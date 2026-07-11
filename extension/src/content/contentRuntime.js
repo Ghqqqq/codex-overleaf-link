@@ -778,7 +778,9 @@
     storageKey = getProjectStorageKey(LEGACY_STORAGE_KEY, window.location.href);
     state = normalizePanelState(await loadStoredState(), { restoreRunningRuns: true });
     ensurePanelOpen();
-    root.CodexOverleafUpdateNotice?.mount?.(panel?.panelEl || panel);
+    root.CodexOverleafUpdateNotice?.mount?.(panel?.panelEl || panel, {
+      getLocale: () => state?.locale || 'en'
+    });
     // v1.8.1: on a non-editor route the panel must NEVER first paint the
     // per-project session UI (composer + probe line) and then swap — mount
     // the dashboard shell synchronously; the account-scope resolution below

@@ -473,7 +473,8 @@
   }
 
   function utx(english, chinese) {
-    return /^zh\b/i.test(navigator.language || '') ? chinese : english;
+    const locale = document.documentElement?.lang || 'en';
+    return /^zh\b/i.test(locale) ? chinese : english;
   }
 
   function injectConsentUpdateStyles() {

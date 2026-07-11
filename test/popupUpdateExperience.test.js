@@ -16,6 +16,7 @@ test('runtime Popup takes ownership after DOMContentLoaded and exposes explicit 
   assert.match(popupSource, /codex-overleaf\/consent-update-later/);
   assert.match(popupSource, /role', 'progressbar'/);
   assert.match(popupSource, /aria-valuetext/);
+  assert.doesNotMatch(popupSource, /navigator\.language/);
 });
 
 test('automatic runtime checks are check-only and installation delegates to the guarded bootstrap executor', () => {
@@ -36,4 +37,6 @@ test('panel notice loads after the idle gate and before content runtime', () => 
   assert.match(noticeSource, /data-update-notice-action/);
   assert.match(noticeSource, /waiting_for_idle/);
   assert.match(noticeSource, /aria-valuetext/);
+  assert.match(noticeSource, /options\.getLocale/);
+  assert.doesNotMatch(noticeSource, /navigator\.language/);
 });

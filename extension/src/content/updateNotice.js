@@ -7,10 +7,18 @@
   let actionInFlight = false;
   let completionTimer = null;
   let listenerInstalled = false;
+  let getLocale = () => '';
 
-  function mount(panelLike) {
+  function mount(panelLike, options = {}) {
+    if (typeof options.getLocale === 'function') {
+      getLocale = options.getLocale;
+    }
     const panel = panelLike?.panelEl || panelLike;
-    if (!panel || mountedPanel === panel) return;
+    if (!panel) return;
+    if (mountedPanel === panel) {
+      render();
+      return;
+    }
     mountedPanel = panel;
     notice?.remove();
     notice = document.createElement('section');
@@ -232,7 +240,8 @@
   }
 
   function tx(english, chinese) {
-    return /^zh\b/i.test(navigator.language || '') ? chinese : english;
+    const locale = String(getLocale() || document.documentElement?.lang || 'en');
+    return /^zh\b/i.test(locale) ? chinese : english;
   }
 
   root.CodexOverleafUpdateNotice = Object.freeze({ mount });
