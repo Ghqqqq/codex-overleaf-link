@@ -2,8 +2,105 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 const { extractFunction } = require('./_helpers/extractFunction');
 
+
+
+function createModelPickerForResponse(response) {
+  const source = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/modelPicker.js'),
+    'utf8'
+  );
+  const modelSelect = {
+    options: [],
+    value: '',
+    append(option) {
+      this.options.push(option);
+    },
+    set textContent(value) {
+      if (value === '') this.options = [];
+    }
+  };
+  const window = {
+    CodexOverleafModels: {
+      FALLBACK_MODELS: [{ id: 'fallback-model', label: 'Fallback Model' }],
+      normalizeDiscoveredModels({ models }) {
+        return { models: models.map(model => ({ ...model })), usedFallback: false };
+      }
+    }
+  };
+  vm.runInNewContext(source, {
+    window,
+    document: {
+      createElement() {
+        return { dataset: {}, setAttribute() {} };
+      }
+    }
+  });
+  const picker = window.CodexOverleafModelPicker.create({
+    tr: key => key,
+    tx: english => english,
+    sendBackgroundNative: async () => response,
+    readSelectedSpeedInput: () => 'standard',
+    getRenderedModelEntries: () => [],
+    persistPanelInputs: async () => {},
+    closeDiagnosticsMenu() {},
+    closeCustomInstructionsSettings() {},
+    closeContextTray() {},
+    closeSlashMenu() {},
+    getPanel: () => ({
+      querySelector(selector) {
+        return selector === '[data-model]' ? modelSelect : null;
+      },
+      querySelectorAll() {
+        return [];
+      }
+    }),
+    getState: () => ({ model: '' })
+  });
+  return { picker, modelSelect };
+}
+
+test('model picker preserves native-host fallback diagnostics', async () => {
+  const { picker, modelSelect } = createModelPickerForResponse({
+    ok: true,
+    result: {
+      source: 'fallback',
+      models: [{ id: 'fallback-model', label: 'Fallback Model' }],
+      fetchedAt: '2026-07-13T00:00:00.000Z',
+      errorCode: 'codex_model_list_timeout',
+      errorMessage: 'timed out'
+    }
+  });
+
+  await picker.loadModelOptions();
+
+  const discovery = picker.getModelDiscovery();
+  assert.equal(discovery.status, 'fallback');
+  assert.equal(discovery.source, 'fallback');
+  assert.equal(discovery.fetchedAt, '2026-07-13T00:00:00.000Z');
+  assert.equal(discovery.errorCode, 'codex_model_list_timeout');
+  assert.equal(discovery.errorMessage, 'timed out');
+  assert.deepEqual(modelSelect.options.map(option => option.value), ['fallback-model']);
+});
+
+test('model picker marks app-server model results as discovered', async () => {
+  const { picker, modelSelect } = createModelPickerForResponse({
+    ok: true,
+    result: {
+      source: 'codex-app-server',
+      models: [{ id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' }],
+      fetchedAt: '2026-07-13T00:00:00.000Z'
+    }
+  });
+
+  await picker.loadModelOptions();
+
+  assert.equal(picker.getModelDiscovery().status, 'discovered');
+  assert.equal(picker.getModelDiscovery().source, 'codex-app-server');
+  assert.deepEqual(modelSelect.options.map(option => option.value), ['gpt-5.6-sol']);
+});
 
 test('composer discovers model options through the native codex.models endpoint', () => {
   const contentScript = fs.readFileSync(
@@ -26,6 +123,7 @@ test('composer discovers model options through the native codex.models endpoint'
   assert.match(modelPicker, /async function loadModelOptions\(\)/);
   assert.match(modelPicker, /method:\s*'codex\.models'/);
   assert.match(modelPicker, /const modelCatalog = getModelCatalog\(\)/);
+  assert.match(modelPicker, /const usedHostFallback = response\?\.result\?\.source === 'fallback'/);
   assert.match(modelPicker, /modelCatalog\.FALLBACK_MODELS/);
   assert.match(modelPicker, /normalizeDiscoveredModels\(\{\s*models:\s*sourceModels,\s*selectedModel:\s*currentSelectedModel\s*\}\)/);
   assert.match(modelPicker, /function renderModelOptions\(models,\s*selectedModel\)/);

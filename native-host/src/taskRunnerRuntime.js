@@ -78,7 +78,7 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
   }
 
   if (request.method === 'codex.models') {
-    return okResponse(request.id, resolveCodexModels(request.params || {}, env));
+    return okResponse(request.id, await resolveCodexModels(request.params || {}, env));
   }
 
   if (request.method === 'codex.run') {

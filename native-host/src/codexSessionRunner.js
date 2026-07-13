@@ -1,6 +1,7 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
+const { resolveCodexCommand, shouldUseShellForCommand } = require('./codexCommand');
 const fs = require('node:fs');
 const path = require('node:path');
 const { version: PACKAGE_VERSION } = require('../../package.json');
@@ -1376,25 +1377,6 @@ function getAbortReason(signal) {
   const error = new Error('Codex run was cancelled by the user');
   error.code = 'codex_cancelled';
   return error;
-}
-
-function resolveCodexCommand(env = process.env) {
-  if (
-    env.CODEX_OVERLEAF_ENV_READY === '1' ||
-    Object.prototype.hasOwnProperty.call(env, 'CODEX_OVERLEAF_CODEX_PATH')
-  ) {
-    return env.CODEX_OVERLEAF_CODEX_PATH || '';
-  }
-  return 'codex';
-}
-
-function shouldUseShellForCommand(command, env = process.env) {
-  const platform = env.CODEX_OVERLEAF_PLATFORM || process.platform;
-  if (platform !== 'win32') {
-    return false;
-  }
-  const text = String(command || '');
-  return text === 'codex' || /\.(?:cmd|bat)$/i.test(text);
 }
 
 function buildFinalAssistantMessage(messages = new Map(), order = []) {

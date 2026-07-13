@@ -103,13 +103,14 @@
         && response.result.models.length > 0;
       const sourceModels = hasDiscoveredModels ? response.result.models : fallbackModels;
       const normalized = modelCatalog.normalizeDiscoveredModels({ models: sourceModels, selectedModel: currentSelectedModel });
+      const usedHostFallback = response?.result?.source === 'fallback';
       renderModelOptions(normalized.models, currentSelectedModel);
       modelDiscovery = {
-        status: hasDiscoveredModels && !normalized.usedFallback ? 'discovered' : 'fallback',
+        status: hasDiscoveredModels && !normalized.usedFallback && !usedHostFallback ? 'discovered' : 'fallback',
         source: hasDiscoveredModels ? response.result?.source || 'unknown' : 'fallback',
         fetchedAt: hasDiscoveredModels ? response.result?.fetchedAt || '' : '',
-        errorCode: hasDiscoveredModels ? '' : response?.error?.code || '',
-        errorMessage: hasDiscoveredModels ? '' : response?.error?.message || ''
+        errorCode: usedHostFallback ? response.result?.errorCode || '' : (hasDiscoveredModels ? '' : response?.error?.code || ''),
+        errorMessage: usedHostFallback ? response.result?.errorMessage || '' : (hasDiscoveredModels ? '' : response?.error?.message || '')
       };
       updateModelDisplay();
     } catch (error) {

@@ -17,9 +17,10 @@ const COPIED_USER_CODEX_FILES = [
   'auth.json',
   'config.toml',
   'installation_id',
-  'models_cache.json',
   'version.json'
 ];
+
+const MATERIALIZED_MODEL_CATALOG_FILE = 'model_catalog.json';
 
 const LINKED_USER_CODEX_DIRS = [
   'vendor_imports'
@@ -79,25 +80,23 @@ function preparePluginCodexHome(env = process.env, options = {}) {
   fs.mkdirSync(pluginHome, { recursive: true });
   chmodIfPossible(pluginHome, 0o700);
   if (samePath(userHome, pluginHome)) {
-    return { userHome, pluginHome, copied: [], linked: [], skippedLinks: [] };
+    return {
+      userHome,
+      pluginHome,
+      copied: [],
+      linked: [],
+      skippedLinks: [],
+      modelCatalog: { status: 'shared_home' }
+    };
   }
 
-  const copied = [];
+  const { copied, modelCatalog } = copyCodexConfigurationSnapshot({
+    userHome,
+    targetHome: pluginHome,
+    loadCodexLocalSkills
+  });
   const linked = [];
   const skippedLinks = [];
-  for (const fileName of COPIED_USER_CODEX_FILES) {
-    const source = path.join(userHome, fileName);
-    const target = path.join(pluginHome, fileName);
-    if (!isRegularFile(source)) {
-      continue;
-    }
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    copyUserCodexFile(source, target, fileName, { loadCodexLocalSkills });
-    if (fileName === 'auth.json') {
-      chmodIfPossible(target, 0o600);
-    }
-    copied.push(fileName);
-  }
 
   // Personalization isolation: the plugin Codex home must never inherit the
   // user's global Codex instructions/memory. Remove them every run — this also
@@ -106,9 +105,6 @@ function preparePluginCodexHome(env = process.env, options = {}) {
   // ~/.codex when the plugin home and user home are the same directory.
   for (const entryName of ISOLATED_USER_INSTRUCTION_ENTRIES) {
     removePluginHomeEntry(pluginHome, entryName, skippedLinks);
-  }
-  if (!isRegularFile(path.join(userHome, 'config.toml'))) {
-    removePluginHomeEntry(pluginHome, 'config.toml', skippedLinks);
   }
 
   if (!loadCodexLocalSkills) {
@@ -154,7 +150,123 @@ function preparePluginCodexHome(env = process.env, options = {}) {
   }
   skippedLinks.push(...skillsResult.skippedLinks);
 
-  return { userHome, pluginHome, copied, linked, skippedLinks };
+  return { userHome, pluginHome, copied, linked, skippedLinks, modelCatalog };
+}
+
+
+function copyCodexConfigurationSnapshot({ userHome, targetHome, loadCodexLocalSkills = true }) {
+  const copied = [];
+  fs.mkdirSync(targetHome, { recursive: true });
+  chmodIfPossible(targetHome, 0o700);
+
+  for (const fileName of COPIED_USER_CODEX_FILES) {
+    const source = path.join(userHome, fileName);
+    const target = path.join(targetHome, fileName);
+    if (!isRegularFile(source)) {
+      fs.rmSync(target, { force: true });
+      continue;
+    }
+    fs.rmSync(target, { force: true });
+    copyUserCodexFile(source, target, fileName, { loadCodexLocalSkills });
+    if (fileName === 'auth.json') {
+      chmodIfPossible(target, 0o600);
+    }
+    copied.push(fileName);
+  }
+
+  const modelCatalog = materializeConfiguredModelCatalog({
+    userHome,
+    pluginHome: targetHome
+  });
+  if (modelCatalog.status === 'copied') {
+    copied.push(MATERIALIZED_MODEL_CATALOG_FILE);
+  }
+  return { copied, modelCatalog };
+}
+
+function materializeConfiguredModelCatalog({ userHome, pluginHome }) {
+  const pluginConfigPath = path.join(pluginHome, 'config.toml');
+  const target = path.join(pluginHome, MATERIALIZED_MODEL_CATALOG_FILE);
+  if (!isRegularFile(pluginConfigPath)) {
+    fs.rmSync(target, { force: true });
+    return { status: 'not_configured' };
+  }
+
+  const config = fs.readFileSync(pluginConfigPath, 'utf8');
+  const configuredPath = readTopLevelTomlString(config, 'model_catalog_json');
+  if (!configuredPath) {
+    fs.rmSync(target, { force: true });
+    return { status: 'not_configured' };
+  }
+
+  const source = path.isAbsolute(configuredPath)
+    ? path.resolve(configuredPath)
+    : path.resolve(userHome, configuredPath);
+  if (!isRegularFile(source)) {
+    fs.rmSync(target, { force: true });
+    return { status: 'missing', source };
+  }
+
+  fs.rmSync(target, { force: true });
+  fs.copyFileSync(source, target);
+  chmodIfPossible(target, 0o600);
+  fs.writeFileSync(
+    pluginConfigPath,
+    replaceTopLevelTomlString(config, 'model_catalog_json', MATERIALIZED_MODEL_CATALOG_FILE),
+    'utf8'
+  );
+  return { status: 'copied', source, target };
+}
+
+function readTopLevelTomlString(content, key) {
+  let beforeFirstSection = true;
+  for (const line of String(content || '').split(/\r?\n/)) {
+    if (parseTomlSectionName(line)) {
+      beforeFirstSection = false;
+    }
+    if (!beforeFirstSection) {
+      continue;
+    }
+    const match = line.match(new RegExp(`^\\s*${buildTomlKeyPattern(key)}\\s*=\\s*("(?:[^"\\\\]|\\\\.)*"|'[^']*')\\s*(?:#.*)?$`));
+    if (!match) {
+      continue;
+    }
+    if (match[1].startsWith("'")) {
+      return match[1].slice(1, -1);
+    }
+    try {
+      return JSON.parse(match[1]);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+function replaceTopLevelTomlString(content, key, value) {
+  const lines = String(content || '').split(/\r?\n/);
+  let beforeFirstSection = true;
+  const replacement = `${key} = ${JSON.stringify(value)}`;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (parseTomlSectionName(lines[index])) {
+      beforeFirstSection = false;
+    }
+    if (beforeFirstSection && new RegExp(`^\\s*${buildTomlKeyPattern(key)}\\s*=`).test(lines[index])) {
+      lines[index] = replacement;
+      return lines.join('\n');
+    }
+  }
+  return content;
+}
+
+
+function buildTomlKeyPattern(key) {
+  const escaped = escapeRegExp(key);
+  return `(?:${escaped}|"${escaped}"|'${escaped}')`;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function ensureDefaultCodexOverleafSkills({ env = process.env } = {}) {
@@ -605,6 +717,7 @@ function isInsideDirectory(target, parent) {
 
 module.exports = {
   buildCodexHomeEnv,
+  copyCodexConfigurationSnapshot,
   clearPluginCodexHistory,
   composePluginSkillsDirectory,
   ensureDefaultCodexOverleafSkills,

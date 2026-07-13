@@ -655,6 +655,120 @@ test('plugin Codex home removes a stale config.toml when the user config.toml is
   }
 });
 
+test('preparePluginCodexHome copies and rewrites the configured relative model catalog', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-model-catalog-'));
+  try {
+    const userHome = path.join(home, '.codex');
+    fs.mkdirSync(path.join(userHome, 'catalogs'), { recursive: true });
+    fs.writeFileSync(path.join(userHome, 'config.toml'), [
+      'model = "gpt-custom"',
+      'model_catalog_json = "catalogs/custom-models.json"',
+      ''
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(path.join(userHome, 'catalogs', 'custom-models.json'), '{"models":[]}', 'utf8');
+
+    const prepared = preparePluginCodexHome({ HOME: home });
+    const copiedCatalog = path.join(prepared.pluginHome, 'model_catalog.json');
+    const pluginConfig = fs.readFileSync(path.join(prepared.pluginHome, 'config.toml'), 'utf8');
+
+    assert.equal(fs.readFileSync(copiedCatalog, 'utf8'), '{"models":[]}');
+    assert.match(pluginConfig, /^model_catalog_json = "model_catalog\.json"$/m);
+    assert.equal(prepared.modelCatalog?.status, 'copied');
+    assert.equal(prepared.copied.includes('model_catalog.json'), true);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('preparePluginCodexHome supports quoted TOML keys and literal relative catalog paths', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-quoted-model-catalog-'));
+  try {
+    const userHome = path.join(home, '.codex');
+    fs.mkdirSync(path.join(userHome, 'catalogs'), { recursive: true });
+    fs.writeFileSync(
+      path.join(userHome, 'config.toml'),
+      `'model_catalog_json' = 'catalogs/custom-models.json'\n`,
+      'utf8'
+    );
+    fs.writeFileSync(path.join(userHome, 'catalogs', 'custom-models.json'), '{"quoted":true}', 'utf8');
+
+    const prepared = preparePluginCodexHome({ HOME: home });
+    const pluginConfig = fs.readFileSync(path.join(prepared.pluginHome, 'config.toml'), 'utf8');
+
+    assert.equal(
+      fs.readFileSync(path.join(prepared.pluginHome, 'model_catalog.json'), 'utf8'),
+      '{"quoted":true}'
+    );
+    assert.match(pluginConfig, /^model_catalog_json = "model_catalog\.json"$/m);
+    assert.equal(prepared.modelCatalog?.status, 'copied');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('preparePluginCodexHome replaces a stale catalog symlink without modifying its target', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-model-catalog-symlink-'));
+  try {
+    const userHome = path.join(home, '.codex');
+    const pluginHome = path.join(home, '.codex-overleaf', 'codex-home');
+    const victim = path.join(home, 'victim.json');
+    fs.mkdirSync(userHome, { recursive: true });
+    fs.mkdirSync(pluginHome, { recursive: true });
+    fs.writeFileSync(path.join(userHome, 'config.toml'), 'model_catalog_json = "custom.json"\n', 'utf8');
+    fs.writeFileSync(path.join(userHome, 'custom.json'), '{"fresh":true}', 'utf8');
+    fs.writeFileSync(victim, '{"victim":true}', 'utf8');
+    fs.symlinkSync(victim, path.join(pluginHome, 'model_catalog.json'));
+
+    preparePluginCodexHome({ HOME: home });
+
+    const targetStat = fs.lstatSync(path.join(pluginHome, 'model_catalog.json'));
+    assert.equal(targetStat.isSymbolicLink(), false);
+    assert.equal(fs.readFileSync(path.join(pluginHome, 'model_catalog.json'), 'utf8'), '{"fresh":true}');
+    assert.equal(fs.readFileSync(victim, 'utf8'), '{"victim":true}');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('preparePluginCodexHome removes a stale copied model catalog when configuration no longer references one', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-stale-model-catalog-'));
+  try {
+    const userHome = path.join(home, '.codex');
+    const pluginHome = path.join(home, '.codex-overleaf', 'codex-home');
+    fs.mkdirSync(userHome, { recursive: true });
+    fs.mkdirSync(pluginHome, { recursive: true });
+    fs.writeFileSync(path.join(userHome, 'config.toml'), 'model = "gpt-default"\n', 'utf8');
+    fs.writeFileSync(path.join(pluginHome, 'model_catalog.json'), '{"stale":true}', 'utf8');
+
+    const prepared = preparePluginCodexHome({ HOME: home });
+
+    assert.equal(fs.existsSync(path.join(pluginHome, 'model_catalog.json')), false);
+    assert.equal(prepared.modelCatalog?.status, 'not_configured');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('preparePluginCodexHome reports a missing configured model catalog without copying stale data', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-missing-model-catalog-'));
+  try {
+    const userHome = path.join(home, '.codex');
+    const pluginHome = path.join(home, '.codex-overleaf', 'codex-home');
+    fs.mkdirSync(userHome, { recursive: true });
+    fs.mkdirSync(pluginHome, { recursive: true });
+    fs.writeFileSync(path.join(userHome, 'config.toml'), 'model_catalog_json = "missing.json"\n', 'utf8');
+    fs.writeFileSync(path.join(pluginHome, 'model_catalog.json'), '{"stale":true}', 'utf8');
+
+    const prepared = preparePluginCodexHome({ HOME: home });
+
+    assert.equal(fs.existsSync(path.join(pluginHome, 'model_catalog.json')), false);
+    assert.equal(prepared.modelCatalog?.status, 'missing');
+    assert.match(prepared.modelCatalog?.source || '', /missing\.json$/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('preparePluginCodexHome leaves a shared user/plugin home untouched', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-samepath-'));
   const sharedHome = path.join(home, 'shared-codex');
