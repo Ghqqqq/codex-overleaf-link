@@ -126,16 +126,20 @@ test('wave-aware admission rejects jobs that cannot fit the broker budget', asyn
   const broker = createSubagentBroker({
     workspacePath: dir,
     runWorkerTask: abortableWorker(() => new Promise(() => {})),
-    limits: { ...TINY, maxWorkers: 1, maxJobsPerRun: 8, perWorkerTimeoutMs: 400, brokerBudgetMs: 500 }
+    limits: { ...TINY, maxWorkers: 1, maxJobsPerRun: 8, perWorkerTimeoutMs: 2000, brokerBudgetMs: 3999 }
   });
   broker.start();
-  writeJob(dir, { id: 'first', task: 't', files: ['sections/ch1.tex'] });
-  writeJob(dir, { id: 'second', task: 't', files: ['sections/ch2.tex'] });
-  await waitFor(() => readResult(dir, 'second'));
-  // first fits (1 wave * 400 <= 500); second would need a second wave (800 > 500)
-  assert.equal(readResult(dir, 'first'), null);
-  assert.equal(readResult(dir, 'second').reason, 'insufficient_time');
-  await broker.stop({ drain: false });
+  try {
+    writeJob(dir, { id: 'first', task: 't', files: ['sections/ch1.tex'] });
+    writeJob(dir, { id: 'second', task: 't', files: ['sections/ch2.tex'] });
+    await waitFor(() => readResult(dir, 'second'));
+    // Leave enough intake headroom for Windows CI while preserving the wave
+    // boundary: one 2000ms wave fits, two 2000ms waves exceed 3999ms.
+    assert.equal(readResult(dir, 'first'), null);
+    assert.equal(readResult(dir, 'second').reason, 'insufficient_time');
+  } finally {
+    await broker.stop({ drain: false });
+  }
 });
 
 test('concurrency stays under maxWorkers across waves', async () => {
