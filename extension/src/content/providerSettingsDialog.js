@@ -15,7 +15,8 @@
       dirty: false,
       busy: '',
       secretAction: 'unchanged',
-      verification: null,
+      verifications: {},
+      pendingCatalog: null,
       root: null,
       returnFocus: null
     };
@@ -24,9 +25,13 @@
       open: catalog => open(instance, catalog),
       close: () => requestClose(instance),
       setCatalog: (catalog, selectedId) => setCatalog(instance, catalog, selectedId),
+      offerCatalog: (catalog, selectedId) => offerCatalog(instance, catalog, selectedId),
       setBusy: (kind, message) => setBusy(instance, kind, message),
       setStatus: status => setStatus(instance, status),
       setVerification: verification => setVerification(instance, verification),
+      setVerificationFailure: failure => setVerificationFailure(instance, failure),
+      setTestProgress: progress => setTestProgress(instance, progress),
+      hasUnsavedChanges: () => instance.dirty,
       isOpen: () => Boolean(instance.root && !instance.root.hidden),
       destroy: () => destroy(instance),
       _instance: instance
@@ -83,14 +88,15 @@
   }
 
   function requestClose(instance) {
-    if (instance.busy === 'testing') {
-      instance.callbacks.onCancelTest?.();
-    }
     if (instance.dirty && !instance.document.defaultView.confirm(instance.tx(
       'Discard unsaved provider changes?',
       '放弃尚未保存的模型服务配置吗？'
     ))) {
       return false;
+    }
+    if (instance.busy === 'testing') {
+      instance.callbacks.onCancelTest?.();
+      instance.busy = '';
     }
     instance.root.hidden = true;
     instance.busy = '';
@@ -108,17 +114,38 @@
     instance.selectedId = nextId || 'builtin';
     instance.draft = null;
     instance.dirty = false;
+    delete instance.root.dataset.dirty;
     instance.secretAction = 'unchanged';
-    instance.verification = null;
+    instance.verifications = {};
+    instance.pendingCatalog = null;
+    setStatus(instance, { tone: '', title: '' });
     render(instance);
+  }
+
+  function offerCatalog(instance, catalog, selectedId) {
+    if (!instance.dirty) {
+      setCatalog(instance, catalog, selectedId);
+      return true;
+    }
+    instance.pendingCatalog = { catalog, selectedId };
+    setStatus(instance, {
+      tone: 'warning',
+      title: instance.tx(
+        'Provider settings changed in another tab. The local draft was kept.',
+        '其他标签页更新了模型服务配置，当前本地草稿已保留。'
+      )
+    });
+    renderFooter(instance);
+    applyBusyState(instance);
+    return false;
   }
 
   function render(instance) {
     const tx = instance.tx;
     instance.root.querySelector('[data-provider-dialog-title]').textContent = tx('Model API providers', '模型 API 服务');
     instance.root.querySelector('[data-provider-dialog-subtitle]').textContent = tx(
-      'Configure endpoints used by future Codex runs.',
-      '配置后续 Codex 任务使用的模型服务端点。'
+      'Configure model APIs used by future Codex runs in every Overleaf project tab.',
+      '配置所有 Overleaf 项目标签页后续 Codex 任务使用的模型 API。'
     );
     renderProviderList(instance);
     renderDetail(instance);
@@ -132,10 +159,11 @@
     const rows = instance.catalog.providers.map(provider => {
       const selected = provider.id === instance.selectedId;
       const active = provider.id === instance.catalog.activeProviderId;
+      const diagnosticCount = Object.values(provider.modelDiagnostics || {}).filter(item => item.status === 'tested').length;
       const status = active
         ? tx('Active', '使用中')
-        : provider.lastVerified
-          ? tx('Verified', '已验证')
+        : diagnosticCount
+          ? tx(`Tested ${diagnosticCount}/${Math.max(1, provider.models.length)}`, `已测试 ${diagnosticCount}/${Math.max(1, provider.models.length)}`)
           : provider.kind === 'custom'
             ? tx('Untested', '未测试')
             : '';
@@ -177,7 +205,8 @@
     const secretSavedAt = formatSecretSavedAt(instance, provider.secretUpdatedAt);
     const disclosureSatisfied = Boolean(
       provider.endpointDisclosureHost &&
-      provider.endpointDisclosureHost === acceptedHost
+      provider.endpointDisclosureHost === acceptedHost &&
+      provider.endpointDisclosureBaseUrl === draft.baseUrl
     );
     detail.innerHTML = `
       <div class="codex-provider-detail-titleline">
@@ -364,18 +393,19 @@
           </div>
         </div>
       </details>
-      ${!active ? `
-        <label class="codex-provider-disclosure">
+      <label class="codex-provider-disclosure">
           <input type="checkbox" data-provider-disclosure ${disclosureSatisfied ? 'checked' : ''}>
-          <span>${escapeHtml(tx(
-            `Future Codex runs may send selected project content to ${acceptedHost || 'this endpoint'}.`,
-            `后续 Codex 任务可能会把所选项目内容发送到 ${acceptedHost || '此端点'}。`
+          <span data-provider-disclosure-text>${escapeHtml(tx(
+            `Future Codex runs in every Overleaf project tab may send selected project content to ${draft.baseUrl || 'this endpoint'}.`,
+            `所有 Overleaf 项目标签页的后续 Codex 任务都可能把所选项目内容发送到 ${draft.baseUrl || '此端点'}。`
           ))}</span>
-        </label>
-      ` : ''}
+      </label>
       <div class="codex-provider-test-row">
+        <select data-provider-test-model aria-label="${escapeAttr(tx('Model to test', '要测试的模型'))}">
+          ${(draft.models || []).map(model => `<option value="${escapeAttr(model.id)}" ${model.id === draft.defaultModelId ? 'selected' : ''}>${escapeHtml(model.label || model.id)}</option>`).join('')}
+        </select>
         <button type="button" class="codex-provider-secondary-button" data-provider-action="test">${escapeHtml(tx('Test connection', '测试连接'))}</button>
-        <span class="codex-provider-test-state" data-provider-test-state>${escapeHtml(formatVerification(instance, provider))}</span>
+        <span class="codex-provider-test-state" data-provider-test-state>${escapeHtml(formatVerification(instance, provider, draft.defaultModelId))}</span>
       </div>
     `;
   }
@@ -410,10 +440,12 @@
     }
     const active = provider.id && provider.id === instance.catalog.activeProviderId;
     const isNew = !provider.id;
+    const destinationChanged = active && getCurrentBaseUrl(instance) !== provider.endpointDisclosureBaseUrl;
     const actionState = getFooterActionState({
       isNew,
       active,
       dirty: instance.dirty,
+      destinationChanged,
       canSave: canSaveCurrentDraft(instance),
       canActivate: canActivateCurrentProvider(instance)
     });
@@ -421,6 +453,7 @@
     const useDisabled = actionState.useEnabled ? '' : ' disabled aria-disabled="true"';
     actions.innerHTML = `
       ${provider.id ? `<button type="button" class="codex-provider-danger-button" data-provider-action="delete">${escapeHtml(tx('Delete', '删除'))}</button>` : ''}
+      ${instance.pendingCatalog ? `<button type="button" class="codex-provider-secondary-button" data-provider-action="reload-external">${escapeHtml(tx('Reload latest', '加载最新配置'))}</button>` : ''}
       <span class="codex-provider-footer-spacer"></span>
       <button type="button" class="codex-provider-secondary-button" data-provider-action="close">${escapeHtml(tx('Cancel', '取消'))}</button>
       ${actionState.showSave ? `<button type="button" class="codex-provider-secondary-button" data-provider-action="save"${saveDisabled}>${escapeHtml(tx('Save', '保存'))}</button>` : ''}
@@ -435,7 +468,7 @@
     const dirty = options.dirty === true;
     return {
       showSave: isNew || dirty,
-      showSaveAndUse: !active && (isNew || dirty),
+      showSaveAndUse: (isNew || dirty) && (!active || options.destinationChanged === true),
       showUse: !isNew && !active && !dirty,
       saveEnabled: options.canSave === true,
       useEnabled: options.canActivate === true
@@ -461,7 +494,35 @@
       selectProvider(instance, '__new__');
       return;
     }
+    if (action === 'reload-external') {
+      if (!instance.pendingCatalog) return;
+      if (instance.dirty && !instance.document.defaultView.confirm(instance.tx(
+        'Discard this draft and load the latest provider settings?',
+        '放弃当前草稿并加载最新模型服务配置吗？'
+      ))) {
+        return;
+      }
+      const pending = instance.pendingCatalog;
+      setCatalog(instance, pending.catalog, pending.selectedId);
+      return;
+    }
     if (action === 'clear-secret') {
+      const provider = getSelectedProvider(instance);
+      if (provider?.id && provider.hasSecret) {
+        const warning = instance.dirty
+          ? instance.tx(
+              'Remove the stored API key now? Unsaved form changes will be discarded when the saved profile reloads.',
+              '立即删除已存储的 API 密钥吗？重新加载已保存配置时，未保存的表单改动会被放弃。'
+            )
+          : instance.tx('Remove the stored API key now?', '立即删除已存储的 API 密钥吗？');
+        if (instance.document.defaultView.confirm(warning)) {
+          instance.callbacks.onClearSecret?.({
+            profileId: provider.id,
+            expectedRevision: provider.revision
+          });
+        }
+        return;
+      }
       instance.secretAction = 'clear';
       const input = instance.root.querySelector('[data-provider-field="apiKey"]');
       if (input) input.value = '';
@@ -485,15 +546,22 @@
       return;
     }
     if (action === 'test') {
-      invalidateVerification(instance, false);
+      const modelId = getSelectedTestModelId(instance);
+      invalidateVerification(instance, false, modelId);
       instance.callbacks.onTest?.(readContext(instance));
+      return;
+    }
+    if (action === 'cancel-test') {
+      instance.callbacks.onCancelTest?.();
+      setBusy(instance, '', '');
+      setStatus(instance, { tone: 'warning', title: instance.tx('Connection test cancelled.', '连接测试已取消。') });
       return;
     }
     if (action === 'use') {
       if (!canActivateCurrentProvider(instance)) {
         setStatus(instance, {
           tone: 'failed',
-          title: instance.tx('Test and save this provider before using it.', '使用前请先测试并保存此模型服务。')
+          title: instance.tx('Save this provider before using it.', '使用前请先保存此模型服务。')
         });
         return;
       }
@@ -509,13 +577,6 @@
       return;
     }
     if (action === 'save' || action === 'save-use') {
-      if (!canSaveCurrentDraft(instance)) {
-        setStatus(instance, {
-          tone: 'failed',
-          title: instance.tx('Run Test connection again after changing provider settings.', '模型服务配置发生变化后，请重新运行“测试连接”。')
-        });
-        return;
-      }
       const context = readContext(instance);
       if (action === 'save-use' && !instance.root.querySelector('[data-provider-disclosure]')?.checked) {
         setStatus(instance, {
@@ -529,11 +590,25 @@
   }
 
   function handleInput(instance, event) {
+    if (event.target.matches('[data-provider-test-model]')) {
+      refreshTestState(instance);
+      return;
+    }
     if (event.target.matches('[data-provider-field]')) {
+      const field = event.target.dataset.providerField;
       if (event.target.dataset.providerField === 'apiKey') {
         instance.secretAction = event.target.value ? 'replace' : (getSelectedProvider(instance)?.hasSecret ? 'unchanged' : 'clear');
       }
-      markDirty(instance);
+      if (field === 'baseUrl') {
+        const disclosure = instance.root.querySelector('[data-provider-disclosure]');
+        if (disclosure) disclosure.checked = false;
+        updateDisclosureText(instance);
+      }
+      markDirty(instance, { invalidateVerification: field !== 'name' });
+      if (field === 'baseUrl') {
+        renderFooter(instance);
+        applyBusyState(instance);
+      }
     }
   }
 
@@ -577,8 +652,11 @@
       ? window.CodexOverleafProviderProfiles.buildEmptyDraft()
       : null;
     instance.dirty = false;
+    delete instance.root.dataset.dirty;
     instance.secretAction = 'unchanged';
-    instance.verification = null;
+    instance.verifications = {};
+    instance.pendingCatalog = null;
+    setStatus(instance, { tone: '', title: '' });
     render(instance);
   }
 
@@ -643,8 +721,11 @@
       expectedRevision: provider.revision || 0,
       draft,
       secretMutation,
-      verification: instance.verification,
-      disclosureHost: getEndpointHost(draft.baseUrl)
+      verification: instance.verifications[getSelectedTestModelId(instance)] || null,
+      verifications: Object.values(instance.verifications).filter(item => item?.status === 'tested'),
+      testModelId: getSelectedTestModelId(instance) || defaultModelId,
+      disclosureHost: getEndpointHost(draft.baseUrl),
+      disclosureBaseUrl: draft.baseUrl
     };
   }
 
@@ -656,10 +737,21 @@
       || instance.catalog.providers.find(provider => provider.id === 'builtin');
   }
 
-  function markDirty(instance) {
+  function markDirty(instance, options = {}) {
+    const footerNeedsRefresh = instance.dirty !== true;
     instance.dirty = true;
     instance.root.dataset.dirty = 'true';
-    invalidateVerification(instance, true);
+    if (options.invalidateVerification !== false) {
+      instance.verifications = {};
+      invalidateVerification(instance, true);
+    }
+    if (footerNeedsRefresh) {
+      // Saved providers initially render Use (inactive) or no primary action
+      // (active). The first edit changes that action contract to Save, so the
+      // footer must be rebuilt without re-rendering and losing form values.
+      renderFooter(instance);
+      applyBusyState(instance);
+    }
   }
 
   function setBusy(instance, kind, message) {
@@ -669,6 +761,7 @@
     } else if (!kind) {
       setStatus(instance, { tone: '', title: '' });
     }
+    syncTestAction(instance);
     applyBusyState(instance);
   }
 
@@ -679,6 +772,8 @@
     instance.root.dataset.busy = instance.busy || '';
     for (const element of instance.root.querySelectorAll('input, select, textarea, button')) {
       if (element.matches('[data-provider-action="close"]')) {
+        element.disabled = false;
+      } else if (element.matches('[data-provider-action="cancel-test"]')) {
         element.disabled = false;
       } else if (element.matches('[data-provider-action="save"], [data-provider-action="save-use"]')) {
         element.disabled = busy || !canSave;
@@ -697,7 +792,8 @@
   }
 
   function setVerification(instance, verification = {}) {
-    instance.verification = verification;
+    const modelId = String(verification.modelId || verification.testedModelId || getSelectedTestModelId(instance)).trim();
+    instance.verifications[modelId] = { ...verification, modelId, status: 'tested' };
     setStatus(instance, {
       tone: 'success',
       title: instance.tx('Connection verified.', '连接验证成功。'),
@@ -709,22 +805,43 @@
         `${verification.durationMs || 0}ms`
       ].filter(Boolean).join(' · ')
     });
-    const state = instance.root.querySelector('[data-provider-test-state]');
-    if (state) {
-      state.textContent = instance.tx('Verified for this draft', '当前草稿已验证');
-      state.dataset.tone = 'success';
-    }
+    refreshTestState(instance);
     applyBusyState(instance);
   }
 
-  function invalidateVerification(instance, changed) {
-    instance.verification = null;
+  function setVerificationFailure(instance, failure = {}) {
+    const modelId = String(failure.modelId || getSelectedTestModelId(instance)).trim();
+    instance.verifications[modelId] = {
+      modelId,
+      status: 'failed',
+      errorCode: failure.errorCode || ''
+    };
+    refreshTestState(instance);
+  }
+
+  function setTestProgress(instance, progress = {}) {
+    const detail = progress.detail || progress;
+    const modelId = detail.modelId || getSelectedTestModelId(instance);
+    setStatus(instance, {
+      tone: 'progress',
+      title: instance.tx(
+        `Testing ${modelId}: ${detail.wireApi} · ${detail.upstreamResponseMode} (${detail.attempt}/${detail.totalAttempts})`,
+        `正在测试 ${modelId}：${detail.wireApi} · ${detail.upstreamResponseMode}（${detail.attempt}/${detail.totalAttempts}）`
+      )
+    });
+  }
+
+  function invalidateVerification(instance, changed, modelId = '') {
+    if (modelId) {
+      delete instance.verifications[modelId];
+    }
     const state = instance.root.querySelector('[data-provider-test-state]');
     if (state) {
       const provider = getSelectedProvider(instance);
+      const selectedModelId = modelId || getSelectedTestModelId(instance) || provider?.defaultModelId;
       state.textContent = changed
-        ? instance.tx('Changes require another test', '配置已变化，需要重新测试')
-        : formatVerification(instance, provider);
+        ? instance.tx('Compatibility has not been tested for these settings', '当前配置尚未测试兼容性')
+        : formatVerification(instance, provider, selectedModelId);
       state.dataset.tone = changed ? 'warning' : '';
     }
     applyBusyState(instance);
@@ -732,29 +849,71 @@
 
   function canSaveCurrentDraft(instance) {
     const provider = getSelectedProvider(instance);
-    return Boolean(instance.verification || (!instance.dirty && provider?.lastVerified));
+    return Boolean(provider && provider.kind === 'custom');
   }
 
   function canActivateCurrentProvider(instance) {
     const provider = getSelectedProvider(instance);
     return Boolean(
       provider?.id &&
-      !instance.dirty &&
-      provider.lastVerified?.revision === provider.revision
+      !instance.dirty
     );
   }
 
-  function formatVerification(instance, provider) {
-    if (instance.verification) {
-      return instance.tx('Verified for this draft', '当前草稿已验证');
+  function formatVerification(instance, provider, modelId) {
+    const transient = instance.verifications[modelId];
+    if (transient?.status === 'failed') {
+      return instance.tx('Failed in this dialog', '本次测试失败');
     }
-    if (provider.lastVerified?.revision === provider.revision) {
-      const mode = provider.lastVerified.upstreamResponseMode;
+    if (transient?.status === 'tested') {
+      return instance.tx('Tested for this draft', '当前草稿已测试');
+    }
+    const diagnostic = provider?.modelDiagnostics?.[modelId];
+    if (diagnostic?.status === 'tested') {
+      const mode = diagnostic.upstreamResponseMode;
       return mode
-        ? `${instance.tx('Verified', '已验证')} · ${mode}`
-        : instance.tx('Verified', '已验证');
+        ? `${instance.tx('Tested', '已测试')} · ${diagnostic.wireApi || ''} · ${mode}`
+        : instance.tx('Tested', '已测试');
     }
-    return instance.tx('Not tested', '尚未测试');
+    return instance.tx('Untested; testing is optional', '尚未测试；测试为可选功能');
+  }
+
+  function refreshTestState(instance) {
+    const state = instance.root.querySelector('[data-provider-test-state]');
+    if (!state) return;
+    const provider = getSelectedProvider(instance);
+    const modelId = getSelectedTestModelId(instance) || provider?.defaultModelId;
+    state.textContent = formatVerification(instance, provider, modelId);
+    const status = instance.verifications[modelId]?.status || provider?.modelDiagnostics?.[modelId]?.status || '';
+    state.dataset.tone = status === 'failed' ? 'failed' : status === 'tested' ? 'success' : '';
+  }
+
+  function getSelectedTestModelId(instance) {
+    return String(instance.root.querySelector('[data-provider-test-model]')?.value || '').trim();
+  }
+
+  function getCurrentBaseUrl(instance) {
+    return String(instance.root.querySelector('[data-provider-field="baseUrl"]')?.value || '').trim();
+  }
+
+  function updateDisclosureText(instance) {
+    const text = instance.root.querySelector('[data-provider-disclosure-text]');
+    if (!text) return;
+    const baseUrl = getCurrentBaseUrl(instance) || instance.tx('this endpoint', '此端点');
+    text.textContent = instance.tx(
+      `Future Codex runs in every Overleaf project tab may send selected project content to ${baseUrl}.`,
+      `所有 Overleaf 项目标签页的后续 Codex 任务都可能把所选项目内容发送到 ${baseUrl}。`
+    );
+  }
+
+  function syncTestAction(instance) {
+    const button = instance.root.querySelector('[data-provider-action="test"], [data-provider-action="cancel-test"]');
+    if (!button) return;
+    const testing = instance.busy === 'testing';
+    button.dataset.providerAction = testing ? 'cancel-test' : 'test';
+    button.textContent = testing
+      ? instance.tx('Cancel test', '取消测试')
+      : instance.tx('Test connection', '测试连接');
   }
 
   function formatSecretSavedAt(instance, value) {

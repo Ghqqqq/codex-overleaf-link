@@ -7,13 +7,19 @@
       tx: options.tx || ((english) => english),
       sendBackgroundNative: options.sendBackgroundNative,
       getSettingsPanelInstance: options.getSettingsPanelInstance || (() => null),
-      onProviderChanged: options.onProviderChanged || (() => {}),
+      getSelectedModel: options.getSelectedModel || (() => ''),
+      clearSelectedModel: options.clearSelectedModel || (() => {}),
+      refreshModelOptions: options.refreshModelOptions || (() => {}),
+      persistInputs: options.persistInputs || (() => {}),
       catalog: Profiles.normalizeCatalog({}),
       loaded: false,
+      loadPromise: null,
       testOperationId: '',
       channel: null,
       dialog: null
     };
+    instance.onProviderChanged = options.onProviderChanged
+      || ((catalog, change) => reconcileProviderSelection(instance, catalog, change));
     instance.dialog = window.CodexOverleafProviderSettingsDialog.create({
       document: options.document || document,
       tx: instance.tx,
@@ -22,6 +28,7 @@
         onCancelTest: () => cancelProviderTest(instance),
         onSave: (context, action) => saveProvider(instance, context, action),
         onActivate: context => activateProvider(instance, context),
+        onClearSecret: context => clearProviderSecret(instance, context),
         onDelete: context => deleteProvider(instance, context),
         onActivateBuiltin: () => activateBuiltin(instance)
       }
@@ -30,6 +37,7 @@
     return {
       open: () => open(instance),
       refreshSummary: () => refresh(instance),
+      ensureLoaded: () => ensureLoaded(instance),
       getRunSelection: () => instance.loaded ? Profiles.buildRunSelection(instance.catalog) : null,
       getCatalog: () => instance.catalog,
       destroy: () => destroy(instance),
@@ -52,8 +60,7 @@
   async function refresh(instance, options = {}) {
     try {
       const result = await request(instance, 'codex.providers.list');
-      applyCatalog(instance, result, options);
-      return result;
+      return applyCatalog(instance, result, options);
     } catch (error) {
       updateSettingsSummary(instance, {
         summary: instance.tx('Provider settings unavailable', '模型服务设置不可用'),
@@ -66,17 +73,52 @@
     }
   }
 
+  async function ensureLoaded(instance) {
+    if (instance.loaded) {
+      return instance.catalog;
+    }
+    if (!instance.loadPromise) {
+      instance.loadPromise = refresh(instance).finally(() => {
+        instance.loadPromise = null;
+      });
+    }
+    await instance.loadPromise;
+    return instance.catalog;
+  }
+
+  async function reconcileProviderSelection(instance, catalog, change = {}) {
+    if (!change.activeProviderChanged && !change.activeModelCatalogChanged) {
+      return;
+    }
+    const previousModel = instance.getSelectedModel();
+    const activeProvider = window.CodexOverleafProviderProfiles.getActiveProvider(catalog);
+    const previousModelUnavailable = activeProvider.kind === 'custom'
+      && previousModel
+      && !activeProvider.models.some(model => model.id === previousModel);
+    if (change.activeProviderChanged || previousModelUnavailable) {
+      instance.clearSelectedModel();
+    }
+    await instance.refreshModelOptions();
+    await instance.persistInputs();
+  }
+
   async function testProvider(instance, context) {
     const operationId = crypto.randomUUID();
     instance.testOperationId = operationId;
-    instance.dialog.setBusy('testing', instance.tx('Testing connection…', '正在测试连接…'));
+    instance.dialog.setBusy('testing', instance.tx('Preparing compatibility test…', '正在准备兼容性测试…'));
     try {
       const result = await request(instance, 'codex.providers.test', {
         operationId,
         profileId: context.profileId,
         expectedRevision: context.expectedRevision,
         draft: context.draft,
-        secretMutation: context.secretMutation
+        secretMutation: context.secretMutation,
+        modelId: context.testModelId,
+        totalBudgetMs: 120000
+      }, event => {
+        if (instance.testOperationId === operationId && event?.type === 'provider.test.progress') {
+          instance.dialog.setTestProgress(event);
+        }
       });
       if (instance.testOperationId !== operationId) {
         return;
@@ -88,6 +130,10 @@
         return;
       }
       instance.dialog.setBusy('failed', formatError(instance, error));
+      instance.dialog.setVerificationFailure({
+        modelId: context.testModelId,
+        errorCode: error?.code || error?.details?.code || ''
+      });
       instance.dialog.setStatus({ tone: 'failed', title: formatError(instance, error) });
     } finally {
       if (instance.testOperationId === operationId) {
@@ -99,6 +145,7 @@
   async function cancelProviderTest(instance) {
     const operationId = instance.testOperationId;
     instance.testOperationId = '';
+    instance.dialog.setBusy('', '');
     if (!operationId) {
       return;
     }
@@ -119,25 +166,57 @@
         secretMutation: context.secretMutation,
         activate: action.activate === true,
         disclosureHost: context.disclosureHost,
-        verifiedDraftFingerprint: context.verification?.draftFingerprint || '',
-        verifiedWireApi: context.verification?.resolvedWireApi || '',
-        verifiedUpstreamResponseMode: context.verification?.resolvedUpstreamResponseMode || ''
+        disclosureBaseUrl: context.disclosureBaseUrl,
+        diagnostics: context.verifications
       });
-      applyCatalog(instance, result, {
+      const previousCatalog = instance.catalog;
+      const applied = applyCatalog(instance, result, {
         updateDialog: true,
         selectedId: result.savedProviderId
       });
-      await notifyChanged(instance);
+      await notifyChanged(instance, applied.change);
       instance.dialog.setBusy('', '');
+      const fellBackToBuiltin = previousCatalog.activeProviderId === result.savedProviderId
+        && result.activeProviderId === 'builtin'
+        && action.activate !== true;
       instance.dialog.setStatus({
-        tone: 'success',
-        title: action.activate
+        tone: fellBackToBuiltin ? 'warning' : 'success',
+        title: fellBackToBuiltin
+          ? instance.tx(
+              'Provider saved. Its endpoint changed, so Built-in Codex is active until the new endpoint is approved.',
+              '模型服务已保存。由于端点发生变化，确认新端点前将使用内置 Codex。'
+            )
+          : action.activate
           ? instance.tx('Provider saved and activated.', '模型服务已保存并启用。')
           : instance.tx('Provider saved.', '模型服务已保存。')
       });
     } catch (error) {
       instance.dialog.setBusy('failed', formatError(instance, error));
       instance.dialog.setStatus({ tone: 'failed', title: formatError(instance, error) });
+    }
+  }
+
+  async function clearProviderSecret(instance, context) {
+    instance.dialog.setBusy('saving', instance.tx('Removing stored API key…', '正在删除已存储的 API 密钥…'));
+    try {
+      const result = await request(instance, 'codex.providers.clear-secret', {
+        providerId: context.profileId,
+        expectedRevision: context.expectedRevision
+      });
+      const applied = applyCatalog(instance, result, {
+        updateDialog: true,
+        selectedId: context.profileId
+      });
+      await notifyChanged(instance, applied.change);
+      instance.dialog.setBusy('', '');
+      instance.dialog.setStatus({
+        tone: 'success',
+        title: result.activeProviderId === 'builtin'
+          ? instance.tx('API key removed. Built-in Codex is now active.', 'API 密钥已删除，当前已切换到内置 Codex。')
+          : instance.tx('Stored API key removed.', '已删除存储的 API 密钥。')
+      });
+    } catch (error) {
+      instance.dialog.setBusy('failed', formatError(instance, error));
     }
   }
 
@@ -148,8 +227,8 @@
         providerId: context.profileId,
         expectedRevision: context.expectedRevision
       });
-      applyCatalog(instance, result, { updateDialog: true });
-      await notifyChanged(instance);
+      const applied = applyCatalog(instance, result, { updateDialog: true });
+      await notifyChanged(instance, applied.change);
       instance.dialog.setBusy('', '');
       instance.dialog.setStatus({ tone: 'success', title: instance.tx('Provider deleted.', '模型服务已删除。') });
     } catch (error) {
@@ -163,13 +242,14 @@
       const result = await request(instance, 'codex.providers.activate', {
         providerId: context.profileId,
         expectedRevision: context.expectedRevision,
-        disclosureHost: context.disclosureHost
+        disclosureHost: context.disclosureHost,
+        disclosureBaseUrl: context.disclosureBaseUrl
       });
-      applyCatalog(instance, result, {
+      const applied = applyCatalog(instance, result, {
         updateDialog: true,
         selectedId: context.profileId
       });
-      await notifyChanged(instance);
+      await notifyChanged(instance, applied.change);
       instance.dialog.setBusy('', '');
       instance.dialog.setStatus({
         tone: 'success',
@@ -188,8 +268,8 @@
         providerId: 'builtin',
         expectedRevision: 0
       });
-      applyCatalog(instance, result, { updateDialog: true, selectedId: 'builtin' });
-      await notifyChanged(instance);
+      const applied = applyCatalog(instance, result, { updateDialog: true, selectedId: 'builtin' });
+      await notifyChanged(instance, applied.change);
       instance.dialog.setBusy('', '');
       instance.dialog.setStatus({ tone: 'success', title: instance.tx('Built-in Codex is active.', '已启用内置 Codex。') });
     } catch (error) {
@@ -197,11 +277,11 @@
     }
   }
 
-  async function request(instance, method, params = {}) {
+  async function request(instance, method, params = {}, onEvent) {
     if (typeof instance.sendBackgroundNative !== 'function') {
       throw createClientError('native_unavailable', 'Native Host request channel is unavailable.');
     }
-    const response = await instance.sendBackgroundNative({ method, params });
+    const response = await instance.sendBackgroundNative({ method, params }, onEvent);
     if (!response?.ok) {
       const error = createClientError(
         response?.error?.code || 'provider_request_failed',
@@ -214,12 +294,22 @@
   }
 
   function applyCatalog(instance, result, options = {}) {
-    instance.catalog = window.CodexOverleafProviderProfiles.normalizeCatalog(result);
+    const nextCatalog = window.CodexOverleafProviderProfiles.normalizeCatalog(result);
+    if (instance.loaded && nextCatalog.storeRevision < instance.catalog.storeRevision) {
+      return { applied: false, change: emptyCatalogChange() };
+    }
+    const previousCatalog = instance.catalog;
+    instance.catalog = nextCatalog;
     instance.loaded = true;
     updateSettingsSummary(instance);
     if (options.updateDialog && instance.dialog.isOpen()) {
-      instance.dialog.setCatalog(instance.catalog, options.selectedId);
+      if (options.source === 'cross-tab') {
+        instance.dialog.offerCatalog(instance.catalog, options.selectedId);
+      } else {
+        instance.dialog.setCatalog(instance.catalog, options.selectedId);
+      }
     }
+    return { applied: true, change: describeCatalogChange(previousCatalog, nextCatalog) };
   }
 
   function updateSettingsSummary(instance, override = {}) {
@@ -233,14 +323,14 @@
     });
   }
 
-  async function notifyChanged(instance) {
+  async function notifyChanged(instance, change = emptyCatalogChange()) {
     try {
-      instance.channel?.postMessage?.({ type: 'provider-settings-changed', at: Date.now() });
+      instance.channel?.postMessage?.({ type: 'provider-settings-changed', change, at: Date.now() });
     } catch (_error) {
       // Revision checks remain authoritative when BroadcastChannel is unavailable.
     }
     try {
-      await instance.onProviderChanged(instance.catalog);
+      await instance.onProviderChanged(instance.catalog, change);
     } catch (_error) {
       // The authoritative catalog is already saved. A later refresh can retry
       // the local model projection without rolling back the provider change.
@@ -254,13 +344,40 @@
         if (event.data?.type !== 'provider-settings-changed') {
           return;
         }
-        refresh(instance, { updateDialog: instance.dialog.isOpen() })
-          .then(() => instance.onProviderChanged(instance.catalog))
+        refresh(instance, { updateDialog: instance.dialog.isOpen(), source: 'cross-tab' })
+          .then(applied => applied.applied && instance.onProviderChanged(instance.catalog, applied.change))
           .catch(() => {});
       });
     } catch (_error) {
       instance.channel = null;
     }
+  }
+
+  function describeCatalogChange(previous, next) {
+    const previousActive = window.CodexOverleafProviderProfiles.getActiveProvider(previous);
+    const nextActive = window.CodexOverleafProviderProfiles.getActiveProvider(next);
+    return {
+      activeProviderChanged: previousActive.id !== nextActive.id,
+      activeModelCatalogChanged: modelCatalogSignature(previousActive) !== modelCatalogSignature(nextActive)
+    };
+  }
+
+  function modelCatalogSignature(provider = {}) {
+    return JSON.stringify({
+      id: provider.id || '',
+      defaultModelId: provider.defaultModelId || '',
+      reasoningAdapter: provider.reasoningAdapter || '',
+      reasoningCapability: provider.reasoningCapability || '',
+      models: (provider.models || []).map(model => ({
+        id: model.id,
+        label: model.label,
+        reasoningEfforts: model.reasoningEfforts || []
+      }))
+    });
+  }
+
+  function emptyCatalogChange() {
+    return { activeProviderChanged: false, activeModelCatalogChanged: false };
   }
 
   function formatError(instance, error) {
@@ -276,7 +393,7 @@
       provider_configuration_invalid: instance.tx('Review the endpoint, authentication, headers, and compatibility settings.', '请检查端点、鉴权、请求头和兼容设置。'),
       provider_connection_timeout: instance.tx('The provider connection timed out.', '连接模型服务超时。'),
       provider_revision_conflict: instance.tx('This provider changed in another tab. Reload it and retry.', '此模型服务已在其他标签页发生变化，请刷新后重试。'),
-      provider_protocol_unverified: instance.tx('Run Test connection before activating Auto protocol.', '启用自动协议前请先测试连接。')
+      provider_protocol_negotiation_required: instance.tx('The Auto protocol could not be negotiated for this model.', '无法为此模型自动协商 API 协议。')
     };
     return messages[code] || error?.message || instance.tx('Provider operation failed.', '模型服务操作失败。');
   }

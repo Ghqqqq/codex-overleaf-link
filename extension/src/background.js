@@ -20,6 +20,7 @@ if (!globalThis.CodexOverleafCompatibility) {
     'codex.providers.test.cancel',
     'codex.providers.upsert',
     'codex.providers.activate',
+    'codex.providers.clear-secret',
     'codex.providers.delete',
     'skills.list',
     'skills.install',

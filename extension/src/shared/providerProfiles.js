@@ -72,7 +72,9 @@
       hasSecret: value.hasSecret === true,
       secretUpdatedAt: normalizeInteger(value.secretUpdatedAt),
       endpointDisclosureHost: normalizeText(value.endpointDisclosureHost),
+      endpointDisclosureBaseUrl: normalizeText(value.endpointDisclosureBaseUrl),
       endpointDisclosureAcceptedAt: normalizeInteger(value.endpointDisclosureAcceptedAt),
+      modelDiagnostics: normalizeModelDiagnostics(value.modelDiagnostics),
       lastVerified: value.lastVerified && typeof value.lastVerified === 'object'
         ? {
             revision: normalizeInteger(value.lastVerified.revision),
@@ -161,6 +163,8 @@
       hasSecret: false,
       secretUpdatedAt: 0,
       endpointDisclosureHost: '',
+      endpointDisclosureBaseUrl: '',
+      modelDiagnostics: {},
       lastVerified: null
     };
   }
@@ -216,6 +220,30 @@
 
   function normalizeRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {};
+  }
+
+  function normalizeModelDiagnostics(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    const result = {};
+    for (const [rawModelId, rawDiagnostic] of Object.entries(value).slice(0, 32)) {
+      const modelId = normalizeText(rawModelId);
+      if (!modelId || !rawDiagnostic || typeof rawDiagnostic !== 'object') {
+        continue;
+      }
+      const status = normalizeText(rawDiagnostic.status).toLowerCase();
+      result[modelId] = {
+        modelId,
+        status: status === 'failed' ? 'failed' : 'tested',
+        at: normalizeInteger(rawDiagnostic.at),
+        wireApi: normalizeWireApi(rawDiagnostic.wireApi, false),
+        upstreamResponseMode: normalizeUpstreamResponseMode(rawDiagnostic.upstreamResponseMode, false),
+        durationMs: normalizeInteger(rawDiagnostic.durationMs),
+        errorCode: normalizeText(rawDiagnostic.errorCode)
+      };
+    }
+    return result;
   }
 
   function normalizeInputModalities(value) {

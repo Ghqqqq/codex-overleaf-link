@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
+  computeConnectionFingerprint,
   computeDraftFingerprint,
   getEndpointHost,
   isResolvedWireApi,
@@ -36,6 +37,14 @@ function deleteProvider(params = {}, env = process.env) {
   return withProviderStoreLock(env, () => deleteProviderUnlocked(params, env));
 }
 
+function clearProviderSecret(params = {}, env = process.env) {
+  return withProviderStoreLock(env, () => clearProviderSecretUnlocked(params, env));
+}
+
+function recordProviderDiagnostic(params = {}, env = process.env) {
+  return withProviderStoreLock(env, () => recordProviderDiagnosticUnlocked(params, env));
+}
+
 function resolveDraftSecret(params = {}, env = process.env) {
   return withProviderStoreLock(env, () => resolveDraftSecretUnlocked(params, env));
 }
@@ -65,30 +74,29 @@ function upsertProviderUnlocked(params = {}, env = process.env) {
   const draft = normalizeProviderDraft(params.draft || {});
   const currentSecret = state.secrets.secrets[id] || '';
   const secret = applySecretMutation(currentSecret, params.secretMutation);
-  const fingerprint = computeDraftFingerprint(draft, secret);
-  const existingVerifiedFingerprint = String(existing?.lastVerified?.draftFingerprint || '');
-  const verified = Boolean(fingerprint && (
-    fingerprint === String(params.verifiedDraftFingerprint || '')
-    || fingerprint === existingVerifiedFingerprint
-  ));
-  if (!verified) {
-    throw providerError('provider_verification_required', 'Run Test connection again after changing provider settings.');
+  const providedDiagnostics = normalizeProvidedDiagnostics(params);
+  const modelDiagnostics = {};
+  for (const model of draft.models) {
+    const connectionFingerprint = computeConnectionFingerprint(draft, secret, model.id);
+    const provided = providedDiagnostics.get(model.id);
+    const previous = existing?.modelDiagnostics?.[model.id];
+    if (provided?.connectionFingerprint === connectionFingerprint && isResolvedWireApi(provided.wireApi)) {
+      modelDiagnostics[model.id] = buildStoredDiagnostic(provided, connectionFingerprint, now);
+    } else if (previous?.connectionFingerprint === connectionFingerprint && isResolvedWireApi(previous.wireApi)) {
+      modelDiagnostics[model.id] = { ...previous };
+    }
   }
-  const verifiedWireApi = verified && isResolvedWireApi(params.verifiedWireApi)
-    ? params.verifiedWireApi
-    : '';
+  const defaultDiagnostic = modelDiagnostics[draft.defaultModelId];
   const resolvedWireApi = draft.wireApiPreference === 'auto'
-    ? verifiedWireApi
+    ? defaultDiagnostic?.wireApi || ''
     : draft.wireApiPreference;
-  const verifiedByCurrentTest = fingerprint === String(params.verifiedDraftFingerprint || '');
-  const verifiedUpstreamResponseMode = verifiedByCurrentTest
-    && ['streaming', 'buffered'].includes(String(params.verifiedUpstreamResponseMode || '').trim().toLowerCase())
-    ? String(params.verifiedUpstreamResponseMode).trim().toLowerCase()
-    : '';
-  const models = draft.models.map(model => model.id === draft.defaultModelId && verifiedUpstreamResponseMode
-    ? { ...model, resolvedUpstreamResponseMode: verifiedUpstreamResponseMode }
-    : model);
-  const verifiedModel = models.find(model => model.id === draft.defaultModelId);
+  const models = draft.models.map(model => {
+    const diagnostic = modelDiagnostics[model.id];
+    return {
+      ...model,
+      resolvedUpstreamResponseMode: diagnostic?.upstreamResponseMode || ''
+    };
+  });
   const endpointHost = getEndpointHost(draft.baseUrl);
   const destinationUnchanged = Boolean(existing && existing.baseUrl === draft.baseUrl);
   let endpointDisclosureHost = destinationUnchanged && existing?.endpointDisclosureHost === endpointHost
@@ -104,6 +112,7 @@ function upsertProviderUnlocked(params = {}, env = process.env) {
     assertCanActivate({
       profile: { ...draft, resolvedWireApi },
       disclosureHost: params.disclosureHost,
+      disclosureBaseUrl: params.disclosureBaseUrl,
       endpointHost
     });
     endpointDisclosureHost = endpointHost;
@@ -125,15 +134,15 @@ function upsertProviderUnlocked(params = {}, env = process.env) {
     endpointDisclosureBaseUrl,
     endpointDisclosureAcceptedAt,
     secretUpdatedAt,
-    lastVerified: verified
+    modelDiagnostics,
+    lastVerified: defaultDiagnostic
       ? {
           revision,
-          at: now,
+          at: defaultDiagnostic.at,
           modelId: draft.defaultModelId,
-          wireApi: verifiedWireApi || draft.wireApiPreference,
-          upstreamResponseMode: verifiedModel?.resolvedUpstreamResponseMode
-            || (verifiedModel?.upstreamResponseMode === 'buffered' ? 'buffered' : 'streaming'),
-          draftFingerprint: fingerprint
+          wireApi: defaultDiagnostic.wireApi,
+          upstreamResponseMode: defaultDiagnostic.upstreamResponseMode,
+          draftFingerprint: defaultDiagnostic.connectionFingerprint
         }
       : null,
     createdAt: existing?.createdAt || now,
@@ -182,7 +191,12 @@ function activateProviderUnlocked(params = {}, env = process.env) {
     throw providerError('provider_revision_conflict', 'Provider changed in another tab. Reload it and retry.');
   }
   const endpointHost = getEndpointHost(profile.baseUrl);
-  assertCanActivate({ profile, disclosureHost: params.disclosureHost, endpointHost });
+  assertCanActivate({
+    profile,
+    disclosureHost: params.disclosureHost,
+    disclosureBaseUrl: params.disclosureBaseUrl,
+    endpointHost
+  });
   const nextProfile = {
     ...profile,
     revision: profile.revision + 1,
@@ -203,6 +217,90 @@ function activateProviderUnlocked(params = {}, env = process.env) {
     secrets: state.secrets
   });
   return buildCatalog(loadProviderState(env));
+}
+
+function clearProviderSecretUnlocked(params = {}, env = process.env) {
+  const state = loadProviderState(env);
+  const providerId = normalizeId(params.providerId);
+  const profile = state.public.profiles.find(item => item.id === providerId);
+  if (!profile) {
+    throw providerError('provider_not_found', 'Provider no longer exists.');
+  }
+  if (profile.revision !== normalizeRevision(params.expectedRevision)) {
+    throw providerError('provider_revision_conflict', 'Provider changed in another tab. Reload it and retry.');
+  }
+  const nextRevision = profile.revision + 1;
+  const nextProfile = {
+    ...profile,
+    revision: nextRevision,
+    resolvedWireApi: profile.wireApiPreference === 'auto' ? '' : profile.wireApiPreference,
+    models: profile.models.map(model => ({ ...model, resolvedUpstreamResponseMode: '' })),
+    modelDiagnostics: {},
+    lastVerified: null,
+    secretUpdatedAt: 0,
+    updatedAt: Date.now()
+  };
+  const secrets = { ...state.secrets.secrets };
+  delete secrets[providerId];
+  commitProviderState(state, {
+    public: {
+      ...state.public,
+      activeProviderId: state.public.activeProviderId === providerId ? 'builtin' : state.public.activeProviderId,
+      profiles: state.public.profiles.map(item => item.id === providerId ? nextProfile : item)
+    },
+    secrets: { ...state.secrets, secrets }
+  });
+  return buildCatalog(loadProviderState(env));
+}
+
+function recordProviderDiagnosticUnlocked(params = {}, env = process.env) {
+  const state = loadProviderState(env);
+  const providerId = normalizeId(params.profileId);
+  const profile = state.public.profiles.find(item => item.id === providerId);
+  if (!profile || profile.revision !== normalizeRevision(params.expectedRevision)) {
+    return { recorded: false };
+  }
+  const modelId = String(params.modelId || '').trim();
+  const secret = state.secrets.secrets[providerId] || '';
+  const connectionFingerprint = computeConnectionFingerprint(profile, secret, modelId);
+  if (connectionFingerprint !== String(params.connectionFingerprint || '') || !isResolvedWireApi(params.wireApi)) {
+    return { recorded: false };
+  }
+  const now = Date.now();
+  const diagnostic = buildStoredDiagnostic(params, connectionFingerprint, now);
+  const modelDiagnostics = {
+    ...(profile.modelDiagnostics || {}),
+    [modelId]: diagnostic
+  };
+  const nextProfile = {
+    ...profile,
+    resolvedWireApi: profile.wireApiPreference === 'auto' && modelId === profile.defaultModelId
+      ? diagnostic.wireApi
+      : profile.resolvedWireApi,
+    models: profile.models.map(model => model.id === modelId
+      ? { ...model, resolvedUpstreamResponseMode: diagnostic.upstreamResponseMode }
+      : model),
+    modelDiagnostics,
+    lastVerified: modelId === profile.defaultModelId
+      ? {
+          revision: profile.revision,
+          at: diagnostic.at,
+          modelId,
+          wireApi: diagnostic.wireApi,
+          upstreamResponseMode: diagnostic.upstreamResponseMode,
+          draftFingerprint: connectionFingerprint
+        }
+      : profile.lastVerified,
+    updatedAt: now
+  };
+  commitProviderState(state, {
+    public: {
+      ...state.public,
+      profiles: state.public.profiles.map(item => item.id === providerId ? nextProfile : item)
+    },
+    secrets: state.secrets
+  });
+  return { recorded: true };
 }
 
 function deleteProviderUnlocked(params = {}, env = process.env) {
@@ -339,13 +437,47 @@ function buildCatalog(state) {
   };
 }
 
-function assertCanActivate({ profile, disclosureHost, endpointHost }) {
-  if (profile.wireApiPreference === 'auto' && !profile.resolvedWireApi) {
-    throw providerError('provider_protocol_unverified', 'Run Test connection before activating an Auto protocol provider.');
-  }
-  if (!endpointHost || endpointHost !== String(disclosureHost || '').trim()) {
+function assertCanActivate({ profile, disclosureHost, disclosureBaseUrl, endpointHost }) {
+  if (!endpointHost
+    || endpointHost !== String(disclosureHost || '').trim()
+    || profile.baseUrl !== String(disclosureBaseUrl || '').trim()) {
     throw providerError('provider_disclosure_required', 'Confirm the provider endpoint before activation.');
   }
+}
+
+function normalizeProvidedDiagnostics(params = {}) {
+  const result = new Map();
+  const values = Array.isArray(params.diagnostics) ? params.diagnostics : [];
+  for (const value of values) {
+    const modelId = String(value?.modelId || value?.testedModelId || '').trim();
+    if (modelId) {
+      result.set(modelId, {
+        ...value,
+        connectionFingerprint: String(value.connectionFingerprint || value.draftFingerprint || '')
+      });
+    }
+  }
+  if (params.verifiedDraftFingerprint && params.draft?.defaultModelId) {
+    result.set(String(params.draft.defaultModelId), {
+      modelId: String(params.draft.defaultModelId),
+      connectionFingerprint: String(params.verifiedDraftFingerprint),
+      wireApi: params.verifiedWireApi,
+      upstreamResponseMode: params.verifiedUpstreamResponseMode
+    });
+  }
+  return result;
+}
+
+function buildStoredDiagnostic(value, connectionFingerprint, now) {
+  const upstreamResponseMode = String(value?.upstreamResponseMode || value?.resolvedUpstreamResponseMode || '').toLowerCase();
+  return {
+    status: 'tested',
+    at: normalizeRevision(value?.at) || now,
+    wireApi: String(value?.wireApi || value?.resolvedWireApi || '').toLowerCase(),
+    upstreamResponseMode: upstreamResponseMode === 'buffered' ? 'buffered' : 'streaming',
+    durationMs: normalizeRevision(value?.durationMs),
+    connectionFingerprint
+  };
 }
 
 function applySecretMutation(currentSecret, mutation = {}) {
@@ -376,10 +508,31 @@ function normalizeStoredProfile(value) {
     endpointDisclosureBaseUrl: String(value.endpointDisclosureBaseUrl || ''),
     endpointDisclosureAcceptedAt: normalizeRevision(value.endpointDisclosureAcceptedAt),
     secretUpdatedAt: normalizeRevision(value.secretUpdatedAt),
+    modelDiagnostics: normalizeStoredDiagnostics(value.modelDiagnostics),
     lastVerified: value.lastVerified && typeof value.lastVerified === 'object' ? { ...value.lastVerified } : null,
     createdAt: normalizeRevision(value.createdAt),
     updatedAt: normalizeRevision(value.updatedAt)
   };
+}
+
+function normalizeStoredDiagnostics(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  const result = {};
+  for (const [modelId, diagnostic] of Object.entries(value).slice(0, 32)) {
+    if (!modelId || !diagnostic || typeof diagnostic !== 'object') continue;
+    result[modelId] = {
+      status: diagnostic.status === 'failed' ? 'failed' : 'tested',
+      at: normalizeRevision(diagnostic.at),
+      wireApi: isResolvedWireApi(diagnostic.wireApi) ? String(diagnostic.wireApi).toLowerCase() : '',
+      upstreamResponseMode: diagnostic.upstreamResponseMode === 'buffered' ? 'buffered' : 'streaming',
+      durationMs: normalizeRevision(diagnostic.durationMs),
+      errorCode: String(diagnostic.errorCode || ''),
+      connectionFingerprint: String(diagnostic.connectionFingerprint || '')
+    };
+  }
+  return result;
 }
 
 function normalizeSecretMap(value) {
@@ -527,10 +680,12 @@ function normalizeRevision(value) {
 
 module.exports = {
   activateProvider,
+  clearProviderSecret,
   deleteProvider,
   getProviderStorePaths,
   listProviders,
   loadProviderState,
+  recordProviderDiagnostic,
   resolveDraftSecret,
   upsertProvider
 };

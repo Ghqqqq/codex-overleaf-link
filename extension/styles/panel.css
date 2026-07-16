@@ -280,6 +280,22 @@
   cursor: pointer;
 }
 .codex-provider-primary-button { border-color: #56ac68; background: #397b48; color: #fff; }
+.codex-provider-secondary-button[data-provider-action="save"]:not(:disabled) {
+  border-color: #5dbb72;
+  background: linear-gradient(180deg, #3f8d51 0%, #337342 100%);
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(121, 213, 138, 0.08), 0 4px 12px rgba(22, 83, 39, 0.22);
+}
+.codex-provider-secondary-button[data-provider-action="save"]:not(:disabled):hover {
+  border-color: #79d58a;
+  background: linear-gradient(180deg, #499d5c 0%, #397f49 100%);
+}
+.codex-provider-secondary-button[data-provider-action="save"]:disabled {
+  border-color: var(--provider-line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--provider-muted);
+  box-shadow: none;
+}
 .codex-provider-danger-button { color: var(--provider-danger); }
 .codex-provider-inline-button { flex: 0 0 auto; }
 .codex-provider-dialog-root button:disabled,

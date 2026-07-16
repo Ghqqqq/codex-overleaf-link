@@ -6,6 +6,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const {
+  computeConnectionFingerprint,
   computeDraftFingerprint,
   normalizeProviderDraft
 } = require('../native-host/src/providerProfile');
@@ -25,6 +26,7 @@ const { classifyResponsesRoute } = require('../native-host/src/providerBridgeRou
 const {
   getProviderStorePaths,
   activateProvider,
+  clearProviderSecret,
   listProviders,
   loadProviderState,
   upsertProvider
@@ -64,10 +66,11 @@ function saveVerifiedProvider(env, draft, options = {}) {
     secretMutation: options.profileId
       ? { kind: 'unchanged' }
       : { kind: 'replace', value: secret },
-    verifiedDraftFingerprint: computeDraftFingerprint(draft, secret),
+    verifiedDraftFingerprint: computeConnectionFingerprint(draft, secret, draft.defaultModelId),
     verifiedWireApi: options.verifiedWireApi || 'responses',
     activate: options.activate === true,
-    disclosureHost: options.activate === true ? new URL(draft.baseUrl).hostname : ''
+    disclosureHost: options.activate === true ? new URL(draft.baseUrl).hostname : '',
+    disclosureBaseUrl: options.activate === true ? draft.baseUrl : ''
   }, env);
 }
 
@@ -111,6 +114,40 @@ test('changing the active provider destination deactivates it and clears disclos
   });
 });
 
+test('providers can be saved and activated without a prior compatibility test', () => {
+  withProviderStore(env => {
+    const draft = makeDraft({ wireApiPreference: 'auto' });
+    const saved = upsertProvider({
+      draft,
+      secretMutation: { kind: 'replace', value: 'sk-untested' }
+    }, env);
+    const provider = saved.providers.find(item => item.kind === 'custom');
+    assert.equal(provider.lastVerified, null);
+    const active = activateProvider({
+      providerId: provider.id,
+      expectedRevision: provider.revision,
+      disclosureHost: 'api.example.com',
+      disclosureBaseUrl: draft.baseUrl
+    }, env);
+    assert.equal(active.activeProviderId, provider.id);
+  });
+});
+
+test('stored API keys can be cleared without testing and active providers fail safe to builtin', () => {
+  withProviderStore(env => {
+    const initial = saveVerifiedProvider(env, makeDraft(), { activate: true });
+    const provider = initial.providers.find(item => item.id === initial.activeProviderId);
+    const cleared = clearProviderSecret({
+      providerId: provider.id,
+      expectedRevision: provider.revision
+    }, env);
+    const updated = cleared.providers.find(item => item.id === provider.id);
+    assert.equal(cleared.activeProviderId, 'builtin');
+    assert.equal(updated.hasSecret, false);
+    assert.deepEqual(updated.modelDiagnostics, {});
+  });
+});
+
 test('provider state recovers a stale inter-process lock and keeps stores aligned', () => {
   withProviderStore(env => {
     const paths = getProviderStorePaths(env);
@@ -140,7 +177,8 @@ test('three saved providers can activate the third profile without another upser
     const activated = activateProvider({
       providerId: third.id,
       expectedRevision: third.revision,
-      disclosureHost: 'api3.example.com'
+      disclosureHost: 'api3.example.com',
+      disclosureBaseUrl: 'https://api3.example.com/v1'
     }, env);
     assert.equal(activated.activeProviderId, third.id);
     assert.equal(activated.providers.filter(provider => provider.kind === 'custom').length, 3);
@@ -172,6 +210,20 @@ test('provider footer separates saved activation from draft save actions', () =>
   const active = getFooterActionState({ active: true, canActivate: true });
   assert.equal(active.showUse, false);
   assert.equal(active.showSaveAndUse, false);
+
+  const dirtyActive = getFooterActionState({ active: true, dirty: true, canSave: false });
+  assert.equal(dirtyActive.showSave, true);
+  assert.equal(dirtyActive.showSaveAndUse, false);
+  assert.equal(dirtyActive.showUse, false);
+  assert.equal(dirtyActive.saveEnabled, false);
+});
+
+test('editing a saved provider refreshes the footer on the first dirty transition', () => {
+  const dialogSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/providerSettingsDialog.js'), 'utf8');
+  assert.match(
+    dialogSource,
+    /function markDirty\(instance, options = \{\}\)\s*\{[\s\S]*?const footerNeedsRefresh = instance\.dirty !== true;[\s\S]*?if \(options\.invalidateVerification !== false\)\s*\{[\s\S]*?invalidateVerification\(instance, true\);[\s\S]*?if \(footerNeedsRefresh\)\s*\{[\s\S]*?renderFooter\(instance\);[\s\S]*?applyBusyState\(instance\);/
+  );
 });
 
 test('provider rows stay inside the sidebar and expose clipped names', () => {

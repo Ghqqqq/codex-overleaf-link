@@ -15,7 +15,7 @@ const {
   isProviderMethod,
   providerErrorResponse,
   resolveProviderModels,
-  resolveRunProvider
+  resolveRunProviderForRun
 } = require('./providerRuntime');
 const { clearPluginCodexHistory } = require('./codexHome');
 const { logDebug, truncateText } = require('./debugLog');
@@ -85,7 +85,7 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
   }
 
   if (isProviderMethod(request.method)) {
-    return handleProviderRequest(request, env);
+    return handleProviderRequest(request, env, emit);
   }
 
   if (request.method === 'codex.models') {
@@ -171,7 +171,10 @@ async function handleCodexRun(request, env, emit) {
   let providerResolution;
   try {
     try {
-      providerResolution = resolveRunProvider(params, env);
+      providerResolution = await resolveRunProviderForRun(params, env, {
+        signal: abortController.signal,
+        emit
+      });
       params = {
         ...params,
         model: providerResolution.modelId,

@@ -161,6 +161,40 @@ function computeDraftFingerprint(draft, secret) {
   return crypto.createHash('sha256').update(JSON.stringify({ normalized: fingerprintDraft, secretDigest })).digest('hex');
 }
 
+function computeConnectionFingerprint(draft, secret, modelId) {
+  const normalized = normalizeProviderDraft(draft);
+  const selectedModelId = normalizeText(modelId) || normalized.defaultModelId;
+  const selectedModel = normalized.models.find(model => model.id === selectedModelId);
+  if (!selectedModel) {
+    throw providerError('provider_model_not_configured', 'The selected model is not configured for this provider.');
+  }
+  const { resolvedUpstreamResponseMode: _resolvedMode, ...model } = selectedModel;
+  const connection = {
+    baseUrl: normalized.baseUrl,
+    wireApiPreference: normalized.wireApiPreference,
+    model,
+    requestTimeoutMs: normalized.requestTimeoutMs,
+    reasoningAdapter: normalized.reasoningAdapter,
+    reasoningCapability: normalized.reasoningCapability,
+    authMode: normalized.authMode,
+    apiKeyHeaderName: normalized.apiKeyHeaderName,
+    fullEndpoint: normalized.fullEndpoint,
+    customHeaders: normalized.customHeaders,
+    queryParams: normalized.queryParams,
+    bodyOverrides: normalized.bodyOverrides,
+    supportsParallelToolCalls: normalized.supportsParallelToolCalls,
+    supportsStreamOptions: normalized.supportsStreamOptions,
+    anthropicVersion: normalized.anthropicVersion,
+    anthropicBeta: normalized.anthropicBeta,
+    anthropicThinkingMode: normalized.anthropicThinkingMode,
+    anthropicPromptCaching: normalized.anthropicPromptCaching,
+    impersonateClaudeCode: normalized.impersonateClaudeCode,
+    maxOutputTokens: normalized.maxOutputTokens
+  };
+  const secretDigest = crypto.createHash('sha256').update(normalizeSecret(secret)).digest('hex');
+  return crypto.createHash('sha256').update(JSON.stringify({ connection, secretDigest })).digest('hex');
+}
+
 function getEndpointHost(baseUrl) {
   try {
     return new URL(baseUrl).hostname;
@@ -204,6 +238,18 @@ function sanitizeProfile(profile, hasSecret) {
     endpointDisclosureHost: profile.endpointDisclosureHost || '',
     endpointDisclosureBaseUrl: profile.endpointDisclosureBaseUrl || '',
     endpointDisclosureAcceptedAt: profile.endpointDisclosureAcceptedAt || 0,
+    modelDiagnostics: Object.fromEntries(Object.entries(profile.modelDiagnostics || {}).map(([modelId, diagnostic]) => [
+      modelId,
+      {
+        modelId,
+        status: diagnostic?.status === 'failed' ? 'failed' : 'tested',
+        at: diagnostic?.at || 0,
+        wireApi: diagnostic?.wireApi || '',
+        upstreamResponseMode: normalizeUpstreamResponseMode(diagnostic?.upstreamResponseMode, false),
+        durationMs: diagnostic?.durationMs || 0,
+        errorCode: diagnostic?.errorCode || ''
+      }
+    ])),
     lastVerified: profile.lastVerified
       ? {
           revision: profile.lastVerified.revision,
@@ -396,6 +442,7 @@ function providerError(code, message, details = {}) {
 }
 
 module.exports = {
+  computeConnectionFingerprint,
   computeDraftFingerprint,
   getEndpointHost,
   isResolvedWireApi,

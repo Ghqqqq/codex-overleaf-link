@@ -1,14 +1,18 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const {
   activateProvider,
+  clearProviderSecret,
   deleteProvider,
   listProviders,
   loadProviderState,
+  recordProviderDiagnostic,
   resolveDraftSecret,
   upsertProvider
 } = require('./providerStore');
 const {
+  computeConnectionFingerprint,
   computeDraftFingerprint,
   getEndpointHost,
   normalizeProviderDraft,
@@ -25,6 +29,7 @@ const PROVIDER_METHODS = new Set([
   'codex.providers.test.cancel',
   'codex.providers.upsert',
   'codex.providers.activate',
+  'codex.providers.clear-secret',
   'codex.providers.delete'
 ]);
 const AUTO_PROTOCOL_FALLBACK_CODES = new Set([
@@ -40,7 +45,7 @@ function isProviderMethod(method) {
   return PROVIDER_METHODS.has(method);
 }
 
-async function handleProviderRequest(request, env = process.env) {
+async function handleProviderRequest(request, env = process.env, emit = () => {}) {
   try {
     const params = request.params || {};
     switch (request.method) {
@@ -50,12 +55,14 @@ async function handleProviderRequest(request, env = process.env) {
         return okResponse(request.id, upsertProvider(params, env));
       case 'codex.providers.activate':
         return okResponse(request.id, activateProvider(params, env));
+      case 'codex.providers.clear-secret':
+        return okResponse(request.id, clearProviderSecret(params, env));
       case 'codex.providers.delete':
         return okResponse(request.id, deleteProvider(params, env));
       case 'codex.providers.test.cancel':
         return okResponse(request.id, cancelProviderTest(params.operationId));
       case 'codex.providers.test':
-        return okResponse(request.id, await testProvider(params, env));
+        return okResponse(request.id, await testProvider(params, env, emit));
       default:
         throw providerError('method_not_found', `Unknown provider method: ${request.method}`);
     }
@@ -64,15 +71,27 @@ async function handleProviderRequest(request, env = process.env) {
   }
 }
 
-async function testProvider(params, env) {
+async function testProvider(params, env, emit = () => {}, externalSignal = null) {
   const operationId = String(params.operationId || '');
   if (!operationId) {
     throw providerError('invalid_request', 'Provider test requires an operation id.');
   }
   const draft = normalizeProviderDraft(params.draft || {});
+  const modelId = String(params.modelId || draft.defaultModelId).trim();
+  if (!draft.models.some(model => model.id === modelId)) {
+    throw providerError('provider_model_not_configured', 'The selected model is not configured for this provider.');
+  }
   const secret = resolveDraftSecret(params, env);
-  const fingerprint = computeDraftFingerprint(draft, secret);
+  const fingerprint = computeConnectionFingerprint(draft, secret, modelId);
   const controller = new AbortController();
+  const totalBudgetMs = Math.min(120000, Math.max(15000, Number(params.totalBudgetMs) || 120000));
+  let budgetExpired = false;
+  const budgetTimer = setTimeout(() => {
+    budgetExpired = true;
+    controller.abort();
+  }, totalBudgetMs);
+  const onExternalAbort = () => controller.abort();
+  externalSignal?.addEventListener?.('abort', onExternalAbort, { once: true });
   activeTests.get(operationId)?.abort?.();
   activeTests.set(operationId, controller);
   const protocols = draft.wireApiPreference === 'auto'
@@ -80,8 +99,16 @@ async function testProvider(params, env) {
     : [draft.wireApiPreference];
   try {
     let lastError;
+    const attempts = protocols.flatMap(wireApi => {
+      const model = draft.models.find(item => item.id === modelId) || {};
+      const requestedMode = model.upstreamResponseMode || 'auto';
+      return wireApi === 'chat' && requestedMode === 'auto'
+        ? [{ wireApi, upstreamResponseMode: 'streaming' }, { wireApi, upstreamResponseMode: 'buffered' }]
+        : [{ wireApi, upstreamResponseMode: requestedMode === 'buffered' ? 'buffered' : 'streaming' }];
+    });
+    let attemptNumber = 0;
     for (const wireApi of protocols) {
-      const model = draft.models.find(item => item.id === draft.defaultModelId) || {};
+      const model = draft.models.find(item => item.id === modelId) || {};
       const requestedMode = model.upstreamResponseMode || 'auto';
       const responseModes = wireApi === 'chat' && requestedMode === 'auto'
         ? ['streaming', 'buffered']
@@ -89,28 +116,51 @@ async function testProvider(params, env) {
       let protocolError;
       for (let index = 0; index < responseModes.length; index += 1) {
         const upstreamResponseMode = responseModes[index];
+        attemptNumber += 1;
+        emitProviderTestProgress(emit, {
+          operationId,
+          modelId,
+          wireApi,
+          upstreamResponseMode,
+          attempt: attemptNumber,
+          totalAttempts: attempts.length
+        });
         const launch = createProviderLaunch({
           profile: { id: params.profileId || 'draft', revision: params.expectedRevision || 0, ...draft },
           secret,
-          modelId: draft.defaultModelId,
+          modelId,
           wireApi,
           upstreamResponseMode
         });
         try {
           const result = await runProviderConnectionTest({ launch, env, signal: controller.signal });
-          return {
+          const verification = {
             ok: true,
             operationId,
             draftFingerprint: fingerprint,
+            connectionFingerprint: fingerprint,
             resolvedWireApi: wireApi,
             resolvedUpstreamResponseMode: upstreamResponseMode,
-            testedModelId: draft.defaultModelId,
+            testedModelId: modelId,
+            modelId,
             durationMs: result.durationMs,
             capabilities: {
               ...(result.capabilities || { text: true, agentTools: true }),
               upstreamStreaming: upstreamResponseMode === 'streaming'
             }
           };
+          if (params.profileId) {
+            recordProviderDiagnostic({
+              profileId: params.profileId,
+              expectedRevision: params.expectedRevision,
+              modelId,
+              connectionFingerprint: fingerprint,
+              wireApi,
+              upstreamResponseMode,
+              durationMs: result.durationMs
+            }, env);
+          }
+          return verification;
         } catch (error) {
           protocolError = error;
           const canTryBuffered = responseModes[index + 1] === 'buffered'
@@ -126,13 +176,28 @@ async function testProvider(params, env) {
     }
     throw lastError || providerError('provider_protocol_incompatible', 'No compatible provider protocol was found.');
   } catch (error) {
+    if (budgetExpired) {
+      error = providerError('provider_connection_timeout', 'The provider compatibility test exceeded its total time budget.');
+    }
     error.message = sanitizeProviderMessage(error?.message, [secret]);
     throw error;
   } finally {
+    clearTimeout(budgetTimer);
+    externalSignal?.removeEventListener?.('abort', onExternalAbort);
     if (activeTests.get(operationId) === controller) {
       activeTests.delete(operationId);
     }
   }
+}
+
+function emitProviderTestProgress(emit, detail) {
+  emit({
+    type: 'provider.test.progress',
+    title: `Testing ${detail.modelId}: ${detail.wireApi} · ${detail.upstreamResponseMode} (${detail.attempt}/${detail.totalAttempts})`,
+    status: 'running',
+    detail,
+    timestamp: new Date().toISOString()
+  });
 }
 
 function cancelProviderTest(operationId) {
@@ -210,13 +275,17 @@ function resolveRunProvider(params = {}, env = process.env) {
   if (!model) {
     throw providerError('provider_model_not_configured', 'The selected model is not configured for the active provider.');
   }
+  const secret = state.secrets.secrets[profile.id] || '';
+  const connectionFingerprint = computeConnectionFingerprint(profile, secret, modelId);
+  const diagnostic = profile.modelDiagnostics?.[modelId];
+  const validDiagnostic = diagnostic?.connectionFingerprint === connectionFingerprint
+    && ['responses', 'chat', 'anthropic'].includes(diagnostic.wireApi);
   const wireApi = profile.wireApiPreference === 'auto'
-    ? profile.resolvedWireApi
+    ? (validDiagnostic ? diagnostic.wireApi : '')
     : profile.wireApiPreference;
   if (!wireApi) {
-    throw providerError('provider_protocol_unverified', 'Run Test connection before using an Auto protocol provider.');
+    throw providerError('provider_protocol_negotiation_required', 'The Auto provider needs a one-time compatibility negotiation for this model.');
   }
-  const secret = state.secrets.secrets[profile.id] || '';
   const reasoning = getReasoningControl(profile, model);
   const supportedReasoningEfforts = reasoning.efforts;
   const reasoningEffort = supportedReasoningEfforts.includes(params.reasoningEffort)
@@ -225,9 +294,49 @@ function resolveRunProvider(params = {}, env = process.env) {
   return {
     modelId,
     reasoningEffort,
-    providerLaunch: createProviderLaunch({ profile, secret, modelId, wireApi, reasoningEffort }),
+    providerLaunch: createProviderLaunch({
+      profile,
+      secret,
+      modelId,
+      wireApi,
+      reasoningEffort,
+      upstreamResponseMode: validDiagnostic ? diagnostic.upstreamResponseMode : ''
+    }),
     providerSelection: { providerId: profile.id, providerRevision: profile.revision }
   };
+}
+
+async function resolveRunProviderForRun(params = {}, env = process.env, options = {}) {
+  try {
+    return resolveRunProvider(params, env);
+  } catch (error) {
+    if (error?.code !== 'provider_protocol_negotiation_required') {
+      throw error;
+    }
+  }
+  const state = loadProviderState(env);
+  const profile = state.public.profiles.find(item => item.id === state.public.activeProviderId);
+  if (!profile) {
+    throw providerError('provider_not_found', 'The active provider no longer exists.');
+  }
+  const modelId = String(params.model || profile.defaultModelId).trim();
+  options.emit?.({
+    type: 'provider.auto-negotiation.started',
+    title: `Detecting a compatible API route for ${modelId}.`,
+    status: 'running',
+    detail: { providerId: profile.id, modelId },
+    timestamp: new Date().toISOString()
+  });
+  await testProvider({
+    operationId: `run-${crypto.randomUUID()}`,
+    profileId: profile.id,
+    expectedRevision: profile.revision,
+    draft: profile,
+    secretMutation: { kind: 'unchanged' },
+    modelId,
+    totalBudgetMs: 120000
+  }, env, options.emit, options.signal);
+  return resolveRunProvider(params, env);
 }
 
 function providerErrorResponse(id, error) {
@@ -251,5 +360,6 @@ module.exports = {
   isProviderMethod,
   providerErrorResponse,
   resolveProviderModels,
-  resolveRunProvider
+  resolveRunProvider,
+  resolveRunProviderForRun
 };

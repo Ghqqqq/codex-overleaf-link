@@ -42,6 +42,7 @@
     'codex.providers.test.cancel',
     'codex.providers.upsert',
     'codex.providers.activate',
+    'codex.providers.clear-secret',
     'codex.providers.delete',
     'task.run',
     'task.confirm',
@@ -602,15 +603,10 @@
     document,
     window,
     getSettingsPanelInstance: () => settingsPanelInstance,
-    onProviderChanged: async () => {
-      if (state) {
-        state.model = '';
-      }
-      await loadModelOptions();
-      await persistPanelInputs();
-    }
+    getSelectedModel: () => state?.model || '',
+    clearSelectedModel: () => { if (state) state.model = ''; },
+    refreshModelOptions: loadModelOptions, persistInputs: persistPanelInputs
   });
-
   // v1.8.1 D3: the dashboard was a one-shot render — another tab finishing a
   // run, clearing history or creating sessions never showed up. Refresh it
   // (debounced) when the tab regains visibility or a cross-tab run signal
@@ -841,6 +837,9 @@
         ensurePanelOpen();
       }
       sendResponse?.(getPanelStateResponse());
+      return;
+    }
+    if (nativeChannel.handleBackgroundNativeEvent(message)) {
       return;
     }
     if (nativeChannel.shouldHandleNativeEvent(message)) {
@@ -1913,6 +1912,7 @@
       }
 
       await awaitRunStep(settleMirrorPrefetchBeforeRun());
+      await awaitRunStep(providerSettingsCoordinator.ensureLoaded());
       appendRunEvent({ title: tx('Local Codex session is starting.', '本地 Codex session 开始运行。'), status: 'running' });
       let response = await awaitRunStep(sendNative({
         method: 'codex.run',
