@@ -879,55 +879,42 @@
     const previousEditorIdentity = getActiveEditorIdentity();
     const previousSignature = contentSignature(currentText);
 
-    // §9.1 target_file_not_found: if the target path is not visible in the
-    // Overleaf project file tree, refuse the write before attempting to open.
-    // openFileByPath itself would fail anyway, but emitting the canonical
-    // path-not-found code (rather than a generic open failure) gives the run
-    // card / final report a more actionable presentation per §17.3.1.
-    // Only fires when the tree-operations layer actually exposes a
-    // projectPathExists hook; older harnesses without the hook fall through
-    // to the openFileByPath path and surface a generic open failure.
-    if (operation?.type === 'edit' && hasProjectPathExistsHook() && !projectPathExists(filePath)) {
-      return {
-        ok: false,
-        code: 'path_not_found',
-        reason: `Cannot edit ${filePath}; the path is not in the Overleaf project file tree.`,
-        failure: buildPageFailure('target_file_not_found', {
-          file: filePath,
-          activeFile: initialActivePath || '',
-          operationType: operation?.type || 'edit',
-          changedDocument: false,
-          userMessage: `Codex could not find ${filePath} in this Overleaf project.`,
-          evidence: {
-            originalCode: 'path_not_found',
-            initialActivePath: initialActivePath || '',
-            writeStarted: false
-          }
-        })
-      };
-    }
-
     const opened = await openFileByPath(filePath, { force: initialActivePath === filePath });
     if (!opened.ok) {
-      const reasonText = `Cannot edit ${filePath}; active file is ${initialActivePath || 'unknown'}; ${opened.reason}`;
+      // A collapsed folder can make a real nested file temporarily invisible
+      // to projectPathExists(). openFileByPath() owns the side-effecting
+      // expand-and-open attempt, so only classify the path as missing after
+      // that attempt has failed and the path still cannot be observed.
+      const pathMissing = operation?.type === 'edit'
+        && hasProjectPathExistsHook()
+        && !projectPathExists(filePath);
+      const resultCode = pathMissing ? 'path_not_found' : 'file_open_failed';
+      const failureCode = pathMissing ? 'target_file_not_found' : 'target_file_open_failed';
+      const reasonText = pathMissing
+        ? `Cannot edit ${filePath}; the path was not found after Overleaf tried to open it.`
+        : `Cannot edit ${filePath}; active file is ${initialActivePath || 'unknown'}; ${opened.reason}`;
       return {
         ok: false,
-        code: 'file_open_failed',
-        debug: buildWritebackDebug('open_file_failed', operation, baseFileLookup, currentText, {
+        code: resultCode,
+        debug: buildWritebackDebug(pathMissing ? 'open_file_path_not_found' : 'open_file_failed', operation, baseFileLookup, currentText, {
           initialActivePath,
           opened
         }),
         reason: reasonText,
-        failure: buildPageFailure('target_file_open_failed', {
+        failure: buildPageFailure(failureCode, {
           file: filePath,
           activeFile: initialActivePath || '',
           operationType: operation?.type || 'edit',
           changedDocument: false,
-          userMessage: `Codex could not open ${filePath} in Overleaf.`,
+          userMessage: pathMissing
+            ? `Codex could not find ${filePath} in this Overleaf project.`
+            : `Codex could not open ${filePath} in Overleaf.`,
           technicalMessage: opened.reason || '',
           evidence: {
+            originalCode: resultCode,
             initialActivePath: initialActivePath || '',
             openMethod: opened.method || '',
+            openAttempted: true,
             writeStarted: false
           }
         })

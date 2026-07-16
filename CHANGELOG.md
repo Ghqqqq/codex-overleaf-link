@@ -22,6 +22,8 @@ Release candidate adding first-class third-party model providers while preservin
 - Hardened custom-provider reasoning defaults and response normalization to avoid invalid DeepSeek requests and repeated streamed content.
 - Let `Auto` connection tests retry through buffered upstream responses when a gateway cannot parse streamed tool calls, while preserving Responses SSE toward Codex.
 - Detected leaked tool-call control tokens as an actionable provider compatibility failure without interpreting them as executable tools.
+- Restored edits to files inside collapsed nested folders by attempting Overleaf's expand-and-open flow before classifying a target path as missing.
+- Replaced oversized provider capability checkboxes with compact, accessible controls scoped correctly to the centered provider dialog.
 
 ## v2.0.0 - 2026-07-14
 

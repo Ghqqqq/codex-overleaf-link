@@ -1192,9 +1192,9 @@ test('accept-replay tracked_changes_created emits structured tracked_changes_rem
   assert.match(writebackRouterText, /buildPageFailure\('tracked_changes_remain'[\s\S]{0,600}changedDocument:\s*true[\s\S]{0,200}terminalState:\s*'needs_review'/);
 });
 
-test('writebackRouter target_file_not_found fires when projectPathExists hook reports the edit path missing', async () => {
-  // The new precheck only fires when treeOperations.projectPathExists is a
-  // real function. Wire one that returns false to drive the path-missing emit.
+test('writebackRouter attempts to open an unobserved edit path before reporting target_file_not_found', async () => {
+  // A collapsed nested folder can initially hide a valid path. The router must
+  // give openFileByPath a chance to expand it before declaring the path absent.
   let openedTarget = '';
   const router = writebackRouter.create({
     compileBridge: { markSourceEdited() {} },
@@ -1208,7 +1208,7 @@ test('writebackRouter target_file_not_found fires when projectPathExists hook re
       projectPathExists: () => false,
       openFileByPath(target) {
         openedTarget = target;
-        return Promise.resolve({ ok: true, method: 'dom-click' });
+        return Promise.resolve({ ok: false, method: 'dom-expand', reason: 'path remained unavailable' });
       }
     },
     window: { setTimeout, clearTimeout }
@@ -1219,7 +1219,7 @@ test('writebackRouter target_file_not_found fires when projectPathExists hook re
   });
 
   assert.equal(result.ok, false);
-  assert.equal(openedTarget, '', 'never attempts to open the missing file');
+  assert.equal(openedTarget, 'ghost.tex', 'the router must attempt expansion/opening before classifying the path');
   const skip = result.skipped[0];
   assert.equal(skip.result.code, 'path_not_found');
   assert.ok(skip.result.failure);
@@ -1228,7 +1228,57 @@ test('writebackRouter target_file_not_found fires when projectPathExists hook re
   assert.equal(skip.result.failure.severity, 'blocked');
   assert.equal(skip.result.failure.file, 'ghost.tex');
   assert.equal(skip.result.failure.changedDocument, false);
+  assert.equal(skip.result.failure.evidence.openAttempted, true);
   assert.equal(failureReasonsModule.validateFailureReason(skip.result.failure).ok, true);
+});
+
+test('writebackRouter writes a nested file that becomes observable while openFileByPath expands its folder', async () => {
+  let activePath = 'main.tex';
+  let editorText = 'root baseline';
+  let targetVisible = false;
+  let openedTarget = '';
+  const router = writebackRouter.create({
+    compileBridge: { markSourceEdited() {} },
+    normalizeSafeProjectPath: projectFiles.normalizeSafeProjectPath,
+    readActiveEditorText: () => editorText,
+    replaceActiveEditorPatches: () => ({ ok: false }),
+    replaceActiveEditorText(nextText) {
+      editorText = nextText;
+      return { ok: true, method: 'codemirror-view' };
+    },
+    delay: () => Promise.resolve(),
+    getActiveEditorIdentity: () => ({ path: activePath }),
+    activeEditorIdentityChanged: previous => previous?.path !== activePath,
+    treeOperations: {
+      getActiveFilePath: () => activePath,
+      projectPathExists: () => targetVisible,
+      openFileByPath(target) {
+        openedTarget = target;
+        targetVisible = true;
+        activePath = target;
+        editorText = 'nested baseline';
+        return Promise.resolve({ ok: true, method: 'dom-expand-click' });
+      }
+    },
+    window: { setTimeout, clearTimeout },
+    writebackOpenSettleMs: 0
+  });
+
+  const result = await router.applyOperations({
+    baseFiles: [{ path: 'sections/intro.tex', content: 'nested baseline' }],
+    operations: [{
+      type: 'edit',
+      path: 'sections/intro.tex',
+      replaceAll: 'nested updated'
+    }]
+  });
+
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(openedTarget, 'sections/intro.tex');
+  assert.equal(activePath, 'sections/intro.tex');
+  assert.equal(editorText, 'nested updated');
+  assert.equal(result.applied.length, 1);
+  assert.equal(result.skipped.length, 0);
 });
 
 test('writebackRouter ensureEditorReadyForOperation emits target_file_open_failed when openFileByPath fails', async () => {

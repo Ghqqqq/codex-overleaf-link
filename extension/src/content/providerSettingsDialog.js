@@ -294,14 +294,26 @@
               <option value="none" ${draft.reasoningCapability === 'none' ? 'selected' : ''}>${escapeHtml(tx('Not supported', '不支持'))}</option>
             </select>
           </label>
-          <label class="codex-provider-field codex-provider-field--wide">
+          <div class="codex-provider-field codex-provider-field--wide">
             <span>${escapeHtml(tx('Protocol capabilities', '协议能力'))}</span>
-            <span class="codex-provider-secret-row">
-              <label><input type="checkbox" data-provider-field="supportsParallelToolCalls" ${draft.supportsParallelToolCalls ? 'checked' : ''}> ${escapeHtml(tx('Parallel tool calls', '并行工具调用'))}</label>
-              <label><input type="checkbox" data-provider-field="supportsStreamOptions" ${draft.supportsStreamOptions ? 'checked' : ''}> stream_options</label>
-              <label><input type="checkbox" data-provider-field="fullEndpoint" ${draft.fullEndpoint ? 'checked' : ''}> ${escapeHtml(tx('Base URL is the full protocol endpoint', '基础 URL 已是完整协议端点'))}</label>
-            </span>
-          </label>
+            <div class="codex-provider-capability-grid">
+              <label class="codex-provider-capability-option">
+                <input class="codex-provider-capability-input" type="checkbox" data-provider-field="supportsParallelToolCalls" ${draft.supportsParallelToolCalls ? 'checked' : ''}>
+                <span class="codex-provider-capability-control" aria-hidden="true"></span>
+                <span>${escapeHtml(tx('Parallel tool calls', '并行工具调用'))}</span>
+              </label>
+              <label class="codex-provider-capability-option">
+                <input class="codex-provider-capability-input" type="checkbox" data-provider-field="supportsStreamOptions" ${draft.supportsStreamOptions ? 'checked' : ''}>
+                <span class="codex-provider-capability-control" aria-hidden="true"></span>
+                <span>stream_options</span>
+              </label>
+              <label class="codex-provider-capability-option codex-provider-capability-option--wide">
+                <input class="codex-provider-capability-input" type="checkbox" data-provider-field="fullEndpoint" ${draft.fullEndpoint ? 'checked' : ''}>
+                <span class="codex-provider-capability-control" aria-hidden="true"></span>
+                <span>${escapeHtml(tx('Base URL is the full protocol endpoint', '基础 URL 已是完整协议端点'))}</span>
+              </label>
+            </div>
+          </div>
           <label class="codex-provider-field codex-provider-field--wide">
             <span>${escapeHtml(tx('Static headers (JSON)', '静态请求头（JSON）'))}</span>
             <textarea data-provider-field="customHeaders" rows="2" spellcheck="false">${escapeHtml(formatJsonRecord(draft.customHeaders))}</textarea>
@@ -335,13 +347,21 @@
             <span>${escapeHtml(tx('Maximum output tokens', '最大输出 Token'))}</span>
             <input type="number" data-provider-field="maxOutputTokens" min="256" max="200000" step="256" value="${Number(draft.maxOutputTokens) || 8192}">
           </label>
-          <label class="codex-provider-field codex-provider-field--wide">
+          <div class="codex-provider-field codex-provider-field--wide">
             <span>${escapeHtml(tx('Anthropic compatibility', 'Anthropic 兼容能力'))}</span>
-            <span class="codex-provider-secret-row">
-              <label><input type="checkbox" data-provider-field="anthropicPromptCaching" ${draft.anthropicPromptCaching ? 'checked' : ''}> ${escapeHtml(tx('Prompt caching markers', 'Prompt 缓存标记'))}</label>
-              <label><input type="checkbox" data-provider-field="impersonateClaudeCode" ${draft.impersonateClaudeCode ? 'checked' : ''}> ${escapeHtml(tx('Claude Code gateway identity', 'Claude Code 网关身份'))}</label>
-            </span>
-          </label>
+            <div class="codex-provider-capability-grid">
+              <label class="codex-provider-capability-option">
+                <input class="codex-provider-capability-input" type="checkbox" data-provider-field="anthropicPromptCaching" ${draft.anthropicPromptCaching ? 'checked' : ''}>
+                <span class="codex-provider-capability-control" aria-hidden="true"></span>
+                <span>${escapeHtml(tx('Prompt caching markers', 'Prompt 缓存标记'))}</span>
+              </label>
+              <label class="codex-provider-capability-option">
+                <input class="codex-provider-capability-input" type="checkbox" data-provider-field="impersonateClaudeCode" ${draft.impersonateClaudeCode ? 'checked' : ''}>
+                <span class="codex-provider-capability-control" aria-hidden="true"></span>
+                <span>${escapeHtml(tx('Claude Code gateway identity', 'Claude Code 网关身份'))}</span>
+              </label>
+            </div>
+          </div>
         </div>
       </details>
       ${!active ? `

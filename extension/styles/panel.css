@@ -4593,3 +4593,92 @@
     animation: none;
   }
 }
+.codex-provider-dialog-root .codex-provider-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 4px 18px;
+  margin-top: 3px;
+}
+
+.codex-provider-dialog-root .codex-provider-capability-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 5px 6px;
+  border-radius: 6px;
+  color: var(--tl-fg-2);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.codex-provider-dialog-root .codex-provider-capability-option:hover {
+  color: var(--tl-fg-1);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.codex-provider-dialog-root .codex-provider-capability-option--wide {
+  grid-column: 1 / -1;
+}
+
+.codex-provider-dialog-root .codex-provider-field .codex-provider-capability-input {
+  position: absolute;
+  width: 1px !important;
+  height: 1px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  background: transparent !important;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.codex-provider-dialog-root .codex-provider-capability-control {
+  position: relative;
+  display: grid;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  box-sizing: border-box;
+  border: 1px solid var(--tl-border-strong);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.025);
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.codex-provider-dialog-root .codex-provider-capability-input:focus-visible + .codex-provider-capability-control {
+  outline: 2px solid color-mix(in srgb, var(--tl-ok) 62%, transparent);
+  outline-offset: 2px;
+}
+
+.codex-provider-dialog-root .codex-provider-capability-input:checked + .codex-provider-capability-control {
+  border-color: var(--tl-ok);
+  background: var(--tl-ok);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--tl-ok) 18%, transparent);
+}
+
+.codex-provider-dialog-root .codex-provider-capability-input:checked + .codex-provider-capability-control::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  margin-top: -2px;
+  border-right: 2px solid #102016;
+  border-bottom: 2px solid #102016;
+  transform: rotate(45deg);
+}
