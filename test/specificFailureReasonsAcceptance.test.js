@@ -218,7 +218,8 @@ test('§17.3.1 — "File could not be found" → target_file_not_found', async (
   const { router } = createSingleFileHarness({
     activePath: 'main.tex',
     files: { 'main.tex': 'present' },
-    pathExists: () => false
+    pathExists: () => false,
+    openFile: () => ({ ok: false, reason: 'path remained unavailable' })
   });
 
   const result = await router.applyOperations({
