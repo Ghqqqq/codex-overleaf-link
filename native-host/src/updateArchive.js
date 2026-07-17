@@ -176,6 +176,7 @@ function isAllowedUpdatePath(value) {
   return entryPath === 'extension-runtime/runtime-manifest.json'
     || /^extension-runtime\/src\/.+/.test(entryPath)
     || /^extension-runtime\/styles\/.+/.test(entryPath)
+    || /^extension-runtime\/vendor\/katex\/(?:LICENSE|VERSION|katex\.min\.(?:css|js)|fonts\/[A-Za-z0-9_.-]+\.(?:ttf|woff2?))$/.test(entryPath)
     || entryPath === 'native-runtime/package.json'
     || /^native-runtime\/native-host\/src\/.+/.test(entryPath)
     || /^native-runtime\/extension\/src\/shared\/.+/.test(entryPath)

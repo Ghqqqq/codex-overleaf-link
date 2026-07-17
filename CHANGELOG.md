@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.1.0 - 2026-07-17
+## v2.1.0 - 2026-07-16
 
 Stable release adding experimental third-party model providers while preserving the built-in Codex path as the stable default and retaining the v2 writeback safety model.
 
