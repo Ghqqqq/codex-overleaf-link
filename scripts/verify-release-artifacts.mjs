@@ -9,6 +9,7 @@ import { verifyPackagePaths } from './verify-npm-package.mjs';
 
 const require = createRequire(import.meta.url);
 const { verifySignedReleaseManifest } = require('../native-host/src/updateTrust.js');
+const { isAllowedUpdatePath } = require('../native-host/src/updateArchive.js');
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FORBIDDEN_ARCHIVE_PATTERNS = [
@@ -158,14 +159,7 @@ function verifyUpdateBundle(filePath, errors) {
     'native-runtime/native-host/src/index.js'
   ], 'coordinated update bundle', errors);
   assertNoForbiddenEntries(entries, 'coordinated update bundle', errors);
-  const invalid = entries.filter(entry => !(
-    entry === 'extension-runtime/runtime-manifest.json'
-    || /^extension-runtime\/(?:src|styles)\/.+/.test(entry)
-    || entry === 'native-runtime/package.json'
-    || /^native-runtime\/native-host\/src\/.+/.test(entry)
-    || /^native-runtime\/extension\/src\/shared\/.+/.test(entry)
-    || /^native-runtime\/scripts\/(?:codex-json-agent|install-native-host|uninstall-native-host)\.mjs$/.test(entry)
-  ));
+  const invalid = entries.filter(entry => !isAllowedUpdatePath(entry));
   if (invalid.length) errors.push(`Coordinated update bundle contains invalid entries:\n${invalid.map(entry => `  - ${entry}`).join('\n')}`);
 }
 
