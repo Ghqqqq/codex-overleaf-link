@@ -112,6 +112,14 @@ function collectNativeRelativeRequireTargets() {
 test('manifest-referenced extension files are git-tracked for release packaging', () => {
   const trackedFiles = readGitTrackedFiles();
   for (const relativePath of collectManifestExtensionPaths()) {
+    if (relativePath.endsWith('/*')) {
+      const trackedPrefix = relativePath.slice(0, -1);
+      assert.ok(
+        [...trackedFiles].some(filePath => filePath.startsWith(trackedPrefix)),
+        `${relativePath} must match at least one git-tracked file because release packaging uses git ls-files`
+      );
+      continue;
+    }
     assert.ok(
       trackedFiles.has(relativePath),
       `${relativePath} must be git-tracked because release packaging uses git ls-files`
