@@ -49,8 +49,11 @@
       <div class="codex-provider-dialog-backdrop" data-provider-backdrop></div>
       <section class="codex-provider-dialog" role="dialog" aria-modal="true" aria-labelledby="codex-provider-dialog-title">
         <header class="codex-provider-dialog-head">
-          <div>
-            <h2 id="codex-provider-dialog-title" data-provider-dialog-title></h2>
+          <div class="codex-provider-dialog-heading">
+            <div class="codex-provider-dialog-titleline">
+              <h2 id="codex-provider-dialog-title" data-provider-dialog-title></h2>
+              <span class="codex-provider-experimental-badge" data-provider-dialog-experimental></span>
+            </div>
             <p data-provider-dialog-subtitle></p>
           </div>
           <button type="button" class="codex-provider-dialog-close" data-provider-action="close" aria-label="Close">×</button>
@@ -143,9 +146,13 @@
   function render(instance) {
     const tx = instance.tx;
     instance.root.querySelector('[data-provider-dialog-title]').textContent = tx('Model API providers', '模型 API 服务');
+    instance.root.querySelector('[data-provider-dialog-experimental]').textContent = tx(
+      'Third-party experimental',
+      '第三方实验性'
+    );
     instance.root.querySelector('[data-provider-dialog-subtitle]').textContent = tx(
-      'Configure model APIs used by future Codex runs in every Overleaf project tab.',
-      '配置所有 Overleaf 项目标签页后续 Codex 任务使用的模型 API。'
+      'Configure experimental third-party integrations used by future Codex runs. Compatibility varies by provider and gateway.',
+      '配置后续 Codex 任务使用的实验性第三方集成；兼容性取决于具体模型服务与网关。'
     );
     renderProviderList(instance);
     renderDetail(instance);
@@ -374,7 +381,7 @@
           </label>
           <label class="codex-provider-field">
             <span>${escapeHtml(tx('Maximum output tokens', '最大输出 Token'))}</span>
-            <input type="number" data-provider-field="maxOutputTokens" min="256" max="200000" step="256" value="${Number(draft.maxOutputTokens) || 8192}">
+            <input type="number" data-provider-field="maxOutputTokens" min="256" max="200000" step="256" value="${Number(draft.maxOutputTokens) || 32768}">
           </label>
           <div class="codex-provider-field codex-provider-field--wide">
             <span>${escapeHtml(tx('Anthropic compatibility', 'Anthropic 兼容能力'))}</span>
@@ -708,7 +715,7 @@
       ,anthropicThinkingMode: get('anthropicThinkingMode')?.value || 'budget'
       ,anthropicPromptCaching: Boolean(get('anthropicPromptCaching')?.checked)
       ,impersonateClaudeCode: Boolean(get('impersonateClaudeCode')?.checked)
-      ,maxOutputTokens: Number(get('maxOutputTokens')?.value || 8192)
+      ,maxOutputTokens: Number(get('maxOutputTokens')?.value || 32768)
     };
     const apiKey = String(get('apiKey')?.value || '');
     const secretMutation = instance.secretAction === 'replace' && apiKey

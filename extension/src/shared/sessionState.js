@@ -69,7 +69,10 @@
     maxUndoRunsPerSession: 2,
     maxUndoBytesPerRun: 320 * 1024,
     targetBytes: 4 * 1024 * 1024,
-    titleChars: 6000,
+    // Stream events carry accumulated assistant/reasoning text in `title`.
+    // Keep one provider-sized response intact; the 4 MiB state target below
+    // remains the aggregate history guard and prunes older events when needed.
+    titleChars: 128 * 1024,
     detailChars: 3000,
     reportDetailChars: 64000,
     historyChars: 1800,

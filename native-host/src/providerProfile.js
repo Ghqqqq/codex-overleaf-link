@@ -407,7 +407,7 @@ function normalizeUpstreamResponseMode(value, allowAuto) {
 
 function normalizeMaxOutputTokens(value) {
   const number = Number(value);
-  if (!Number.isFinite(number)) return 8192;
+  if (!Number.isFinite(number) || number === 8192) return 32768;
   return Math.min(200000, Math.max(256, Math.floor(number)));
 }
 

@@ -73,6 +73,8 @@
         "src/content/diagnosticsPanel.js",
         "src/content/composerPanel.js",
         "src/content/themeController.js",
+        "vendor/katex/katex.min.js",
+        "src/content/mathText.js",
         "src/content/markdownText.js",
         "src/content/diagnosticsController.js",
         "src/content/runTimelineView.js",
@@ -92,6 +94,7 @@
         "src/contentScript.js"
       ],
       "css": [
+        "vendor/katex/katex.min.css",
         "styles/panel.css"
       ],
       "run_at": "document_idle"
@@ -102,6 +105,7 @@
       "resources": [
         "assets/icons/codex-overleaf-icon.png",
         "assets/icons/codex-overleaf-dialog-icon.png",
+        "vendor/katex/fonts/*",
         "src/shared/reviewing.js",
         "src/shared/projectFiles.js",
         "src/shared/compatibility.js",

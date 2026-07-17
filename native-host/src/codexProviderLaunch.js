@@ -49,7 +49,7 @@ function createProviderLaunch({ profile, secret = '', modelId, wireApi, reasonin
     anthropicThinkingMode: profile.anthropicThinkingMode || 'budget',
     anthropicPromptCaching: profile.anthropicPromptCaching === true,
     impersonateClaudeCode: profile.impersonateClaudeCode === true,
-    maxOutputTokens: profile.maxOutputTokens || 8192,
+    maxOutputTokens: profile.maxOutputTokens || 32768,
     apiKey: secret
   });
 }

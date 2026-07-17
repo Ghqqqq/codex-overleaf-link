@@ -177,6 +177,7 @@ npm exec --yes codex-overleaf-link@2.1.0 -- uninstall-managed --browser chromium
 - **Sensitive preflight** — scan selected project context for likely secrets before sending it to Codex.
 - **Audit and diagnostics** — keep local run records and export redacted diagnostic bundles for issue reports.
 - **Model picker** — discover available Codex models locally, then switch model, reasoning effort, and speed from one compact control.
+- **Third-party model providers (experimental)** — configure OpenAI-compatible Chat Completions, Responses API, and Anthropic Messages endpoints from Settings. Provider and gateway behavior varies, so the built-in Codex path remains the stable default.
 - **Session history** — multi-session management with rename, resume, and delete.
 - **Isolated Codex home** — plugin sessions run under `~/.codex-overleaf/codex-home` (not global `~/.codex/sessions`) and do not inherit your global Codex personalization.
 - **Experimental OT warm mirror** — optional read-only observation of active Overleaf text edits to keep focused local mirror files warm. Falls back to full snapshots when unavailable or inconsistent. Off by default; it never writes back to Overleaf through realtime collaboration channels.

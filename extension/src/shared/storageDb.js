@@ -26,7 +26,10 @@
     taskChars: 12000,
     historyTaskChars: 300,
     historyResultChars: 1800,
-    eventTitleChars: 6000,
+    // Assistant/reasoning streams are stored in event titles. Preserve one
+    // full 32K-token-class response and let session compaction control total
+    // history size instead of clipping the active event at 6,000 characters.
+    eventTitleChars: 128 * 1024,
     statusTextChars: 800,
     detailChars: 3000,
     reportDetailChars: 64000,

@@ -411,6 +411,7 @@ test('passes Codex mode, model, and reasoning settings to the runner boundary', 
 
     assert.equal(received.userTask, '检查 citation');
     assert.match(received.task, /Current user request:\n检查 citation/);
+    assert.match(received.task, /Keep track of ranges already inspected/);
     assert.equal(received.mode, 'ask');
     assert.equal(received.model, 'gpt-5.4');
     assert.equal(received.reasoningEffort, 'high');

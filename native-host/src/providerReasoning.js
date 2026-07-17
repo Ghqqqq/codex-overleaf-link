@@ -13,6 +13,7 @@ const REASONING_ADAPTERS = new Set([
 ]);
 const REASONING_CAPABILITIES = new Set(['auto', 'none', 'toggle', 'effort']);
 const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const DEEPSEEK_MAX_REASONING_OUTPUT_TOKENS = 65536;
 
 function normalizeReasoningAdapter(value) {
   const normalized = String(value || '').trim().toLowerCase();
@@ -121,7 +122,10 @@ function getReasoningControl(profile = {}, model = {}) {
 }
 
 function applyReasoningControl(chatBody, responsesRequest = {}, launch = {}) {
-  const requested = normalizeEffort(responsesRequest?.reasoning?.effort || launch.reasoningEffort);
+  // The panel selection is the user's explicit per-run choice. Codex may put
+  // its own model default in the Responses request, so launch must win when
+  // it is present (including the meaningful `none` value).
+  const requested = resolveRequestedReasoningEffort(responsesRequest, launch);
   if (!requested) {
     return;
   }
@@ -145,6 +149,24 @@ function applyReasoningControl(chatBody, responsesRequest = {}, launch = {}) {
   } else if (adapter === 'reasoning_split') {
     chatBody.reasoning_split = enabled;
   }
+}
+
+function resolveRequestedReasoningEffort(responsesRequest = {}, launch = {}) {
+  return normalizeEffort(launch.reasoningEffort)
+    || normalizeEffort(responsesRequest?.reasoning?.effort);
+}
+
+function resolveReasoningMaxOutputTokens(value, responsesRequest = {}, launch = {}, modelId = '') {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return value;
+  }
+  const normalized = Math.max(1, Math.floor(number));
+  const effort = resolveRequestedReasoningEffort(responsesRequest, launch);
+  const adapter = resolveReasoningAdapter(launch, modelId || launch.modelId);
+  return adapter === 'deepseek' && effort === 'xhigh'
+    ? Math.max(normalized, DEEPSEEK_MAX_REASONING_OUTPUT_TOKENS)
+    : normalized;
 }
 
 function requiresReasoningContentReplay(launch = {}, modelId = '') {
@@ -208,5 +230,6 @@ module.exports = {
   requiresReasoningContentReplay,
   resolveReasoningAdapter,
   resolveReasoningCapability,
+  resolveReasoningMaxOutputTokens,
   supportsToolChoice
 };

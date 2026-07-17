@@ -30,6 +30,7 @@
       "resources": [
         "assets/icons/codex-overleaf-icon.png",
         "assets/icons/codex-overleaf-dialog-icon.png",
+        "runtime/vendor/katex/fonts/*",
         "runtime/src/shared/*",
         "runtime/src/page/*",
         "runtime/src/pageBridge.js"

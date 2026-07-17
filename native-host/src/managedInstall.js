@@ -131,6 +131,7 @@ function buildManagedExtensionTree(options = {}) {
   copyPackageTree(packageRoot, 'extension/assets', targetRoot, 'assets', { allowedFiles });
   copyPackageTree(packageRoot, 'extension/src', targetRoot, 'runtime/src', { allowedFiles });
   copyPackageTree(packageRoot, 'extension/styles', targetRoot, 'runtime/styles', { allowedFiles });
+  copyPackageTree(packageRoot, 'extension/vendor', targetRoot, 'runtime/vendor', { allowedFiles });
   copyPackageFile(packageRoot, 'extension/runtime-manifest.json', targetRoot, 'runtime/runtime-manifest.json', allowedFiles);
   fs.writeFileSync(path.join(targetRoot, EXTENSION_MARKER), JSON.stringify({
     managedBy: MANAGED_BY,

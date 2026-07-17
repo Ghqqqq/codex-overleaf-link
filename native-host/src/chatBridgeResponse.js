@@ -19,22 +19,31 @@ function convertChatResponse(chat = {}, context = {}) {
   if (!output.length) {
     throw responseError('The provider completed without usable text, reasoning, or tool calls.');
   }
+  const terminal = mapChatFinishReason(choice.finish_reason);
   const response = buildResponseEnvelope({
     id: responseId(chat.id),
     createdAt: Number(chat.created) || nowSeconds(),
     model: chat.model || context.model,
     output,
-    status: 'completed',
     usage: normalizeUsage(chat.usage),
-    requestBody: context.requestBody
+    requestBody: context.requestBody,
+    ...terminal
   });
   return {
     response,
-    assistantMessage: buildAssistantMessage(split, toolCalls, context.launch)
+    assistantMessage: buildAssistantMessage(split, toolCalls, context.launch),
+    providerFinishReason: normalizeText(choice.finish_reason)
   };
 }
 
-async function streamChatResponse({ upstream, res, context = {}, onComplete = () => {} } = {}) {
+async function streamChatResponse({
+  upstream,
+  res,
+  context = {},
+  onComplete = () => {},
+  onActivity = () => {},
+  recoverInterrupted = () => ''
+} = {}) {
   const state = createStreamState(context);
   beginSse(res);
   emit(state, res, 'response.created', { response: streamEnvelope(state, 'in_progress') });
@@ -42,26 +51,44 @@ async function streamChatResponse({ upstream, res, context = {}, onComplete = ()
   const decoder = new TextDecoder();
   let buffer = '';
   let done = false;
-  for await (const chunk of upstream.body || []) {
-    buffer += decoder.decode(chunk, { stream: true });
-    let boundary = findSseBoundary(buffer);
-    while (boundary) {
-      const block = buffer.slice(0, boundary.index);
-      buffer = buffer.slice(boundary.index + boundary.length);
-      const data = parseSseData(block);
-      if (data === '[DONE]') {
-        done = true;
-        break;
+  let interruptedReason = '';
+  try {
+    for await (const chunk of upstream.body || []) {
+      onActivity();
+      buffer += decoder.decode(chunk, { stream: true });
+      let boundary = findSseBoundary(buffer);
+      while (boundary) {
+        const block = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary.length);
+        const data = parseSseData(block);
+        if (data === '[DONE]') {
+          done = true;
+          break;
+        }
+        if (data) {
+          assertNoLeakedToolControlTokens(data);
+          processChatChunk(state, res, parseJson(data));
+          // Several OpenAI-compatible gateways emit a terminal
+          // finish_reason but keep the SSE connection open and omit [DONE].
+          // The finish_reason is the protocol terminal signal; waiting for the
+          // socket to close turns a completed answer into a transport timeout.
+          if (state.finishReason) {
+            done = true;
+            break;
+          }
+        }
+        boundary = findSseBoundary(buffer);
       }
-      if (data) {
-        assertNoLeakedToolControlTokens(data);
-        processChatChunk(state, res, parseJson(data));
-      }
-      boundary = findSseBoundary(buffer);
+      if (done) break;
     }
-    if (done) break;
+  } catch (error) {
+    interruptedReason = normalizeText(recoverInterrupted(error));
+    const hasRecoverablePartialOutput = interruptedReason
+      && (state.reasoning || state.message)
+      && state.tools.size === 0;
+    if (!hasRecoverablePartialOutput) throw error;
   }
-  if (!done) {
+  if (!done && !interruptedReason) {
     buffer += decoder.decode();
     const data = parseSseData(buffer);
     if (data && data !== '[DONE]') {
@@ -69,7 +96,7 @@ async function streamChatResponse({ upstream, res, context = {}, onComplete = ()
       processChatChunk(state, res, parseJson(data));
     }
   }
-  const completed = completeStream(state, res);
+  const completed = completeStream(state, res, interruptedReason);
   onComplete(completed);
   res.end();
   return completed.response;
@@ -78,11 +105,22 @@ async function streamChatResponse({ upstream, res, context = {}, onComplete = ()
 function writeConvertedResponseAsSse(res, converted, context = {}, onComplete = () => {}) {
   const state = { sequence: 0 };
   beginSse(res);
-  const pending = { ...converted.response, status: 'in_progress', output: [], usage: null };
+  const pending = {
+    ...converted.response,
+    status: 'in_progress',
+    incomplete_details: null,
+    output: [],
+    usage: null
+  };
   emit(state, res, 'response.created', { response: pending });
   emit(state, res, 'response.in_progress', { response: pending });
   converted.response.output.forEach((item, outputIndex) => emitWholeItem(state, res, item, outputIndex));
-  emit(state, res, 'response.completed', { response: converted.response });
+  emit(
+    state,
+    res,
+    converted.response.status === 'incomplete' ? 'response.incomplete' : 'response.completed',
+    { response: converted.response }
+  );
   onComplete(converted);
   res.end();
 }
@@ -193,7 +231,7 @@ function openTool(state, res, tool) {
   emit(state, res, 'response.output_item.added', { output_index: tool.outputIndex, item: tool.item });
 }
 
-function completeStream(state, res) {
+function completeStream(state, res, interruptedReason = '') {
   if (!state.reasoning && !state.message && state.tools.size === 0) {
     throw responseError(`The provider stream ended without usable output${state.finishReason ? ` (${state.finishReason})` : ''}.`);
   }
@@ -201,8 +239,16 @@ function completeStream(state, res) {
   if (state.message) completeMessage(state, res);
   const tools = Array.from(state.tools.values()).sort((a, b) => a.index - b.index);
   for (const tool of tools) completeTool(state, res, tool);
-  const response = streamEnvelope(state, 'completed');
-  emit(state, res, 'response.completed', { response });
+  const terminal = interruptedReason
+    ? { status: 'incomplete', incompleteReason: 'max_output_tokens' }
+    : mapChatFinishReason(state.finishReason);
+  const response = streamEnvelope(state, terminal.status, terminal.incompleteReason);
+  emit(
+    state,
+    res,
+    terminal.status === 'incomplete' ? 'response.incomplete' : 'response.completed',
+    { response }
+  );
   const split = {
     content: state.message?.text || '',
     reasoning: state.reasoning?.text || ''
@@ -216,7 +262,10 @@ function completeStream(state, res) {
       arguments: tool.arguments,
       kind: tool.kind,
       item: tool.item
-    })), state.context.launch)
+    })), state.context.launch),
+    providerFinishReason: interruptedReason
+      ? `bridge_${interruptedReason}`
+      : normalizeText(state.finishReason)
   };
 }
 
@@ -301,26 +350,37 @@ function createStreamState(context) {
   };
 }
 
-function streamEnvelope(state, status) {
+function streamEnvelope(state, status, incompleteReason = null) {
+  const terminal = status === 'completed' || status === 'incomplete';
   return buildResponseEnvelope({
     id: state.id,
     createdAt: state.createdAt,
     model: state.model,
-    output: status === 'completed' ? state.items.filter(Boolean) : [],
+    output: terminal ? state.items.filter(Boolean) : [],
     status,
-    usage: status === 'completed' ? state.usage : null,
-    requestBody: state.context.requestBody
+    usage: terminal ? state.usage : null,
+    requestBody: state.context.requestBody,
+    incompleteReason
   });
 }
 
-function buildResponseEnvelope({ id, createdAt, model, output, status, usage, requestBody = {} }) {
+function buildResponseEnvelope({
+  id,
+  createdAt,
+  model,
+  output,
+  status,
+  usage,
+  requestBody = {},
+  incompleteReason = null
+}) {
   return {
     id,
     object: 'response',
     created_at: createdAt,
     status,
     error: null,
-    incomplete_details: null,
+    incomplete_details: incompleteReason ? { reason: incompleteReason } : null,
     instructions: null,
     model,
     output: Array.isArray(output) ? output : [],
@@ -406,6 +466,23 @@ function extractReasoning(message = {}) {
     .map(item => typeof item === 'string' ? item : normalizeText(item?.text || item?.content || item?.summary))
     .filter(Boolean)
     .join('\n');
+}
+
+function mapChatFinishReason(value) {
+  const reason = normalizeText(value).trim().toLowerCase();
+  if (['length', 'max_tokens', 'max_output_tokens', 'model_context_window_exceeded'].includes(reason)) {
+    return { status: 'incomplete', incompleteReason: 'max_output_tokens' };
+  }
+  if (['content_filter', 'content-filter', 'refusal', 'safety'].includes(reason)) {
+    return { status: 'incomplete', incompleteReason: 'content_filter' };
+  }
+  if (['insufficient_system_resource', 'insufficient-system-resource', 'resource_exhausted'].includes(reason)) {
+    // The Responses API has no portable provider-resource incomplete reason.
+    // Treat the partial generation like an output truncation so Codex can
+    // continue it through the bounded history-anchor path.
+    return { status: 'incomplete', incompleteReason: 'max_output_tokens' };
+  }
+  return { status: 'completed', incompleteReason: null };
 }
 
 function responseError(message) {

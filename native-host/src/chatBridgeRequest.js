@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const {
   applyReasoningControl,
   requiresReasoningContentReplay,
+  resolveReasoningMaxOutputTokens,
   supportsToolChoice
 } = require('./providerReasoning');
 
@@ -34,8 +35,14 @@ function buildChatRequest({ requestBody = {}, launch = {}, historyMessages = [] 
   if (toolChoice && supportsToolChoice(launch, model)) body.tool_choice = toolChoice;
   copyNumber(requestBody, body, 'temperature');
   copyNumber(requestBody, body, 'top_p');
-  if (Number.isFinite(Number(requestBody.max_output_tokens))) {
-    body.max_tokens = Math.max(1, Math.floor(Number(requestBody.max_output_tokens)));
+  const maxOutputTokens = resolveReasoningMaxOutputTokens(
+    requestBody.max_output_tokens ?? launch.maxOutputTokens,
+    requestBody,
+    launch,
+    model
+  );
+  if (Number.isFinite(Number(maxOutputTokens))) {
+    body.max_tokens = Math.max(1, Math.floor(Number(maxOutputTokens)));
   }
   if (launch.supportsParallelToolCalls && typeof requestBody.parallel_tool_calls === 'boolean') {
     body.parallel_tool_calls = requestBody.parallel_tool_calls;

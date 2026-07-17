@@ -68,7 +68,7 @@
       anthropicThinkingMode: normalizeAnthropicThinkingMode(value.anthropicThinkingMode),
       anthropicPromptCaching: value.anthropicPromptCaching === true,
       impersonateClaudeCode: value.impersonateClaudeCode === true,
-      maxOutputTokens: normalizeInteger(value.maxOutputTokens) || 8192,
+      maxOutputTokens: normalizeMaxOutputTokens(value.maxOutputTokens),
       hasSecret: value.hasSecret === true,
       secretUpdatedAt: normalizeInteger(value.secretUpdatedAt),
       endpointDisclosureHost: normalizeText(value.endpointDisclosureHost),
@@ -159,7 +159,7 @@
       anthropicThinkingMode: 'budget',
       anthropicPromptCaching: false,
       impersonateClaudeCode: false,
-      maxOutputTokens: 8192,
+      maxOutputTokens: 32768,
       hasSecret: false,
       secretUpdatedAt: 0,
       endpointDisclosureHost: '',
@@ -264,6 +264,11 @@
   function normalizeInteger(value) {
     const number = Number(value);
     return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
+  }
+
+  function normalizeMaxOutputTokens(value) {
+    const number = normalizeInteger(value);
+    return !number || number === 8192 ? 32768 : number;
   }
 
   return {

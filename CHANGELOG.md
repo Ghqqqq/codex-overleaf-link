@@ -1,13 +1,13 @@
 # Changelog
 
-## v2.1.0 - 2026-07-16
+## v2.1.0 - 2026-07-17
 
-Release candidate adding first-class third-party model providers while preserving the built-in Codex path and the v2 writeback safety model.
+Stable release adding experimental third-party model providers while preserving the built-in Codex path as the stable default and retaining the v2 writeback safety model.
 
 ### Added
 
-- Added a dedicated third-party provider dialog with profile-specific endpoints, models, credentials, reasoning controls, connection testing, and explicit activation from Settings.
-- Added a Native Host provider runtime with redacted profile storage, OpenAI-compatible Chat Completions bridging, provider-aware reasoning translation, model discovery, and Codex app-server launch integration.
+- Added an experimental third-party provider dialog with profile-specific endpoints, models, credentials, reasoning controls, connection testing, and explicit activation from Settings.
+- Added an experimental Native Host provider runtime with redacted profile storage, OpenAI-compatible Chat Completions and Responses bridging, Anthropic Messages support, provider-aware reasoning translation, model discovery, and Codex app-server launch integration.
 - Added staged project-context loading with file-tree readiness feedback, warmed ZIP snapshots, cache reuse, and resilient snapshot fallbacks.
 - Added model-scoped `Auto`, `Streaming`, and `Buffered` upstream response modes for Chat Completions providers.
 
@@ -24,6 +24,10 @@ Release candidate adding first-class third-party model providers while preservin
 - Detected leaked tool-call control tokens as an actionable provider compatibility failure without interpreting them as executable tools.
 - Restored edits to files inside collapsed nested folders by attempting Overleaf's expand-and-open flow before classifying a target path as missing.
 - Replaced oversized provider capability checkboxes with compact, accessible controls scoped correctly to the centered provider dialog.
+
+### Changed
+
+- Marked third-party provider integration as experimental throughout Settings, the provider dialog, and public documentation because tool calling, streaming, and reasoning metadata vary across providers and gateways. Built-in Codex remains the stable default.
 
 ## v2.0.0 - 2026-07-14
 

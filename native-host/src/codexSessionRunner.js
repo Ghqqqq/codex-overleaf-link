@@ -21,6 +21,7 @@ const {
 const { createSubagentBroker } = require('./subagentBroker');
 const { resolveCodexCommand, shouldUseShellForCommand } = require('./codexCommand');
 const { applyProviderEnvironment, buildProviderConfigArgs, prepareProviderLaunch } = require('./codexProviderLaunch');
+const { buildReadProgressRules, createReadProgressController } = require('./readProgressGuard');
 
 const PARALLEL_SUBAGENTS_SKILL_ID = 'parallel-subagents';
 
@@ -285,7 +286,7 @@ function buildCodexTurnPrompt(params = {}, mirror = {}, projectLocalSkills, turn
     turnAttachments,
     codexSkillInvocationContext
   });
-  return [prompt.systemPrompt, prompt.userPrompt].filter(Boolean).join('\n\n');
+  return [prompt.systemPrompt, buildReadProgressRules(), prompt.userPrompt].filter(Boolean).join('\n\n');
 }
 
 function materializeTurnAttachments(attachments = [], workspacePath = '') {
@@ -809,6 +810,11 @@ function runCodexAppServerProcess(input) {
     let activeTurnId = '';
     const assistantMessages = new Map();
     const assistantMessageOrder = [];
+    const readProgressController = createReadProgressController({
+      input, request, fail,
+      getTurn: () => ({ threadId: activeThreadId, turnId: activeTurnId }),
+      emitEvent: (...args) => emitCodexEvent(input.emit, ...args)
+    });
     let settled = false;
     // Two-layer timeout strategy:
     //   1. Optional absolute deadline (CODEX_OVERLEAF_CODEX_TIMEOUT_MS) —
@@ -904,6 +910,7 @@ function runCodexAppServerProcess(input) {
 
       const turnResponse = await startTurnWithSummaryFallback(activeThreadId);
       activeTurnId = turnResponse?.turn?.id || '';
+      readProgressController.flush();
     }
 
     async function startTurnWithSummaryFallback(threadId) {
@@ -990,6 +997,8 @@ function runCodexAppServerProcess(input) {
           method: message.method,
           params: message.params || {}
         }, inferNotificationStatus(message));
+        if (message.method === 'item/completed' &&
+          !readProgressController.observe(message.params?.item || {})) return;
         if (message.method === 'turn/completed' && (!activeTurnId || message.params?.turn?.id === activeTurnId || message.params?.turnId === activeTurnId)) {
           succeed();
         }

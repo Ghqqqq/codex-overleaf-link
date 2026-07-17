@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 
 const THINKING_PREFIX = 'codex-overleaf-anthropic-thinking-v1:';
-const DEFAULT_MAX_TOKENS = 8192;
+const DEFAULT_MAX_TOKENS = 32768;
 
 function buildAnthropicRequest({ requestBody = {}, launch = {}, historyMessages = [] } = {}) {
   const toolContext = buildToolContext(requestBody.tools);

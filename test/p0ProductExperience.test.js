@@ -1586,6 +1586,22 @@ test('panel.css ships the jump-to-latest button, dark scrollbar, and motion prim
     'activity titles must not single-line-ellipsize');
 });
 
+test('streamed assistant text shrinks with the panel and wraps mixed-language content', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../extension/styles/panel.css'), 'utf8');
+  const activityListRule = css.match(/\.run-activity-list\s*\{[\s\S]*?\}/)?.[0] || '';
+  const streamRule = css.match(/\.run-stream\s*\{[\s\S]*?\}/)?.[0] || '';
+  const streamTextRule = css.match(/\.run-stream-text\s*\{[\s\S]*?\}/)?.[0] || '';
+  assert.match(activityListRule, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(activityListRule, /min-width:\s*0/);
+  assert.match(streamRule, /box-sizing:\s*border-box/);
+  assert.match(streamRule, /width:\s*100%/);
+  assert.match(streamRule, /min-width:\s*0/);
+  assert.match(streamTextRule, /max-width:\s*100%/);
+  assert.match(streamTextRule, /white-space:\s*pre-wrap/);
+  assert.match(streamTextRule, /overflow-wrap:\s*anywhere/);
+  assert.doesNotMatch(streamTextRule, /white-space:\s*nowrap/);
+});
+
 test('Option B visual: glyph status rows, sticky current-step header, left-rule stream', () => {
   const css = fs.readFileSync(path.join(__dirname, '../extension/styles/panel.css'), 'utf8');
   // Status glyphs: idle ·, completed ✓, failed ✕. Running is a CSS-drawn arc

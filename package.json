@@ -45,6 +45,7 @@
     "extension/runtime-manifest.json",
     "extension/src/",
     "extension/styles/",
+    "extension/vendor/",
     "scripts/codex-json-agent.mjs",
     "scripts/install-native-host.mjs",
     "scripts/install-managed.mjs",

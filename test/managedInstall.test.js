@@ -26,11 +26,16 @@ test('builds a loadable managed extension with stable Bootstrap and replaceable 
     assert.equal(manifest.host_permissions.includes('https://www.overleaf.com/project'), true);
     assert.equal(fs.existsSync(path.join(root, 'runtime/runtime-manifest.json')), true);
     assert.equal(fs.existsSync(path.join(root, 'runtime/src/content/contentRuntime.js')), true);
+    assert.equal(fs.existsSync(path.join(root, 'runtime/src/content/mathText.js')), true);
+    assert.equal(fs.existsSync(path.join(root, 'runtime/vendor/katex/katex.min.js')), true);
+    assert.equal(fs.existsSync(path.join(root, 'runtime/vendor/katex/katex.min.css')), true);
+    assert.equal(fs.existsSync(path.join(root, 'runtime/vendor/katex/fonts/KaTeX_Main-Regular.woff2')), true);
     const sourceManifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../extension/manifest.json'), 'utf8'));
     const runtimeManifest = JSON.parse(fs.readFileSync(path.join(root, 'runtime/runtime-manifest.json'), 'utf8'));
     assert.deepEqual(runtimeManifest.matches, sourceManifest.content_scripts[0].matches);
     assert.deepEqual(runtimeManifest.js, sourceManifest.content_scripts[0].js);
     assert.deepEqual(runtimeManifest.css, sourceManifest.content_scripts[0].css);
+    assert.equal(manifest.web_accessible_resources[0].resources.includes('runtime/vendor/katex/fonts/*'), true);
     assert.equal(fs.existsSync(path.join(root, 'bootstrap/update.html')), true);
     assert.equal(fs.existsSync(path.join(root, 'bootstrap/update.css')), true);
     assert.equal(fs.existsSync(path.join(root, 'bootstrap/update.js')), true);

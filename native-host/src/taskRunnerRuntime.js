@@ -39,7 +39,7 @@ const activeRunControllers = new Map();
 const activeRunByProject = new Map();
 const pendingPlans = new Map();
 const PENDING_PLAN_TTL_MS = 30 * 60 * 1000;
-const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed']);
+const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result']);
 
 async function handleRequest(request, env = process.env, emit = () => {}) {
   if (!request || typeof request !== 'object') {

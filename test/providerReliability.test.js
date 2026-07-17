@@ -18,7 +18,11 @@ const { sanitizeProviderMessage } = require('../native-host/src/providerRedactio
 const { getReasoningControl, resolveReasoningAdapter } = require('../native-host/src/providerReasoning');
 const { buildProviderModelCatalogData } = require('../native-host/src/providerModelCatalog');
 const { buildChatRequest } = require('../native-host/src/chatBridgeRequest');
-const { convertChatResponse } = require('../native-host/src/chatBridgeResponse');
+const {
+  convertChatResponse,
+  streamChatResponse,
+  writeConvertedResponseAsSse
+} = require('../native-host/src/chatBridgeResponse');
 const { buildChatCompletionsUrl, buildUpstreamHeaders } = require('../native-host/src/chatCompletionsBridge');
 const { resolveRunProvider } = require('../native-host/src/providerRuntime');
 const { classifyProviderFailure } = require('../native-host/src/codexProviderTest');
@@ -32,6 +36,7 @@ const {
   upsertProvider
 } = require('../native-host/src/providerStore');
 const ModelPickerSupport = require('../extension/src/content/modelPickerSupport');
+const ProviderProfiles = require('../extension/src/shared/providerProfiles');
 
 function withProviderStore(callback) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-provider-'));
@@ -54,6 +59,25 @@ function makeDraft(overrides = {}) {
     reasoningAdapter: 'none',
     reasoningCapability: 'none',
     ...overrides
+  };
+}
+
+function makeSseCollector() {
+  let body = '';
+  return {
+    writableEnded: false,
+    writeHead() {},
+    write(value) {
+      body += String(value || '');
+      return true;
+    },
+    end(value = '') {
+      body += String(value || '');
+      this.writableEnded = true;
+    },
+    get body() {
+      return body;
+    }
   };
 }
 
@@ -294,6 +318,25 @@ test('unknown custom-model context keeps the 256K product default', () => {
   assert.equal(catalog.models[0].context_window, 262144);
 });
 
+test('custom providers migrate the legacy 8K output budget to the 32K default', () => {
+  assert.equal(normalizeProviderDraft(makeDraft()).maxOutputTokens, 32768);
+  assert.equal(normalizeProviderDraft(makeDraft({ maxOutputTokens: 8192 })).maxOutputTokens, 32768);
+  assert.equal(normalizeProviderDraft(makeDraft({ maxOutputTokens: 65536 })).maxOutputTokens, 65536);
+  assert.equal(ProviderProfiles.buildEmptyDraft().maxOutputTokens, 32768);
+  assert.equal(ProviderProfiles.normalizeProvider({
+    id: 'legacy-provider',
+    kind: 'custom',
+    models: [{ id: 'legacy-model' }],
+    maxOutputTokens: 8192
+  }).maxOutputTokens, 32768);
+  assert.equal(ProviderProfiles.normalizeProvider({
+    id: 'custom-provider',
+    kind: 'custom',
+    models: [{ id: 'custom-model' }],
+    maxOutputTokens: 65536
+  }).maxOutputTokens, 65536);
+});
+
 test('local protocol bridges accept Responses Compact aliases', () => {
   assert.equal(classifyResponsesRoute('POST', '/v1/responses'), 'responses');
   assert.equal(classifyResponsesRoute('POST', '/v1/responses/compact'), 'compact');
@@ -399,6 +442,63 @@ test('chat compatibility keeps optional request fields capability-gated', () => 
   assert.equal('stream_options' in translated.body, false);
   assert.equal('parallel_tool_calls' in translated.body, false);
   assert.equal(translated.body.tools[0].function.name, 'shell');
+});
+
+test('chat compatibility applies the provider output budget unless Codex overrides it', () => {
+  const fallback = buildChatRequest({
+    requestBody: { model: 'vendor-model', input: 'Inspect the project.' },
+    launch: { modelId: 'vendor-model', maxOutputTokens: 32768 }
+  });
+  assert.equal(fallback.body.max_tokens, 32768);
+
+  const explicit = buildChatRequest({
+    requestBody: {
+      model: 'vendor-model',
+      input: 'Inspect the project.',
+      max_output_tokens: 4096
+    },
+    launch: { modelId: 'vendor-model', maxOutputTokens: 32768 }
+  });
+  assert.equal(explicit.body.max_tokens, 4096);
+});
+
+test('chat compatibility preserves length-limited terminal semantics', async () => {
+  const converted = convertChatResponse({
+    id: 'chat-limited',
+    model: 'vendor-model',
+    choices: [{
+      finish_reason: 'length',
+      message: { reasoning_content: 'The reasoning reached the provider output limit.' }
+    }]
+  }, {
+    model: 'vendor-model',
+    requestBody: {},
+    launch: { modelId: 'vendor-model' }
+  });
+  assert.equal(converted.response.status, 'incomplete');
+  assert.deepEqual(converted.response.incomplete_details, { reason: 'max_output_tokens' });
+
+  const bufferedSse = makeSseCollector();
+  writeConvertedResponseAsSse(bufferedSse, converted);
+  assert.match(bufferedSse.body, /event: response\.incomplete/);
+  assert.doesNotMatch(bufferedSse.body, /event: response\.completed/);
+
+  const streamingSse = makeSseCollector();
+  const upstream = {
+    body: (async function* stream() {
+      yield Buffer.from('data: {"id":"chat-stream","choices":[{"delta":{"reasoning_content":"Still checking."},"finish_reason":"length"}]}\n\n');
+      yield Buffer.from('data: [DONE]\n\n');
+    }())
+  };
+  const streamed = await streamChatResponse({
+    upstream,
+    res: streamingSse,
+    context: { model: 'vendor-model', requestBody: {}, launch: { modelId: 'vendor-model' } }
+  });
+  assert.equal(streamed.status, 'incomplete');
+  assert.deepEqual(streamed.incomplete_details, { reason: 'max_output_tokens' });
+  assert.match(streamingSse.body, /event: response\.incomplete/);
+  assert.doesNotMatch(streamingSse.body, /event: response\.completed/);
 });
 
 test('chat compatibility restores namespaced tools and structured reasoning', () => {

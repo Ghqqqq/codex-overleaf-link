@@ -12,10 +12,13 @@ const { requiresReasoningContentReplay } = require('./providerReasoning');
 const { classifyResponsesRoute } = require('./providerBridgeRoutes');
 const { providerError } = require('./providerProfile');
 const { sanitizeProviderMessage } = require('./providerRedaction');
+const { logDebug } = require('./debugLog');
 
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 const MAX_ERROR_BYTES = 64 * 1024;
 const MAX_HISTORY_ENTRIES = 64;
+const MAX_REASONING_CONTINUATIONS = 2;
+const REASONING_CONTINUATION_MARKER = '[codex-overleaf-provider-reasoning-continuation]';
 
 async function startChatCompletionsBridge({ launch, signal } = {}) {
   if (!launch?.baseUrl) {
@@ -24,8 +27,21 @@ async function startChatCompletionsBridge({ launch, signal } = {}) {
   const clientToken = crypto.randomBytes(32).toString('base64url');
   const activeRequests = new Set();
   const history = new Map();
+  const continuationState = {
+    anchorMessages: [],
+    attempts: 0,
+    responseId: ''
+  };
   const server = http.createServer((req, res) => {
-    handleRequest({ req, res, launch, clientToken, activeRequests, history }).catch(error => {
+    handleRequest({
+      req,
+      res,
+      launch,
+      clientToken,
+      activeRequests,
+      history,
+      continuationState
+    }).catch(error => {
       if (res.writableEnded) return;
       const code = normalizeBridgeErrorCode(error?.code);
       const message = sanitizeProviderMessage(error?.message, [launch.apiKey]) || bridgeErrorMessage(code);
@@ -55,6 +71,9 @@ async function startChatCompletionsBridge({ launch, signal } = {}) {
     for (const controller of activeRequests) controller.abort();
     activeRequests.clear();
     history.clear();
+    continuationState.anchorMessages = [];
+    continuationState.attempts = 0;
+    continuationState.responseId = '';
     await closeServer(server);
   };
   signal?.addEventListener('abort', close, { once: true });
@@ -62,7 +81,15 @@ async function startChatCompletionsBridge({ launch, signal } = {}) {
   return { baseUrl, clientToken, close };
 }
 
-async function handleRequest({ req, res, launch, clientToken, activeRequests, history }) {
+async function handleRequest({
+  req,
+  res,
+  launch,
+  clientToken,
+  activeRequests,
+  history,
+  continuationState
+}) {
   if (!isAuthorized(req, clientToken)) {
     sendJsonError(res, 401, 'unauthorized', 'Local bridge authorization failed.');
     return;
@@ -81,20 +108,57 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
     return;
   }
   const requestBody = await readJsonBody(req);
-  const previous = history.get(String(requestBody.previous_response_id || ''));
+  const traceId = crypto.randomUUID().slice(0, 12);
+  const startedAt = Date.now();
+  const previousResponseId = String(requestBody.previous_response_id || '');
+  const previous = history.get(previousResponseId);
+  const fallbackAnchor = previous
+    ? []
+    : continuationState.anchorMessages;
   const translated = buildChatRequest({
     requestBody,
     launch,
-    historyMessages: previous?.messages || []
+    historyMessages: previous?.messages || fallbackAnchor
+  });
+  assertReasoningContinuationBudget(translated.messages, continuationState.attempts);
+  const idleTimeoutMs = resolveRequestTimeoutMs(launch);
+  const totalTimeoutMs = resolveTotalRequestTimeoutMs(launch, idleTimeoutMs);
+  logDebug('provider.bridge.request', {
+    traceId,
+    providerName: launch.providerName,
+    model: translated.body.model,
+    reasoningEffort: launch.reasoningEffort,
+    maxOutputTokens: translated.body.max_tokens,
+    stream: translated.body.stream,
+    hasPreviousResponseId: Boolean(previousResponseId),
+    historyHit: Boolean(previous),
+    usedFallbackAnchor: fallbackAnchor.length > 0,
+    inputItemCount: Array.isArray(requestBody.input) ? requestBody.input.length : requestBody.input ? 1 : 0,
+    messageCount: translated.messages.length,
+    continuationAttempts: continuationState.attempts,
+    idleTimeoutMs,
+    totalTimeoutMs
   });
   const controller = new AbortController();
   activeRequests.add(controller);
+  let abortReason = '';
+  let idleTimeout;
+  const abortRequest = reason => {
+    if (controller.signal.aborted) return;
+    abortReason = reason;
+    controller.abort();
+  };
+  const refreshIdleTimeout = () => {
+    clearTimeout(idleTimeout);
+    idleTimeout = setTimeout(() => abortRequest('idle_timeout'), idleTimeoutMs);
+  };
   const onClientClose = () => {
-    if (!res.writableEnded) controller.abort();
+    if (!res.writableEnded) abortRequest('client_close');
   };
   req.on('aborted', onClientClose);
   res.on('close', onClientClose);
-  const timeout = setTimeout(() => controller.abort(), resolveRequestTimeoutMs(launch));
+  refreshIdleTimeout();
+  const totalTimeout = setTimeout(() => abortRequest('total_timeout'), totalTimeoutMs);
   try {
     const upstream = await fetch(buildChatCompletionsUrl(launch.baseUrl, launch), {
       method: 'POST',
@@ -102,6 +166,7 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
       body: JSON.stringify(translated.body),
       signal: controller.signal
     });
+    refreshIdleTimeout();
     if (!upstream.ok) {
       await forwardUpstreamError(upstream, res, launch.apiKey);
       return;
@@ -112,14 +177,62 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
       model: translated.body.model,
       toolKinds: translated.toolKinds
     };
-    const remember = converted => rememberHistory(history, converted.response.id, [
-      ...translated.messages,
-      converted.assistantMessage
-    ]);
+    const remember = converted => {
+      const continuation = buildHistoryContinuation(converted);
+      const anchored = isReasoningContinuation(continuation);
+      const assistant = converted.assistantMessage || {};
+      const reasoningChars = typeof assistant.reasoning_content === 'string'
+        ? assistant.reasoning_content.length
+        : 0;
+      const contentChars = typeof assistant.content === 'string'
+        ? assistant.content.length
+        : 0;
+      const toolCallCount = Array.isArray(assistant.tool_calls)
+        ? assistant.tool_calls.length
+        : 0;
+      if (anchored) {
+        continuationState.anchorMessages = continuation;
+        continuationState.attempts += 1;
+        continuationState.responseId = converted.response.id;
+      } else {
+        continuationState.anchorMessages = [];
+        continuationState.attempts = 0;
+        continuationState.responseId = '';
+      }
+      logDebug('provider.bridge.response', {
+        traceId,
+        responseId: converted.response.id,
+        previousResponseId,
+        durationMs: Date.now() - startedAt,
+        providerFinishReason: converted.providerFinishReason || '',
+        responseStatus: converted.response.status,
+        incompleteReason: converted.response.incomplete_details?.reason || '',
+        reasoningChars,
+        contentChars,
+        toolCallCount,
+        continuationAnchored: anchored,
+        continuationAttempts: continuationState.attempts
+      });
+      rememberHistory(history, converted.response.id, [
+        ...translated.messages,
+        ...continuation
+      ]);
+    };
     if (requestBody.stream !== false) {
       const contentType = String(upstream.headers.get('content-type') || '').toLowerCase();
       if (contentType.includes('text/event-stream')) {
-        await streamChatResponse({ upstream, res, context, onComplete: remember });
+        await streamChatResponse({
+          upstream,
+          res,
+          context,
+          onComplete: remember,
+          onActivity: refreshIdleTimeout,
+          recoverInterrupted: () => (
+            ['idle_timeout', 'total_timeout'].includes(abortReason)
+              ? abortReason
+              : ''
+          )
+        });
       } else {
         const converted = convertChatResponse(await upstream.json(), context);
         writeConvertedResponseAsSse(res, converted, context, remember);
@@ -130,12 +243,20 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
       sendJson(res, 200, converted.response);
     }
   } catch (error) {
+    logDebug('provider.bridge.error', {
+      traceId,
+      durationMs: Date.now() - startedAt,
+      code: normalizeBridgeErrorCode(error?.code),
+      aborted: controller.signal.aborted,
+      abortReason
+    });
     if (controller.signal.aborted) {
       throw providerError('provider_connection_timeout', 'The provider request was cancelled or timed out.');
     }
     throw error;
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(idleTimeout);
+    clearTimeout(totalTimeout);
     activeRequests.delete(controller);
     req.removeListener('aborted', onClientClose);
     res.removeListener('close', onClientClose);
@@ -195,11 +316,83 @@ function resolveRequestTimeoutMs(launch = {}) {
   return deepSeekThinking ? Math.max(120000, configured) : configured;
 }
 
+function resolveTotalRequestTimeoutMs(launch = {}, idleTimeoutMs = resolveRequestTimeoutMs(launch)) {
+  const deepSeekThinking = requiresReasoningContentReplay(launch, launch.modelId)
+    && String(launch.reasoningEffort || '').toLowerCase() !== 'none';
+  const floor = deepSeekThinking ? 30 * 60 * 1000 : 5 * 60 * 1000;
+  return Math.max(floor, idleTimeoutMs * 2);
+}
+
+function buildHistoryContinuation(converted = {}) {
+  const assistant = converted.assistantMessage || {};
+  const reasoning = typeof assistant.reasoning_content === 'string'
+    ? assistant.reasoning_content.trim()
+    : '';
+  const content = String(assistant.content || '').trim();
+  const toolCallCount = Array.isArray(assistant.tool_calls)
+    ? assistant.tool_calls.length
+    : 0;
+  // Some OpenAI-compatible DeepSeek gateways end a partial thinking stream
+  // with `finish_reason: stop`. A reasoning-only turn still has no usable
+  // answer or action for Codex, regardless of the provider's terminal label.
+  const reasoningOnlyTurn = reasoning && !content && toolCallCount === 0;
+  const interruptedContentTurn = converted.response?.status === 'incomplete'
+    && content
+    && toolCallCount === 0;
+  if (!reasoningOnlyTurn && !interruptedContentTurn) {
+    return [assistant];
+  }
+  const preservedOutput = interruptedContentTurn
+    ? `Partial answer preserved from the same unfinished task:\n\n${content}`
+    : `Partial analysis preserved from the same unfinished task:\n\n${reasoning}`;
+  return [
+    {
+      role: 'assistant',
+      content: preservedOutput
+    },
+    {
+      role: 'user',
+      content: [
+        REASONING_CONTINUATION_MARKER,
+        'The preceding assistant message is established output from this same task.',
+        'Continue from the exact point where that partial output stopped.',
+        'Do not restart the analysis, reread files already covered, restate the task, or repeat conclusions above.',
+        'Move to the next tool call or final answer as soon as the remaining reasoning is complete.'
+      ].join('\n')
+    }
+  ];
+}
+
+function isReasoningContinuation(messages = []) {
+  return messages.some(message => (
+    message?.role === 'user'
+    && typeof message.content === 'string'
+    && message.content.includes(REASONING_CONTINUATION_MARKER)
+  ));
+}
+
+function assertReasoningContinuationBudget(messages = [], stateAttempts = 0) {
+  const historyAttempts = messages.filter(message => (
+    message?.role === 'user'
+    && typeof message.content === 'string'
+    && message.content.includes(REASONING_CONTINUATION_MARKER)
+  )).length;
+  const count = Math.max(historyAttempts, Number(stateAttempts) || 0);
+  if (count <= MAX_REASONING_CONTINUATIONS) {
+    return;
+  }
+  throw providerError(
+    'provider_reasoning_continuation_exhausted',
+    'The provider repeatedly stopped during reasoning. Reduce the task scope or use a lower reasoning effort.'
+  );
+}
+
 function normalizeBridgeErrorCode(value) {
   return [
     'provider_connection_timeout',
     'provider_response_invalid',
     'provider_agent_tools_incompatible',
+    'provider_reasoning_continuation_exhausted',
     'provider_stream_tool_parse_failed',
     'provider_protocol_incompatible'
   ].includes(value) ? value : 'provider_bridge_failed';

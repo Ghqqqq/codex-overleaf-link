@@ -63,6 +63,21 @@
 
   function buildMarkdownInlineNodes(value) {
     const source = String(value || '');
+    const mathText = typeof window !== 'undefined'
+      ? window.CodexOverleafMathText
+      : null;
+    if (!mathText?.buildMathNodes) {
+      return buildMarkdownInlineNodesWithoutMath(source);
+    }
+    return mathText.buildMathNodes(source, {
+      document,
+      katex: window.katex,
+      renderText: buildMarkdownInlineNodesWithoutMath
+    });
+  }
+
+  function buildMarkdownInlineNodesWithoutMath(value) {
+    const source = String(value || '');
     const nodes = [];
     let index = 0;
 

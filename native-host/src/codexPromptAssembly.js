@@ -35,6 +35,7 @@ function buildCodexTurnPrompt(options = {}) {
     '',
     'Project location citation rules:',
     formatProjectLocationCitationRules(),
+    formatMathOutputRules(),
     '',
     'Focused project file inventory:',
     formatFocusedProjectFileInventory(context.focusFiles),
@@ -260,6 +261,14 @@ function formatProjectLocationCitationRules() {
     '- Do not wrap project location citations in backticks or inline code; write main.tex:28 as normal text so the browser can turn it into a jump button.',
     '- Do not cite local absolute paths, temporary workspace paths, file:// URLs, or markdown links to local files.',
     '- If a line number is uncertain, cite only the project-relative file path.'
+  ].join('\n');
+}
+
+function formatMathOutputRules() {
+  return [
+    '- In user-visible prose, format inline mathematics as $...$ and display mathematics as $$...$$ on separate lines.',
+    '- Never wrap mathematical expressions in backticks or fenced code blocks unless you are showing literal source code.',
+    '- Do not emit bare TeX commands as prose when explicit math delimiters can express the same formula.'
   ].join('\n');
 }
 

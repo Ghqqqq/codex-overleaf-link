@@ -23,6 +23,22 @@
 .codex-provider-settings-summary[data-tone="warning"] { color: #d9bd78; }
 .codex-provider-settings-summary[data-tone="failed"] { color: #ef8f84; }
 
+.codex-provider-experimental-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 19px;
+  padding: 0 7px;
+  border: 1px solid rgba(217, 189, 120, 0.42);
+  border-radius: 999px;
+  background: rgba(217, 189, 120, 0.08);
+  color: #d9bd78;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.035em;
+  white-space: nowrap;
+}
+
 .codex-provider-dialog-root {
   --provider-bg: var(--provider-panel-bg, #151716);
   --provider-surface: #1c1f1d;
@@ -83,6 +99,15 @@
   color: inherit;
   font-size: 18px;
   line-height: 1.2;
+}
+
+.codex-provider-dialog-heading { min-width: 0; }
+
+.codex-provider-dialog-titleline {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
 }
 
 .codex-provider-dialog-head p,
@@ -2167,6 +2192,9 @@
 
 #codex-overleaf-panel .run-activity-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  max-width: 100%;
   gap: 0;
   margin-top: 2px;
 }
@@ -2308,6 +2336,10 @@
 }
 
 #codex-overleaf-panel .run-stream {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   margin: 6px 0 2px;
   color: var(--tl-fg-1);
   border-left: 2px solid var(--tl-border);
@@ -2325,10 +2357,56 @@
 }
 
 #codex-overleaf-panel .run-stream-text {
+  min-width: 0;
+  max-width: 100%;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
   font-size: 12px;
   line-height: 1.48;
+}
+
+#codex-overleaf-panel .run-stream-text > * {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+#codex-overleaf-panel .run-math {
+  max-width: 100%;
+  color: inherit;
+  font-size: 1.02em;
+}
+
+#codex-overleaf-panel .run-math--inline {
+  display: inline-block;
+  overflow-x: auto;
+  overflow-y: hidden;
+  vertical-align: -0.15em;
+}
+
+#codex-overleaf-panel .run-math--display {
+  display: block;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 8px 0;
+  padding: 2px 0 4px;
+}
+
+#codex-overleaf-panel .run-math--display .katex-display {
+  min-width: max-content;
+  margin: 0;
+  text-align: left;
+}
+
+#codex-overleaf-panel .run-math--fallback {
+  border-radius: 4px;
+  background: var(--tl-surface-2);
+  color: var(--tl-review);
+  padding: 1px 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 0.96em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 #codex-overleaf-panel .run-stream[data-stream-role="reasoning"] .run-stream-text {
@@ -2369,6 +2447,8 @@
 }
 
 #codex-overleaf-panel .run-process {
+  min-width: 0;
+  max-width: 100%;
   margin-top: 4px;
 }
 
