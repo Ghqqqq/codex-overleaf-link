@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.1.1 - 2026-07-18
+## v2.1.1 - 2026-07-17
 
 Visual polish release for the experimental third-party Provider configuration experience.
 
