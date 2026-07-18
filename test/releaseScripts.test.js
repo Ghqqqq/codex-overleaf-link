@@ -424,7 +424,7 @@ releaseTest('CHANGELOG exposes structured release notes for the current version'
   const section = extractReleaseNotes(changelog, version);
   const escapedVersion = version.replace(/\./g, '\\.');
 
-  assert.match(section, new RegExp(`^## v${escapedVersion} - 2026-07-17$`, 'm'));
+  assert.match(section, new RegExp(`^## v${escapedVersion} - 2026-07-18$`, 'm'));
   assert.match(section, /^### (Added|Changed|Deprecated|Removed|Fixed|Security)$/m);
   assert.match(section, /^- \S.+$/m);
   assert.doesNotMatch(section, new RegExp(`^## v(?!${escapedVersion}(?:\\s|$))`, 'm'));
