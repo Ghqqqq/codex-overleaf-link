@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.1.1 - 2026-07-18
+
+Visual polish release for the experimental third-party Provider configuration experience.
+
+### Changed
+
+- Reworked the connection test area into a compact, themed dock with a dark model selector, clear hierarchy, and a restrained connection action.
+- Preserved native select accessibility, keyboard behavior, cancellation behavior, and existing Provider test semantics while improving responsive layout and status feedback.
+
 ## v2.1.0 - 2026-07-17
 
 Stable release adding experimental third-party model providers while preserving the built-in Codex path as the stable default and retaining the v2 writeback safety model.

@@ -408,10 +408,31 @@
           ))}</span>
       </label>
       <div class="codex-provider-test-row">
-        <select data-provider-test-model aria-label="${escapeAttr(tx('Model to test', '要测试的模型'))}">
-          ${(draft.models || []).map(model => `<option value="${escapeAttr(model.id)}" ${model.id === draft.defaultModelId ? 'selected' : ''}>${escapeHtml(model.label || model.id)}</option>`).join('')}
-        </select>
-        <button type="button" class="codex-provider-secondary-button" data-provider-action="test">${escapeHtml(tx('Test connection', '测试连接'))}</button>
+        <div class="codex-provider-test-copy">
+          <strong>${escapeHtml(tx('Connection check', '连接检查'))}</strong>
+          <span>${escapeHtml(tx('Probe one model before using this provider.', '使用此服务商前，可选择一个模型进行探测。'))}</span>
+        </div>
+        <div class="codex-provider-test-controls">
+          <label class="codex-provider-test-model">
+            <span class="codex-provider-test-model-label">${escapeHtml(tx('Test model', '测试模型'))}</span>
+            <span class="codex-provider-test-select-shell">
+              <select data-provider-test-model aria-label="${escapeAttr(tx('Model to test', '要测试的模型'))}">
+                ${(draft.models || []).map(model => `<option value="${escapeAttr(model.id)}" ${model.id === draft.defaultModelId ? 'selected' : ''}>${escapeHtml(model.label || model.id)}</option>`).join('')}
+              </select>
+              <svg class="codex-provider-test-chevron" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="m4 6 4 4 4-4"></path>
+              </svg>
+            </span>
+          </label>
+          <button type="button" class="codex-provider-test-button" data-provider-action="test">
+            <svg viewBox="0 0 18 18" aria-hidden="true">
+              <circle cx="5" cy="9" r="2.25"></circle>
+              <circle cx="13" cy="9" r="2.25"></circle>
+              <path d="M7.25 9h3.5"></path>
+            </svg>
+            <span data-provider-test-action-label>${escapeHtml(tx('Test connection', '测试连接'))}</span>
+          </button>
+        </div>
         <span class="codex-provider-test-state" data-provider-test-state>${escapeHtml(formatVerification(instance, provider, draft.defaultModelId))}</span>
       </div>
     `;
@@ -918,9 +939,13 @@
     if (!button) return;
     const testing = instance.busy === 'testing';
     button.dataset.providerAction = testing ? 'cancel-test' : 'test';
-    button.textContent = testing
+    const actionLabel = testing
       ? instance.tx('Cancel test', '取消测试')
       : instance.tx('Test connection', '测试连接');
+    const labelEl = button.querySelector('[data-provider-test-action-label]');
+    if (labelEl) labelEl.textContent = actionLabel;
+    else button.textContent = actionLabel;
+    button.setAttribute('aria-label', actionLabel);
   }
 
   function formatSecretSavedAt(instance, value) {

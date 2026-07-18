@@ -264,14 +264,111 @@
 }
 
 .codex-provider-test-row {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   margin-top: 18px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 0 0, rgba(121, 213, 138, 0.08), transparent 44%),
+    rgba(255, 255, 255, 0.025);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
 }
 
-.codex-provider-test-state { color: var(--provider-muted); font-size: 11px; }
+.codex-provider-test-copy { display: grid; gap: 3px; min-width: 0; }
+.codex-provider-test-copy strong { color: var(--provider-text); font-size: 12px; font-weight: 750; letter-spacing: 0.01em; }
+.codex-provider-test-copy > span { color: var(--provider-muted); font-size: 11px; line-height: 1.4; }
+
+.codex-provider-test-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.codex-provider-test-model { display: grid; gap: 6px; min-width: 0; }
+.codex-provider-test-model-label {
+  color: var(--provider-muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.codex-provider-test-select-shell { position: relative; display: block; min-width: 0; border-radius: 9px; }
+.codex-provider-test-select-shell select {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 38px 0 12px;
+  border: 1px solid var(--provider-line);
+  border-radius: 9px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(7, 12, 10, 0.58);
+  color: var(--provider-text);
+  color-scheme: dark;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  outline: none;
+  cursor: pointer;
+}
+.codex-provider-test-select-shell select:hover { border-color: rgba(121, 213, 138, 0.34); background: rgba(12, 19, 15, 0.72); }
+.codex-provider-test-select-shell:focus-within { box-shadow: 0 0 0 3px rgba(121, 213, 138, 0.12); }
+.codex-provider-test-select-shell:focus-within select { border-color: rgba(121, 213, 138, 0.66); }
+.codex-provider-test-chevron {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  fill: none;
+  stroke: var(--provider-muted);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.codex-provider-test-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(121, 213, 138, 0.36);
+  border-radius: 9px;
+  background: linear-gradient(180deg, rgba(66, 132, 78, 0.38), rgba(42, 91, 52, 0.34));
+  color: #b8edc2;
+  box-shadow: 0 5px 15px rgba(6, 19, 10, 0.16);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 140ms ease;
+}
+.codex-provider-test-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.codex-provider-test-button:not(:disabled):hover {
+  border-color: rgba(121, 213, 138, 0.7);
+  background: linear-gradient(180deg, rgba(72, 151, 88, 0.5), rgba(44, 102, 57, 0.46));
+  color: #d4f7da;
+  transform: translateY(-1px);
+}
+.codex-provider-test-button:not(:disabled):active { transform: translateY(0); }
+.codex-provider-test-button[data-provider-action="cancel-test"] { border-color: rgba(242, 129, 113, 0.42); background: rgba(122, 55, 47, 0.24); color: #f3aaa0; }
+
+.codex-provider-test-state { min-height: 16px; color: var(--provider-muted); font-size: 11px; line-height: 1.4; }
+.codex-provider-test-state:empty { display: none; }
 .codex-provider-test-state[data-tone="success"] { color: var(--provider-accent); }
+.codex-provider-test-state[data-tone="failed"] { color: var(--provider-danger); }
 
 .codex-provider-dialog-foot {
   min-height: 70px;
@@ -333,6 +430,11 @@
 .codex-provider-builtin-mark svg { display: block; width: 27px; height: 27px; fill: currentColor; }
 .codex-provider-builtin .codex-provider-active-badge,
 .codex-provider-builtin button { margin-top: 18px; }
+
+@media (max-width: 620px) {
+  .codex-provider-test-controls { grid-template-columns: 1fr; align-items: stretch; }
+  .codex-provider-test-button { width: 100%; }
+}
 
 @keyframes codex-provider-spin { to { transform: rotate(360deg); } }
 
