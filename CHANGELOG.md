@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.1.3 - 2026-07-19
+
+### Fixed
+
+- Made the Native Host pin one Codex executable identity per process and report its selected path, version, and source consistently.
+- Added duplicate Codex installation detection with candidate versions to `doctor`, `bridge.ping`, and per-run technical events.
+- Preserved existing `PATH` priority while making the selected runtime observable instead of silently routing between installations.
+
 ## v2.1.2 - 2026-07-19
 
 ### Fixed

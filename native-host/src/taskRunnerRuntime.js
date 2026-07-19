@@ -1,5 +1,7 @@
 'use strict';
 
+const { buildCodexRuntimeEvent } = require('./codexRuntimeIdentity');
+
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const { buildOperationSummary, splitDeletePlan } = require('../../extension/src/shared/summary');
@@ -156,6 +158,10 @@ async function handleCodexRun(request, env, emit) {
       'codex_not_found',
       'Codex CLI was not found. Install Codex or make sure the `codex` command is available in your login shell.'
     );
+  }
+  const codexRuntimeEvent = buildCodexRuntimeEvent(env);
+  if (codexRuntimeEvent && typeof emit === 'function') {
+    emit(codexRuntimeEvent);
   }
 
   const projectKey = resolveProjectKey(params);

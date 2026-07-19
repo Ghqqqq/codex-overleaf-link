@@ -56,6 +56,7 @@ async function runDoctor(options = {}) {
       errors: []
     },
     bridge: null,
+    codex: null,
     ping: {
       attempted: false
     },
@@ -106,6 +107,10 @@ async function runDoctor(options = {}) {
   body.ping = pingResult;
 
   if (body.ping.ok) {
+    body.codex = sanitizeCodexRuntime(
+      rawPingResponse?.result?.environment?.codex,
+      pathOptions
+    );
     body.compatibility = sanitizeCompatibility(
       evaluateNativeCompatibility(rawPingResponse, { version: PACKAGE_VERSION })
     );
@@ -206,6 +211,19 @@ function formatDoctorHuman(body = {}) {
     lines.push(`Native compatibility: ${body.compatibility.classification || 'unknown'}`);
     lines.push(`Native version: ${body.compatibility.nativeVersion || 'unknown'}`);
   }
+  if (body.codex) {
+    lines.push(`Codex status: ${body.codex.ok ? 'available' : 'not found'}`);
+    lines.push(`Codex path: ${body.codex.path || 'unknown'}`);
+    lines.push(`Codex version: ${body.codex.version || 'unknown'}`);
+    lines.push(`Codex source: ${body.codex.source || 'unknown'}`);
+    if (body.codex.multipleInstallations) {
+      lines.push('Warning: multiple Codex installations detected.');
+      lines.push('Codex candidates:');
+      for (const candidate of body.codex.candidates) {
+        lines.push(`  ${candidate.selected ? '*' : '-'} ${candidate.path || 'unknown'} (${candidate.version || 'unknown'}, ${candidate.source || 'path'})`);
+      }
+    }
+  }
   if (body.ping?.ok === false) {
     lines.push(`Ping: failed (${body.ping.error || 'unknown error'})`);
   } else if (body.ping?.ok === true) {
@@ -253,6 +271,28 @@ function normalizeDiagnosticPath(targetPath, options = {}) {
   }
 
   return value;
+}
+
+function sanitizeCodexRuntime(codex, pathOptions) {
+  if (!codex || typeof codex !== 'object') return null;
+  const normalizeCodexPath = value => {
+    const normalized = normalizeDiagnosticPath(value, pathOptions);
+    return normalized.includes('<absolute-path>') ? String(value || '') : normalized;
+  };
+  return {
+    ok: codex.ok === true,
+    path: normalizeCodexPath(codex.path || ''),
+    version: String(codex.version || ''),
+    source: String(codex.source || ''),
+    selectedBy: String(codex.selectedBy || ''),
+    multipleInstallations: codex.multipleInstallations === true,
+    candidates: Array.isArray(codex.candidates) ? codex.candidates.map(candidate => ({
+      path: normalizeCodexPath(candidate?.path || ''),
+      version: String(candidate?.version || ''),
+      source: String(candidate?.source || ''),
+      selected: candidate?.selected === true
+    })) : []
+  };
 }
 
 function finalizeDoctorResult(body) {

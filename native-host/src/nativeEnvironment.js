@@ -4,6 +4,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const {
+  buildCodexRuntimeIdentity,
+  getCodexRuntimeIdentityFromEnv,
+  serializeCodexRuntimeIdentity
+} = require('./codexRuntimeIdentity');
 
 const TOOL_NAMES = ['codex', 'latexmk', 'pdflatex', 'xelatex', 'lualatex', 'bibtex', 'biber'];
 const LATEX_TOOL_NAMES = ['latexmk', 'pdflatex', 'xelatex', 'lualatex', 'bibtex', 'biber'];
@@ -32,6 +37,16 @@ function buildNativeRuntimeEnv(baseEnv = process.env, options = {}) {
   for (const tool of TOOL_NAMES) {
     env[getToolEnvName(tool)] = resolveExecutable(tool, env.PATH, { ...runtimeOptions, env }) || '';
   }
+  const codexRuntime = buildCodexRuntimeIdentity({
+    selectedPath: env.CODEX_OVERLEAF_CODEX_PATH,
+    pathValue: env.PATH,
+    delimiter: runtimeOptions.delimiter,
+    env,
+    platform: runtimeOptions.platform
+  });
+  env.CODEX_OVERLEAF_CODEX_RUNTIME_JSON = serializeCodexRuntimeIdentity(codexRuntime);
+  env.CODEX_OVERLEAF_CODEX_VERSION = codexRuntime.selected?.version || '';
+  env.CODEX_OVERLEAF_CODEX_SOURCE = codexRuntime.selected?.source || '';
 
   return env;
 }
@@ -200,13 +215,25 @@ function resolveExecutable(name, pathValue, options = {}) {
 }
 
 function summarizeNativeEnvironment(env = process.env, options = {}) {
+  const codexRuntime = getCodexRuntimeIdentityFromEnv(env);
+  const selectedCodex = codexRuntime.selected || {};
   const runtimeOptions = { ...options, platform: getNativeRuntimePlatform({ ...options, env }) };
   const availableLatex = LATEX_TOOL_NAMES.filter(tool => Boolean(env[getToolEnvName(tool)]));
   const missingLatex = LATEX_TOOL_NAMES.filter(tool => !env[getToolEnvName(tool)]);
   return {
     codex: {
       ok: Boolean(env.CODEX_OVERLEAF_CODEX_PATH),
-      path: env.CODEX_OVERLEAF_CODEX_PATH || ''
+      path: env.CODEX_OVERLEAF_CODEX_PATH || '',
+      version: selectedCodex.version || '',
+      source: selectedCodex.source || '',
+      selectedBy: codexRuntime.selectedBy || 'not-found',
+      multipleInstallations: codexRuntime.multipleInstallations === true,
+      candidates: codexRuntime.candidates.map(candidate => ({
+        path: candidate.displayPath || candidate.path || '',
+        version: candidate.version || '',
+        source: candidate.source || 'path',
+        selected: candidate.selected === true
+      }))
     },
     latex: {
       ok: availableLatex.length > 0,

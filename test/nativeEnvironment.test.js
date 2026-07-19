@@ -188,6 +188,8 @@ test('native environment summary reports discovered tools without exposing raw s
 
   assert.equal(summary.codex.ok, true);
   assert.equal(summary.codex.path, '/opt/homebrew/bin/codex');
+  assert.equal(summary.codex.multipleInstallations, false);
+  assert.equal(summary.codex.candidates.length, 1);
   assert.deepEqual(summary.latex.available, ['latexmk']);
   assert.deepEqual(summary.latex.missing, ['pdflatex', 'xelatex', 'lualatex', 'bibtex', 'biber']);
   assert.equal(Object.hasOwn(summary, 'rawShellOutput'), false);

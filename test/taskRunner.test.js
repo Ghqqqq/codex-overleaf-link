@@ -144,6 +144,7 @@ function parseVersion(version) {
 test('bridge.ping returns bridge metadata', async () => {
   const response = await handleRequest({ id: '1', method: 'bridge.ping', params: {} }, {
     CODEX_OVERLEAF_CODEX_PATH: '/opt/homebrew/bin/codex',
+    CODEX_OVERLEAF_CODEX_VERSION: '0.144.6',
     CODEX_OVERLEAF_LATEXMK_PATH: '/Library/TeX/texbin/latexmk'
   });
 
@@ -159,6 +160,8 @@ test('bridge.ping returns bridge metadata', async () => {
   );
   assert.equal(response.result.minExtensionVersion, MIN_COMPATIBLE_EXTENSION_VERSION);
   assert.equal(response.result.environment.codex.ok, true);
+  assert.equal(response.result.environment.codex.version, '0.144.6');
+  assert.equal(response.result.environment.codex.candidates.length, 1);
   assert.deepEqual(response.result.environment.latex.available, ['latexmk']);
 });
 
