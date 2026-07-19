@@ -1,6 +1,5 @@
 (function initCodexOverleafContentRuntime(root) {
   'use strict';
-
   function init() {
   'use strict';
 
@@ -438,7 +437,7 @@
     saveState,
     saveStateSoon,
     readPanelInputs,
-    applyStateToPanel,
+    applyStateToPanel, syncSessionProvider: () => providerSettingsCoordinator.syncSessionProvider(),
     getPanel: () => panel,
     getState: () => state,
     setState: next => { state = next; },
@@ -569,7 +568,8 @@
     tr,
     tx,
     getLocale,
-    sendBackgroundNative,
+    sendBackgroundNative, getProviderSelection: () => providerSettingsCoordinator.getRunSelection(state?.providerId)
+      || { providerId: state?.providerId || 'builtin', providerRevision: 0 },
     readSelectedSpeedInput,
     getRenderedModelEntries,
     persistPanelInputs,
@@ -603,8 +603,8 @@
     document,
     window,
     getSettingsPanelInstance: () => settingsPanelInstance,
-    getSelectedModel: () => state?.model || '',
-    clearSelectedModel: () => { if (state) state.model = ''; },
+    getSelectedModel: () => state?.model || '', getSelectedProviderId: () => state?.providerId || 'builtin',
+    setSelectedProviderId: providerId => { state = updateActiveSession(state, { providerId: providerId || 'builtin' }); },
     refreshModelOptions: loadModelOptions, persistInputs: persistPanelInputs
   });
   // v1.8.1 D3: the dashboard was a one-shot render — another tab finishing a
@@ -898,9 +898,7 @@
         }
       })
       .catch(() => { /* fail-closed inside refreshAccountScopeId */ });
-    loadModelOptions().catch(error => {
-      applyFallbackModelOptions(resolveSelectedModel(), error);
-    });
+    providerSettingsCoordinator.syncSessionProvider().catch(() => {});
     syncOtWarmMirrorController().catch(error => {
       updateOtStatusDisplay('unavailable');
       appendPlainLog(tx(`Failed to sync experimental OT warm mirror: ${error.message}`, `同步实验性 OT 预热镜像失败：${error.message}`));
@@ -2935,7 +2933,7 @@
     });
     return {
       ...params,
-      providerSelection: providerSettingsCoordinator.getRunSelection()
+      providerSelection: providerSettingsCoordinator.getRunSelection(state?.providerId)
     };
   }
 
@@ -2949,6 +2947,7 @@
       sessionId: input.sessionId || '',
       turnId: currentRunView?.recordId || '',
       mode: input.mode || state?.mode || '',
+      ...providerSettingsCoordinator.getProviderSnapshot(state?.providerId),
       model: state?.model || '',
       reasoningEffort: state?.reasoningEffort || '',
       speedTier: state?.speedTier || '',
@@ -5967,7 +5966,7 @@
       const { prefs, sessions, activeSessionId } = await Migration.runMigrationIfNeeded(projectId, legacyKey);
 
       return {
-        model: prefs.model || '',
+        model: prefs.model || '', providerId: prefs.providerId || 'builtin',
         reasoningEffort: prefs.reasoningEffort || '',
         speedTier: prefs.speedTier || '',
         mode: prefs.mode || '',
@@ -5992,7 +5991,7 @@
           runs: Array.isArray(session.runs) ? session.runs : [],
           history: Array.isArray(session.history) ? session.history : [],
           task: typeof session.task === 'string' ? session.task : '',
-          mode: session.mode || prefs.mode || 'confirm',
+          mode: session.mode || prefs.mode || 'confirm', providerId: session.providerId || 'builtin',
           model: session.model || prefs.model || 'gpt-5.4',
           reasoningEffort: session.reasoningEffort || prefs.reasoningEffort || 'high',
           speedTier: session.speedTier || prefs.speedTier || 'standard',
@@ -6012,7 +6011,7 @@
       const fallback = stored[storageKey] || stored[LEGACY_STORAGE_KEY] || {};
       if (fallback?.__codexOverleafCompactFallback === true) {
         return {
-          mode: fallback.mode || '',
+          mode: fallback.mode || '', providerId: fallback.providerId || 'builtin',
           model: fallback.model || '',
           reasoningEffort: fallback.reasoningEffort || '',
           speedTier: fallback.speedTier || '',
@@ -6453,7 +6452,7 @@
 
   function applyStateToPanel() {
     applyPanelTheme(getThemePreference());
-    if (!modelSelectHasOption(state.model)) {
+    if ((state.providerId || 'builtin') === 'builtin' && !modelSelectHasOption(state.model)) {
       renderModelOptions(getModelCatalog().FALLBACK_MODELS, state.model);
     }
     panel.querySelector('[data-model]').value = state.model;
@@ -6545,6 +6544,7 @@
       id: createRunId(),
       task,
       mode,
+      ...providerSettingsCoordinator.getProviderSnapshot(state?.providerId),
       model,
       reasoningEffort,
       speedTier,

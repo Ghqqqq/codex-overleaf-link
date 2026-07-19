@@ -175,11 +175,23 @@
       || buildBuiltinProvider();
   }
 
-  function buildRunSelection(catalog = {}) {
-    const active = getActiveProvider(catalog);
+  function getProviderById(catalog = {}, providerId = '') {
+    const normalized = normalizeCatalog(catalog);
+    const requestedId = normalizeText(providerId) || normalized.activeProviderId || BUILTIN_PROVIDER_ID;
+    if (requestedId === BUILTIN_PROVIDER_ID) {
+      return normalized.providers.find(provider => provider.id === BUILTIN_PROVIDER_ID)
+        || buildBuiltinProvider();
+    }
+    return normalized.providers.find(provider => provider.id === requestedId) || null;
+  }
+
+  function buildRunSelection(catalog = {}, providerId = '') {
+    const normalized = normalizeCatalog(catalog);
+    const requestedId = normalizeText(providerId) || normalized.activeProviderId || BUILTIN_PROVIDER_ID;
+    const provider = getProviderById(normalized, requestedId);
     return {
-      providerId: active.id,
-      providerRevision: active.revision || 0
+      providerId: requestedId,
+      providerRevision: provider?.revision || 0
     };
   }
 
@@ -277,6 +289,7 @@
     buildEmptyDraft,
     buildRunSelection,
     getActiveProvider,
+    getProviderById,
     normalizeCatalog,
     normalizeProvider
   };

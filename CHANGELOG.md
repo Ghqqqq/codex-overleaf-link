@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.1.2 - 2026-07-19
+
+### Fixed
+
+- Bind Provider, model, reasoning, and speed selection to each Session so switching conversations restores the correct runtime endpoint.
+- Route model discovery and runs through the Session's explicit Provider identity, with revision checks and fail-closed handling for deleted Providers.
+- Discard stale model-catalog responses and persist sanitized Provider snapshots in run and audit history.
+
 ## v2.1.1 - 2026-07-18
 
 Visual polish release for the experimental third-party Provider configuration experience.

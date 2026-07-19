@@ -6,7 +6,7 @@
   }
 })(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions) {
   'use strict';
-  if (!StorageRunActions?.compactRunsForStorage || !StorageRunActions?.compactRunActionPayload) {
+  if (!StorageRunActions?.compactRunsForStorage || !StorageRunActions?.compactRunActionPayload || !StorageRunActions?.compactProviderSnapshot) {
     throw new Error('Codex Overleaf storage run-action helpers are unavailable.');
   }
   // IndexedDB versions are monotonic; v2.0 RC profiles have already opened v3.
@@ -275,7 +275,7 @@
       history: compactHistoryForStorage(input.history),
       runs: compactRunsForStorage(input.runs, options),
       task: normalizeDisplayTextForStorage(input.task, SESSION_STORAGE_LIMITS.taskChars),
-      mode: typeof input.mode === 'string' ? input.mode : '',
+      mode: typeof input.mode === 'string' ? input.mode : '', providerId: typeof input.providerId === 'string' && input.providerId ? input.providerId : 'builtin',
       model: typeof input.model === 'string' ? input.model : '',
       reasoningEffort: typeof input.reasoningEffort === 'string' ? input.reasoningEffort : '',
       speedTier: typeof input.speedTier === 'string' ? input.speedTier : '',
@@ -402,7 +402,7 @@
       turnId: typeof input.turnId === 'string' ? input.turnId : '',
       createdAt: typeof input.createdAt === 'string' ? input.createdAt : now,
       completedAt: typeof input.completedAt === 'string' ? input.completedAt : '',
-      mode: typeof input.mode === 'string' ? input.mode : '',
+      mode: typeof input.mode === 'string' ? input.mode : '', ...StorageRunActions.compactProviderSnapshot(input),
       model: typeof input.model === 'string' ? input.model : '',
       reasoningEffort: typeof input.reasoningEffort === 'string' ? input.reasoningEffort : '',
       speedTier: typeof input.speedTier === 'string' ? input.speedTier : '',
@@ -426,7 +426,7 @@
 
   function extractLightweightPrefs(state, projectId) {
     var prefs = {
-      storageSchemaVersion: TARGET_SCHEMA_VERSION,
+      storageSchemaVersion: TARGET_SCHEMA_VERSION, providerId: typeof state.providerId === 'string' && state.providerId ? state.providerId : 'builtin',
       model: typeof state.model === 'string' ? state.model : '',
       reasoningEffort: typeof state.reasoningEffort === 'string' ? state.reasoningEffort : '',
       speedTier: typeof state.speedTier === 'string' ? state.speedTier : '',
@@ -647,7 +647,7 @@
     var compact = {
       id: run.id,
       task: normalizeDisplayTextForStorage(run.task || 'untitled task', SESSION_STORAGE_LIMITS.taskChars),
-      mode: typeof run.mode === 'string' ? redactSecretLikeText(run.mode) : '',
+      mode: typeof run.mode === 'string' ? redactSecretLikeText(run.mode) : '', ...StorageRunActions.compactProviderSnapshot(run),
       model: normalizeTextField(run.model, 80),
       reasoningEffort: typeof run.reasoningEffort === 'string' ? redactSecretLikeText(run.reasoningEffort) : '',
       speedTier: typeof run.speedTier === 'string' ? redactSecretLikeText(run.speedTier) : '',

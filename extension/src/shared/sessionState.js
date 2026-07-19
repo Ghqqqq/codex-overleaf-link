@@ -13,6 +13,7 @@
 
   const DEFAULT_PANEL_STATE = {
     mode: 'confirm',
+    providerId: 'builtin',
     model: 'gpt-5.4',
     reasoningEffort: 'high',
     speedTier: 'standard',
@@ -177,6 +178,7 @@
       ...legacySession,
       task: state.task,
       mode: state.mode,
+      providerId: 'builtin',
       model: state.model,
       reasoningEffort: state.reasoningEffort,
       speedTier: state.speedTier,
@@ -208,6 +210,9 @@
       runs,
       task: sanitizeAssistantVisibleText(session.task),
       mode: VALID_MODES.has(session.mode) ? session.mode : fallbackState.mode,
+      providerId: typeof session.providerId === 'string' && session.providerId.trim()
+        ? session.providerId.trim()
+        : 'builtin',
       model: typeof session.model === 'string' && session.model ? session.model : fallbackState.model,
       reasoningEffort: VALID_REASONING.has(session.reasoningEffort)
         ? session.reasoningEffort
@@ -237,6 +242,7 @@
         id: `recovered_${session.id}_${index}`,
         task,
         mode: session.mode,
+        providerId: session.providerId || 'builtin',
         model: session.model,
         reasoningEffort: session.reasoningEffort,
         speedTier: session.speedTier,
@@ -269,6 +275,7 @@
     if (!active) {
       const session = createSession({
         mode: state.mode,
+        providerId: state.providerId,
         model: state.model,
         reasoningEffort: state.reasoningEffort,
         speedTier: state.speedTier,
@@ -283,12 +290,16 @@
       id: active.id,
       history: Array.isArray(active.history) ? active.history.slice(-10) : [],
       focusFiles: normalizeFocusFiles(active.focusFiles),
-      codexThreadId: active.codexThreadId || ''
+      codexThreadId: active.codexThreadId || '',
+      providerId: active.providerId || 'builtin'
     };
     state.runs = Array.isArray(active.runs) ? active.runs : [];
     state.task = typeof active.task === 'string' ? active.task : '';
     state.focusFiles = normalizeFocusFiles(active.focusFiles);
     state.mode = VALID_MODES.has(active.mode) ? active.mode : DEFAULT_PANEL_STATE.mode;
+    state.providerId = typeof active.providerId === 'string' && active.providerId
+      ? active.providerId
+      : 'builtin';
     state.model = typeof active.model === 'string' && active.model ? active.model : DEFAULT_PANEL_STATE.model;
     state.reasoningEffort = VALID_REASONING.has(active.reasoningEffort)
       ? active.reasoningEffort
@@ -318,6 +329,9 @@
       runs,
       task: sanitizeAssistantVisibleText(overrides.task),
       mode: VALID_MODES.has(overrides.mode) ? overrides.mode : DEFAULT_PANEL_STATE.mode,
+      providerId: typeof overrides.providerId === 'string' && overrides.providerId.trim()
+        ? overrides.providerId.trim()
+        : 'builtin',
       model: typeof overrides.model === 'string' && overrides.model ? overrides.model : DEFAULT_PANEL_STATE.model,
       reasoningEffort: VALID_REASONING.has(overrides.reasoningEffort)
         ? overrides.reasoningEffort
@@ -404,6 +418,7 @@
     if (!remaining.length) {
       const replacement = createSession({
         mode: state.mode,
+        providerId: state.providerId,
         model: state.model,
         reasoningEffort: state.reasoningEffort,
         speedTier: state.speedTier,
@@ -589,6 +604,10 @@
       id: run.id,
       task: sanitizeAssistantVisibleText(run.task) || 'untitled task',
       mode: typeof run.mode === 'string' ? run.mode : '',
+      providerId: typeof run.providerId === 'string' && run.providerId ? run.providerId : 'builtin',
+      providerName: typeof run.providerName === 'string' ? run.providerName : '',
+      providerRevision: Number.isFinite(Number(run.providerRevision)) ? Number(run.providerRevision) : 0,
+      providerEndpointHost: typeof run.providerEndpointHost === 'string' ? run.providerEndpointHost : '',
       model: typeof run.model === 'string' ? run.model : '',
       reasoningEffort: typeof run.reasoningEffort === 'string' ? run.reasoningEffort : '',
       speedTier: typeof run.speedTier === 'string' ? run.speedTier : '',

@@ -8,6 +8,8 @@
       sendBackgroundNative: options.sendBackgroundNative,
       getSettingsPanelInstance: options.getSettingsPanelInstance || (() => null),
       getSelectedModel: options.getSelectedModel || (() => ''),
+      getSelectedProviderId: options.getSelectedProviderId || (() => 'builtin'),
+      setSelectedProviderId: options.setSelectedProviderId || (() => {}),
       clearSelectedModel: options.clearSelectedModel || (() => {}),
       refreshModelOptions: options.refreshModelOptions || (() => {}),
       persistInputs: options.persistInputs || (() => {}),
@@ -38,7 +40,12 @@
       open: () => open(instance),
       refreshSummary: () => refresh(instance),
       ensureLoaded: () => ensureLoaded(instance),
-      getRunSelection: () => instance.loaded ? Profiles.buildRunSelection(instance.catalog) : null,
+      getRunSelection: providerId => instance.loaded
+        ? Profiles.buildRunSelection(instance.catalog, providerId || instance.getSelectedProviderId())
+        : null,
+      getProviderSnapshot: providerId => getProviderSnapshot(instance, providerId),
+      isProviderAvailable: providerId => Boolean(Profiles.getProviderById(instance.catalog, providerId)),
+      syncSessionProvider: () => syncSessionProvider(instance),
       getCatalog: () => instance.catalog,
       destroy: () => destroy(instance),
       _instance: instance
@@ -86,19 +93,33 @@
     return instance.catalog;
   }
 
+  async function syncSessionProvider(instance) {
+    try {
+      await ensureLoaded(instance);
+    } catch (_error) {
+      return instance.refreshModelOptions(
+        window.CodexOverleafProviderProfiles.buildRunSelection(instance.catalog, instance.getSelectedProviderId())
+      );
+    }
+    return reconcileProviderSelection(instance, instance.catalog, { forceSessionRefresh: true });
+  }
+
   async function reconcileProviderSelection(instance, catalog, change = {}) {
-    if (!change.activeProviderChanged && !change.activeModelCatalogChanged) {
+    const previousProviderId = instance.getSelectedProviderId() || 'builtin';
+    const requestedProviderId = typeof change.sessionProviderId === 'string' && change.sessionProviderId
+      ? change.sessionProviderId
+      : previousProviderId;
+    const sessionProviderChanged = requestedProviderId !== previousProviderId;
+    if (sessionProviderChanged) {
+      instance.setSelectedProviderId(requestedProviderId);
+    }
+    const changedProviderIds = Array.isArray(change.changedProviderIds) ? change.changedProviderIds : [];
+    if (!change.forceSessionRefresh && !sessionProviderChanged && !changedProviderIds.includes(requestedProviderId)) {
       return;
     }
-    const previousModel = instance.getSelectedModel();
-    const activeProvider = window.CodexOverleafProviderProfiles.getActiveProvider(catalog);
-    const previousModelUnavailable = activeProvider.kind === 'custom'
-      && previousModel
-      && !activeProvider.models.some(model => model.id === previousModel);
-    if (change.activeProviderChanged || previousModelUnavailable) {
-      instance.clearSelectedModel();
-    }
-    await instance.refreshModelOptions();
+    await instance.refreshModelOptions(
+      window.CodexOverleafProviderProfiles.buildRunSelection(catalog, requestedProviderId)
+    );
     await instance.persistInputs();
   }
 
@@ -174,7 +195,9 @@
         updateDialog: true,
         selectedId: result.savedProviderId
       });
-      await notifyChanged(instance, applied.change);
+      await notifyChanged(instance, applied.change, action.activate === true
+        ? { sessionProviderId: result.savedProviderId }
+        : {});
       instance.dialog.setBusy('', '');
       const fellBackToBuiltin = previousCatalog.activeProviderId === result.savedProviderId
         && result.activeProviderId === 'builtin'
@@ -249,7 +272,7 @@
         updateDialog: true,
         selectedId: context.profileId
       });
-      await notifyChanged(instance, applied.change);
+      await notifyChanged(instance, applied.change, { sessionProviderId: context.profileId });
       instance.dialog.setBusy('', '');
       instance.dialog.setStatus({
         tone: 'success',
@@ -269,7 +292,7 @@
         expectedRevision: 0
       });
       const applied = applyCatalog(instance, result, { updateDialog: true, selectedId: 'builtin' });
-      await notifyChanged(instance, applied.change);
+      await notifyChanged(instance, applied.change, { sessionProviderId: 'builtin' });
       instance.dialog.setBusy('', '');
       instance.dialog.setStatus({ tone: 'success', title: instance.tx('Built-in Codex is active.', '已启用内置 Codex。') });
     } catch (error) {
@@ -315,22 +338,22 @@
   function updateSettingsSummary(instance, override = {}) {
     const active = window.CodexOverleafProviderProfiles.getActiveProvider(instance.catalog);
     const summary = override.summary || (active.kind === 'builtin'
-      ? instance.tx('Built-in Codex is active', '当前使用内置 Codex')
-      : `${active.name} · ${active.defaultModelId || instance.tx('No model', '未配置模型')} · ${instance.tx('Active', '使用中')}`);
+      ? instance.tx('Built-in Codex · default for new sessions', '内置 Codex · 新会话默认')
+      : `${active.name} · ${active.defaultModelId || instance.tx('No model', '未配置模型')} · ${instance.tx('Default for new sessions', '新会话默认')}`);
     instance.getSettingsPanelInstance()?.setProviderSummary?.({
       summary,
       tone: override.tone || (active.kind === 'custom' && active.wireApiPreference === 'auto' && !active.resolvedWireApi ? 'warning' : 'ok')
     });
   }
 
-  async function notifyChanged(instance, change = emptyCatalogChange()) {
+  async function notifyChanged(instance, change = emptyCatalogChange(), localChange = {}) {
     try {
       instance.channel?.postMessage?.({ type: 'provider-settings-changed', change, at: Date.now() });
     } catch (_error) {
       // Revision checks remain authoritative when BroadcastChannel is unavailable.
     }
     try {
-      await instance.onProviderChanged(instance.catalog, change);
+      await instance.onProviderChanged(instance.catalog, { ...change, ...localChange });
     } catch (_error) {
       // The authoritative catalog is already saved. A later refresh can retry
       // the local model projection without rolling back the provider change.
@@ -356,9 +379,19 @@
   function describeCatalogChange(previous, next) {
     const previousActive = window.CodexOverleafProviderProfiles.getActiveProvider(previous);
     const nextActive = window.CodexOverleafProviderProfiles.getActiveProvider(next);
+    const providerIds = new Set([
+      ...(previous.providers || []).map(provider => provider.id),
+      ...(next.providers || []).map(provider => provider.id)
+    ]);
+    const changedProviderIds = Array.from(providerIds).filter(providerId => {
+      const previousProvider = window.CodexOverleafProviderProfiles.getProviderById(previous, providerId);
+      const nextProvider = window.CodexOverleafProviderProfiles.getProviderById(next, providerId);
+      return modelCatalogSignature(previousProvider) !== modelCatalogSignature(nextProvider);
+    });
     return {
       activeProviderChanged: previousActive.id !== nextActive.id,
-      activeModelCatalogChanged: modelCatalogSignature(previousActive) !== modelCatalogSignature(nextActive)
+      activeModelCatalogChanged: modelCatalogSignature(previousActive) !== modelCatalogSignature(nextActive),
+      changedProviderIds
     };
   }
 
@@ -377,7 +410,32 @@
   }
 
   function emptyCatalogChange() {
-    return { activeProviderChanged: false, activeModelCatalogChanged: false };
+    return { activeProviderChanged: false, activeModelCatalogChanged: false, changedProviderIds: [] };
+  }
+
+  function getProviderSnapshot(instance, providerId) {
+    const requestedId = providerId || instance.getSelectedProviderId() || 'builtin';
+    const provider = window.CodexOverleafProviderProfiles.getProviderById(instance.catalog, requestedId);
+    if (!provider) {
+      return {
+        providerId: requestedId,
+        providerName: 'Unavailable provider',
+        providerRevision: 0,
+        providerEndpointHost: ''
+      };
+    }
+    let endpointHost = '';
+    try {
+      endpointHost = provider.baseUrl ? new URL(provider.baseUrl).host : '';
+    } catch (_error) {
+      endpointHost = '';
+    }
+    return {
+      providerId: provider.id,
+      providerName: provider.name || provider.id,
+      providerRevision: provider.revision || 0,
+      providerEndpointHost: endpointHost
+    };
   }
 
   function formatError(instance, error) {

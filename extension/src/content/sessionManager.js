@@ -28,6 +28,7 @@
       saveStateSoon,
       readPanelInputs,
       applyStateToPanel,
+      syncSessionProvider,
       getPanel,
       getState,
       setState,
@@ -98,6 +99,7 @@
     }
     const session = createSession({
       mode: getState().mode,
+      providerId: getState().providerId || 'builtin',
       model: getState().model,
       reasoningEffort: getState().reasoningEffort,
       speedTier: getState().speedTier,
@@ -108,8 +110,9 @@
       sessions: [...(getState().sessions || []), session].slice(-20),
       activeSessionId: session.id
     }));
-    await saveState();
     applyStateToPanel();
+    await syncSessionProvider?.();
+    await saveState();
     getPanel().querySelector('[data-task]')?.focus();
   }
 
@@ -130,8 +133,9 @@
     }
     readPanelInputs();
     setState(setActiveSession(getState(), sessionId));
-    await saveState();
     applyStateToPanel();
+    await syncSessionProvider?.();
+    await saveState();
   }
 
   async function deleteSessionWithConfirm(sessionId) {

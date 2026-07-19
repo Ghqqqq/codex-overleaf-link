@@ -13,6 +13,7 @@
       tx,
       getLocale,
       sendBackgroundNative,
+      getProviderSelection,
       readSelectedSpeedInput,
       getRenderedModelEntries,
       persistPanelInputs,
@@ -33,6 +34,7 @@
     } = Support;
 
   let modelDiscovery = { status: 'fallback', source: 'fallback', fetchedAt: '' };
+  let modelLoadGeneration = 0;
 
   function getModelDiscovery() {
     return modelDiscovery;
@@ -96,7 +98,9 @@
     updateModelDisplay();
     await persistPanelInputs();
   }
-  async function loadModelOptions() {
+  async function loadModelOptions(providerSelection) {
+    const generation = ++modelLoadGeneration;
+    const selection = providerSelection || getProviderSelection?.() || null;
     const selectedModel = resolveSelectedModel();
     const modelCatalog = getModelCatalog();
     const fallbackModels = modelCatalog.FALLBACK_MODELS;
@@ -104,8 +108,19 @@
     try {
       const response = await sendBackgroundNative({
         method: 'codex.models',
-        params: {}
+        params: selection ? { providerSelection: selection } : {}
       });
+      if (generation !== modelLoadGeneration) {
+        return { stale: true };
+      }
+      const responseProviderId = response?.result?.providerId || '';
+      if (selection?.providerId && responseProviderId && responseProviderId !== selection.providerId) {
+        return { stale: true };
+      }
+      if (selection?.providerId && selection.providerId !== 'builtin'
+        && Number(response?.result?.providerRevision) !== Number(selection.providerRevision)) {
+        return { stale: true };
+      }
       const currentSelectedModel = resolveSelectedModel() || selectedModel;
       const hasDiscoveredModels = response?.ok
         && Array.isArray(response.result?.models)
@@ -121,17 +136,25 @@
         applyUnavailableModelOptions({ code: 'provider_model_catalog_invalid', message: 'The active provider returned no usable models.' });
         return;
       }
-      renderModelOptions(normalized.models, retainedSelectedModel);
+      renderModelOptions(normalized.models, retainedSelectedModel, { allowUnknownSelected: false });
       modelDiscovery = {
         status: hasDiscoveredModels && !normalized.usedFallback ? 'discovered' : 'fallback',
         source: hasDiscoveredModels ? response.result?.source || 'unknown' : 'fallback',
         fetchedAt: hasDiscoveredModels ? response.result?.fetchedAt || '' : '',
         errorCode: hasDiscoveredModels ? '' : response?.error?.code || '',
-        errorMessage: hasDiscoveredModels ? '' : response?.error?.message || ''
+        errorMessage: hasDiscoveredModels ? '' : response?.error?.message || '',
+        providerId: responseProviderId || selection?.providerId || 'builtin',
+        providerRevision: Number(response?.result?.providerRevision || selection?.providerRevision || 0)
       };
       updateModelDisplay();
+      await persistPanelInputs();
+      return { stale: false, providerId: modelDiscovery.providerId };
     } catch (error) {
+      if (generation !== modelLoadGeneration) {
+        return { stale: true };
+      }
       applyUnavailableModelOptions(error);
+      return { stale: false, error };
     }
   }
 
@@ -140,14 +163,13 @@
     if (modelSelect) {
       modelSelect.textContent = '';
       const option = document.createElement('option');
-      option.value = '';
+      option.value = resolveSelectedModel();
       option.textContent = tx('Models unavailable', '模型不可用');
       option.disabled = true;
       modelSelect.append(option);
       modelSelect.value = '';
       modelSelect.disabled = true;
     }
-    if (getState()) getState().model = '';
     modelDiscovery = {
       status: 'unavailable',
       source: 'custom-provider',
@@ -182,7 +204,7 @@
     return Support.getModelCatalog({ getPanel });
   }
 
-  function renderModelOptions(models, selectedModel) {
+  function renderModelOptions(models, selectedModel, options = {}) {
     const modelSelect = getPanel()?.querySelector('[data-model]');
     if (!modelSelect) {
       return;
@@ -219,7 +241,7 @@
       }
     }
 
-    if (selectedId && !renderedSelected) {
+    if (selectedId && !renderedSelected && options.allowUnknownSelected !== false) {
       const option = document.createElement('option');
       option.value = selectedId;
       option.textContent = `${selectedId} (custom)`;

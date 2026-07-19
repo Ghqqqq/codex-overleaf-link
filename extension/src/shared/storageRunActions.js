@@ -92,8 +92,18 @@
     return value.length * 2;
   }
 
+  function compactProviderSnapshot(value) {
+    return {
+      providerId: typeof value.providerId === 'string' && value.providerId ? value.providerId : 'builtin',
+      providerName: typeof value.providerName === 'string' ? value.providerName : '',
+      providerRevision: Number.isFinite(Number(value.providerRevision)) ? Number(value.providerRevision) : 0,
+      providerEndpointHost: typeof value.providerEndpointHost === 'string' ? value.providerEndpointHost : ''
+    };
+  }
+
   return {
     compactRunsForStorage: compactRunsForStorage,
-    compactRunActionPayload: compactRunActionPayload
+    compactRunActionPayload: compactRunActionPayload,
+    compactProviderSnapshot: compactProviderSnapshot
   };
 });

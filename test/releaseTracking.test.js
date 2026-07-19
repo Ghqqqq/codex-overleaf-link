@@ -10,8 +10,8 @@ const packageLock = require('../package-lock.json');
 const extensionManifest = require('../extension/manifest.json');
 const compatibility = require('../extension/src/shared/compatibility');
 
-test('current release version surfaces are aligned for v2.1.1 packaging', () => {
-  assert.equal(packageJson.version, '2.1.1');
+test('current release version surfaces are aligned for v2.1.2 packaging', () => {
+  assert.equal(packageJson.version, '2.1.2');
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[''].version, packageJson.version);
   assert.equal(extensionManifest.version, packageJson.version);

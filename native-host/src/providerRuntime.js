@@ -213,12 +213,24 @@ function cancelProviderTest(operationId) {
 
 function resolveProviderModels(params = {}, env = process.env, resolveBuiltInModels) {
   const state = loadProviderState(env);
-  if (state.public.activeProviderId === 'builtin') {
-    return resolveBuiltInModels(params, env);
+  const selection = params.providerSelection;
+  const requestedProviderId = selection?.providerId || state.public.activeProviderId || 'builtin';
+  if (requestedProviderId === 'builtin') {
+    const result = resolveBuiltInModels(params, env);
+    const attachProvider = value => ({
+      ...(value || {}),
+      providerId: 'builtin',
+      providerRevision: 0,
+      providerName: 'Built-in Codex'
+    });
+    return result && typeof result.then === 'function' ? result.then(attachProvider) : attachProvider(result);
   }
-  const profile = state.public.profiles.find(item => item.id === state.public.activeProviderId);
+  const profile = state.public.profiles.find(item => item.id === requestedProviderId);
   if (!profile) {
-    throw providerError('provider_not_found', 'The active provider no longer exists.');
+    throw providerError('provider_not_found', 'The selected provider no longer exists.');
+  }
+  if (selection?.providerId && Number(selection.providerRevision) !== profile.revision) {
+    throw providerError('provider_revision_conflict', 'The selected provider changed. Refresh its model list and retry.');
   }
   return {
     providerId: profile.id,
@@ -245,10 +257,8 @@ function resolveRunProvider(params = {}, env = process.env) {
   const state = loadProviderState(env);
   const selection = params.providerSelection;
   const activeProviderId = state.public.activeProviderId || 'builtin';
-  if (selection?.providerId && selection.providerId !== activeProviderId) {
-    throw providerError('provider_revision_conflict', 'The active provider changed in another tab. Refresh and retry.');
-  }
-  if (activeProviderId === 'builtin') {
+  const requestedProviderId = selection?.providerId || activeProviderId;
+  if (requestedProviderId === 'builtin') {
     return {
       modelId: params.model || '',
       reasoningEffort: params.reasoningEffort || '',
@@ -256,15 +266,15 @@ function resolveRunProvider(params = {}, env = process.env) {
       providerSelection: { providerId: 'builtin', providerRevision: 0 }
     };
   }
-  const profile = state.public.profiles.find(item => item.id === activeProviderId);
+  const profile = state.public.profiles.find(item => item.id === requestedProviderId);
   if (!profile) {
-    throw providerError('provider_not_found', 'The active provider no longer exists.');
+    throw providerError('provider_not_found', 'The selected provider no longer exists.');
   }
   if (!selection?.providerId) {
     throw providerError('provider_selection_unavailable', 'The active provider has not been confirmed by this Overleaf tab. Wait for Provider settings to load and retry.');
   }
   if (Number(selection.providerRevision) !== profile.revision) {
-    throw providerError('provider_revision_conflict', 'The active provider changed in another tab. Refresh and retry.');
+    throw providerError('provider_revision_conflict', 'The selected provider changed. Refresh its model list and retry.');
   }
   const endpointHost = getEndpointHost(profile.baseUrl);
   if (profile.endpointDisclosureHost !== endpointHost || profile.endpointDisclosureBaseUrl !== profile.baseUrl) {
@@ -302,7 +312,9 @@ function resolveRunProvider(params = {}, env = process.env) {
       reasoningEffort,
       upstreamResponseMode: validDiagnostic ? diagnostic.upstreamResponseMode : ''
     }),
-    providerSelection: { providerId: profile.id, providerRevision: profile.revision }
+    providerSelection: { providerId: profile.id, providerRevision: profile.revision },
+    providerName: profile.name,
+    providerEndpointHost: endpointHost
   };
 }
 
@@ -315,9 +327,10 @@ async function resolveRunProviderForRun(params = {}, env = process.env, options 
     }
   }
   const state = loadProviderState(env);
-  const profile = state.public.profiles.find(item => item.id === state.public.activeProviderId);
+  const requestedProviderId = params.providerSelection?.providerId || state.public.activeProviderId || 'builtin';
+  const profile = state.public.profiles.find(item => item.id === requestedProviderId);
   if (!profile) {
-    throw providerError('provider_not_found', 'The active provider no longer exists.');
+    throw providerError('provider_not_found', 'The selected provider no longer exists.');
   }
   const modelId = String(params.model || profile.defaultModelId).trim();
   options.emit?.({

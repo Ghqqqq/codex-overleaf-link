@@ -81,6 +81,7 @@
       runs: Array.isArray(legacy.runs) ? legacy.runs : [],
       task: typeof legacy.task === 'string' ? legacy.task : '',
       mode: typeof legacy.mode === 'string' ? legacy.mode : legacyBlob.mode || '',
+      providerId: typeof legacy.providerId === 'string' && legacy.providerId ? legacy.providerId : 'builtin',
       model: typeof legacy.model === 'string' ? legacy.model : legacyBlob.model || '',
       reasoningEffort: typeof legacy.reasoningEffort === 'string' ? legacy.reasoningEffort : legacyBlob.reasoningEffort || '',
       speedTier: typeof legacy.speedTier === 'string' ? legacy.speedTier : legacyBlob.speedTier || '',
