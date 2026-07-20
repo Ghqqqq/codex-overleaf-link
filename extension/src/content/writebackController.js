@@ -193,7 +193,7 @@
     };
   }
 
-  function formatUnsupportedLocalChangeSummary(changes = [], locale = 'zh') {
+  function formatUnsupportedLocalChangeSummary(changes = [], locale = 'en') {
     if (!changes.length) {
       return '';
     }
@@ -218,7 +218,7 @@
     return lines.join('\n');
   }
 
-  function formatUnsupportedLocalChangeReason(changeOrReason, locale = 'zh') {
+  function formatUnsupportedLocalChangeReason(changeOrReason, locale = 'en') {
     const isEnglish = locale === 'en';
     const change = typeof changeOrReason === 'object' && changeOrReason
       ? changeOrReason
@@ -247,7 +247,7 @@
       : '当前类型暂不支持自动写回。';
   }
 
-  function formatBinaryPayloadLimitReason(change = {}, locale = 'zh') {
+  function formatBinaryPayloadLimitReason(change = {}, locale = 'en') {
     const isEnglish = locale === 'en';
     const size = formatBytes(change.size);
     const limit = formatBytes(change.limit || change.aggregateLimit || change.nativeOutputLimit);

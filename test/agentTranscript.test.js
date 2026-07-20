@@ -10,11 +10,11 @@ const {
   translateRawError
 } = require('../extension/src/shared/agentTranscript');
 
-test('translates raw write-mode errors into user-facing remediation', () => {
+test('defaults missing locale to English for user-facing remediation', () => {
   const translated = translateRawError('Mode must be "confirm" or "auto"', { mode: 'ask' });
 
-  assert.equal(translated.conclusion, '这轮没有写入：当前是“只问不改”，但这个任务需要写入权限。');
-  assert.equal(translated.nextStep, '请切换到“建议修改”或“自动写入”后重新运行。');
+  assert.equal(translated.conclusion, 'No files were written: this task needs write access, but the current mode is Ask.');
+  assert.equal(translated.nextStep, 'Switch to Suggest or Auto and run the task again.');
   assert.doesNotMatch(JSON.stringify(translated), /Mode must be/);
 });
 
@@ -27,14 +27,14 @@ test('translates raw errors in English when the panel locale is English', () => 
 });
 
 test('timeout remediation does not tell users to raise a default Codex timeout', () => {
-  const translated = translateRawError('Codex app-server timed out after 600000ms');
+  const translated = translateRawError('Codex app-server timed out after 600000ms', { locale: 'zh' });
 
   assert.equal(translated.conclusion, '这轮没有写入：本地 Codex 长时间没有完成。');
   assert.doesNotMatch(translated.nextStep, /提高超时时间|timeout/i);
 });
 
 test('unknown ask-mode errors explain local Codex failure without implying the analysis succeeded silently', () => {
-  const translated = translateRawError('unexpected app-server failure', { mode: 'ask' });
+  const translated = translateRawError('unexpected app-server failure', { mode: 'ask', locale: 'zh' });
 
   assert.doesNotMatch(translated.conclusion, /没有返回可用说明/);
   assert.match(translated.conclusion, /本地 Codex 没有正常完成/);
@@ -42,7 +42,7 @@ test('unknown ask-mode errors explain local Codex failure without implying the a
 });
 
 test('unsupported reasoning summary errors explain model parameter compatibility', () => {
-  const translated = translateRawError('Unsupported parameter: reasoning.summary is not supported with the gpt-5.3-codex-spark model.');
+  const translated = translateRawError('Unsupported parameter: reasoning.summary is not supported with the gpt-5.3-codex-spark model.', { locale: 'zh' });
 
   assert.equal(translated.conclusion, '这轮没有继续：当前 Codex 模型不支持插件请求的推理摘要参数。');
   assert.match(translated.nextStep, /刷新扩展|重新运行/);
@@ -64,11 +64,11 @@ test('maps project sync events to visible human progress without temp paths', ()
   const preparing = mapAgentEventToActivity({
     type: 'agent.snapshot.preparing',
     detail: { fileCount: 13, totalChars: 42000 }
-  });
+  }, { locale: 'zh' });
   const ready = mapAgentEventToActivity({
     type: 'agent.snapshot.ready',
     detail: { tempDir: '/tmp/codex-overleaf-agent-secret', fileCount: 13 }
-  });
+  }, { locale: 'zh' });
 
   assert.equal(preparing.visible, true);
   assert.match(preparing.title, /正在同步 Overleaf 项目/);
@@ -81,15 +81,15 @@ test('maps native glue sync events to the same visible Overleaf workspace story'
   const started = mapAgentEventToActivity({
     type: 'overleaf.sync.started',
     detail: { fileCount: 13, projectId: 'aabbccddeeff001122334455' }
-  });
+  }, { locale: 'zh' });
   const completed = mapAgentEventToActivity({
     type: 'overleaf.sync.completed',
     detail: { fileCount: 13, workspacePath: '/tmp/private/path' }
-  });
+  }, { locale: 'zh' });
   const changes = mapAgentEventToActivity({
     type: 'overleaf.sync.changes',
     detail: { changedCount: 2, files: ['main.tex', 'refs.bib'] }
-  });
+  }, { locale: 'zh' });
 
   assert.equal(started.visible, true);
   assert.match(started.title, /正在同步 Overleaf 项目到本地 Codex workspace/);
@@ -127,7 +127,7 @@ test('maps Codex app-server events to native-feeling transcript lines', () => {
         ]
       }
     }
-  });
+  }, { locale: 'zh' });
   const reasoning = mapAgentEventToActivity({
     type: 'codex.session.event',
     title: 'item/reasoning/summaryTextDelta',
@@ -135,7 +135,7 @@ test('maps Codex app-server events to native-feeling transcript lines', () => {
       method: 'item/reasoning/summaryTextDelta',
       params: { delta: '先定位 citation 使用点，再核对 bib 条目。' }
     }
-  });
+  }, { locale: 'zh' });
   const patch = mapAgentEventToActivity({
     type: 'codex.session.event',
     title: 'item/fileChange/patchUpdated',
@@ -147,7 +147,7 @@ test('maps Codex app-server events to native-feeling transcript lines', () => {
         ]
       }
     }
-  });
+  }, { locale: 'zh' });
 
   assert.equal(plan.visible, true);
   assert.match(plan.title, /Codex 计划更新：检查 main\.tex/);
@@ -169,7 +169,7 @@ test('keeps raw reasoning text out of the visible transcript', () => {
       method: 'item/reasoning/textDelta',
       params: { delta: 'private chain-of-thought fragment' }
     }
-  });
+  }, { locale: 'zh' });
 
   assert.equal(activity.kind, 'technical');
   assert.equal(activity.visible, false);
@@ -188,7 +188,7 @@ test('maps Codex context compaction to a lightweight visible checkpoint', () => 
         afterTokens: 82000
       }
     }
-  });
+  }, { locale: 'zh' });
 
   assert.equal(activity.kind, 'checkpoint');
   assert.equal(activity.visible, true);
@@ -282,7 +282,7 @@ test('maps Codex command events to visible natural progress without raw commands
   const started = mapAgentEventToActivity({
     type: 'codex.command.started',
     detail: { command: 'rg citation main.tex' }
-  });
+  }, { locale: 'zh' });
   const completed = mapAgentEventToActivity({
     type: 'codex.command.completed',
     detail: {
@@ -290,7 +290,7 @@ test('maps Codex command events to visible natural progress without raw commands
       output: '1:\\cite{a}\n2:\\cite{b}\n',
       exitCode: 0
     }
-  });
+  }, { locale: 'zh' });
 
   assert.equal(started.visible, true);
   assert.equal(started.status, 'running');
@@ -318,6 +318,7 @@ test('maps human agent messages to visible progress without speaker labels', () 
 
 test('formats userReport as a readable final report', () => {
   const report = buildHumanCompletionReport({
+    locale: 'zh',
     status: 'completed',
     userReport: {
       conclusion: '没有发现缺失 citation key，也没有修改文件。',
@@ -352,6 +353,7 @@ test('preserves markdown sections in Codex final assistant reports', () => {
   ].join('\n');
 
   const report = buildHumanCompletionReport({
+    locale: 'zh',
     status: 'completed',
     conclusion: finalAnswer,
     operations: [],
@@ -365,6 +367,7 @@ test('preserves markdown sections in Codex final assistant reports', () => {
 
 test('builds fallback final reports without raw operation JSON', () => {
   const report = buildHumanCompletionReport({
+    locale: 'zh',
     status: 'completed',
     notes: '已润色摘要的一句话。',
     operations: [
@@ -460,6 +463,7 @@ test('local workspace sync reasons are localized in English reports', () => {
 
 test('fallback final reports include skipped write reasons directly', () => {
   const report = buildHumanCompletionReport({
+    locale: 'zh',
     status: 'failed',
     notes: '本地 Codex 改动已尝试写回 Overleaf。',
     operations: [
@@ -666,6 +670,7 @@ test('English unchanged reasons translate unsupported local change summaries', (
 
 test('storage quota errors are not presented as missing ask-mode analysis', () => {
   const report = buildHumanCompletionReport({
+    locale: 'zh',
     status: 'failed',
     mode: 'ask',
     errorMessage: 'Resource::kQuotaBytes quota exceeded',
@@ -688,7 +693,7 @@ test('formatHumanReport omits empty sections', () => {
     appliedChanges: [],
     unchangedReason: '',
     nextStep: ''
-  });
+  }, 'zh');
 
   assert.equal(text, '结论：没有发现问题。');
 });
@@ -760,6 +765,7 @@ test('buildHumanCompletionReport attaches structured payload alongside text', ()
   // run pipeline uses (writeResult populated from applyResults counts; undo
   // populated from the run-record undo count).
   const report = buildHumanCompletionReport({
+    locale: 'zh',
     status: 'completed',
     userReport: {
       conclusion: '没有发现缺失 citation key。',

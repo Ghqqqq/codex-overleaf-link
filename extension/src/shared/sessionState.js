@@ -1051,6 +1051,9 @@
       runs,
       task: summarizeTextForStorage(session.task, 'task'),
       mode: normalizeMode(session.mode || fallbackState.mode),
+      providerId: typeof session.providerId === 'string' && session.providerId
+        ? session.providerId
+        : 'builtin',
       model: normalizeTextField(session.model || fallbackState.model || DEFAULT_PANEL_STATE.model, 80),
       reasoningEffort: normalizeReasoning(session.reasoningEffort || fallbackState.reasoningEffort),
       speedTier: normalizeSpeedTier(session.speedTier || fallbackState.speedTier),

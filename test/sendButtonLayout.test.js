@@ -79,6 +79,27 @@ test('composer preserves a custom selected model before async discovery finishes
   assert.match(readSelectedModelInput, /modelSelect\?\.value\s*\|\|\s*state\?\.model\s*\|\|\s*''/);
 });
 
+test('composer captures a user-selected Fast tier before capability options rerender', () => {
+  const runtimeSource = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/contentRuntime.js'),
+    'utf8'
+  );
+  const pickerSource = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/modelPicker.js'),
+    'utf8'
+  );
+  const persistPanelInputs = extractFunction(runtimeSource, 'persistPanelInputs');
+  const handleChoice = extractFunction(pickerSource, 'handleModelConfigChoiceClick');
+  const captureIndex = persistPanelInputs.indexOf("event?.target?.matches?.('[data-speed]')");
+  const rerenderIndex = persistPanelInputs.indexOf('renderSpeedOptions(getRenderedModelEntries())');
+
+  assert.notEqual(captureIndex, -1, 'speed changes must be captured explicitly');
+  assert.notEqual(rerenderIndex, -1, 'speed capabilities must still be rerendered');
+  assert.equal(captureIndex < rerenderIndex, true, 'Fast must reach session state before rerender');
+  assert.match(handleChoice, /changedInput\s*=\s*speedSelect/);
+  assert.match(handleChoice, /persistPanelInputs\(changedInput\s*\?/);
+});
+
 test('composer sends through a form submit path with a guarded run handler', () => {
   const contentScript = fs.readFileSync(
     path.join(__dirname, '../extension/src/content/contentRuntime.js'),

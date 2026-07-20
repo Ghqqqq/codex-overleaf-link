@@ -49,7 +49,7 @@
   };
 
   function normalizeLocale(options = {}) {
-    return options?.locale === 'en' ? 'en' : 'zh';
+    return options?.locale === 'zh' ? 'zh' : 'en';
   }
 
   function textFor(locale, zh, en) {
@@ -430,7 +430,7 @@
       && /(context|thread|turn|conversation|codex)/i.test(label);
   }
 
-  function formatContextCompactionCheckpoint(event = {}, locale = 'zh') {
+  function formatContextCompactionCheckpoint(event = {}, locale = 'en') {
     const method = String(event.detail?.method || event.title || '');
     const running = event.status === 'running' || /(started|starting|begin|prepar)/i.test(method);
     return {
@@ -559,7 +559,7 @@
     return `${prefix}:${itemId || 'current'}`;
   }
 
-  function formatPlanUpdateTitle(params = {}, locale = 'zh') {
+  function formatPlanUpdateTitle(params = {}, locale = 'en') {
     const steps = Array.isArray(params.plan) ? params.plan : [];
     const active = steps.find(step => step.status === 'in_progress') || steps.find(step => step.status === 'pending');
     const text = cleanVisibleText(active?.step || params.explanation || '');
@@ -568,7 +568,7 @@
       : textFor(locale, 'Codex 更新了执行计划。', 'Codex updated its plan.');
   }
 
-  function formatPlanUpdateDetail(params = {}, locale = 'zh') {
+  function formatPlanUpdateDetail(params = {}, locale = 'en') {
     const steps = Array.isArray(params.plan) ? params.plan : [];
     if (!steps.length) {
       return undefined;
@@ -892,7 +892,7 @@
    * part of Codex's answer. `formatHumanReport` retains the legacy flat-text
    * shape for transcripts, storage fallback, and existing assertions.
    */
-  function buildStructuredHumanReport(report = {}, locale = 'zh') {
+  function buildStructuredHumanReport(report = {}, locale = 'en') {
     const conclusion = cleanVisibleMarkdownText(report.conclusion || '');
 
     const bodySections = [];
@@ -939,7 +939,7 @@
     return { conclusion, body: bodySections.join('\n\n'), meta };
   }
 
-  function formatHumanReport(report = {}, locale = 'zh') {
+  function formatHumanReport(report = {}, locale = 'en') {
     const sections = [];
     const conclusion = cleanVisibleMarkdownText(report.conclusion || '');
     if (conclusion) {
@@ -969,7 +969,7 @@
     return sections.join('\n\n');
   }
 
-  function buildFallbackReport(input, counts, locale = 'zh') {
+  function buildFallbackReport(input, counts, locale = 'en') {
     const operations = Array.isArray(input.operations) ? input.operations : [];
     const appliedOperations = collectAppliedOperations(input.applyResults);
     const affectedFiles = collectAffectedFiles(operations, input.summary, input.applyResults);
@@ -1023,7 +1023,7 @@
     return localized.nextAction || primary.nextAction || '';
   }
 
-  function formatWriteResult(appliedCount, skippedCount, locale = 'zh') {
+  function formatWriteResult(appliedCount, skippedCount, locale = 'en') {
     return textFor(
       locale,
       `已写入 ${appliedCount} 项，跳过 ${skippedCount} 项`,
@@ -1031,7 +1031,7 @@
     );
   }
 
-  function inferUnchangedReason(input, locale = 'zh') {
+  function inferUnchangedReason(input, locale = 'en') {
     if (input.mode === 'ask' || input.status === '只问不改') {
       return textFor(locale, '这轮是只问不改。', 'This run was Ask mode.');
     }
@@ -1041,7 +1041,7 @@
     return '';
   }
 
-  function formatFallbackNextStep(input, skippedCount, affectedFiles, locale = 'zh') {
+  function formatFallbackNextStep(input, skippedCount, affectedFiles, locale = 'en') {
     if (skippedCount) {
       return textFor(locale, '请查看本轮报告中的跳过项，处理后可以重试。', 'Review the skipped items in this report, then retry after resolving them.');
     }
@@ -1070,7 +1070,7 @@
     };
   }
 
-  function technicalOnly(event, locale = 'zh') {
+  function technicalOnly(event, locale = 'en') {
     return {
       kind: 'technical',
       visible: false,
@@ -1094,7 +1094,7 @@
     return TECHNICAL_EVENT_PATTERNS.some(pattern => pattern.test(type));
   }
 
-  function summarizeCommandActivity(event, locale = 'zh') {
+  function summarizeCommandActivity(event, locale = 'en') {
     const type = String(event.type || '');
     const command = String(event.detail?.command || '');
     const output = String(event.detail?.output || '');
@@ -1140,7 +1140,7 @@
     return 'check';
   }
 
-  function formatCommandStartedTitle(kind, command, locale = 'zh') {
+  function formatCommandStartedTitle(kind, command, locale = 'en') {
     if (kind === 'search') {
       const query = extractSearchQuery(command);
       return query ? textFor(locale, `正在搜索项目内容：${query}`, `Searching project content: ${query}`) : textFor(locale, '正在搜索项目内容。', 'Searching project content.');
@@ -1157,7 +1157,7 @@
     return textFor(locale, '正在执行一次本地检查。', 'Running a local check.');
   }
 
-  function formatCommandCompletedTitle(kind, output, failed, locale = 'zh') {
+  function formatCommandCompletedTitle(kind, output, failed, locale = 'en') {
     if (failed) {
       if (kind === 'search') {
         return textFor(locale, '搜索没有正常完成。', 'Search did not finish normally.');
@@ -1184,7 +1184,7 @@
     return textFor(locale, '本地检查已完成。', 'Local check completed.');
   }
 
-  function formatCommandPublicDetail(kind, command, locale = 'zh') {
+  function formatCommandPublicDetail(kind, command, locale = 'en') {
     if (kind !== 'search') {
       return undefined;
     }
@@ -1235,7 +1235,7 @@
     return files;
   }
 
-  function formatFilesInline(files = [], locale = 'zh') {
+  function formatFilesInline(files = [], locale = 'en') {
     const values = normalizeStringList(files);
     if (!values.length) {
       return textFor(locale, '没有文件', 'no files');
@@ -1300,7 +1300,7 @@
       .trim();
   }
 
-  function addListSection(sections, label, values, locale = 'zh') {
+  function addListSection(sections, label, values, locale = 'en') {
     const items = normalizeStringList(values);
     if (!items.length) {
       return;
@@ -1314,7 +1314,7 @@
    * rendered report. Per-item first line gets the `- ` bullet; subsequent
    * lines pass through verbatim (the formatter already indents them).
    */
-  function addStructuredListSection(sections, label, values, locale = 'zh') {
+  function addStructuredListSection(sections, label, values, locale = 'en') {
     const items = normalizeMultilineStringList(values);
     if (!items.length) {
       return;
@@ -1408,7 +1408,7 @@
     return files;
   }
 
-  function formatOperationLine(operation, locale = 'zh') {
+  function formatOperationLine(operation, locale = 'en') {
     const labels = OPERATION_LABELS[locale] || OPERATION_LABELS.zh;
     const label = labels[operation?.type] || operation?.type || textFor(locale, '处理', 'process');
     const filePath = operation?.path || operation?.from || operation?.to || textFor(locale, '未知文件', 'unknown file');
@@ -1418,7 +1418,7 @@
       : (reason ? `${filePath}：${label}（${reason}）` : `${filePath}：${label}`);
   }
 
-  function formatOperationReason(operation, locale = 'zh') {
+  function formatOperationReason(operation, locale = 'en') {
     const key = operation?.reasonKey || '';
     const count = Number(operation?.reasonParams?.count || 0);
     if (key === 'localWorkspaceDelete') {
@@ -1440,7 +1440,7 @@
     return localizeVisibleReason(operation?.reason || '', locale);
   }
 
-  function formatSkippedOperationLine(item, locale = 'zh') {
+  function formatSkippedOperationLine(item, locale = 'en') {
     const operation = item?.operation || {};
     const labels = OPERATION_LABELS[locale] || OPERATION_LABELS.zh;
     const label = labels[operation.type] || operation.type || textFor(locale, '处理', 'process');
@@ -1547,7 +1547,7 @@
     };
   }
 
-  function formatSkippedReason(result = {}, operation = {}, locale = 'zh') {
+  function formatSkippedReason(result = {}, operation = {}, locale = 'en') {
     const key = result.reasonKey || '';
     const code = result.code || '';
     const filePath = result.reasonParams?.filePath || operation?.path || operation?.from || operation?.to || '';
@@ -1664,7 +1664,7 @@
     return parts.join(', ');
   }
 
-  function localizeVisibleReason(reason, locale = 'zh') {
+  function localizeVisibleReason(reason, locale = 'en') {
     const text = cleanVisibleText(reason || '');
     if (!text || locale !== 'en') {
       return text;

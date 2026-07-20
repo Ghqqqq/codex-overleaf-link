@@ -414,17 +414,17 @@ function writeReleaseFixture(rootDir, overrides = {}) {
 releaseTest('CHANGELOG exposes structured release notes for the current version', async () => {
   const version = readJson(path.join(repoRoot, 'package.json')).version;
   const changelog = readText(path.join(repoRoot, 'CHANGELOG.md'));
-  const heading = `## v${version} - 2026-07-19`;
+  const heading = `## v${version} - 2026-07-20`;
   const start = changelog.indexOf(heading);
   assert.notEqual(start, -1, `CHANGELOG.md should contain ${heading}`);
-  assert.equal(changelog.includes(`## [${version}] - 2026-07-19`), false);
+  assert.equal(changelog.includes(`## [${version}] - 2026-07-20`), false);
   assert.equal(changelog.indexOf(heading, start + heading.length), -1, 'CHANGELOG.md should not duplicate the current release heading');
 
   const { extractReleaseNotes } = await importScriptModule('scripts/build-release.mjs');
   const section = extractReleaseNotes(changelog, version);
   const escapedVersion = version.replace(/\./g, '\\.');
 
-  assert.match(section, new RegExp(`^## v${escapedVersion} - 2026-07-19$`, 'm'));
+  assert.match(section, new RegExp(`^## v${escapedVersion} - 2026-07-20$`, 'm'));
   assert.match(section, /^### (Added|Changed|Deprecated|Removed|Fixed|Security)$/m);
   assert.match(section, /^- \S.+$/m);
   assert.doesNotMatch(section, new RegExp(`^## v(?!${escapedVersion}(?:\\s|$))`, 'm'));

@@ -84,3 +84,76 @@ test('legacy sessions without provider identity migrate conservatively to Built-
   assert.equal(state.providerId, 'builtin');
   assert.equal(state.sessions[0].providerId, 'builtin');
 });
+
+test('storage compaction preserves the session provider and model tuple', () => {
+  const session = SessionState.createSession({
+    providerId: 'provider-a',
+    model: 'model-a',
+    reasoningEffort: 'none',
+    speedTier: 'standard'
+  });
+  const live = SessionState.normalizePanelState({
+    sessions: [session],
+    activeSessionId: session.id
+  });
+
+  const compact = SessionState.prepareStateForStorage(live);
+  const restored = SessionState.normalizePanelState(compact);
+
+  assert.equal(compact.sessions[0].providerId, 'provider-a');
+  assert.equal(restored.providerId, 'provider-a');
+  assert.equal(restored.model, 'model-a');
+});
+
+test('explicit Built-in activation clears a custom model before catalog refresh', async t => {
+  const previousWindow = global.window;
+  const coordinatorPath = require.resolve('../extension/src/content/providerSettingsCoordinator');
+  class FakeBroadcastChannel {
+    addEventListener() {}
+    postMessage() {}
+    close() {}
+  }
+  const fakeWindow = {
+    BroadcastChannel: FakeBroadcastChannel,
+    CodexOverleafProviderProfiles: ProviderProfiles,
+    CodexOverleafProviderSettingsDialog: {
+      create: () => ({ isOpen: () => false, destroy() {} })
+    }
+  };
+  global.window = fakeWindow;
+  delete require.cache[coordinatorPath];
+  require(coordinatorPath);
+  t.after(() => {
+    delete require.cache[coordinatorPath];
+    global.window = previousWindow;
+  });
+
+  let selectedProviderId = 'provider-a';
+  let selectedModel = 'model-a';
+  const calls = [];
+  const coordinator = fakeWindow.CodexOverleafProviderSettingsCoordinator.create({
+    document: {},
+    window: fakeWindow,
+    getSelectedProviderId: () => selectedProviderId,
+    setSelectedProviderId: (providerId, modelId) => {
+      selectedProviderId = providerId;
+      selectedModel = modelId;
+      calls.push(`provider:${providerId}`);
+      calls.push(`model:${modelId}`);
+    },
+    refreshModelOptions: async selection => calls.push(`refresh:${selection.providerId}`),
+    persistInputs: async () => calls.push('persist')
+  });
+  const catalog = ProviderProfiles.normalizeCatalog({
+    activeProviderId: 'builtin',
+    providers: [customProvider('provider-a', 4, 'model-a')]
+  });
+  coordinator._instance.catalog = catalog;
+  coordinator._instance.loaded = true;
+
+  await coordinator._instance.onProviderChanged(catalog, { sessionProviderId: 'builtin' });
+
+  assert.equal(selectedProviderId, 'builtin');
+  assert.equal(selectedModel, '');
+  assert.deepEqual(calls, ['provider:builtin', 'model:', 'refresh:builtin', 'persist']);
+});

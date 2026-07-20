@@ -49,6 +49,7 @@
       model: state.model,
       reasoningEffort: state.reasoningEffort,
       speedTier: state.speedTier,
+      locale: state.locale === 'zh' ? 'zh' : 'en',
       session: state.session,
       threadId: codexThreadId || undefined,
       customInstructions: normalizedCustomInstructions || undefined,
@@ -70,7 +71,7 @@
     return params;
   }
 
-  function buildSessionHistoryResult({ assistantMessage = '', syncOutcome = {}, syncChanges = [], locale = 'zh' } = {}) {
+  function buildSessionHistoryResult({ assistantMessage = '', syncOutcome = {}, syncChanges = [], locale = 'en' } = {}) {
     const parts = [];
     const finalAnswer = truncateSessionHistoryText(assistantMessage, 1600);
     if (finalAnswer) {

@@ -83,20 +83,24 @@
     const modelSelect = getPanel()?.querySelector('[data-model]');
     const reasoningSelect = getPanel()?.querySelector('[data-reasoning]');
     const speedSelect = getPanel()?.querySelector('[data-speed]');
+    let changedInput = null;
 
     if (choice.dataset.reasoningChoice && reasoningSelect) {
       reasoningSelect.value = choice.dataset.reasoningChoice;
+      changedInput = reasoningSelect;
     } else if (choice.dataset.modelChoice && modelSelect) {
       modelSelect.value = choice.dataset.modelChoice;
+      changedInput = modelSelect;
       renderReasoningOptions(getRenderedModelEntries());
       renderSpeedOptions(getRenderedModelEntries());
     } else if (choice.dataset.speedChoice && speedSelect) {
       speedSelect.value = choice.dataset.speedChoice;
+      changedInput = speedSelect;
     }
 
     renderModelConfigChoices();
     updateModelDisplay();
-    await persistPanelInputs();
+    await persistPanelInputs(changedInput ? { type: 'change', target: changedInput } : undefined);
   }
   async function loadModelOptions(providerSelection) {
     const generation = ++modelLoadGeneration;

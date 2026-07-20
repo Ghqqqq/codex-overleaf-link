@@ -604,7 +604,7 @@
     window,
     getSettingsPanelInstance: () => settingsPanelInstance,
     getSelectedModel: () => state?.model || '', getSelectedProviderId: () => state?.providerId || 'builtin',
-    setSelectedProviderId: providerId => { state = updateActiveSession(state, { providerId: providerId || 'builtin' }); },
+    setSelectedProviderId: (providerId, model) => { state = updateActiveSession(state, { providerId: providerId || 'builtin', ...(model !== undefined ? { model } : {}) }); const modelSelect = panel?.querySelector('[data-model]'); if (model !== undefined && modelSelect) modelSelect.value = ''; },
     refreshModelOptions: loadModelOptions, persistInputs: persistPanelInputs
   });
   // v1.8.1 D3: the dashboard was a one-shot render — another tab finishing a
@@ -6313,7 +6313,7 @@
       saveStateSoon();
       return;
     }
-    renderReasoningOptions(getRenderedModelEntries());
+    if (event?.target?.matches?.('[data-speed]')) state = updateActiveSession(state, { speedTier: readSelectedSpeedInput() }); renderReasoningOptions(getRenderedModelEntries());
     renderSpeedOptions(getRenderedModelEntries());
     readPanelInputs();
     renderModelConfigChoices();

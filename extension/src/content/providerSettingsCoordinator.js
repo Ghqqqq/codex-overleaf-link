@@ -111,7 +111,11 @@
       : previousProviderId;
     const sessionProviderChanged = requestedProviderId !== previousProviderId;
     if (sessionProviderChanged) {
-      instance.setSelectedProviderId(requestedProviderId);
+      const requestedProvider = window.CodexOverleafProviderProfiles.getProviderById(catalog, requestedProviderId);
+      const preferredModelId = requestedProvider?.kind === 'custom'
+        ? requestedProvider.defaultModelId || requestedProvider.models?.[0]?.id || ''
+        : '';
+      instance.setSelectedProviderId(requestedProviderId, preferredModelId);
     }
     const changedProviderIds = Array.isArray(change.changedProviderIds) ? change.changedProviderIds : [];
     if (!change.forceSessionRefresh && !sessionProviderChanged && !changedProviderIds.includes(requestedProviderId)) {

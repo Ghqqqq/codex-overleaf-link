@@ -7,6 +7,7 @@ test('run controller builds codex.run params without embedding project when mirr
   const params = RunController.buildCodexRunParams({
     currentProjectId: 'project-123',
     state: {
+      locale: 'zh',
       mode: 'auto',
       model: 'gpt-5.5',
       reasoningEffort: 'xhigh',
@@ -37,6 +38,7 @@ test('run controller builds codex.run params without embedding project when mirr
   assert.equal(params.expectedMirrorFreshness, 300000);
   assert.equal(params.threadId, 'thread-1');
   assert.equal(params.speedTier, 'fast');
+  assert.equal(params.locale, 'zh');
   assert.equal(params.customInstructions, 'Use project-specific notation and concise academic tone.');
   assert.equal(params.compileLog, 'compile log');
   assert.deepEqual(params.compileErrors, ['error']);
@@ -61,6 +63,7 @@ test('run controller carries trimmed project custom instructions for normal snap
   });
 
   assert.equal(params.project?.files?.[0]?.path, 'main.tex');
+  assert.equal(params.locale, 'en');
   assert.equal(params.customInstructions, 'Use project terminology. Prefer \\\\cref{} references.');
 });
 
@@ -323,6 +326,7 @@ test('focused full-project runs still restrict writeback to focused files', () =
 
 test('run controller truncates session history summaries while preserving changed files', () => {
   const result = RunController.buildSessionHistoryResult({
+    locale: 'zh',
     assistantMessage: '结论：没有问题。',
     syncChanges: Array.from({ length: 10 }, (_, index) => ({ path: `file-${index}.tex` }))
   });

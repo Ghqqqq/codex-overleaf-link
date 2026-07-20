@@ -151,7 +151,7 @@ test('mapAgentEventToActivity returns completed activity for turn/completed', ()
     title: 'turn/completed',
     status: 'completed',
     detail: { method: 'turn/completed', params: {} }
-  });
+  }, { locale: 'zh' });
 
   assert.equal(activity.kind, 'activity');
   assert.equal(activity.visible, true);

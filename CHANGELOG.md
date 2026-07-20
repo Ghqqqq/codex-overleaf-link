@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.1.4 - 2026-07-20
+
+### Fixed
+
+- Localized Native Host fallback reports using the requested panel locale, with English as the safe default when locale metadata is absent.
+- Standardized missing-locale behavior across transcript, session-history, and writeback formatters without changing model prompts or model-authored responses.
+- Preserved each session's provider/model/reasoning/speed tuple through storage compaction and cleared stale provider models before explicit provider switches.
+- Captured user-selected Fast speed before capability controls rerender, preventing the previous Standard value from immediately overriding it.
+
 ## v2.1.3 - 2026-07-19
 
 ### Fixed

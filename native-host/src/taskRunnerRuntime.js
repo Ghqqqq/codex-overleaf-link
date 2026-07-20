@@ -889,6 +889,7 @@ function validateTaskResultOperationQuotas(result = {}) {
 }
 
 function buildDefaultUserReport(mode, operations = [], params = {}) {
+  const locale = normalizeReportLocale(params.locale);
   const checked = (params.project?.files || [])
     .map(file => file?.path)
     .filter(path => typeof path === 'string' && path.length > 0)
@@ -897,17 +898,27 @@ function buildDefaultUserReport(mode, operations = [], params = {}) {
 
   return {
     conclusion: hasOperations
-      ? 'Codex 已准备好建议修改，等待确认或写入。'
-      : '这轮任务已完成，没有写入 Overleaf 文件。',
+      ? reportText(locale, 'Codex prepared proposed changes and is waiting for confirmation or writeback.', 'Codex 已准备好建议修改，等待确认或写入。')
+      : reportText(locale, 'This task completed without writing Overleaf files.', '这轮任务已完成，没有写入 Overleaf 文件。'),
     checked,
     findings: [],
-    plannedChanges: hasOperations ? operations.map(formatOperationForUserReport) : [],
+    plannedChanges: hasOperations ? operations.map(operation => formatOperationForUserReport(operation, locale)) : [],
     appliedChanges: [],
-    unchangedReason: hasOperations ? '' : (mode === 'ask' ? '这轮是只问不改。' : ''),
+    unchangedReason: hasOperations
+      ? ''
+      : (mode === 'ask' ? reportText(locale, 'This run was Ask mode.', '这轮是只问不改。') : ''),
     nextStep: hasOperations
-      ? '请确认修改方案后写入 Overleaf。'
-      : '可以继续追问，或加入更多 @context 后再检查。'
+      ? reportText(locale, 'Review and confirm the proposed changes before writing them to Overleaf.', '请确认修改方案后写入 Overleaf。')
+      : reportText(locale, 'Continue the conversation, or add more @context and run another check.', '可以继续追问，或加入更多 @context 后再检查。')
   };
+}
+
+function normalizeReportLocale(locale) {
+  return locale === 'zh' ? 'zh' : 'en';
+}
+
+function reportText(locale, english, chinese) {
+  return locale === 'zh' ? chinese : english;
 }
 
 function normalizeUserReport(value, fallback) {
@@ -932,17 +943,13 @@ function normalizeStringArray(value, fallback = []) {
   return value.filter(item => typeof item === 'string');
 }
 
-function formatOperationForUserReport(operation) {
-  const labels = {
-    edit: '编辑',
-    create: '新建',
-    rename: '重命名',
-    move: '移动',
-    delete: '删除'
-  };
-  const label = labels[operation?.type] || operation?.type || '处理';
-  const filePath = operation?.path || operation?.to || '未知文件';
-  return `${filePath}：${label}`;
+function formatOperationForUserReport(operation, locale = 'en') {
+  const labels = locale === 'zh'
+    ? { edit: '编辑', create: '新建', rename: '重命名', move: '移动', delete: '删除' }
+    : { edit: 'edit', create: 'create', rename: 'rename', move: 'move', delete: 'delete' };
+  const label = labels[operation?.type] || operation?.type || reportText(locale, 'change', '处理');
+  const filePath = operation?.path || operation?.to || reportText(locale, 'unknown file', '未知文件');
+  return locale === 'zh' ? `${filePath}：${label}` : `${filePath}: ${label}`;
 }
 
 function collectResultOperations(result) {

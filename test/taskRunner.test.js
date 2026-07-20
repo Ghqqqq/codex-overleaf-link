@@ -1473,6 +1473,7 @@ test('task.run default results include a minimal user report', async () => {
     id: '3bb',
     method: 'task.run',
     params: {
+      locale: 'zh',
       mode: 'ask',
       task: 'Explain citation issues',
       project: { id: 'abc', files: [{ path: 'main.tex', content: 'hello' }] },
@@ -1484,6 +1485,24 @@ test('task.run default results include a minimal user report', async () => {
   assert.equal(response.result.userReport.conclusion, '这轮任务已完成，没有写入 Overleaf 文件。');
   assert.deepEqual(response.result.userReport.checked, ['main.tex']);
   assert.equal(response.result.userReport.nextStep, '可以继续追问，或加入更多 @context 后再检查。');
+});
+
+test('task.run defaults missing report locale to English', async () => {
+  const response = await handleRequest({
+    id: '3bbc',
+    method: 'task.run',
+    params: {
+      mode: 'ask',
+      task: 'Explain citation issues',
+      project: { id: 'abc', files: [{ path: 'main.tex', content: 'hello' }] },
+      proposedOperations: []
+    }
+  }, {});
+
+  assert.equal(response.ok, true);
+  assert.equal(response.result.userReport.conclusion, 'This task completed without writing Overleaf files.');
+  assert.deepEqual(response.result.userReport.checked, ['main.tex']);
+  assert.equal(response.result.userReport.nextStep, 'Continue the conversation, or add more @context and run another check.');
 });
 
 test('task.run in Ask Mode strips external-agent pending write operations', async () => {
