@@ -1,12 +1,7 @@
 (function initCodexOverleafRecentProjects() {
   'use strict';
 
-  // Recent-projects dashboard — the cross-project welcome variant carved out
-  // of contentRuntime.js (v1.4.8 structural-debt phase 4): the account-scoped
-  // project-name cache + DOM enrichment, the welcome/empty/degraded states,
-  // row rendering, and the per-project/variant switchers. Code moved verbatim;
-  // runtime collaborators are factory-injected (the account scope id stays in
-  // the runtime and is read through a getter).
+  // Cross-project dashboard: account-scoped names, project rows and sessions.
   function create(deps = {}) {
     const {
       tr,
@@ -24,6 +19,10 @@
       PROJECT_EDITOR_RESERVED_IDS,
       STATUS_BADGE_CLASS
     } = deps;
+    const projectSessionCleanup = window.CodexOverleafProjectSessionCleanup.create({
+      tr, getAccountScopeId: getCachedAccountScopeId, showPluginConfirm, showPluginToast,
+      sendBackgroundNative, mutateProjectPanelState, renderRecentProjectsVariant
+    });
 
   // chrome.storage.local cache key (spec §5.6.3). The cache is keyed by
   // accountScopeId so a second account on the same Chrome profile cannot
@@ -416,9 +415,6 @@
       el.appendChild(textNode(tr('recentProjects_row_projectLinkUnavailable'), 'recent-projects-row-warning'));
     }
     if (!valid) {
-      // Dead entry: the session records behind it carry an empty/garbage
-      // projectId, so it can never be opened or expanded. Offer a cleanup
-      // action that removes those records (and with them, this row).
       var deadWrap = document.createElement('div');
       deadWrap.className = 'recent-projects-row-wrap';
       var deadHead = document.createElement('div');
@@ -438,8 +434,6 @@
       deadWrap.appendChild(deadHead);
       return deadWrap;
     }
-    // Wrap the row with an expand toggle + a lazily-populated session list so
-    // sessions can be managed (delete/rename) without entering the project.
     var wrap = document.createElement('div');
     wrap.className = 'recent-projects-row-wrap';
     wrap.setAttribute('data-project-row-wrap', projectId);
@@ -456,8 +450,20 @@
     expand.textContent = tr('recentProjects_sessions_action');
     var head = document.createElement('div');
     head.className = 'recent-projects-row-head';
+    var clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'recent-projects-row-clear';
+    clear.setAttribute('data-project-clear', '');
+    clear.title = tr('recentProjects_clearProject');
+    clear.setAttribute('aria-label', tr('recentProjects_clearProject'));
+    clear.textContent = '×';
+    clear.addEventListener('click', function (event) {
+      event.stopPropagation();
+      projectSessionCleanup.clearProjectSessions(projectId, name).catch(function () { /* surfaced by the action */ });
+    });
     head.appendChild(el);
     head.appendChild(expand);
+    head.appendChild(clear);
     var sessionsEl = document.createElement('div');
     sessionsEl.className = 'recent-projects-sessions';
     sessionsEl.setAttribute('data-project-sessions', '');

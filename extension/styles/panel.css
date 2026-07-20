@@ -3390,9 +3390,30 @@
 
 #codex-overleaf-panel .codex-model-speed-indicator {
   flex: 0 0 auto;
-  color: var(--tl-fg-3);
-  font-size: 13px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--tl-fg-1);
+  line-height: 0;
+}
+
+#codex-overleaf-panel .codex-model-speed-indicator[hidden] {
+  display: none;
+}
+
+#codex-overleaf-panel .codex-model-speed-indicator svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+#codex-overleaf-panel .codex-model-speed-indicator path {
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 0.55;
+  stroke-linejoin: round;
 }
 
 #codex-overleaf-panel .codex-model-config-popover {
@@ -4188,6 +4209,33 @@
 }
 
 #codex-overleaf-panel .recent-projects-row-cleanup:hover {
+  background: var(--tl-hover);
+  color: var(--tl-fail);
+}
+
+#codex-overleaf-panel .recent-projects-row-clear {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--tl-r-sm);
+  color: var(--tl-fg-4);
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0;
+  transform: translateX(4px);
+  transition: color 120ms ease, background 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+
+#codex-overleaf-panel .recent-projects-row-wrap:hover .recent-projects-row-clear,
+#codex-overleaf-panel .recent-projects-row-clear:focus-visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+#codex-overleaf-panel .recent-projects-row-clear:hover {
   background: var(--tl-hover);
   color: var(--tl-fail);
 }

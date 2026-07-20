@@ -48,6 +48,31 @@ test('dashboard rows expand into a per-project session list', () => {
   assert.match(rowFn, /rename\.disabled = true/);
 });
 
+test('dashboard project rows expose a guarded one-confirm clear-all action', () => {
+  const dashboard = repo('extension/src/content/recentProjects.js');
+  const cleanupSource = repo('extension/src/content/projectSessionCleanup.js');
+  const clear = extractFunction(cleanupSource, 'clearProjectSessions');
+  assert.match(dashboard, /data-project-clear/);
+  assert.match(dashboard, /clearProjectSessions\(projectId, name\)/);
+  assert.match(clear, /getAllByIndex\('sessions', 'projectId', projectId\)/);
+  assert.match(clear, /record\.accountScopeId === scope/);
+  assert.match(clear, /recentProjects_clearProject_running/);
+  assert.match(clear, /recentProjects_clearProject_title/);
+  assert.match(clear, /destructive: true/);
+  assert.match(clear, /SessionState\.deleteSession\(nextState, record\.id\)/);
+  assert.match(clear, /deleteRecord\('sessions', record\.id\)/);
+  assert.match(clear, /codex\.history\.clearPlugin/);
+  assert.match(clear, /renderRecentProjectsVariant\(\)/);
+  const I18n = require('../extension/src/shared/i18n');
+  for (const key of ['recentProjects_clearProject', 'recentProjects_clearProject_title', 'recentProjects_clearProject_message', 'recentProjects_clearProject_confirm', 'recentProjects_clearProject_running', 'recentProjects_clearProject_done', 'recentProjects_clearProject_partial', 'recentProjects_clearProject_historyPartial']) {
+    assert.notEqual(I18n.t('en', key), key, `missing English ${key}`);
+    assert.notEqual(I18n.t('zh', key), key, `missing Chinese ${key}`);
+  }
+  const css = repo('extension/styles/panel.css');
+  assert.match(css, /\.recent-projects-row-clear/);
+  assert.match(css, /\.recent-projects-row-clear:hover\s*\{[^}]*var\(--tl-fail\)/);
+});
+
 test('dashboard delete mirrors the in-project flow: confirm, storage, record, native, toasts', () => {
   const src = repo('extension/src/content/recentProjects.js');
   const del = extractFunction(src, 'deleteDashboardSession');

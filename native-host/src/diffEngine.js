@@ -1,6 +1,6 @@
 'use strict';
 
-function computeLineDiff(oldText, newText, contextLines = 3) {
+function computeLineDiff(oldText, newText, contextLines = 3, locale = 'en') {
   const oldLines = splitLines(oldText);
   const newLines = splitLines(newText);
 
@@ -12,23 +12,28 @@ function computeLineDiff(oldText, newText, contextLines = 3) {
   const MAX_DIFF_PRODUCT = 4000000;
 
   if (oldLines.length > MAX_LINES || newLines.length > MAX_LINES || oldLines.length * newLines.length > MAX_DIFF_PRODUCT) {
-    return buildTruncatedResult(oldLines.length, newLines.length);
+    return buildTruncatedResult(oldLines.length, newLines.length, locale);
   }
 
   const edits = myersDiff(oldLines, newLines);
   if (edits === null) {
-    return buildTruncatedResult(oldLines.length, newLines.length);
+    return buildTruncatedResult(oldLines.length, newLines.length, locale);
   }
 
   return buildHunks(oldLines, newLines, edits, contextLines);
 }
 
-function buildTruncatedResult(oldCount, newCount) {
+function buildTruncatedResult(oldCount, newCount, locale = 'en') {
   return [{
     startA: 1,
     startB: 1,
     truncated: true,
-    lines: [{ type: 'context', text: `文件改动较大（${oldCount} → ${newCount} 行），请在 Overleaf 中查看完整差异。` }]
+    lines: [{
+      type: 'context',
+      text: locale === 'zh'
+        ? `文件改动较大（${oldCount} → ${newCount} 行），请在 Overleaf 中查看完整差异。`
+        : `Large file change (${oldCount} → ${newCount} lines). Review the full diff in Overleaf.`
+    }]
   }];
 }
 

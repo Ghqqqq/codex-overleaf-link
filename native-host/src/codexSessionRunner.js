@@ -252,7 +252,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
     if (change.type === 'write' && typeof change.previousContent === 'string') {
       return {
         ...change,
-        diff: computeLineDiff(change.previousContent, change.content),
+        diff: computeLineDiff(change.previousContent, change.content, 3, params.locale === 'zh' ? 'zh' : 'en'),
         patches: computeTextPatches(change.previousContent, change.content)
       };
     }

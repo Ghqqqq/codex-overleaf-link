@@ -881,7 +881,7 @@
     return {
       ok: true,
       project,
-      restrictToFocusFiles: runController.shouldRestrictWritebackToFocus({ focusFiles })
+      restrictToFocusFiles: runController.shouldRestrictWritebackToFocus({ focusFiles, focusedPartialSnapshot })
     };
   }
 

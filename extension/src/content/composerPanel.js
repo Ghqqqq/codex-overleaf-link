@@ -49,7 +49,11 @@
           </label>
           <div class="codex-model-config" data-model-config>
             <button type="button" class="codex-model-config-button" data-model-config-toggle aria-haspopup="menu" aria-expanded="false">
-              <span class="codex-model-speed-indicator" data-speed-indicator hidden>⚡</span>
+              <span class="codex-model-speed-indicator" data-speed-indicator hidden aria-hidden="true">
+                <svg viewBox="0 0 16 16" focusable="false">
+                  <path d="M8.9 1.8 3.8 8.8h3.3l-.5 5.4 5.5-7.5H8.8z"></path>
+                </svg>
+              </span>
               <span data-model-display>5.4</span>
               <span data-reasoning-display>Medium</span>
             </button>

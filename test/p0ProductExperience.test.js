@@ -1255,13 +1255,16 @@ test('focused OT freshness is checked before project-level warm mirror freshness
   assert.doesNotMatch(warmStartBody, /otFreshFileCount/);
 });
 
-test('OT warm starts force focused run params for initial and thread-resume codex runs', () => {
+test('OT warm starts route focus restrictions through the shared writeback policy', () => {
   const contentScript = getContentScriptSource();
   const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
   const runParamBlocks = Array.from(runTaskBody.matchAll(/buildCodexRunParams\(\{[\s\S]*?submittedMode\s*\}/g))
     .map(match => match[0]);
 
-  assert.match(runTaskBody, /if \(warmMirrorReuse\.otWarmStart\) \{[\s\S]*restrictToFocusFiles\s*=\s*true/);
+  assert.match(
+    runTaskBody,
+    /restrictToFocusFiles\s*=\s*runController\.shouldRestrictWritebackToFocus\(\{\s*focusFiles,\s*focusedPartialSnapshot:\s*warmMirrorReuse\.partialSnapshot,\s*otWarmStart\s*\}\)/
+  );
   assert.ok(runParamBlocks.length >= 3, 'initial, mirror-stale retry, and thread-resume run params should be visible');
   for (const block of runParamBlocks) {
     assert.match(block, /otWarmStart/);

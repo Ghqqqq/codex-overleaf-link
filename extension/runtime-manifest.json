@@ -58,6 +58,7 @@
     "src/content/applyResultFormatters.js",
     "src/content/modelPickerSupport.js",
     "src/content/modelPicker.js",
+    "src/content/projectSessionCleanup.js",
     "src/content/recentProjects.js",
     "src/content/otWarmMirror.js",
     "src/content/writebackOrchestrator.js",

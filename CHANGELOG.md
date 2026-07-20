@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.1.5 - 2026-07-20
+
+### Fixed
+
+- Treat `@context` as the primary editing context when a complete project snapshot is available, while preserving focus-only writeback for partial and OT warm snapshots.
+- Localize large-diff fallback summaries from the run locale and default missing locale metadata to English.
+
 ## v2.1.4 - 2026-07-20
 
 ### Fixed

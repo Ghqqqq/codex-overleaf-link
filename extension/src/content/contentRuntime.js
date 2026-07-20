@@ -1727,13 +1727,10 @@
         return;
       }
       appendRunEvent({
-        // Wording must match behavior: a non-empty focus selection RESTRICTS
-        // reads and writes to these files (shouldRestrictWritebackToFocus),
-        // it does not merely "prioritize" them. The selection persists across
-        // turns until cleared via the ＋ tray.
+        // @context prioritizes these files; complete project runs may still update related files.
         title: tx(
-          `This run reads and writes ONLY: ${formatContextItems(getActiveFocusFiles())} (persists across turns; clear via ＋)`,
-          `本轮仅读写：${formatContextItems(getActiveFocusFiles())}（跨轮保留，可在 ＋ 中清除）`
+          `This run will prioritize: ${formatContextItems(getActiveFocusFiles())} (persists across turns; clear via ＋)`,
+          `本轮将优先处理：${formatContextItems(getActiveFocusFiles())}（跨轮保留，可在 ＋ 中清除）`
         ),
         status: 'completed'
       });
@@ -1785,7 +1782,7 @@
         focusFiles,
         isUsableProjectFileContent: window.CodexOverleafProjectFiles.isUsableProjectFileContent
       });
-      let restrictToFocusFiles = runController.shouldRestrictWritebackToFocus({ focusFiles });
+      let restrictToFocusFiles = runController.shouldRestrictWritebackToFocus({ focusFiles, focusedPartialSnapshot });
       if (snapshotWarnings.blocking.length && !warmMirrorReuse.useExistingMirror && !focusedPartialSnapshot) {
         for (const warning of snapshotWarnings.blocking) {
           appendLog(tx(`Cannot continue: ${formatProjectSnapshotWarning(warning)}`, `无法继续：${formatProjectSnapshotWarning(warning)}`));
@@ -1827,8 +1824,8 @@
           if (Array.isArray(warmMirrorReuse.focusFiles) && warmMirrorReuse.focusFiles.length) {
             focusFiles = warmMirrorReuse.focusFiles;
           }
-          restrictToFocusFiles = true;
         }
+        restrictToFocusFiles = runController.shouldRestrictWritebackToFocus({ focusFiles, focusedPartialSnapshot: warmMirrorReuse.partialSnapshot, otWarmStart });
         appendRunEvent({
           title: warmMirrorReuse.warmStart
             ? tr('warmMirrorReuseTitle')

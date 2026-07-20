@@ -130,8 +130,8 @@
     });
   }
 
-  function shouldRestrictWritebackToFocus({ focusFiles = [] } = {}) {
-    return normalizeFocusFiles(focusFiles).length > 0;
+  function shouldRestrictWritebackToFocus({ focusFiles = [], focusedPartialSnapshot = false, otWarmStart = false } = {}) {
+    return normalizeFocusFiles(focusFiles).length > 0 && (focusedPartialSnapshot === true || otWarmStart === true);
   }
 
   function isFullSnapshotWarning(warning) {

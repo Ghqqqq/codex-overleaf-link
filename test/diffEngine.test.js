@@ -70,15 +70,16 @@ test('returns fallback hunk for files exceeding line threshold', () => {
   assert.equal(hunks[0].truncated, true);
   assert.ok(hunks[0].lines.length <= 1);
   assert.ok(hunks[0].lines[0].type === 'context');
-  assert.match(hunks[0].lines[0].text, /改动较大/);
+  assert.match(hunks[0].lines[0].text, /Large file change/);
 });
 
 test('returns fallback hunk when edit distance would be too large', () => {
   const oldLines = Array.from({ length: 3000 }, (_, i) => `old ${i}`).join('\n');
   const newLines = Array.from({ length: 3000 }, (_, i) => `new ${i}`).join('\n');
-  const hunks = computeLineDiff(oldLines, newLines);
+  const hunks = computeLineDiff(oldLines, newLines, 3, 'zh');
   assert.equal(hunks.length, 1);
   assert.equal(hunks[0].truncated, true);
+  assert.match(hunks[0].lines[0].text, /改动较大/);
 });
 
 test('still computes diff for moderately sized files', () => {

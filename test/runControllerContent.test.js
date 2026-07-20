@@ -307,11 +307,25 @@ test('OT warm mirror runs carry an explicit marker while preserving focused rest
   assert.deepEqual(params.focusFiles, ['main.tex']);
 });
 
-test('focused full-project runs still restrict writeback to focused files', () => {
+test('focused full-project runs prioritize focus without restricting complete snapshots', () => {
   assert.equal(
     RunController.shouldRestrictWritebackToFocus({
       focusFiles: ['paper.tex'],
       project: { capabilities: { fullProjectSnapshot: true } }
+    }),
+    false
+  );
+  assert.equal(
+    RunController.shouldRestrictWritebackToFocus({
+      focusFiles: ['paper.tex'],
+      focusedPartialSnapshot: true
+    }),
+    true
+  );
+  assert.equal(
+    RunController.shouldRestrictWritebackToFocus({
+      focusFiles: ['paper.tex'],
+      otWarmStart: true
     }),
     true
   );
