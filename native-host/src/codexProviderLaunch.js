@@ -2,6 +2,7 @@
 
 const { startChatCompletionsBridge } = require('./chatCompletionsBridge');
 const { startAnthropicMessagesBridge } = require('./anthropicMessagesBridge');
+const { startResponsesPassthroughBridge } = require('./responsesPassthroughBridge');
 const { prepareProviderModelCatalog } = require('./providerModelCatalog');
 
 const PROVIDER_CONFIG_ID = 'codex_overleaf_custom';
@@ -56,14 +57,16 @@ function createProviderLaunch({ profile, secret = '', modelId, wireApi, reasonin
 
 async function prepareProviderLaunch(launch, { signal } = {}) {
   const catalog = prepareProviderModelCatalog(launch);
-  if (!catalog.launch || !['chat', 'anthropic'].includes(catalog.launch.wireApi)) {
+  if (!catalog.launch || !['responses', 'chat', 'anthropic'].includes(catalog.launch.wireApi)) {
     return { launch: catalog.launch, close: async () => catalog.close() };
   }
   try {
     const routedWireApi = catalog.launch.wireApi;
     const bridge = routedWireApi === 'anthropic'
       ? await startAnthropicMessagesBridge({ launch: catalog.launch, signal })
-      : await startChatCompletionsBridge({ launch: catalog.launch, signal });
+      : routedWireApi === 'chat'
+        ? await startChatCompletionsBridge({ launch: catalog.launch, signal })
+        : await startResponsesPassthroughBridge({ launch: catalog.launch, signal });
     return {
       launch: Object.freeze({
         ...catalog.launch,
