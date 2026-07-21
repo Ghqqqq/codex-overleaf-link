@@ -101,9 +101,42 @@
     };
   }
 
+  function compactStructuredEventValue(value, options, depth) {
+    var config = options || {};
+    var d = depth || 0;
+    if (typeof value === 'string') {
+      return typeof config.normalizeString === 'function' ? config.normalizeString(value) : value;
+    }
+    if (value === null || typeof value === 'number' || typeof value === 'boolean') return value;
+    if (d > 6 || typeof value !== 'object') return null;
+    if (Array.isArray(value)) {
+      return value.slice(0, 32).map(function (item) {
+        return compactStructuredEventValue(item, config, d + 1);
+      });
+    }
+    var out = {};
+    var keys = Object.keys(value).slice(0, 32);
+    for (var i = 0; i < keys.length; i++) {
+      out[keys[i]] = compactStructuredEventValue(value[keys[i]], config, d + 1);
+    }
+    return out;
+  }
+
+  function hashString(value) {
+    var hash = 2166136261;
+    var text = String(value || '');
+    for (var i = 0; i < text.length; i++) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  }
+
   return {
+    compactStructuredEventValue: compactStructuredEventValue,
     compactRunsForStorage: compactRunsForStorage,
     compactRunActionPayload: compactRunActionPayload,
-    compactProviderSnapshot: compactProviderSnapshot
+    compactProviderSnapshot: compactProviderSnapshot,
+    hashString: hashString
   };
 });

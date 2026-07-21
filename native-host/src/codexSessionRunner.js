@@ -22,6 +22,13 @@ const { createSubagentBroker } = require('./subagentBroker');
 const { resolveCodexCommand, shouldUseShellForCommand } = require('./codexCommand');
 const { applyProviderEnvironment, buildProviderConfigArgs, prepareProviderLaunch } = require('./codexProviderLaunch');
 const { buildReadProgressRules, createReadProgressController } = require('./readProgressGuard');
+const {
+  createCodexIdleWatchdog,
+  createOptionalTimeout,
+  getAbortReason,
+  parseOptionalPositiveInteger,
+  throwIfAborted
+} = require('./codexSessionTiming');
 
 const PARALLEL_SUBAGENTS_SKILL_ID = 'parallel-subagents';
 
@@ -1386,69 +1393,6 @@ function tokenizeShellCommand(command) {
     tokens.push(current);
   }
   return tokens;
-}
-
-function createOptionalTimeout(value, onTimeout) {
-  const timeoutMs = parseOptionalPositiveInteger(value);
-  if (!timeoutMs) {
-    return {
-      cancel() {}
-    };
-  }
-  const timer = setTimeout(() => onTimeout(timeoutMs), timeoutMs);
-  return {
-    cancel() {
-      clearTimeout(timer);
-    }
-  };
-}
-
-// Idle-style watchdog: fires only after the app-server has been silent for
-// `idleMs`. Callers must invoke .reset() on every signal of liveness
-// (incoming line, outgoing request). cancel() stops the timer on settle.
-// Returns no-op when idleMs is non-positive (defensive guard against bad env
-// var values).
-function createCodexIdleWatchdog(idleMs, onIdle) {
-  if (!(idleMs > 0)) {
-    return {
-      reset() {},
-      cancel() {}
-    };
-  }
-  let timer = setTimeout(() => onIdle(idleMs), idleMs);
-  return {
-    reset() {
-      clearTimeout(timer);
-      timer = setTimeout(() => onIdle(idleMs), idleMs);
-    },
-    cancel() {
-      clearTimeout(timer);
-    }
-  };
-}
-
-function parseOptionalPositiveInteger(value) {
-  if (value === undefined || value === null || value === '') {
-    return 0;
-  }
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
-}
-
-function throwIfAborted(signal) {
-  if (!signal?.aborted) {
-    return;
-  }
-  throw getAbortReason(signal);
-}
-
-function getAbortReason(signal) {
-  if (signal?.reason instanceof Error) {
-    return signal.reason;
-  }
-  const error = new Error('Codex run was cancelled by the user');
-  error.code = 'codex_cancelled';
-  return error;
 }
 
 function buildFinalAssistantMessage(messages = new Map(), order = []) {

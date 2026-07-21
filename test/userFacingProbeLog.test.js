@@ -188,8 +188,12 @@ test('normal task flow logs a user-facing project read summary', () => {
     'utf8'
   );
   const runTaskBody = extractFunction(contentScript, 'runTask');
+  const diagnosticsPanel = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/diagnosticsPanel.js'),
+    'utf8'
+  );
 
   assert.match(runTaskBody, /appendLog\(formatProjectSnapshotUserLog\(project\)\)/);
   assert.match(contentScript, /function formatProjectSnapshotUserLog\(/);
-  assert.match(contentScript, /已读取 Overleaf 项目/);
+  assert.match(diagnosticsPanel, /已读取 Overleaf 项目/);
 });

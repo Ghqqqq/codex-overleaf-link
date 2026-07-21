@@ -194,6 +194,39 @@
       : text.length * 2;
   }
 
+  function compactForStorage(items, helpers = {}) {
+    const normalizeField = helpers.normalizeField || (value => String(value || ''));
+    const normalizeDisplay = helpers.normalizeDisplay || normalizeField;
+    const normalizePaths = helpers.normalizePaths || (value => normalizePayload({ focusFiles: value }).focusFiles);
+    return (Array.isArray(items) ? items : [])
+      .slice(-MAX_ITEMS)
+      .map(item => {
+        const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+        return {
+          id: normalizeField(item?.id, 160),
+          clientUserMessageId: normalizeField(item?.clientUserMessageId, 160),
+          text: normalizeDisplay(item?.text, MAX_TEXT_CHARS),
+          status: VALID_STATUSES.has(item?.status) ? item.status : 'queued',
+          createdAt: typeof item?.createdAt === 'string' ? item.createdAt : '',
+          updatedAt: typeof item?.updatedAt === 'string' ? item.updatedAt : '',
+          sourceRunId: normalizeField(item?.sourceRunId, 160),
+          linkedRunId: normalizeField(item?.linkedRunId, 160),
+          claimToken: normalizeField(item?.claimToken, 160),
+          pauseReason: normalizeField(item?.pauseReason, 160),
+          payload: {
+            mode: typeof payload.mode === 'string' ? payload.mode : 'ask',
+            providerId: normalizeField(payload.providerId, 160) || 'builtin',
+            model: normalizeField(payload.model, 160),
+            reasoningEffort: normalizeField(payload.reasoningEffort, 32),
+            speedTier: payload.speedTier === 'fast' ? 'fast' : 'standard',
+            requireReviewing: payload.requireReviewing !== false,
+            focusFiles: normalizePaths(payload.focusFiles)
+          }
+        };
+      })
+      .filter(item => item.id && item.text);
+  }
+
   function failure(queue, code) {
     return { ok: false, queue, item: null, error: { code } };
   }
@@ -203,6 +236,7 @@
     MAX_QUEUE_BYTES,
     MAX_TEXT_CHARS,
     claimNext,
+    compactForStorage,
     enqueue,
     markExecuting,
     markSteering,

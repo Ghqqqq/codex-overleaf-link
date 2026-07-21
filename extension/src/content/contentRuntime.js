@@ -795,7 +795,7 @@
   let renderedSlashCommands = new Map();
   let runCancellationRequested = false;
   let runCancellationController = null;
-  let activePluginConfirmResolve = null;
+  let pluginConfirmController = null;
   const updateIdleClient = root.CodexOverleafUpdateIdle?.create({
     document,
     getBusyState: () => ({
@@ -803,7 +803,7 @@
       cancelling: runCancellationRequested,
       storage: saveStateInFlight || Boolean(saveStateTimer),
       reviewAction: trackedChangeInFlight.size > 0,
-      dialog: Boolean(activePluginConfirmResolve)
+      dialog: Boolean(pluginConfirmController?.isOpen())
     }),
     checkSaved: () => callPageBridge('waitForSaveState', { deadlineMs: 1500, pollIntervalMs: 100, requirePositiveSignal: true, allowQuietEditorFallback: true, quietFallbackMs: 1000 }),
     onApplyingChange: applying => { if (panel) panel.dataset.updating = applying ? 'true' : 'false'; },
@@ -2852,125 +2852,16 @@
     return confirmed ? 'new' : 'cancel';
   }
 
-  async function showPluginConfirm({
-    title = tr('confirmDefaultTitle'),
-    message = '',
-    confirmLabel = tr('confirmDefaultConfirm'),
-    cancelLabel = tr('confirmDefaultCancel'),
-    destructive = false
-  } = {}) {
-    if (!panel) {
-      ensurePanelOpen();
-    }
-
-    if (activePluginConfirmResolve) {
-      activePluginConfirmResolve(false);
-      activePluginConfirmResolve = null;
-    }
-
-    return new Promise(resolve => {
-      let settled = false;
-      const overlay = document.createElement('div');
-      overlay.className = 'codex-plugin-confirm';
-      overlay.setAttribute('data-plugin-confirm', 'true');
-      overlay.setAttribute('role', 'dialog');
-      overlay.setAttribute('aria-modal', 'true');
-      overlay.setAttribute('aria-label', title);
-
-      const card = document.createElement('section');
-      card.className = 'codex-plugin-confirm-card';
-
-      const head = document.createElement('div');
-      head.className = 'codex-plugin-confirm-head';
-      const icon = document.createElement('img');
-      icon.className = 'codex-plugin-confirm-icon';
-      icon.alt = '';
-      icon.setAttribute('aria-hidden', 'true');
-      icon.src = chrome.runtime.getURL('assets/icons/codex-overleaf-dialog-icon.png');
-      const titleWrap = document.createElement('div');
-      const brand = document.createElement('div');
-      brand.className = 'codex-plugin-confirm-brand';
-      brand.textContent = tr('confirmBrand');
-      const titleEl = document.createElement('div');
-      titleEl.className = 'codex-plugin-confirm-title';
-      titleEl.textContent = title;
-      titleWrap.append(brand, titleEl);
-      head.append(icon, titleWrap);
-
-      const body = document.createElement('div');
-      body.className = 'codex-plugin-confirm-body';
-      body.textContent = String(message || '');
-
-      const actions = document.createElement('div');
-      actions.className = 'codex-plugin-confirm-actions';
-      const cancel = document.createElement('button');
-      cancel.type = 'button';
-      cancel.className = 'codex-plugin-confirm-cancel';
-      cancel.textContent = cancelLabel;
-      const confirm = document.createElement('button');
-      confirm.type = 'button';
-      confirm.className = 'codex-plugin-confirm-confirm';
-      if (destructive) {
-        confirm.dataset.destructive = 'true';
-      }
-      confirm.textContent = confirmLabel;
-      actions.append(cancel, confirm);
-      card.append(head, body, actions);
-      overlay.append(card);
-      panel.append(overlay);
-
-      const cleanup = value => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        activePluginConfirmResolve = null;
-        document.removeEventListener('keydown', onKeydown, true);
-        overlay.remove();
-        resolve(value);
-      };
-      activePluginConfirmResolve = cleanup;
-      const onKeydown = event => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          cleanup(false);
-          return;
-        }
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          // Destructive dialogs never treat a bare Enter as consent — the
-          // user must deliberately reach the (red) confirm button. Enter on
-          // a focused button still activates it via the click handler.
-          if (!destructive && event.target !== cancel) {
-            cleanup(true);
-          } else if (event.target === cancel) {
-            cleanup(false);
-          } else if (event.target === confirm) {
-            cleanup(true);
-          }
-          return;
-        }
-        if (event.key === 'Tab') {
-          // aria-modal contract: keep Tab cycling inside the two-button card
-          // instead of drifting onto the Overleaf page behind the overlay.
-          event.preventDefault();
-          const next = event.target === cancel ? confirm : cancel;
-          next.focus();
-        }
-      };
-
-      overlay.addEventListener('click', event => {
-        if (event.target === overlay) {
-          cleanup(false);
-        }
+  async function showPluginConfirm(options = {}) {
+    if (!pluginConfirmController) {
+      pluginConfirmController = PanelRenderer.createConfirmController({
+        getPanel: () => panel,
+        ensurePanelOpen,
+        getIconUrl: () => chrome.runtime.getURL('assets/icons/codex-overleaf-dialog-icon.png'),
+        tr
       });
-      cancel.addEventListener('click', () => cleanup(false));
-      confirm.addEventListener('click', () => cleanup(true));
-      document.addEventListener('keydown', onKeydown, true);
-      // Destructive dialogs open on the SAFE button so a stray keystroke
-      // cannot delete anything; benign confirms keep the fast path.
-      (destructive ? cancel : confirm).focus();
-    });
+    }
+    return pluginConfirmController.show(options);
   }
 
   function getEnabledCodexOverleafSkillIds() {
@@ -5433,102 +5324,23 @@
   }
 
   function formatProjectSnapshotUserLog(project) {
-    const files = project?.files || [];
-    if (!files.length) {
-      return tx(
-        'No Overleaf project files were read yet. Make sure the project has loaded, or open a .tex file in Overleaf and retry.',
-        '还没有读到 Overleaf 项目文件。请确认项目已加载完成，或在 Overleaf 点开一个 .tex 文件后重试。'
-      );
-    }
-
-    const textCount = files.filter(isTextSnapshotFile).length;
-    const binaryCount = files.length - textCount;
-    const resourceText = binaryCount ? tx(`, ${binaryCount} asset file(s)`, `，${binaryCount} 个资源文件`) : '';
-    const activePath = project.activePath ? tx(`, current file: ${project.activePath}`, `，当前文件：${project.activePath}`) : '';
-    const focusFiles = getActiveFocusFiles();
-    const focusText = focusFiles.length ? tx(`, focus: ${focusFiles.join(', ')}`, `，优先处理：${focusFiles.join(', ')}`) : '';
-    return tx(
-      `Read Overleaf project: ${textCount} text file(s)${resourceText}${activePath}${focusText}.`,
-      `已读取 Overleaf 项目：${textCount} 个文本文件${resourceText}${activePath}${focusText}。`
-    );
+    return DiagnosticsPanel.formatProjectSnapshotUserLog(project, { tx, getFocusFiles: getActiveFocusFiles });
   }
 
   function formatProjectSnapshotFileSize(file) {
-    if (isTextSnapshotFile(file)) {
-      return `${String(file.content || '').length} chars`;
-    }
-    if (Number.isFinite(Number(file?.size))) {
-      return `${Number(file.size)} bytes`;
-    }
-    return file?.contentBase64 ? `${String(file.contentBase64).length} base64` : 'binary';
+    return DiagnosticsPanel.formatProjectSnapshotFileSize(file);
   }
 
   function formatProjectSnapshotWarning(warning) {
-    if (/No source files were captured/i.test(warning)) {
-      return tx('No project source files were read. Make sure Overleaf has loaded, or open a .tex file and retry.', '没有读取到项目源文件。请确认 Overleaf 页面加载完成，或点开一个 .tex 文件后重试。');
-    }
-    if (/Full project snapshot was not captured/i.test(warning)) {
-      return tx('The full Overleaf project was not read. To avoid refreshing the local workspace from an incomplete snapshot, reload Overleaf or retry later.', '没有读到完整的 Overleaf 项目。为了避免本地 workspace 用残缺快照覆盖项目，请刷新 Overleaf 或稍后重试。');
-    }
-    if (/empty or still loading/i.test(warning)) {
-      return tx('Some file content is still loading. Wait for Overleaf to finish loading, then retry.', '读取到的文件内容还在加载中。请等 Overleaf 加载完成后重试。');
-    }
-    if (/suspiciously short|shorter than 80 characters/i.test(warning)) {
-      return tx('Some file content is very short and may not have fully loaded. Results may be incomplete.', '部分文件内容很短，可能还没完全加载。结果可能不完整。');
-    }
-    if (/identical captured content/i.test(warning)) {
-      return tx('Several files appear to have identical captured content, so Overleaf file switching may have failed. Reload and retry.', '多个文件内容看起来相同，Overleaf 文件切换可能没有成功。请刷新页面后重试。');
-    }
-    if (/were skipped/i.test(warning)) {
-      return tx('Some project files were skipped, usually images, PDFs, or unreadable files.', '有些项目文件被跳过，通常是图片、PDF 或无法读取的文件。');
-    }
-    return warning;
+    return DiagnosticsPanel.formatProjectSnapshotWarning(warning, tx);
   }
 
   function appendEditorDiagnostics(editorDiagnostics, projectDiagnostics) {
-    if (editorDiagnostics) {
-      const active = editorDiagnostics.active;
-      appendLog(`Editor probe: active ${active?.tag || 'none'} ${active?.ariaLabel || active?.className || ''} len=${active?.valueLength || 0}; textareas=${editorDiagnostics.textareaCount || 0}; editables=${editorDiagnostics.editableCount || 0}; iframes=${editorDiagnostics.iframeCount || 0}.`);
-      if (editorDiagnostics.documentStats) {
-        const stats = editorDiagnostics.documentStats;
-        appendLog(`DOM stats: elements=${stats.elementCount || 0}; textareas=${stats.textareaCount || 0}; cm=${stats.cmCount || 0}; role textbox=${stats.roleTextboxCount || 0}.`);
-      }
-      if (editorDiagnostics.unstableStore) {
-        const store = editorDiagnostics.unstableStore;
-        const readable = (store.readable || [])
-          .map(item => `${item.path}:${item.present ? item.type : 'missing'}`)
-          .join(', ');
-        appendLog(`Overleaf store: ${store.present ? 'present' : 'missing'}${readable ? `; ${readable}` : ''}.`);
-      }
-      if (editorDiagnostics.codeMirrorView) {
-        const view = editorDiagnostics.codeMirrorView;
-        appendLog(`CodeMirror view: docLength=${view.docLength || 0}; dispatch=${Boolean(view.hasDispatch)}; source=${view.source || 'unknown'}.`);
-      }
-      if (editorDiagnostics.globals) {
-        const globals = editorDiagnostics.globals;
-        appendLog(`Overleaf globals: overleaf=${globals.overleaf || 'missing'}; Overleaf=${globals.Overleaf || 'missing'}; _ide=${globals._ide || 'missing'}.`);
-      }
-      for (const item of [...(editorDiagnostics.textareas || []), ...(editorDiagnostics.editables || [])].slice(0, 3)) {
-        appendLog(`Editor candidate: ${item.tag || 'node'} ${item.ariaLabel || item.className || item.id || ''} len=${item.valueLength || 0}.`);
-      }
-    }
-    if (projectDiagnostics) {
-      const records = projectDiagnostics.docRecords || [];
-      appendLog(`Project probe: doc records=${projectDiagnostics.docRecordCount || 0}; roots=${(projectDiagnostics.internalRootKeys || []).slice(0, 6).join(', ') || 'none'}.`);
-      for (const record of records.slice(0, 4)) {
-        appendLog(`Doc record: ${record.path} id=${record.id} source=${record.source || 'internal'}.`);
-      }
-    }
+    DiagnosticsPanel.appendEditorDiagnostics(editorDiagnostics, projectDiagnostics, appendLog);
   }
 
   function appendProjectWarnings(project) {
-    const warnings = getProjectSnapshotWarnings(project);
-    for (const warning of warnings.blocking) {
-      appendLog(`Snapshot blocked: ${warning}`);
-    }
-    for (const warning of warnings.nonBlocking) {
-      appendLog(`Snapshot warning: ${warning}`);
-    }
+    DiagnosticsPanel.appendProjectWarnings(project, { getWarnings: getProjectSnapshotWarnings, appendLog });
   }
 
   function getProjectSnapshotWarnings(project) {
@@ -5578,40 +5390,15 @@
   }
 
   function isTextSnapshotFile(file) {
-    return Boolean(file && file.kind !== 'binary' && typeof file.content === 'string');
+    return DiagnosticsPanel.isTextSnapshotFile(file);
   }
 
   function uniqueContentSignatures(files) {
-    const signatures = files.map(file => {
-      const content = String(file.content || '');
-      return `${content.length}:${content.slice(0, 120)}:${content.slice(-120)}`;
-    });
-    return Array.from(new Set(signatures));
+    return DiagnosticsPanel.uniqueContentSignatures(files);
   }
 
   function appendReviewingDiagnostics(diagnostics) {
-    if (!diagnostics) {
-      appendLog(tx('Probe diagnostics unavailable.', '诊断探针不可用。'));
-      return;
-    }
-
-    appendLog(`Probe saw ${diagnostics.controlCount || 0} controls; body Reviewing=${Boolean(diagnostics.bodyTextHasReviewing)}, text Reviewing=${Boolean(diagnostics.textContentHasReviewing)}.`);
-    const controls = diagnostics.reviewLikeControls || [];
-    if (!controls.length) {
-      appendLog('Probe did not see review/track/suggest controls in the page DOM.');
-      return;
-    }
-
-    for (const control of controls.slice(0, 4)) {
-      const label = [
-        control.text,
-        control.ariaLabel && `aria:${control.ariaLabel}`,
-        control.title && `title:${control.title}`,
-        control.dataTestId && `test:${control.dataTestId}`,
-        control.id && `id:${control.id}`
-      ].filter(Boolean).join(' | ');
-      appendLog(`Review-like ${control.tag || 'node'}: ${label || control.htmlSnippet || '(no label)'}`);
-    }
+    DiagnosticsPanel.appendReviewingDiagnostics(diagnostics, { appendLog, tx });
   }
 
   function sendNative(payload) {

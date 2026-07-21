@@ -236,6 +236,117 @@
     actions.prepend(button);
   }
 
+  function createConfirmController(options = {}) {
+    let activeResolve = null;
+
+    function isOpen() {
+      return Boolean(activeResolve);
+    }
+
+    function dismiss(value = false) {
+      activeResolve?.(value);
+    }
+
+    function show(config = {}) {
+      if (!options.getPanel?.()) {
+        options.ensurePanelOpen?.();
+      }
+      const panel = options.getPanel?.();
+      if (!panel) {
+        return Promise.resolve(false);
+      }
+      dismiss(false);
+      const tr = options.tr || (key => key);
+      const title = config.title || tr('confirmDefaultTitle');
+      const message = config.message || '';
+      const confirmLabel = config.confirmLabel || tr('confirmDefaultConfirm');
+      const cancelLabel = config.cancelLabel || tr('confirmDefaultCancel');
+      const destructive = config.destructive === true;
+      const doc = panel.ownerDocument || document;
+
+      return new Promise(resolve => {
+        let settled = false;
+        const overlay = doc.createElement('div');
+        overlay.className = 'codex-plugin-confirm';
+        overlay.setAttribute('data-plugin-confirm', 'true');
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-label', title);
+
+        const card = doc.createElement('section');
+        card.className = 'codex-plugin-confirm-card';
+        const head = doc.createElement('div');
+        head.className = 'codex-plugin-confirm-head';
+        const icon = doc.createElement('img');
+        icon.className = 'codex-plugin-confirm-icon';
+        icon.alt = '';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.src = options.getIconUrl?.() || '';
+        const titleWrap = doc.createElement('div');
+        const brand = doc.createElement('div');
+        brand.className = 'codex-plugin-confirm-brand';
+        brand.textContent = tr('confirmBrand');
+        const titleEl = doc.createElement('div');
+        titleEl.className = 'codex-plugin-confirm-title';
+        titleEl.textContent = title;
+        titleWrap.append(brand, titleEl);
+        head.append(icon, titleWrap);
+
+        const body = doc.createElement('div');
+        body.className = 'codex-plugin-confirm-body';
+        body.textContent = String(message);
+        const actions = doc.createElement('div');
+        actions.className = 'codex-plugin-confirm-actions';
+        const cancel = doc.createElement('button');
+        cancel.type = 'button';
+        cancel.className = 'codex-plugin-confirm-cancel';
+        cancel.textContent = cancelLabel;
+        const confirm = doc.createElement('button');
+        confirm.type = 'button';
+        confirm.className = 'codex-plugin-confirm-confirm';
+        if (destructive) confirm.dataset.destructive = 'true';
+        confirm.textContent = confirmLabel;
+        actions.append(cancel, confirm);
+        card.append(head, body, actions);
+        overlay.append(card);
+        panel.append(overlay);
+
+        const cleanup = value => {
+          if (settled) return;
+          settled = true;
+          activeResolve = null;
+          doc.removeEventListener('keydown', onKeydown, true);
+          overlay.remove();
+          resolve(value);
+        };
+        activeResolve = cleanup;
+        const onKeydown = event => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            cleanup(false);
+          } else if (event.key === 'Enter') {
+            event.preventDefault();
+            if (!destructive && event.target !== cancel) cleanup(true);
+            else if (event.target === cancel) cleanup(false);
+            else if (event.target === confirm) cleanup(true);
+          } else if (event.key === 'Tab') {
+            event.preventDefault();
+            (event.target === cancel ? confirm : cancel).focus();
+          }
+        };
+        overlay.addEventListener('click', event => {
+          if (event.target === overlay) cleanup(false);
+        });
+        cancel.addEventListener('click', () => cleanup(false));
+        confirm.addEventListener('click', () => cleanup(true));
+        doc.addEventListener('keydown', onKeydown, true);
+        (destructive ? cancel : confirm).focus();
+      });
+    }
+
+    return { dismiss, isOpen, show };
+  }
+
   function destroy(instance) {
     for (const { target, type, listener, options } of instance.listeners.splice(0)) {
       target.removeEventListener?.(type, listener, options);
@@ -246,6 +357,7 @@
 
   window.CodexOverleafPanelRenderer = {
     create,
+    createConfirmController,
     setVisible,
     setBadge,
     setWidth

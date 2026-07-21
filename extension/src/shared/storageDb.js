@@ -1,12 +1,12 @@
 (function initStorageDb(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./storageRunActions'));
+    module.exports = factory(require('./storageRunActions'), require('./runInputQueue'));
   } else {
-    root.CodexOverleafStorageDb = factory(root.CodexOverleafStorageRunActions);
+    root.CodexOverleafStorageDb = factory(root.CodexOverleafStorageRunActions, root.CodexOverleafRunInputQueue);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions) {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue) {
   'use strict';
-  if (!StorageRunActions?.compactRunsForStorage || !StorageRunActions?.compactRunActionPayload || !StorageRunActions?.compactProviderSnapshot) {
+  if (!StorageRunActions?.compactRunsForStorage || !StorageRunActions?.compactRunActionPayload || !StorageRunActions?.compactProviderSnapshot || !StorageRunActions?.compactStructuredEventValue || !StorageRunActions?.hashString || !RunInputQueue?.compactForStorage) {
     throw new Error('Codex Overleaf storage run-action helpers are unavailable.');
   }
   // IndexedDB versions are monotonic; v2.0 RC profiles have already opened v3.
@@ -272,7 +272,11 @@
       codexThreadId: typeof input.codexThreadId === 'string' ? input.codexThreadId : '',
       status: typeof input.status === 'string' && input.status ? input.status : 'active',
       focusFiles: normalizePathList(input.focusFiles),
-      pendingInputs: compactPendingInputsForStorage(input.pendingInputs),
+      pendingInputs: RunInputQueue.compactForStorage(input.pendingInputs, {
+        normalizeField: normalizeTextField,
+        normalizeDisplay: normalizeDisplayTextForStorage,
+        normalizePaths: normalizePathList
+      }),
       history: compactHistoryForStorage(input.history),
       runs: compactRunsForStorage(input.runs, options),
       task: normalizeDisplayTextForStorage(input.task, SESSION_STORAGE_LIMITS.taskChars),
@@ -723,64 +727,16 @@
       });
   }
 
-  function compactPendingInputsForStorage(items) {
-    return (Array.isArray(items) ? items : [])
-      .slice(-20)
-      .map(function (item) {
-        var payload = item && item.payload && typeof item.payload === 'object' ? item.payload : {};
-        return {
-          id: normalizeTextField(item && item.id, 160),
-          clientUserMessageId: normalizeTextField(item && item.clientUserMessageId, 160),
-          text: normalizeDisplayTextForStorage(item && item.text, 12000),
-          status: ['queued', 'paused', 'claimed', 'executing', 'steering'].includes(item && item.status)
-            ? item.status
-            : 'queued',
-          createdAt: typeof (item && item.createdAt) === 'string' ? item.createdAt : '',
-          updatedAt: typeof (item && item.updatedAt) === 'string' ? item.updatedAt : '',
-          sourceRunId: normalizeTextField(item && item.sourceRunId, 160),
-          linkedRunId: normalizeTextField(item && item.linkedRunId, 160),
-          claimToken: normalizeTextField(item && item.claimToken, 160),
-          pauseReason: normalizeTextField(item && item.pauseReason, 160),
-          payload: {
-            mode: typeof payload.mode === 'string' ? payload.mode : 'ask',
-            providerId: normalizeTextField(payload.providerId, 160) || 'builtin',
-            model: normalizeTextField(payload.model, 160),
-            reasoningEffort: normalizeTextField(payload.reasoningEffort, 32),
-            speedTier: payload.speedTier === 'fast' ? 'fast' : 'standard',
-            requireReviewing: payload.requireReviewing !== false,
-            focusFiles: normalizePathList(payload.focusFiles)
-          }
-        };
-      })
-      .filter(function (item) { return item.id && item.text; });
-  }
-
   // Deep-copies a known-safe structured event value (the completion-report
   // {conclusion, body, meta[]} payload, or a FailureReason object) preserving
   // its shape while redacting + truncating every string field. Bounded depth +
   // breadth so a pathological value can't blow up the stored record.
   function compactStructuredEventValueForStorage(value, depth) {
-    var d = depth || 0;
-    if (typeof value === 'string') {
-      return normalizeDisplayTextForStorage(value, SESSION_STORAGE_LIMITS.reportDetailChars);
-    }
-    if (value === null || typeof value === 'number' || typeof value === 'boolean') {
-      return value;
-    }
-    if (d > 6 || typeof value !== 'object') {
-      return null;
-    }
-    if (Array.isArray(value)) {
-      return value.slice(0, 32).map(function (item) {
-        return compactStructuredEventValueForStorage(item, d + 1);
-      });
-    }
-    var out = {};
-    var keys = Object.keys(value).slice(0, 32);
-    for (var i = 0; i < keys.length; i++) {
-      out[keys[i]] = compactStructuredEventValueForStorage(value[keys[i]], d + 1);
-    }
-    return out;
+    return StorageRunActions.compactStructuredEventValue(value, {
+      normalizeString: function (text) {
+        return normalizeDisplayTextForStorage(text, SESSION_STORAGE_LIMITS.reportDetailChars);
+      }
+    }, depth);
   }
 
   function getEventDetailLimit(event) {
@@ -1351,23 +1307,7 @@
     }
   }
 
-  function hashString(value) {
-    var hash = 2166136261;
-    var text = String(value || '');
-    for (var i = 0; i < text.length; i++) {
-      hash ^= text.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    return (hash >>> 0).toString(16).padStart(8, '0');
-  }
-
-  function cloneJsonValue(value) {
-    try {
-      return JSON.parse(JSON.stringify(value));
-    } catch (_error) {
-      return Array.isArray(value) ? value.slice() : value;
-    }
-  }
+  var hashString = StorageRunActions.hashString;
 
   return {
     TARGET_SCHEMA_VERSION: TARGET_SCHEMA_VERSION,

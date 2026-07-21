@@ -313,6 +313,129 @@
     }
   }
 
+  function formatProjectSnapshotUserLog(project, options = {}) {
+    const tx = options.tx || ((english) => english);
+    const files = project?.files || [];
+    if (!files.length) {
+      return tx(
+        'No Overleaf project files were read yet. Make sure the project has loaded, or open a .tex file in Overleaf and retry.',
+        '还没有读到 Overleaf 项目文件。请确认项目已加载完成，或在 Overleaf 点开一个 .tex 文件后重试。'
+      );
+    }
+    const textCount = files.filter(isTextSnapshotFile).length;
+    const binaryCount = files.length - textCount;
+    const resourceText = binaryCount ? tx(`, ${binaryCount} asset file(s)`, `，${binaryCount} 个资源文件`) : '';
+    const activePath = project.activePath ? tx(`, current file: ${project.activePath}`, `，当前文件：${project.activePath}`) : '';
+    const focusFiles = options.getFocusFiles?.() || [];
+    const focusText = focusFiles.length ? tx(`, focus: ${focusFiles.join(', ')}`, `，优先处理：${focusFiles.join(', ')}`) : '';
+    return tx(
+      `Read Overleaf project: ${textCount} text file(s)${resourceText}${activePath}${focusText}.`,
+      `已读取 Overleaf 项目：${textCount} 个文本文件${resourceText}${activePath}${focusText}。`
+    );
+  }
+
+  function formatProjectSnapshotFileSize(file) {
+    if (isTextSnapshotFile(file)) return `${String(file.content || '').length} chars`;
+    if (Number.isFinite(Number(file?.size))) return `${Number(file.size)} bytes`;
+    return file?.contentBase64 ? `${String(file.contentBase64).length} base64` : 'binary';
+  }
+
+  function formatProjectSnapshotWarning(warning, tx = (english => english)) {
+    if (/No source files were captured/i.test(warning)) {
+      return tx('No project source files were read. Make sure Overleaf has loaded, or open a .tex file and retry.', '没有读取到项目源文件。请确认 Overleaf 页面加载完成，或点开一个 .tex 文件后重试。');
+    }
+    if (/Full project snapshot was not captured/i.test(warning)) {
+      return tx('The full Overleaf project was not read. To avoid refreshing the local workspace from an incomplete snapshot, reload Overleaf or retry later.', '没有读到完整的 Overleaf 项目。为了避免本地 workspace 用残缺快照覆盖项目，请刷新 Overleaf 或稍后重试。');
+    }
+    if (/empty or still loading/i.test(warning)) {
+      return tx('Some file content is still loading. Wait for Overleaf to finish loading, then retry.', '读取到的文件内容还在加载中。请等 Overleaf 加载完成后重试。');
+    }
+    if (/suspiciously short|shorter than 80 characters/i.test(warning)) {
+      return tx('Some file content is very short and may not have fully loaded. Results may be incomplete.', '部分文件内容很短，可能还没完全加载。结果可能不完整。');
+    }
+    if (/identical captured content/i.test(warning)) {
+      return tx('Several files appear to have identical captured content, so Overleaf file switching may have failed. Reload and retry.', '多个文件内容看起来相同，Overleaf 文件切换可能没有成功。请刷新页面后重试。');
+    }
+    if (/were skipped/i.test(warning)) {
+      return tx('Some project files were skipped, usually images, PDFs, or unreadable files.', '有些项目文件被跳过，通常是图片、PDF 或无法读取的文件。');
+    }
+    return warning;
+  }
+
+  function appendEditorDiagnostics(editorDiagnostics, projectDiagnostics, appendLog = () => {}) {
+    if (editorDiagnostics) {
+      const active = editorDiagnostics.active;
+      appendLog(`Editor probe: active ${active?.tag || 'none'} ${active?.ariaLabel || active?.className || ''} len=${active?.valueLength || 0}; textareas=${editorDiagnostics.textareaCount || 0}; editables=${editorDiagnostics.editableCount || 0}; iframes=${editorDiagnostics.iframeCount || 0}.`);
+      if (editorDiagnostics.documentStats) {
+        const stats = editorDiagnostics.documentStats;
+        appendLog(`DOM stats: elements=${stats.elementCount || 0}; textareas=${stats.textareaCount || 0}; cm=${stats.cmCount || 0}; role textbox=${stats.roleTextboxCount || 0}.`);
+      }
+      if (editorDiagnostics.unstableStore) {
+        const store = editorDiagnostics.unstableStore;
+        const readable = (store.readable || []).map(item => `${item.path}:${item.present ? item.type : 'missing'}`).join(', ');
+        appendLog(`Overleaf store: ${store.present ? 'present' : 'missing'}${readable ? `; ${readable}` : ''}.`);
+      }
+      if (editorDiagnostics.codeMirrorView) {
+        const view = editorDiagnostics.codeMirrorView;
+        appendLog(`CodeMirror view: docLength=${view.docLength || 0}; dispatch=${Boolean(view.hasDispatch)}; source=${view.source || 'unknown'}.`);
+      }
+      if (editorDiagnostics.globals) {
+        const globals = editorDiagnostics.globals;
+        appendLog(`Overleaf globals: overleaf=${globals.overleaf || 'missing'}; Overleaf=${globals.Overleaf || 'missing'}; _ide=${globals._ide || 'missing'}.`);
+      }
+      for (const item of [...(editorDiagnostics.textareas || []), ...(editorDiagnostics.editables || [])].slice(0, 3)) {
+        appendLog(`Editor candidate: ${item.tag || 'node'} ${item.ariaLabel || item.className || item.id || ''} len=${item.valueLength || 0}.`);
+      }
+    }
+    if (projectDiagnostics) {
+      const records = projectDiagnostics.docRecords || [];
+      appendLog(`Project probe: doc records=${projectDiagnostics.docRecordCount || 0}; roots=${(projectDiagnostics.internalRootKeys || []).slice(0, 6).join(', ') || 'none'}.`);
+      for (const record of records.slice(0, 4)) appendLog(`Doc record: ${record.path} id=${record.id} source=${record.source || 'internal'}.`);
+    }
+  }
+
+  function appendProjectWarnings(project, options = {}) {
+    const warnings = options.getWarnings?.(project) || { blocking: [], nonBlocking: [] };
+    for (const warning of warnings.blocking) options.appendLog?.(`Snapshot blocked: ${warning}`);
+    for (const warning of warnings.nonBlocking) options.appendLog?.(`Snapshot warning: ${warning}`);
+  }
+
+  function isTextSnapshotFile(file) {
+    return Boolean(file && file.kind !== 'binary' && typeof file.content === 'string');
+  }
+
+  function uniqueContentSignatures(files) {
+    return Array.from(new Set(files.map(file => {
+      const content = String(file.content || '');
+      return `${content.length}:${content.slice(0, 120)}:${content.slice(-120)}`;
+    })));
+  }
+
+  function appendReviewingDiagnostics(diagnostics, options = {}) {
+    const appendLog = options.appendLog || (() => {});
+    const tx = options.tx || ((english) => english);
+    if (!diagnostics) {
+      appendLog(tx('Probe diagnostics unavailable.', '诊断探针不可用。'));
+      return;
+    }
+    appendLog(`Probe saw ${diagnostics.controlCount || 0} controls; body Reviewing=${Boolean(diagnostics.bodyTextHasReviewing)}, text Reviewing=${Boolean(diagnostics.textContentHasReviewing)}.`);
+    const controls = diagnostics.reviewLikeControls || [];
+    if (!controls.length) {
+      appendLog('Probe did not see review/track/suggest controls in the page DOM.');
+      return;
+    }
+    for (const control of controls.slice(0, 4)) {
+      const label = [
+        control.text,
+        control.ariaLabel && `aria:${control.ariaLabel}`,
+        control.title && `title:${control.title}`,
+        control.dataTestId && `test:${control.dataTestId}`,
+        control.id && `id:${control.id}`
+      ].filter(Boolean).join(' | ');
+      appendLog(`Review-like ${control.tag || 'node'}: ${label || control.htmlSnippet || '(no label)'}`);
+    }
+  }
+
   function t(instance, key, params) {
     if (typeof instance?.i18n === 'function') {
       return instance.i18n(key, params);
@@ -331,12 +454,20 @@
   }
 
   window.CodexOverleafDiagnosticsPanel = {
+    appendEditorDiagnostics,
+    appendProjectWarnings,
+    appendReviewingDiagnostics,
     create,
+    formatProjectSnapshotFileSize,
+    formatProjectSnapshotUserLog,
+    formatProjectSnapshotWarning,
+    isTextSnapshotFile,
     updateStatus,
     toggleMenu,
     closeMenu,
     closeResult,
     showLoading,
-    showResult
+    showResult,
+    uniqueContentSignatures
   };
 })();
