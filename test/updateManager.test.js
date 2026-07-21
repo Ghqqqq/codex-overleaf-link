@@ -28,6 +28,9 @@ function createAppliedUpdateFixture() {
   const payloadRoot = path.join(stageRoot, 'payload');
   fs.mkdirSync(path.join(extensionRoot, 'runtime'), { recursive: true });
   fs.writeFileSync(path.join(extensionRoot, 'runtime', 'old.js'), 'old\n');
+  fs.writeFileSync(path.join(extensionRoot, 'runtime', 'runtime-manifest.json'), '{"schemaVersion":1}\n');
+  fs.mkdirSync(path.join(extensionRoot, 'bootstrap'), { recursive: true });
+  fs.writeFileSync(path.join(extensionRoot, 'bootstrap', 'background.js'), '// bootstrap\n');
   fs.writeFileSync(path.join(extensionRoot, 'manifest.json'), JSON.stringify({
     manifest_version: 3,
     version: '1.9.0',
@@ -132,6 +135,26 @@ test('native apply rejects a staged transaction when target-bound authorization 
       error => error?.code === 'update_consent_required'
     );
     assert.equal(fs.existsSync(path.join(fixture.context.extensionRoot, 'runtime', 'old.js')), true);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('native apply rejects a mixed source and managed extension tree before moving runtime files', () => {
+  const fixture = createAppliedUpdateFixture();
+  try {
+    const manifestPath = path.join(fixture.context.extensionRoot, 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.background.service_worker = 'src/background.js';
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+    assert.throws(
+      () => applyStagedUpdate(fixture.context, { transactionId: 'fixture' }, {
+        getWorkState: () => ({ projectLocks: 0, runControllers: 0 })
+      }),
+      error => error?.code === 'update_managed_layout_invalid'
+    );
+    assert.equal(fs.existsSync(path.join(fixture.context.extensionRoot, 'runtime', 'old.js')), true);
+    assert.equal(fs.existsSync(path.join(fixture.context.extensionRoot, 'slots', 'previous')), false);
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }

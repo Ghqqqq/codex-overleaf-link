@@ -18,6 +18,7 @@
     'waiting_for_idle',
     'applying',
     'awaiting_health',
+    'rolling_back',
     'committed',
     'rolled_back',
     'failed'
@@ -27,7 +28,8 @@
     'staged',
     'waiting_for_idle',
     'applying',
-    'awaiting_health'
+    'awaiting_health',
+    'rolling_back'
   ]);
   const TERMINAL_STATES = new Set(['committed', 'rolled_back', 'failed']);
   const QUIET_FAILURE_CODES = new Set([
@@ -44,6 +46,7 @@
     waiting_for_idle: { value: 65, determinate: true, phase: 'waiting' },
     applying: { value: 82, determinate: false, phase: 'applying' },
     awaiting_health: { value: 94, determinate: false, phase: 'health' },
+    rolling_back: { value: 94, determinate: false, phase: 'rollback' },
     committed: { value: 100, determinate: true, phase: 'committed' },
     rolled_back: { value: 94, determinate: true, phase: 'rolled_back' },
     failed: { value: 0, determinate: true, phase: 'failed' }
@@ -63,8 +66,12 @@
       blocker: blockers[0] || '',
       blockers,
       transactionId: safeId(value.transactionId),
+      initiatedBy: ['automatic', 'manual'].includes(value.initiatedBy) ? value.initiatedBy : '',
       lastCheckedAt: finiteNumber(value.lastCheckedAt),
       stagedAt: finiteNumber(value.stagedAt),
+      phaseStartedAt: finiteNumber(value.phaseStartedAt),
+      deadlineAt: finiteNumber(value.deadlineAt),
+      heartbeatAt: finiteNumber(value.heartbeatAt),
       postponeUntil: finiteNumber(value.postponeUntil),
       code: safeToken(value.code),
       message: String(value.message || '').replace(/\s+/g, ' ').trim().slice(0, 300)
@@ -96,7 +103,11 @@
     const execution = EXECUTION_STATES.has(state.state);
     const available = state.state === 'update_available' && newer;
     const progress = getProgressModel(state);
-    const quietFailure = state.state === 'failed' && QUIET_FAILURE_CODES.has(state.code);
+    const quietFailure = state.state === 'failed' &&
+      state.initiatedBy !== 'manual' &&
+      QUIET_FAILURE_CODES.has(state.code);
+    const visibleFailure = state.state === 'failed' &&
+      (state.initiatedBy === 'manual' || (!quietFailure && newer));
 
     return {
       state,
@@ -112,7 +123,7 @@
       snoozed,
       execution,
       showPanel: (available && !snoozed) || execution || state.state === 'rolled_back' ||
-        (state.state === 'failed' && !quietFailure && newer),
+        visibleFailure,
       badge: getBadge(state, { available, snoozed }),
       actions: {
         check: ['idle', 'committed', 'rolled_back', 'failed'].includes(state.state),
@@ -135,7 +146,7 @@
   }
 
   function getBadge(state, flags) {
-    if (state.state === 'applying' || state.state === 'awaiting_health') {
+    if (state.state === 'applying' || state.state === 'awaiting_health' || state.state === 'rolling_back') {
       return { text: '...', color: '#3578bd' };
     }
     if (state.state === 'failed' || state.state === 'rolled_back') {

@@ -14,18 +14,27 @@ const { writeConvertedResponseAsSse } = require('./chatBridgeResponse');
 const { classifyResponsesRoute } = require('./providerBridgeRoutes');
 const { providerError } = require('./providerProfile');
 const { sanitizeProviderMessage } = require('./providerRedaction');
+const {
+  createProviderStreamLifecycle,
+  resolveProviderIdleTimeoutMs,
+  resolveProviderTotalTimeoutMs
+} = require('./providerStreamLifecycle');
 
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 const MAX_ERROR_BYTES = 64 * 1024;
 const MAX_HISTORY_ENTRIES = 64;
+const MAX_CONTINUATION_CHARS = 512 * 1024;
+const MAX_REASONING_CONTINUATIONS = 2;
+const REASONING_CONTINUATION_MARKER = '[codex-overleaf-provider-reasoning-continuation]';
 
 async function startAnthropicMessagesBridge({ launch, signal } = {}) {
   if (!launch?.baseUrl) throw providerError('provider_base_url_invalid', 'Anthropic routing requires a provider Base URL.');
   const clientToken = crypto.randomBytes(32).toString('base64url');
   const activeRequests = new Set();
   const history = new Map();
+  const continuationState = { anchorMessages: [], attempts: 0, responseId: '' };
   const server = http.createServer((req, res) => {
-    handleRequest({ req, res, launch, clientToken, activeRequests, history }).catch(error => {
+    handleRequest({ req, res, launch, clientToken, activeRequests, history, continuationState }).catch(error => {
       if (res.writableEnded) return;
       const code = normalizeBridgeErrorCode(error?.code);
       const message = sanitizeProviderMessage(error?.message, [launch.apiKey]) || 'The Anthropic provider bridge failed.';
@@ -40,9 +49,10 @@ async function startAnthropicMessagesBridge({ launch, signal } = {}) {
       }
     });
   });
-  const timeoutMs = resolveTimeout(launch);
+  const idleTimeoutMs = resolveProviderIdleTimeoutMs(launch);
+  const totalTimeoutMs = resolveProviderTotalTimeoutMs(launch, idleTimeoutMs);
   server.keepAliveTimeout = 5000;
-  server.requestTimeout = timeoutMs + 5000;
+  server.requestTimeout = totalTimeoutMs + 5000;
   await listen(server);
   const address = server.address();
   let closed = false;
@@ -53,6 +63,9 @@ async function startAnthropicMessagesBridge({ launch, signal } = {}) {
     for (const controller of activeRequests) controller.abort();
     activeRequests.clear();
     history.clear();
+    continuationState.anchorMessages = [];
+    continuationState.attempts = 0;
+    continuationState.responseId = '';
     await closeServer(server);
   };
   signal?.addEventListener('abort', close, { once: true });
@@ -60,7 +73,7 @@ async function startAnthropicMessagesBridge({ launch, signal } = {}) {
   return { baseUrl: `http://127.0.0.1:${address.port}/v1`, clientToken, close };
 }
 
-async function handleRequest({ req, res, launch, clientToken, activeRequests, history }) {
+async function handleRequest({ req, res, launch, clientToken, activeRequests, history, continuationState }) {
   if (!isAuthorized(req, clientToken)) {
     sendJsonError(res, 401, 'unauthorized', 'Local bridge authorization failed.');
     return;
@@ -76,22 +89,39 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
     return;
   }
   const requestBody = await readJsonBody(req);
-  const previous = history.get(String(requestBody.previous_response_id || ''));
+  const previousResponseId = String(requestBody.previous_response_id || '');
+  const previous = history.get(previousResponseId);
+  const fallbackAnchor = previous ? [] : continuationState.anchorMessages;
+  const continuing = Boolean(previous?.continuation || fallbackAnchor.length);
+  if (continuing && continuationState.attempts >= MAX_REASONING_CONTINUATIONS) {
+    throw providerError(
+      'provider_reasoning_continuation_exhausted',
+      'The provider repeatedly interrupted the same reasoning stream. Retry the task or use a different model endpoint.'
+    );
+  }
   const translated = buildAnthropicRequest({
     requestBody,
     launch,
-    historyMessages: previous?.messages || []
+    historyMessages: previous?.messages || fallbackAnchor
   });
   const controller = new AbortController();
   activeRequests.add(controller);
+  let abortReason = '';
+  const lifecycle = createProviderStreamLifecycle({
+    controller,
+    idleTimeoutMs: resolveProviderIdleTimeoutMs(launch),
+    totalTimeoutMs: resolveProviderTotalTimeoutMs(launch),
+    onAbort: reason => { abortReason = reason; }
+  });
   const onClientClose = () => {
-    if (!res.writableEnded) controller.abort();
+    if (!res.writableEnded) lifecycle.abort('client_close');
   };
   req.on('aborted', onClientClose);
   res.on('close', onClientClose);
-  const timeout = setTimeout(() => controller.abort(), resolveTimeout(launch));
+  lifecycle.start();
   try {
     const upstream = await fetchWithRectification(launch, translated.body, controller.signal);
+    lifecycle.touch();
     if (!upstream.response.ok) {
       forwardUpstreamError(upstream.response, upstream.errorText, res, launch.apiKey);
       return;
@@ -102,14 +132,36 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
       model: translated.body.model,
       toolContext: translated.toolContext
     };
-    const remember = converted => rememberHistory(history, converted.response.id, [
-      ...(upstream.requestBody.messages || translated.messages),
-      { role: 'assistant', content: converted.assistantBlocks }
-    ]);
+    const remember = converted => {
+      const baseMessages = upstream.requestBody.messages || translated.messages;
+      const continuation = buildAnthropicHistoryContinuation(converted);
+      const anchored = continuation.length > 0;
+      const assistantMessages = anchored
+        ? continuation
+        : [{ role: 'assistant', content: converted.assistantBlocks }];
+      const messages = [...baseMessages, ...assistantMessages];
+      if (anchored) {
+        continuationState.anchorMessages = messages;
+        continuationState.attempts += 1;
+        continuationState.responseId = converted.response.id;
+      } else {
+        continuationState.anchorMessages = [];
+        continuationState.attempts = 0;
+        continuationState.responseId = '';
+      }
+      rememberHistory(history, converted.response.id, messages, { continuation: anchored });
+    };
     const contentType = String(upstream.response.headers.get('content-type') || '').toLowerCase();
     if (requestBody.stream !== false) {
       if (contentType.includes('text/event-stream')) {
-        await streamAnthropicResponse({ upstream: upstream.response, res, context, onComplete: remember });
+        await streamAnthropicResponse({
+          upstream: upstream.response,
+          res,
+          context,
+          onComplete: remember,
+          onActivity: lifecycle.touch,
+          recoverInterrupted: lifecycle.recoverInterrupted
+        });
       } else {
         const converted = convertAnthropicResponse(await upstream.response.json(), context);
         writeConvertedResponseAsSse(res, converted, context, remember);
@@ -117,7 +169,14 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
     } else if (contentType.includes('text/event-stream')) {
       let converted;
       const sink = { writeHead() {}, write() {}, end() {} };
-      await streamAnthropicResponse({ upstream: upstream.response, res: sink, context, onComplete: value => { converted = value; } });
+      await streamAnthropicResponse({
+        upstream: upstream.response,
+        res: sink,
+        context,
+        onComplete: value => { converted = value; },
+        onActivity: lifecycle.touch,
+        recoverInterrupted: lifecycle.recoverInterrupted
+      });
       remember(converted);
       sendJson(res, 200, converted.response);
     } else {
@@ -126,10 +185,17 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
       sendJson(res, 200, converted.response);
     }
   } catch (error) {
-    if (controller.signal.aborted) throw providerError('provider_connection_timeout', 'The provider request was cancelled or timed out.');
+    if (controller.signal.aborted) {
+      throw providerError(
+        'provider_connection_timeout',
+        abortReason === 'total_timeout'
+          ? 'The provider exceeded the maximum total request duration.'
+          : 'The provider stopped producing data before the request completed.'
+      );
+    }
     throw error;
   } finally {
-    clearTimeout(timeout);
+    lifecycle.dispose();
     activeRequests.delete(controller);
     req.removeListener('aborted', onClientClose);
     res.removeListener('close', onClientClose);
@@ -202,20 +268,42 @@ function forwardUpstreamError(response, errorText, res, apiKey) {
   sendJsonError(res, response.status, 'provider_upstream_error', sanitizeProviderMessage(message, [apiKey]));
 }
 
-function rememberHistory(history, responseId, messages) {
+function rememberHistory(history, responseId, messages, metadata = {}) {
   history.delete(responseId);
-  history.set(responseId, { messages });
+  history.set(responseId, { messages, ...metadata });
   while (history.size > MAX_HISTORY_ENTRIES) history.delete(history.keys().next().value);
 }
 
-function resolveTimeout(launch = {}) {
-  const configured = Math.min(300000, Math.max(5000, Number(launch.requestTimeoutMs) || 30000));
-  const thinking = !['', 'none', 'off', 'disabled'].includes(String(launch.reasoningEffort || '').toLowerCase());
-  return thinking ? Math.max(120000, configured) : configured;
+function buildAnthropicHistoryContinuation(converted = {}) {
+  if (converted.response?.status !== 'incomplete') return [];
+  const blocks = Array.isArray(converted.assistantBlocks) ? converted.assistantBlocks : [];
+  if (blocks.some(block => block?.type === 'tool_use')) return [];
+  const partial = blocks.map(block => {
+    if (block?.type === 'thinking') return String(block.thinking || '');
+    if (block?.type === 'text') return String(block.text || '');
+    return '';
+  }).filter(Boolean).join('\n\n').trim();
+  if (!partial) return [];
+  const retained = partial.length > MAX_CONTINUATION_CHARS
+    ? partial.slice(-MAX_CONTINUATION_CHARS)
+    : partial;
+  return [{
+    role: 'assistant',
+    content: [{
+      type: 'text',
+      text: `${REASONING_CONTINUATION_MARKER}\nThe previous provider stream was interrupted. Continue from this preserved partial analysis without restarting it.\n\n${retained}`
+    }]
+  }];
 }
 
 function normalizeBridgeErrorCode(value) {
-  return ['provider_connection_timeout', 'provider_response_invalid', 'provider_request_invalid', 'provider_upstream_error'].includes(value)
+  return [
+    'provider_connection_timeout',
+    'provider_reasoning_continuation_exhausted',
+    'provider_response_invalid',
+    'provider_request_invalid',
+    'provider_upstream_error'
+  ].includes(value)
     ? value
     : 'provider_bridge_failed';
 }

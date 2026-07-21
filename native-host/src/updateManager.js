@@ -20,7 +20,11 @@ const JOURNAL_FILE = 'transaction.json';
 const CANDIDATE_FILE = 'candidate.json';
 const COOLDOWN_FILE = 'cooldowns.json';
 const AUTHORIZATION_FILE = 'authorization.json';
+const MUTATION_LOCK_FILE = 'mutation.lock';
 const AUTHORIZATION_TTL_MS = 2 * 60 * 60 * 1000;
+const MUTATION_LOCK_WAIT_MS = 10 * 1000;
+const MUTATION_LOCK_STALE_MS = 15 * 60 * 1000;
+const ACTIVATION_DELAY_MS = 125;
 const CONSENT_MIGRATION_TARGET_VERSION = '1.9.4';
 const UPDATE_METHODS = new Set([
   'update.status',
@@ -29,9 +33,18 @@ const UPDATE_METHODS = new Set([
   'update.stage',
   'update.canApply',
   'update.apply',
+  'update.activate',
   'update.confirm',
   'update.rollback',
   'update.revoke'
+]);
+const LAYOUT_GATED_METHODS = new Set([
+  'update.check',
+  'update.authorize',
+  'update.stage',
+  'update.apply',
+  'update.activate',
+  'update.confirm'
 ]);
 const RELEASE_ASSET_HOSTS = new Set([
   'github.com',
@@ -53,25 +66,30 @@ async function handleUpdateRequest(request, options = {}) {
     if (!context.managed) {
       throw updateError('update_not_managed', 'Run install-managed once to enable coordinated automatic updates.');
     }
+    if (LAYOUT_GATED_METHODS.has(request.method)) {
+      assertManagedLayout(context);
+    }
     switch (request.method) {
       case 'update.status':
-        return okResponse(request.id, await withUpdateMutex(() => recoverAndReadStatus(context)));
+        return okResponse(request.id, await withUpdateMutex(context, () => recoverAndReadStatus(context)));
       case 'update.check':
-        return okResponse(request.id, await withUpdateMutex(() => checkForUpdate(context, request.params || {}, options)));
+        return okResponse(request.id, await withUpdateMutex(context, () => checkForUpdate(context, request.params || {}, options)));
       case 'update.authorize':
-        return okResponse(request.id, await withUpdateMutex(() => authorizeUpdate(context, request.params || {})));
+        return okResponse(request.id, await withUpdateMutex(context, () => authorizeUpdate(context, request.params || {})));
       case 'update.stage':
-        return okResponse(request.id, await withUpdateMutex(() => stageCandidate(context, options)));
+        return okResponse(request.id, await withUpdateMutex(context, () => stageCandidate(context, options)));
       case 'update.canApply':
         return okResponse(request.id, getApplyGate(options));
       case 'update.apply':
-        return okResponse(request.id, await withUpdateMutex(() => applyStagedUpdate(context, request.params || {}, options)));
+        return okResponse(request.id, await withUpdateMutex(context, () => applyStagedUpdate(context, request.params || {}, options)));
+      case 'update.activate':
+        return okResponse(request.id, await withUpdateMutex(context, () => scheduleStagedActivation(context, request.params || {}, options)));
       case 'update.confirm':
-        return okResponse(request.id, await withUpdateMutex(() => confirmUpdate(context, request.params || {})));
+        return okResponse(request.id, await withUpdateMutex(context, () => confirmUpdate(context, request.params || {})));
       case 'update.rollback':
-        return okResponse(request.id, await withUpdateMutex(() => rollbackUpdate(context, request.params || {})));
+        return okResponse(request.id, await withUpdateMutex(context, () => rollbackUpdate(context, request.params || {})));
       case 'update.revoke':
-        return okResponse(request.id, await withUpdateMutex(() => revokeUpdate(context, request.params || {})));
+        return okResponse(request.id, await withUpdateMutex(context, () => revokeUpdate(context, request.params || {})));
       default:
         throw updateError('unknown_update_method', 'Unknown managed update method.');
     }
@@ -80,10 +98,80 @@ async function handleUpdateRequest(request, options = {}) {
   }
 }
 
-function withUpdateMutex(action) {
-  const result = updateMutationTail.then(action, action);
+function withUpdateMutex(context, action) {
+  const guardedAction = () => withUpdateFileLock(context, action);
+  const result = updateMutationTail.then(guardedAction, guardedAction);
   updateMutationTail = result.catch(() => {});
   return result;
+}
+
+async function withUpdateFileLock(context, action) {
+  const lock = await acquireUpdateFileLock(context);
+  try {
+    return await action();
+  } finally {
+    releaseUpdateFileLock(lock);
+  }
+}
+
+async function acquireUpdateFileLock(context) {
+  const lockPath = path.join(context.updatesRoot, MUTATION_LOCK_FILE);
+  const deadline = Date.now() + MUTATION_LOCK_WAIT_MS;
+  const token = crypto.randomUUID();
+  while (Date.now() <= deadline) {
+    try {
+      const descriptor = fs.openSync(lockPath, 'wx', 0o600);
+      try {
+        fs.writeFileSync(descriptor, JSON.stringify({
+          token,
+          pid: process.pid,
+          createdAt: Date.now(),
+          expiresAt: Date.now() + MUTATION_LOCK_STALE_MS
+        }) + '\n');
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      return { lockPath, token };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      if (removeStaleUpdateFileLock(lockPath)) continue;
+      await delay(75);
+    }
+  }
+  throw updateError('update_transaction_locked', 'Another Native Host process is already changing the managed update state.');
+}
+
+function removeStaleUpdateFileLock(lockPath) {
+  const owner = readJsonSafe(lockPath, null);
+  const expired = !owner || Number(owner.expiresAt || 0) <= Date.now();
+  const abandoned = Number.isInteger(Number(owner?.pid)) && !isProcessAlive(Number(owner.pid));
+  if (!expired && !abandoned) return false;
+  try {
+    fs.rmSync(lockPath, { force: true });
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function releaseUpdateFileLock(lock) {
+  if (!lock?.lockPath || !lock.token) return;
+  const owner = readJsonSafe(lock.lockPath, null);
+  if (owner?.token === lock.token) fs.rmSync(lock.lockPath, { force: true });
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+function delay(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
 async function checkForUpdate(context, params = {}, options = {}) {
@@ -255,7 +343,7 @@ async function stageCandidate(context, options = {}) {
       cleanupStage(existingJournal.stageRoot);
     }
   }
-  if (existingJournal && ['applying', 'awaiting_health'].includes(existingJournal.state)) {
+  if (existingJournal && ['activation_pending', 'applying', 'awaiting_health'].includes(existingJournal.state)) {
     throw updateError('update_transaction_in_progress', 'A managed update transaction is already being applied.');
   }
   if (authorization.state === 'bound') {
@@ -315,13 +403,67 @@ function getApplyGate(options = {}) {
   return { idle: blockers.length === 0, blockers, workState: state };
 }
 
+function scheduleStagedActivation(context, params = {}, options = {}) {
+  const gate = getApplyGate(options);
+  if (!gate.idle) {
+    throw updateError('update_native_busy', 'Native host is still processing a Codex task.');
+  }
+  assertManagedLayout(context);
+  const journal = readJournal(context);
+  if (!journal || journal.state !== 'staged') {
+    throw updateError('update_not_staged', 'No verified update is ready to activate.');
+  }
+  if (params.transactionId && params.transactionId !== journal.id) {
+    throw updateError('update_transaction_mismatch', 'Update transaction id does not match the staged update.');
+  }
+  const authorization = requireAuthorization(context, journal.targetVersion, ['bound']);
+  if (journal.authorizationId !== authorization.id || authorization.transactionId !== journal.id) {
+    throw updateError('update_consent_mismatch', 'Activation transaction does not match the bound authorization.');
+  }
+  const pending = {
+    ...journal,
+    state: 'activation_pending',
+    activationRequestedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  writeJournal(context, pending);
+  setTimeout(() => {
+    void withUpdateMutex(context, () => applyStagedUpdate(context, {
+      transactionId: pending.id
+    }, {
+      ...options,
+      allowActivationPending: true
+    })).catch(error => recordScheduledActivationFailure(context, pending, error));
+  }, ACTIVATION_DELAY_MS);
+  return {
+    transactionId: pending.id,
+    targetVersion: pending.targetVersion,
+    state: pending.state
+  };
+}
+
+function recordScheduledActivationFailure(context, pending, error) {
+  const current = readJournal(context);
+  if (!current || current.id !== pending.id || ['awaiting_health', 'rolled_back'].includes(current.state)) return;
+  writeJournal(context, {
+    ...current,
+    state: 'rolled_back',
+    reasonCode: safeErrorCode(error),
+    rolledBackAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+  settleAuthorization(context, pending.authorizationId, 'revoked');
+}
+
 function applyStagedUpdate(context, params = {}, options = {}) {
   const gate = getApplyGate(options);
   if (!gate.idle) {
     throw updateError('update_native_busy', 'Native host is still processing a Codex task.');
   }
+  assertManagedLayout(context);
   const journal = readJournal(context);
-  if (!journal || journal.state !== 'staged') {
+  const allowedStates = options.allowActivationPending ? ['activation_pending'] : ['staged'];
+  if (!journal || !allowedStates.includes(journal.state)) {
     throw updateError('update_not_staged', 'No verified update is ready to apply.');
   }
   if (params.transactionId && params.transactionId !== journal.id) {
@@ -354,6 +496,14 @@ function applyStagedUpdate(context, params = {}, options = {}) {
     syncManagedMarkerVersions(context, journal.targetVersion);
   } catch (error) {
     rollbackFiles(context, { ...journal, previousManifest });
+    writeJournal(context, {
+      ...journal,
+      previousManifest,
+      state: 'rolled_back',
+      reasonCode: 'update_apply_failed',
+      rolledBackAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
     settleAuthorization(context, journal.authorizationId, 'revoked');
     throw updateError('update_apply_failed', 'Managed update could not be applied atomically.', { cause: error });
   }
@@ -436,7 +586,7 @@ function revokeUpdate(context, params = {}) {
   }
   const journal = readJournal(context);
   if (journal?.targetVersion === targetVersion &&
-      ['applying', 'awaiting_health', 'committed'].includes(journal.state)) {
+      ['activation_pending', 'applying', 'awaiting_health', 'committed'].includes(journal.state)) {
     throw updateError('update_revoke_too_late', 'The update is already being applied.');
   }
   const authorization = readAuthorization(context);
@@ -528,6 +678,10 @@ function cleanupOrphanStageRoots(updatesRoot, retainedRoots = []) {
 
 function recoverAndReadStatus(context) {
   let journal = readJournal(context);
+  if (journal?.state === 'activation_pending') {
+    journal = { ...journal, state: 'staged', reasonCode: 'update_activation_interrupted', updatedAt: new Date().toISOString() };
+    writeJournal(context, journal);
+  }
   if (journal?.state === 'applying') {
     rollbackFiles(context, journal);
     journal = { ...journal, state: 'rolled_back', reasonCode: 'update_interrupted', updatedAt: new Date().toISOString() };
@@ -580,6 +734,34 @@ function getManagedContext(options = {}) {
 
 function assertManagedMarkers(context) {
   if (!context.managed) throw updateError('update_not_managed', 'Managed installation markers are missing.');
+}
+
+function assertManagedLayout(context) {
+  assertManagedMarkers(context);
+  const activeVersion = readVersionPointer(context.nativeRoot, 'active-version');
+  const nativeMarker = readJsonSafe(path.join(context.nativeRoot, NATIVE_MARKER), null);
+  const extensionMarker = readJsonSafe(path.join(context.extensionRoot, EXTENSION_MARKER), null);
+  const manifest = readJsonSafe(path.join(context.extensionRoot, 'manifest.json'), null);
+  const requiredFiles = [
+    path.join(context.extensionRoot, 'bootstrap', 'background.js'),
+    path.join(context.extensionRoot, 'runtime', 'runtime-manifest.json')
+  ];
+  const valid = Boolean(
+    parseSemver(activeVersion) &&
+    nativeMarker?.version === activeVersion &&
+    extensionMarker?.version === activeVersion &&
+    manifest?.version === activeVersion &&
+    manifest?.manifest_version === 3 &&
+    manifest?.background?.service_worker === 'bootstrap/background.js' &&
+    requiredFiles.every(filePath => fs.existsSync(filePath) && fs.statSync(filePath).isFile())
+  );
+  if (!valid) {
+    throw updateError(
+      'update_managed_layout_invalid',
+      'Managed extension files do not match the active Native Host. Run install-managed for the latest stable version, then reload the Chrome extension and Overleaf.'
+    );
+  }
+  return activeVersion;
 }
 
 function isManagedMarker(marker, kind) {
@@ -672,6 +854,7 @@ function publicTransaction(journal) {
     sourceVersion: journal.sourceVersion,
     targetVersion: journal.targetVersion,
     createdAt: journal.createdAt,
+    activationRequestedAt: journal.activationRequestedAt,
     appliedAt: journal.appliedAt,
     confirmedAt: journal.confirmedAt,
     rolledBackAt: journal.rolledBackAt,
@@ -816,6 +999,7 @@ function errorResponse(id, code, message) {
 module.exports = {
   GITHUB_LATEST_URL,
   applyStagedUpdate,
+  assertManagedLayout,
   authorizeUpdate,
   checkForUpdate,
   cleanupOrphanStageRoots,
@@ -826,6 +1010,7 @@ module.exports = {
   isUpdateMethod,
   revokeUpdate,
   rollbackUpdate,
+  scheduleStagedActivation,
   stageCandidate,
   syncManagedMarkerVersions
 };

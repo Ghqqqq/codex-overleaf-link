@@ -222,7 +222,8 @@
         : fallbackState.speedTier,
       requireReviewing: session.requireReviewing !== false,
       focusFiles: normalizeFocusFiles(session.focusFiles),
-      codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : ''
+      codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
+      pendingInputs: normalizePendingInputs(session.pendingInputs, options.restoreRunningRuns === true)
     };
   }
 
@@ -341,7 +342,8 @@
         : DEFAULT_PANEL_STATE.speedTier,
       requireReviewing: overrides.requireReviewing !== false,
       focusFiles: normalizeFocusFiles(overrides.focusFiles),
-      codexThreadId: typeof overrides.codexThreadId === 'string' ? overrides.codexThreadId : ''
+      codexThreadId: typeof overrides.codexThreadId === 'string' ? overrides.codexThreadId : '',
+      pendingInputs: normalizePendingInputs(overrides.pendingInputs)
     };
   }
 
@@ -623,7 +625,12 @@
       undoBaseFiles: normalizeRunFiles(run.undoBaseFiles),
       undoTrackedChanges: normalizeRunTrackedChanges(run.undoTrackedChanges),
       undoExpectedFiles: normalizeRunFiles(run.undoExpectedFiles),
-      undoStatus: sanitizeAssistantVisibleText(run.undoStatus)
+      undoStatus: sanitizeAssistantVisibleText(run.undoStatus),
+      nativeRequestId: sanitizeAssistantVisibleText(run.nativeRequestId),
+      codexTurnId: sanitizeAssistantVisibleText(run.codexTurnId),
+      nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,
+      queueItemId: sanitizeAssistantVisibleText(run.queueItemId),
+      interruptedDraft: run.interruptedDraft ? sanitizeAssistantVisibleValue(run.interruptedDraft) : undefined
     };
 
     applyTrackedChangeStatus(normalized, run.trackedChangeStatus);
@@ -1058,7 +1065,9 @@
       reasoningEffort: normalizeReasoning(session.reasoningEffort || fallbackState.reasoningEffort),
       speedTier: normalizeSpeedTier(session.speedTier || fallbackState.speedTier),
       requireReviewing: session.requireReviewing !== false,
-      focusFiles: normalizeFocusFiles(session.focusFiles)
+      focusFiles: normalizeFocusFiles(session.focusFiles),
+      codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
+      pendingInputs: normalizePendingInputs(session.pendingInputs)
     };
     // Welcome-panel + write-guard: preserve the four
     // Recent-projects fields through compaction so they round-trip when state
@@ -1139,8 +1148,15 @@
       undoBaseFiles: undoPayload.undoBaseFiles,
       undoTrackedChanges: undoPayload.undoTrackedChanges,
       undoExpectedFiles: undoPayload.undoExpectedFiles,
-      undoStatus: summarizeTextForStorage(run.undoStatus, 'undo status')
+      undoStatus: summarizeTextForStorage(run.undoStatus, 'undo status'),
+      nativeRequestId: normalizeTextField(run.nativeRequestId, 160),
+      codexTurnId: normalizeTextField(run.codexTurnId, 160),
+      nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,
+      queueItemId: normalizeTextField(run.queueItemId, 160)
     };
+    if (run.interruptedDraft) {
+      compact.interruptedDraft = sanitizeAssistantVisibleValue(run.interruptedDraft);
+    }
     if (VALID_TRACKED_CHANGE_STATUS.has(run.trackedChangeStatus)) {
       compact.trackedChangeStatus = run.trackedChangeStatus;
     }
@@ -1368,6 +1384,15 @@
         result: sanitizeAssistantVisibleText(entry?.result || entry?.status) || 'completed',
         at: typeof entry?.at === 'string' ? entry.at : ''
       }));
+  }
+
+  function normalizePendingInputs(value, recoverActive = false) {
+    const Queue = (typeof globalThis !== 'undefined' ? globalThis.CodexOverleafRunInputQueue : null)
+      || (typeof module === 'object' && module.exports ? require('./runInputQueue') : null);
+    if (Queue?.normalizeQueue) {
+      return Queue.normalizeQueue(value, { recoverActive });
+    }
+    return [];
   }
 
   function sanitizeAssistantVisibleValue(value, depth = 0) {

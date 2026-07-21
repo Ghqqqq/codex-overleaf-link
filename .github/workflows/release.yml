@@ -25,6 +25,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -37,6 +39,9 @@ jobs:
 
       - name: Run architecture budget check
         run: npm run check:architecture
+
+      - name: Verify managed update boundary
+        run: npm run verify:update-boundary
 
       - name: Run synthetic large-project benchmark
         run: npm run benchmark:large
@@ -51,6 +56,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -114,6 +121,10 @@ jobs:
         env:
           CODEX_OVERLEAF_UPDATE_SIGNING_KEY_B64: ${{ secrets.CODEX_OVERLEAF_UPDATE_SIGNING_KEY_B64 }}
         run: npm run sign:release
+
+      - name: Rehearse previous-stable managed update hop
+        if: env.RELEASE_PRERELEASE != 'true'
+        run: npm run verify:update-hop
 
       - name: Verify release artifact contents
         run: npm run verify:release-artifacts -- --require-signature

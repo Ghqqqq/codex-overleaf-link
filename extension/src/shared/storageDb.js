@@ -272,6 +272,7 @@
       codexThreadId: typeof input.codexThreadId === 'string' ? input.codexThreadId : '',
       status: typeof input.status === 'string' && input.status ? input.status : 'active',
       focusFiles: normalizePathList(input.focusFiles),
+      pendingInputs: compactPendingInputsForStorage(input.pendingInputs),
       history: compactHistoryForStorage(input.history),
       runs: compactRunsForStorage(input.runs, options),
       task: normalizeDisplayTextForStorage(input.task, SESSION_STORAGE_LIMITS.taskChars),
@@ -663,8 +664,23 @@
       undoBaseFiles: actionPayload.undoBaseFiles,
       undoTrackedChanges: actionPayload.undoTrackedChanges,
       undoExpectedFiles: actionPayload.undoExpectedFiles,
-      undoStatus: normalizeDisplayTextForStorage(run.undoStatus, SESSION_STORAGE_LIMITS.statusTextChars)
+      undoStatus: normalizeDisplayTextForStorage(run.undoStatus, SESSION_STORAGE_LIMITS.statusTextChars),
+      nativeRequestId: normalizeTextField(run.nativeRequestId, 160),
+      codexTurnId: normalizeTextField(run.codexTurnId, 160),
+      nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,
+      queueItemId: normalizeTextField(run.queueItemId, 160)
     };
+    if (run.interruptedDraft && typeof run.interruptedDraft === 'object') {
+      compact.interruptedDraft = {
+        requestId: normalizeTextField(run.interruptedDraft.requestId, 160),
+        threadId: normalizeTextField(run.interruptedDraft.threadId, 160),
+        turnId: normalizeTextField(run.interruptedDraft.turnId, 160),
+        lastEventSeq: Number.isFinite(Number(run.interruptedDraft.lastEventSeq))
+          ? Number(run.interruptedDraft.lastEventSeq)
+          : 0,
+        reason: normalizeTextField(run.interruptedDraft.reason, 80)
+      };
+    }
     if (VALID_TRACKED_CHANGE_STATUSES[run.trackedChangeStatus] === true) {
       compact.trackedChangeStatus = run.trackedChangeStatus;
     }
@@ -705,6 +721,38 @@
         }
         return compact;
       });
+  }
+
+  function compactPendingInputsForStorage(items) {
+    return (Array.isArray(items) ? items : [])
+      .slice(-20)
+      .map(function (item) {
+        var payload = item && item.payload && typeof item.payload === 'object' ? item.payload : {};
+        return {
+          id: normalizeTextField(item && item.id, 160),
+          clientUserMessageId: normalizeTextField(item && item.clientUserMessageId, 160),
+          text: normalizeDisplayTextForStorage(item && item.text, 12000),
+          status: ['queued', 'paused', 'claimed', 'executing', 'steering'].includes(item && item.status)
+            ? item.status
+            : 'queued',
+          createdAt: typeof (item && item.createdAt) === 'string' ? item.createdAt : '',
+          updatedAt: typeof (item && item.updatedAt) === 'string' ? item.updatedAt : '',
+          sourceRunId: normalizeTextField(item && item.sourceRunId, 160),
+          linkedRunId: normalizeTextField(item && item.linkedRunId, 160),
+          claimToken: normalizeTextField(item && item.claimToken, 160),
+          pauseReason: normalizeTextField(item && item.pauseReason, 160),
+          payload: {
+            mode: typeof payload.mode === 'string' ? payload.mode : 'ask',
+            providerId: normalizeTextField(payload.providerId, 160) || 'builtin',
+            model: normalizeTextField(payload.model, 160),
+            reasoningEffort: normalizeTextField(payload.reasoningEffort, 32),
+            speedTier: payload.speedTier === 'fast' ? 'fast' : 'standard',
+            requireReviewing: payload.requireReviewing !== false,
+            focusFiles: normalizePathList(payload.focusFiles)
+          }
+        };
+      })
+      .filter(function (item) { return item.id && item.text; });
   }
 
   // Deep-copies a known-safe structured event value (the completion-report

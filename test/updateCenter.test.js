@@ -40,6 +40,19 @@ test('Overleaf update actions stay in the current tab and never create an update
   assert.doesNotMatch(coordinator, /chrome\.windows\.create/);
 });
 
+test('failed managed updates stop progress and expose an actionable recovery command', () => {
+  const notice = read('extension/src/content/updateNotice.js');
+  const bootstrap = read('extension/bootstrap/background.js');
+  const coordinator = read('extension/src/backgroundUpdateCoordinator.js');
+
+  assert.match(notice, /codex-overleaf-link@\$\{version\} -- install-managed/);
+  assert.match(notice, /update_recovery_timeout/);
+  assert.match(notice, /id: 'copy-manual'/);
+  assert.match(bootstrap, /setFailedUpdateState/);
+  assert.match(bootstrap, /readNativeUpdateStatus\(UPDATE_RECOVERY_TIMEOUT_MS\)/);
+  assert.match(coordinator, /state: 'failed'/);
+});
+
 test('consent updater checks once at browser or extension startup without changing periodic checks', () => {
   const coordinator = read('extension/src/backgroundUpdateCoordinator.js');
 

@@ -14,15 +14,20 @@
     const backgroundEventHandlers = new Map();
 
     function sendNative(payload) {
+      return sendNativeTracked(payload).promise;
+    }
+
+    function sendNativeTracked(payload) {
       const id = cryptoImpl.randomUUID();
       activeRequestId = id;
-      return runtime.sendMessage({
+      const promise = runtime.sendMessage({
         type: 'codex-overleaf/native-request',
         payload: {
           id,
           ...payload
         }
       });
+      return { id, promise };
     }
 
     function sendBackgroundNative(payload, onEvent) {
@@ -71,6 +76,7 @@
       handleBackgroundNativeEvent,
       sendBackgroundNative,
       sendNative,
+      sendNativeTracked,
       shouldHandleNativeEvent
     };
   }

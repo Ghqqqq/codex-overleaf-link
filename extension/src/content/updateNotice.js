@@ -9,7 +9,10 @@
   let getLocale = () => '';
   let settingsRoot = null;
   let settingsActionInFlight = false;
+  let restartWatchdog = null;
+  let manualCommandCopied = false;
   const ACTIVE_UPDATE_STATES = new Set(['downloading', 'staged', 'waiting_for_idle', 'applying', 'awaiting_health']);
+  const RESTART_WATCHDOG_MS = 30 * 1000;
 
   function mount(panelLike, options = {}) {
     if (typeof options.getLocale === 'function') {
@@ -60,6 +63,20 @@
   async function handleClick(event) {
     const action = event.target?.closest?.('[data-update-notice-action]')?.dataset?.updateNoticeAction;
     if (!action || actionInFlight) return;
+    if (action === 'copy-manual') {
+      try {
+        await navigator.clipboard.writeText(manualUpdateCommand(currentView?.state));
+        manualCommandCopied = true;
+        render();
+        setTimeout(() => {
+          manualCommandCopied = false;
+          render();
+        }, 1800);
+      } catch (_error) {
+        manualCommandCopied = false;
+      }
+      return;
+    }
     actionInFlight = true;
     render();
     try {
@@ -121,6 +138,7 @@
   }
 
   function buildRestartingView() {
+    scheduleRestartWatchdog();
     return {
       ...(currentView || {}),
       state: {
@@ -130,6 +148,43 @@
         message: ''
       },
       progress: { value: 90, determinate: false, phase: 'awaiting_health' },
+      showPanel: true
+    };
+  }
+
+  function scheduleRestartWatchdog() {
+    clearTimeout(restartWatchdog);
+    restartWatchdog = setTimeout(async () => {
+      try {
+        const view = await request('codex-overleaf/consent-update-get-state');
+        if (view?.state && !ACTIVE_UPDATE_STATES.has(view.state.state)) {
+          currentView = view;
+        } else {
+          currentView = buildFailedView('update_recovery_timeout', tx(
+            'The update did not finish restarting. Retry or use the manual recovery command.',
+            '更新重启未能完成。请重试或使用手动恢复命令。'
+          ));
+        }
+      } catch (_error) {
+        currentView = buildFailedView('update_recovery_timeout', tx(
+          'The update did not finish restarting. Retry or use the manual recovery command.',
+          '更新重启未能完成。请重试或使用手动恢复命令。'
+        ));
+      }
+      render();
+    }, RESTART_WATCHDOG_MS);
+  }
+
+  function buildFailedView(code, message) {
+    return {
+      ...(currentView || {}),
+      state: {
+        ...(currentView?.state || {}),
+        state: 'failed',
+        code,
+        message
+      },
+      progress: { value: 0, determinate: true, phase: 'failed' },
       showPanel: true
     };
   }
@@ -184,6 +239,10 @@
 
     const focusedAction = document.activeElement?.dataset?.updateNoticeAction || '';
     const state = currentView.state || {};
+    if (state.state !== 'awaiting_health') {
+      clearTimeout(restartWatchdog);
+      restartWatchdog = null;
+    }
     const progress = currentView.progress || {};
     const copy = getCopy(state);
     notice.hidden = false;
@@ -200,6 +259,16 @@
     detail.className = 'codex-update-notice-detail';
     detail.textContent = copy.detail;
     body.append(eyebrow, title, detail);
+
+    if (state.state === 'failed') {
+      const recovery = document.createElement('span');
+      recovery.className = 'codex-update-notice-recovery';
+      recovery.textContent = tx('Manual recovery:', '手动恢复：');
+      const command = document.createElement('code');
+      command.className = 'codex-update-notice-command';
+      command.textContent = manualUpdateCommand(state);
+      body.append(recovery, command);
+    }
 
     if (!['update_available', 'failed', 'rolled_back'].includes(state.state)) {
       const bar = document.createElement('div');
@@ -290,7 +359,10 @@
       return [{ id: 'later', label: tx('Later', '稍后'), primary: false }];
     }
     if (['failed', 'rolled_back'].includes(state)) {
-      return [{ id: 'retry', label: tx('Retry', '重试'), primary: true }];
+      return [
+        { id: 'copy-manual', label: manualCommandCopied ? tx('Copied', '已复制') : tx('Copy command', '复制命令'), primary: false },
+        { id: 'retry', label: tx('Retry', '重试'), primary: true }
+      ];
     }
     if (state === 'committed') {
       return [{ id: 'dismiss', label: tx('Done', '完成'), primary: true }];
@@ -348,6 +420,13 @@
         detail: state.message || tx('Review the update details and retry.', '请查看更新详情后重试。')
       }
     }[state.state] || { eyebrow: '', title: '', detail: '' };
+  }
+
+  function manualUpdateCommand(state = {}) {
+    const version = /^\d+\.\d+\.\d+$/.test(String(state.latestVersion || ''))
+      ? state.latestVersion
+      : 'latest';
+    return `npm exec --yes codex-overleaf-link@${version} -- install-managed`;
   }
 
   function blockerCopy(value) {

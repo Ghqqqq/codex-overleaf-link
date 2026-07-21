@@ -9,6 +9,7 @@ const { handleUpdateRequest, isUpdateMethod } = require('./updateManager');
 const { buildNativeRuntimeEnv, summarizeNativeEnvironment } = require('./nativeEnvironment');
 
 let buffered = Buffer.alloc(0);
+let stdoutUnavailable = false;
 const runtimeEnv = buildNativeRuntimeEnv(process.env);
 Object.assign(process.env, runtimeEnv);
 logDebug('environment.ready', summarizeNativeEnvironment(runtimeEnv));
@@ -74,7 +75,21 @@ process.stdin.on('error', error => {
   console.error(`stdin error: ${error.message}`);
 });
 
+process.stdout.on('error', error => {
+  if (isExpectedNativeDisconnect(error)) {
+    stdoutUnavailable = true;
+    logDebug('stdout.disconnected', { code: error.code, message: error.message });
+    return;
+  }
+  logDebug('stdout.error', { code: error.code, message: error.message, stack: error.stack });
+});
+
 process.on('uncaughtException', error => {
+  if (isExpectedNativeDisconnect(error)) {
+    stdoutUnavailable = true;
+    logDebug('process.native_disconnect', { code: error.code, message: error.message });
+    return;
+  }
   logDebug('process.uncaught_exception', {
     message: error.message,
     stack: error.stack
@@ -91,6 +106,10 @@ process.on('unhandledRejection', reason => {
 });
 
 function writeResponse(response) {
+  if (stdoutUnavailable || process.stdout.destroyed || process.stdout.writableEnded) {
+    logDebug('stdout.write_skipped', { ok: response?.ok, code: response?.error?.code });
+    return false;
+  }
   let frame;
   try {
     frame = encodeMessage(response);
@@ -110,7 +129,29 @@ function writeResponse(response) {
     }
   }
   logDebug('stdout.write', { bytes: frame.length, ok: response?.ok, code: response?.error?.code });
-  process.stdout.write(frame);
+  try {
+    process.stdout.write(frame, error => {
+      if (!error) return;
+      if (isExpectedNativeDisconnect(error)) {
+        stdoutUnavailable = true;
+        logDebug('stdout.write_disconnected', { code: error.code, message: error.message });
+        return;
+      }
+      logDebug('stdout.write_failed', { code: error.code, message: error.message });
+    });
+    return true;
+  } catch (error) {
+    if (isExpectedNativeDisconnect(error)) {
+      stdoutUnavailable = true;
+      logDebug('stdout.write_disconnected', { code: error.code, message: error.message });
+      return false;
+    }
+    throw error;
+  }
+}
+
+function isExpectedNativeDisconnect(error) {
+  return ['EPIPE', 'ERR_STREAM_DESTROYED', 'ERR_STREAM_WRITE_AFTER_END'].includes(String(error?.code || ''));
 }
 
 function buildOversizeResponseFallback(response, error) {

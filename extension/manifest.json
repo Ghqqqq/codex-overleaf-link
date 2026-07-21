@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Codex Overleaf Link",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "description": "Connect the active Overleaf project to a local Codex bridge.",
   "icons": {
     "16": "assets/icons/icon16.png",
@@ -44,6 +44,7 @@
         "src/shared/i18n.js",
         "src/shared/models.js",
         "src/shared/providerProfiles.js",
+        "src/shared/runInputQueue.js",
         "src/shared/sessionState.js",
         "src/shared/storageKeys.js",
         "src/shared/staleGuard.js",
@@ -71,6 +72,9 @@
         "src/content/providerSettingsDialog.js",
         "src/content/providerSettingsCoordinator.js",
         "src/content/diagnosticsPanel.js",
+        "src/content/runQueueScheduler.js",
+        "src/content/activeTurnControl.js",
+        "src/content/pendingInputView.js",
         "src/content/composerPanel.js",
         "src/content/themeController.js",
         "vendor/katex/katex.min.js",

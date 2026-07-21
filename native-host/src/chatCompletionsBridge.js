@@ -13,6 +13,11 @@ const { classifyResponsesRoute } = require('./providerBridgeRoutes');
 const { providerError } = require('./providerProfile');
 const { sanitizeProviderMessage } = require('./providerRedaction');
 const { logDebug } = require('./debugLog');
+const {
+  createProviderStreamLifecycle,
+  resolveProviderIdleTimeoutMs,
+  resolveProviderTotalTimeoutMs
+} = require('./providerStreamLifecycle');
 
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 const MAX_ERROR_BYTES = 64 * 1024;
@@ -57,9 +62,10 @@ async function startChatCompletionsBridge({ launch, signal } = {}) {
       }
     });
   });
-  const requestTimeoutMs = resolveRequestTimeoutMs(launch);
+  const requestTimeoutMs = resolveProviderIdleTimeoutMs(launch);
+  const totalTimeoutMs = resolveProviderTotalTimeoutMs(launch, requestTimeoutMs);
   server.keepAliveTimeout = 5000;
-  server.requestTimeout = requestTimeoutMs + 5000;
+  server.requestTimeout = totalTimeoutMs + 5000;
   await listen(server);
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}/v1`;
@@ -121,8 +127,8 @@ async function handleRequest({
     historyMessages: previous?.messages || fallbackAnchor
   });
   assertReasoningContinuationBudget(translated.messages, continuationState.attempts);
-  const idleTimeoutMs = resolveRequestTimeoutMs(launch);
-  const totalTimeoutMs = resolveTotalRequestTimeoutMs(launch, idleTimeoutMs);
+  const idleTimeoutMs = resolveProviderIdleTimeoutMs(launch);
+  const totalTimeoutMs = resolveProviderTotalTimeoutMs(launch, idleTimeoutMs);
   logDebug('provider.bridge.request', {
     traceId,
     providerName: launch.providerName,
@@ -142,23 +148,18 @@ async function handleRequest({
   const controller = new AbortController();
   activeRequests.add(controller);
   let abortReason = '';
-  let idleTimeout;
-  const abortRequest = reason => {
-    if (controller.signal.aborted) return;
-    abortReason = reason;
-    controller.abort();
-  };
-  const refreshIdleTimeout = () => {
-    clearTimeout(idleTimeout);
-    idleTimeout = setTimeout(() => abortRequest('idle_timeout'), idleTimeoutMs);
-  };
+  const lifecycle = createProviderStreamLifecycle({
+    controller,
+    idleTimeoutMs,
+    totalTimeoutMs,
+    onAbort: reason => { abortReason = reason; }
+  });
   const onClientClose = () => {
-    if (!res.writableEnded) abortRequest('client_close');
+    if (!res.writableEnded) lifecycle.abort('client_close');
   };
   req.on('aborted', onClientClose);
   res.on('close', onClientClose);
-  refreshIdleTimeout();
-  const totalTimeout = setTimeout(() => abortRequest('total_timeout'), totalTimeoutMs);
+  lifecycle.start();
   try {
     const upstream = await fetch(buildChatCompletionsUrl(launch.baseUrl, launch), {
       method: 'POST',
@@ -166,7 +167,7 @@ async function handleRequest({
       body: JSON.stringify(translated.body),
       signal: controller.signal
     });
-    refreshIdleTimeout();
+    lifecycle.touch();
     if (!upstream.ok) {
       await forwardUpstreamError(upstream, res, launch.apiKey);
       return;
@@ -226,12 +227,8 @@ async function handleRequest({
           res,
           context,
           onComplete: remember,
-          onActivity: refreshIdleTimeout,
-          recoverInterrupted: () => (
-            ['idle_timeout', 'total_timeout'].includes(abortReason)
-              ? abortReason
-              : ''
-          )
+          onActivity: lifecycle.touch,
+          recoverInterrupted: lifecycle.recoverInterrupted
         });
       } else {
         const converted = convertChatResponse(await upstream.json(), context);
@@ -255,8 +252,7 @@ async function handleRequest({
     }
     throw error;
   } finally {
-    clearTimeout(idleTimeout);
-    clearTimeout(totalTimeout);
+    lifecycle.dispose();
     activeRequests.delete(controller);
     req.removeListener('aborted', onClientClose);
     res.removeListener('close', onClientClose);
@@ -307,20 +303,6 @@ function buildUpstreamHeaders(launch = {}) {
     headers.authorization = `Bearer ${launch.apiKey}`;
   }
   return headers;
-}
-
-function resolveRequestTimeoutMs(launch = {}) {
-  const configured = Math.min(300000, Math.max(5000, Number(launch.requestTimeoutMs) || 30000));
-  const deepSeekThinking = requiresReasoningContentReplay(launch, launch.modelId)
-    && String(launch.reasoningEffort || '').toLowerCase() !== 'none';
-  return deepSeekThinking ? Math.max(120000, configured) : configured;
-}
-
-function resolveTotalRequestTimeoutMs(launch = {}, idleTimeoutMs = resolveRequestTimeoutMs(launch)) {
-  const deepSeekThinking = requiresReasoningContentReplay(launch, launch.modelId)
-    && String(launch.reasoningEffort || '').toLowerCase() !== 'none';
-  const floor = deepSeekThinking ? 30 * 60 * 1000 : 5 * 60 * 1000;
-  return Math.max(floor, idleTimeoutMs * 2);
 }
 
 function buildHistoryContinuation(converted = {}) {

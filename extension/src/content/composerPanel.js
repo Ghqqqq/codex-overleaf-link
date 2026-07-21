@@ -15,6 +15,7 @@
     };
 
     container.innerHTML = `
+      <div class="codex-pending-inputs" data-pending-inputs hidden></div>
       <form class="codex-composer" data-composer-form>
         <div class="codex-attachment-strip codex-attachment-preview-list" data-attachment-strip hidden></div>
         <div class="codex-composer-skill-context" data-composer-skill-context hidden>
@@ -85,7 +86,7 @@
               </div>
             </div>
           </div>
-          <button type="submit" data-run title="Send" aria-label="Send">↑</button>
+          <button type="submit" data-run data-action="send" title="Send" aria-label="Send">↑</button>
         </div>
         <div class="codex-slash-menu" data-slash-menu hidden>
           <button type="button" data-slash-command="install-skill" data-slash-command-kind="installer">
@@ -142,7 +143,7 @@
     bind(instance, form, 'drop', event => instance.callbacks.onDrop?.(event));
     bind(instance, instance.container.querySelector('[data-run]'), 'click', event => {
       event.preventDefault();
-      if (instance.callbacks.isRunning?.()) {
+      if (instance.callbacks.isRunning?.() && !String(task?.value || '').trim()) {
         instance.callbacks.onCancel?.();
         return;
       }
@@ -185,9 +186,17 @@
     if (!runButton) {
       return;
     }
-    runButton.disabled = false;
-    runButton.title = running ? t(instance, 'cancelRun') : t(instance, 'send');
-    runButton.setAttribute('aria-label', running ? t(instance, 'cancelRun') : t(instance, 'send'));
+    const hasInput = Boolean(String(instance?.container?.querySelector('[data-task]')?.value || '').trim());
+    const action = running && !hasInput ? 'cancel' : 'send';
+    const label = action === 'cancel'
+      ? t(instance, 'cancelRun')
+      : running
+        ? t(instance, 'queueNextInput')
+        : t(instance, 'send');
+    runButton.dataset.action = action;
+    runButton.disabled = action === 'send' && !hasInput;
+    runButton.title = label;
+    runButton.setAttribute('aria-label', label);
   }
 
   function setModels(target, models = []) {

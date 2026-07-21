@@ -8,6 +8,7 @@ if (!globalThis.CodexOverleafCompatibility) {
   const HOST_NAME = 'com.codex.overleaf';
   const COMPATIBILITY_REQUIRED_METHODS = new Set([
     'codex.run',
+    'codex.steer',
     'task.run',
     'task.confirm',
     'mirror.sync',
@@ -35,6 +36,13 @@ if (!globalThis.CodexOverleafCompatibility) {
   const CodexOverleafCompatibility = globalThis.CodexOverleafCompatibility;
   let port = null;
   const pending = new Map();
+  const runJournals = new Map();
+  const journalWrites = new Map();
+  const ownerBindings = new Map();
+  const ownerCancelTimers = new Map();
+  const RUN_JOURNAL_PREFIX = 'codex-overleaf:run-journal:';
+  const RUN_JOURNAL_MAX_EVENTS = 300;
+  const RUN_JOURNAL_MAX_BYTES = 512 * 1024;
   globalThis.CodexOverleafNativeBridge = Object.freeze({
     requestInternal: payload => sendNativeRequest(payload, null, { skipCompatibility: true }),
     getPendingState: () => ({
@@ -44,6 +52,26 @@ if (!globalThis.CodexOverleafCompatibility) {
   });
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === 'codex-overleaf/run-journal/list') {
+      if (!isAllowedOverleafSender(sender)) {
+        sendResponse({ ok: false, journals: [] });
+        return undefined;
+      }
+      listRunJournals(String(message.projectKey || ''))
+        .then(journals => sendResponse({ ok: true, journals }))
+        .catch(error => sendResponse({ ok: false, journals: [], error: getErrorMessage(error, 'Journal read failed.') }));
+      return true;
+    }
+    if (message?.type === 'codex-overleaf/run-journal/ack') {
+      if (!isAllowedOverleafSender(sender)) {
+        sendResponse({ ok: false });
+        return undefined;
+      }
+      acknowledgeRunJournal(String(message.requestId || ''))
+        .then(() => sendResponse({ ok: true }))
+        .catch(error => sendResponse({ ok: false, error: getErrorMessage(error, 'Journal cleanup failed.') }));
+      return true;
+    }
     if (message?.type !== 'codex-overleaf/native-request') {
       return undefined;
     }
@@ -103,6 +131,42 @@ if (!globalThis.CodexOverleafCompatibility) {
     return true;
   });
 
+  chrome.runtime.onConnect?.addListener(portConnection => {
+    if (portConnection.name !== 'codex-overleaf/run-owner' || !isAllowedOverleafSender(portConnection.sender)) {
+      return;
+    }
+    portConnection.onMessage.addListener(message => {
+      const requestId = String(message?.requestId || '');
+      if (!requestId) {
+        return;
+      }
+      if (message.type === 'release') {
+        ownerBindings.delete(portConnection);
+        clearTimeout(ownerCancelTimers.get(requestId));
+        ownerCancelTimers.delete(requestId);
+        return;
+      }
+      if (message.type === 'bind') {
+        ownerBindings.set(portConnection, {
+          requestId,
+          projectKey: String(message.projectKey || ''),
+          documentId: String(portConnection.sender?.documentId || '')
+        });
+        clearTimeout(ownerCancelTimers.get(requestId));
+        ownerCancelTimers.delete(requestId);
+      }
+    });
+    portConnection.onDisconnect.addListener(() => {
+      const binding = ownerBindings.get(portConnection);
+      ownerBindings.delete(portConnection);
+      if (!binding?.requestId) {
+        return;
+      }
+      const timer = setTimeout(() => interruptOwnerlessRun(binding), 150);
+      ownerCancelTimers.set(binding.requestId, timer);
+    });
+  });
+
   function getNativeRetryClass(method) {
     switch (method) {
       case 'bridge.ping':
@@ -156,6 +220,9 @@ if (!globalThis.CodexOverleafCompatibility) {
         eventForwarded: false
       };
       pending.set(id, pendingRequest);
+      if (request.method === 'codex.run') {
+        createRunJournal(id, pendingRequest);
+      }
 
       try {
         postNativeRequest(pendingRequest);
@@ -366,15 +433,20 @@ if (!globalThis.CodexOverleafCompatibility) {
       }
       const pendingRequest = pending.get(id);
       if (message?.event) {
-        pendingRequest.eventForwarded = (
-          forwardNativeEvent(pendingRequest.tabId, id, message.event) ||
-          pendingRequest.eventForwarded
-        );
+        const { sequence, write } = appendRunJournalEvent(id, message.event);
+        Promise.resolve(write).catch(() => {}).then(() => {
+          pendingRequest.eventForwarded = (
+            forwardNativeEvent(pendingRequest.tabId, id, message.event, sequence) ||
+            pendingRequest.eventForwarded
+          );
+        });
         return;
       }
       pendingRequest.finalResponseReceived = true;
       pending.delete(id);
-      pendingRequest.resolve(message);
+      finalizeRunJournal(id, message).catch(() => {}).finally(() => {
+        pendingRequest.resolve(message);
+      });
     });
     nativePort.onDisconnect.addListener(() => {
       if (nativePort !== port) {
@@ -432,6 +504,13 @@ if (!globalThis.CodexOverleafCompatibility) {
 
   function rejectInterruptedNativeRequest(pendingId, pendingRequest, errorMessage) {
     pending.delete(pendingId);
+    finalizeRunJournal(pendingId, {
+      ok: false,
+      error: {
+        code: 'native_execution_interrupted',
+        message: errorMessage || 'Native host disconnected'
+      }
+    }).catch(() => {});
     if (pendingRequest.retryClass === 'no_silent_retry') {
       pendingRequest.reject(createNativeRequestError(
         'native_execution_interrupted',
@@ -522,7 +601,7 @@ if (!globalThis.CodexOverleafCompatibility) {
     }
   }
 
-  function forwardNativeEvent(tabId, id, event) {
+  function forwardNativeEvent(tabId, id, event, journalSeq = 0) {
     if (typeof tabId !== 'number') {
       return false;
     }
@@ -530,11 +609,187 @@ if (!globalThis.CodexOverleafCompatibility) {
     chrome.tabs.sendMessage(tabId, {
       type: 'codex-overleaf/native-event',
       id,
-      event
+      event,
+      journalSeq
     }, () => {
       void chrome.runtime.lastError;
     });
     return true;
+  }
+
+  function createRunJournal(id, pendingRequest) {
+    const params = pendingRequest.request?.params || {};
+    const journal = {
+      requestId: id,
+      projectKey: String(params.projectId || params.project?.projectId || ''),
+      clientRunId: String(params.clientRunId || ''),
+      sessionId: String(params.clientSessionId || ''),
+      task: sanitizeJournalString(params.task).slice(0, 12000),
+      mode: String(params.mode || ''),
+      model: String(params.model || ''),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      terminal: false,
+      ownerLost: false,
+      nextSequence: 1,
+      events: []
+    };
+    runJournals.set(id, journal);
+    pruneInMemoryRunJournals();
+    return queueJournalWrite(id);
+  }
+
+  function appendRunJournalEvent(id, event) {
+    const journal = runJournals.get(id);
+    if (!journal) {
+      return { sequence: 0, write: Promise.resolve() };
+    }
+    const sequence = journal.nextSequence++;
+    journal.events.push({ sequence, event: sanitizeJournalValue(event) });
+    journal.updatedAt = new Date().toISOString();
+    trimRunJournal(journal);
+    return { sequence, write: queueJournalWrite(id) };
+  }
+
+  function finalizeRunJournal(id, response) {
+    const journal = runJournals.get(id);
+    if (!journal) {
+      return Promise.resolve();
+    }
+    journal.terminal = true;
+    journal.updatedAt = new Date().toISOString();
+    journal.final = {
+      ok: response?.ok === true,
+      code: String(response?.error?.code || ''),
+      status: String(response?.result?.status || '')
+    };
+    return queueJournalWrite(id);
+  }
+
+  function trimRunJournal(journal) {
+    if (journal.events.length > RUN_JOURNAL_MAX_EVENTS) {
+      journal.events.splice(0, journal.events.length - RUN_JOURNAL_MAX_EVENTS);
+    }
+    while (journal.events.length && JSON.stringify(journal).length * 2 > RUN_JOURNAL_MAX_BYTES) {
+      journal.events.shift();
+    }
+  }
+
+  function sanitizeJournalValue(value, depth = 0) {
+    if (typeof value === 'string') {
+      return sanitizeJournalString(value);
+    }
+    if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') {
+      return value;
+    }
+    if (depth > 10) {
+      return '[nested value omitted]';
+    }
+    if (Array.isArray(value)) {
+      return value.slice(0, 200).map(item => sanitizeJournalValue(item, depth + 1));
+    }
+    if (typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).slice(0, 200).map(([key, item]) => [
+        sanitizeJournalString(key).slice(0, 160),
+        sanitizeJournalValue(item, depth + 1)
+      ]));
+    }
+    return String(value);
+  }
+
+  function sanitizeJournalString(value) {
+    return String(value || '')
+      .replace(/\b(?:sk|hf|glpat|npm|ghp|github_pat|AKIA|AIza)[_-]?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED]')
+      .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[REDACTED]')
+      .replace(/(?:file:\/\/)?\/(?:Users|home|private|var|opt|Library)\/[^\s"'<>]+/g, '[local path]')
+      .slice(0, 131072);
+  }
+
+  function queueJournalWrite(id) {
+    const storage = chrome.storage?.session;
+    if (!storage || !runJournals.has(id)) {
+      return Promise.resolve();
+    }
+    const previous = journalWrites.get(id) || Promise.resolve();
+    const snapshot = JSON.parse(JSON.stringify(runJournals.get(id)));
+    const next = previous.catch(() => {}).then(() => storage.set({
+      [RUN_JOURNAL_PREFIX + id]: snapshot
+    }));
+    journalWrites.set(id, next);
+    return next.finally(() => {
+      if (journalWrites.get(id) === next) {
+        journalWrites.delete(id);
+      }
+    });
+  }
+
+  async function listRunJournals(projectKey) {
+    await Promise.allSettled(Array.from(journalWrites.values()));
+    const storage = chrome.storage?.session;
+    if (!storage) {
+      return [];
+    }
+    const values = await storage.get(null);
+    const entries = Object.entries(values || {})
+      .filter(([key, value]) => key.startsWith(RUN_JOURNAL_PREFIX)
+        && (!projectKey || value?.projectKey === projectKey))
+      .sort((a, b) => String(a[1]?.createdAt || '').localeCompare(String(b[1]?.createdAt || '')));
+    const stale = entries.slice(0, Math.max(0, entries.length - 4)).map(([key]) => key);
+    if (stale.length) {
+      await storage.remove(stale);
+    }
+    return entries.slice(-4).map(([_key, value]) => value);
+  }
+
+  function pruneInMemoryRunJournals() {
+    if (runJournals.size <= 4) {
+      return;
+    }
+    const oldest = Array.from(runJournals.values())
+      .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
+      .slice(0, runJournals.size - 4);
+    for (const journal of oldest) {
+      runJournals.delete(journal.requestId);
+      journalWrites.delete(journal.requestId);
+      chrome.storage?.session?.remove?.(RUN_JOURNAL_PREFIX + journal.requestId).catch?.(() => {});
+    }
+  }
+
+  async function acknowledgeRunJournal(id) {
+    if (!id) {
+      return;
+    }
+    await (journalWrites.get(id) || Promise.resolve()).catch(() => {});
+    runJournals.delete(id);
+    journalWrites.delete(id);
+    await chrome.storage?.session?.remove?.(RUN_JOURNAL_PREFIX + id);
+  }
+
+  async function interruptOwnerlessRun(binding) {
+    ownerCancelTimers.delete(binding.requestId);
+    if (Array.from(ownerBindings.values()).some(value => value.requestId === binding.requestId)) {
+      return;
+    }
+    const journal = runJournals.get(binding.requestId);
+    if (journal) {
+      journal.ownerLost = true;
+      journal.updatedAt = new Date().toISOString();
+      await queueJournalWrite(binding.requestId).catch(() => {});
+    }
+    if (!pending.has(binding.requestId)) {
+      return;
+    }
+    try {
+      sendNativeCancel({
+        method: 'codex.cancel',
+        params: {
+          requestId: binding.requestId,
+          projectKey: binding.projectKey || undefined
+        }
+      });
+    } catch (_error) {
+      // The original request disconnect path will settle the journal.
+    }
   }
 })();
 

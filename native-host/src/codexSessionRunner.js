@@ -30,7 +30,7 @@ const MAX_TURN_ATTACHMENT_BYTES = 12 * 1024 * 1024;
 const MAX_TURN_ATTACHMENTS = 8;
 const MAX_TURN_ATTACHMENT_TOTAL_BYTES = MAX_TURN_ATTACHMENT_BYTES * MAX_TURN_ATTACHMENTS;
 
-async function runCodexSession({ params = {}, env = process.env, emit = () => {}, rootDir, executeCodex, providerLaunch, signal } = {}) {
+async function runCodexSession({ params = {}, env = process.env, emit = () => {}, rootDir, executeCodex, providerLaunch, signal, onControlReady } = {}) {
   throwIfAborted(signal);
   const projectId = params.projectId || params.project?.projectId || params.project?.id || params.project?.url || 'overleaf-project';
   const skillInvocation = normalizeSkillInvocation(params.skillInvocation);
@@ -162,6 +162,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
       // While subagent workers are active, the parent idle watchdog resets
       // instead of failing the run (spec P2-7 fix).
       hasExternalActivity: subagentBroker ? () => subagentBroker.hasActiveWorkers() : undefined,
+      onControlReady,
       signal
     });
   } catch (error) {
@@ -808,6 +809,7 @@ function runCodexAppServerProcess(input) {
     let stderr = '';
     let activeThreadId = '';
     let activeTurnId = '';
+    let controlPublished = false;
     const assistantMessages = new Map();
     const assistantMessageOrder = [];
     const readProgressController = createReadProgressController({
@@ -841,7 +843,15 @@ function runCodexAppServerProcess(input) {
       fail(new Error(`Codex app-server produced no events for ${ms}ms (idle watchdog); the run was aborted to release the project lock.`));
     });
     const onAbort = () => {
-      fail(getAbortReason(input.signal));
+      const reason = getAbortReason(input.signal);
+      if (!activeThreadId || !activeTurnId) {
+        fail(reason);
+        return;
+      }
+      Promise.race([
+        interruptActiveTurn().catch(() => null),
+        new Promise(resolveDelay => setTimeout(resolveDelay, 1500))
+      ]).finally(() => fail(reason));
     };
     input.signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -910,6 +920,7 @@ function runCodexAppServerProcess(input) {
 
       const turnResponse = await startTurnWithSummaryFallback(activeThreadId);
       activeTurnId = turnResponse?.turn?.id || '';
+      publishActiveTurnControl();
       readProgressController.flush();
     }
 
@@ -935,6 +946,7 @@ function runCodexAppServerProcess(input) {
     }
 
     function request(method, params) {
+      idleWatchdog.reset();
       const id = nextId++;
       const message = { id, method, params };
       child.stdin.write(`${JSON.stringify(message)}\n`);
@@ -986,6 +998,11 @@ function runCodexAppServerProcess(input) {
       }
 
       if (message.method) {
+        if (message.method === 'turn/started') {
+          activeThreadId = message.params?.thread?.id || message.params?.threadId || activeThreadId;
+          activeTurnId = message.params?.turn?.id || message.params?.turnId || activeTurnId;
+          publishActiveTurnControl();
+        }
         recordAssistantMessage(message);
         // For `error` events surface the actual error text as the visible
         // title so the run timeline reads "Reconnecting... 2/5" instead of
@@ -1059,6 +1076,39 @@ function runCodexAppServerProcess(input) {
         assistantMessageOrder.push(itemId);
       }
       assistantMessages.set(itemId, text);
+    }
+
+    function publishActiveTurnControl() {
+      if (controlPublished || !activeThreadId || !activeTurnId) {
+        return;
+      }
+      controlPublished = true;
+      const control = Object.freeze({
+        threadId: activeThreadId,
+        turnId: activeTurnId,
+        steer: ({ input: steerInput, clientUserMessageId } = {}) => request('turn/steer', {
+          threadId: activeThreadId,
+          expectedTurnId: activeTurnId,
+          input: Array.isArray(steerInput) ? steerInput : [],
+          clientUserMessageId: clientUserMessageId || undefined
+        }),
+        interrupt: () => interruptActiveTurn()
+      });
+      input.onControlReady?.(control);
+      emitCodexEvent(input.emit, 'codex.turn.bound', 'Codex turn is ready for follow-up guidance', {
+        threadId: activeThreadId,
+        turnId: activeTurnId
+      }, 'running');
+    }
+
+    function interruptActiveTurn() {
+      if (!activeThreadId || !activeTurnId || settled) {
+        return Promise.resolve({ interrupted: false });
+      }
+      return request('turn/interrupt', {
+        threadId: activeThreadId,
+        turnId: activeTurnId
+      });
     }
 
     function succeed() {

@@ -36,6 +36,7 @@
     'mirror.status',
     'codex.models',
     'codex.run',
+    'codex.steer',
     'codex.providers.list',
     'codex.providers.test',
     'codex.providers.test.cancel',
@@ -113,6 +114,10 @@
   const ContextTray = window.CodexOverleafContextTray;
   const LocalSkillsPanel = window.CodexOverleafLocalSkillsPanel;
   const runController = window.CodexOverleafRunController;
+  const RunInputQueue = window.CodexOverleafRunInputQueue;
+  const RunQueueScheduler = window.CodexOverleafRunQueueScheduler;
+  const ActiveTurnControl = window.CodexOverleafActiveTurnControl;
+  const PendingInputView = window.CodexOverleafPendingInputView;
   const mirrorHealth = window.CodexOverleafMirrorHealth;
   const otWarmMirrorController = window.CodexOverleafOtWarmMirrorController;
   const PanelRenderer = window.CodexOverleafPanelRenderer;
@@ -767,6 +772,9 @@
   let state = null;
   let storageKey = LEGACY_STORAGE_KEY;
   let currentRunView = null;
+  let runQueueScheduler = null;
+  let runInputCoordinator = null;
+  const activeTurnControl = ActiveTurnControl.create({ chrome });
   let saveStateTimer = null;
   // Two-phase saveState scheduling. `saveStateInFlight` flips to true while
   // an async saveState() is actually writing; `saveStateRunAfterFlight` is
@@ -843,7 +851,7 @@
       return;
     }
     if (nativeChannel.shouldHandleNativeEvent(message)) {
-      appendNativeEvent(message.event);
+      appendNativeEvent(message.event, message.journalSeq);
     }
   });
 
@@ -862,6 +870,15 @@
   async function init() {
     storageKey = getProjectStorageKey(LEGACY_STORAGE_KEY, window.location.href);
     state = normalizePanelState(await loadStoredState(), { restoreRunningRuns: true });
+    initializeRunQueueScheduler();
+    recoverInterruptedRunJournals()
+      .then(() => applyStateToPanel())
+      .catch(() => {});
+    setTimeout(() => {
+      recoverInterruptedRunJournals()
+        .then(() => applyStateToPanel())
+        .catch(() => {});
+    }, 900);
     ensurePanelOpen();
     root.CodexOverleafUpdateNotice?.mount?.(panel?.panelEl || panel, {
       getLocale: () => state?.locale || 'en'
@@ -1338,7 +1355,8 @@
     setElementTitleAndAria('[data-context-refresh]', tr('refreshFileList'), tr('refreshFileList'));
     setElementTitleAndAria('[data-reasoning]', tr('reasoningLabel'), tr('reasoningLabel'));
     setElementTitleAndAria('[data-speed]', tr('speedLabel'), tr('speedLabel'));
-    setElementTitleAndAria('[data-run]', currentRunView ? tr('cancelRun') : tr('send'), currentRunView ? tr('cancelRun') : tr('send'));
+    setElementTitleAndAria('[data-run]', currentRunView ? tr('queueNextInput') : tr('send'), currentRunView ? tr('queueNextInput') : tr('send'));
+    setElementTitleAndAria('[data-stop-run]', tr('cancelRun'), tr('cancelRun'));
 
     const actions = panel.querySelector('.codex-vscode-head-actions');
     if (actions) {
@@ -1646,7 +1664,7 @@
     return contextTrayController.resetContextProject();
   }
 
-  async function runTask() {
+  async function runTask(options = {}) {
     // Barrier on a still-flying background mirror refresh from the previous
     // turn (v1.7.5) BEFORE startRunView creates the new run view: the mirror's
     // wrap-up events must land in the run that produced them, not the new
@@ -1665,7 +1683,8 @@
     const submittedAttachments = getComposerAttachmentsForRun();
     const submittedSkillInvocation = getComposerSkillInvocationForRun();
 
-    const task = state.task.trim();
+    const queuedInput = options.queuedInput || null;
+    const task = String(queuedInput?.text || state.task || '').trim();
     if (!task) {
       appendLog(tx('Enter a task first.', '请先输入任务。'));
       return;
@@ -1681,9 +1700,13 @@
       reasoningEffort: state.reasoningEffort,
       speedTier: state.speedTier,
       attachments: submittedAttachments,
-      skillInvocation: submittedSkillInvocation
+      skillInvocation: submittedSkillInvocation,
+      queueItemId: queuedInput?.id || ''
     });
     const runSessionId = currentRunView.sessionId;
+    if (queuedInput?.id) {
+      await runQueueScheduler?.markExecuting(runSessionId, queuedInput.id, currentRunView.recordId);
+    }
     let runAuditDraft = null;
     try {
       runAuditDraft = await awaitRunStep(createAuditDraftForRun({
@@ -1693,10 +1716,11 @@
         focusFiles: getActiveFocusFiles()
       }));
       announceCrossTabRunStart();
-      // Keep attachments across turns (v1.7.5): screenshots and files usually
-      // anchor several follow-up questions. The tray keeps them visible and
-      // hand-removable; only the task text resets after submit.
-      clearTaskComposer({ keepAttachments: true });
+      // Binary attachments belong to this submitted turn. The run record has
+      // already captured their snapshots, so clear them from the composer
+      // together with the submitted text. Persistent @context remains intact.
+      clearTaskComposer({ keepAttachments: false });
+      syncComposerSendAvailability(true);
       appendRunEvent({
         title: submittedSkillInvocation?.id === 'skill-installer'
           ? tx('I will use the Codex skill installer for this request.', '我会用 Codex skill installer 处理这个请求。')
@@ -1909,9 +1933,7 @@
       await awaitRunStep(settleMirrorPrefetchBeforeRun());
       await awaitRunStep(providerSettingsCoordinator.ensureLoaded());
       appendRunEvent({ title: tx('Local Codex session is starting.', '本地 Codex session 开始运行。'), status: 'running' });
-      let response = await awaitRunStep(sendNative({
-        method: 'codex.run',
-        params: buildCodexRunParams({
+      let response = await awaitRunStep(sendTrackedCodexRun(buildCodexRunParams({
           task,
           project,
           useExistingMirror,
@@ -1926,8 +1948,7 @@
           attachments: submittedAttachments,
           skillInvocation: submittedSkillInvocation,
           submittedMode
-        })
-      }));
+        })));
 
       // Handle mirror_stale error by retrying with full sync
       if (!response.ok && response.error?.code === 'mirror_stale' && useExistingMirror) {
@@ -1945,9 +1966,7 @@
         fileOverlays = null;
         otWarmStart = false;
         restrictToFocusFiles = staleRetry.restrictToFocusFiles;
-        response = await awaitRunStep(sendNative({
-          method: 'codex.run',
-          params: buildCodexRunParams({
+        response = await awaitRunStep(sendTrackedCodexRun(buildCodexRunParams({
             task,
             project,
             useExistingMirror: false,
@@ -1962,8 +1981,7 @@
             attachments: submittedAttachments,
             skillInvocation: submittedSkillInvocation,
             submittedMode
-          })
-        }));
+          })));
       }
 
       if (!response.ok && response.error?.code === 'thread_resume_failed') {
@@ -1979,9 +1997,7 @@
             }
           }
           appendRunEvent({ title: tx('Creating a new Codex conversation thread.', '正在新建 Codex 会话线程。'), status: 'running' });
-          response = await sendNative({
-            method: 'codex.run',
-            params: buildCodexRunParams({
+          response = await sendTrackedCodexRun(buildCodexRunParams({
               task,
               project,
               useExistingMirror,
@@ -1996,8 +2012,7 @@
               attachments: submittedAttachments,
               skillInvocation: submittedSkillInvocation,
               submittedMode
-            })
-          });
+            }));
         } else {
           appendRunEvent({ title: tx('Cancelled: user chose not to create a new thread.', '已取消：用户选择不新建线程。'), status: 'rejected' });
           await finalizeAuditRecord(runAuditDraft, { resultStatus: 'rejected' });
@@ -2306,6 +2321,15 @@
       });
       finishRunView(tx('Task failed', '任务失败'), 'failed');
     } finally {
+      const settledView = currentRunView;
+      const settledRecord = settledView ? findRunRecord(settledView.recordId, settledView.sessionId) : null;
+      const settlement = {
+        sessionId: settledView?.sessionId || '',
+        status: settledView?.terminalStatus || settledRecord?.status || 'failed',
+        queueItemId: settledView?.queueItemId || '',
+        requestId: settledView?.nativeRequestId || '',
+        continueQueue: runCancellationRequested
+      };
       setRunning(false);
       nativeChannel.clearActiveRequest();
       stopRunElapsedTick();
@@ -2315,7 +2339,12 @@
       if (isExperimentalOtEnabled()) {
         await resumeOtWarmMirror('run-settled');
       }
-      saveStateSoon();
+      await saveState().catch(() => {});
+      activeTurnControl.release(settlement.requestId);
+      if (settlement.requestId) {
+        activeTurnControl.acknowledge(settlement.requestId).catch(() => {});
+      }
+      runQueueScheduler?.afterSettlement(settlement).catch(() => {});
     }
   }
 
@@ -2554,7 +2583,7 @@
       return;
     }
     if (currentRunView) {
-      return;
+      return queueComposerInput();
     }
     runTask().catch(error => {
       setRunning(false);
@@ -2565,6 +2594,71 @@
       console.error('[codex-overleaf] failed to start task', error);
       appendPlainLog(tx(`Could not start Codex task: ${error.message}`, `无法启动 Codex 任务：${error.message}`));
     });
+  }
+
+  function initializeRunQueueScheduler() {
+    runInputCoordinator = RunQueueScheduler.createCoordinator({
+      getSession: sessionId => findSessionById(sessionId),
+      getActiveSession: () => getActiveSession(state),
+      setQueue: (sessionId, pendingInputs) => updateSessionById(sessionId, { pendingInputs }),
+      getCurrentRun: () => currentRunView,
+      canStart: sessionId => state?.activeSessionId === sessionId && isProjectEditorRoute(window.location),
+      readInputs: readPanelInputs,
+      getTask: () => panel?.querySelector('[data-task]')?.value || '',
+      hasAttachments: () => getComposerAttachmentsForRun().length > 0,
+      capturePayload: () => ({
+        mode: state.mode,
+        providerId: state.providerId,
+        model: state.model,
+        reasoningEffort: state.reasoningEffort,
+        speedTier: state.speedTier,
+        requireReviewing: state.requireReviewing,
+        focusFiles: getActiveFocusFiles()
+      }),
+      clearTask: () => {
+        panel.querySelector('[data-task]').value = '';
+        updateSessionById(state.activeSessionId, { task: '' });
+        autosizeTaskTextarea();
+        syncComposerSendAvailability();
+      },
+      applyQueuedInput: item => {
+        state = updateActiveSession(state, {
+          task: item.text,
+          mode: item.payload?.mode || state.mode,
+          providerId: item.payload?.providerId || state.providerId,
+          model: item.payload?.model || state.model,
+          reasoningEffort: item.payload?.reasoningEffort || state.reasoningEffort,
+          speedTier: item.payload?.speedTier || state.speedTier,
+          requireReviewing: item.payload?.requireReviewing !== false,
+          focusFiles: item.payload?.focusFiles || []
+        });
+        applyStateToPanel();
+      },
+      run: item => runTask({ queuedInput: item }),
+      sendSteer: params => sendBackgroundNative({ method: 'codex.steer', params }),
+      getContainer: () => panel?.querySelector('[data-pending-inputs]'),
+      createView: options => PendingInputView.create(options),
+      appendEvent: (title, status) => appendRunEvent({ title, status }),
+      appendGuidance: text => appendRunEvent({
+        title: tr('queuedInputGuided'),
+        detail: text,
+        status: 'completed'
+      }),
+      toast: (message, status) => showPluginToast(message, { status }),
+      tr,
+      save: () => saveState(),
+      saveSoon: () => saveStateSoon(),
+      randomUUID: () => crypto.randomUUID()
+    });
+    runQueueScheduler = runInputCoordinator.scheduler;
+  }
+
+  function queueComposerInput() {
+    return runInputCoordinator?.queueComposerInput();
+  }
+
+  function renderPendingInputs() {
+    return runInputCoordinator?.render();
   }
 
   async function cancelActiveRun() {
@@ -2930,8 +3024,92 @@
     });
     return {
       ...params,
+      clientRunId: currentRunView?.recordId || '',
+      clientSessionId: currentRunView?.sessionId || '',
       providerSelection: providerSettingsCoordinator.getRunSelection(state?.providerId)
     };
+  }
+
+  async function sendTrackedCodexRun(params) {
+    const compatibilityGate = await ensureNativeCompatibilityForMethod('codex.run');
+    if (!compatibilityGate.ok) {
+      return compatibilityGate.response;
+    }
+    throwIfCancelledBeforeNativeDispatch('codex.run');
+    const tracked = nativeChannel.sendNativeTracked(attachNativeCompatibilityEvidence({
+      method: 'codex.run',
+      params
+    }, compatibilityGate.compatibility));
+    if (currentRunView) {
+      currentRunView.nativeRequestId = tracked.id;
+      const record = findRunRecord(currentRunView.recordId, currentRunView.sessionId);
+      if (record) {
+        record.nativeRequestId = tracked.id;
+      }
+      activeTurnControl.bind({
+        requestId: tracked.id,
+        projectKey: currentRunView.runProjectId,
+        clientRunId: currentRunView.recordId,
+        sessionId: currentRunView.sessionId
+      });
+      saveStateSoon();
+    }
+    return tracked.promise.finally(() => {
+      if (currentRunView?.nativeRequestId === tracked.id) {
+        currentRunView.activeTurn = null;
+        renderPendingInputs();
+      }
+    });
+  }
+
+  async function recoverInterruptedRunJournals() {
+    const projectKey = getCurrentProjectId();
+    const changed = await activeTurnControl.recoverJournals({
+      projectKey,
+      findSession: findSessionById,
+      getActiveSession: () => getActiveSession(state),
+      createInterruptedRun: journal => ({
+          id: journal.clientRunId,
+          task: journal.task || 'interrupted task',
+          mode: journal.mode || 'ask',
+          model: journal.model || '',
+          status: 'interrupted',
+          statusText: tr('restoredRunStoppedStatus'),
+          runProjectId: projectKey,
+          startedAt: journal.createdAt || new Date().toISOString(),
+          finishedAt: journal.updatedAt || new Date().toISOString(),
+          events: [],
+          attachments: [],
+          undoOperations: [],
+          undoTrackedChanges: [],
+          undoExpectedFiles: []
+      }),
+      mapEvent: (raw, journal) => {
+        const activity = mapAgentEventToActivity(raw, { locale: getLocale() });
+        if (!activity?.visible || activity.kind === 'technical') {
+          return null;
+        }
+        return {
+          kind: activity.kind || 'activity',
+          title: sanitizeAssistantVisibleText(activity.title) || 'Event',
+          status: activity.status || 'running',
+          detail: sanitizeAssistantVisibleValue(activity.detail),
+          timestamp: raw.timestamp || journal.updatedAt || new Date().toISOString(),
+          streamKey: sanitizeAssistantVisibleText(activity.streamKey),
+          streamRole: sanitizeAssistantVisibleText(activity.streamRole),
+          appendText: sanitizeAssistantVisibleText(activity.appendText),
+          replaceText: activity.replaceText
+        };
+      },
+      upsertStream: upsertRunStreamRecordEvent,
+      pauseSessionQueue: (session, reason) => {
+        session.pendingInputs = RunInputQueue.pauseAll(session.pendingInputs || [], reason);
+      },
+      maxEvents: MAX_RUN_EVENTS
+    });
+    if (changed) {
+      await saveState().catch(() => {});
+    }
   }
 
   async function createAuditDraftForRun(input = {}) {
@@ -3123,6 +3301,8 @@
   }
 
   function appendRunCancelledReport() {
+    const hasQueuedFollowUp = (getActiveSession(state)?.pendingInputs || [])
+      .some(item => item?.status === 'queued');
     appendRunEvent({
       title: tx('Current Codex task was cancelled.', '已中断当前 Codex 任务。'),
       status: 'failed'
@@ -3132,7 +3312,9 @@
       status: 'rejected',
       operations: [],
       applyResults: [],
-      nextStep: tx('Edit the task and run again.', '可以修改任务后重新运行。')
+      nextStep: hasQueuedFollowUp
+        ? tx('The first queued follow-up will start next.', '接下来会自动启动队首的后续任务。')
+        : tx('Edit the task and run again.', '可以修改任务后重新运行。')
     });
   }
 
@@ -3145,17 +3327,27 @@
     task.style.height = `${Math.min(task.scrollHeight, 160)}px`;
   }
 
-  function syncComposerSendAvailability() {
+  function syncComposerSendAvailability(runningOverride) {
     const runButton = panel?.querySelector('[data-run]');
     if (!runButton) {
       return;
     }
-    // While a run is active the button is Cancel and must stay clickable.
-    if (currentRunView) {
-      runButton.disabled = false;
-      return;
-    }
-    runButton.disabled = !String(panel?.querySelector('[data-task]')?.value || '').trim();
+    const hasInput = Boolean(String(panel?.querySelector('[data-task]')?.value || '').trim());
+    const running = typeof runningOverride === 'boolean'
+      ? runningOverride
+      : Boolean(currentRunView);
+    const action = running && !hasInput ? 'cancel' : 'send';
+    const label = action === 'cancel'
+      ? tr('cancelRun')
+      : running
+        ? tr('queueNextInput')
+        : tr('send');
+    runButton.dataset.action = action;
+    runButton.disabled = action === 'cancel'
+      ? runCancellationRequested
+      : !hasInput;
+    runButton.title = label;
+    runButton.setAttribute('aria-label', label);
   }
 
   function handleTaskInputKeydown(event) {
@@ -3172,6 +3364,7 @@
   function handleTaskInput() {
     autosizeTaskTextarea();
     syncComposerSendAvailability();
+    renderPendingInputs();
     scheduleMirrorPrefetch({
       reason: 'composer-input',
       delayMs: mirrorHealth?.PREFETCH_DEBOUNCE_MS || 1200
@@ -6516,12 +6709,7 @@
 
 
   function setRunning(running) {
-    const runButton = panel.querySelector('[data-run]');
-    // Running -> the button is Cancel and must never be disabled; idle -> it
-    // is Send and disables on an empty composer (feedback instead of no-op).
-    runButton.disabled = running ? false : !String(panel.querySelector('[data-task]')?.value || '').trim();
-    runButton.title = running ? tr('cancelRun') : tr('send');
-    runButton.setAttribute('aria-label', running ? tr('cancelRun') : tr('send'));
+    syncComposerSendAvailability(running);
     panel.querySelector('[data-new-session]').disabled = false;
     panel.querySelector('[data-diagnostics-snapshot]').disabled = running;
     if (running) {
@@ -6529,9 +6717,10 @@
     }
     panel.dataset.running = running ? 'true' : 'false';
     panel.dataset.cancelling = running && runCancellationRequested ? 'true' : 'false';
+    renderPendingInputs();
   }
 
-  function startRunView({ task, mode, model, reasoningEffort, speedTier }) {
+  function startRunView({ task, mode, model, reasoningEffort, speedTier, queueItemId = '' }) {
     let attachments = [];
     if (Array.isArray(arguments[0]?.attachments)) {
       attachments = arguments[0].attachments;
@@ -6555,6 +6744,10 @@
       undoTrackedChanges: [],
       undoExpectedFiles: [],
       undoStatus: '',
+      queueItemId,
+      nativeRequestId: '',
+      codexTurnId: '',
+      nativeEventSeq: 0,
       // Welcome-panel + write-guard:
       // Immutable per-run capture of the project this run was submitted
       // against. Every writeback / accept / undo dispatch attaches this id
@@ -6599,7 +6792,10 @@
       report: root.querySelector('[data-run-report]'),
       status: root.querySelector('[data-run-status]'),
       projectFiles: captureProjectReferenceFiles(arguments[0]?.project),
-      startedAt: Date.now()
+      startedAt: Date.now(),
+      queueItemId,
+      nativeRequestId: '',
+      activeTurn: null
     };
   }
 
@@ -6616,6 +6812,7 @@
       record.status = status;
       record.statusText = statusText;
       record.finishedAt = new Date().toISOString();
+      currentRunView.terminalStatus = status;
       // Welcome-panel + write-guard:
       // when the user navigated away mid-run, the URL-derived projectId now
       // belongs to a different project (or /project). Routing this finish
@@ -6646,8 +6843,13 @@
   }
 
 
-  function appendNativeEvent(event) {
+  function appendNativeEvent(event, journalSeq = 0) {
     if (!event) {
+      return;
+    }
+
+    if (event.type === 'codex.turn.bound') {
+      bindActiveTurn(event.detail || {}, journalSeq);
       return;
     }
 
@@ -6666,8 +6868,28 @@
       streamKey: activity.streamKey,
       streamRole: activity.streamRole,
       appendText: activity.appendText,
-      replaceText: activity.replaceText
+      replaceText: activity.replaceText,
+      nativeEventSeq: journalSeq
     });
+  }
+
+  function bindActiveTurn(detail = {}, journalSeq = 0) {
+    if (!currentRunView) {
+      return;
+    }
+    const threadId = String(detail.threadId || '');
+    const turnId = String(detail.turnId || '');
+    currentRunView.activeTurn = { threadId, turnId };
+    const record = findRunRecord(currentRunView.recordId, currentRunView.sessionId);
+    if (record) {
+      record.codexTurnId = turnId;
+      record.nativeEventSeq = Math.max(Number(record.nativeEventSeq || 0), Number(journalSeq || 0));
+    }
+    if (threadId) {
+      updateSessionById(currentRunView.sessionId, { codexThreadId: threadId });
+    }
+    renderPendingInputs();
+    saveState().catch(() => {});
   }
 
   function appendTechnicalEvent(event) {
@@ -6731,6 +6953,9 @@
     const record = findRunRecord(currentRunView.recordId, currentRunView.sessionId);
     let renderedEvent = event;
     if (record) {
+      if (Number.isFinite(Number(input.nativeEventSeq))) {
+        record.nativeEventSeq = Math.max(Number(record.nativeEventSeq || 0), Number(input.nativeEventSeq || 0));
+      }
       // v1.8.1: keep the session's activity timestamp honest DURING a run —
       // it was pinned to run start, so the dashboard's 30-minute zombie
       // heuristic mislabeled any long live run as interrupted (fleet P1).

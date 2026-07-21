@@ -44,30 +44,55 @@ function convertAnthropicResponse(message = {}, context = {}) {
   };
 }
 
-async function streamAnthropicResponse({ upstream, res, context = {}, onComplete = () => {} } = {}) {
+async function streamAnthropicResponse({
+  upstream,
+  res,
+  context = {},
+  onComplete = () => {},
+  onActivity = () => {},
+  recoverInterrupted = () => ''
+} = {}) {
   const state = createState(context);
   beginSse(res);
   emit(state, res, 'response.created', { response: streamEnvelope(state, 'in_progress') });
   emit(state, res, 'response.in_progress', { response: streamEnvelope(state, 'in_progress') });
   const decoder = new TextDecoder();
   let buffer = '';
-  for await (const chunk of upstream.body || []) {
-    buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
-    let boundary = findBoundary(buffer);
-    while (boundary) {
-      const block = buffer.slice(0, boundary.index);
-      buffer = buffer.slice(boundary.index + boundary.length);
-      const event = parseEvent(block);
+  let done = false;
+  let interruptedReason = '';
+  try {
+    for await (const chunk of upstream.body || []) {
+      onActivity();
+      buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
+      let boundary = findBoundary(buffer);
+      while (boundary) {
+        const block = buffer.slice(0, boundary.index);
+        buffer = buffer.slice(boundary.index + boundary.length);
+        const event = parseEvent(block);
+        if (event.data) processEvent(state, res, event.type, parseJson(event.data));
+        if (state.sawMessageStop || state.stopReason) {
+          done = true;
+          break;
+        }
+        boundary = findBoundary(buffer);
+      }
+      if (done) break;
+    }
+  } catch (error) {
+    interruptedReason = String(recoverInterrupted(error) || '');
+    if (!interruptedReason || !hasRecoverablePartialOutput(state)) throw error;
+  }
+  if (!done && !interruptedReason && hasRecoverablePartialOutput(state)) {
+    interruptedReason = 'stream_ended';
+  }
+  if (!done && !interruptedReason) {
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      const event = parseEvent(buffer);
       if (event.data) processEvent(state, res, event.type, parseJson(event.data));
-      boundary = findBoundary(buffer);
     }
   }
-    buffer += decoder.decode();
-  if (buffer.trim()) {
-    const event = parseEvent(buffer);
-    if (event.data) processEvent(state, res, event.type, parseJson(event.data));
-  }
-  const converted = completeStream(state, res);
+  const converted = completeStream(state, res, interruptedReason);
   onComplete(converted);
   res.end();
   return converted;
@@ -221,10 +246,12 @@ function closeBlock(state, res, index) {
   state.items[entry.outputIndex] = entry.item;
 }
 
-function completeStream(state, res) {
+function completeStream(state, res, interruptedReason = '') {
   for (const index of Array.from(state.blocks.keys()).sort((a, b) => a - b)) closeBlock(state, res, index);
   if (!state.items.filter(Boolean).length) throw responseError('Anthropic stream ended without usable output.');
-  const terminal = mapStopReason(state.stopReason);
+  const terminal = interruptedReason
+    ? { status: 'incomplete', incompleteReason: 'max_output_tokens' }
+    : mapStopReason(state.stopReason);
   const response = responseEnvelope({
     id: state.id,
     model: state.model,
@@ -235,6 +262,15 @@ function completeStream(state, res) {
   });
   emit(state, res, terminal.status === 'incomplete' ? 'response.incomplete' : 'response.completed', { response });
   return { response, assistantBlocks: state.assistantBlocks.filter(Boolean) };
+}
+
+function hasRecoverablePartialOutput(state) {
+  const entries = Array.from(state.blocks.values());
+  if (entries.some(entry => entry?.type === 'tool_use')) return false;
+  return entries.some(entry => (
+    (entry?.type === 'text' && entry.text)
+    || ((entry?.type === 'thinking' || entry?.type === 'redacted_thinking') && (entry.thinking || entry.data))
+  ));
 }
 
 function toolItem(block, toolContext) {

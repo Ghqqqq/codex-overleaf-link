@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -34,6 +36,9 @@ jobs:
 
       - name: Verify npm package manifest
         run: npm run verify:npm-package
+
+      - name: Verify managed update boundary
+        run: npm run verify:update-boundary
 
       - name: Check architecture budget
         run: npm run check:architecture

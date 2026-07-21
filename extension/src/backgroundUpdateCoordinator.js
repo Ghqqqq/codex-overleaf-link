@@ -3,13 +3,29 @@
 
   const UPDATE_STATE_KEY = 'codex-overleaf-managed-update-state-v1';
   const CONSENT_STATE_KEY = 'codex-overleaf-update-consent-v1';
+  const UPDATE_RELOAD_TABS_KEY = 'codex-overleaf-managed-update-tabs-v1';
   const CHECK_ALARM = 'codex-overleaf-consent-update-check';
+  const IDLE_ALARM = 'codex-overleaf-consent-update-idle';
+  const WATCHDOG_ALARM = 'codex-overleaf-consent-update-watchdog';
   const STARTUP_CHECK_SESSION_KEY = 'codex-overleaf-startup-update-check-v1';
   const STARTUP_CHECK_CLAIMED_FLAG = '__codexOverleafStartupUpdateCheckClaimed';
   const CHECK_INTERVAL_MINUTES = 24 * 60;
   const SNOOZE_MS = 24 * 60 * 60 * 1000;
   const CANDIDATE_MAX_AGE_MS = 5 * 60 * 1000;
   const CHECK_REQUEST_TIMEOUT_MS = 15 * 1000;
+  const ACTIVATION_TIMEOUT_MS = 20 * 1000;
+  const ACTIVATION_POLL_MS = 250;
+  const FAST_IDLE_RETRY_MS = 4000;
+  const SLOW_IDLE_RETRY_MS = 15000;
+  const FAST_IDLE_RETRY_BLOCKERS = new Set(['recent_user_activity', 'save_state_not_stable']);
+  const WATCHDOG_INTERVAL_MINUTES = 1;
+  const PHASE_TIMEOUT_MS = Object.freeze({
+    checking: 30 * 1000,
+    downloading: 2 * 60 * 1000,
+    applying: 90 * 1000,
+    awaiting_health: 2 * 60 * 1000,
+    rolling_back: 60 * 1000
+  });
   const LEGACY_GUARD = Number.MAX_SAFE_INTEGER;
   const OVERLEAF_MATCHES = [
     'https://www.overleaf.com/project',
@@ -29,6 +45,8 @@
   let nativeBridge = null;
   let initialized = false;
   let policyTail = Promise.resolve();
+  let idleRetryTimer = null;
+  let activationPromise = null;
 
   function init(options = {}) {
     if (initialized || !policy) return;
@@ -51,6 +69,12 @@
       if (alarm?.name === CHECK_ALARM) {
         void enqueuePolicyAction(() => checkOnly({ manual: false })).catch(() => {});
       }
+      if (alarm?.name === WATCHDOG_ALARM) {
+        void enqueuePolicyAction(() => reconcileExpiredPhase()).catch(() => {});
+      }
+      if (alarm?.name === IDLE_ALARM) {
+        void enqueuePolicyAction(() => tryActivateStagedUpdate()).catch(() => {});
+      }
     });
 
     chrome.storage?.onChanged?.addListener((changes, area) => {
@@ -66,10 +90,19 @@
       delayInMinutes: 0.5,
       periodInMinutes: CHECK_INTERVAL_MINUTES
     });
+    chrome.alarms?.create?.(WATCHDOG_ALARM, {
+      delayInMinutes: WATCHDOG_INTERVAL_MINUTES,
+      periodInMinutes: WATCHDOG_INTERVAL_MINUTES
+    });
     await recoverInterruptedCheck();
+    await reconcileExpiredPhase();
     await settleTerminalConsent();
     await armLegacyGuard();
     await publishView();
+    const updateState = await getUpdateState();
+    if (['staged', 'waiting_for_idle'].includes(updateState.state)) {
+      scheduleIdleRetry(updateState.blockers);
+    }
     if (await claimStartupCheck()) {
       void enqueuePolicyAction(() => checkOnly({ manual: false })).catch(() => {});
     }
@@ -115,6 +148,7 @@
     await setUpdateState({
       ...currentState,
       state: 'checking',
+      initiatedBy: manual ? 'manual' : 'automatic',
       code: '',
       message: '',
       blocker: '',
@@ -181,6 +215,7 @@
       await setUpdateState({
         ...currentState,
         state: 'failed',
+        initiatedBy: manual ? 'manual' : 'automatic',
         postponeUntil: LEGACY_GUARD,
         code: safeCode(error),
         message: safeMessage(error)
@@ -239,27 +274,22 @@
     }
 
     const authorizationId = crypto.randomUUID();
-    await requestNative('update.authorize', {
-      authorizationId,
-      targetVersion: state.latestVersion,
-      currentVersion: currentVersion()
-    });
-    await setConsentState({
-      ...consent,
-      snoozedVersion: '',
-      snoozedUntil: 0,
-      authorizedVersion: state.latestVersion,
-      authorizationId,
-      authorizedAt: Date.now()
-    });
-    await setUpdateState({ ...state, postponeUntil: 0, code: '', message: '' });
-
     try {
-      const executor = root.CodexOverleafManagedUpdateExecutor;
-      if (typeof executor?.installAuthorizedUpdate !== 'function') {
-        throw codedError('update_executor_unavailable', 'The managed update executor is unavailable.');
-      }
-      await executor.installAuthorizedUpdate();
+      await requestNative('update.authorize', {
+        authorizationId,
+        targetVersion: state.latestVersion,
+        currentVersion: currentVersion()
+      });
+      await setConsentState({
+        ...consent,
+        snoozedVersion: '',
+        snoozedUntil: 0,
+        authorizedVersion: state.latestVersion,
+        authorizationId,
+        authorizedAt: Date.now()
+      });
+      await setUpdateState({ ...state, postponeUntil: 0, code: '', message: '' });
+      await stageAuthorizedUpdate();
       return getView();
     } catch (error) {
       await bestEffortRevoke({
@@ -273,8 +303,166 @@
         authorizationId: '',
         authorizedAt: 0
       });
+      const observed = await getUpdateState().catch(() => state);
+      if (!['awaiting_health', 'committed', 'rolled_back'].includes(observed.state)) {
+        await setUpdateState({
+          ...observed,
+          state: 'failed',
+          initiatedBy: 'manual',
+          blocker: '',
+          blockers: [],
+          code: safeCode(error),
+          message: safeMessage(error)
+        });
+      }
       await armLegacyGuard();
       throw error;
+    }
+  }
+
+  async function stageAuthorizedUpdate() {
+    const current = await getUpdateState();
+    await setUpdateState({
+      ...current,
+      state: 'downloading',
+      initiatedBy: 'manual',
+      blocker: '',
+      blockers: [],
+      code: '',
+      message: ''
+    });
+    const staged = await requestNative('update.stage');
+    await setUpdateState({
+      ...current,
+      state: 'staged',
+      initiatedBy: 'manual',
+      latestVersion: staged.targetVersion,
+      transactionId: staged.transactionId,
+      stagedAt: Date.now(),
+      blocker: '',
+      blockers: [],
+      code: '',
+      message: ''
+    });
+    return tryActivateStagedUpdate();
+  }
+
+  function tryActivateStagedUpdate() {
+    if (activationPromise) return activationPromise;
+    activationPromise = tryActivateStagedUpdateCore().finally(() => {
+      activationPromise = null;
+    });
+    return activationPromise;
+  }
+
+  async function tryActivateStagedUpdateCore() {
+    clearIdleRetryTimer();
+    const state = await getUpdateState();
+    if (!['staged', 'waiting_for_idle'].includes(state.state)) {
+      await chrome.alarms?.clear?.(IDLE_ALARM).catch(() => {});
+      return state;
+    }
+    const surfaceTabs = await chrome.tabs.query({ url: OVERLEAF_MATCHES }).catch(() => []);
+    const editorTabs = surfaceTabs.filter(isUsableEditorTab);
+    const reloadTabs = surfaceTabs
+      .filter(tab => Number.isInteger(tab?.id) && !tab.discarded && tab.status !== 'unloaded')
+      .map(tab => tab.id);
+    const probes = await Promise.all(editorTabs.map(tab => probeTabIdle(tab.id)));
+    const nativeGate = await requestNative('update.canApply')
+      .then(result => ({ ok: true, result }))
+      .catch(error => ({ ok: false, error: safeError(error) }));
+    const blockers = root.CodexOverleafUpdateStatus?.collectBlockers(probes, nativeGate) || ['busy'];
+    if (blockers.length) {
+      const waiting = await setUpdateState({
+        ...state,
+        state: 'waiting_for_idle',
+        blocker: blockers[0],
+        blockers
+      });
+      scheduleIdleRetry(blockers);
+      return waiting;
+    }
+
+    await chrome.alarms?.clear?.(IDLE_ALARM).catch(() => {});
+    await chrome.storage.local.set({ [UPDATE_RELOAD_TABS_KEY]: reloadTabs });
+    await setUpdateState({
+      ...state,
+      state: 'applying',
+      blocker: '',
+      blockers: [],
+      code: '',
+      message: ''
+    });
+    const activation = await requestNative('update.activate', {
+      transactionId: state.transactionId
+    });
+    const transaction = await waitForActivatedTransaction(activation.transactionId || state.transactionId);
+    if (transaction.state === 'rolled_back') {
+      throw codedError(transaction.reasonCode || 'update_apply_failed', 'The managed update was rolled back during activation.');
+    }
+    await setUpdateState({
+      ...state,
+      state: 'awaiting_health',
+      latestVersion: transaction.targetVersion,
+      transactionId: transaction.id,
+      code: '',
+      message: ''
+    });
+    chrome.runtime.reload();
+    return { state: 'awaiting_health' };
+  }
+
+  async function waitForActivatedTransaction(transactionId) {
+    const deadline = Date.now() + ACTIVATION_TIMEOUT_MS;
+    while (Date.now() <= deadline) {
+      const status = await requestNative('update.status').catch(() => null);
+      const transaction = status?.transaction;
+      if (transaction?.id === transactionId && ['awaiting_health', 'rolled_back'].includes(transaction.state)) {
+        return transaction;
+      }
+      await new Promise(resolve => setTimeout(resolve, ACTIVATION_POLL_MS));
+    }
+    throw codedError('update_activation_timeout', 'The managed update did not reach health verification after activation.');
+  }
+
+  function scheduleIdleRetry(blockers = []) {
+    clearIdleRetryTimer();
+    const values = Array.isArray(blockers) ? blockers.filter(Boolean) : [];
+    const fast = values.length > 0 && values.every(value => FAST_IDLE_RETRY_BLOCKERS.has(value));
+    idleRetryTimer = setTimeout(() => {
+      idleRetryTimer = null;
+      void enqueuePolicyAction(() => tryActivateStagedUpdate()).catch(() => {});
+    }, fast ? FAST_IDLE_RETRY_MS : SLOW_IDLE_RETRY_MS);
+    chrome.alarms?.create?.(IDLE_ALARM, { delayInMinutes: 0.5 });
+  }
+
+  function clearIdleRetryTimer() {
+    if (idleRetryTimer === null) return;
+    clearTimeout(idleRetryTimer);
+    idleRetryTimer = null;
+  }
+
+  function isUsableEditorTab(tab) {
+    if (!Number.isInteger(tab?.id) || tab.discarded || tab.status === 'unloaded') return false;
+    try {
+      const url = new URL(tab.url || '');
+      return url.protocol === 'https:' &&
+        (url.hostname === 'www.overleaf.com' || url.hostname === 'overleaf.com') &&
+        /^\/project\/[^/]+(?:\/|$)/.test(url.pathname);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  async function probeTabIdle(tabId) {
+    try {
+      return await withTimeout(
+        chrome.tabs.sendMessage(tabId, { type: 'codex-overleaf/update-idle-probe' }),
+        3500,
+        codedError('tab_probe_timeout', 'An Overleaf tab did not answer the idle check in time.')
+      );
+    } catch (error) {
+      return { idle: false, blockers: [safeCode(error) === 'tab_probe_timeout' ? 'tab_probe_timeout' : 'tab_probe_unavailable'] };
     }
   }
 
@@ -301,6 +489,8 @@
     }
 
     const snoozedUntil = Date.now() + SNOOZE_MS;
+    clearIdleRetryTimer();
+    await chrome.alarms?.clear?.(IDLE_ALARM).catch(() => {});
     await setUpdateState({
       ...state,
       state: 'update_available',
@@ -331,6 +521,52 @@
       authorizedVersion: '',
       authorizationId: '',
       authorizedAt: 0
+    });
+  }
+
+  async function reconcileExpiredPhase() {
+    const state = await getUpdateState();
+    if (!state.deadlineAt || Date.now() <= state.deadlineAt || policy.isTerminalState(state.state)) {
+      return state;
+    }
+    if (['applying', 'awaiting_health', 'rolling_back'].includes(state.state)) {
+      const status = await requestNative('update.status').catch(() => null);
+      const transaction = status?.transaction;
+      if (transaction?.state === 'awaiting_health') {
+        return setUpdateState({
+          ...state,
+          state: 'awaiting_health',
+          latestVersion: transaction.targetVersion,
+          transactionId: transaction.id,
+          code: '',
+          message: ''
+        });
+      }
+      if (transaction?.state === 'committed') {
+        return setUpdateState({
+          ...state,
+          state: 'committed',
+          currentVersion: transaction.targetVersion,
+          latestVersion: transaction.targetVersion,
+          code: '',
+          message: ''
+        });
+      }
+      if (transaction?.state === 'rolled_back') {
+        return setUpdateState({
+          ...state,
+          state: 'rolled_back',
+          currentVersion: transaction.sourceVersion || state.currentVersion,
+          code: transaction.reasonCode || 'update_rolled_back',
+          message: 'The managed update was rolled back after activation did not complete.'
+        });
+      }
+    }
+    return setUpdateState({
+      ...state,
+      state: 'failed',
+      code: 'update_phase_timeout',
+      message: 'The managed update phase did not complete in time. Retry, or use the manual update command.'
     });
   }
 
@@ -388,7 +624,18 @@
   }
 
   async function setUpdateState(value) {
-    const next = policy.normalizeUpdateState(value, currentVersion());
+    const stored = await chrome.storage.local.get(UPDATE_STATE_KEY);
+    const previous = policy.normalizeUpdateState(stored?.[UPDATE_STATE_KEY], currentVersion());
+    const now = Date.now();
+    const changedPhase = value.state && value.state !== previous.state;
+    const timeoutMs = PHASE_TIMEOUT_MS[value.state] || 0;
+    const next = policy.normalizeUpdateState({
+      ...value,
+      initiatedBy: value.initiatedBy || previous.initiatedBy,
+      phaseStartedAt: changedPhase ? now : (value.phaseStartedAt || previous.phaseStartedAt),
+      deadlineAt: changedPhase ? (timeoutMs ? now + timeoutMs : 0) : (value.deadlineAt || previous.deadlineAt),
+      heartbeatAt: now
+    }, currentVersion());
     await chrome.storage.local.set({ [UPDATE_STATE_KEY]: next });
     return next;
   }

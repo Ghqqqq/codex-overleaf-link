@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.1.6 - 2026-07-21
+
+Release candidate focused on controllable long-running tasks and resilient managed updates.
+
+### Added
+
+- Added in-run follow-up guidance with a visible queue, immediate steering, removal controls, and automatic dispatch after the active task settles.
+- Preserved partial run output and queued input state across interruption and storage compaction so a later `continue` retains useful context.
+- Added managed-update boundary and previous-version hop verification to catch runtime files that cannot safely update in place.
+
+### Fixed
+
+- Made update progress durable across Overleaf tabs, surfaced terminal update failures with a manual-install fallback, and prevented stale safe-point state from spinning indefinitely.
+- Cleared sent composer attachments together with text while keeping queued attachments attached to their own pending input.
+- Unified provider stream lifecycle handling across Chat Completions and Anthropic Messages: active output refreshes the idle deadline, protocol terminal events finish immediately, and interrupted partial reasoning receives at most two context-preserving continuation attempts.
+
 ## v2.1.5 - 2026-07-20
 
 ### Fixed

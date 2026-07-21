@@ -34,6 +34,7 @@ const { version: PACKAGE_VERSION } = require('../../package.json');
 
 const activeProjectLocks = new Map();
 const activeRunControllers = new Map();
+const activeRunEntries = new Map();
 // Parallel index of active runs by projectKey so codex.cancel can find a
 // controller even when the original request id is unknown (e.g. after the
 // Overleaf tab was reloaded — the requestId lived in content-side JS state
@@ -106,6 +107,10 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
     return handleCodexRun(request, env, emit);
   }
 
+  if (request.method === 'codex.steer') {
+    return handleCodexSteer(request);
+  }
+
   if (request.method === 'codex.cancel') {
     return handleCodexCancel(request);
   }
@@ -170,9 +175,16 @@ async function handleCodexRun(request, env, emit) {
     return errorResponse(request.id, 'project_locked', `Project ${projectKey} is currently in use by codex.run`);
   }
   const abortController = new AbortController();
+  const activeEntry = {
+    id: request.id || '',
+    projectKey,
+    controller: abortController,
+    control: null
+  };
   if (request.id) {
     activeRunControllers.set(request.id, abortController);
-    activeRunByProject.set(projectKey, { id: request.id, controller: abortController });
+    activeRunEntries.set(request.id, activeEntry);
+    activeRunByProject.set(projectKey, activeEntry);
   }
   let providerResolution;
   try {
@@ -232,6 +244,9 @@ async function handleCodexRun(request, env, emit) {
       emit,
       rootDir: env.CODEX_OVERLEAF_MIRROR_ROOT,
       providerLaunch: providerResolution.providerLaunch,
+      onControlReady: control => {
+        activeEntry.control = control;
+      },
       signal: abortController.signal
     });
     const syncChanges = Array.isArray(result.syncChanges) ? result.syncChanges : [];
@@ -265,11 +280,63 @@ async function handleCodexRun(request, env, emit) {
     if (request.id && activeRunControllers.get(request.id) === abortController) {
       activeRunControllers.delete(request.id);
     }
+    if (request.id && activeRunEntries.get(request.id) === activeEntry) {
+      activeRunEntries.delete(request.id);
+    }
     if (activeRunByProject.get(projectKey)?.controller === abortController) {
       activeRunByProject.delete(projectKey);
     }
     releaseProjectLock(projectKey, lockToken);
   }
+}
+
+async function handleCodexSteer(request) {
+  const params = request.params || {};
+  const entry = findActiveRunEntry(params);
+  if (!entry?.control) {
+    return errorResponse(request.id, 'codex_turn_not_ready', 'The active Codex turn is not ready for guidance.');
+  }
+  const expectedThreadId = String(params.threadId || '');
+  const expectedTurnId = String(params.expectedTurnId || params.turnId || '');
+  if ((expectedThreadId && expectedThreadId !== entry.control.threadId)
+    || (expectedTurnId && expectedTurnId !== entry.control.turnId)) {
+    return errorResponse(request.id, 'codex_turn_mismatch', 'The active Codex turn changed before the guidance was delivered.');
+  }
+  const inputText = String(
+    params.text
+      || (Array.isArray(params.input)
+        ? params.input.filter(item => item?.type === 'text').map(item => item.text || '').join('\n')
+        : '')
+  ).trim();
+  if (!inputText) {
+    return errorResponse(request.id, 'codex_steer_empty', 'Guidance input is empty.');
+  }
+  if (inputText.length > 12000) {
+    return errorResponse(request.id, 'codex_steer_too_large', 'Guidance input exceeds the 12000 character limit.');
+  }
+  try {
+    await entry.control.steer({
+      input: [{ type: 'text', text: inputText }],
+      clientUserMessageId: String(params.clientUserMessageId || '').slice(0, 160) || undefined
+    });
+    return okResponse(request.id, {
+      accepted: true,
+      requestId: entry.id,
+      threadId: entry.control.threadId,
+      turnId: entry.control.turnId
+    });
+  } catch (error) {
+    return errorResponse(request.id, 'codex_steer_failed', truncateText(error.message, 4000));
+  }
+}
+
+function findActiveRunEntry(params = {}) {
+  const targetId = String(params.requestId || params.id || '');
+  if (targetId && activeRunEntries.has(targetId)) {
+    return activeRunEntries.get(targetId);
+  }
+  const projectKey = String(params.projectKey || '');
+  return projectKey ? activeRunByProject.get(projectKey) : null;
 }
 
 // Cancel paths, in priority order:
@@ -1207,7 +1274,8 @@ function errorResponse(id, code, message, details = {}) {
 function getActiveNativeWorkState() {
   return {
     projectLocks: activeProjectLocks.size,
-    runControllers: activeRunControllers.size
+    runControllers: activeRunControllers.size,
+    activeTurnControls: Array.from(activeRunEntries.values()).filter(entry => entry.control).length
   };
 }
 
