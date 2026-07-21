@@ -319,16 +319,16 @@ test('unknown custom-model context keeps the 256K product default', () => {
 });
 
 test('custom providers migrate the legacy 8K output budget to the 32K default', () => {
-  assert.equal(normalizeProviderDraft(makeDraft()).maxOutputTokens, 32768);
-  assert.equal(normalizeProviderDraft(makeDraft({ maxOutputTokens: 8192 })).maxOutputTokens, 32768);
+  assert.equal(normalizeProviderDraft(makeDraft()).maxOutputTokens, 65536);
+  assert.equal(normalizeProviderDraft(makeDraft({ maxOutputTokens: 8192 })).maxOutputTokens, 65536);
   assert.equal(normalizeProviderDraft(makeDraft({ maxOutputTokens: 65536 })).maxOutputTokens, 65536);
-  assert.equal(ProviderProfiles.buildEmptyDraft().maxOutputTokens, 32768);
+  assert.equal(ProviderProfiles.buildEmptyDraft().maxOutputTokens, 65536);
   assert.equal(ProviderProfiles.normalizeProvider({
     id: 'legacy-provider',
     kind: 'custom',
     models: [{ id: 'legacy-model' }],
     maxOutputTokens: 8192
-  }).maxOutputTokens, 32768);
+  }).maxOutputTokens, 65536);
   assert.equal(ProviderProfiles.normalizeProvider({
     id: 'custom-provider',
     kind: 'custom',
@@ -444,12 +444,12 @@ test('chat compatibility keeps optional request fields capability-gated', () => 
   assert.equal(translated.body.tools[0].function.name, 'shell');
 });
 
-test('chat compatibility applies the provider output budget unless Codex overrides it', () => {
+test('chat compatibility applies the configured provider output budget consistently', () => {
   const fallback = buildChatRequest({
     requestBody: { model: 'vendor-model', input: 'Inspect the project.' },
-    launch: { modelId: 'vendor-model', maxOutputTokens: 32768 }
+    launch: { modelId: 'vendor-model', maxOutputTokens: 65536 }
   });
-  assert.equal(fallback.body.max_tokens, 32768);
+  assert.equal(fallback.body.max_tokens, 65536);
 
   const explicit = buildChatRequest({
     requestBody: {
@@ -457,9 +457,9 @@ test('chat compatibility applies the provider output budget unless Codex overrid
       input: 'Inspect the project.',
       max_output_tokens: 4096
     },
-    launch: { modelId: 'vendor-model', maxOutputTokens: 32768 }
+    launch: { modelId: 'vendor-model', maxOutputTokens: 65536 }
   });
-  assert.equal(explicit.body.max_tokens, 4096);
+  assert.equal(explicit.body.max_tokens, 65536);
 });
 
 test('chat compatibility preserves length-limited terminal semantics', async () => {

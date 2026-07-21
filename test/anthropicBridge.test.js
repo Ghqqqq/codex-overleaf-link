@@ -11,6 +11,7 @@ const {
   streamAnthropicResponse
 } = require('../native-host/src/anthropicBridgeResponse');
 const {
+  buildAnthropicHistoryContinuation,
   buildAnthropicHeaders,
   buildAnthropicMessagesUrl
 } = require('../native-host/src/anthropicMessagesBridge');
@@ -111,6 +112,51 @@ test('Anthropic stop reasons and cache usage map to Responses semantics', () => 
   assert.equal(converted.response.incomplete_details.reason, 'max_output_tokens');
   assert.equal(converted.response.usage.input_tokens, 35);
   assert.equal(converted.response.usage.input_tokens_details.cached_tokens, 20);
+});
+
+test('Anthropic output-limit continuation preserves signed thinking and ends with user guidance', () => {
+  const messages = buildAnthropicHistoryContinuation({
+    response: {
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' }
+    },
+    assistantBlocks: [
+      { type: 'thinking', thinking: 'Verified analysis.', signature: 'signed-analysis' },
+      { type: 'text', text: 'The partial final answer' }
+    ]
+  });
+  assert.deepEqual(messages.map(message => message.role), ['assistant', 'user']);
+  assert.deepEqual(messages[0].content[0], {
+    type: 'thinking',
+    thinking: 'Verified analysis.',
+    signature: 'signed-analysis'
+  });
+  assert.equal(messages[0].content[1].text, 'The partial final answer');
+  assert.match(messages[1].content[0].text, /Continue from the exact unfinished point/);
+  assert.match(messages[1].content[0].text, /Do not reread files already analyzed/);
+});
+
+test('Anthropic output-limit continuation moves unsigned thinking into the user continuation turn', () => {
+  const messages = buildAnthropicHistoryContinuation({
+    response: {
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' }
+    },
+    assistantBlocks: [{ type: 'thinking', thinking: 'An unfinished proof step.' }]
+  });
+  assert.deepEqual(messages.map(message => message.role), ['user']);
+  assert.match(messages[0].content[0].text, /Preserved unfinished reasoning tail/);
+  assert.match(messages[0].content[0].text, /An unfinished proof step/);
+});
+
+test('Anthropic continuation does not replay non-output-limit incomplete responses', () => {
+  assert.deepEqual(buildAnthropicHistoryContinuation({
+    response: {
+      status: 'incomplete',
+      incomplete_details: { reason: 'content_filter' }
+    },
+    assistantBlocks: [{ type: 'text', text: 'Partial' }]
+  }), []);
 });
 
 test('Anthropic SSE streams text and tool JSON as Responses events', async () => {

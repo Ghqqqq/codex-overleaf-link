@@ -14,6 +14,7 @@ const { writeConvertedResponseAsSse } = require('./chatBridgeResponse');
 const { classifyResponsesRoute } = require('./providerBridgeRoutes');
 const { providerError } = require('./providerProfile');
 const { sanitizeProviderMessage } = require('./providerRedaction');
+const { logDebug } = require('./debugLog');
 const {
   createProviderStreamLifecycle,
   resolveProviderIdleTimeoutMs,
@@ -104,6 +105,15 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
     launch,
     historyMessages: previous?.messages || fallbackAnchor
   });
+  logDebug('provider.anthropic.request', {
+    model: translated.body.model,
+    stream: requestBody.stream !== false,
+    maxTokens: translated.body.max_tokens,
+    thinkingType: translated.body.thinking?.type || 'disabled',
+    hasPreviousResponse: Boolean(previousResponseId),
+    continuing,
+    continuationAttempt: continuationState.attempts
+  });
   const controller = new AbortController();
   activeRequests.add(controller);
   let abortReason = '';
@@ -150,6 +160,18 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
         continuationState.responseId = '';
       }
       rememberHistory(history, converted.response.id, messages, { continuation: anchored });
+      const blocks = Array.isArray(converted.assistantBlocks) ? converted.assistantBlocks : [];
+      logDebug('provider.anthropic.response', {
+        responseId: converted.response.id,
+        status: converted.response.status,
+        incompleteReason: converted.response.incomplete_details?.reason || '',
+        blockTypes: blocks.map(block => String(block?.type || 'unknown')),
+        textChars: blocks.reduce((total, block) => total + (block?.type === 'text' ? String(block.text || '').length : 0), 0),
+        thinkingChars: blocks.reduce((total, block) => total + (block?.type === 'thinking' ? String(block.thinking || '').length : 0), 0),
+        signedThinkingBlocks: blocks.filter(block => block?.type === 'thinking' && block.signature).length,
+        continuationAnchored: anchored,
+        continuationAttempt: continuationState.attempts
+      });
     };
     const contentType = String(upstream.response.headers.get('content-type') || '').toLowerCase();
     if (requestBody.stream !== false) {
@@ -276,24 +298,46 @@ function rememberHistory(history, responseId, messages, metadata = {}) {
 
 function buildAnthropicHistoryContinuation(converted = {}) {
   if (converted.response?.status !== 'incomplete') return [];
+  if (converted.response?.incomplete_details?.reason !== 'max_output_tokens') return [];
   const blocks = Array.isArray(converted.assistantBlocks) ? converted.assistantBlocks : [];
   if (blocks.some(block => block?.type === 'tool_use')) return [];
-  const partial = blocks.map(block => {
-    if (block?.type === 'thinking') return String(block.thinking || '');
-    if (block?.type === 'text') return String(block.text || '');
-    return '';
-  }).filter(Boolean).join('\n\n').trim();
-  if (!partial) return [];
+  const assistantContent = [];
+  const unsignedThinking = [];
+  for (const block of blocks) {
+    if (block?.type === 'thinking') {
+      const thinking = String(block.thinking || '');
+      const signature = String(block.signature || '');
+      if (signature) assistantContent.push({ type: 'thinking', thinking, signature });
+      else if (thinking) unsignedThinking.push(thinking);
+      continue;
+    }
+    if (block?.type === 'redacted_thinking' && block.data) {
+      assistantContent.push({ type: 'redacted_thinking', data: block.data });
+      continue;
+    }
+    if (block?.type === 'text' && block.text) {
+      assistantContent.push({ type: 'text', text: String(block.text) });
+    }
+  }
+  if (!assistantContent.length && !unsignedThinking.length) return [];
+
+  const messages = [];
+  if (assistantContent.length) messages.push({ role: 'assistant', content: assistantContent });
+  const partial = unsignedThinking.join('\n\n').trim();
   const retained = partial.length > MAX_CONTINUATION_CHARS
     ? partial.slice(-MAX_CONTINUATION_CHARS)
     : partial;
-  return [{
-    role: 'assistant',
+  const preservedTail = retained
+    ? `\n\nPreserved unfinished reasoning tail:\n${retained}`
+    : '';
+  messages.push({
+    role: 'user',
     content: [{
       type: 'text',
-      text: `${REASONING_CONTINUATION_MARKER}\nThe previous provider stream was interrupted. Continue from this preserved partial analysis without restarting it.\n\n${retained}`
+      text: `${REASONING_CONTINUATION_MARKER}\nThe previous provider response reached its output limit. Continue from the exact unfinished point. Do not reread files already analyzed, repeat prior analysis, restate the plan, or restart the task. Complete the remaining work and produce the final answer.${preservedTail}`
     }]
-  }];
+  });
+  return messages;
 }
 
 function normalizeBridgeErrorCode(value) {
@@ -363,6 +407,7 @@ function closeServer(server) {
 }
 
 module.exports = {
+  buildAnthropicHistoryContinuation,
   buildAnthropicHeaders,
   buildAnthropicMessagesUrl,
   startAnthropicMessagesBridge

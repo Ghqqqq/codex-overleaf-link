@@ -159,7 +159,7 @@
       anthropicThinkingMode: 'budget',
       anthropicPromptCaching: false,
       impersonateClaudeCode: false,
-      maxOutputTokens: 32768,
+      maxOutputTokens: 65536,
       hasSecret: false,
       secretUpdatedAt: 0,
       endpointDisclosureHost: '',
@@ -280,7 +280,8 @@
 
   function normalizeMaxOutputTokens(value) {
     const number = normalizeInteger(value);
-    return !number || number === 8192 ? 32768 : number;
+    if (!number || number === 8192 || number === 32768) return 65536;
+    return Math.min(65536, Math.max(256, number));
   }
 
   return {

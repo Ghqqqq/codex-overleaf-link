@@ -407,8 +407,8 @@ function normalizeUpstreamResponseMode(value, allowAuto) {
 
 function normalizeMaxOutputTokens(value) {
   const number = Number(value);
-  if (!Number.isFinite(number) || number === 8192) return 32768;
-  return Math.min(200000, Math.max(256, Math.floor(number)));
+  if (!Number.isFinite(number) || number === 8192 || number === 32768) return 65536;
+  return Math.min(65536, Math.max(256, Math.floor(number)));
 }
 
 function normalizeRequiredText(value, code, message, maxLength) {

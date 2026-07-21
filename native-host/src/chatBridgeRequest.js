@@ -36,7 +36,7 @@ function buildChatRequest({ requestBody = {}, launch = {}, historyMessages = [] 
   copyNumber(requestBody, body, 'temperature');
   copyNumber(requestBody, body, 'top_p');
   const maxOutputTokens = resolveReasoningMaxOutputTokens(
-    requestBody.max_output_tokens ?? launch.maxOutputTokens,
+    launch.maxOutputTokens ?? requestBody.max_output_tokens,
     requestBody,
     launch,
     model

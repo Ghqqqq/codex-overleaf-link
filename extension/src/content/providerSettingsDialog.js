@@ -381,7 +381,7 @@
           </label>
           <label class="codex-provider-field">
             <span>${escapeHtml(tx('Maximum output tokens', '最大输出 Token'))}</span>
-            <input type="number" data-provider-field="maxOutputTokens" min="256" max="200000" step="256" value="${Number(draft.maxOutputTokens) || 32768}">
+            <input type="number" data-provider-field="maxOutputTokens" min="256" max="65536" step="256" value="${Number(draft.maxOutputTokens) || 65536}">
           </label>
           <div class="codex-provider-field codex-provider-field--wide">
             <span>${escapeHtml(tx('Anthropic compatibility', 'Anthropic 兼容能力'))}</span>
@@ -736,7 +736,7 @@
       ,anthropicThinkingMode: get('anthropicThinkingMode')?.value || 'budget'
       ,anthropicPromptCaching: Boolean(get('anthropicPromptCaching')?.checked)
       ,impersonateClaudeCode: Boolean(get('impersonateClaudeCode')?.checked)
-      ,maxOutputTokens: Number(get('maxOutputTokens')?.value || 32768)
+      ,maxOutputTokens: Number(get('maxOutputTokens')?.value || 65536)
     };
     const apiKey = String(get('apiKey')?.value || '');
     const secretMutation = instance.secretAction === 'replace' && apiKey
