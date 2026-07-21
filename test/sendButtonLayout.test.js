@@ -111,7 +111,7 @@ test('composer sends through a form submit path with a guarded run handler', () 
   );
 
   assert.match(composerPanel, /<form class="codex-composer" data-composer-form>/);
-  assert.match(composerPanel, /<button type="submit" data-run title="Send" aria-label="Send">↑<\/button>/);
+  assert.match(composerPanel, /<button type="submit" data-run data-action="send" title="Send" aria-label="Send">↑<\/button>/);
   assert.match(composerPanel, /'submit'/);
   assert.match(composerPanel, /event\.preventDefault\(\);\s*instance\.callbacks\.onSubmit\?\.\(\);/);
   assert.match(composerPanel, /requestSubmit\?\.\(\)/);
@@ -147,7 +147,7 @@ test('starting a run is not blocked by asynchronous state persistence', () => {
   );
   // v1.6.3: applySyncChangesToOverleaf moved to writebackOrchestrator.js, so
   // runTask's end delimiter is the next function still in contentRuntime.
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function runSkillInstallerTask/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function runSkillInstallerTask/)?.[0] || '';
   const beforeStartRun = runTaskBody.split(/currentRunView = startRunView\(/)[0] || '';
 
   assert.doesNotMatch(beforeStartRun, /await saveState\(\)/);
@@ -166,7 +166,7 @@ test('clicking the running spinner requests cancellation instead of being disabl
   const clickHandler = composerPanel.match(/querySelector\('\[data-run\]'\)[\s\S]*?form\?\.requestSubmit\?\.\(\);/)?.[0] || '';
   const setRunningBody = contentScript.match(/function setRunning\(running\) \{[\s\S]*?\n  \}/)?.[0] || '';
 
-  assert.match(clickHandler, /if \(instance\.callbacks\.isRunning\?\.\(\)\)/);
+  assert.match(clickHandler, /if \(instance\.callbacks\.isRunning\?\.\(\) && !String\(task\?\.value \|\| ''\)\.trim\(\)\)/);
   assert.match(contentScript, /onCancel:\s*\(\) => cancelActiveRun\(\)/);
   assert.match(contentScript, /async function cancelActiveRun\(/);
   assert.match(contentScript, /method:\s*'codex\.cancel'/);
