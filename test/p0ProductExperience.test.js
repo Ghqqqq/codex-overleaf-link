@@ -3336,19 +3336,22 @@ test('stale write copy explains user or collaborator edits without snapshot jarg
 
 test('confirmation prompts render as Codex plugin dialogs instead of browser page alerts', () => {
   const contentScript = getContentScriptSource();
+  const panelRenderer = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/panelRenderer.js'),
+    'utf8'
+  );
   const css = fs.readFileSync(
     path.join(__dirname, '../extension/styles/panel.css'),
     'utf8'
   );
 
   assert.doesNotMatch(contentScript, /window\.confirm\s*\(/);
-  assert.match(contentScript, /data-plugin-confirm/);
+  assert.match(panelRenderer, /data-plugin-confirm/);
   assert.match(contentScript, /async function showPluginConfirm\(/);
-  assert.match(contentScript, /confirmBrand/);
-  const confirmBody = contentScript.match(/async function showPluginConfirm\([\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
-  assert.match(confirmBody, /assets\/icons\/codex-overleaf-dialog-icon\.png/);
-  assert.doesNotMatch(confirmBody, /assets\/icons\/codex-overleaf-icon\.png/);
-  assert.doesNotMatch(confirmBody, /assets\/icons\/icon32\.png/);
+  assert.match(panelRenderer, /confirmBrand/);
+  assert.match(contentScript, /assets\/icons\/codex-overleaf-dialog-icon\.png/);
+  assert.doesNotMatch(contentScript, /assets\/icons\/codex-overleaf-icon\.png/);
+  assert.doesNotMatch(contentScript, /assets\/icons\/icon32\.png/);
   assert.equal(
     fs.existsSync(path.join(__dirname, '../extension/assets/icons/codex-overleaf-dialog-icon.png')),
     true
@@ -3364,6 +3367,10 @@ test('confirmation prompts render as Codex plugin dialogs instead of browser pag
 
 test('English locale is applied to dialogs, diff review, undo controls, and transcripts', () => {
   const contentScript = getContentScriptSource();
+  const panelRenderer = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/panelRenderer.js'),
+    'utf8'
+  );
   const diffReviewPanel = fs.readFileSync(
     path.join(__dirname, '../extension/src/content/diffReviewPanel.js'),
     'utf8'
@@ -3373,7 +3380,6 @@ test('English locale is applied to dialogs, diff review, undo controls, and tran
     'utf8'
   );
 
-  const confirmBody = contentScript.match(/async function showPluginConfirm\([\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
   const undoBody = contentScript.match(/function configureUndoButton\(root, run\) \{[\s\S]*?\n  function refreshRunCard/)?.[0] || '';
   const transcriptCallBody = contentScript.match(/function appendNativeEvent\([^)]*\) \{[\s\S]*?\n  function appendRunEvent/)?.[0] || '';
   const completionBody = contentScript.match(/function appendCompletionReport\(input = \{\}\) \{[\s\S]*?\n  function formatCompletionWork/)?.[0] || '';
@@ -3381,7 +3387,7 @@ test('English locale is applied to dialogs, diff review, undo controls, and tran
   assert.match(i18n, /confirmBrand:\s*'Codex Confirm'/);
   assert.match(i18n, /diffAcceptAll:\s*'Accept all'/);
   assert.match(i18n, /undoRun:\s*'Undo changes'/);
-  assert.match(confirmBody, /brand\.textContent = tr\('confirmBrand'\)/);
+  assert.match(panelRenderer, /brand\.textContent = tr\('confirmBrand'\)/);
   assert.match(diffReviewPanel, /tr\('diffAccepted'\)/);
   assert.match(diffReviewPanel, /tr\('diffAcceptAll'\)/);
   assert.match(undoBody, /tr\('undoRun'\)/);
