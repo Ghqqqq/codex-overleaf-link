@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { extractFunction } = require('./_helpers/extractFunction');
 
 test('normal state refresh writes user-facing status instead of raw probe diagnostics', () => {
   const contentScript = fs.readFileSync(
@@ -186,7 +187,7 @@ test('normal task flow logs a user-facing project read summary', () => {
     path.join(__dirname, '../extension/src/content/contentRuntime.js'),
     'utf8'
   );
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
+  const runTaskBody = extractFunction(contentScript, 'runTask');
 
   assert.match(runTaskBody, /appendLog\(formatProjectSnapshotUserLog\(project\)\)/);
   assert.match(contentScript, /function formatProjectSnapshotUserLog\(/);
