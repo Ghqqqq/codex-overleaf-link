@@ -289,7 +289,14 @@
         authorizedAt: Date.now()
       });
       await setUpdateState({ ...state, postponeUntil: 0, code: '', message: '' });
-      await stageAuthorizedUpdate();
+      const executor = globalThis.CodexOverleafManagedUpdateExecutor;
+      if (!executor || typeof executor.installAuthorizedUpdate !== 'function') {
+        throw codedError(
+          'update_executor_unavailable',
+          'The managed update executor is unavailable.'
+        );
+      }
+      await executor.installAuthorizedUpdate();
       return getView();
     } catch (error) {
       await bestEffortRevoke({
