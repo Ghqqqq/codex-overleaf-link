@@ -518,7 +518,7 @@ test('run timeline uses user-facing action transcript and undo language', () => 
 
 test('task runs sync the full project only when a Codex run starts', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
 
   assert.match(runTaskBody, /getRunProjectSnapshot\(\)/);
   assert.match(contentScript, /preferLightweight:\s*true/);
@@ -767,7 +767,7 @@ test('composer slash menu offers Codex Overleaf skill installation and installed
   const composerSource = `${contentScript}\n${composerPanel}`;
   const keydownBody = contentScript.match(/function handleTaskInputKeydown\(event\) \{[\s\S]*?\n  function createDiffReviewElement/)?.[0] || '';
   const selectBody = extractFromContentScript( 'selectSlashCommand');
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
 
   assert.match(composerSource, /data-slash-menu/);
   assert.match(composerSource, /data-slash-command="install-skill"/);
@@ -804,7 +804,7 @@ test('composer slash menu offers Codex Overleaf skill installation and installed
 
 test('task runs use sensitive preflight, skill toggles, governance gating, binary confirmation, and audit summaries', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
   const applyBody = contentScript.match(/async function applySyncChangesToOverleaf[\s\S]*?\n  async function verifyPostWriteSaveState/)?.[0] || '';
 
   assert.match(contentScript, /CodexOverleafGovernanceRules/);
@@ -842,7 +842,7 @@ test('composer supports pasted or dropped turn attachments without Overleaf asse
     'utf8'
   );
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../extension/manifest.json'), 'utf8'));
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
   const clearBody = extractFromContentScript( 'clearTaskComposer');
   const scriptOrder = manifest.content_scripts[0].js;
 
@@ -1198,7 +1198,7 @@ test('mirror prefetch is non-invasive and never enables editor navigation', () =
 
 test('warm send checks mirror status before full project snapshot fallback', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
 
   assert.match(runTaskBody, /resolveWarmRunStart/);
   assert.ok(runTaskBody.indexOf('resolveWarmRunStart') < runTaskBody.indexOf('getRunProjectSnapshot'));
@@ -1206,7 +1206,7 @@ test('warm send checks mirror status before full project snapshot fallback', () 
 
 test('send waits for in-flight mirror prefetch before starting codex run', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
   const helperBody = contentScript.match(/async function settleMirrorPrefetchBeforeRun\(\) \{[\s\S]*?\n  function/)?.[0] || '';
 
   assert.match(runTaskBody, /await awaitRunStep\(settleMirrorPrefetchBeforeRun\(\)\)/);
@@ -1257,7 +1257,7 @@ test('focused OT freshness is checked before project-level warm mirror freshness
 
 test('OT warm starts route focus restrictions through the shared writeback policy', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
   const runParamBlocks = Array.from(runTaskBody.matchAll(/buildCodexRunParams\(\{[\s\S]*?submittedMode\s*\}/g))
     .map(match => match[0]);
 
@@ -1334,7 +1334,7 @@ test('warm mirror overlays preserve active file alongside focused files', () => 
 
 test('ask mode is not blocked by write-safety preconditions', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
   const codexSessionRunner = fs.readFileSync(
     path.join(__dirname, '../native-host/src/codexSessionRunner.js'),
     'utf8'
@@ -1372,7 +1372,7 @@ test('ask mode ignores unexpected local Codex writeback changes without failing 
 
 test('composer clears the submitted task as soon as Codex accepts the run', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
 
   assert.match(runTaskBody, /currentRunView = startRunView\(/);
   // v1.7.5: the submit-path clear keeps attachments across turns (they anchor
@@ -1830,7 +1830,7 @@ test('write paths enforce Overleaf Reviewing before applying changes when reques
 
 test('write tasks preflight Reviewing or Editing before syncing or starting local Codex', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
   const preflightIndex = runTaskBody.indexOf('preflightWriteSafety({');
   const snapshotIndex = runTaskBody.indexOf('getRunProjectSnapshot()');
   const codexRunIndex = runTaskBody.indexOf("method: 'codex.run'");
@@ -2592,7 +2592,7 @@ test('file-level hunk review action preserves previous hunk decisions for that f
 
 test('auto recompile is based on successfully applied Overleaf writes', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
   const applySyncBody = contentScript.match(/async function applySyncChangesToOverleaf[\s\S]*?\n  async function refreshProjectMirrorAfterWriteback/)?.[0] || '';
 
   assert.doesNotMatch(runTaskBody, /response\.result\.syncChanges[\s\S]*autoRecompileAfterWriteback/);
@@ -2603,7 +2603,7 @@ test('auto recompile is based on successfully applied Overleaf writes', () => {
 
 test('@compile-log context is preserved across Codex run retries', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
 
   assert.match(contentScript, /function buildCodexRunParams\(/);
   assert.match(runTaskBody, /compileLogContext = await awaitRunStep\(resolveCompileLogContext\(\)\)/);
@@ -2613,7 +2613,7 @@ test('@compile-log context is preserved across Codex run retries', () => {
 
 test('runTask freezes submitted custom instructions for initial and retry codex runs', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
   const submittedModeIndex = runTaskBody.indexOf('const submittedMode = state.mode');
   const submittedReviewingIndex = runTaskBody.indexOf('const submittedRequireReviewing = state.requireReviewing === true');
   const submittedCustomInstructionsIndex = runTaskBody.indexOf('const submittedCustomInstructions = getCustomInstructionsForCurrentProject()');
@@ -2665,6 +2665,7 @@ test('content script run-param wrapper uses explicit custom instructions before 
       codexOverleafSkills: [],
       codexOverleafSkillEnabled: {}
     };
+    let currentRunView = null;
     function getCurrentProjectId() { return 'project-123'; }
     function getCustomInstructionsForCurrentProject() {
       getterCalls++;
@@ -2752,7 +2753,7 @@ test('mirror prefetch treats expected busy failures as non-retained skips', () =
 
 test('warm synthetic runs announce mirror reuse without logging empty snapshot copy', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
   const initialRunBody = runTaskBody.split(/\/\/ Handle mirror_stale error by retrying with full sync/)[0] || '';
   const initialRunLines = initialRunBody.split('\n');
   const snapshotLogLineIndex = initialRunLines.findIndex(line => line.includes('appendLog(formatProjectSnapshotUserLog(project))'));
@@ -4500,7 +4501,7 @@ test('session row controls do not interpolate translated strings through innerHT
 
 test('user-facing task failures do not render raw stack traces', () => {
   const contentScript = getContentScriptSource();
-  const runTaskBody = contentScript.match(/async function runTask\(\) \{[\s\S]*?\n  async function persistRunResult/)?.[0] || '';
+  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function persistRunResult/)?.[0] || '';
 
   assert.doesNotMatch(runTaskBody, /stack:\s*error\.stack/);
   assert.doesNotMatch(runTaskBody, /stack:\s*persistenceError\.stack/);
@@ -5508,7 +5509,7 @@ test('writeback records the undo checkpoint before any cancellable verify await;
   const undoBody = extractFromContentScript('undoRun');
   assert.match(undoBody, /getPendingMirrorRefresh/,
     'undoRun must barrier on the pending mirror refresh');
-  const runTaskBody = getContentScriptSource().match(/async function runTask\(\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
+  const runTaskBody = getContentScriptSource().match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
   assert.match(runTaskBody, /getPendingMirrorRefresh/,
     'runTask must barrier on the pending mirror refresh');
   // The ~5s save-verify must only run when real writes landed, not on an
