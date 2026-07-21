@@ -1440,27 +1440,15 @@
     return '';
   }
 
-  function installDiagnosticsDismiss() {
-    // DiagnosticsPanel installs its outside-click dismiss listener during create().
-  }
+  function installDiagnosticsDismiss() {}
 
-  function closeDiagnosticsResult() {
-    DiagnosticsPanel.closeResult(diagnosticsPanelInstance);
-  }
+  function closeDiagnosticsResult() { DiagnosticsPanel.closeResult(diagnosticsPanelInstance); }
 
-  function showDiagnosticsLoading(title, subtitle = tr('diagnosticsLoading')) {
-    DiagnosticsPanel.showLoading(diagnosticsPanelInstance, title, subtitle);
-  }
+  function showDiagnosticsLoading(title, subtitle = tr('diagnosticsLoading')) { DiagnosticsPanel.showLoading(diagnosticsPanelInstance, title, subtitle); }
 
-  function showDiagnosticsResult(result = {}) {
-    DiagnosticsPanel.showResult(diagnosticsPanelInstance, result);
-  }
+  function showDiagnosticsResult(result = {}) { DiagnosticsPanel.showResult(diagnosticsPanelInstance, result); }
 
-  // Push an overall health bucket (ok / warn / fail / unknown) to the
-  // diagnostics trigger's status dot.
-  function setDiagnosticsHealth(health) {
-    DiagnosticsPanel.updateStatus(diagnosticsPanelInstance, { health });
-  }
+  function setDiagnosticsHealth(health) { DiagnosticsPanel.updateStatus(diagnosticsPanelInstance, { health }); }
 
   function installContextDismiss() {
     return contextTrayController.installContextDismiss();
