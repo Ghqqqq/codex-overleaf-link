@@ -450,6 +450,36 @@ releaseTest('package exposes release verification and artifact build commands', 
   assert.equal(pkg.scripts['build:release'], 'node scripts/build-release.mjs');
 });
 
+releaseTest('managed update boundary permits only the bootstrap manifest release version to change', async () => {
+  const { assertBootstrapManifestVersionTransition } = await importScriptModule('scripts/verify-update-boundary.mjs');
+  const previousManifest = {
+    manifest_version: 3,
+    version: '2.1.5',
+    permissions: ['storage'],
+    background: { service_worker: 'bootstrap/background.js' }
+  };
+  const currentManifest = { ...previousManifest, version: '2.1.6' };
+
+  assert.doesNotThrow(() => assertBootstrapManifestVersionTransition({
+    previousManifest,
+    currentManifest,
+    previousPackageVersion: '2.1.5',
+    currentPackageVersion: '2.1.6'
+  }));
+  assert.throws(() => assertBootstrapManifestVersionTransition({
+    previousManifest,
+    currentManifest: { ...currentManifest, permissions: ['storage', 'tabs'] },
+    previousPackageVersion: '2.1.5',
+    currentPackageVersion: '2.1.6'
+  }), /changed beyond its release version/);
+  assert.throws(() => assertBootstrapManifestVersionTransition({
+    previousManifest,
+    currentManifest: { ...currentManifest, version: '2.1.5' },
+    previousPackageVersion: '2.1.5',
+    currentPackageVersion: '2.1.6'
+  }), /must match their package release versions/);
+});
+
 releaseTest('README documents the npm tarball in GitHub Release artifacts', () => {
   const pkg = readJson(path.join(repoRoot, 'package.json'));
   const readme = readText(path.join(repoRoot, 'README.md'));

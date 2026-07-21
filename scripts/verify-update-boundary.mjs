@@ -5,52 +5,87 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
-const currentTag = `v${pkg.version}`;
-const protectedPaths = [
-  'extension/bootstrap',
-  'extension/assets',
-  'extension/popup.html',
-  'native-host/src/managedLauncherRuntime.js',
-  'native-host/src/nativeHostPlatform.js',
-  'native-host/src/manifest.js',
-  'scripts/install-managed.mjs',
-  'scripts/install-native-host.mjs'
-];
+const BOOTSTRAP_MANIFEST_PATH = 'extension/bootstrap/manifest.template.json';
 
-const baseRef = process.env.CODEX_OVERLEAF_UPDATE_BASE_REF || findPreviousStableTag();
-if (!baseRef) {
-  throw new Error('No previous stable tag is available. Fetch full tag history or set CODEX_OVERLEAF_UPDATE_BASE_REF.');
+if (process.env.CODEX_OVERLEAF_TEST_IMPORT !== '1') {
+  verifyUpdateBoundary();
 }
 
-const changed = git([
-  'diff',
-  '--name-only',
-  `${baseRef}..HEAD`,
-  '--',
-  ...protectedPaths
-]).split('\n').map(value => value.trim()).filter(Boolean);
-if (changed.length) {
-  throw new Error([
-    `Managed update boundary changed since ${baseRef}:`,
-    ...changed.map(value => `- ${value}`),
-    'These files are outside the signed runtime bundle. Keep the protocol-1 bridge immutable, or require an explicit managed reinstall/protocol migration.'
-  ].join('\n'));
+function verifyUpdateBoundary() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  const currentTag = `v${pkg.version}`;
+  const protectedPaths = [
+    'extension/bootstrap',
+    'extension/assets',
+    'extension/popup.html',
+    'native-host/src/managedLauncherRuntime.js',
+    'native-host/src/nativeHostPlatform.js',
+    'native-host/src/manifest.js',
+    'scripts/install-managed.mjs',
+    'scripts/install-native-host.mjs'
+  ];
+
+  const baseRef = process.env.CODEX_OVERLEAF_UPDATE_BASE_REF || findPreviousStableTag(currentTag);
+  if (!baseRef) {
+    throw new Error('No previous stable tag is available. Fetch full tag history or set CODEX_OVERLEAF_UPDATE_BASE_REF.');
+  }
+
+  const changed = git([
+    'diff',
+    '--name-only',
+    `${baseRef}..HEAD`,
+    '--',
+    ...protectedPaths
+  ]).split('\n').map(value => value.trim()).filter(Boolean);
+  const incompatibleChanges = changed.filter(relativePath => relativePath !== BOOTSTRAP_MANIFEST_PATH);
+  if (incompatibleChanges.length) {
+    throw new Error([
+      `Managed update boundary changed since ${baseRef}:`,
+      ...incompatibleChanges.map(value => `- ${value}`),
+      'These files are outside the signed runtime bundle. Keep the protocol-1 bridge immutable, or require an explicit managed reinstall/protocol migration.'
+    ].join('\n'));
+  }
+
+  const previousPackage = JSON.parse(git(['show', `${baseRef}:package.json`]));
+  if (changed.includes(BOOTSTRAP_MANIFEST_PATH)) {
+    assertBootstrapManifestVersionTransition({
+      previousManifest: JSON.parse(git(['show', `${baseRef}:${BOOTSTRAP_MANIFEST_PATH}`])),
+      currentManifest: JSON.parse(fs.readFileSync(path.join(rootDir, BOOTSTRAP_MANIFEST_PATH), 'utf8')),
+      previousPackageVersion: previousPackage.version,
+      currentPackageVersion: pkg.version
+    });
+  }
+
+  const dependencyKeys = ['dependencies', 'optionalDependencies', 'peerDependencies'];
+  for (const key of dependencyKeys) {
+    const before = stableJson(previousPackage[key] || {});
+    const after = stableJson(pkg[key] || {});
+    if (before !== after) {
+      throw new Error(`${key} changed since ${baseRef}. The runtime-only updater does not install node_modules; use a managed reinstall or package dependencies inside the signed runtime.`);
+    }
+  }
+
+  console.log(`Managed update boundary is compatible: ${baseRef} -> ${currentTag}.`);
 }
 
-const previousPackage = JSON.parse(git(['show', `${baseRef}:package.json`]));
-const dependencyKeys = ['dependencies', 'optionalDependencies', 'peerDependencies'];
-for (const key of dependencyKeys) {
-  const before = stableJson(previousPackage[key] || {});
-  const after = stableJson(pkg[key] || {});
-  if (before !== after) {
-    throw new Error(`${key} changed since ${baseRef}. The runtime-only updater does not install node_modules; use a managed reinstall or package dependencies inside the signed runtime.`);
+export function assertBootstrapManifestVersionTransition({
+  previousManifest,
+  currentManifest,
+  previousPackageVersion,
+  currentPackageVersion
+}) {
+  if (previousManifest?.version !== previousPackageVersion || currentManifest?.version !== currentPackageVersion) {
+    throw new Error('Bootstrap manifest versions must match their package release versions.');
+  }
+
+  const previousShape = { ...previousManifest, version: '<release-version>' };
+  const currentShape = { ...currentManifest, version: '<release-version>' };
+  if (stableJson(previousShape) !== stableJson(currentShape)) {
+    throw new Error('Bootstrap manifest changed beyond its release version. Use an explicit managed reinstall/protocol migration.');
   }
 }
 
-console.log(`Managed update boundary is compatible: ${baseRef} -> ${currentTag}.`);
-
-function findPreviousStableTag() {
+function findPreviousStableTag(currentTag) {
   const tags = git(['tag', '--merged', 'HEAD', '--sort=-v:refname'])
     .split('\n')
     .map(value => value.trim())
@@ -68,5 +103,11 @@ function git(args) {
 }
 
 function stableJson(value) {
-  return JSON.stringify(value, Object.keys(value).sort());
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
