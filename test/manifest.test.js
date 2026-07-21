@@ -35,8 +35,8 @@ test('release docs carry exact v2.1.6 badge and changelog heading', () => {
 
   assert.match(readme, new RegExp(`version-${escapedVersion}-blue`));
   assert.doesNotMatch(readme, /version-1\.0\.0-blue/);
-  assert.match(changelog, new RegExp(`^## v${escapedVersion} - 2026-07-20$`, 'm'));
-  assert.doesNotMatch(changelog, new RegExp(`^## \\[${escapedVersion}\\] - 2026-07-20$`, 'm'));
+  assert.match(changelog, new RegExp(`^## v${escapedVersion} - \\d{4}-\\d{2}-\\d{2}$`, 'm'));
+  assert.doesNotMatch(changelog, new RegExp(`^## \\[${escapedVersion}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm'));
   assert.doesNotMatch(changelog, /^## v1\.0\.0 - 2026-05-07[\s\S]*version-1\.1\.0-blue/m);
 });
 

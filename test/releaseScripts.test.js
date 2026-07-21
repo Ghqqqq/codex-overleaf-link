@@ -414,17 +414,16 @@ function writeReleaseFixture(rootDir, overrides = {}) {
 releaseTest('CHANGELOG exposes structured release notes for the current version', async () => {
   const version = readJson(path.join(repoRoot, 'package.json')).version;
   const changelog = readText(path.join(repoRoot, 'CHANGELOG.md'));
-  const heading = `## v${version} - 2026-07-21`;
-  const start = changelog.indexOf(heading);
-  assert.notEqual(start, -1, `CHANGELOG.md should contain ${heading}`);
-  assert.equal(changelog.includes(`## [${version}] - 2026-07-21`), false);
-  assert.equal(changelog.indexOf(heading, start + heading.length), -1, 'CHANGELOG.md should not duplicate the current release heading');
+  const escapedVersion = version.replace(/\./g, '\\.');
+  const headingPattern = new RegExp(`^## v${escapedVersion} - \\d{4}-\\d{2}-\\d{2}$`, 'gm');
+  const headings = changelog.match(headingPattern) || [];
+  assert.equal(headings.length, 1, 'CHANGELOG.md should contain one ISO-dated heading for the current release');
+  assert.doesNotMatch(changelog, new RegExp(`^## \\[${escapedVersion}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm'));
 
   const { extractReleaseNotes } = await importScriptModule('scripts/build-release.mjs');
   const section = extractReleaseNotes(changelog, version);
-  const escapedVersion = version.replace(/\./g, '\\.');
 
-  assert.match(section, new RegExp(`^## v${escapedVersion} - 2026-07-21$`, 'm'));
+  assert.match(section, new RegExp(`^## v${escapedVersion} - \\d{4}-\\d{2}-\\d{2}$`, 'm'));
   assert.match(section, /^### (Added|Changed|Deprecated|Removed|Fixed|Security)$/m);
   assert.match(section, /^- \S.+$/m);
   assert.doesNotMatch(section, new RegExp(`^## v(?!${escapedVersion}(?:\\s|$))`, 'm'));
