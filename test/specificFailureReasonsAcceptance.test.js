@@ -475,9 +475,7 @@ test('content-side emits project_snapshot_unavailable when initial snapshot fail
   // no warm mirror or focused-partial path applies, runTask synthesizes a
   // project_snapshot_unavailable failure and threads it through both the
   // run-card completion report and the audit record.
-  const runTaskBody = CONTENT_RUNTIME_SOURCE.match(
-    /async function runTask\(\)[\s\S]*?\n  async function /
-  )?.[0] || '';
+  const runTaskBody = extractFunctionBody(CONTENT_RUNTIME_SOURCE, 'runTask');
   assert.match(
     runTaskBody,
     /buildContentFailure\('project_snapshot_unavailable'/,
@@ -503,9 +501,7 @@ test('content-side emits project_snapshot_unavailable when initial snapshot fail
 });
 
 test('content-side emits selected_context_unresolved when @-context resolution fails (source + helper)', () => {
-  const runTaskBody = CONTENT_RUNTIME_SOURCE.match(
-    /async function runTask\(\)[\s\S]*?\n  async function /
-  )?.[0] || '';
+  const runTaskBody = extractFunctionBody(CONTENT_RUNTIME_SOURCE, 'runTask');
   assert.match(
     runTaskBody,
     /buildContentFailure\('selected_context_unresolved'/,
@@ -586,9 +582,7 @@ test('content-side emits codex_no_usable_result when native bridge returns nothi
   );
 
   // Source: the empty-result path emits the canonical code with §9.7 evidence.
-  const runTaskBody = CONTENT_RUNTIME_SOURCE.match(
-    /async function runTask\(\)[\s\S]*?\n  async function /
-  )?.[0] || '';
+  const runTaskBody = extractFunctionBody(CONTENT_RUNTIME_SOURCE, 'runTask');
   assert.match(
     runTaskBody,
     /buildContentFailure\('codex_no_usable_result'/,
@@ -681,9 +675,7 @@ test('content-side emits native_bridge_unavailable when bridge is disconnected',
   // Source: the !response.ok branch emits native_bridge_unavailable when
   // the error matches a bridge-availability shape; otherwise emits
   // codex_no_usable_result.
-  const runTaskBody = CONTENT_RUNTIME_SOURCE.match(
-    /async function runTask\(\)[\s\S]*?\n  async function /
-  )?.[0] || '';
+  const runTaskBody = extractFunctionBody(CONTENT_RUNTIME_SOURCE, 'runTask');
   assert.match(runTaskBody, /isNativeBridgeUnavailableError\(response\.error\)/);
   assert.match(runTaskBody, /buildContentFailure\('native_bridge_unavailable'/);
   assert.match(runTaskBody, /handshakeFailed:\s*true/);
