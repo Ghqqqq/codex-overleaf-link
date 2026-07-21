@@ -44,6 +44,9 @@ test('large project benchmark writes required JSON metrics within native frame b
       totalEventCount: 14400
     });
     assert.equal(report.fixture.repeatedStateBytes > 0, true);
+    assert.equal(report.fixture.mirrorSyncSamplesMs.length, 3);
+    const orderedSyncSamples = [...report.fixture.mirrorSyncSamplesMs].sort((left, right) => left - right);
+    assert.equal(report.metrics['mirror.sync_ms'], orderedSyncSamples[1]);
     assert.equal(report.fixture.fileCount >= report.fixture.textFileCount + 3, true);
     assert.equal(report.fixture.textBytes > 0, true);
     assert.equal(report.fixture.binaryBytes > 0, true);

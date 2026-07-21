@@ -29,6 +29,7 @@ const OVERSIZED_SKIPPED_BINARY_BYTES = 11 * 1024 * 1024;
 const REPEATED_STATE_SESSION_COUNT = 12;
 const REPEATED_STATE_RUNS_PER_SESSION = 10;
 const REPEATED_STATE_EVENTS_PER_RUN = 120;
+const MIRROR_SYNC_SAMPLE_COUNT = 3;
 const DEFAULT_MAX_SNAPSHOT_MS = 5000;
 const DEFAULT_MAX_SYNC_MS = 3000;
 const DEFAULT_MAX_STATUS_MS = 500;
@@ -59,7 +60,8 @@ const REQUIRED_METRIC_KEYS = [
 
 export async function runBenchmark(options = {}) {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-overleaf-large-project-'));
-  const projectId = `benchmark-${process.pid}-${Date.now()}`;
+  const projectIdPrefix = `benchmark-${process.pid}-${Date.now()}`;
+  let projectId = '';
   const oversizedPath = 'figures/native-limit-large.pdf';
   const syncState = {
     repeatedSessionCount: 0,
@@ -82,6 +84,7 @@ export async function runBenchmark(options = {}) {
   let mirrorHashedBytes = 0;
   let nativeOutputBytes = 0;
   let collected = { changes: [], unsupportedChanges: [] };
+  let mirrorSyncSamplesMs = [];
 
   try {
     fixtureMeasurement = await measureAsync(() => createLargeProjectFixture({
@@ -104,42 +107,25 @@ export async function runBenchmark(options = {}) {
     diffMeasurement = await measureAsync(() => computeLineDiff(diffPreviousContent, diffNextContent));
     patchMeasurement = await measureAsync(() => computeTextPatches(diffPreviousContent, diffNextContent));
 
-    syncMeasurement = await measureAsync(async () => {
-      const first = await syncOverleafToMirror({
-        projectId,
+    const syncSamples = [];
+    for (let sampleIndex = 0; sampleIndex < MIRROR_SYNC_SAMPLE_COUNT; sampleIndex += 1) {
+      const sampleProjectId = `${projectIdPrefix}-sync-${sampleIndex + 1}`;
+      const measurement = await measureAsync(() => runMirrorSyncScenario({
+        projectId: sampleProjectId,
         rootDir,
-        project: {
-          capabilities: { fullProjectSnapshot: true, method: 'synthetic-benchmark' },
-          files: fixture.files
-        }
-      });
-      syncState.repeatedSessionCount += 1;
-      const second = await syncOverleafToMirror({
-        projectId,
-        rootDir,
-        project: {
-          capabilities: { fullProjectSnapshot: true, method: 'synthetic-benchmark-repeat' },
-          files: fixture.files
-        }
-      });
-      syncState.repeatedSessionCount += 1;
-      const partial = await syncOverleafToMirror({
-        projectId,
-        rootDir,
-        project: {
-          capabilities: { fullProjectSnapshot: false, method: 'synthetic-benchmark-partial' },
-          files: [
-            { path: fixture.editableTextPath, content: fixture.partialOverlayContent }
-          ]
-        }
-      });
-      syncState.partialSnapshot = partial.partialSnapshot === true;
-      syncState.oversizedSkippedBinaryCount = Math.max(
-        first.skippedFiles?.length || 0,
-        second.skippedFiles?.length || 0
-      );
-      return { first, second, partial };
-    });
+        fixture
+      }));
+      syncSamples.push({ ...measurement, projectId: sampleProjectId });
+    }
+    syncMeasurement = selectMedianMeasurement(syncSamples);
+    mirrorSyncSamplesMs = syncSamples.map(sample => roundMetric(sample.ms));
+    projectId = syncMeasurement.projectId;
+    syncState.repeatedSessionCount = 2;
+    syncState.partialSnapshot = syncSamples.every(sample => sample.value.partial.partialSnapshot === true);
+    syncState.oversizedSkippedBinaryCount = Math.max(...syncSamples.flatMap(sample => [
+      sample.value.first.skippedFiles?.length || 0,
+      sample.value.second.skippedFiles?.length || 0
+    ]));
 
     statusMeasurement = await measureAsync(() => getMirrorStatus(projectId, { rootDir }));
 
@@ -202,7 +188,8 @@ export async function runBenchmark(options = {}) {
           totalRunCount: repeatedState.totalRunCount,
           totalEventCount: repeatedState.totalEventCount
         },
-        repeatedStateBytes: repeatedState.bytes
+        repeatedStateBytes: repeatedState.bytes,
+        mirrorSyncSamplesMs
       },
       metrics: {
         'snapshot.total_ms': roundMetric(
@@ -242,6 +229,39 @@ export async function runBenchmark(options = {}) {
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }
+}
+
+async function runMirrorSyncScenario({ projectId, rootDir, fixture }) {
+  const first = await syncOverleafToMirror({
+    projectId,
+    rootDir,
+    project: {
+      capabilities: { fullProjectSnapshot: true, method: 'synthetic-benchmark' },
+      files: fixture.files
+    }
+  });
+  const second = await syncOverleafToMirror({
+    projectId,
+    rootDir,
+    project: {
+      capabilities: { fullProjectSnapshot: true, method: 'synthetic-benchmark-repeat' },
+      files: fixture.files
+    }
+  });
+  const partial = await syncOverleafToMirror({
+    projectId,
+    rootDir,
+    project: {
+      capabilities: { fullProjectSnapshot: false, method: 'synthetic-benchmark-partial' },
+      files: [{ path: fixture.editableTextPath, content: fixture.partialOverlayContent }]
+    }
+  });
+  return { first, second, partial };
+}
+
+function selectMedianMeasurement(measurements) {
+  const ordered = [...measurements].sort((left, right) => left.ms - right.ms);
+  return ordered[Math.floor(ordered.length / 2)];
 }
 
 export function createLargeProjectFixture(options = {}) {
