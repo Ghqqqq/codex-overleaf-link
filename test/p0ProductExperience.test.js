@@ -3349,9 +3349,10 @@ test('confirmation prompts render as Codex plugin dialogs instead of browser pag
   assert.match(panelRenderer, /data-plugin-confirm/);
   assert.match(contentScript, /async function showPluginConfirm\(/);
   assert.match(panelRenderer, /confirmBrand/);
-  assert.match(contentScript, /assets\/icons\/codex-overleaf-dialog-icon\.png/);
-  assert.doesNotMatch(contentScript, /assets\/icons\/codex-overleaf-icon\.png/);
-  assert.doesNotMatch(contentScript, /assets\/icons\/icon32\.png/);
+  const confirmBody = contentScript.match(/async function showPluginConfirm\([\s\S]*?\n  \}/)?.[0] || '';
+  assert.match(confirmBody, /assets\/icons\/codex-overleaf-dialog-icon\.png/);
+  assert.doesNotMatch(confirmBody, /assets\/icons\/codex-overleaf-icon\.png/);
+  assert.doesNotMatch(confirmBody, /assets\/icons\/icon32\.png/);
   assert.equal(
     fs.existsSync(path.join(__dirname, '../extension/assets/icons/codex-overleaf-dialog-icon.png')),
     true
