@@ -112,7 +112,6 @@
       options.setQueue?.(session.id, result.queue);
       options.clearTask?.();
       render();
-      options.appendEvent?.(options.tr?.('queuedInputAdded'), 'info');
       options.saveSoon?.();
     }
 

@@ -2181,7 +2181,8 @@
   min-width: 0;
 }
 
-#codex-overleaf-panel .run-prompt {
+#codex-overleaf-panel .run-prompt,
+#codex-overleaf-panel .run-guidance-message {
   box-sizing: border-box;
   border: 1px solid var(--tl-border-strong);
   border-radius: 8px;
@@ -2190,6 +2191,30 @@
   padding: 7px 9px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+#codex-overleaf-panel .run-guidance-message {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  margin: 7px 0 4px;
+  animation: tl-slide-in 140ms ease-out;
+}
+
+#codex-overleaf-panel .run-guidance-marker {
+  color: var(--tl-fg-4);
+  font-size: 14px;
+  line-height: 1.35;
+  text-align: center;
+  opacity: 0.72;
+}
+
+#codex-overleaf-panel .run-guidance-text {
+  min-width: 0;
+  color: var(--tl-fg-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 #codex-overleaf-panel .run-turn-meta {
@@ -2299,6 +2324,16 @@
   max-width: 100%;
   gap: 0;
   margin-top: 2px;
+}
+
+/* The process disclosure owns machine activity only. User Guidance messages
+   remain part of the visible conversation when the work log is collapsed. */
+#codex-overleaf-panel .run-process:not([open]) + .run-activity-list > :not(.run-guidance-message) {
+  display: none;
+}
+
+#codex-overleaf-panel .run-process:not([open]) + .run-activity-list:not(:has(> .run-guidance-message)) {
+  display: none;
 }
 
 #codex-overleaf-panel .run-activity {

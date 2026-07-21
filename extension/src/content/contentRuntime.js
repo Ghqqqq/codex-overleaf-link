@@ -2628,9 +2628,9 @@
       createView: options => PendingInputView.create(options),
       appendEvent: (title, status) => appendRunEvent({ title, status }),
       appendGuidance: text => appendRunEvent({
-        title: tr('queuedInputGuided'),
-        detail: text,
-        status: 'completed'
+        title: text,
+        status: 'completed',
+        kind: 'guidance'
       }),
       toast: (message, status) => showPluginToast(message, { status }),
       tr,

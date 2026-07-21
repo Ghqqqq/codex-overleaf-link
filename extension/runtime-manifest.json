@@ -55,6 +55,7 @@
     "src/content/mathText.js",
     "src/content/markdownText.js",
     "src/content/diagnosticsController.js",
+    "src/content/runGuidanceView.js",
     "src/content/runTimelineView.js",
     "src/content/projectSettingsCoordinator.js",
     "src/content/sessionMenuView.js",

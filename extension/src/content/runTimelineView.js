@@ -1,6 +1,7 @@
 (function initCodexOverleafRunTimelineView() {
   'use strict';
 
+  const RunGuidanceView = window.CodexOverleafRunGuidanceView;
   // Run-timeline view — the timeline render pipeline carved out of
   // contentRuntime.js (v1.4.6 structural-debt phase 2): the scroll engine +
   // jump-to-latest button, the live-elapsed tick and collapsed-header summary,
@@ -413,19 +414,24 @@
             <span class="run-status" data-run-status></span>
             <span class="run-scan" aria-hidden="true"></span>
           </summary>
-          <div class="run-activity-list" data-run-events></div>
         </details>
+        <div class="run-activity-list" data-run-events></div>
         <div class="run-report" data-run-report aria-live="polite" hidden></div>
       </div>
     `;
 
     renderAttachmentPreviewList(run.attachments, root.querySelector('[data-run-attachments]'), { readonly: true });
-    root.querySelector('[data-run-task]').textContent = run.task || '';
+    const runTask = root.querySelector('[data-run-task]');
+    runTask.classList.add('run-user-message');
+    runTask.textContent = run.task || '';
     root.querySelector('[data-run-status]').textContent = getRunStatusText(run);
     const process = root.querySelector('[data-run-process]');
     process.open = run.status === 'running';
 
     const events = root.querySelector('[data-run-events]');
+    const eventListId = `codex-run-events-${String(run.id || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    events.id = eventListId;
+    root.querySelector('[data-run-process-summary]')?.setAttribute('aria-controls', eventListId);
     const report = root.querySelector('[data-run-report]');
     if ((run.events || []).length >= 300) {
       const truncated = document.createElement('div');
@@ -465,7 +471,11 @@
   }
 
   function renderRunEvent(event) {
-    return renderActivityLine(sanitizeRunEventForRender(event));
+    const normalized = sanitizeRunEventForRender(event);
+    const guidanceText = RunGuidanceView.getGuidanceText(normalized);
+    return guidanceText
+      ? RunGuidanceView.renderGuidanceMessage(normalized, guidanceText, tx)
+      : renderActivityLine(normalized);
   }
 
   function upsertStreamEvent(view, event) {
