@@ -145,13 +145,15 @@ test('starting a run is not blocked by asynchronous state persistence', () => {
     path.join(__dirname, '../extension/src/content/contentRuntime.js'),
     'utf8'
   );
-  // v1.6.3: applySyncChangesToOverleaf moved to writebackOrchestrator.js, so
-  // runTask's end delimiter is the next function still in contentRuntime.
-  const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function runSkillInstallerTask/)?.[0] || '';
+  const runTaskBody = extractFunction(contentScript, 'runTask');
   const beforeStartRun = runTaskBody.split(/currentRunView = startRunView\(/)[0] || '';
+  const startRunIndex = runTaskBody.indexOf('currentRunView = startRunView(');
+  const persistedRunIndex = runTaskBody.indexOf('await saveState()');
 
   assert.doesNotMatch(beforeStartRun, /await saveState\(\)/);
-  assert.match(runTaskBody, /saveStateSoon\(\)/);
+  assert.notEqual(startRunIndex, -1, 'run view should be created synchronously');
+  assert.notEqual(persistedRunIndex, -1, 'run state should still be persisted');
+  assert.equal(startRunIndex < persistedRunIndex, true, 'persistence must not delay the visible run start');
 });
 
 test('clicking the running spinner requests cancellation instead of being disabled', () => {
@@ -164,14 +166,15 @@ test('clicking the running spinner requests cancellation instead of being disabl
     'utf8'
   );
   const clickHandler = composerPanel.match(/querySelector\('\[data-run\]'\)[\s\S]*?form\?\.requestSubmit\?\.\(\);/)?.[0] || '';
-  const setRunningBody = contentScript.match(/function setRunning\(running\) \{[\s\S]*?\n  \}/)?.[0] || '';
+  const setRunningBody = extractFunction(composerPanel, 'setRunning');
 
   assert.match(clickHandler, /if \(instance\.callbacks\.isRunning\?\.\(\) && !String\(task\?\.value \|\| ''\)\.trim\(\)\)/);
   assert.match(contentScript, /onCancel:\s*\(\) => cancelActiveRun\(\)/);
   assert.match(contentScript, /async function cancelActiveRun\(/);
   assert.match(contentScript, /method:\s*'codex\.cancel'/);
-  assert.doesNotMatch(setRunningBody, /\[data-run\]'\)\.disabled = running/);
-  assert.match(setRunningBody, /aria-label', running \? tr\('cancelRun'\) : tr\('send'\)/);
+  assert.doesNotMatch(setRunningBody, /runButton\.disabled = running/);
+  assert.match(setRunningBody, /const action = running && !hasInput \? 'cancel' : 'send'/);
+  assert.match(setRunningBody, /runButton\.setAttribute\('aria-label', label\)/);
 });
 
 test('task failures after a user cancellation request render as interrupted', () => {
