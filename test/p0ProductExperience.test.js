@@ -1375,9 +1375,9 @@ test('composer clears the submitted task as soon as Codex accepts the run', () =
   const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';
 
   assert.match(runTaskBody, /currentRunView = startRunView\(/);
-  // v1.7.5: the submit-path clear keeps attachments across turns (they anchor
-  // follow-up questions); only the task text resets.
-  assert.match(runTaskBody, /clearTaskComposer\(\{ keepAttachments: true \}\)/);
+  // Submitted binary attachments are captured by the run record and then
+  // cleared with the text so they cannot leak into the next turn.
+  assert.match(runTaskBody, /clearTaskComposer\(\{ keepAttachments: false \}\)/);
   assert.match(contentScript, /function clearTaskComposer\(/);
   const clearBody = extractFromContentScript('clearTaskComposer');
   assert.match(clearBody, /if \(!keepAttachments\)/,
@@ -1747,7 +1747,7 @@ test('session titles auto-name once and can be manually renamed inline', () => {
     path.join(__dirname, '../extension/src/content/sessionPanel.js'),
     'utf8'
   );
-  const startRunBody = contentScript.match(/function startRunView\(\{ task, mode, model, reasoningEffort, speedTier \}\) \{[\s\S]*?\n  function finishRunView/)?.[0] || '';
+  const startRunBody = contentScript.match(/function startRunView\([^)]*\) \{[\s\S]*?\n  function finishRunView/)?.[0] || '';
 
   assert.match(startRunBody, /active\?\.titleSource !== 'manual'/);
   assert.match(startRunBody, /deriveSessionTitle/);
@@ -1955,7 +1955,7 @@ test('write preflight gives natural feedback for automatic Reviewing or Editing 
 
 test('native and raw agent events go through the human transcript mapper', () => {
   const contentScript = getContentScriptSource();
-  const appendNativeEventBody = contentScript.match(/function appendNativeEvent\(event\) \{[\s\S]*?\n  \}/)?.[0] || '';
+  const appendNativeEventBody = contentScript.match(/function appendNativeEvent\([^)]*\) \{[\s\S]*?\n  \}/)?.[0] || '';
 
   assert.match(contentScript, /CodexOverleafAgentTranscript/);
   assert.match(appendNativeEventBody, /mapAgentEventToActivity\(event,\s*\{\s*locale:\s*getLocale\(\)\s*\}\)/);
@@ -2617,7 +2617,7 @@ test('runTask freezes submitted custom instructions for initial and retry codex 
   const submittedModeIndex = runTaskBody.indexOf('const submittedMode = state.mode');
   const submittedReviewingIndex = runTaskBody.indexOf('const submittedRequireReviewing = state.requireReviewing === true');
   const submittedCustomInstructionsIndex = runTaskBody.indexOf('const submittedCustomInstructions = getCustomInstructionsForCurrentProject()');
-  const taskIndex = runTaskBody.indexOf('const task = state.task.trim()');
+  const taskIndex = runTaskBody.indexOf('const task = String(');
   const runParamBlocks = Array.from(runTaskBody.matchAll(/buildCodexRunParams\(\{[\s\S]*?submittedMode\s*\}/g))
     .map(match => match[0]);
 
@@ -3375,7 +3375,7 @@ test('English locale is applied to dialogs, diff review, undo controls, and tran
 
   const confirmBody = contentScript.match(/async function showPluginConfirm\([\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
   const undoBody = contentScript.match(/function configureUndoButton\(root, run\) \{[\s\S]*?\n  function refreshRunCard/)?.[0] || '';
-  const transcriptCallBody = contentScript.match(/function appendNativeEvent\(event\) \{[\s\S]*?\n  function appendRunEvent/)?.[0] || '';
+  const transcriptCallBody = contentScript.match(/function appendNativeEvent\([^)]*\) \{[\s\S]*?\n  function appendRunEvent/)?.[0] || '';
   const completionBody = contentScript.match(/function appendCompletionReport\(input = \{\}\) \{[\s\S]*?\n  function formatCompletionWork/)?.[0] || '';
 
   assert.match(i18n, /confirmBrand:\s*'Codex Confirm'/);
