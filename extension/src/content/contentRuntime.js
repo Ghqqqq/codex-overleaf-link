@@ -602,63 +602,13 @@
     updateModelDisplay
   } = modelPicker;
 
-  async function confirmProjectProviderSwitch({ providerName } = {}) {
-    if (getRunningSessionIds().length) {
-      showPluginToast(tx(
-        'Wait for the running task to finish before switching providers.',
-        '请等待正在运行的任务结束后再切换模型服务。'
-      ), { status: 'warning' });
-      return false;
-    }
-    return showPluginConfirm({
-      title: tx('Switch provider for this project?', '切换当前项目的模型服务？'),
-      message: tx(
-        `All sessions in this project will use ${providerName || 'the selected provider'}. The model, reasoning, and speed choices may change; existing run history stays unchanged, while future turns start fresh provider threads and may behave differently.`,
-        `当前项目的所有会话都将使用 ${providerName || '所选模型服务'}。模型、推理强度和速度选项可能变化；已有运行历史保持不变，后续轮次会创建新的服务线程，输出效果也可能变化。`
-      ),
-      confirmLabel: tx('Switch provider', '切换模型服务'),
-      cancelLabel: tr('confirmDefaultCancel')
-    });
-  }
-
-  function commitProjectProviderSelection(providerId, model) {
-    const nextProviderId = providerId || 'builtin';
-    const providerChanged = nextProviderId !== (state?.providerId || 'builtin');
-    const nextModel = model || readSelectedModelInput() || state?.model || '';
-    const nextReasoningEffort = panel?.querySelector('[data-reasoning]')?.value || state?.reasoningEffort;
-    const nextSpeedTier = readSelectedSpeedInput() || state?.speedTier;
-    const runSelection = providerSettingsCoordinator.getRunSelection(nextProviderId);
-    const nextProviderRevision = Number(runSelection?.providerRevision || 0);
-    const sessions = (state?.sessions || []).map(session => ({
-      ...session,
-      providerId: nextProviderId,
-      model: nextModel,
-      reasoningEffort: nextReasoningEffort,
-      speedTier: nextSpeedTier,
-      codexThreadId: providerChanged ? '' : session.codexThreadId,
-      pendingInputs: (session.pendingInputs || []).map(item => ({
-        ...item,
-        payload: {
-          ...(item.payload || {}),
-          providerId: nextProviderId,
-          providerRevision: nextProviderRevision,
-          model: nextModel,
-          reasoningEffort: nextReasoningEffort,
-          speedTier: nextSpeedTier
-        }
-      }))
-    }));
-    state = normalizePanelState({
-      ...state,
-      providerId: nextProviderId,
-      providerRevision: nextProviderRevision,
-      model: nextModel,
-      reasoningEffort: nextReasoningEffort,
-      speedTier: nextSpeedTier,
-      sessions
-    });
-    applyStateToPanel();
-  }
+  const projectProviderSelection = window.CodexOverleafProjectProviderSelection.create({
+    tx, tr, getRunningSessionIds, showToast: showPluginToast, showConfirm: showPluginConfirm,
+    getState: () => state, setState: next => { state = next; }, getPanel: () => panel,
+    readSelectedModel: readSelectedModelInput, readSelectedSpeed: readSelectedSpeedInput,
+    getRunSelection: providerId => providerSettingsCoordinator.getRunSelection(providerId),
+    normalizeState: normalizePanelState, applyStateToPanel
+  });
 
   const providerSettingsCoordinator = window.CodexOverleafProviderSettingsCoordinator.create({
     tx,
@@ -667,8 +617,8 @@
     window,
     getSettingsPanelInstance: () => settingsPanelInstance,
     getSelectedModel: () => state?.model || '', getSelectedProviderId: () => state?.providerId || 'builtin',
-    setSelectedProviderId: commitProjectProviderSelection,
-    confirmProviderSwitch: confirmProjectProviderSwitch,
+    setSelectedProviderId: projectProviderSelection.commit,
+    confirmProviderSwitch: projectProviderSelection.confirmSwitch,
     refreshModelOptions: loadModelOptions, persistInputs: persistPanelInputs
   });
   // v1.8.1 D3: the dashboard was a one-shot render — another tab finishing a
@@ -2646,44 +2596,10 @@
     });
   }
 
-  function upsertRunGuidance(text, target = {}) {
-    const record = findRunRecord(target.recordId, target.sessionId);
-    const guidanceId = String(target.guidanceId || '').trim();
-    if (!record || !guidanceId) {
-      return null;
-    }
-    const event = {
-      title: String(text || '').trim(),
-      status: target.status || 'queued',
-      kind: 'guidance',
-      guidanceId,
-      timestamp: new Date().toISOString()
-    };
-    const existing = (record.events || []).find(entry => entry.guidanceId === guidanceId);
-    if (!existing) {
-      appendRunEvent(event, record);
-      return event;
-    }
-    Object.assign(existing, event, { timestamp: existing.timestamp || event.timestamp });
-    if (currentRunView?.recordId === target.recordId) {
-      const row = currentRunView.root?.querySelector(`[data-guidance-id="${cssEscape(guidanceId)}"]`);
-      row?.replaceWith(renderRunEvent(existing));
-    }
-    return existing;
-  }
-
-  function removeRunGuidance(guidanceId, target = {}) {
-    const record = findRunRecord(target.recordId, target.sessionId);
-    if (!record || !guidanceId) {
-      return false;
-    }
-    const before = (record.events || []).length;
-    record.events = (record.events || []).filter(event => event.guidanceId !== guidanceId);
-    if (currentRunView?.recordId === target.recordId) {
-      currentRunView.root?.querySelector(`[data-guidance-id="${cssEscape(guidanceId)}"]`)?.remove();
-    }
-    return record.events.length !== before;
-  }
+  const runGuidanceController = window.CodexOverleafRunGuidanceController.create({
+    findRunRecord, appendRunEvent, getCurrentRunView: () => currentRunView,
+    renderRunEvent, cssEscape, bumpUnreadIfDetached
+  });
 
   function initializeRunQueueScheduler() {
     runInputCoordinator = RunQueueScheduler.createCoordinator({
@@ -2722,8 +2638,8 @@
       getContainer: () => panel?.querySelector('[data-pending-inputs]'),
       createView: options => PendingInputView.create(options),
       appendEvent: (title, status) => appendRunEvent({ title, status }),
-      appendGuidance: upsertRunGuidance,
-      removeGuidance: removeRunGuidance,
+      appendGuidance: runGuidanceController.upsert,
+      removeGuidance: runGuidanceController.remove,
       toast: (message, status) => showPluginToast(message, { status }),
       tr,
       save: () => saveState(),
@@ -6149,21 +6065,6 @@
         ));
         return;
       }
-      const requestedDeletedSessionIds = Array.isArray(options?.deletedSessionIds)
-        ? options.deletedSessionIds.filter(id => typeof id === 'string' && id)
-        : [];
-      let sessionTombstones = {};
-      if (requestedDeletedSessionIds.length && typeof Migration.addSessionTombstones === 'function') {
-        sessionTombstones = await Migration.addSessionTombstones(projectId, requestedDeletedSessionIds);
-      } else if (typeof Migration.loadSessionTombstones === 'function') {
-        sessionTombstones = await Migration.loadSessionTombstones();
-      }
-      const tombstonedSessionIds = new Set(requestedDeletedSessionIds);
-      if (typeof Migration.getDeletedSessionIds === 'function') {
-        for (const id of Migration.getDeletedSessionIds(sessionTombstones, projectId)) {
-          tombstonedSessionIds.add(id);
-        }
-      }
       const compactState = prepareStateForStorage(state, { onAggressive: notifyAggressiveCompactionOnce });
       compactState.autoRecompile = state.autoRecompile;
       compactState.loadCodexLocalSkills = state.loadCodexLocalSkills !== false;
@@ -6226,25 +6127,12 @@
           createdAt: session.createdAt,
           updatedAt: session.updatedAt
         }, { preserveRunActionPayload: true })
-      )).filter(record => !tombstonedSessionIds.has(record.id));
-      const existingSessions = await StorageDb.getAllByIndex('sessions', 'projectId', projectId);
-      const tombstonedExisting = existingSessions.filter(record => tombstonedSessionIds.has(record.id));
-      if (tombstonedExisting.length) {
-        await Promise.all(tombstonedExisting.map(record => StorageDb.deleteRecord('sessions', record.id)));
-      }
-      const existingById = new Map(existingSessions
-        .filter(record => !tombstonedSessionIds.has(record.id))
-        .map(record => [record.id, record]));
-      const nonStaleRecords = sessionRecords.filter(record => {
-        const existing = existingById.get(record.id);
-        if (!existing) return true;
-        const existingUpdatedAt = Date.parse(existing.updatedAt || '') || 0;
-        const nextUpdatedAt = Date.parse(record.updatedAt || '') || 0;
-        return nextUpdatedAt >= existingUpdatedAt;
+      ));
+      await window.CodexOverleafSessionPersistence.writeSessions({
+        Migration, StorageDb, projectId,
+        deletedSessionIds: options?.deletedSessionIds,
+        sessionRecords
       });
-      if (nonStaleRecords.length) {
-        await StorageDb.putRecords('sessions', nonStaleRecords);
-      }
     } catch (error) {
       // Fallback: try legacy save
       try {
@@ -6701,17 +6589,6 @@
     };
   }
 
-  function settleRunGuidanceView(view) {
-    const guidance = view?.guidance || view?.root?.querySelector('[data-run-guidance]');
-    if (!guidance || !view?.events) {
-      return;
-    }
-    view.guidance = guidance;
-    for (const row of view.events.querySelectorAll('[data-kind="guidance"]')) {
-      guidance.append(row);
-    }
-  }
-
   function finishRunView(text, status) {
     if (!currentRunView) {
       return;
@@ -6726,7 +6603,7 @@
       record.statusText = statusText;
       record.finishedAt = new Date().toISOString();
       currentRunView.terminalStatus = status;
-      settleRunGuidanceView(currentRunView);
+      runGuidanceController.settleView(currentRunView);
       // Welcome-panel + write-guard:
       // when the user navigated away mid-run, the URL-derived projectId now
       // belongs to a different project (or /project). Routing this finish
@@ -6962,25 +6839,7 @@
     if (event.kind === 'technical') {
       return;
     }
-    const guidanceText = window.CodexOverleafRunGuidanceView?.getGuidanceText(event);
-    if (guidanceText) {
-      const guidance = view.guidance || view.root?.querySelector('[data-run-guidance]');
-      const target = view.terminalStatus ? guidance : view.events;
-      if (target) {
-        view.guidance = guidance;
-        const rendered = renderRunEvent(event);
-        const existing = event.guidanceId
-          ? view.root?.querySelector(`[data-guidance-id="${cssEscape(event.guidanceId)}"]`)
-          : null;
-        if (existing) {
-          existing.replaceWith(rendered);
-        } else {
-          target.append(rendered);
-        }
-        bumpUnreadIfDetached();
-        return;
-      }
-    }
+    if (runGuidanceController.appendToView(event, view)) return;
     if (event.kind === 'stream') {
       // Stream deltas update an existing line in place — they must not inflate
       // the unread-step counter.

@@ -72,6 +72,18 @@ export const ARCHITECTURE_FILE_BUDGETS = Object.freeze([
     maxLines: 420
   },
   {
+    path: 'extension/src/content/projectProviderSelection.js',
+    maxLines: 120
+  },
+  {
+    path: 'extension/src/content/sessionPersistence.js',
+    maxLines: 140
+  },
+  {
+    path: 'extension/src/content/runGuidanceController.js',
+    maxLines: 120
+  },
+  {
     path: 'extension/src/content/sessionMenuView.js',
     maxLines: 280
   },
