@@ -35,8 +35,12 @@ test('dashboard rows expand into a per-project session list', () => {
   // sessions come from the IndexedDB sessions store by projectId, scoped to
   // the current account, newest first
   const load = extractFunction(src, 'loadProjectSessionRecords');
+  const persistence = repo('extension/src/content/sessionPersistence.js');
+  const isVisibleRecord = extractFunction(persistence, 'isVisibleRecord');
   assert.match(load, /getAllByIndex\('sessions', 'projectId', projectId\)/);
-  assert.match(load, /record\.accountScopeId === scope/);
+  assert.match(load, /Persistence\.isVisibleRecord\(record, deletedIds, scope\)/);
+  assert.match(isVisibleRecord, /record\.accountScopeId === accountScopeId/);
+  assert.match(isVisibleRecord, /deletedIds \|\| \[\]/);
   assert.match(load, /localeCompare/);
   // running sessions are protected (badge derived from the stored record)
   const rowFn = extractFunction(src, 'renderProjectSessionRow');
