@@ -2504,30 +2504,55 @@
 }
 
 #codex-overleaf-panel .run-math {
-  max-width: 100%;
   color: inherit;
-  font-size: 1.02em;
+  font-size: 1em;
 }
 
 #codex-overleaf-panel .run-math--inline {
-  display: inline-block;
-  overflow-x: auto;
-  overflow-y: hidden;
-  vertical-align: -0.15em;
+  display: inline;
+  max-width: none;
+  overflow: visible;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+#codex-overleaf-panel .run-math--inline .katex {
+  display: inline;
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: nowrap;
 }
 
 #codex-overleaf-panel .run-math--display {
+  box-sizing: border-box;
   display: block;
+  width: 100%;
+  max-width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
-  margin: 8px 0;
-  padding: 2px 0 4px;
+  margin: 10px 0;
+  padding: 4px 2px 7px;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
 }
 
 #codex-overleaf-panel .run-math--display .katex-display {
-  min-width: max-content;
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
   margin: 0;
-  text-align: left;
+  text-align: center;
+}
+
+#codex-overleaf-panel .run-math .katex {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+#codex-overleaf-panel .run-math .katex .text,
+#codex-overleaf-panel .run-math .katex .text * {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 0.94em;
 }
 
 #codex-overleaf-panel .run-math--fallback {

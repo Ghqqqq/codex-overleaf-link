@@ -7,6 +7,8 @@
     Object.freeze({ open: '\\(', close: '\\)', display: false, singleDollar: false }),
     Object.freeze({ open: '$', close: '$', display: false, singleDollar: true })
   ]);
+  const LONG_INLINE_MATH_CHARS = 120;
+  const COMPLEX_INLINE_MATH_CHARS = 80;
 
   function parseMathSegments(value) {
     const source = String(value || '');
@@ -186,14 +188,19 @@
   function createMathNode(segment, options = {}) {
     const documentRef = options.document || root.document;
     const node = documentRef.createElement('span');
-    node.className = `run-math ${segment.display ? 'run-math--display' : 'run-math--inline'}`;
-    node.dataset.mathDisplay = segment.display ? 'block' : 'inline';
+    const source = normalizeMathForRendering(segment.value);
+    const display = segment.display || shouldPromoteInlineMath(source);
+    node.className = `run-math ${display ? 'run-math--display' : 'run-math--inline'}`;
+    node.dataset.mathDisplay = display ? 'block' : 'inline';
+    if (display && !segment.display) {
+      node.classList.add('run-math--promoted');
+    }
     try {
       if (typeof options.katex?.render !== 'function') {
         throw new Error('KaTeX is unavailable');
       }
-      options.katex.render(segment.value, node, {
-        displayMode: segment.display,
+      options.katex.render(source, node, {
+        displayMode: display,
         throwOnError: true,
         trust: false,
         strict: 'warn',
@@ -211,6 +218,23 @@
     }
   }
 
+  function normalizeMathForRendering(value) {
+    return String(value || '')
+      .replace(/\r\n?/g, '\n')
+      .replace(/(\S)\s+\|\s+(\S)/g, '$1 \\mid $2');
+  }
+
+  function shouldPromoteInlineMath(value) {
+    const source = String(value || '').trim();
+    if (source.length >= LONG_INLINE_MATH_CHARS) {
+      return true;
+    }
+    if (source.length < COMPLEX_INLINE_MATH_CHARS) {
+      return false;
+    }
+    return /(?:=|\\(?:le|ge|approx|sim|to|Rightarrow|Longrightarrow)\b|\\begin\{(?:aligned|gathered|split|array)\}|\\\\)/.test(source);
+  }
+
   function toNodeArray(value) {
     if (Array.isArray(value)) {
       return value;
@@ -224,6 +248,7 @@
   const api = {
     buildMathNodes,
     createMathNode,
+    normalizeMathForRendering,
     parseMathSegments
   };
   root.CodexOverleafMathText = api;

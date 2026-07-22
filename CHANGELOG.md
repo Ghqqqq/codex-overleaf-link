@@ -12,6 +12,7 @@ Release candidate focused on controllable long-running tasks and resilient manag
 
 ### Fixed
 
+- Restored inline KaTeX baseline flow without per-formula scroll artifacts, separated display equations from prose blocks, and made long equations responsive without shrinking their notation.
 - Made update progress durable across Overleaf tabs, surfaced terminal update failures with a manual-install fallback, and prevented stale safe-point state from spinning indefinitely.
 - Cleared sent composer attachments together with text while keeping queued attachments attached to their own pending input.
 - Unified provider stream lifecycle handling across Chat Completions and Anthropic Messages: active output refreshes the idle deadline, protocol terminal events finish immediately, and interrupted partial reasoning receives at most two context-preserving continuation attempts.

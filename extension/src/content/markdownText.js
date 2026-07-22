@@ -533,10 +533,35 @@
         index++;
       }
 
-      const paragraph = document.createElement('p');
-      paragraph.append(...buildMarkdownInlineNodes(paragraphLines.join(' ')));
-      target.append(paragraph);
+      appendMarkdownParagraphFlow(target, paragraphLines.join(' '));
     }
+  }
+
+  function appendMarkdownParagraphFlow(target, value) {
+    const nodes = buildMarkdownInlineNodes(value);
+    let paragraph = null;
+    let paragraphHasContent = false;
+    const flushParagraph = () => {
+      if (paragraph && paragraphHasContent) {
+        target.append(paragraph);
+      }
+      paragraph = null;
+      paragraphHasContent = false;
+    };
+
+    for (const node of nodes) {
+      if (node?.dataset?.mathDisplay === 'block') {
+        flushParagraph();
+        target.append(node);
+        continue;
+      }
+      if (!paragraph) {
+        paragraph = document.createElement('p');
+      }
+      paragraph.append(node);
+      paragraphHasContent = true;
+    }
+    flushParagraph();
   }
 
   function isMarkdownFenceLine(line) {

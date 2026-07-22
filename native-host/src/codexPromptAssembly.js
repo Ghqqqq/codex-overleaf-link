@@ -268,7 +268,9 @@ function formatMathOutputRules() {
   return [
     '- In user-visible prose, format inline mathematics as $...$ and display mathematics as $$...$$ on separate lines.',
     '- Never wrap mathematical expressions in backticks or fenced code blocks unless you are showing literal source code.',
-    '- Do not emit bare TeX commands as prose when explicit math delimiters can express the same formula.'
+    '- Do not emit bare TeX commands as prose when explicit math delimiters can express the same formula.',
+    '- Keep prose outside math delimiters. Inside mathematics, wrap necessary words with \\text{...} and use \\mid for conditional bars.',
+    '- For long display equations, use \\begin{aligned}...\\end{aligned} and place explicit row breaks near relation operators.'
   ].join('\n');
 }
 
