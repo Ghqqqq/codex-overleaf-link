@@ -4023,7 +4023,12 @@ test('saveState merges latest lightweight prefs before saving project-scoped set
     };
     const window = {
       CodexOverleafStorageDb: StorageDb,
-      CodexOverleafStorageMigration: Migration
+      CodexOverleafStorageMigration: Migration,
+      CodexOverleafSessionPersistence: {
+        writeSessions({ StorageDb, sessionRecords }) {
+          return StorageDb.putRecords('sessions', sessionRecords);
+        }
+      }
     };
     function getCurrentProjectId() { return 'project_a'; }
     function getCodexOverleafSkillEnabled() {
@@ -4855,7 +4860,7 @@ test('Fix A: finishRunView still calls saveStateSoon on the happy path (no navig
     + "function sanitizeAssistantVisibleText(x){ return x; }"
     + "function findRunRecord(){ return state.sessions[0].runs[0]; }"
     + "function flushPendingStreamRenders(){}"
-    + "function settleRunGuidanceView(){}"
+    + "const runGuidanceController = { settleView(){} };"
     + "function formatProcessedSummary(){ return ''; }"
     + "function saveStateSoon(){ saveCount++; }"
     + "function renderSessionList(){}"
@@ -4923,6 +4928,9 @@ test('Fix A: saveState skips persistence when run is navigation-divergent and no
     + "  CodexOverleafStorageMigration: {"
     + "    loadPrefs: () => Promise.resolve({}),"
     + "    savePrefs: () => Promise.resolve()"
+    + "  },"
+    + "  CodexOverleafSessionPersistence: {"
+    + "    writeSessions: ({ StorageDb, sessionRecords }) => StorageDb.putRecords('sessions', sessionRecords)"
     + "  },"
     + "  location: { pathname: '/project/' + 'a'.repeat(24), href: 'http://x/project/' + 'a'.repeat(24) }"
     + "};"
