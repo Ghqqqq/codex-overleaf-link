@@ -23,7 +23,7 @@ test('composer discovers model options through the native codex.models endpoint'
 
   assert.match(modelPicker, /let modelDiscovery\s*=\s*\{\s*status:\s*'fallback'/);
   assert.match(contentScript, /providerSettingsCoordinator\.syncSessionProvider\(\)\.catch/);
-  assert.match(modelPicker, /async function loadModelOptions\(providerSelection\)/);
+  assert.match(modelPicker, /async function loadModelOptions\(providerSelection, options = \{\}\)/);
   assert.match(modelPicker, /method:\s*'codex\.models'/);
   assert.match(modelPicker, /params:\s*selection\s*\?\s*\{\s*providerSelection:\s*selection\s*\}\s*:\s*\{\}/);
   assert.match(modelPicker, /const modelCatalog = getModelCatalog\(\)/);
@@ -75,7 +75,8 @@ test('composer preserves a custom selected model before async discovery finishes
   assert.notEqual(renderIndex, -1, 'applyStateToPanel should render fallback/custom model options synchronously');
   assert.notEqual(assignIndex, -1, 'applyStateToPanel should still select state.model');
   assert.equal(renderIndex < assignIndex, true, 'custom option must exist before assigning state.model');
-  assert.match(readPanelInputs, /model:\s*readSelectedModelInput\(\)/);
+  assert.match(readPanelInputs, /const model = readSelectedModelInput\(\)/);
+  assert.match(readPanelInputs, /state\.model = model/);
   assert.match(readSelectedModelInput, /modelSelect\?\.value\s*\|\|\s*state\?\.model\s*\|\|\s*''/);
 });
 
@@ -210,7 +211,7 @@ test('panel persistence uses hybrid IndexedDB storage with legacy fallback', () 
   assert.match(contentScript, /saveState\(\)\s*\.catch/);
   // Hybrid approach: prefs via Migration, sessions via StorageDb
   assert.match(contentScript, /Migration\.savePrefs\(prefs\)/);
-  assert.match(contentScript, /StorageDb\.putRecords\('sessions', sessionRecords\)/);
+  assert.match(contentScript, /StorageDb\.putRecords\('sessions', nonStaleRecords\)/);
   assert.match(contentScript, /StorageDb\.extractLightweightPrefs\(compactState, projectId\)/);
   assert.match(contentScript, /runs:\s*Array\.isArray\(session\.runs\)/);
   assert.match(contentScript, /history:\s*Array\.isArray\(session\.history\)/);
