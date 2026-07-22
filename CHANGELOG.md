@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.1.6 - 2026-07-21
+## v2.1.6 - 2026-07-22
 
 Release candidate focused on controllable long-running tasks and resilient managed updates.
 
