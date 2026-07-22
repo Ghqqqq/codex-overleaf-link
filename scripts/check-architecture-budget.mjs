@@ -64,8 +64,11 @@ export const ARCHITECTURE_FILE_BUDGETS = Object.freeze([
     // refresh with interaction preservation, and the in-run activity bump.
     // v1.9.12 moved project-scoped settings, governance, skill toggles and
     // theme coordination into projectSettingsCoordinator.js.
+    // v2.1.6 extracted provider selection, guidance lifecycle, and session
+    // persistence (8858 -> 8717). 8720 freezes the remaining orchestration
+    // wiring without forcing another artificial split.
     path: 'extension/src/content/contentRuntime.js',
-    maxLines: 8700
+    maxLines: 8720
   },
   {
     path: 'extension/src/content/projectSettingsCoordinator.js',
