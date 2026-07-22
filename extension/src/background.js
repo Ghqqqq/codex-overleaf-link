@@ -6,6 +6,19 @@ if (!globalThis.CodexOverleafCompatibility) {
   'use strict';
 
   const HOST_NAME = 'com.codex.overleaf';
+  const MANAGED_UPDATE_STATE_KEY = 'codex-overleaf-managed-update-state-v1';
+  const MANAGED_UPDATE_TABS_KEY = 'codex-overleaf-managed-update-tabs-v1';
+  const MANAGED_OVERLEAF_MATCHES = [
+    'https://www.overleaf.com/project',
+    'https://overleaf.com/project',
+    'https://www.overleaf.com/project/*',
+    'https://overleaf.com/project/*'
+  ];
+  const MANAGED_UPDATE_PHASE_TIMEOUT_MS = Object.freeze({
+    applying: 90 * 1000,
+    awaiting_health: 2 * 60 * 1000,
+    rolling_back: 60 * 1000
+  });
   const COMPATIBILITY_REQUIRED_METHODS = new Set([
     'codex.run',
     'codex.steer',
@@ -43,13 +56,26 @@ if (!globalThis.CodexOverleafCompatibility) {
   const RUN_JOURNAL_PREFIX = 'codex-overleaf:run-journal:';
   const RUN_JOURNAL_MAX_EVENTS = 300;
   const RUN_JOURNAL_MAX_BYTES = 512 * 1024;
+  const managedBootstrapRuntime = isManagedBootstrapRuntime();
   globalThis.CodexOverleafNativeBridge = Object.freeze({
-    requestInternal: payload => sendNativeRequest(payload, null, { skipCompatibility: true }),
+    requestInternal: payload => requestManagedInternal(payload),
     getPendingState: () => ({
       executionRequests: Array.from(pending.values()).filter(item => item.retryClass === 'no_silent_retry').length,
       totalRequests: pending.size
     })
   });
+
+  if (managedBootstrapRuntime) {
+    chrome.storage?.onChanged?.addListener((changes, area) => {
+      if (area !== 'local' || !changes[MANAGED_UPDATE_STATE_KEY]?.newValue) {
+        return;
+      }
+      void repairManagedUpdatePhaseMetadata(changes[MANAGED_UPDATE_STATE_KEY].newValue);
+    });
+    setTimeout(() => {
+      void reconcileManagedUpdateTransaction();
+    }, 250);
+  }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'codex-overleaf/run-journal/list') {
@@ -230,6 +256,192 @@ if (!globalThis.CodexOverleafCompatibility) {
         handleNativePostFailure(id, pendingRequest, error);
       }
     });
+  }
+
+  async function requestManagedInternal(payload) {
+    if (managedBootstrapRuntime && payload?.method === 'update.apply') {
+      const gate = await verifyManagedUpdateSafety();
+      if (!gate.ok) {
+        return gate;
+      }
+    }
+    return sendNativeRequest(payload, null, { skipCompatibility: true });
+  }
+
+  async function verifyManagedUpdateSafety() {
+    const tabs = await chrome.tabs.query({ url: MANAGED_OVERLEAF_MATCHES }).catch(() => []);
+    const editorTabs = tabs.filter(tab => (
+      isManagedEditorTab(tab) && !tab.discarded && tab.status !== 'unloaded'
+    ));
+    const probes = await Promise.all(editorTabs.map(tab => probeManagedUpdateTab(tab.id)));
+    const nativeGate = await sendNativeRequest({
+      id: crypto.randomUUID(),
+      method: 'update.canApply',
+      params: {}
+    }, null, { skipCompatibility: true }).catch(error => ({
+      ok: false,
+      error: {
+        code: error?.code || 'native_connection_failed',
+        message: getErrorMessage(error, 'Native Host update safety check failed.')
+      }
+    }));
+    const blockers = globalThis.CodexOverleafUpdateStatus?.collectBlockers(probes, nativeGate) || ['busy'];
+    if (!blockers.length) {
+      return { ok: true };
+    }
+    return {
+      ok: false,
+      error: {
+        code: 'update_not_idle',
+        message: 'The update paused because Overleaf or the Native Host became busy. It will retry at the next safe point.',
+        blockers
+      }
+    };
+  }
+
+  async function probeManagedUpdateTab(tabId) {
+    if (!Number.isInteger(tabId)) {
+      return { idle: false, blockers: ['tab_unavailable'] };
+    }
+    try {
+      return await Promise.race([
+        chrome.tabs.sendMessage(tabId, { type: 'codex-overleaf/update-idle-probe' }),
+        new Promise(resolve => setTimeout(() => resolve({
+          idle: false,
+          blockers: ['tab_probe_timeout']
+        }), 3500))
+      ]);
+    } catch (_error) {
+      return { idle: false, blockers: ['tab_probe_unavailable'] };
+    }
+  }
+
+  function isManagedEditorTab(tab) {
+    try {
+      const url = new URL(tab?.url || '');
+      return url.protocol === 'https:' &&
+        (url.hostname === 'www.overleaf.com' || url.hostname === 'overleaf.com') &&
+        /^\/project\/[^/]+(?:\/|$)/.test(url.pathname);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function isManagedBootstrapRuntime() {
+    return chrome.runtime.getManifest().background?.service_worker === 'bootstrap/background.js';
+  }
+
+  async function repairManagedUpdatePhaseMetadata(state) {
+    const timeoutMs = MANAGED_UPDATE_PHASE_TIMEOUT_MS[state?.state] || 0;
+    if (!timeoutMs || Number(state.deadlineAt || 0) > 0) {
+      return;
+    }
+    const now = Date.now();
+    await chrome.storage.local.set({
+      [MANAGED_UPDATE_STATE_KEY]: {
+        ...state,
+        phaseStartedAt: now,
+        deadlineAt: now + timeoutMs,
+        heartbeatAt: now
+      }
+    });
+  }
+
+  async function reconcileManagedUpdateTransaction() {
+    const response = await sendNativeRequest({
+      id: crypto.randomUUID(),
+      method: 'update.status',
+      params: {}
+    }, null, { skipCompatibility: true }).catch(() => null);
+    if (!response?.ok) {
+      return;
+    }
+
+    const transaction = response.result?.transaction || null;
+    const state = await getManagedUpdateState();
+    if (transaction?.state === 'rolled_back') {
+      await setManagedUpdateState({
+        ...state,
+        state: 'rolled_back',
+        currentVersion: transaction.sourceVersion || state.currentVersion,
+        transactionId: transaction.id || state.transactionId,
+        code: transaction.reasonCode || state.code || 'update_rolled_back'
+      });
+      await reloadManagedUpdateTabs();
+      return;
+    }
+    if (transaction?.state === 'committed') {
+      const targetVersion = transaction.targetVersion || state.latestVersion || state.currentVersion;
+      await setManagedUpdateState({
+        ...state,
+        state: 'committed',
+        currentVersion: targetVersion,
+        latestVersion: targetVersion,
+        transactionId: '',
+        blocker: '',
+        blockers: [],
+        code: '',
+        message: ''
+      });
+      await reloadManagedUpdateTabs();
+      return;
+    }
+    if (transaction?.state === 'staged' && ['applying', 'awaiting_health'].includes(state.state)) {
+      await setManagedUpdateState({
+        ...state,
+        state: 'staged',
+        transactionId: transaction.id || state.transactionId,
+        blocker: '',
+        blockers: [],
+        code: '',
+        message: '',
+        phaseStartedAt: 0,
+        deadlineAt: 0,
+        heartbeatAt: 0
+      });
+      setTimeout(() => {
+        void globalThis.CodexOverleafManagedUpdateExecutor?.installAuthorizedUpdate?.().catch?.(() => {});
+      }, 250);
+      return;
+    }
+    if (!transaction && ['applying', 'awaiting_health', 'rolling_back'].includes(state.state)) {
+      await setManagedUpdateState({
+        ...state,
+        state: 'failed',
+        code: 'update_transaction_lost',
+        message: 'The managed update transaction could not be recovered. Use the manual update command.',
+        phaseStartedAt: 0,
+        deadlineAt: 0,
+        heartbeatAt: 0
+      });
+    }
+  }
+
+  async function getManagedUpdateState() {
+    const stored = await chrome.storage.local.get(MANAGED_UPDATE_STATE_KEY);
+    return stored?.[MANAGED_UPDATE_STATE_KEY] || {
+      state: 'idle',
+      managed: true,
+      currentVersion: chrome.runtime.getManifest().version,
+      latestVersion: chrome.runtime.getManifest().version
+    };
+  }
+
+  async function setManagedUpdateState(state) {
+    await chrome.storage.local.set({ [MANAGED_UPDATE_STATE_KEY]: state });
+    return state;
+  }
+
+  async function reloadManagedUpdateTabs() {
+    const stored = await chrome.storage.local.get(MANAGED_UPDATE_TABS_KEY);
+    const pendingIds = Array.isArray(stored?.[MANAGED_UPDATE_TABS_KEY])
+      ? stored[MANAGED_UPDATE_TABS_KEY]
+      : [];
+    const openTabs = await chrome.tabs.query({ url: MANAGED_OVERLEAF_MATCHES }).catch(() => []);
+    const openIds = new Set(openTabs.map(tab => tab.id).filter(Number.isInteger));
+    const reloadIds = [...new Set(pendingIds.filter(tabId => Number.isInteger(tabId) && openIds.has(tabId)))];
+    await chrome.storage.local.remove(MANAGED_UPDATE_TABS_KEY);
+    await Promise.allSettled(reloadIds.map(tabId => chrome.tabs.reload(tabId)));
   }
 
   function getNativeCompatibilityBlock(request = {}) {
