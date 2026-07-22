@@ -770,9 +770,13 @@ test('migrates legacy single-session state into a switchable session list', () =
   assert.equal(getActiveSession(state).runs[0].id, 'run_legacy');
 });
 
-test('switches active session and mirrors composer settings from that session', () => {
+test('switches active session while preserving project-wide model settings', () => {
   const state = normalizePanelState({
     activeSessionId: 'session_b',
+    providerId: 'builtin',
+    model: 'gpt-5.4',
+    reasoningEffort: 'high',
+    speedTier: 'standard',
     sessions: [{
       id: 'session_a',
       title: 'A',
@@ -797,9 +801,10 @@ test('switches active session and mirrors composer settings from that session', 
   assert.equal(state.session.id, 'session_b');
   assert.equal(state.task, 'draft b');
   assert.equal(state.mode, 'confirm');
-  assert.equal(state.model, 'gpt-5.5');
-  assert.equal(state.reasoningEffort, 'xhigh');
-  assert.equal(state.speedTier, 'fast');
+  assert.equal(state.providerId, 'builtin');
+  assert.equal(state.model, 'gpt-5.4');
+  assert.equal(state.reasoningEffort, 'high');
+  assert.equal(state.speedTier, 'standard');
   assert.equal(state.runs[0].id, 'run_b');
 });
 
