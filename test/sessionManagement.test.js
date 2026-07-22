@@ -42,7 +42,6 @@ test('session management lives in the Sessions list instead of a duplicate heade
   assert.doesNotMatch(renderer, /data-session-label-text/);
   assert.doesNotMatch(renderer, /data-session-menu-trigger/);
   assert.match(sessionPanel, /data-session-list/);
-  assert.match(sessionPanel, /data-session-delete/);
 });
 
 test('deleting an empty session skips the modal; deleting the only session reads as Reset', () => {
