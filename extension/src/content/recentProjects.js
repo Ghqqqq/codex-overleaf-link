@@ -510,9 +510,17 @@
       return [];
     }
     var records = await StorageDb.getAllByIndex('sessions', 'projectId', projectId);
+    var Migration = window.CodexOverleafStorageMigration;
+    var deletedIds = [];
+    if (Migration && Migration.loadSessionTombstones && Migration.getDeletedSessionIds) {
+      var tombstones = await Migration.loadSessionTombstones();
+      deletedIds = Migration.getDeletedSessionIds(tombstones, projectId);
+    }
     var scope = getCachedAccountScopeId();
     return (records || [])
-      .filter(function (record) { return record && (!scope || record.accountScopeId === scope); })
+      .filter(function (record) {
+        return record && deletedIds.indexOf(record.id) === -1 && (!scope || record.accountScopeId === scope);
+      })
       .sort(function (a, b) {
         return String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''));
       });
@@ -728,6 +736,10 @@
     });
     if (!approved) {
       return;
+    }
+    var Migration = window.CodexOverleafStorageMigration;
+    if (Migration && Migration.addSessionTombstones) {
+      await Migration.addSessionTombstones(projectId, [record.id]);
     }
     try {
       await mutateProjectPanelState(projectId, function (state) {
@@ -962,9 +974,15 @@
     try {
       var StorageDb = window.CodexOverleafStorageDb;
       if (StorageDb) {
+        var Migration = window.CodexOverleafStorageMigration;
+        var deletedSessionIdsByProject = {};
+        if (Migration && Migration.loadSessionTombstones) {
+          deletedSessionIdsByProject = await Migration.loadSessionTombstones();
+        }
         rows = await StorageDb.listRecentProjectsAcrossAccount({
           accountScopeId: accountScopeId,
-          limit: showAll ? 500 : pageLimit + 1
+          limit: showAll ? 500 : pageLimit + 1,
+          deletedSessionIdsByProject: deletedSessionIdsByProject
         });
       }
     } catch (_error) {

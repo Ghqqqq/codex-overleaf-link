@@ -732,22 +732,20 @@ if (!globalThis.CodexOverleafCompatibility) {
     const values = await storage.get(null);
     const entries = Object.entries(values || {})
       .filter(([key, value]) => key.startsWith(RUN_JOURNAL_PREFIX)
-        && (!projectKey || value?.projectKey === projectKey))
+        && (!projectKey || value?.projectKey === projectKey)
+        && (value?.terminal || value?.ownerLost))
       .sort((a, b) => String(a[1]?.createdAt || '').localeCompare(String(b[1]?.createdAt || '')));
-    const stale = entries.slice(0, Math.max(0, entries.length - 4)).map(([key]) => key);
-    if (stale.length) {
-      await storage.remove(stale);
-    }
-    return entries.slice(-4).map(([_key, value]) => value);
+    return entries.slice(-16).map(([_key, value]) => value);
   }
 
   function pruneInMemoryRunJournals() {
-    if (runJournals.size <= 4) {
+    if (runJournals.size <= 16) {
       return;
     }
     const oldest = Array.from(runJournals.values())
+      .filter(journal => journal?.terminal || journal?.ownerLost)
       .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
-      .slice(0, runJournals.size - 4);
+      .slice(0, runJournals.size - 16);
     for (const journal of oldest) {
       runJournals.delete(journal.requestId);
       journalWrites.delete(journal.requestId);

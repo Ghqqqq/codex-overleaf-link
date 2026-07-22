@@ -164,9 +164,11 @@
     return {
       mode: ['ask', 'confirm', 'auto'].includes(payload.mode) ? payload.mode : 'ask',
       providerId: String(payload.providerId || 'builtin').slice(0, 160),
+      providerRevision: String(payload.providerRevision || '').slice(0, 160),
       model: String(payload.model || '').slice(0, 160),
       reasoningEffort: String(payload.reasoningEffort || '').slice(0, 32),
       speedTier: payload.speedTier === 'fast' ? 'fast' : 'standard',
+      autoRecompile: payload.autoRecompile !== false,
       requireReviewing: payload.requireReviewing !== false,
       focusFiles: (Array.isArray(payload.focusFiles) ? payload.focusFiles : [])
         .map(path => String(path || '').replace(/\\/g, '/').replace(/^\/+/, '').trim())
@@ -216,9 +218,11 @@
           payload: {
             mode: typeof payload.mode === 'string' ? payload.mode : 'ask',
             providerId: normalizeField(payload.providerId, 160) || 'builtin',
+            providerRevision: normalizeField(payload.providerRevision, 160),
             model: normalizeField(payload.model, 160),
             reasoningEffort: normalizeField(payload.reasoningEffort, 32),
             speedTier: payload.speedTier === 'fast' ? 'fast' : 'standard',
+            autoRecompile: payload.autoRecompile !== false,
             requireReviewing: payload.requireReviewing !== false,
             focusFiles: normalizePaths(payload.focusFiles)
           }

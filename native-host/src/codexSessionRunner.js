@@ -1123,6 +1123,12 @@ function runCodexAppServerProcess(input) {
         return;
       }
       settled = true;
+      const turnEndedError = new Error('Codex turn ended before the pending app-server request completed.');
+      turnEndedError.code = 'codex_turn_ended';
+      for (const pendingRequest of pending.values()) {
+        pendingRequest.reject(turnEndedError);
+      }
+      pending.clear();
       cleanup();
       child.kill('SIGTERM');
       resolve({

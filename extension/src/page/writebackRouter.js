@@ -528,15 +528,9 @@
     }
     const CANCELLED_RACE_SENTINEL = Symbol('writebackRouter.cancelled');
     async function raceOpAgainstCancellation(opPromise) {
-      const racer = createCancellationRacer();
-      try {
-        return await Promise.race([
-          opPromise,
-          racer.promise.then(() => CANCELLED_RACE_SENTINEL)
-        ]);
-      } finally {
-        racer.dispose();
-      }
+      // Once an editor operation starts, preserve its actual result and undo
+      // metadata. The loop's pre-operation cancellation check stops the tail.
+      return await opPromise;
     }
 
     for (const rawOperation of operations) {

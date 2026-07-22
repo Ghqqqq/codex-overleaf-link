@@ -49,6 +49,10 @@
       if (!approved) {
         return;
       }
+      const Migration = window.CodexOverleafStorageMigration;
+      if (Migration?.addSessionTombstones) {
+        await Migration.addSessionTombstones(projectId, records.map(record => record.id));
+      }
       try {
         await mutateProjectPanelState(projectId, state => records.reduce(
           (nextState, record) => SessionState.deleteSession(nextState, record.id),

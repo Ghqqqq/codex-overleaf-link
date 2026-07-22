@@ -6,13 +6,19 @@
     '\u540e\u7eed\u5f15\u5bfc\u5df2\u53d1\u9001\u5230\u5f53\u524d Codex turn\u3002'
   ]);
 
+  const GUIDANCE_DELIVERY_PREFIX = /^(?:Guidance delivered|Follow-up guidance delivered|引导已发送|后续引导已发送)\s*[:：]\s*/i;
+
+  function normalizeGuidanceText(value) {
+    return String(value || '').trim().replace(GUIDANCE_DELIVERY_PREFIX, '').trim();
+  }
+
   function getGuidanceText(event = {}) {
     const detailText = typeof event.detail === 'string' ? event.detail.trim() : '';
     if (event.kind === 'guidance') {
-      return detailText || String(event.title || '').trim();
+      return normalizeGuidanceText(detailText || event.title);
     }
     return detailText && LEGACY_GUIDANCE_TITLES.has(String(event.title || ''))
-      ? detailText
+      ? normalizeGuidanceText(detailText)
       : '';
   }
 
@@ -21,19 +27,17 @@
     row.className = 'run-guidance-message run-user-message';
     row.dataset.kind = 'guidance';
     row.dataset.status = event.status || 'completed';
+    if (event.guidanceId) {
+      row.dataset.guidanceId = event.guidanceId;
+    }
     row.setAttribute('role', 'group');
     row.setAttribute('aria-label', tx('Follow-up guidance', '\u540e\u7eed\u5f15\u5bfc'));
-
-    const marker = document.createElement('span');
-    marker.className = 'run-guidance-marker';
-    marker.setAttribute('aria-hidden', 'true');
-    marker.textContent = '\u21b3';
 
     const text = document.createElement('div');
     text.className = 'run-guidance-text';
     text.textContent = guidanceText;
 
-    row.append(marker, text);
+    row.append(text);
     return row;
   }
 

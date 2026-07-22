@@ -51,18 +51,6 @@
         <div data-session-slot></div>
         <div class="codex-toast-region" data-toast-region aria-live="polite" aria-atomic="false"></div>
         <section class="codex-thread-section">
-          <div class="codex-thread-title" data-session-label>
-            <button type="button" class="codex-thread-title-trigger" data-session-menu-trigger aria-haspopup="menu" aria-expanded="false">
-              <span class="codex-thread-title-text" data-session-label-text></span>
-              <span class="codex-thread-title-chevron" aria-hidden="true">▾</span>
-            </button>
-            <input type="text" class="codex-thread-title-input" data-session-rename-input maxlength="80" hidden>
-            <div class="codex-thread-title-actions">
-              <button type="button" class="codex-thread-title-action" data-session-rename title="Rename session" aria-label="Rename session">✎</button>
-              <button type="button" class="codex-thread-title-action codex-thread-title-action--delete" data-session-delete title="Delete session" aria-label="Delete session">×</button>
-            </div>
-            <div class="codex-session-menu" data-session-menu hidden></div>
-          </div>
           <div class="col-log" data-log></div>
         </section>
       </div>

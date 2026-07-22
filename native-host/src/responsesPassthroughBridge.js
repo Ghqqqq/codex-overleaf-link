@@ -18,6 +18,7 @@ const MAX_HISTORY_ENTRIES = 64;
 const MAX_HISTORY_ITEMS = 4096;
 const MAX_HISTORY_BYTES = 32 * 1024 * 1024;
 const MAX_DUPLICATE_CONTINUATIONS = 2;
+const MAX_STREAM_BUFFER_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_OUTPUT_TOKENS = 65536;
 const CONTINUATION_MARKER = '[codex-overleaf-provider-reasoning-continuation]';
 
@@ -255,8 +256,9 @@ function rememberResponse(history, { response, previous, previousResponseId, cur
   if (!responseId) return;
   const outputItems = Array.isArray(response.output) ? response.output : [];
   const metrics = inspectOutput(response, outputItems);
-  const continuationRequired = response.status === 'incomplete'
-    || (metrics.hasReasoning && metrics.contentChars === 0 && metrics.toolCallCount === 0);
+  const incompleteReason = String(response.incomplete_details?.reason || '');
+  const continuationRequired = ['max_output_tokens', 'max_tokens', 'length'].includes(incompleteReason)
+    || (response.status !== 'incomplete' && metrics.hasReasoning && metrics.contentChars === 0 && metrics.toolCallCount === 0);
   const duplicate = replayed && previous
     ? outputsRepeat(previous.metrics.normalizedOutput, metrics.normalizedOutput)
     : false;
@@ -362,10 +364,7 @@ function collectTextParts(value, target) {
 
 function outputsRepeat(previous, current) {
   if (!previous || !current) return false;
-  if (previous === current) return true;
-  const prefixLength = Math.min(512, previous.length, current.length);
-  if (prefixLength < 160) return false;
-  return previous.slice(0, prefixLength) === current.slice(0, prefixLength);
+  return previous === current;
 }
 
 function normalizeComparableText(value) {
@@ -432,6 +431,9 @@ async function forwardResponsesSse(upstream, res, onActivity) {
 
 function observeSseText(observer, text, flush = false) {
   observer.buffer += text;
+  if (Buffer.byteLength(observer.buffer, 'utf8') > MAX_STREAM_BUFFER_BYTES) {
+    throw providerError('provider_stream_frame_too_large', 'Provider stream frame exceeded the local bridge limit.');
+  }
   let match;
   while ((match = /\r?\n\r?\n/.exec(observer.buffer))) {
     const block = observer.buffer.slice(0, match.index);

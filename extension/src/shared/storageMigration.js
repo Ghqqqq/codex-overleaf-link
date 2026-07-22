@@ -8,6 +8,8 @@
   'use strict';
 
   var PREFS_KEY = 'codexOverleafPrefs';
+  var SESSION_TOMBSTONES_KEY = 'codexOverleafSessionTombstones';
+  var MAX_DELETED_SESSION_IDS_PER_PROJECT = 100;
   var CUSTOM_INSTRUCTIONS_MAX_CHARS = 12000;
   var PROJECT_PREF_KEY_MAX_CHARS = 160;
 
@@ -15,15 +17,20 @@
     var StorageDb = (typeof window !== 'undefined' && window.CodexOverleafStorageDb)
       ? window.CodexOverleafStorageDb
       : require('./storageDb');
-    return chrome.storage.local.get([PREFS_KEY, legacyStorageKey]).then(function (stored) {
+    return chrome.storage.local.get([PREFS_KEY, legacyStorageKey, SESSION_TOMBSTONES_KEY]).then(function (stored) {
       var prefs = normalizePrefs(stored[PREFS_KEY] || {});
+      var tombstones = normalizeDeletedSessionIdsByProject(stored[SESSION_TOMBSTONES_KEY] || {});
+      var deletedSessionIds = getDeletedSessionIds(tombstones, projectId);
       var schemaVersion = prefs.storageSchemaVersion || 0;
 
       if (schemaVersion >= StorageDb.TARGET_SCHEMA_VERSION) {
         var activeSessionByProject = prefs.activeSessionByProject || {};
         var activeSessionId = activeSessionByProject[projectId] || '';
         return StorageDb.getAllByIndex('sessions', 'projectId', projectId).then(function (sessions) {
-          return { prefs: prefs, sessions: sessions, activeSessionId: activeSessionId, migrated: false };
+          var visibleSessions = sessions.filter(function (session) {
+            return deletedSessionIds.indexOf(session && session.id) === -1;
+          });
+          return { prefs: prefs, sessions: visibleSessions, activeSessionId: activeSessionId, migrated: false };
         });
       }
 
@@ -35,6 +42,7 @@
       for (var i = 0; i < legacySessions.length; i++) {
         var legacy = legacySessions[i];
         if (!legacy || !legacy.id) { continue; }
+        if (deletedSessionIds.indexOf(legacy.id) !== -1) { continue; }
         var record = StorageDb.buildSessionRecord(
           buildLegacySessionRecordInput(projectId, legacyBlob, legacy)
         );
@@ -101,6 +109,64 @@
     });
   }
 
+  function normalizeDeletedSessionIdsByProject(value) {
+    var result = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return result;
+    }
+    Object.keys(value).forEach(function (rawProjectId) {
+      var projectId = normalizeProjectPrefKey(rawProjectId);
+      if (!projectId || !Array.isArray(value[rawProjectId])) {
+        return;
+      }
+      var seen = {};
+      var ids = value[rawProjectId].map(function (id) {
+        return normalizeTextField(id, PROJECT_PREF_KEY_MAX_CHARS);
+      }).filter(function (id) {
+        if (!id || seen[id]) { return false; }
+        seen[id] = true;
+        return true;
+      }).slice(-MAX_DELETED_SESSION_IDS_PER_PROJECT);
+      if (ids.length) {
+        result[projectId] = ids;
+      }
+    });
+    return result;
+  }
+
+  function getDeletedSessionIds(tombstones, projectId) {
+    var normalized = normalizeDeletedSessionIdsByProject(tombstones);
+    var key = normalizeProjectPrefKey(projectId);
+    return key && Array.isArray(normalized[key]) ? normalized[key].slice() : [];
+  }
+
+  function loadSessionTombstones() {
+    return chrome.storage.local.get([SESSION_TOMBSTONES_KEY]).then(function (stored) {
+      return normalizeDeletedSessionIdsByProject(stored[SESSION_TOMBSTONES_KEY] || {});
+    });
+  }
+
+  function addSessionTombstones(projectId, sessionIds) {
+    var key = normalizeProjectPrefKey(projectId);
+    if (!key) {
+      return loadSessionTombstones();
+    }
+    return loadSessionTombstones().then(function (tombstones) {
+      var incoming = (Array.isArray(sessionIds) ? sessionIds : [])
+        .map(function (id) { return normalizeTextField(id, PROJECT_PREF_KEY_MAX_CHARS); })
+        .filter(Boolean);
+      var incomingSet = {};
+      incoming.forEach(function (id) { incomingSet[id] = true; });
+      tombstones[key] = (tombstones[key] || [])
+        .filter(function (id) { return !incomingSet[id]; })
+        .concat(incoming)
+        .slice(-MAX_DELETED_SESSION_IDS_PER_PROJECT);
+      var payload = {};
+      payload[SESSION_TOMBSTONES_KEY] = normalizeDeletedSessionIdsByProject(tombstones);
+      return chrome.storage.local.set(payload).then(function () { return payload[SESSION_TOMBSTONES_KEY]; });
+    });
+  }
+
   function normalizePrefs(prefs) {
     var source = prefs && typeof prefs === 'object' ? prefs : {};
     return Object.assign({}, source, {
@@ -162,8 +228,13 @@
 
   return {
     PREFS_KEY: PREFS_KEY,
+    SESSION_TOMBSTONES_KEY: SESSION_TOMBSTONES_KEY,
     runMigrationIfNeeded: runMigrationIfNeeded,
     savePrefs: savePrefs,
-    loadPrefs: loadPrefs
+    loadPrefs: loadPrefs,
+    loadSessionTombstones: loadSessionTombstones,
+    addSessionTombstones: addSessionTombstones,
+    getDeletedSessionIds: getDeletedSessionIds,
+    normalizeDeletedSessionIdsByProject: normalizeDeletedSessionIdsByProject
   };
 });

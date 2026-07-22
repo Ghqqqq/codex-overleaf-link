@@ -32,6 +32,8 @@ function installManagedDistribution(options = {}) {
   if (!parseSemver(version)) {
     throw updateError('managed_version_invalid', 'Managed installation requires a stable semantic version.');
   }
+  const releaseRef = String(options.releaseRef || process.env.CODEX_OVERLEAF_RELEASE_REF || process.env.CODEX_OVERLEAF_REF || `v${version}`);
+  const releaseChannel = options.releaseChannel || (releaseRef === `v${version}` ? 'stable' : 'prerelease');
   const platform = options.platform || process.platform;
   const browser = options.browser || 'chrome';
   const env = options.env || process.env;
@@ -52,7 +54,14 @@ function installManagedDistribution(options = {}) {
   const unique = process.pid + '-' + Date.now() + '-' + Math.random().toString(16).slice(2);
   const extensionStage = path.join(parent, '.extension.staging-' + unique);
   const extensionRollback = path.join(parent, '.extension.rollback-' + unique);
-  buildManagedExtensionTree({ packageRoot, targetRoot: extensionStage, version, allowedFiles: options.allowedFiles });
+  buildManagedExtensionTree({
+    packageRoot,
+    targetRoot: extensionStage,
+    version,
+    releaseRef,
+    releaseChannel,
+    allowedFiles: options.allowedFiles
+  });
 
   const previousExtensionMarker = readManagedMarker(extensionRoot, EXTENSION_MARKER);
   if (fs.existsSync(extensionRoot) && !isManagedMarker(previousExtensionMarker, 'extension')) {
@@ -75,7 +84,7 @@ function installManagedDistribution(options = {}) {
   }
 
   try {
-    installManagedNativeVersion({ packageRoot, nativeRoot, version });
+    installManagedNativeVersion({ packageRoot, nativeRoot, version, releaseRef, releaseChannel });
     installManagedNativeRegistration({
       browser,
       env,
@@ -111,6 +120,8 @@ function buildManagedExtensionTree(options = {}) {
   const packageRoot = path.resolve(options.packageRoot || path.resolve(__dirname, '../..'));
   const targetRoot = path.resolve(String(options.targetRoot || ''));
   const version = String(options.version || readJson(path.join(packageRoot, 'package.json')).version || '');
+  const releaseRef = String(options.releaseRef || `v${version}`);
+  const releaseChannel = options.releaseChannel || (releaseRef === `v${version}` ? 'stable' : 'prerelease');
   if (!parseSemver(version)) {
     throw new Error('Managed extension version is invalid.');
   }
@@ -138,12 +149,14 @@ function buildManagedExtensionTree(options = {}) {
     kind: 'extension',
     bootstrapProtocol: 1,
     version,
+    releaseRef,
+    releaseChannel,
     installedAt: new Date().toISOString()
   }, null, 2) + '\n', 'utf8');
   return { targetRoot, version };
 }
 
-function installManagedNativeVersion({ packageRoot, nativeRoot, version }) {
+function installManagedNativeVersion({ packageRoot, nativeRoot, version, releaseRef = `v${version}`, releaseChannel = 'stable' }) {
   const marker = readManagedMarker(nativeRoot, NATIVE_MARKER);
   if (fs.existsSync(nativeRoot) && !isManagedMarker(marker, 'native')) {
     throw new Error('Refusing to replace an unmarked managed native root: ' + nativeRoot);
@@ -157,7 +170,11 @@ function installManagedNativeVersion({ packageRoot, nativeRoot, version }) {
   for (const entry of buildRuntimeFileManifest({ packageRoot })) {
     copyFile(entry.sourcePath, path.join(stage, entry.relativePath));
   }
-  fs.writeFileSync(path.join(stage, '.codex-overleaf-version.json'), JSON.stringify({ version }, null, 2) + '\n');
+  fs.writeFileSync(path.join(stage, '.codex-overleaf-version.json'), JSON.stringify({
+    version,
+    releaseRef,
+    releaseChannel
+  }, null, 2) + '\n');
   if (fs.existsSync(target)) {
     safeRemove(target);
   }

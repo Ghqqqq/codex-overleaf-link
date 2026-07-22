@@ -76,10 +76,17 @@ export function buildRelease(options = {}) {
   }
   prepareReleaseOutputDir({ rootDir, outputDir });
 
-  createExtensionZip({ rootDir, outputPath: extensionZipPath, trackedFiles });
+  createExtensionZip({ rootDir, outputPath: extensionZipPath, trackedFiles, releaseRef, releaseChannel });
   createNativeTarball({ rootDir, outputPath: nativeTarballPath, trackedFiles });
   createNpmTarball({ rootDir, outputPath: npmTarballPath, expectedName: npmTarballName, trackedFiles });
-  createCoordinatedUpdateBundle({ rootDir, outputPath: updateBundlePath, trackedFiles, version });
+  createCoordinatedUpdateBundle({
+    rootDir,
+    outputPath: updateBundlePath,
+    trackedFiles,
+    version,
+    releaseRef,
+    releaseChannel
+  });
 
   const copiedInstallPath = path.join(outputDir, 'install.sh');
   const copiedWindowsInstallPath = path.join(outputDir, 'install.ps1');
@@ -285,24 +292,33 @@ function isSamePathOrAncestor(candidateAncestor, targetPath) {
   return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function createExtensionZip({ rootDir, outputPath, trackedFiles }) {
+function createExtensionZip({ rootDir, outputPath, trackedFiles, releaseRef, releaseChannel }) {
   const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-managed-extension-'));
   try {
     const version = readJson(path.join(rootDir, 'package.json')).version;
-    buildManagedExtensionTree({ packageRoot: rootDir, targetRoot: stagingRoot, version, allowedFiles: trackedFiles });
+    buildManagedExtensionTree({
+      packageRoot: rootDir,
+      targetRoot: stagingRoot,
+      version,
+      releaseRef,
+      releaseChannel,
+      allowedFiles: trackedFiles
+    });
     runRequiredCommand('zip', ['-qr', outputPath, '.'], { cwd: stagingRoot });
   } finally {
     fs.rmSync(stagingRoot, { recursive: true, force: true });
   }
 }
 
-function createCoordinatedUpdateBundle({ rootDir, outputPath, trackedFiles, version }) {
+function createCoordinatedUpdateBundle({ rootDir, outputPath, trackedFiles, version, releaseRef, releaseChannel }) {
   const managedExtensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-update-extension-'));
   try {
     buildManagedExtensionTree({
       packageRoot: rootDir,
       targetRoot: managedExtensionRoot,
       version,
+      releaseRef,
+      releaseChannel,
       allowedFiles: trackedFiles
     });
     const entries = [];

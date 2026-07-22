@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { requiresReasoningContentReplay } = require('./providerReasoning');
+const MAX_STREAM_BUFFER_BYTES = 8 * 1024 * 1024;
 
 function convertChatResponse(chat = {}, context = {}) {
   const choice = Array.isArray(chat.choices) ? chat.choices[0] || {} : {};
@@ -56,6 +57,9 @@ async function streamChatResponse({
     for await (const chunk of upstream.body || []) {
       onActivity();
       buffer += decoder.decode(chunk, { stream: true });
+      if (Buffer.byteLength(buffer, 'utf8') > MAX_STREAM_BUFFER_BYTES) {
+        throw responseError('Provider stream frame exceeded the local bridge limit.', 'provider_stream_frame_too_large');
+      }
       let boundary = findSseBoundary(buffer);
       while (boundary) {
         const block = buffer.slice(0, boundary.index);
@@ -240,7 +244,7 @@ function completeStream(state, res, interruptedReason = '') {
   const tools = Array.from(state.tools.values()).sort((a, b) => a.index - b.index);
   for (const tool of tools) completeTool(state, res, tool);
   const terminal = interruptedReason
-    ? { status: 'incomplete', incompleteReason: 'max_output_tokens' }
+    ? { status: 'incomplete', incompleteReason: interruptedReason }
     : mapChatFinishReason(state.finishReason);
   const response = streamEnvelope(state, terminal.status, terminal.incompleteReason);
   emit(
@@ -470,24 +474,24 @@ function extractReasoning(message = {}) {
 
 function mapChatFinishReason(value) {
   const reason = normalizeText(value).trim().toLowerCase();
-  if (['length', 'max_tokens', 'max_output_tokens', 'model_context_window_exceeded'].includes(reason)) {
+  if (['length', 'max_tokens', 'max_output_tokens'].includes(reason)) {
     return { status: 'incomplete', incompleteReason: 'max_output_tokens' };
+  }
+  if (reason === 'model_context_window_exceeded') {
+    return { status: 'incomplete', incompleteReason: 'context_window_exceeded' };
   }
   if (['content_filter', 'content-filter', 'refusal', 'safety'].includes(reason)) {
     return { status: 'incomplete', incompleteReason: 'content_filter' };
   }
   if (['insufficient_system_resource', 'insufficient-system-resource', 'resource_exhausted'].includes(reason)) {
-    // The Responses API has no portable provider-resource incomplete reason.
-    // Treat the partial generation like an output truncation so Codex can
-    // continue it through the bounded history-anchor path.
-    return { status: 'incomplete', incompleteReason: 'max_output_tokens' };
+    return { status: 'incomplete', incompleteReason: 'provider_resource_exhausted' };
   }
   return { status: 'completed', incompleteReason: null };
 }
 
-function responseError(message) {
+function responseError(message, code = 'provider_response_invalid') {
   const error = new Error(message);
-  error.code = 'provider_response_invalid';
+  error.code = code;
   return error;
 }
 

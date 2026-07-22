@@ -159,7 +159,7 @@
         return;
       }
       setState(deleteSession(getState(), sessionId));
-      await saveState();
+      await saveState({ deletedSessionIds: [sessionId] });
       applyStateToPanel();
       showPluginToast(tr('deleteSessionDeletedToast'), { status: 'info' });
       return;
@@ -186,7 +186,7 @@
     }
 
     setState(deleteSession(getState(), sessionId));
-    await saveState();
+    await saveState({ deletedSessionIds: [sessionId] });
     applyStateToPanel();
 
     try {

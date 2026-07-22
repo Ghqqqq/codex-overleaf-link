@@ -102,7 +102,7 @@
     updateModelDisplay();
     await persistPanelInputs(changedInput ? { type: 'change', target: changedInput } : undefined);
   }
-  async function loadModelOptions(providerSelection) {
+  async function loadModelOptions(providerSelection, options = {}) {
     const generation = ++modelLoadGeneration;
     const selection = providerSelection || getProviderSelection?.() || null;
     const selectedModel = resolveSelectedModel();
@@ -131,14 +131,17 @@
         && response.result.models.length > 0;
       if (!hasDiscoveredModels && !Support.shouldUseBuiltInFallback(response)) {
         applyUnavailableModelOptions(response?.error);
-        return;
+        return { stale: false, error: response?.error || { code: 'provider_models_unavailable' } };
       }
       const sourceModels = hasDiscoveredModels ? response.result.models : fallbackModels;
       const retainedSelectedModel = retainSelectedModel(sourceModels, currentSelectedModel);
       const normalized = modelCatalog.normalizeDiscoveredModels({ models: sourceModels, selectedModel: retainedSelectedModel });
       if (normalized.usedFallback && response.result?.providerId && response.result.providerId !== 'builtin') {
         applyUnavailableModelOptions({ code: 'provider_model_catalog_invalid', message: 'The active provider returned no usable models.' });
-        return;
+        return {
+          stale: false,
+          error: { code: 'provider_model_catalog_invalid', message: 'The active provider returned no usable models.' }
+        };
       }
       renderModelOptions(normalized.models, retainedSelectedModel, { allowUnknownSelected: false });
       modelDiscovery = {
@@ -151,8 +154,14 @@
         providerRevision: Number(response?.result?.providerRevision || selection?.providerRevision || 0)
       };
       updateModelDisplay();
-      await persistPanelInputs();
-      return { stale: false, providerId: modelDiscovery.providerId };
+      if (options.persist !== false) {
+        await persistPanelInputs();
+      }
+      return {
+        stale: false,
+        providerId: modelDiscovery.providerId,
+        selectedModel: resolveSelectedModel()
+      };
     } catch (error) {
       if (generation !== modelLoadGeneration) {
         return { stale: true };

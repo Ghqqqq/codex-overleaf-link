@@ -4,12 +4,13 @@
 const { decodeFrames, encodeMessage } = require('./nativeMessaging');
 const { logDebug } = require('./debugLog');
 const { handleRequest } = require('./taskRunner');
-const { getActiveNativeWorkState } = require('./taskRunnerRuntime');
+const { abortAllActiveOperations, getActiveNativeWorkState } = require('./taskRunnerRuntime');
 const { handleUpdateRequest, isUpdateMethod } = require('./updateManager');
 const { buildNativeRuntimeEnv, summarizeNativeEnvironment } = require('./nativeEnvironment');
 
 let buffered = Buffer.alloc(0);
 let stdoutUnavailable = false;
+let nativeDisconnectHandled = false;
 const runtimeEnv = buildNativeRuntimeEnv(process.env);
 Object.assign(process.env, runtimeEnv);
 logDebug('environment.ready', summarizeNativeEnvironment(runtimeEnv));
@@ -72,13 +73,14 @@ async function handleDecodedMessage(message) {
 
 process.stdin.on('error', error => {
   logDebug('stdin.error', { message: error.message });
-  console.error(`stdin error: ${error.message}`);
+  handleNativeDisconnect('stdin_error', error);
 });
+process.stdin.on('end', () => handleNativeDisconnect('stdin_end'));
+process.stdin.on('close', () => handleNativeDisconnect('stdin_close'));
 
 process.stdout.on('error', error => {
   if (isExpectedNativeDisconnect(error)) {
-    stdoutUnavailable = true;
-    logDebug('stdout.disconnected', { code: error.code, message: error.message });
+    handleNativeDisconnect('stdout_disconnected', error);
     return;
   }
   logDebug('stdout.error', { code: error.code, message: error.message, stack: error.stack });
@@ -86,8 +88,7 @@ process.stdout.on('error', error => {
 
 process.on('uncaughtException', error => {
   if (isExpectedNativeDisconnect(error)) {
-    stdoutUnavailable = true;
-    logDebug('process.native_disconnect', { code: error.code, message: error.message });
+    handleNativeDisconnect('uncaught_native_disconnect', error);
     return;
   }
   logDebug('process.uncaught_exception', {
@@ -133,8 +134,7 @@ function writeResponse(response) {
     process.stdout.write(frame, error => {
       if (!error) return;
       if (isExpectedNativeDisconnect(error)) {
-        stdoutUnavailable = true;
-        logDebug('stdout.write_disconnected', { code: error.code, message: error.message });
+        handleNativeDisconnect('stdout_write_disconnected', error);
         return;
       }
       logDebug('stdout.write_failed', { code: error.code, message: error.message });
@@ -142,8 +142,7 @@ function writeResponse(response) {
     return true;
   } catch (error) {
     if (isExpectedNativeDisconnect(error)) {
-      stdoutUnavailable = true;
-      logDebug('stdout.write_disconnected', { code: error.code, message: error.message });
+      handleNativeDisconnect('stdout_write_disconnected', error);
       return false;
     }
     throw error;
@@ -152,6 +151,21 @@ function writeResponse(response) {
 
 function isExpectedNativeDisconnect(error) {
   return ['EPIPE', 'ERR_STREAM_DESTROYED', 'ERR_STREAM_WRITE_AFTER_END'].includes(String(error?.code || ''));
+}
+
+function handleNativeDisconnect(source, error) {
+  if (nativeDisconnectHandled) return;
+  nativeDisconnectHandled = true;
+  stdoutUnavailable = true;
+  logDebug('native_transport.disconnected', {
+    source,
+    code: error?.code,
+    message: error?.message
+  });
+  abortAllActiveOperations('Native messaging transport disconnected.');
+  process.exitCode = 0;
+  const exitTimer = setTimeout(() => process.exit(0), 1500);
+  exitTimer.unref?.();
 }
 
 function buildOversizeResponseFallback(response, error) {

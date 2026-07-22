@@ -10,6 +10,7 @@
       getSelectedModel: options.getSelectedModel || (() => ''),
       getSelectedProviderId: options.getSelectedProviderId || (() => 'builtin'),
       setSelectedProviderId: options.setSelectedProviderId || (() => {}),
+      confirmProviderSwitch: options.confirmProviderSwitch || (() => true),
       clearSelectedModel: options.clearSelectedModel || (() => {}),
       refreshModelOptions: options.refreshModelOptions || (() => {}),
       persistInputs: options.persistInputs || (() => {}),
@@ -38,7 +39,7 @@
     setupCrossTabRefresh(instance, options.window || window);
     return {
       open: () => open(instance),
-      refreshSummary: () => refresh(instance),
+      refreshSummary: () => refreshSummary(instance),
       ensureLoaded: () => ensureLoaded(instance),
       getRunSelection: providerId => instance.loaded
         ? Profiles.buildRunSelection(instance.catalog, providerId || instance.getSelectedProviderId())
@@ -93,9 +94,45 @@
     return instance.catalog;
   }
 
+  async function ensureLoadedWithRetry(instance) {
+    try {
+      return await ensureLoaded(instance);
+    } catch (_firstError) {
+      // Extension reloads can race the first Native Messaging connection.
+      // Keep the persisted project selection visible, then retry once after
+      // the service worker and Native Host have had a chance to reconnect.
+      updateSettingsSummary(instance);
+      await new Promise(resolve => setTimeout(resolve, 800));
+      try {
+        const result = await refresh(instance);
+        return result?.catalog || instance.catalog;
+      } catch (error) {
+        updateSettingsSummary(instance);
+        throw error;
+      }
+    }
+  }
+
+  async function refreshSummary(instance) {
+    // Project state hydrates before the Native Host catalog is guaranteed to
+    // be ready. Project the persisted selection immediately so Settings never
+    // claims Built-in Codex (or stays on a loading placeholder) while the
+    // authoritative catalog request is still pending.
+    updateSettingsSummary(instance);
+    try {
+      await ensureLoadedWithRetry(instance);
+    } catch (_error) {
+      // This card describes the project's saved selection. Native connection
+      // failures are surfaced when Configure is opened, without replacing the
+      // selection with a misleading Built-in/unavailable state.
+    }
+    updateSettingsSummary(instance);
+    return instance.catalog;
+  }
+
   async function syncSessionProvider(instance) {
     try {
-      await ensureLoaded(instance);
+      await ensureLoadedWithRetry(instance);
     } catch (_error) {
       return instance.refreshModelOptions(
         window.CodexOverleafProviderProfiles.buildRunSelection(instance.catalog, instance.getSelectedProviderId())
@@ -109,22 +146,78 @@
     const requestedProviderId = typeof change.sessionProviderId === 'string' && change.sessionProviderId
       ? change.sessionProviderId
       : previousProviderId;
-    const sessionProviderChanged = requestedProviderId !== previousProviderId;
-    if (sessionProviderChanged) {
+    const projectProviderChanged = requestedProviderId !== previousProviderId;
+    if (projectProviderChanged && change.providerSwitchApproved !== true) {
       const requestedProvider = window.CodexOverleafProviderProfiles.getProviderById(catalog, requestedProviderId);
-      const preferredModelId = requestedProvider?.kind === 'custom'
-        ? requestedProvider.defaultModelId || requestedProvider.models?.[0]?.id || ''
-        : '';
-      instance.setSelectedProviderId(requestedProviderId, preferredModelId);
+      const approved = await instance.confirmProviderSwitch({
+        providerId: requestedProviderId,
+        providerName: requestedProvider?.name || requestedProviderId
+      });
+      if (!approved) {
+        return { cancelled: true };
+      }
     }
     const changedProviderIds = Array.isArray(change.changedProviderIds) ? change.changedProviderIds : [];
-    if (!change.forceSessionRefresh && !sessionProviderChanged && !changedProviderIds.includes(requestedProviderId)) {
+    if (!change.forceSessionRefresh && !projectProviderChanged && !changedProviderIds.includes(requestedProviderId)) {
       return;
     }
-    await instance.refreshModelOptions(
-      window.CodexOverleafProviderProfiles.buildRunSelection(catalog, requestedProviderId)
-    );
+    const loadResult = change.modelsPreloaded === true
+      ? { stale: false, selectedModel: change.preloadedModelId || '' }
+      : await instance.refreshModelOptions(
+        window.CodexOverleafProviderProfiles.buildRunSelection(catalog, requestedProviderId),
+        { persist: false }
+      );
+    if (loadResult?.stale || loadResult?.error) {
+      const error = createClientError(
+        loadResult?.error?.code || 'provider_model_catalog_unavailable',
+        loadResult?.error?.message || 'The provider model catalog could not be loaded.'
+      );
+      error.details = loadResult?.error || {};
+      throw error;
+    }
+    if (projectProviderChanged) {
+      await instance.setSelectedProviderId(requestedProviderId, loadResult?.selectedModel || '');
+    }
     await instance.persistInputs();
+    updateSettingsSummary(instance);
+    return { providerId: requestedProviderId, selectedModel: loadResult?.selectedModel || '' };
+  }
+
+  async function prepareProviderActivation(instance, providerId) {
+    const previousProviderId = instance.getSelectedProviderId() || 'builtin';
+    const provider = window.CodexOverleafProviderProfiles.getProviderById(instance.catalog, providerId);
+    if (providerId !== previousProviderId) {
+      const approved = await instance.confirmProviderSwitch({
+        providerId,
+        providerName: provider?.name || providerId
+      });
+      if (!approved) {
+        return { cancelled: true, previousProviderId };
+      }
+    }
+    const result = await instance.refreshModelOptions(
+      window.CodexOverleafProviderProfiles.buildRunSelection(instance.catalog, providerId),
+      { persist: false }
+    );
+    if (result?.stale || result?.error) {
+      if (providerId !== previousProviderId) {
+        await instance.refreshModelOptions(
+          window.CodexOverleafProviderProfiles.buildRunSelection(instance.catalog, previousProviderId),
+          { persist: false }
+        ).catch(() => {});
+      }
+      const error = createClientError(
+        result?.error?.code || 'provider_model_catalog_unavailable',
+        result?.error?.message || 'The provider model catalog could not be loaded.'
+      );
+      error.details = result?.error || {};
+      throw error;
+    }
+    return {
+      cancelled: false,
+      previousProviderId,
+      selectedModel: result?.selectedModel || ''
+    };
   }
 
   async function testProvider(instance, context) {
@@ -264,8 +357,13 @@
   }
 
   async function activateProvider(instance, context) {
-    instance.dialog.setBusy('saving', instance.tx('Activating provider…', '正在启用模型服务…'));
+    let preparation;
     try {
+      preparation = await prepareProviderActivation(instance, context.profileId);
+      if (preparation.cancelled) {
+        return;
+      }
+      instance.dialog.setBusy('saving', instance.tx('Activating provider…', '正在启用模型服务…'));
       const result = await request(instance, 'codex.providers.activate', {
         providerId: context.profileId,
         expectedRevision: context.expectedRevision,
@@ -276,30 +374,59 @@
         updateDialog: true,
         selectedId: context.profileId
       });
-      await notifyChanged(instance, applied.change, { sessionProviderId: context.profileId });
+      await notifyChanged(instance, applied.change, {
+        sessionProviderId: context.profileId,
+        providerSwitchApproved: true,
+        modelsPreloaded: true,
+        preloadedModelId: preparation.selectedModel,
+        requireProjection: true
+      });
       instance.dialog.setBusy('', '');
       instance.dialog.setStatus({
         tone: 'success',
         title: instance.tx('Provider activated.', '模型服务已启用。')
       });
     } catch (error) {
+      if (preparation?.previousProviderId && preparation.previousProviderId !== context.profileId) {
+        await instance.refreshModelOptions(
+          window.CodexOverleafProviderProfiles.buildRunSelection(instance.catalog, preparation.previousProviderId),
+          { persist: false }
+        ).catch(() => {});
+      }
       instance.dialog.setBusy('failed', formatError(instance, error));
       instance.dialog.setStatus({ tone: 'failed', title: formatError(instance, error) });
     }
   }
 
   async function activateBuiltin(instance) {
-    instance.dialog.setBusy('saving', instance.tx('Activating built-in Codex…', '正在启用内置 Codex…'));
+    let preparation;
     try {
+      preparation = await prepareProviderActivation(instance, 'builtin');
+      if (preparation.cancelled) {
+        return;
+      }
+      instance.dialog.setBusy('saving', instance.tx('Activating built-in Codex…', '正在启用内置 Codex…'));
       const result = await request(instance, 'codex.providers.activate', {
         providerId: 'builtin',
         expectedRevision: 0
       });
       const applied = applyCatalog(instance, result, { updateDialog: true, selectedId: 'builtin' });
-      await notifyChanged(instance, applied.change, { sessionProviderId: 'builtin' });
+      await notifyChanged(instance, applied.change, {
+        sessionProviderId: 'builtin',
+        providerSwitchApproved: true,
+        modelsPreloaded: true,
+        preloadedModelId: preparation.selectedModel,
+        requireProjection: true
+      });
       instance.dialog.setBusy('', '');
       instance.dialog.setStatus({ tone: 'success', title: instance.tx('Built-in Codex is active.', '已启用内置 Codex。') });
     } catch (error) {
+      if (preparation?.previousProviderId && preparation.previousProviderId !== 'builtin') {
+        await instance.refreshModelOptions(
+          window.CodexOverleafProviderProfiles.buildRunSelection(instance.catalog, preparation.previousProviderId),
+          { persist: false }
+        ).catch(() => {});
+      }
       instance.dialog.setBusy('failed', formatError(instance, error));
     }
   }
@@ -340,13 +467,31 @@
   }
 
   function updateSettingsSummary(instance, override = {}) {
-    const active = window.CodexOverleafProviderProfiles.getActiveProvider(instance.catalog);
-    const summary = override.summary || (active.kind === 'builtin'
-      ? instance.tx('Built-in Codex · default for new sessions', '内置 Codex · 新会话默认')
-      : `${active.name} · ${active.defaultModelId || instance.tx('No model', '未配置模型')} · ${instance.tx('Default for new sessions', '新会话默认')}`);
+    const selectedProviderId = instance.getSelectedProviderId() || 'builtin';
+    const catalogProvider = window.CodexOverleafProviderProfiles.getProviderById(
+      instance.catalog,
+      selectedProviderId
+    );
+    const selectedProvider = catalogProvider?.id === selectedProviderId
+      ? catalogProvider
+      : (selectedProviderId === 'builtin'
+        ? window.CodexOverleafProviderProfiles.getActiveProvider(instance.catalog)
+        : {
+          id: selectedProviderId,
+          name: selectedProviderId,
+          kind: 'custom',
+          defaultModelId: instance.getSelectedModel() || '',
+          wireApiPreference: '',
+          resolvedWireApi: ''
+        });
+    const summary = override.summary || (selectedProvider.kind === 'builtin'
+      ? instance.tx('Built-in Codex · current project', '内置 Codex · 当前项目')
+      : `${selectedProvider.name} · ${instance.getSelectedModel() || selectedProvider.defaultModelId || instance.tx('No model', '未配置模型')} · ${instance.tx('Current project', '当前项目')}`);
     instance.getSettingsPanelInstance()?.setProviderSummary?.({
       summary,
-      tone: override.tone || (active.kind === 'custom' && active.wireApiPreference === 'auto' && !active.resolvedWireApi ? 'warning' : 'ok')
+      tone: override.tone || (selectedProvider.kind === 'custom'
+        && selectedProvider.wireApiPreference === 'auto'
+        && !selectedProvider.resolvedWireApi ? 'warning' : 'ok')
     });
   }
 
@@ -358,7 +503,10 @@
     }
     try {
       await instance.onProviderChanged(instance.catalog, { ...change, ...localChange });
-    } catch (_error) {
+    } catch (error) {
+      if (localChange.requireProjection === true) {
+        throw error;
+      }
       // The authoritative catalog is already saved. A later refresh can retry
       // the local model projection without rolling back the provider change.
     }

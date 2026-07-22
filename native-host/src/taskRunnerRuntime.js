@@ -1279,8 +1279,19 @@ function getActiveNativeWorkState() {
   };
 }
 
+function abortAllActiveOperations(reason = 'Native messaging transport disconnected.') {
+  const error = new Error(String(reason || 'Native messaging transport disconnected.'));
+  error.code = 'native_transport_closed';
+  for (const controller of activeRunControllers.values()) {
+    if (controller && !controller.signal?.aborted) {
+      controller.abort(error);
+    }
+  }
+}
+
 module.exports = {
   NATIVE_REQUEST_QUOTAS,
+  abortAllActiveOperations,
   buildDefaultTaskResult,
   getActiveNativeWorkState,
   handleRequest,

@@ -1146,7 +1146,11 @@
       return Promise.resolve([]);
     }
     return getAllSessions().then(function (all) {
-      return filterRecentProjectsAcrossAccount(all, { accountScopeId: accountScopeId, limit: limit });
+      return filterRecentProjectsAcrossAccount(all, {
+        accountScopeId: accountScopeId,
+        limit: limit,
+        deletedSessionIdsByProject: options && options.deletedSessionIdsByProject
+      });
     });
   }
 
@@ -1157,6 +1161,7 @@
   function filterRecentProjectsAcrossAccount(sessions, options) {
     var accountScopeId = options && options.accountScopeId;
     var limit = options && Number.isFinite(options.limit) ? options.limit : 10;
+    var deletedSessionIdsByProject = options && options.deletedSessionIdsByProject;
     if (!accountScopeId) {
       return [];
     }
@@ -1167,6 +1172,8 @@
       var s = all[i];
       if (!s) continue;
       if (s.accountScopeId !== accountScopeId) continue;
+      if (deletedSessionIdsByProject && Array.isArray(deletedSessionIdsByProject[s.projectId])
+        && deletedSessionIdsByProject[s.projectId].indexOf(s.id) !== -1) continue;
       if (typeof s.lastActivityAt !== 'string' || !s.lastActivityAt) continue;
       if (!isValidOverleafProjectId(s.projectId)) continue;
       var prev = byProject[s.projectId];

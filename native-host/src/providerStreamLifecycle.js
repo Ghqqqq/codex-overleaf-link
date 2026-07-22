@@ -71,7 +71,7 @@ function createProviderStreamLifecycle({
 function resolveProviderIdleTimeoutMs(launch = {}) {
   const configured = Number(launch.requestTimeoutMs);
   if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_IDLE_TIMEOUT_MS;
-  return Math.min(MAX_IDLE_TIMEOUT_MS, Math.max(5000, Math.floor(configured)));
+  return Math.min(MAX_IDLE_TIMEOUT_MS, Math.max(DEFAULT_IDLE_TIMEOUT_MS, Math.floor(configured)));
 }
 
 function resolveProviderTotalTimeoutMs(launch = {}, idleTimeoutMs = resolveProviderIdleTimeoutMs(launch)) {

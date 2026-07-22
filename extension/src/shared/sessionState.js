@@ -127,6 +127,9 @@
     if (!VALID_SPEED_TIERS.has(state.speedTier)) {
       state.speedTier = DEFAULT_PANEL_STATE.speedTier;
     }
+    state.providerId = typeof state.providerId === 'string' && state.providerId.trim()
+      ? state.providerId.trim()
+      : 'builtin';
     if (!VALID_LOCALES.has(state.locale)) {
       state.locale = DEFAULT_PANEL_STATE.locale;
     }
@@ -178,7 +181,7 @@
       ...legacySession,
       task: state.task,
       mode: state.mode,
-      providerId: 'builtin',
+      providerId: state.providerId,
       model: state.model,
       reasoningEffort: state.reasoningEffort,
       speedTier: state.speedTier,
@@ -212,7 +215,7 @@
       mode: VALID_MODES.has(session.mode) ? session.mode : fallbackState.mode,
       providerId: typeof session.providerId === 'string' && session.providerId.trim()
         ? session.providerId.trim()
-        : 'builtin',
+        : (fallbackState.providerId || 'builtin'),
       model: typeof session.model === 'string' && session.model ? session.model : fallbackState.model,
       reasoningEffort: VALID_REASONING.has(session.reasoningEffort)
         ? session.reasoningEffort
@@ -292,22 +295,12 @@
       history: Array.isArray(active.history) ? active.history.slice(-10) : [],
       focusFiles: normalizeFocusFiles(active.focusFiles),
       codexThreadId: active.codexThreadId || '',
-      providerId: active.providerId || 'builtin'
+      providerId: state.providerId || 'builtin'
     };
     state.runs = Array.isArray(active.runs) ? active.runs : [];
     state.task = typeof active.task === 'string' ? active.task : '';
     state.focusFiles = normalizeFocusFiles(active.focusFiles);
     state.mode = VALID_MODES.has(active.mode) ? active.mode : DEFAULT_PANEL_STATE.mode;
-    state.providerId = typeof active.providerId === 'string' && active.providerId
-      ? active.providerId
-      : 'builtin';
-    state.model = typeof active.model === 'string' && active.model ? active.model : DEFAULT_PANEL_STATE.model;
-    state.reasoningEffort = VALID_REASONING.has(active.reasoningEffort)
-      ? active.reasoningEffort
-      : DEFAULT_PANEL_STATE.reasoningEffort;
-    state.speedTier = VALID_SPEED_TIERS.has(active.speedTier)
-      ? active.speedTier
-      : DEFAULT_PANEL_STATE.speedTier;
     state.requireReviewing = active.requireReviewing !== false;
 
     return state;
@@ -727,6 +720,7 @@
           timestamp: typeof event.timestamp === 'string' ? event.timestamp : '',
           kind: typeof event.kind === 'string' ? event.kind : 'activity',
           technicalDetail: sanitizeAssistantVisibleValue(event.technicalDetail),
+          guidanceId: sanitizeAssistantVisibleText(event.guidanceId),
           streamKey: sanitizeAssistantVisibleText(event.streamKey),
           streamRole: sanitizeAssistantVisibleText(event.streamRole)
         };
@@ -972,11 +966,14 @@
       codexOverleafSkills: compactCodexOverleafSkillsForStorage(source.codexOverleafSkills),
       composerAttachments: normalizeComposerAttachmentsForPersistence(source.composerAttachments),
       mode: VALID_MODES.has(active?.mode) ? active.mode : normalizeMode(source.mode),
-      model: normalizeTextField(active?.model || source.model || DEFAULT_PANEL_STATE.model, 80),
-      reasoningEffort: VALID_REASONING.has(active?.reasoningEffort)
-        ? active.reasoningEffort
+      providerId: typeof source.providerId === 'string' && source.providerId.trim()
+        ? source.providerId.trim()
+        : 'builtin',
+      model: normalizeTextField(source.model || DEFAULT_PANEL_STATE.model, 80),
+      reasoningEffort: VALID_REASONING.has(source.reasoningEffort)
+        ? source.reasoningEffort
         : normalizeReasoning(source.reasoningEffort),
-      speedTier: normalizeSpeedTier(active?.speedTier || source.speedTier),
+      speedTier: normalizeSpeedTier(source.speedTier),
       locale: normalizeLocale(source.locale),
       requireReviewing: active ? active.requireReviewing !== false : source.requireReviewing !== false,
       autoOpen: source.autoOpen !== false,
@@ -1173,6 +1170,7 @@
           status: normalizeEventStatus(event.status),
           timestamp: typeof event.timestamp === 'string' ? event.timestamp : '',
           kind: typeof event.kind === 'string' ? event.kind : 'activity',
+          guidanceId: normalizeTextField(event.guidanceId, 160),
           streamKey: typeof event.streamKey === 'string' ? event.streamKey : '',
           streamRole: typeof event.streamRole === 'string' ? event.streamRole : ''
         };

@@ -204,10 +204,15 @@ async function checkForUpdate(context, params = {}, options = {}) {
   }
   const latestVersion = releaseTag.slice(1);
   if (!isNewerStableVersion(latestVersion, currentVersion)) {
+    const activeMarker = readJsonSafe(path.join(context.extensionRoot, EXTENSION_MARKER), null);
+    const equalVersionPrerelease = compareSemver(latestVersion, currentVersion) === 0
+      && activeMarker?.releaseChannel === 'prerelease';
     return {
       managed: true,
       available: false,
-      reason: compareSemver(latestVersion, currentVersion) === 0 ? 'up_to_date' : 'downgrade_rejected',
+      reason: equalVersionPrerelease
+        ? 'prerelease_promotion_requires_manual_update'
+        : (compareSemver(latestVersion, currentVersion) === 0 ? 'up_to_date' : 'downgrade_rejected'),
       currentVersion,
       latestVersion,
       etag: releaseResponse.headers.get('etag') || ''

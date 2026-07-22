@@ -44,7 +44,6 @@
     } = deps;
 
   let logAutoFollow = true;
-  let runSearchQuery = '';
   let userScrollIntentUntil = 0;
   // Scroll engine: a single rAF coalesces a burst of scroll requests into one
   // write per frame (streaming can fire ~25/sec); `scrollLogPendingForce`
@@ -309,84 +308,10 @@
       truncated.textContent = tr('runsTruncatedNote');
       log.append(truncated);
     }
-    // In-session search (v1.8.0): filter run cards by task or report text.
-    // Rendered with the same >= 3 threshold as the turn navigator; filtering
-    // is pure display (hidden attribute), state is kept across re-renders.
-    if (runs.length < 3 && runSearchQuery) {
-      // No search box is rendered below this threshold — a stale query from a
-      // bigger session would silently blank this log with no way to clear it.
-      runSearchQuery = '';
-    }
-    if (runs.length >= 3) {
-      const search = document.createElement('input');
-      search.type = 'search';
-      search.className = 'run-search';
-      search.setAttribute('data-run-search', '');
-      search.placeholder = tr('runSearchPlaceholder');
-      search.setAttribute('aria-label', tr('runSearchPlaceholder'));
-      search.value = runSearchQuery;
-      search.addEventListener('input', () => {
-        runSearchQuery = search.value;
-        applyRunSearchFilter(log);
-      });
-      log.append(search);
-    }
-    // Turn navigation (v1.7.5): once the log holds enough turns that
-    // scroll-hunting hurts, offer a jump-to-turn dropdown pinned above them.
-    if (runs.length >= 3) {
-      const nav = document.createElement('select');
-      nav.className = 'run-turn-nav';
-      nav.setAttribute('data-run-turn-nav', '');
-      nav.setAttribute('aria-label', tr('runTurnNavLabel'));
-      const placeholder = document.createElement('option');
-      placeholder.value = '';
-      placeholder.textContent = tr('runTurnNavLabel');
-      nav.append(placeholder);
-      runs.forEach((run, index) => {
-        const option = document.createElement('option');
-        option.value = run.id;
-        option.textContent = `#${index + 1} ${String(run.task || '').replace(/\s+/g, ' ').slice(0, 48)}`;
-        nav.append(option);
-      });
-      nav.addEventListener('change', () => {
-        if (!nav.value) {
-          return;
-        }
-        const card = log.querySelector(`[data-run-id="${cssEscape(nav.value)}"]`);
-        card?.scrollIntoView({ block: 'start' });
-        nav.value = '';
-      });
-      log.append(nav);
-    }
     for (const run of runs) {
       log.append(renderRunCard(run));
     }
-    if (runSearchQuery) {
-      applyRunSearchFilter(log);
-    }
     scrollLogToBottom({ force: true });
-  }
-
-  // Case-insensitive substring match over the run's task text and its
-  // report/event narration. Empty query shows everything again.
-  function applyRunSearchFilter(log) {
-    const query = String(runSearchQuery || '').trim().toLowerCase();
-    const state = getState();
-    const matchingIds = new Set();
-    if (query) {
-      for (const run of state.runs || []) {
-        const haystack = [
-          run.task || '',
-          ...(run.events || []).map(event => `${event.title || ''} ${typeof event.detail === 'string' ? event.detail : ''}`)
-        ].join(' ').toLowerCase();
-        if (haystack.includes(query)) {
-          matchingIds.add(run.id);
-        }
-      }
-    }
-    for (const card of log.querySelectorAll('[data-run-id]')) {
-      card.hidden = Boolean(query) && !matchingIds.has(card.dataset.runId);
-    }
   }
 
   function renderRunCard(run) {
@@ -405,6 +330,7 @@
       <div class="transcript-turn-main">
         <div class="run-attachments codex-attachment-preview-list" data-run-attachments hidden></div>
         <div class="run-prompt" data-run-task></div>
+        <div class="run-guidance-list" data-run-guidance></div>
         <div class="run-turn-meta">
           <button type="button" data-run-accept hidden title="Accept this run's tracked changes in Overleaf">Accept changes</button>
           <button type="button" data-run-undo hidden title="Undo this run's writes to Overleaf">Undo</button>
@@ -428,6 +354,7 @@
     const process = root.querySelector('[data-run-process]');
     process.open = run.status === 'running';
 
+    const guidance = root.querySelector('[data-run-guidance]');
     const events = root.querySelector('[data-run-events]');
     const eventListId = `codex-run-events-${String(run.id || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
     events.id = eventListId;
@@ -439,12 +366,28 @@
       truncated.textContent = tr('eventsTruncatedNote');
       events.append(truncated);
     }
+    const guidanceTarget = run.status === 'running' ? events : guidance;
+    const renderedGuidanceIds = new Set();
+    const completedLegacyGuidance = new Set((run.events || [])
+      .filter(event => event.kind === 'guidance' && !event.guidanceId && event.status === 'completed')
+      .map(event => event.title));
     for (const event of run.events || []) {
       if (event.kind === 'report') {
         report.hidden = false;
         report.replaceChildren(renderCompletionReport(event, run));
       } else if (event.kind === 'technical') {
         continue;
+      } else if (RunGuidanceView.getGuidanceText(event)) {
+        if (event.guidanceId && renderedGuidanceIds.has(event.guidanceId)) {
+          continue;
+        }
+        if (!event.guidanceId && event.status === 'queued' && completedLegacyGuidance.has(event.title)) {
+          continue;
+        }
+        if (event.guidanceId) {
+          renderedGuidanceIds.add(event.guidanceId);
+        }
+        guidanceTarget.append(renderRunEvent(event));
       } else if (event.kind === 'stream') {
         upsertStreamEvent({ events }, event);
       } else {

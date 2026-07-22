@@ -85,16 +85,36 @@ async function initializeBootstrap() {
 
   const nativeStatus = await requestInternal({ method: 'update.status', params: {} }).catch(() => null);
   const transaction = nativeStatus?.ok ? nativeStatus.result?.transaction : null;
+  const state = await getUpdateState();
   if (transaction?.state === 'awaiting_health') {
     await confirmPendingUpdate(transaction);
   } else if (transaction?.state === 'rolled_back') {
+    await setUpdateState({ ...state, state: 'rolled_back', transactionId: transaction.id || state.transactionId });
     await reloadPendingOverleafTabs();
+  } else if (transaction?.state === 'committed') {
+    await setUpdateState({
+      ...state,
+      state: 'committed',
+      currentVersion: transaction.targetVersion || state.latestVersion,
+      latestVersion: transaction.targetVersion || state.latestVersion,
+      transactionId: ''
+    });
+    await reloadPendingOverleafTabs();
+  } else if (transaction?.state === 'staged' && ['applying', 'awaiting_health'].includes(state.state)) {
+    await setUpdateState({ ...state, state: 'staged', transactionId: transaction.id || state.transactionId });
+  } else if (!transaction && ['applying', 'awaiting_health', 'rolling_back'].includes(state.state)) {
+    await setUpdateState({
+      ...state,
+      state: 'failed',
+      code: 'update_transaction_lost',
+      message: 'The managed update transaction could not be recovered. Use the manual update command.'
+    });
   }
 
   chrome.alarms.create(CHECK_ALARM, { delayInMinutes: 0.5, periodInMinutes: 24 * 60 });
-  const state = await getUpdateState();
-  if (state.state === 'staged' || state.state === 'waiting_for_idle') {
-    scheduleIdleRetry(state.blockers);
+  const reconciledState = await getUpdateState();
+  if (reconciledState.state === 'staged' || reconciledState.state === 'waiting_for_idle') {
+    scheduleIdleRetry(reconciledState.blockers);
   }
 }
 
@@ -245,9 +265,41 @@ async function tryApplyStagedUpdateCore() {
   }
 
   await clearIdleRetry();
-  await chrome.storage.local.set({ [UPDATE_RELOAD_TABS_KEY]: refreshTabs.map(tab => tab.id).filter(Number.isInteger) });
-  await setUpdateState({ ...state, state: 'applying', blocker: '', blockers: [] });
+  const phaseStartedAt = Date.now();
+  await setUpdateState({
+    ...state,
+    state: 'applying',
+    blocker: '',
+    blockers: [],
+    phaseStartedAt,
+    deadlineAt: phaseStartedAt + 2 * 60 * 1000,
+    heartbeatAt: phaseStartedAt
+  });
   await broadcastUpdateState('applying');
+  const confirmationProbes = await Promise.all(activeTabs.map(tab => probeTabIdle(tab)));
+  const confirmationNativeGate = await requestInternal({ method: 'update.canApply', params: {} }).catch(error => ({
+    ok: false,
+    error: { code: safeCode(error), message: safeMessage(error) }
+  }));
+  const confirmationBlockers = globalThis.CodexOverleafUpdateStatus?.collectBlockers(
+    confirmationProbes,
+    confirmationNativeGate
+  ) || ['busy'];
+  if (confirmationBlockers.length) {
+    const waiting = await setUpdateState({
+      ...state,
+      state: 'waiting_for_idle',
+      blocker: confirmationBlockers[0],
+      blockers: confirmationBlockers,
+      phaseStartedAt: 0,
+      deadlineAt: 0,
+      heartbeatAt: 0
+    });
+    await broadcastUpdateState('waiting_for_idle');
+    scheduleIdleRetry(confirmationBlockers);
+    return waiting;
+  }
+  await chrome.storage.local.set({ [UPDATE_RELOAD_TABS_KEY]: refreshTabs.map(tab => tab.id).filter(Number.isInteger) });
   const applied = await requestInternal({
     method: 'update.apply',
     params: { transactionId: state.transactionId }
@@ -255,7 +307,15 @@ async function tryApplyStagedUpdateCore() {
   if (!applied?.ok) {
     throw nativeError(applied);
   }
-  await setUpdateState({ ...state, state: 'awaiting_health', latestVersion: applied.result.targetVersion });
+  const awaitingHealthAt = Date.now();
+  await setUpdateState({
+    ...state,
+    state: 'awaiting_health',
+    latestVersion: applied.result.targetVersion,
+    phaseStartedAt: awaitingHealthAt,
+    deadlineAt: awaitingHealthAt + 2 * 60 * 1000,
+    heartbeatAt: awaitingHealthAt
+  });
   chrome.runtime.reload();
   return { state: 'awaiting_health' };
 }
@@ -480,7 +540,10 @@ async function setUpdateState(next) {
     blocker: blockers[0] || '',
     blockers,
     code: next.code || '',
-    message: String(next.message || '').slice(0, 300)
+    message: String(next.message || '').slice(0, 300),
+    phaseStartedAt: Number(next.phaseStartedAt || 0),
+    deadlineAt: Number(next.deadlineAt || 0),
+    heartbeatAt: Number(next.heartbeatAt || 0)
   };
   await chrome.storage.local.set({ [UPDATE_STATE_KEY]: value });
   return value;

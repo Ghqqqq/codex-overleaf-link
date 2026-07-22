@@ -89,12 +89,16 @@
     async function recoverJournals(options = {}) {
       const projectKey = String(options.projectKey || '');
       if (!projectKey) {
-        return false;
+        return { changed: false, acknowledgeIds: [] };
       }
       const journals = await listJournals(projectKey).catch(() => []);
       let changed = false;
+      const acknowledgeIds = [];
       for (const journal of journals) {
-        const session = options.findSession?.(journal.sessionId) || options.getActiveSession?.();
+        if (!journal?.terminal && !journal?.ownerLost) {
+          continue;
+        }
+        const session = options.findSession?.(journal.sessionId);
         if (!session) {
           continue;
         }
@@ -149,11 +153,9 @@
         }
         options.pauseSessionQueue?.(session, 'page_reload');
         changed = true;
-        if (journal.terminal) {
-          acknowledge(journal.requestId).catch(() => {});
-        }
+        acknowledgeIds.push(journal.requestId);
       }
-      return changed;
+      return { changed, acknowledgeIds };
     }
 
     function destroy() {

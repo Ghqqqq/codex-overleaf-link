@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const MAX_STREAM_BUFFER_BYTES = 8 * 1024 * 1024;
 const { encodeAnthropicThinkingBlock } = require('./anthropicBridgeRequest');
 
 function convertAnthropicResponse(message = {}, context = {}) {
@@ -64,6 +65,9 @@ async function streamAnthropicResponse({
     for await (const chunk of upstream.body || []) {
       onActivity();
       buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true });
+      if (Buffer.byteLength(buffer, 'utf8') > MAX_STREAM_BUFFER_BYTES) {
+        throw responseError('Provider stream frame exceeded the local bridge limit.', 'provider_stream_frame_too_large');
+      }
       let boundary = findBoundary(buffer);
       while (boundary) {
         const block = buffer.slice(0, boundary.index);
@@ -250,7 +254,7 @@ function completeStream(state, res, interruptedReason = '') {
   for (const index of Array.from(state.blocks.keys()).sort((a, b) => a - b)) closeBlock(state, res, index);
   if (!state.items.filter(Boolean).length) throw responseError('Anthropic stream ended without usable output.');
   const terminal = interruptedReason
-    ? { status: 'incomplete', incompleteReason: 'max_output_tokens' }
+    ? { status: 'incomplete', incompleteReason: interruptedReason }
     : mapStopReason(state.stopReason);
   const response = responseEnvelope({
     id: state.id,
@@ -325,7 +329,8 @@ function responseEnvelope({ id, model, output, usage, requestBody = {}, status, 
 }
 
 function mapStopReason(value) {
-  if (value === 'max_tokens' || value === 'model_context_window_exceeded') return { status: 'incomplete', incompleteReason: 'max_output_tokens' };
+  if (value === 'max_tokens') return { status: 'incomplete', incompleteReason: 'max_output_tokens' };
+  if (value === 'model_context_window_exceeded') return { status: 'incomplete', incompleteReason: 'context_window_exceeded' };
   if (value === 'refusal') return { status: 'incomplete', incompleteReason: 'content_filter' };
   return { status: 'completed', incompleteReason: null };
 }

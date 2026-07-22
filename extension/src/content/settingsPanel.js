@@ -154,7 +154,7 @@
             <div class="codex-set-card codex-provider-settings-entry">
               <div class="codex-provider-settings-entry-copy">
                 <p class="codex-set-row-help" data-i18n="providerSettingsHelp">Configure experimental third-party model APIs. Compatibility varies by provider and gateway.</p>
-                <p class="codex-provider-settings-summary" data-provider-settings-summary data-tone="ok" data-i18n="providerSettingsBuiltin">Built-in Codex is active</p>
+                <p class="codex-provider-settings-summary" data-provider-settings-summary data-tone="loading">${t(instance, 'providerSettingsLoading')}</p>
               </div>
               <button type="button" class="codex-set-btn" data-provider-settings-open data-i18n="providerSettingsConfigure">Configure</button>
             </div>
