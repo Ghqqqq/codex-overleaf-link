@@ -193,6 +193,10 @@ test('panel persistence uses hybrid IndexedDB storage with legacy fallback', () 
     path.join(__dirname, '../extension/src/content/contentRuntime.js'),
     'utf8'
   );
+  const sessionPersistence = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/sessionPersistence.js'),
+    'utf8'
+  );
 
   assert.match(contentScript, /prepareStateForStorage/);
   // The chrome.storage.local quota fallback writes a COMPACT shape
@@ -211,7 +215,8 @@ test('panel persistence uses hybrid IndexedDB storage with legacy fallback', () 
   assert.match(contentScript, /saveState\(\)\s*\.catch/);
   // Hybrid approach: prefs via Migration, sessions via StorageDb
   assert.match(contentScript, /Migration\.savePrefs\(prefs\)/);
-  assert.match(contentScript, /StorageDb\.putRecords\('sessions', nonStaleRecords\)/);
+  assert.match(contentScript, /CodexOverleafSessionPersistence\.writeSessions/);
+  assert.match(sessionPersistence, /StorageDb\.putRecords\('sessions', writable\)/);
   assert.match(contentScript, /StorageDb\.extractLightweightPrefs\(compactState, projectId\)/);
   assert.match(contentScript, /runs:\s*Array\.isArray\(session\.runs\)/);
   assert.match(contentScript, /history:\s*Array\.isArray\(session\.history\)/);
