@@ -328,6 +328,9 @@ if (!globalThis.CodexOverleafCompatibility) {
   }
 
   function isManagedBootstrapRuntime() {
+    if (typeof chrome.runtime?.getManifest !== 'function') {
+      return false;
+    }
     return chrome.runtime.getManifest().background?.service_worker === 'bootstrap/background.js';
   }
 
