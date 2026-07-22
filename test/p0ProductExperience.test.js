@@ -4076,7 +4076,9 @@ test('saveState merges latest lightweight prefs before saving project-scoped set
   assert.equal(harness.getStoredSessionRecords()[0].runs[0].task, 'Current task');
   assert.equal(harness.getStoredSessionRecords()[0].runs[0].statusText, 'Done 7s');
   assert.equal(harness.getStoredSessionRecords()[0].runs[0].events[0].detail, '结论：刷新后历史仍应显示这段回答。');
-  assert.deepEqual(harness.getDeletedSessionIds(), ['old_project_session']);
+  // A session missing from this tab may have been created by another tab.
+  // Only an explicit deletion tombstone may remove it from IndexedDB.
+  assert.deepEqual(harness.getDeletedSessionIds(), []);
   assert.deepEqual(harness.getSavedPrefs().codexOverleafSkillEnabled, { 'venue-style': false });
 });
 
@@ -4853,6 +4855,7 @@ test('Fix A: finishRunView still calls saveStateSoon on the happy path (no navig
     + "function sanitizeAssistantVisibleText(x){ return x; }"
     + "function findRunRecord(){ return state.sessions[0].runs[0]; }"
     + "function flushPendingStreamRenders(){}"
+    + "function settleRunGuidanceView(){}"
     + "function formatProcessedSummary(){ return ''; }"
     + "function saveStateSoon(){ saveCount++; }"
     + "function renderSessionList(){}"
