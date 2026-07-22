@@ -36,22 +36,14 @@ test('startNewSession reuses an empty idle active session instead of minting a g
   assert.match(body, /\[data-task\]'\)\?\.focus\(\)/);
 });
 
-test('the active-session header bar exposes inline rename + delete', () => {
+test('session management lives in the Sessions list instead of a duplicate header bar', () => {
   const renderer = repo('extension/src/content/panelRenderer.js');
-  const runtime = repo('extension/src/content/sessionMenuView.js');
-  // markup
-  assert.match(renderer, /data-session-label-text/);
-  assert.match(renderer, /data-session-rename-input/);
-  assert.match(renderer, /data-session-rename\b/);
-  assert.match(renderer, /data-session-delete\b/);
-  // wiring + flow
-  assert.match(runtime, /function bindActiveSessionHeader\(/);
-  assert.match(runtime, /function beginActiveSessionRename\(/);
-  assert.match(runtime, /deleteSessionWithConfirm\(getState\(\)\.activeSessionId\)/);
-  // header never blank: empty active falls back to the placeholder
-  const label = extractFunction(runtime, 'applySessionLabel');
-  assert.match(label, /newSessionFallback/);
-  assert.match(label, /data-session-label-text/);
+  const sessionPanel = repo('extension/src/content/sessionPanel.js');
+  assert.doesNotMatch(renderer, /data-session-label-text/);
+  assert.doesNotMatch(renderer, /data-session-menu-trigger/);
+  assert.match(sessionPanel, /data-session-list/);
+  assert.match(sessionPanel, /data-session-rename/);
+  assert.match(sessionPanel, /data-session-delete/);
 });
 
 test('deleting an empty session skips the modal; deleting the only session reads as Reset', () => {
@@ -112,42 +104,15 @@ test('session-management i18n is available in English and Chinese', () => {
   }
 });
 
-test('the header title is a session dropdown: list, switch, and New session in place', () => {
+test('the panel header omits the duplicate session dropdown and retains New Session', () => {
   const renderer = repo('extension/src/content/panelRenderer.js');
-  assert.match(renderer, /data-session-menu-trigger/);
-  assert.match(renderer, /data-session-menu\b/);
-  assert.match(renderer, /codex-thread-title-chevron/);
-
-  const manager = repo('extension/src/content/sessionMenuView.js');
-  assert.match(manager, /function toggleSessionMenu\(/);
-  assert.match(manager, /function closeSessionMenu\(/);
-  const render = extractFunction(manager, 'renderSessionMenu');
-  // every saved (displayable) session, newest first, active + running marked
-  assert.match(render, /filter\(isDisplayableSession\)/);
-  assert.match(render, /sort\(/);
-  assert.match(render, /dataset\.active = session\.id === state\?\.activeSessionId/);
-  assert.match(render, /dataset\.running = isSessionRunning\(session\)/);
-  assert.match(render, /formatSessionTime\(session\.updatedAt \|\| session\.createdAt\)/);
-  // row click switches (no-op for the active row); footer mints a new session
-  assert.match(render, /switchSession\(session\.id\)/);
-  assert.match(render, /startNewSession\(\)/);
-  assert.match(render, /tr\('newSession'\)/);
-  // outside-click dismiss uses the capture phase so panel click-stoppers
-  // cannot swallow it; Escape closes too
-  const bindBody = extractFunction(manager, 'bindActiveSessionHeader');
-  assert.match(bindBody, /document\.addEventListener\('click',[\s\S]*?, true\)/);
-  assert.match(bindBody, /event\.key === 'Escape'/);
-  // renaming hides the trigger while the input is showing
-  const begin = extractFunction(manager, 'beginActiveSessionRename');
-  assert.match(begin, /trigger\.hidden = true/);
-  // trigger is localized like the rest of the header bar
-  const label = extractFunction(manager, 'applySessionLabel');
-  assert.match(label, /tr\('sessionMenuOpen'\)/);
-
-  const css = repo('extension/styles/panel.css');
-  assert.match(css, /\.codex-session-menu \{/);
-  assert.match(css, /\.codex-session-menu-item\[data-active="true"\]/);
-  assert.match(css, /\.codex-thread-title-trigger/);
+  const sessionPanel = repo('extension/src/content/sessionPanel.js');
+  assert.doesNotMatch(renderer, /data-session-menu-trigger/);
+  assert.doesNotMatch(renderer, /data-session-menu\b/);
+  assert.doesNotMatch(renderer, /codex-thread-title-chevron/);
+  assert.match(renderer, /data-new-session/);
+  assert.match(sessionPanel, /data-session-list/);
+  assert.match(sessionPanel, /data-view-all/);
 });
 
 test('panel.css styles the active-session bar and visible row controls', () => {
