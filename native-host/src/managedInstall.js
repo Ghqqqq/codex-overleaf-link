@@ -148,7 +148,7 @@ function buildManagedExtensionTree(options = {}) {
   fs.writeFileSync(path.join(targetRoot, EXTENSION_MARKER), JSON.stringify({
     managedBy: MANAGED_BY,
     kind: 'extension',
-    bootstrapProtocol: 1,
+    bootstrapProtocol: 2,
     version,
     releaseRef,
     releaseChannel,
@@ -193,7 +193,7 @@ function installManagedNativeVersion({ packageRoot, nativeRoot, version, release
   fs.writeFileSync(path.join(nativeRoot, NATIVE_MARKER), JSON.stringify({
     managedBy: MANAGED_BY,
     kind: 'native',
-    bootstrapProtocol: 1,
+    bootstrapProtocol: 2,
     version,
     installedAt: new Date().toISOString()
   }, null, 2) + '\n', 'utf8');
@@ -380,7 +380,9 @@ function readManagedMarker(root, markerName) {
 }
 
 function isManagedMarker(marker, kind) {
-  return marker?.managedBy === MANAGED_BY && marker?.kind === kind && marker?.bootstrapProtocol === 1;
+  return marker?.managedBy === MANAGED_BY &&
+    marker?.kind === kind &&
+    (marker?.bootstrapProtocol === 1 || marker?.bootstrapProtocol === 2);
 }
 
 function readVersionPointer(nativeRoot, name) {

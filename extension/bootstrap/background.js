@@ -352,6 +352,19 @@ async function confirmPendingUpdate(transaction) {
     await rollbackBrokenRuntime(new Error('Updated native host did not report the target version.'));
     return;
   }
+  const native = ping.result || {};
+  const protocolRange = native.supportedProtocol || {};
+  const requiredCapabilities = globalThis.CodexOverleafCompatibility?.REQUIRED_CAPABILITIES || [];
+  const missingCapabilities = requiredCapabilities.filter(capability => native.capabilities?.[capability] !== true);
+  if (!Number.isInteger(native.protocolVersion) ||
+      !Number.isInteger(protocolRange.min) ||
+      !Number.isInteger(protocolRange.max) ||
+      native.protocolVersion < protocolRange.min ||
+      native.protocolVersion > protocolRange.max ||
+      missingCapabilities.length) {
+    await rollbackBrokenRuntime(new Error('Updated native host did not pass protocol and capability health checks.'));
+    return;
+  }
   const confirmed = await requestInternal({
     method: 'update.confirm',
     params: {
@@ -377,7 +390,7 @@ async function confirmPendingUpdate(transaction) {
 
 async function verifyPendingRuntimeHealth(targetVersion) {
   const tabIds = await getPendingOverleafTabIds();
-  if (!tabIds.length) return true;
+  if (!tabIds.length) return false;
   await Promise.allSettled(tabIds.map(tabId => chrome.tabs.reload(tabId)));
   const remaining = new Set(tabIds);
   const deadline = Date.now() + 20000;

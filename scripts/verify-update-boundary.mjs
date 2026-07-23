@@ -18,6 +18,7 @@ function verifyUpdateBoundary() {
     'extension/bootstrap',
     'extension/assets',
     'extension/popup.html',
+    'native-host/src/updateTrust.js',
     'native-host/src/managedLauncherRuntime.js',
     'native-host/src/nativeHostPlatform.js',
     'native-host/src/manifest.js',
@@ -38,15 +39,35 @@ function verifyUpdateBoundary() {
     ...protectedPaths
   ]).split('\n').map(value => value.trim()).filter(Boolean);
   const incompatibleChanges = changed.filter(relativePath => relativePath !== BOOTSTRAP_MANIFEST_PATH);
-  if (incompatibleChanges.length) {
+  const previousPackage = JSON.parse(git(['show', `${baseRef}:package.json`]));
+  const previousBootstrapProtocol = readBootstrapProtocol(`${baseRef}:native-host/src/updateTrust.js`);
+  const currentBootstrapProtocol = readBootstrapProtocol(path.join(rootDir, 'native-host/src/updateTrust.js'));
+  const protocolMigration = currentBootstrapProtocol === previousBootstrapProtocol + 1;
+  if (currentBootstrapProtocol < previousBootstrapProtocol ||
+      currentBootstrapProtocol > previousBootstrapProtocol + 1) {
+    throw new Error(
+      `Bootstrap protocol must remain stable or increase by exactly one: ${previousBootstrapProtocol} -> ${currentBootstrapProtocol}.`
+    );
+  }
+  if (protocolMigration) {
+    const previousVersion = parseReleaseVersion(previousPackage.version);
+    const currentVersion = parseReleaseVersion(pkg.version);
+    const advancesReleaseLine = currentVersion.major > previousVersion.major ||
+      (currentVersion.major === previousVersion.major && currentVersion.minor > previousVersion.minor);
+    if (!advancesReleaseLine || currentVersion.patch !== 0) {
+      throw new Error(
+        `Bootstrap protocol migrations require a new major/minor baseline with patch zero: ${previousPackage.version} -> ${pkg.version}.`
+      );
+    }
+  }
+  if (incompatibleChanges.length && !protocolMigration) {
     throw new Error([
       `Managed update boundary changed since ${baseRef}:`,
       ...incompatibleChanges.map(value => `- ${value}`),
-      'These files are outside the signed runtime bundle. Keep the protocol-1 bridge immutable, or require an explicit managed reinstall/protocol migration.'
+      `These files require an explicit Bootstrap protocol migration. Current protocol remains ${currentBootstrapProtocol}.`
     ].join('\n'));
   }
 
-  const previousPackage = JSON.parse(git(['show', `${baseRef}:package.json`]));
   if (changed.includes(BOOTSTRAP_MANIFEST_PATH)) {
     assertBootstrapManifestVersionTransition({
       previousManifest: JSON.parse(git(['show', `${baseRef}:${BOOTSTRAP_MANIFEST_PATH}`])),
@@ -65,7 +86,33 @@ function verifyUpdateBoundary() {
     }
   }
 
-  console.log(`Managed update boundary is compatible: ${baseRef} -> ${currentTag}.`);
+  console.log(protocolMigration
+    ? `Managed update boundary declares protocol migration ${previousBootstrapProtocol} -> ${currentBootstrapProtocol}: ${baseRef} -> ${currentTag}.`
+    : `Managed update boundary is compatible: ${baseRef} -> ${currentTag}.`);
+}
+
+function readBootstrapProtocol(source) {
+  const content = source.includes(':') && !path.isAbsolute(source)
+    ? git(['show', source])
+    : fs.readFileSync(source, 'utf8');
+  const match = content.match(/BOOTSTRAP_PROTOCOL\s*=\s*(\d+)/);
+  const value = Number(match && match[1]);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`Unable to read Bootstrap protocol from ${source}.`);
+  }
+  return value;
+}
+
+function parseReleaseVersion(value) {
+  const match = String(value || '').match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) {
+    throw new Error(`Invalid stable package version: ${value}.`);
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3])
+  };
 }
 
 export function assertBootstrapManifestVersionTransition({

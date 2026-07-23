@@ -53,5 +53,7 @@ test('runtime manifest preserves content order and places idle probe before cont
 test('health confirmation waits for the replacement content runtime to answer from Overleaf', () => {
   assert.match(contentRuntimeSource, /codex-overleaf\/runtime-health-probe/);
   assert.match(source, /await verifyPendingRuntimeHealth\(targetVersion\)[\s\S]*method:\s*'update\.confirm'/);
+  assert.match(source, /if \(!tabIds\.length\) return false/);
+  assert.match(source, /missingCapabilities[\s\S]*rollbackBrokenRuntime/);
   assert.match(source, /transaction\?\.state === 'rolled_back'[\s\S]*reloadPendingOverleafTabs/);
 });

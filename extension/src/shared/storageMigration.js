@@ -9,6 +9,7 @@
 
   var PREFS_KEY = 'codexOverleafPrefs';
   var SESSION_TOMBSTONES_KEY = 'codexOverleafSessionTombstones';
+  var SESSION_TOMBSTONE_ENTRY_PREFIX = 'codexOverleafSessionTombstone:v2:';
   var MAX_DELETED_SESSION_IDS_PER_PROJECT = 100;
   var CUSTOM_INSTRUCTIONS_MAX_CHARS = 12000;
   var PROJECT_PREF_KEY_MAX_CHARS = 160;
@@ -17,9 +18,9 @@
     var StorageDb = (typeof window !== 'undefined' && window.CodexOverleafStorageDb)
       ? window.CodexOverleafStorageDb
       : require('./storageDb');
-    return chrome.storage.local.get([PREFS_KEY, legacyStorageKey, SESSION_TOMBSTONES_KEY]).then(function (stored) {
+    return chrome.storage.local.get(null).then(function (stored) {
       var prefs = normalizePrefs(stored[PREFS_KEY] || {});
-      var tombstones = normalizeDeletedSessionIdsByProject(stored[SESSION_TOMBSTONES_KEY] || {});
+      var tombstones = collectSessionTombstones(stored);
       var deletedSessionIds = getDeletedSessionIds(tombstones, projectId);
       var schemaVersion = prefs.storageSchemaVersion || 0;
 
@@ -141,8 +142,8 @@
   }
 
   function loadSessionTombstones() {
-    return chrome.storage.local.get([SESSION_TOMBSTONES_KEY]).then(function (stored) {
-      return normalizeDeletedSessionIdsByProject(stored[SESSION_TOMBSTONES_KEY] || {});
+    return chrome.storage.local.get(null).then(function (stored) {
+      return collectSessionTombstones(stored);
     });
   }
 
@@ -151,19 +152,67 @@
     if (!key) {
       return loadSessionTombstones();
     }
-    return loadSessionTombstones().then(function (tombstones) {
-      var incoming = (Array.isArray(sessionIds) ? sessionIds : [])
-        .map(function (id) { return normalizeTextField(id, PROJECT_PREF_KEY_MAX_CHARS); })
-        .filter(Boolean);
-      var incomingSet = {};
-      incoming.forEach(function (id) { incomingSet[id] = true; });
-      tombstones[key] = (tombstones[key] || [])
-        .filter(function (id) { return !incomingSet[id]; })
-        .concat(incoming)
+    var incoming = (Array.isArray(sessionIds) ? sessionIds : [])
+      .map(function (id) { return normalizeTextField(id, PROJECT_PREF_KEY_MAX_CHARS); })
+      .filter(Boolean);
+    if (!incoming.length) {
+      return loadSessionTombstones();
+    }
+    var deletedAt = new Date().toISOString();
+    var payload = {};
+    incoming.forEach(function (sessionId) {
+      payload[buildSessionTombstoneEntryKey(key, sessionId)] = {
+        projectId: key,
+        sessionId: sessionId,
+        deletedAt: deletedAt
+      };
+    });
+    return chrome.storage.local.set(payload)
+      .then(function () { return pruneSessionTombstoneEntries(key); })
+      .then(loadSessionTombstones);
+  }
+
+  function collectSessionTombstones(stored) {
+    var tombstones = normalizeDeletedSessionIdsByProject(
+      stored && stored[SESSION_TOMBSTONES_KEY] || {}
+    );
+    Object.keys(stored || {}).forEach(function (storageKey) {
+      if (storageKey.indexOf(SESSION_TOMBSTONE_ENTRY_PREFIX) !== 0) {
+        return;
+      }
+      var entry = stored[storageKey];
+      var projectId = normalizeProjectPrefKey(entry && entry.projectId);
+      var sessionId = normalizeTextField(entry && entry.sessionId, PROJECT_PREF_KEY_MAX_CHARS);
+      if (!projectId || !sessionId) {
+        return;
+      }
+      tombstones[projectId] = (tombstones[projectId] || [])
+        .filter(function (id) { return id !== sessionId; })
+        .concat(sessionId)
         .slice(-MAX_DELETED_SESSION_IDS_PER_PROJECT);
-      var payload = {};
-      payload[SESSION_TOMBSTONES_KEY] = normalizeDeletedSessionIdsByProject(tombstones);
-      return chrome.storage.local.set(payload).then(function () { return payload[SESSION_TOMBSTONES_KEY]; });
+    });
+    return normalizeDeletedSessionIdsByProject(tombstones);
+  }
+
+  function buildSessionTombstoneEntryKey(projectId, sessionId) {
+    return SESSION_TOMBSTONE_ENTRY_PREFIX +
+      encodeURIComponent(projectId) + ':' +
+      encodeURIComponent(sessionId);
+  }
+
+  function pruneSessionTombstoneEntries(projectId) {
+    return chrome.storage.local.get(null).then(function (stored) {
+      var entries = Object.keys(stored || {}).filter(function (storageKey) {
+        var entry = stored[storageKey];
+        return storageKey.indexOf(SESSION_TOMBSTONE_ENTRY_PREFIX) === 0 &&
+          normalizeProjectPrefKey(entry && entry.projectId) === projectId;
+      }).sort(function (leftKey, rightKey) {
+        var left = String(stored[leftKey] && stored[leftKey].deletedAt || '');
+        var right = String(stored[rightKey] && stored[rightKey].deletedAt || '');
+        return left === right ? leftKey.localeCompare(rightKey) : left.localeCompare(right);
+      });
+      var obsolete = entries.slice(0, Math.max(0, entries.length - MAX_DELETED_SESSION_IDS_PER_PROJECT));
+      return obsolete.length ? chrome.storage.local.remove(obsolete) : undefined;
     });
   }
 

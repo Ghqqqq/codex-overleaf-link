@@ -48,6 +48,7 @@ if (!globalThis.CodexOverleafCompatibility) {
   ]);
   const CodexOverleafCompatibility = globalThis.CodexOverleafCompatibility;
   let port = null;
+  let managedUpdateExecutionLocked = false;
   const pending = new Map();
   const runJournals = new Map();
   const journalWrites = new Map();
@@ -231,6 +232,18 @@ if (!globalThis.CodexOverleafCompatibility) {
       });
     }
     const request = sanitizeNativeRequest(requestWithEvidence);
+    if (managedUpdateExecutionLocked &&
+        !request.method.startsWith('update.') &&
+        request.method !== 'codex.cancel' &&
+        getNativeRetryClass(request.method) === 'no_silent_retry') {
+      return Promise.resolve({
+        ok: false,
+        error: {
+          code: 'update_applying',
+          message: 'A managed update is activating. Retry after the extension reloads.'
+        }
+      });
+    }
 
     return new Promise((resolve, reject) => {
       const pendingRequest = {
@@ -264,6 +277,17 @@ if (!globalThis.CodexOverleafCompatibility) {
       if (!gate.ok) {
         return gate;
       }
+      managedUpdateExecutionLocked = true;
+      try {
+        const result = await sendNativeRequest(payload, null, { skipCompatibility: true });
+        if (!result?.ok) {
+          managedUpdateExecutionLocked = false;
+        }
+        return result;
+      } catch (error) {
+        managedUpdateExecutionLocked = false;
+        throw error;
+      }
     }
     return sendNativeRequest(payload, null, { skipCompatibility: true });
   }
@@ -285,7 +309,14 @@ if (!globalThis.CodexOverleafCompatibility) {
         message: getErrorMessage(error, 'Native Host update safety check failed.')
       }
     }));
-    const blockers = globalThis.CodexOverleafUpdateStatus?.collectBlockers(probes, nativeGate) || ['busy'];
+    const pendingState = globalThis.CodexOverleafNativeBridge?.getPendingState?.() || {};
+    const backgroundBlockers = Number(pendingState.executionRequests || 0) > 0
+      ? ['background_execution_pending']
+      : [];
+    const blockers = [
+      ...backgroundBlockers,
+      ...(globalThis.CodexOverleafUpdateStatus?.collectBlockers(probes, nativeGate) || ['busy'])
+    ];
     if (!blockers.length) {
       return { ok: true };
     }

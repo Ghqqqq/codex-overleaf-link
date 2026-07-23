@@ -15,7 +15,7 @@ function signedFixture(overrides = {}) {
     channel: 'stable',
     version: '1.9.1',
     tag: 'v1.9.1',
-    bootstrapProtocol: 1,
+    bootstrapProtocol: 2,
     gitCommit: 'a'.repeat(40),
     createdAt: '2026-07-10T00:00:00.000Z',
     updateBundle: {
@@ -74,7 +74,7 @@ test('rejects prerelease syntax and bootstrap protocol changes', () => {
     () => verifySignedReleaseManifest(prerelease.bytes, prerelease.envelope, { publicKeys: prerelease.publicKeys }),
     error => error.code === 'update_manifest_version_invalid'
   );
-  const bootstrap = signedFixture({ bootstrapProtocol: 2 });
+  const bootstrap = signedFixture({ bootstrapProtocol: 1 });
   assert.throws(
     () => verifySignedReleaseManifest(bootstrap.bytes, bootstrap.envelope, { publicKeys: bootstrap.publicKeys }),
     error => error.code === 'update_bootstrap_upgrade_required'

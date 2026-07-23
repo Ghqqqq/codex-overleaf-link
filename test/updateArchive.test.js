@@ -21,6 +21,7 @@ test('creates and extracts an allowlisted coordinated update bundle', () => {
       'extension-runtime/vendor/markdown-it/SOURCE.json': '{"source":"markdown-it"}\n',
       'extension-runtime/vendor/markdown-it/VERSION': '14.1.0\n',
       'extension-runtime/vendor/markdown-it/markdown-it.min.js': 'void 0;\n',
+      'extension-runtime/vendor/future-renderer/runtime.js': 'void 0;\n',
       'native-runtime/package.json': '{"version":"1.9.1"}\n',
       'native-runtime/native-host/src/index.js': 'void 0;\n'
     };

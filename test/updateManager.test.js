@@ -39,7 +39,7 @@ function createAppliedUpdateFixture() {
   fs.writeFileSync(path.join(extensionRoot, '.codex-overleaf-managed-extension.json'), JSON.stringify({
     managedBy: 'codex-overleaf-link',
     kind: 'extension',
-    bootstrapProtocol: 1,
+    bootstrapProtocol: 2,
     version: '1.9.0'
   }, null, 2) + '\n');
   fs.mkdirSync(path.join(nativeRoot, 'versions', '1.8.9'), { recursive: true });
@@ -49,7 +49,7 @@ function createAppliedUpdateFixture() {
   fs.writeFileSync(path.join(nativeRoot, '.codex-overleaf-managed-native.json'), JSON.stringify({
     managedBy: 'codex-overleaf-link',
     kind: 'native',
-    bootstrapProtocol: 1,
+    bootstrapProtocol: 2,
     version: '1.9.0'
   }, null, 2) + '\n');
   fs.mkdirSync(path.join(payloadRoot, 'extension-runtime'), { recursive: true });

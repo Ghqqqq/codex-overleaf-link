@@ -193,6 +193,27 @@ async function checkForUpdate(context, params = {}, options = {}) {
     redirect: 'follow'
   }, 12000);
   if (releaseResponse.status === 304) {
+    const candidate = readJsonSafe(path.join(context.updatesRoot, CANDIDATE_FILE), null);
+    if (candidate?.manifestBase64 && candidate?.signatureBase64) {
+      try {
+        const manifest = verifySignedReleaseManifest(
+          Buffer.from(candidate.manifestBase64, 'base64'),
+          Buffer.from(candidate.signatureBase64, 'base64')
+        );
+        if (isNewerStableVersion(manifest.version, currentVersion)) {
+          return {
+            managed: true,
+            available: true,
+            currentVersion,
+            latestVersion: manifest.version,
+            etag: params.etag || candidate.etag || '',
+            cached: true
+          };
+        }
+      } catch (_error) {
+        // Invalid cached candidates are treated as cache misses.
+      }
+    }
     return { managed: true, available: false, reason: 'not_modified', currentVersion, etag: params.etag || '' };
   }
   if (!releaseResponse.ok) {
@@ -336,6 +357,7 @@ async function stageCandidate(context, options = {}) {
       throw updateError('update_consent_mismatch', 'Staged transaction does not match the active authorization.');
     }
     try {
+      verifyStagedArchive(existingJournal);
       verifyStagedPair(existingJournal.payloadRoot, manifest.version);
       bindAuthorization(context, authorization, existingJournal.id);
       return {
@@ -344,8 +366,15 @@ async function stageCandidate(context, options = {}) {
         state: existingJournal.state,
         reused: true
       };
-    } catch (_error) {
+    } catch (error) {
       cleanupStage(existingJournal.stageRoot);
+      removeJournal(context);
+      settleAuthorization(context, authorization.id, 'revoked');
+      throw updateError(
+        safeErrorCode(error) || 'update_staged_payload_invalid',
+        'The previously staged update is no longer valid. Choose Update now to download it again.',
+        { cause: error }
+      );
     }
   }
   if (existingJournal && ['activation_pending', 'applying', 'awaiting_health'].includes(existingJournal.state)) {
@@ -381,6 +410,9 @@ async function stageCandidate(context, options = {}) {
       targetVersion: manifest.version,
       stageRoot,
       payloadRoot,
+      archivePath,
+      bundleSize: manifest.updateBundle.size,
+      bundleSha256: manifest.updateBundle.sha256,
       manifestSha256: crypto.createHash('sha256').update(manifestBytes).digest('hex'),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -478,15 +510,42 @@ function applyStagedUpdate(context, params = {}, options = {}) {
   if (journal.authorizationId !== authorization.id || authorization.transactionId !== journal.id) {
     throw updateError('update_consent_mismatch', 'Apply transaction does not match the bound authorization.');
   }
+  const verifiedPayloadRoot = path.join(journal.stageRoot, 'payload-apply');
+  try {
+    verifyStagedArchive(journal);
+    fs.rmSync(verifiedPayloadRoot, { recursive: true, force: true });
+    extractVerifiedUpdateBundle({
+      archivePath: journal.archivePath,
+      destinationRoot: verifiedPayloadRoot
+    });
+    verifyStagedPair(verifiedPayloadRoot, journal.targetVersion);
+  } catch (error) {
+    cleanupStage(journal.stageRoot);
+    writeJournal(context, {
+      ...journal,
+      state: 'rolled_back',
+      reasonCode: safeErrorCode(error) || 'update_staged_payload_invalid',
+      rolledBackAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    settleAuthorization(context, journal.authorizationId, 'revoked');
+    throw error;
+  }
   assertManagedMarkers(context);
   const extensionRuntime = path.join(context.extensionRoot, 'runtime');
   const previousRuntime = path.join(context.extensionRoot, 'slots', 'previous', 'runtime');
-  const stagedExtension = path.join(journal.payloadRoot, 'extension-runtime');
-  const stagedNative = path.join(journal.payloadRoot, 'native-runtime');
+  const stagedExtension = path.join(verifiedPayloadRoot, 'extension-runtime');
+  const stagedNative = path.join(verifiedPayloadRoot, 'native-runtime');
   const targetNative = path.join(context.nativeRoot, 'versions', journal.targetVersion);
   const manifestPath = path.join(context.extensionRoot, 'manifest.json');
   const previousManifest = fs.readFileSync(manifestPath, 'utf8');
-  writeJournal(context, { ...journal, state: 'applying', previousManifest, updatedAt: new Date().toISOString() });
+  writeJournal(context, {
+    ...journal,
+    payloadRoot: verifiedPayloadRoot,
+    state: 'applying',
+    previousManifest,
+    updatedAt: new Date().toISOString()
+  });
 
   try {
     fs.rmSync(path.dirname(previousRuntime), { recursive: true, force: true });
@@ -514,6 +573,7 @@ function applyStagedUpdate(context, params = {}, options = {}) {
   }
   const awaiting = {
     ...journal,
+    payloadRoot: verifiedPayloadRoot,
     previousManifest,
     state: 'awaiting_health',
     appliedAt: new Date().toISOString(),
@@ -770,7 +830,7 @@ function assertManagedLayout(context) {
 }
 
 function isManagedMarker(marker, kind) {
-  return marker?.managedBy === 'codex-overleaf-link' && marker?.kind === kind && marker?.bootstrapProtocol === 1;
+  return marker?.managedBy === 'codex-overleaf-link' && marker?.kind === kind && marker?.bootstrapProtocol === 2;
 }
 
 function verifyStagedPair(payloadRoot, targetVersion) {
@@ -783,6 +843,43 @@ function verifyStagedPair(payloadRoot, targetVersion) {
   const match = compatibility.match(/BUILD_TARGET_VERSION\s*=\s*['"]([^'"]+)['"]/);
   if (match?.[1] !== targetVersion) {
     throw updateError('update_extension_version_mismatch', 'Staged extension runtime version does not match the signed release.');
+  }
+  const extensionRuntimeRoot = path.join(payloadRoot, 'extension-runtime');
+  const runtimeManifest = readJsonSafe(path.join(extensionRuntimeRoot, 'runtime-manifest.json'), null);
+  const runtimeFiles = [
+    ...(Array.isArray(runtimeManifest?.js) ? runtimeManifest.js : []),
+    ...(Array.isArray(runtimeManifest?.css) ? runtimeManifest.css : [])
+  ];
+  if (!runtimeFiles.length) {
+    throw updateError('update_runtime_manifest_invalid', 'Staged runtime manifest does not declare any runtime files.');
+  }
+  for (const relativePath of runtimeFiles) {
+    const normalized = String(relativePath || '').replace(/\\/g, '/');
+    if (!normalized || normalized.startsWith('/') ||
+        normalized.split('/').some(part => !part || part === '.' || part === '..')) {
+      throw updateError('update_runtime_manifest_invalid', 'Staged runtime manifest contains an invalid file path.');
+    }
+    const filePath = path.resolve(extensionRuntimeRoot, ...normalized.split('/'));
+    const relative = path.relative(extensionRuntimeRoot, filePath);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative) ||
+        !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      throw updateError('update_runtime_asset_missing', 'Staged runtime manifest references a missing file: ' + normalized);
+    }
+  }
+}
+
+function verifyStagedArchive(journal) {
+  if (!journal?.archivePath || !Number.isSafeInteger(journal.bundleSize) ||
+      !/^[0-9a-f]{64}$/.test(String(journal.bundleSha256 || ''))) {
+    throw updateError('update_staged_archive_invalid', 'Staged update archive metadata is incomplete. Download the update again.');
+  }
+  const bytes = fs.readFileSync(journal.archivePath);
+  if (bytes.length !== journal.bundleSize) {
+    throw updateError('update_bundle_size_mismatch', 'Staged update bundle size changed after verification.');
+  }
+  const hash = crypto.createHash('sha256').update(bytes).digest('hex');
+  if (hash !== journal.bundleSha256) {
+    throw updateError('update_bundle_hash_mismatch', 'Staged update bundle changed after verification.');
   }
 }
 

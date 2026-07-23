@@ -101,14 +101,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            echo "GitHub Release ${GITHUB_REF_NAME} already exists; release assets are immutable."
-            exit 1
-          fi
-          if [ "${RELEASE_PRERELEASE}" != "true" ] && npm view "codex-overleaf-link@${PACKAGE_VERSION}" version >/dev/null 2>&1; then
-            echo "codex-overleaf-link@${PACKAGE_VERSION} is already published; use a new patch version."
+          release_json="$(gh release view "${GITHUB_REF_NAME}" --json isDraft 2>/dev/null || true)"
+          if [ -n "${release_json}" ] && [ "$(printf '%s' "${release_json}" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).isDraft")" != "true" ]; then
+            echo "Published GitHub Release ${GITHUB_REF_NAME} already exists; release assets are immutable."
             exit 1
           fi
 
@@ -129,12 +125,48 @@ jobs:
       - name: Verify release artifact contents
         run: npm run verify:release-artifacts -- --require-signature
 
+      - name: Prepare draft GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: ${{ env.RELEASE_PRERELEASE == 'true' }}
+          name: ${{ github.ref_name }}
+          body_path: ${{ env.RELEASE_DIR }}/release-notes.md
+          files: |
+            ${{ env.RELEASE_DIR }}/codex-overleaf-link-extension-${{ env.RELEASE_ASSET_TAG }}.zip
+            ${{ env.RELEASE_DIR }}/codex-overleaf-native-host-${{ env.RELEASE_ASSET_TAG }}.tar.gz
+            ${{ env.RELEASE_DIR }}/codex-overleaf-update-${{ env.RELEASE_ASSET_TAG }}.tar.gz
+            ${{ env.RELEASE_DIR }}/codex-overleaf-link-${{ env.PACKAGE_VERSION }}.tgz
+            ${{ env.RELEASE_DIR }}/install.sh
+            ${{ env.RELEASE_DIR }}/install.ps1
+            ${{ env.RELEASE_DIR }}/uninstall-native-host.mjs
+            ${{ env.RELEASE_DIR }}/nativeHostPlatform.js
+            ${{ env.RELEASE_DIR }}/manifest.js
+            ${{ env.RELEASE_DIR }}/runtimeInstaller.js
+            ${{ env.RELEASE_DIR }}/release-manifest.json
+            ${{ env.RELEASE_DIR }}/release-manifest.sig
+            ${{ env.RELEASE_DIR }}/release-notes.md
+            ${{ env.RELEASE_DIR }}/SHA256SUMS
+          fail_on_unmatched_files: true
+          overwrite_files: true
+
       - name: Publish npm package
         if: env.RELEASE_PRERELEASE != 'true'
         shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish "${LOCAL_TGZ}" --access public --provenance
+        run: |
+          published_integrity="$(npm view "codex-overleaf-link@${PACKAGE_VERSION}" dist.integrity 2>/dev/null || true)"
+          local_integrity="sha512-$(node -e "const fs=require('node:fs'),crypto=require('node:crypto');process.stdout.write(crypto.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "${LOCAL_TGZ}")"
+          if [ -n "${published_integrity}" ]; then
+            if [ "${published_integrity}" != "${local_integrity}" ]; then
+              echo "Published npm package exists with different integrity; use a new version."
+              exit 1
+            fi
+            echo "Matching npm package is already published; continuing the interrupted release."
+          else
+            npm publish "${LOCAL_TGZ}" --access public --provenance
+          fi
 
       - name: Verify npm package is published
         if: env.RELEASE_PRERELEASE != 'true'
@@ -162,27 +194,8 @@ jobs:
             exit 1
           fi
 
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          draft: false
-          prerelease: ${{ env.RELEASE_PRERELEASE == 'true' }}
-          name: ${{ github.ref_name }}
-          body_path: ${{ env.RELEASE_DIR }}/release-notes.md
-          files: |
-            ${{ env.RELEASE_DIR }}/codex-overleaf-link-extension-${{ env.RELEASE_ASSET_TAG }}.zip
-            ${{ env.RELEASE_DIR }}/codex-overleaf-native-host-${{ env.RELEASE_ASSET_TAG }}.tar.gz
-            ${{ env.RELEASE_DIR }}/codex-overleaf-update-${{ env.RELEASE_ASSET_TAG }}.tar.gz
-            ${{ env.RELEASE_DIR }}/codex-overleaf-link-${{ env.PACKAGE_VERSION }}.tgz
-            ${{ env.RELEASE_DIR }}/install.sh
-            ${{ env.RELEASE_DIR }}/install.ps1
-            ${{ env.RELEASE_DIR }}/uninstall-native-host.mjs
-            ${{ env.RELEASE_DIR }}/nativeHostPlatform.js
-            ${{ env.RELEASE_DIR }}/manifest.js
-            ${{ env.RELEASE_DIR }}/runtimeInstaller.js
-            ${{ env.RELEASE_DIR }}/release-manifest.json
-            ${{ env.RELEASE_DIR }}/release-manifest.sig
-            ${{ env.RELEASE_DIR }}/release-notes.md
-            ${{ env.RELEASE_DIR }}/SHA256SUMS
-          fail_on_unmatched_files: true
-          overwrite_files: false
+      - name: Publish prepared GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --prerelease="${RELEASE_PRERELEASE}"

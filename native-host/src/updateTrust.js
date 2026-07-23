@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const UPDATE_REPOSITORY = 'Ghqqqq/codex-overleaf-link';
 const UPDATE_CHANNEL = 'stable';
 const UPDATE_MANIFEST_SCHEMA = 2;
-const BOOTSTRAP_PROTOCOL = 1;
+const BOOTSTRAP_PROTOCOL = 2;
 const TRUSTED_UPDATE_KEYS = Object.freeze({
   'release-2026-01': [
     '-----BEGIN PUBLIC KEY-----',

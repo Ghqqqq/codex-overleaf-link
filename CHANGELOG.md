@@ -1,6 +1,10 @@
 # Changelog
 
-## v2.1.6 - 2026-07-23
+## v2.2.0 - 2026-07-23
+
+- Establish Bootstrap protocol 2 as the durable managed-update baseline; v2.1.x installations require one pinned managed reinstall.
+- Harden update consent, ETag recovery, safe-point locking, staged archive verification, runtime health confirmation, rollback timeouts, and release publication recovery.
+- Preserve concurrent Session deletions across multiple Overleaf tabs with per-session tombstones.
 
 Release candidate focused on controllable long-running tasks and resilient managed updates.
 

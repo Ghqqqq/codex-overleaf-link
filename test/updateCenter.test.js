@@ -52,7 +52,12 @@ test('failed managed updates stop progress and expose an actionable recovery com
   assert.match(bootstrap, /method: 'update\.status'/);
   assert.match(bootstrap, /transaction\?\.state === 'awaiting_health'[\s\S]*confirmPendingUpdate\(transaction\)/);
   assert.match(bootstrap, /async function rollbackBrokenRuntime\(error\)[\s\S]*state: 'failed'/);
+  assert.match(coordinator, /transaction\?\.state === 'awaiting_health'[\s\S]*method: 'update\.rollback'|requestNative\('update\.rollback'/);
+  assert.match(coordinator, /code: 'update_health_timeout'/);
   assert.match(coordinator, /state: 'failed'/);
+  assert.match(background, /managedUpdateExecutionLocked/);
+  assert.match(background, /background_execution_pending/);
+  assert.match(coordinator, /CodexOverleafManagedUpdateExecutor[\s\S]*installAuthorizedUpdate/);
 });
 
 test('consent updater checks once at browser or extension startup without changing periodic checks', () => {
@@ -64,4 +69,12 @@ test('consent updater checks once at browser or extension startup without changi
   assert.match(coordinator, /enqueuePolicyAction\(\(\) => checkOnly\(\{ manual: false \}\)\)/);
   assert.match(coordinator, /delayInMinutes:\s*0\.5/);
   assert.match(coordinator, /periodInMinutes:\s*CHECK_INTERVAL_MINUTES/);
+});
+
+test('managed updater preserves authorized candidates across ETag 304 and re-verifies staged bytes before apply', () => {
+  const updater = read('native-host/src/updateManager.js');
+  assert.match(updater, /releaseResponse\.status === 304[\s\S]*CANDIDATE_FILE[\s\S]*available: true/);
+  assert.match(updater, /bundleSha256: manifest\.updateBundle\.sha256/);
+  assert.match(updater, /verifyStagedArchive\(journal\)[\s\S]*payload-apply[\s\S]*extractVerifiedUpdateBundle/);
+  assert.match(updater, /update_runtime_asset_missing/);
 });

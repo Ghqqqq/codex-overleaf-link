@@ -458,25 +458,25 @@ releaseTest('managed update boundary permits only the bootstrap manifest release
     permissions: ['storage'],
     background: { service_worker: 'bootstrap/background.js' }
   };
-  const currentManifest = { ...previousManifest, version: '2.1.6' };
+  const currentManifest = { ...previousManifest, version: '2.2.0' };
 
   assert.doesNotThrow(() => assertBootstrapManifestVersionTransition({
     previousManifest,
     currentManifest,
     previousPackageVersion: '2.1.5',
-    currentPackageVersion: '2.1.6'
+    currentPackageVersion: '2.2.0'
   }));
   assert.throws(() => assertBootstrapManifestVersionTransition({
     previousManifest,
     currentManifest: { ...currentManifest, permissions: ['storage', 'tabs'] },
     previousPackageVersion: '2.1.5',
-    currentPackageVersion: '2.1.6'
+    currentPackageVersion: '2.2.0'
   }), /changed beyond its release version/);
   assert.throws(() => assertBootstrapManifestVersionTransition({
     previousManifest,
     currentManifest: { ...currentManifest, version: '2.1.5' },
     previousPackageVersion: '2.1.5',
-    currentPackageVersion: '2.1.6'
+    currentPackageVersion: '2.2.0'
   }), /must match their package release versions/);
 });
 
@@ -520,9 +520,10 @@ releaseTest('release workflow grants publish permission and builds/verifies arti
     'name: Build release artifacts',
     'name: Sign coordinated update manifest',
     'name: Verify release artifact contents',
+    'name: Prepare draft GitHub release',
     'name: Publish npm package',
     'name: Verify npm package is published',
-    'uses: softprops/action-gh-release@v2'
+    'name: Publish prepared GitHub release'
   ]);
 });
 
@@ -539,6 +540,7 @@ releaseTest('release workflow accepts the stable tag or a numbered RC and reject
     'name: Verify release tag matches package version',
     'name: Build release artifacts',
     'name: Verify release artifact contents',
+    'name: Prepare draft GitHub release',
     'name: Publish npm package',
     'name: Verify npm package is published'
   ]);
@@ -641,7 +643,7 @@ releaseTest('release workflow publishes generated notes and built artifacts', ()
   assert.match(workflow, /if:\s+env\.RELEASE_PRERELEASE != 'true'/);
   assertReleaseWorkflowUploadsExactArtifactSet(workflow);
   assert.match(workflow, /^\s+fail_on_unmatched_files:\s+true\s*$/m);
-  assert.match(workflow, /^\s+overwrite_files:\s+false\s*$/m);
+  assert.match(workflow, /^\s+overwrite_files:\s+true\s*$/m);
 });
 
 releaseTest('release workflow upload artifact gate rejects extra explicit files', () => {
@@ -1624,14 +1626,15 @@ releaseTest('release workflow builds and verifies artifacts before npm publish w
     'name: Build release artifacts',
     'name: Sign coordinated update manifest',
     'name: Verify release artifact contents',
+    'name: Prepare draft GitHub release',
     'name: Publish npm package',
     'name: Verify npm package is published',
-    'name: Publish GitHub release'
+    'name: Publish prepared GitHub release'
   ]);
   assert.match(workflow, /npm run verify:release-artifacts/);
   assert.match(workflow, /for attempt in 1 2 3 4 5 6 7 8 9 10 11 12;/);
   assert.match(workflow, /sleep 5/);
-  assert.match(workflow, /overwrite_files:\s*false/);
+  assert.match(workflow, /overwrite_files:\s*true/);
 });
 
 releaseTest('release artifact verifier is wired as an npm script and checks archives', () => {

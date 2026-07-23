@@ -173,6 +173,19 @@ function verifyUpdateBundle(filePath, errors) {
   assertNoForbiddenEntries(entries, 'coordinated update bundle', errors);
   const invalid = entries.filter(entry => !isAllowedUpdatePath(entry));
   if (invalid.length) errors.push(`Coordinated update bundle contains invalid entries:\n${invalid.map(entry => `  - ${entry}`).join('\n')}`);
+  try {
+    const runtimeManifest = JSON.parse(readTarEntry(filePath, 'extension-runtime/runtime-manifest.json'));
+    const runtimeFiles = [
+      ...(Array.isArray(runtimeManifest.js) ? runtimeManifest.js : []),
+      ...(Array.isArray(runtimeManifest.css) ? runtimeManifest.css : [])
+    ];
+    const declaredEntries = runtimeFiles.map(relativePath => (
+      `extension-runtime/${String(relativePath || '').replace(/\\/g, '/')}`
+    ));
+    requireEntries(entries, declaredEntries, 'coordinated update runtime manifest', errors);
+  } catch (error) {
+    errors.push(`Coordinated update runtime manifest is invalid: ${error.message}`);
+  }
   verifyKatexFontUrls(
     readTarEntry(filePath, 'extension-runtime/vendor/katex/katex.min.css'),
     'coordinated update bundle',

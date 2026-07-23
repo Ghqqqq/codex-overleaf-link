@@ -355,6 +355,14 @@
   }
 
   function tryActivateStagedUpdate() {
+    const executor = root.CodexOverleafManagedUpdateExecutor;
+    if (typeof executor?.installAuthorizedUpdate === 'function') {
+      if (activationPromise) return activationPromise;
+      activationPromise = Promise.resolve(executor.installAuthorizedUpdate()).finally(() => {
+        activationPromise = null;
+      });
+      return activationPromise;
+    }
     if (activationPromise) return activationPromise;
     activationPromise = tryActivateStagedUpdateCore().finally(() => {
       activationPromise = null;
@@ -540,13 +548,16 @@
       const status = await requestNative('update.status').catch(() => null);
       const transaction = status?.transaction;
       if (transaction?.state === 'awaiting_health') {
+        await requestNative('update.rollback', {
+          transactionId: transaction.id,
+          reasonCode: 'update_health_timeout'
+        }).catch(() => null);
         return setUpdateState({
           ...state,
-          state: 'awaiting_health',
-          latestVersion: transaction.targetVersion,
-          transactionId: transaction.id,
-          code: '',
-          message: ''
+          state: 'failed',
+          currentVersion: transaction.sourceVersion || state.currentVersion,
+          code: 'update_health_timeout',
+          message: 'The updated runtime did not complete its health check and was rolled back. Retry, or use the manual update command.'
         });
       }
       if (transaction?.state === 'committed') {

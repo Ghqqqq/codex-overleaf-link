@@ -176,12 +176,12 @@ function isAllowedUpdatePath(value) {
   return entryPath === 'extension-runtime/runtime-manifest.json'
     || /^extension-runtime\/src\/.+/.test(entryPath)
     || /^extension-runtime\/styles\/.+/.test(entryPath)
-    || /^extension-runtime\/vendor\/katex\/(?:LICENSE|VERSION|katex\.min\.(?:css|js)|fonts\/[A-Za-z0-9_.-]+\.(?:ttf|woff2?))$/.test(entryPath)
-    || /^extension-runtime\/vendor\/markdown-it\/(?:LICENSE|VERSION|SOURCE\.json|markdown-it\.min\.js)$/.test(entryPath)
+    || /^extension-runtime\/vendor\/.+/.test(entryPath)
+    || /^extension-runtime\/assets\/.+/.test(entryPath)
     || entryPath === 'native-runtime/package.json'
-    || /^native-runtime\/native-host\/src\/.+/.test(entryPath)
+    || /^native-runtime\/native-host\/.+/.test(entryPath)
     || /^native-runtime\/extension\/src\/shared\/.+/.test(entryPath)
-    || /^native-runtime\/scripts\/(?:codex-json-agent|install-native-host|uninstall-native-host)\.mjs$/.test(entryPath);
+    || /^native-runtime\/scripts\/.+/.test(entryPath);
 }
 
 function safeArchiveTarget(root, entryPath) {

@@ -36,11 +36,21 @@ try {
   fs.mkdirSync(path.dirname(oldVersionRoot), { recursive: true });
   fs.cpSync(oldSourceRoot, oldVersionRoot, { recursive: true });
   fs.writeFileSync(path.join(nativeRoot, 'active-version'), `${baseVersion}\n`);
-  writeJson(path.join(nativeRoot, '.codex-overleaf-managed-native.json'), marker('native', baseVersion));
   const extensionMarkerPath = path.join(extensionRoot, '.codex-overleaf-managed-extension.json');
-  if (!fs.existsSync(extensionMarkerPath)) writeJson(extensionMarkerPath, marker('extension', baseVersion));
+  const installedExtensionMarker = fs.existsSync(extensionMarkerPath)
+    ? JSON.parse(fs.readFileSync(extensionMarkerPath, 'utf8'))
+    : null;
+  const baseBootstrapProtocol = Number(installedExtensionMarker?.bootstrapProtocol || 1);
+  writeJson(
+    path.join(nativeRoot, '.codex-overleaf-managed-native.json'),
+    marker('native', baseVersion, baseBootstrapProtocol)
+  );
+  if (!fs.existsSync(extensionMarkerPath)) {
+    writeJson(extensionMarkerPath, marker('extension', baseVersion, baseBootstrapProtocol));
+  }
 
   const manifestBytes = fs.readFileSync(path.join(releaseDir, 'release-manifest.json'));
+  const targetManifest = JSON.parse(manifestBytes);
   const signatureBytes = fs.readFileSync(path.join(releaseDir, 'release-manifest.sig'));
   const bundlePath = path.join(releaseDir, `codex-overleaf-update-v${currentVersion}.tar.gz`);
   const bundleBytes = fs.readFileSync(bundlePath);
@@ -52,33 +62,64 @@ try {
     CODEX_OVERLEAF_MANAGED_NATIVE_ROOT: nativeRoot
   };
   const fetch = createReleaseFetch({ manifestBytes, signatureBytes, bundleBytes });
-  const invoke = async (method, params = {}) => {
-    const response = await oldUpdateManager.handleUpdateRequest({ id: crypto.randomUUID(), method, params }, {
+  const invokeRaw = (method, params = {}) => oldUpdateManager.handleUpdateRequest({
+    id: crypto.randomUUID(),
+    method,
+    params
+  }, {
       env,
       fetch,
       getWorkState: () => ({ projectLocks: 0, runControllers: 0 })
     });
+  const invoke = async (method, params = {}) => {
+    const response = await invokeRaw(method, params);
     if (!response?.ok) throw new Error(`${method} failed: ${response?.error?.code}: ${response?.error?.message}`);
     return response.result;
   };
 
-  const checked = await invoke('update.check', { currentVersion: baseVersion });
-  if (!checked.available || checked.latestVersion !== currentVersion) throw new Error('Previous updater did not accept the current signed candidate.');
-  const authorizationId = crypto.randomUUID();
-  await invoke('update.authorize', { authorizationId, currentVersion: baseVersion, targetVersion: currentVersion });
-  const staged = await invoke('update.stage');
-  const applied = await invoke('update.apply', { transactionId: staged.transactionId });
-  if (applied.state !== 'awaiting_health') throw new Error(`Previous updater ended in unexpected state: ${applied.state}`);
+  if (targetManifest.bootstrapProtocol !== baseBootstrapProtocol) {
+    if (targetManifest.bootstrapProtocol !== baseBootstrapProtocol + 1) {
+      throw new Error(`Bootstrap migrations must increase by one: ${baseBootstrapProtocol} -> ${targetManifest.bootstrapProtocol}.`);
+    }
+    const rejected = await invokeRaw('update.check', { currentVersion: baseVersion });
+    if (rejected?.ok || rejected?.error?.code !== 'update_bootstrap_upgrade_required') {
+      throw new Error('Previous updater did not fail closed for the declared Bootstrap protocol migration.');
+    }
+    console.log(
+      `Managed update baseline migration passed: ${baseTag} protocol ${baseBootstrapProtocol} rejects ` +
+      `${currentTag} protocol ${targetManifest.bootstrapProtocol} and requires managed reinstall.`
+    );
+  } else {
+    const checked = await invoke('update.check', { currentVersion: baseVersion });
+    if (!checked.available || checked.latestVersion !== currentVersion) {
+      throw new Error('Previous updater did not accept the current signed candidate.');
+    }
+    const authorizationId = crypto.randomUUID();
+    await invoke('update.authorize', { authorizationId, currentVersion: baseVersion, targetVersion: currentVersion });
+    const staged = await invoke('update.stage');
+    const applied = await invoke('update.apply', { transactionId: staged.transactionId });
+    if (applied.state !== 'awaiting_health') {
+      throw new Error(`Previous updater ended in unexpected state: ${applied.state}`);
+    }
 
-  const activeVersion = fs.readFileSync(path.join(nativeRoot, 'active-version'), 'utf8').trim();
-  const extensionManifest = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8'));
-  if (activeVersion !== currentVersion || extensionManifest.version !== currentVersion) {
-    throw new Error(`Managed pair did not activate together: extension=${extensionManifest.version}, native=${activeVersion}.`);
+    const activeVersion = fs.readFileSync(path.join(nativeRoot, 'active-version'), 'utf8').trim();
+    const extensionManifest = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8'));
+    if (activeVersion !== currentVersion || extensionManifest.version !== currentVersion) {
+      throw new Error(`Managed pair did not activate together: extension=${extensionManifest.version}, native=${activeVersion}.`);
+    }
+    if (extensionManifest.background?.service_worker !== 'bootstrap/background.js') {
+      throw new Error('Managed update replaced the immutable bootstrap entry point.');
+    }
+    const committed = await invoke('update.confirm', {
+      transactionId: staged.transactionId,
+      extensionVersion: currentVersion,
+      nativeVersion: currentVersion
+    });
+    if (committed.state !== 'committed') {
+      throw new Error(`Previous updater did not commit the healthy pair: ${committed.state}`);
+    }
+    console.log(`Managed update hop passed with the real ${baseTag} updater: ${baseVersion} -> ${currentVersion}.`);
   }
-  if (extensionManifest.background?.service_worker !== 'bootstrap/background.js') {
-    throw new Error('Managed update replaced the immutable bootstrap entry point.');
-  }
-  console.log(`Managed update hop passed with the real ${baseTag} updater: ${baseVersion} -> ${currentVersion}.`);
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 }
@@ -115,8 +156,8 @@ async function downloadReleaseAsset(tag, name, target) {
   fs.writeFileSync(target, bytes);
 }
 
-function marker(kind, version) {
-  return { managedBy: 'codex-overleaf-link', kind, version, bootstrapProtocol: 1, updatedAt: new Date().toISOString() };
+function marker(kind, version, bootstrapProtocol) {
+  return { managedBy: 'codex-overleaf-link', kind, version, bootstrapProtocol, updatedAt: new Date().toISOString() };
 }
 
 function writeJson(target, value) {

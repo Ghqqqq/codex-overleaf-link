@@ -98,8 +98,8 @@ test('source and managed KaTeX CSS resolve every font from their actual package 
   buildManagedExtensionTree({
     packageRoot: root,
     targetRoot: managedRoot,
-    version: '2.1.6',
-    releaseRef: 'v2.1.6-rc.999',
+    version: '2.2.0',
+    releaseRef: 'v2.2.0-rc.999',
     releaseChannel: 'prerelease'
   });
   const managedCss = fs.readFileSync(path.join(managedRoot, 'runtime/vendor/katex/katex.min.css'), 'utf8');

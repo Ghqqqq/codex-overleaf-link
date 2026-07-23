@@ -127,7 +127,7 @@ export function buildRelease(options = {}) {
     channel: releaseChannel,
     version,
     tag: releaseRef,
-    bootstrapProtocol: 1,
+    bootstrapProtocol: 2,
     gitCommit: getGitCommit(rootDir),
     createdAt: new Date().toISOString(),
     updateBundle: describeArtifact(updateBundlePath, updateBundleName),
