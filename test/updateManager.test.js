@@ -68,14 +68,16 @@ function createAppliedUpdateFixture() {
     "const BUILD_TARGET_VERSION = '1.9.1';\n"
   );
   fs.writeFileSync(path.join(payloadRoot, 'extension-runtime', 'src', 'new.js'), 'new\n');
-  fs.mkdirSync(path.join(payloadRoot, 'native-runtime'), { recursive: true });
+  fs.mkdirSync(path.join(payloadRoot, 'native-runtime', 'native-host', 'src'), { recursive: true });
   fs.writeFileSync(path.join(payloadRoot, 'native-runtime', 'package.json'), '{"version":"1.9.1"}\n');
+  fs.writeFileSync(path.join(payloadRoot, 'native-runtime', 'native-host', 'src', 'index.js'), 'void 0;\n');
   const archivePath = path.join(stageRoot, 'bundle.tar.gz');
   const archiveEntries = [
     'extension-runtime/runtime-manifest.json',
     'extension-runtime/src/shared/compatibility.js',
     'extension-runtime/src/new.js',
-    'native-runtime/package.json'
+    'native-runtime/package.json',
+    'native-runtime/native-host/src/index.js'
   ].map(archivePath => ({
     archivePath,
     sourcePath: path.join(payloadRoot, ...archivePath.split('/'))
