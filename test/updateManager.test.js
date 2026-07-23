@@ -1,8 +1,10 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { createUpdateBundleArchive } = require('../native-host/src/updateArchive');
 
 const {
   GITHUB_LATEST_URL,
@@ -52,10 +54,34 @@ function createAppliedUpdateFixture() {
     bootstrapProtocol: 2,
     version: '1.9.0'
   }, null, 2) + '\n');
-  fs.mkdirSync(path.join(payloadRoot, 'extension-runtime'), { recursive: true });
-  fs.writeFileSync(path.join(payloadRoot, 'extension-runtime', 'new.js'), 'new\n');
+  fs.mkdirSync(path.join(payloadRoot, 'extension-runtime', 'src', 'shared'), { recursive: true });
+  fs.writeFileSync(
+    path.join(payloadRoot, 'extension-runtime', 'runtime-manifest.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      js: ['src/shared/compatibility.js', 'src/new.js'],
+      css: []
+    }, null, 2) + '\n'
+  );
+  fs.writeFileSync(
+    path.join(payloadRoot, 'extension-runtime', 'src', 'shared', 'compatibility.js'),
+    "const BUILD_TARGET_VERSION = '1.9.1';\n"
+  );
+  fs.writeFileSync(path.join(payloadRoot, 'extension-runtime', 'src', 'new.js'), 'new\n');
   fs.mkdirSync(path.join(payloadRoot, 'native-runtime'), { recursive: true });
   fs.writeFileSync(path.join(payloadRoot, 'native-runtime', 'package.json'), '{"version":"1.9.1"}\n');
+  const archivePath = path.join(stageRoot, 'bundle.tar.gz');
+  const archiveEntries = [
+    'extension-runtime/runtime-manifest.json',
+    'extension-runtime/src/shared/compatibility.js',
+    'extension-runtime/src/new.js',
+    'native-runtime/package.json'
+  ].map(archivePath => ({
+    archivePath,
+    sourcePath: path.join(payloadRoot, ...archivePath.split('/'))
+  }));
+  createUpdateBundleArchive({ outputPath: archivePath, entries: archiveEntries });
+  const archiveBytes = fs.readFileSync(archivePath);
   fs.mkdirSync(updatesRoot, { recursive: true });
   fs.writeFileSync(path.join(updatesRoot, 'transaction.json'), JSON.stringify({
     id: 'fixture',
@@ -66,6 +92,9 @@ function createAppliedUpdateFixture() {
     targetVersion: '1.9.1',
     stageRoot,
     payloadRoot,
+    archivePath,
+    bundleSize: archiveBytes.length,
+    bundleSha256: crypto.createHash('sha256').update(archiveBytes).digest('hex'),
     createdAt: '2026-07-10T00:00:00.000Z'
   }, null, 2) + '\n');
   fs.writeFileSync(path.join(updatesRoot, 'authorization.json'), JSON.stringify({
