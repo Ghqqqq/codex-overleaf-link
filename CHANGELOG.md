@@ -16,6 +16,7 @@ Release candidate focused on controllable long-running tasks and resilient manag
 - Restored inline KaTeX baseline flow without per-formula scroll artifacts, separated display equations from prose blocks, and made long equations responsive without shrinking their notation.
 - Prevented display equations containing a standalone `=` line from being misclassified as Markdown Setext headings.
 - Bundled Markdown and KaTeX runtime assets with verified managed-install font paths so local and packaged extension rendering stay aligned.
+- Included the complete allowlisted Markdown renderer runtime in coordinated update bundles.
 - Made update progress durable across Overleaf tabs, surfaced terminal update failures with a manual-install fallback, and prevented stale safe-point state from spinning indefinitely.
 - Cleared sent composer attachments together with text while keeping queued attachments attached to their own pending input.
 - Unified provider stream lifecycle handling across Chat Completions and Anthropic Messages: active output refreshes the idle deadline, protocol terminal events finish immediately, and interrupted partial reasoning receives at most two context-preserving continuation attempts.
