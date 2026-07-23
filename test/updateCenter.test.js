@@ -43,6 +43,7 @@ test('Overleaf update actions stay in the current tab and never create an update
 test('failed managed updates stop progress and expose an actionable recovery command', () => {
   const notice = read('extension/src/content/updateNotice.js');
   const bootstrap = read('extension/bootstrap/background.js');
+  const background = read('extension/src/background.js');
   const coordinator = read('extension/src/backgroundUpdateCoordinator.js');
 
   assert.match(notice, /codex-overleaf-link@\$\{version\} -- install-managed/);
@@ -75,6 +76,8 @@ test('managed updater preserves authorized candidates across ETag 304 and re-ver
   const updater = read('native-host/src/updateManager.js');
   assert.match(updater, /releaseResponse\.status === 304[\s\S]*CANDIDATE_FILE[\s\S]*available: true/);
   assert.match(updater, /bundleSha256: manifest\.updateBundle\.sha256/);
-  assert.match(updater, /verifyStagedArchive\(journal\)[\s\S]*payload-apply[\s\S]*extractVerifiedUpdateBundle/);
+  assert.match(updater, /const verifiedPayloadRoot = path\.join\(journal\.stageRoot, 'payload-apply'\)/);
+  assert.match(updater, /verifyStagedArchive\(journal\)/);
+  assert.match(updater, /extractVerifiedUpdateBundle\(\{\s*archivePath: journal\.archivePath,\s*destinationRoot: verifiedPayloadRoot/);
   assert.match(updater, /update_runtime_asset_missing/);
 });
