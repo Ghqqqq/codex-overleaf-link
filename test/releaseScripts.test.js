@@ -633,7 +633,8 @@ releaseTest('release workflow publishes generated notes and built artifacts', ()
   const workflow = readReleaseWorkflow();
 
   assert.match(workflow, /uses:\s+softprops\/action-gh-release@v2/);
-  assert.match(workflow, /^\s+draft:\s+false\s*$/m);
+  assert.match(workflow, /^\s+draft:\s+true\s*$/m);
+  assert.match(workflow, /gh release edit "\$\{GITHUB_REF_NAME\}" --draft=false --prerelease="\$\{RELEASE_PRERELEASE\}"/);
   assert.match(workflow, /^\s+prerelease:\s+\$\{\{ env\.RELEASE_PRERELEASE == 'true' \}\}\s*$/m);
   assert.match(workflow, /^\s+name:\s+\$\{\{ github\.ref_name \}\}\s*$/m);
   assert.match(
