@@ -245,9 +245,29 @@
     return [value];
   }
 
+  function matchMathAt(value, index = 0) {
+    const source = String(value || '');
+    const start = Number.isSafeInteger(index) ? index : 0;
+    if (start < 0 || start >= source.length || (source[start] !== '$' && source[start] !== '\\')) {
+      return null;
+    }
+    const segment = parseMathSegments(source.slice(start))[0];
+    if (!segment || segment.type !== 'math' || !segment.raw) {
+      return null;
+    }
+    return {
+      start,
+      end: start + segment.raw.length,
+      raw: segment.raw,
+      value: segment.value,
+      display: Boolean(segment.display)
+    };
+  }
+
   const api = {
     buildMathNodes,
     createMathNode,
+    matchMathAt,
     normalizeMathForRendering,
     parseMathSegments
   };

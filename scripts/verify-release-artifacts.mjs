@@ -123,13 +123,23 @@ function verifyExtensionZip(filePath, errors) {
     'bootstrap/update.js',
     'bootstrap/runtimeContext.js',
     'runtime/runtime-manifest.json',
-    'runtime/src/contentScript.js'
+    'runtime/src/contentScript.js',
+    'runtime/vendor/markdown-it/markdown-it.min.js',
+    'runtime/vendor/markdown-it/LICENSE',
+    'runtime/vendor/katex/katex.min.css',
+    'runtime/vendor/katex/fonts/KaTeX_Main-Regular.woff2'
   ], 'extension zip', errors);
   assertNoForbiddenEntries(entries, 'extension zip', errors);
   const invalid = entries.filter(entry => !/^(manifest\.json|\.codex-overleaf-managed-extension\.json|assets\/|bootstrap\/|runtime\/)/.test(entry));
   if (invalid.length) {
     errors.push(`Extension zip contains entries outside the runtime allowlist:\n${invalid.map(entry => `  - ${entry}`).join('\n')}`);
   }
+  verifyKatexFontUrls(
+    readZipEntry(filePath, 'runtime/vendor/katex/katex.min.css'),
+    'extension zip',
+    'chrome-extension://__MSG_@@extension_id__/runtime/vendor/katex/fonts/',
+    errors
+  );
 }
 
 function verifyNativeTarball(filePath, errors) {
@@ -155,12 +165,32 @@ function verifyUpdateBundle(filePath, errors) {
   requireEntries(entries, [
     'extension-runtime/runtime-manifest.json',
     'extension-runtime/src/contentScript.js',
+    'extension-runtime/vendor/markdown-it/markdown-it.min.js',
+    'extension-runtime/vendor/katex/katex.min.css',
     'native-runtime/package.json',
     'native-runtime/native-host/src/index.js'
   ], 'coordinated update bundle', errors);
   assertNoForbiddenEntries(entries, 'coordinated update bundle', errors);
   const invalid = entries.filter(entry => !isAllowedUpdatePath(entry));
   if (invalid.length) errors.push(`Coordinated update bundle contains invalid entries:\n${invalid.map(entry => `  - ${entry}`).join('\n')}`);
+  verifyKatexFontUrls(
+    readTarEntry(filePath, 'extension-runtime/vendor/katex/katex.min.css'),
+    'coordinated update bundle',
+    'chrome-extension://__MSG_@@extension_id__/runtime/vendor/katex/fonts/',
+    errors
+  );
+}
+
+function verifyKatexFontUrls(css, label, expectedPrefix, errors) {
+  const urls = [...String(css || '').matchAll(/url\((['"]?)([^)'"]+)\1\)/g)].map(match => match[2]);
+  if (!urls.length) {
+    errors.push(`${label} KaTeX CSS contains no font URLs.`);
+    return;
+  }
+  const invalid = urls.filter(url => !url.startsWith(expectedPrefix));
+  if (invalid.length) {
+    errors.push(`${label} KaTeX CSS contains invalid font URLs:\n${invalid.map(url => `  - ${url}`).join('\n')}`);
+  }
 }
 
 function verifyReleaseSignature(releaseDir, errors) {
@@ -266,6 +296,24 @@ function listZipEntries(filePath) {
     throw new Error(result.stderr || result.stdout || `unzip failed for ${filePath}`);
   }
   return result.stdout.split(/\r?\n/).filter(Boolean).map(normalizeArchiveEntry);
+}
+
+function readZipEntry(filePath, entry) {
+  const result = spawnSync('unzip', ['-p', filePath, entry], { encoding: 'utf8' });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || `Could not read ${entry} from ${filePath}`);
+  }
+  return result.stdout;
+}
+
+function readTarEntry(filePath, entry) {
+  const result = spawnSync('tar', ['-xOzf', filePath, entry], { encoding: 'utf8' });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || `Could not read ${entry} from ${filePath}`);
+  }
+  return result.stdout;
 }
 
 function normalizeArchiveEntry(entry) {

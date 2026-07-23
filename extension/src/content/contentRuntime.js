@@ -177,7 +177,8 @@
     tx,
     callPageBridge,
     getCurrentProjectReferenceFiles,
-    showPluginToast
+    showPluginToast,
+    recordRenderingDiagnostic: detail => appendTechnicalEvent({ type: 'rendering.diagnostic', detail })
   });
   const {
     renderMarkdownInlineText,

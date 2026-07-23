@@ -33,6 +33,7 @@ test('architecture budget tracks v1.0 final split targets for the largest files'
       ['extension/src/content/sessionMenuView.js', 280],
       ['extension/src/content/panelMaintenance.js', 420],
       ['extension/src/content/markdownText.js', 700],
+      ['extension/src/content/markdownDomRenderer.js', 600],
       ['extension/src/content/diagnosticsController.js', 700],
       ['extension/src/content/runTimelineView.js', 1160],
       ['extension/src/content/sessionManager.js', 320],

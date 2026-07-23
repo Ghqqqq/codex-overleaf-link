@@ -2,6 +2,136 @@
   --codex-overleaf-panel-width: 380px;
 }
 
+/* Rich response geometry is shared by streaming and settled output. Repeated
+   class selectors intentionally outrank older component-local declarations. */
+#codex-overleaf-panel .run-stream-text.run-stream-text,
+#codex-overleaf-panel .run-final-answer.run-final-answer {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--tl-fg-2);
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) > :first-child {
+  margin-top: 0;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) > :last-child {
+  margin-bottom: 0;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) p {
+  margin: 0.58em 0;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.05em 0 0.45em;
+  color: var(--tl-fg-1);
+  font-weight: 720;
+  line-height: 1.3;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) h1 { font-size: 1.35em; }
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) h2 { font-size: 1.22em; }
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) h3 { font-size: 1.12em; }
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) :is(h4, h5, h6) { font-size: 1em; }
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) :is(ul, ol) {
+  margin: 0.55em 0;
+  padding-inline-start: 1.55em;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) :is(ul, ol) :is(ul, ol) {
+  margin: 0.2em 0;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) li {
+  margin: 0.2em 0;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .run-markdown-quote {
+  margin: 0.7em 0;
+  padding: 0.12em 0 0.12em 0.9em;
+  border-inline-start: 3px solid var(--tl-accent, #79b8f2);
+  color: var(--tl-fg-3);
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .run-markdown-table {
+  width: 100%;
+  margin: 0.75em 0;
+  border-collapse: collapse;
+  font-size: 0.94em;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .run-markdown-table :is(th, td) {
+  padding: 0.42em 0.58em;
+  border: 1px solid var(--tl-border);
+  text-align: start;
+  vertical-align: top;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .run-markdown-table th {
+  background: var(--tl-surface-2);
+  color: var(--tl-fg-1);
+  font-weight: 700;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .is-align-center { text-align: center; }
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .is-align-right { text-align: right; }
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .is-align-left { text-align: left; }
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) hr {
+  margin: 1em 0;
+  border: 0;
+  border-top: 1px solid var(--tl-border);
+}
+
+#codex-overleaf-panel .run-math--display.run-math--display {
+  display: block;
+  max-width: 100%;
+  margin: 14px 0;
+  padding: 2px 0 5px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .katex-display {
+  margin: 0;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .katex .text.text {
+  font-family: KaTeX_Main, "Times New Roman", serif !important;
+}
+
+#codex-overleaf-panel .codex-custom-instructions-panel .codex-custom-instructions-head {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  justify-content: initial;
+}
+
+#codex-overleaf-panel .codex-custom-instructions-panel .codex-custom-instructions-head > div {
+  min-width: 0;
+}
+
+#codex-overleaf-panel .codex-project-settings-panel .codex-provider-settings-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+#codex-overleaf-panel .codex-project-settings-panel .codex-provider-settings-entry .codex-set-btn,
+#codex-overleaf-panel .codex-project-settings-panel [data-update-settings] button {
+  width: 100%;
+  justify-content: center;
+}
+
 /* v2.1 provider profiles: detailed configuration lives in a viewport modal. */
 .codex-provider-settings-entry {
   display: flex;

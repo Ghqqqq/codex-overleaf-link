@@ -144,6 +144,7 @@ function buildManagedExtensionTree(options = {}) {
   copyPackageTree(packageRoot, 'extension/styles', targetRoot, 'runtime/styles', { allowedFiles });
   copyPackageTree(packageRoot, 'extension/vendor', targetRoot, 'runtime/vendor', { allowedFiles });
   copyPackageFile(packageRoot, 'extension/runtime-manifest.json', targetRoot, 'runtime/runtime-manifest.json', allowedFiles);
+  rewriteManagedRuntimeAssetPaths(targetRoot);
   fs.writeFileSync(path.join(targetRoot, EXTENSION_MARKER), JSON.stringify({
     managedBy: MANAGED_BY,
     kind: 'extension',
@@ -345,6 +346,24 @@ function copyFile(source, target) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.copyFileSync(source, target);
   fs.chmodSync(target, fs.statSync(source).mode & 0o777);
+}
+
+function rewriteManagedRuntimeAssetPaths(targetRoot) {
+  const cssPath = path.join(targetRoot, 'runtime/vendor/katex/katex.min.css');
+  if (!fs.existsSync(cssPath)) {
+    return;
+  }
+  const sourcePrefix = 'chrome-extension://__MSG_@@extension_id__/vendor/katex/fonts/';
+  const managedPrefix = 'chrome-extension://__MSG_@@extension_id__/runtime/vendor/katex/fonts/';
+  const css = fs.readFileSync(cssPath, 'utf8');
+  if (!css.includes(sourcePrefix)) {
+    throw new Error('Managed KaTeX CSS does not contain the expected source font prefix.');
+  }
+  const rewritten = css.split(sourcePrefix).join(managedPrefix);
+  if (rewritten.includes(sourcePrefix)) {
+    throw new Error('Managed KaTeX CSS retained a source-only font path.');
+  }
+  fs.writeFileSync(cssPath, rewritten, 'utf8');
 }
 
 function normalizeAllowedFiles(value) {

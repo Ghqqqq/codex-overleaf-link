@@ -434,7 +434,7 @@
       const text = existing.querySelector('[data-stream-text]');
       if (text) {
         if (event.streamRole === 'assistant') {
-          renderMarkdownBlockText(text, event.title || '');
+          renderMarkdownBlockText(text, event.title || '', { streaming: event.status === 'running' });
         } else {
           renderMarkdownInlineText(text, event.title || '');
         }
@@ -456,7 +456,7 @@
     text.className = 'run-stream-text';
     text.dataset.streamText = '';
     if (event.streamRole === 'assistant') {
-      renderMarkdownBlockText(text, event.title || '');
+      renderMarkdownBlockText(text, event.title || '', { streaming: event.status === 'running' });
     } else {
       renderMarkdownInlineText(text, event.title || '');
     }

@@ -105,6 +105,12 @@ export const ARCHITECTURE_FILE_BUDGETS = Object.freeze([
     maxLines: 700
   },
   {
+    // Bounded markdown-it token-to-DOM adapter. Parsing and structural
+    // rendering stay isolated from runtime orchestration and sanitization.
+    path: 'extension/src/content/markdownDomRenderer.js',
+    maxLines: 600
+  },
+  {
     // Carved from contentRuntime in v1.4.5: the diagnostics check runners
     // (inspect*) and result formatters behind the diagnostics menu.
     path: 'extension/src/content/diagnosticsController.js',

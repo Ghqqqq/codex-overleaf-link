@@ -463,13 +463,56 @@
     return '#';
   }
 
-  function renderMarkdownBlockText(target, value) {
-    const source = normalizeInlineOrderedLists(String(value || '').trim());
-    target.replaceChildren();
-    if (!source) {
+  const renderingDiagnosticKeys = new Set();
+
+  function renderMarkdownBlockText(target, value, renderOptions = {}) {
+    const rawSource = String(value || '').trim();
+    if (!rawSource) {
+      target.replaceChildren();
       return;
     }
 
+    if (!renderOptions.streaming) {
+      const runtimeRoot = typeof window !== 'undefined' ? window : globalThis;
+      const domRenderer = runtimeRoot.CodexOverleafMarkdownDomRenderer;
+      try {
+        if (!domRenderer?.renderMarkdown || typeof runtimeRoot.markdownit !== 'function') {
+          const dependencyError = new Error('The vendored Markdown DOM renderer is unavailable.');
+          dependencyError.code = 'markdown_dom_dependency_missing';
+          throw dependencyError;
+        }
+        domRenderer.renderMarkdown(target, rawSource, {
+          document,
+          markdownIt: runtimeRoot.markdownit,
+          mathText: runtimeRoot.CodexOverleafMathText,
+          renderTextNodes: text => buildMarkdownInlineNodes(text),
+          renderLinkNodes: (label, href) => {
+            const safeLabel = String(label || '');
+            const target = String(href || '').trim();
+            if (!/^https?:\/\//i.test(target) && !resolveMarkdownLineReference(safeLabel, target)) return buildMarkdownInlineNodes(safeLabel);
+            return buildMarkdownInlineNodes(
+              `[${safeLabel.replace(/]/g, '\\]')}](${target.replace(/\)/g, '\\)')})`
+            );
+          },
+          renderCodeNodes: text => buildMarkdownInlineNodes(`\`${String(text || '').replace(/`/g, '\\`')}\``),
+          sanitizeText: sanitizeAssistantVisibleText,
+          createMathNode: segment => runtimeRoot.CodexOverleafMathText.createMathNode(segment, {
+            document, katex: runtimeRoot.katex,
+            renderText: text => buildMarkdownInlineNodes(text)
+          }),
+          recordDiagnostic: recordRenderingDiagnostic
+        });
+        return;
+      } catch (error) {
+        recordRenderingDiagnostic({
+          code: error?.code || 'markdown_dom_fallback',
+          detail: String(error?.message || 'Markdown DOM rendering failed.')
+        });
+      }
+    }
+
+    const source = normalizeInlineOrderedLists(rawSource);
+    target.replaceChildren();
     const lines = source.split(/\r?\n/);
     let index = 0;
 
@@ -535,6 +578,17 @@
 
       appendMarkdownParagraphFlow(target, paragraphLines.join(' '));
     }
+  }
+
+  function recordRenderingDiagnostic(diagnostic = {}) {
+    const code = String(diagnostic.code || 'markdown_rendering_diagnostic');
+    const detail = String(diagnostic.detail || '').slice(0, 240);
+    const key = `${code}:${detail}`;
+    if (renderingDiagnosticKeys.has(key)) {
+      return;
+    }
+    renderingDiagnosticKeys.add(key);
+    if (typeof options.recordRenderingDiagnostic === 'function') options.recordRenderingDiagnostic({ code, detail });
   }
 
   function appendMarkdownParagraphFlow(target, value) {

@@ -3,10 +3,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const MathText = require('../extension/src/content/mathText.js');
 const { buildCodexTurnPrompt } = require('../native-host/src/codexPromptAssembly.js');
+const { buildManagedExtensionTree } = require('../native-host/src/managedInstall.js');
 
 test('math parser recognizes explicit inline and display delimiters', () => {
   const segments = MathText.parseMathSegments('Inline $x_1^2$ and display $$\\sum_i x_i$$.');
@@ -70,12 +72,42 @@ test('extension loads local KaTeX before the isolated math and markdown renderer
   const scripts = manifest.content_scripts[0].js;
   const styles = manifest.content_scripts[0].css;
   assert.ok(scripts.indexOf('vendor/katex/katex.min.js') < scripts.indexOf('src/content/mathText.js'));
-  assert.ok(scripts.indexOf('src/content/mathText.js') < scripts.indexOf('src/content/markdownText.js'));
+  assert.ok(scripts.indexOf('vendor/markdown-it/markdown-it.min.js') < scripts.indexOf('src/content/mathText.js'));
+  assert.ok(scripts.indexOf('src/content/mathText.js') < scripts.indexOf('src/content/markdownDomRenderer.js'));
+  assert.ok(scripts.indexOf('src/content/markdownDomRenderer.js') < scripts.indexOf('src/content/markdownText.js'));
   assert.ok(styles.indexOf('vendor/katex/katex.min.css') < styles.indexOf('styles/panel.css'));
   assert.equal(fs.existsSync(path.join(root, 'extension/vendor/katex/katex.min.js')), true);
+  assert.equal(fs.existsSync(path.join(root, 'extension/vendor/markdown-it/markdown-it.min.js')), true);
   assert.equal(fs.existsSync(path.join(root, 'extension/vendor/katex/fonts/KaTeX_Main-Regular.woff2')), true);
   const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   assert.ok(packageJson.files.includes('extension/vendor/'));
+});
+
+test('source and managed KaTeX CSS resolve every font from their actual package roots', () => {
+  const root = path.join(__dirname, '..');
+  const sourceCss = fs.readFileSync(path.join(root, 'extension/vendor/katex/katex.min.css'), 'utf8');
+  const sourcePrefix = 'chrome-extension://__MSG_@@extension_id__/vendor/katex/fonts/';
+  const sourceUrls = extractCssUrls(sourceCss);
+  assert.ok(sourceUrls.length > 10);
+  assert.equal(sourceUrls.every(url => url.startsWith(sourcePrefix)), true);
+  for (const url of sourceUrls) {
+    assert.equal(fs.existsSync(path.join(root, 'extension/vendor/katex/fonts', url.slice(sourcePrefix.length))), true);
+  }
+
+  const managedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-managed-css-'));
+  buildManagedExtensionTree({
+    packageRoot: root,
+    targetRoot: managedRoot,
+    version: '2.1.6',
+    releaseRef: 'v2.1.6-rc.999',
+    releaseChannel: 'prerelease'
+  });
+  const managedCss = fs.readFileSync(path.join(managedRoot, 'runtime/vendor/katex/katex.min.css'), 'utf8');
+  const managedPrefix = 'chrome-extension://__MSG_@@extension_id__/runtime/vendor/katex/fonts/';
+  const managedUrls = extractCssUrls(managedCss);
+  assert.equal(managedUrls.length, sourceUrls.length);
+  assert.equal(managedUrls.every(url => url.startsWith(managedPrefix)), true);
+  fs.rmSync(managedRoot, { recursive: true, force: true });
 });
 
 test('Codex prompt requires explicit math delimiters and reserves backticks for source', () => {
@@ -107,4 +139,8 @@ function createFakeDocument() {
       return { textContent: String(value) };
     }
   };
+}
+
+function extractCssUrls(css) {
+  return [...css.matchAll(/url\((['"]?)([^)'"]+)\1\)/g)].map(match => match[2]);
 }
