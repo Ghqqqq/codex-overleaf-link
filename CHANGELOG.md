@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.2.1 - 2026-07-24
+
+### Fixed
+
+- Exclude changed root-level PDF build artifacts from binary writeback when a matching root TeX source exists, including case-insensitive filename matching, so locally compiled outputs no longer trigger asset confirmation.
+
 ## v2.2.0 - 2026-07-23
 
 - Establish Bootstrap protocol 2 as the durable managed-update baseline; v2.1.x installations require one pinned managed reinstall.

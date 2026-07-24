@@ -124,13 +124,15 @@ async function collectMirrorChangesDetailed({ projectId, rootDir }) {
     const previous = baselineByPath.get(filePath);
     const target = resolveWorkspacePath(mirror.workspacePath, filePath);
     const stat = fs.statSync(target);
-    if (!previous && isGeneratedArtifactPath(filePath, baselineByPath)) {
-      unsupportedChanges.push({
-        type: 'unsupported-local-file',
-        path: filePath,
-        reason: 'generated_artifact',
-        size: stat.size
-      });
+    if (isGeneratedArtifactPath(filePath, baselineByPath)) {
+      if (!previous || !workspaceFileMatchesBaseline(target, previous)) {
+        unsupportedChanges.push({
+          type: 'unsupported-local-file',
+          path: filePath,
+          reason: 'generated_artifact',
+          size: stat.size
+        });
+      }
       continue;
     }
     if (isSupportedBinaryAssetPath(filePath)) {
@@ -602,7 +604,12 @@ function hasMatchingRootSourceFile(normalizedPdfPath, baselineByPath) {
     return true;
   }
   const stem = normalizedPdfPath.replace(/\.pdf$/i, '');
-  return baselineByPath.has(`${stem}.tex`) || stem === 'main' || stem === 'output';
+  const sourcePath = `${stem}.tex`;
+  const hasMatchingSource = baselineByPath.has(sourcePath)
+    || Array.from(baselineByPath.keys()).some(filePath =>
+      normalizeRelativePath(filePath).toLowerCase() === sourcePath
+    );
+  return hasMatchingSource || stem === 'main' || stem === 'output';
 }
 
 function isSupportedBinaryAssetPath(filePath) {
