@@ -1,15 +1,16 @@
 (function initCodexOverleafRunInputQueue(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./runExecutionSnapshot'));
   } else {
-    root.CodexOverleafRunInputQueue = factory();
+    root.CodexOverleafRunInputQueue = factory(root.CodexOverleafRunExecutionSnapshot);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function runInputQueueFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function runInputQueueFactory(RunExecutionSnapshot) {
   'use strict';
 
   const MAX_ITEMS = 20;
   const MAX_TEXT_CHARS = 12000;
   const MAX_QUEUE_BYTES = 128 * 1024;
+  const MAX_PERSISTED_QUEUE_BYTES = 512 * 1024;
   const ACTIVE_STATUSES = new Set(['claimed', 'executing', 'steering']);
   const VALID_STATUSES = new Set(['queued', 'paused', ...ACTIVE_STATUSES]);
 
@@ -27,6 +28,7 @@
       if (options.recoverActive === true && ACTIVE_STATUSES.has(status)) {
         status = 'paused';
       }
+      const executionSnapshot = normalizeExecutionSnapshot(raw, options.fallbackInput);
       normalized.push({
         id,
         clientUserMessageId: String(raw.clientUserMessageId || id),
@@ -38,7 +40,8 @@
         linkedRunId: status === 'executing' ? String(raw.linkedRunId || '') : '',
         claimToken: status === 'claimed' || status === 'executing' ? String(raw.claimToken || '') : '',
         pauseReason: status === 'paused' ? String(raw.pauseReason || '') : '',
-        payload: normalizePayload(raw.payload)
+        executionSnapshot: RunExecutionSnapshot.cloneSnapshot(executionSnapshot),
+        payload: RunExecutionSnapshot.toQueuePayload(executionSnapshot)
       });
       if (normalized.length >= MAX_ITEMS) {
         break;
@@ -63,6 +66,7 @@
     const nowFactory = deps.now || (() => new Date().toISOString());
     const id = String(input.id || idFactory());
     const timestamp = String(nowFactory());
+    const executionSnapshot = normalizeExecutionSnapshot(input, input.fallbackInput);
     const item = {
       id,
       clientUserMessageId: String(input.clientUserMessageId || id),
@@ -74,10 +78,11 @@
       linkedRunId: '',
       claimToken: '',
       pauseReason: input.status === 'paused' ? String(input.pauseReason || '') : '',
-      payload: normalizePayload(input.payload)
+      executionSnapshot: RunExecutionSnapshot.cloneSnapshot(executionSnapshot),
+      payload: RunExecutionSnapshot.toQueuePayload(executionSnapshot)
     };
     const next = [...queue, item];
-    if (estimateBytes(next) > MAX_QUEUE_BYTES) {
+    if (estimateLegacyBytes(next) > MAX_QUEUE_BYTES || estimateBytes(next) > MAX_PERSISTED_QUEUE_BYTES) {
       return failure(queue, 'queue_too_large');
     }
     return { ok: true, queue: next, item };
@@ -114,13 +119,37 @@
       return { ok: false, queue, item: null };
     }
     const tokenFactory = deps.randomUUID || (() => 'claim_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8));
-    const item = {
+    let item = {
       ...queue[index],
       status: 'claimed',
       claimToken: String(tokenFactory()),
       updatedAt: new Date().toISOString(),
       pauseReason: ''
     };
+    try {
+      const captured = RunExecutionSnapshot.normalizeSnapshot(
+        item.executionSnapshot || item.payload?.executionSnapshot || item.payload,
+        { source: item.executionSnapshot?.source || item.payload?.executionSnapshot?.source || 'submitted' }
+      );
+      const snapshot = deps.resolveExecutionSnapshot instanceof Function
+        ? deps.resolveExecutionSnapshot(captured)
+        : captured;
+      item = {
+        ...item,
+        executionSnapshot: RunExecutionSnapshot.cloneSnapshot(snapshot),
+        payload: RunExecutionSnapshot.toQueuePayload(snapshot)
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        queue,
+        item: null,
+        error: {
+          code: error?.code || 'provider_revision_conflict',
+          message: error?.message || ''
+        }
+      };
+    }
     queue[index] = item;
     return { ok: true, queue, item };
   }
@@ -160,21 +189,14 @@
     return normalizeQueue(items).map(item => item.id === id ? updater(item) : item);
   }
 
-  function normalizePayload(payload = {}) {
-    return {
-      mode: ['ask', 'confirm', 'auto'].includes(payload.mode) ? payload.mode : 'ask',
-      providerId: String(payload.providerId || 'builtin').slice(0, 160),
-      providerRevision: String(payload.providerRevision || '').slice(0, 160),
-      model: String(payload.model || '').slice(0, 160),
-      reasoningEffort: String(payload.reasoningEffort || '').slice(0, 32),
-      speedTier: payload.speedTier === 'fast' ? 'fast' : 'standard',
-      autoRecompile: payload.autoRecompile !== false,
-      requireReviewing: payload.requireReviewing !== false,
-      focusFiles: (Array.isArray(payload.focusFiles) ? payload.focusFiles : [])
-        .map(path => String(path || '').replace(/\\/g, '/').replace(/^\/+/, '').trim())
-        .filter(Boolean)
-        .slice(0, 100)
-    };
+  function normalizeExecutionSnapshot(raw = {}, fallbackInput = {}) {
+    return RunExecutionSnapshot.captureRawQueueTuple(raw, fallbackInput);
+  }
+
+  function normalizePayload(payload = {}, fallbackInput = {}) {
+    return RunExecutionSnapshot.toQueuePayload(
+      RunExecutionSnapshot.captureRawQueueTuple(payload, fallbackInput)
+    );
   }
 
   function normalizeTimestamp(value) {
@@ -183,7 +205,10 @@
 
   function trimToBudget(items) {
     const queue = items.slice(-MAX_ITEMS);
-    while (queue.length && estimateBytes(queue) > MAX_QUEUE_BYTES) {
+    while (queue.length && (
+      estimateLegacyBytes(queue) > MAX_QUEUE_BYTES
+      || estimateBytes(queue) > MAX_PERSISTED_QUEUE_BYTES
+    )) {
       queue.shift();
     }
     return queue;
@@ -196,6 +221,29 @@
       : text.length * 2;
   }
 
+  function estimateLegacyBytes(items) {
+    return estimateBytes((Array.isArray(items) ? items : []).map(item => {
+      const legacyItem = { ...(item || {}) };
+      delete legacyItem.executionSnapshot;
+      return {
+        ...legacyItem,
+        payload: item?.payload && typeof item.payload === 'object'
+          ? {
+              mode: item.payload.mode,
+              providerId: item.payload.providerId,
+              providerRevision: item.payload.providerRevision,
+              model: item.payload.model,
+              reasoningEffort: item.payload.reasoningEffort,
+              speedTier: item.payload.speedTier,
+              autoRecompile: item.payload.autoRecompile,
+              requireReviewing: item.payload.requireReviewing,
+              focusFiles: item.payload.focusFiles
+            }
+          : {}
+      };
+    }));
+  }
+
   function compactForStorage(items, helpers = {}) {
     const normalizeField = helpers.normalizeField || (value => String(value || ''));
     const normalizeDisplay = helpers.normalizeDisplay || normalizeField;
@@ -204,6 +252,11 @@
       .slice(-MAX_ITEMS)
       .map(item => {
         const payload = item?.payload && typeof item.payload === 'object' ? item.payload : {};
+        const snapshot = RunExecutionSnapshot.captureRawQueueTuple(item, payload);
+        const compactSnapshot = RunExecutionSnapshot.cloneSnapshot({
+          ...snapshot,
+          focusFiles: normalizePaths(snapshot.focusFiles)
+        });
         return {
           id: normalizeField(item?.id, 160),
           clientUserMessageId: normalizeField(item?.clientUserMessageId, 160),
@@ -215,17 +268,8 @@
           linkedRunId: normalizeField(item?.linkedRunId, 160),
           claimToken: normalizeField(item?.claimToken, 160),
           pauseReason: normalizeField(item?.pauseReason, 160),
-          payload: {
-            mode: typeof payload.mode === 'string' ? payload.mode : 'ask',
-            providerId: normalizeField(payload.providerId, 160) || 'builtin',
-            providerRevision: normalizeField(payload.providerRevision, 160),
-            model: normalizeField(payload.model, 160),
-            reasoningEffort: normalizeField(payload.reasoningEffort, 32),
-            speedTier: payload.speedTier === 'fast' ? 'fast' : 'standard',
-            autoRecompile: payload.autoRecompile !== false,
-            requireReviewing: payload.requireReviewing !== false,
-            focusFiles: normalizePaths(payload.focusFiles)
-          }
+          executionSnapshot: compactSnapshot,
+          payload: RunExecutionSnapshot.toQueuePayload(compactSnapshot)
         };
       })
       .filter(item => item.id && item.text);
@@ -238,10 +282,13 @@
   return {
     MAX_ITEMS,
     MAX_QUEUE_BYTES,
+    MAX_PERSISTED_QUEUE_BYTES,
     MAX_TEXT_CHARS,
     claimNext,
     compactForStorage,
     enqueue,
+    estimateBytes,
+    estimateLegacyBytes,
     markExecuting,
     markSteering,
     normalizeQueue,

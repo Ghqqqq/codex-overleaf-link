@@ -23,19 +23,20 @@ const {
 } = require('../native-host/src/nativeHostPlatform');
 const extensionManifest = require('../extension/manifest.json');
 
-test('release metadata is prepared for v2.2.1', () => {
-  assert.equal(packageJson.version, '2.2.1');
+test('development package and extension metadata use the same semantic version', () => {
+  assert.match(packageJson.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
   assert.equal(extensionManifest.version, packageJson.version);
 });
 
-test('release docs carry exact v2.2.1 badge and changelog heading', () => {
+test('public install docs describe the latest stable changelog release', () => {
   const readme = fs.readFileSync(path.join(__dirname, '../README.md'), 'utf8');
   const changelog = fs.readFileSync(path.join(__dirname, '../CHANGELOG.md'), 'utf8');
-  const escapedVersion = packageJson.version.replace(/\./g, '\\.');
+  const latestStable = changelog.match(/^## v(\d+\.\d+\.\d+) - \d{4}-\d{2}-\d{2}$/m);
+  assert.ok(latestStable, 'CHANGELOG must contain a stable semver release heading');
+  const escapedVersion = latestStable[1].replace(/\./g, '\\.');
 
   assert.match(readme, new RegExp(`version-${escapedVersion}-blue`));
   assert.doesNotMatch(readme, /version-1\.0\.0-blue/);
-  assert.match(changelog, new RegExp(`^## v${escapedVersion} - \\d{4}-\\d{2}-\\d{2}$`, 'm'));
   assert.doesNotMatch(changelog, new RegExp(`^## \\[${escapedVersion}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm'));
   assert.doesNotMatch(changelog, /^## v1\.0\.0 - 2026-05-07[\s\S]*version-1\.1\.0-blue/m);
 });
@@ -60,11 +61,14 @@ test('loads line reference shared module immediately after project files', () =>
 test('loads storage run-action helpers immediately before storageDb', () => {
   const js = extensionManifest.content_scripts[0].js;
   const runActionsIndex = js.indexOf('src/shared/storageRunActions.js');
+  const sessionClaimsIndex = js.indexOf('src/shared/storageSessionClaims.js');
   const storageDbIndex = js.indexOf('src/shared/storageDb.js');
 
   assert.notEqual(runActionsIndex, -1);
+  assert.notEqual(sessionClaimsIndex, -1);
   assert.notEqual(storageDbIndex, -1);
-  assert.equal(storageDbIndex, runActionsIndex + 1);
+  assert.equal(sessionClaimsIndex, runActionsIndex + 1);
+  assert.equal(storageDbIndex, sessionClaimsIndex + 1);
 });
 
 test('pins the Native Messaging host name', () => {
@@ -322,6 +326,18 @@ test('content script loads shared compatibility before native and panel scripts'
   assert.ok(compatibilityIndex > -1);
   assert.ok(compatibilityIndex < scripts.indexOf('src/content/nativeChannel.js'));
   assert.ok(compatibilityIndex < scripts.indexOf('src/contentScript.js'));
+});
+
+test('content script loads bridge and native compatibility controllers before runtime', () => {
+  const scripts = extensionManifest.content_scripts[0].js;
+  const runtimeIndex = scripts.indexOf('src/content/contentRuntime.js');
+  for (const helper of [
+    'src/content/pageBridgeClient.js',
+    'src/content/nativeCompatibilityController.js'
+  ]) {
+    assert.ok(scripts.indexOf(helper) > scripts.indexOf('src/content/nativeChannel.js'));
+    assert.ok(scripts.indexOf(helper) < runtimeIndex);
+  }
 });
 
 test('content script loads governance, sensitive scan, and audit helpers before the panel script', () => {

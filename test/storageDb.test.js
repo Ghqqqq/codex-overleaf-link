@@ -1190,3 +1190,70 @@ test('buildSessionRecord preserves a report event detailStructured + failure acr
   assert.equal(event.failure.code, 'codex_project_locked');
   assert.equal(event.failure.terminalState, 'blocked');
 });
+
+test('buildSessionRecord preserves canonical run settlement projections across reload', () => {
+  const SettlementFacts = require('../extension/src/shared/settlementFacts');
+  const record = buildSessionRecord({
+    id: 'ses_settlement',
+    projectId: 'proj_settlement',
+    runs: [{
+      id: 'run_settlement',
+      task: 'edit intro',
+      status: 'completed',
+      trackedChangeStatus: 'needs_review',
+      settlement: {
+        documentEffect: 'changed',
+        evidence: {
+          applied: 'complete',
+          readBack: 'exact',
+          saved: 'verified',
+          settled: 'needs-review'
+        },
+        failures: [{
+          code: 'accept_not_verified',
+          stage: 'accept',
+          severity: 'warning',
+          userMessage: 'The tracked changes could not be verified as clean.',
+          retryable: true,
+          nextAction: 'Review and retry Accept.',
+          changedDocument: true,
+          terminalState: 'needs_review'
+        }]
+      }
+    }]
+  });
+
+  const run = record.runs[0];
+  const projection = SettlementFacts.projectRunSettlement(run);
+  assert.ok(run.settlement, 'canonical settlement must survive StorageDb compaction');
+  assert.equal(run.settlementFacts, undefined);
+  assert.equal(projection.changedDocument, true);
+  assert.equal(projection.terminalState, 'needs_review');
+  assert.equal(projection.canRetry, true);
+  assert.equal(projection.primaryFailure.code, 'accept_not_verified');
+});
+
+test('buildSessionRecord redacts secrets and absolute local paths inside canonical settlement', () => {
+  const record = buildSessionRecord({
+    id: 'ses_private_settlement',
+    projectId: 'proj_private_settlement',
+    runs: [{
+      id: 'run_private_settlement',
+      settlement: {
+        failures: [{
+          code: 'write_failed',
+          stage: 'write',
+          severity: 'error',
+          userMessage: 'Token sk-proj-12345678901234567890 failed in /Users/alice/private/main.tex',
+          nextAction: 'Inspect /Users/alice/private/main.tex',
+          retryable: true
+        }]
+      }
+    }]
+  });
+  const serialized = JSON.stringify(record.runs[0].settlement);
+
+  assert.doesNotMatch(serialized, /sk-proj-12345678901234567890/);
+  assert.doesNotMatch(serialized, /\/Users\/alice\/private/);
+  assert.equal(record.runs[0].settlement.failures[0].code, 'write_failed');
+});

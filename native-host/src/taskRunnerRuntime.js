@@ -26,10 +26,10 @@ const { getNativeRuntimePlatform, summarizeNativeEnvironment } = require('./nati
 const {
   NATIVE_REQUEST_QUOTAS,
   firstQuotaViolation,
-  validateNativeRequestQuotas,
+  getRequestQuotaViolation,
   validateOperationListQuota,
   validateOperationPayloadQuota
-} = require('./nativeQuotas');
+} = require('./nativeTransportEnvelope');
 const { version: PACKAGE_VERSION } = require('../../package.json');
 
 const activeProjectLocks = new Map();
@@ -49,7 +49,7 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
     return errorResponse(undefined, 'invalid_request', 'Request must be an object');
   }
 
-  const quotaError = validateNativeRequestQuotas(request);
+  const quotaError = getRequestQuotaViolation(request);
   if (quotaError) {
     return quotaErrorResponse(request.id, quotaError);
   }

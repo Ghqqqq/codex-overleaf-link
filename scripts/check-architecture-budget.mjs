@@ -68,7 +68,15 @@ export const ARCHITECTURE_FILE_BUDGETS = Object.freeze([
     // persistence (8858 -> 8717). 8720 freezes the remaining orchestration
     // wiring without forcing another artificial split.
     path: 'extension/src/content/contentRuntime.js',
-    maxLines: 8720
+    maxLines: 8000
+  },
+  {
+    path: 'extension/src/content/pageBridgeClient.js',
+    maxLines: 260
+  },
+  {
+    path: 'extension/src/content/nativeCompatibilityController.js',
+    maxLines: 360
   },
   {
     path: 'extension/src/content/projectSettingsCoordinator.js',
@@ -172,8 +180,62 @@ export const ARCHITECTURE_FILE_BUDGETS = Object.freeze([
     // mirror refresh (pendingMirrorRefresh) and the skipped-failure
     // promotion that feeds the recovery-action registry.
     // v1.8.0 B2 raised 820 -> 880 for the in-place mirror confirm path.
+    // The settlement evidence handoff adds one cohesive return contract while
+    // keeping terminal policy in WritebackSettlement: 880 -> 920.
     path: 'extension/src/content/writebackOrchestrator.js',
-    maxLines: 880
+    maxLines: 920
+  },
+  {
+    path: 'extension/src/content/runSettlementPersistence.js',
+    maxLines: 80
+  },
+  {
+    // Content-side adapter over the shared scoped transaction policy.
+    path: 'extension/src/content/scopedPersistenceCoordinator.js',
+    maxLines: 140
+  },
+  {
+    path: 'extension/src/shared/runExecutionSnapshotCodec.js',
+    maxLines: 190
+  },
+  {
+    path: 'extension/src/shared/runExecutionSnapshot.js',
+    maxLines: 260
+  },
+  {
+    path: 'extension/src/shared/settlementFacts.js',
+    maxLines: 360
+  },
+  {
+    path: 'extension/src/shared/writebackEvidenceProjection.js',
+    maxLines: 220
+  },
+  {
+    path: 'extension/src/shared/writebackSettlement.js',
+    maxLines: 760
+  },
+  {
+    path: 'extension/src/shared/scopedPersistenceQueuePolicy.js',
+    maxLines: 210
+  },
+  {
+    path: 'extension/src/shared/scopedPersistenceBrowserAdapter.js',
+    maxLines: 180
+  },
+  {
+    // Owns account/project/generation-scoped hydration and monotonic commits.
+    path: 'extension/src/shared/scopedPersistenceTransaction.js',
+    maxLines: 250
+  },
+  {
+    // Declarative Page RPC metadata consumed by caller and dispatcher.
+    path: 'extension/src/shared/pageRpcContract.js',
+    maxLines: 160
+  },
+  {
+    // Canonical managed-update phases, progress, deadlines, and recovery.
+    path: 'extension/src/shared/managedUpdateProjection.js',
+    maxLines: 340
   },
   {
     // Writeback router: large but cohesive. v1.3.9 added the cross-world
@@ -202,7 +264,12 @@ export const ARCHITECTURE_FILE_BUDGETS = Object.freeze([
   },
   {
     path: 'extension/src/shared/storageDb.js',
-    maxLines: 1350
+    maxLines: 1360
+  },
+  {
+    // Single Native transport entry point over framing, quotas, and reduction.
+    path: 'native-host/src/nativeTransportEnvelope.js',
+    maxLines: 180
   },
   {
     path: 'native-host/src/codexSessionRunner.js',
@@ -219,6 +286,10 @@ export const ARCHITECTURE_FILE_BUDGETS = Object.freeze([
   {
     path: 'native-host/src/taskRunner.js',
     maxLines: 1000
+  },
+  {
+    path: 'native-host/src/taskRunnerRuntime.js',
+    maxLines: 1350
   }
 ]);
 

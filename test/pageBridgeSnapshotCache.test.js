@@ -12,6 +12,10 @@ const pageBridgeSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/pageBridge.js'),
   'utf8'
 );
+const pageRpcContractSource = fs.readFileSync(
+  path.join(__dirname, '../extension/src/shared/pageRpcContract.js'),
+  'utf8'
+);
 const saveStateSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/page/saveState.js'),
   'utf8'
@@ -1392,6 +1396,7 @@ function createSnapshotHarness({
   if (pageBridgeCapabilitySource) {
     vm.runInContext(pageBridgeCapabilitySource, context, { filename: 'pageBridgeCapability.js' });
   }
+  vm.runInContext(pageRpcContractSource, context, { filename: 'pageRpcContract.js' });
   vm.runInContext(pageBridgeSource, context, { filename: 'pageBridge.js' });
 
   return {

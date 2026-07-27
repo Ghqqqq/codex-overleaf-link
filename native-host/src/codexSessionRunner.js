@@ -10,7 +10,10 @@ const { computeTextPatches } = require('./textPatch');
 const { buildCodexHomeEnv } = require('./codexHome');
 const { buildCodexSpeedArgs } = require('./codexArgs');
 const { truncateText } = require('./debugLog');
-const { enforceNativeOkResponseBudget } = require('./nativeResponseBudget');
+const {
+  estimateBase64DecodedBytes,
+  reduceTaskResult
+} = require('./nativeTransportEnvelope');
 const { buildCodexTurnPrompt: buildCodexPromptParts } = require('./codexPromptAssembly');
 const { evaluateSkillCommand } = require('./commandApproval');
 const {
@@ -186,7 +189,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
   throwIfAborted(signal);
 
   if (skillInstallTurn) {
-    return enforceNativeOkResponseBudget({
+    return reduceTaskResult({
       status: 'completed',
       projectId: mirror.projectKey,
       workspacePath: mirror.workspacePath,
@@ -245,7 +248,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
       ignoredChangedCount: rawSyncChanges.length,
       ignoredUnsupportedCount: unsupportedChanges.length
     }, rawSyncChanges.length || unsupportedChanges.length ? 'warning' : 'completed');
-    return enforceNativeOkResponseBudget({
+    return reduceTaskResult({
       status: 'completed',
       projectId: mirror.projectKey,
       workspacePath: mirror.workspacePath,
@@ -266,7 +269,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
     }
     return change;
   });
-  const response = enforceNativeOkResponseBudget({
+  const response = reduceTaskResult({
     status: 'completed',
     projectId: mirror.projectKey,
     workspacePath: mirror.workspacePath,
@@ -368,15 +371,6 @@ function normalizeTurnAttachments(value) {
     });
   }
   return result;
-}
-
-function estimateBase64DecodedBytes(value) {
-  const clean = String(value || '').replace(/\s+/g, '');
-  if (!clean) {
-    return 0;
-  }
-  const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0;
-  return Math.max(0, Math.floor(clean.length * 3 / 4) - padding);
 }
 
 function sanitizeAttachmentFileName(value) {

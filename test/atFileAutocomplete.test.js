@@ -53,12 +53,16 @@ test('the @compile-log gate matches tokens at start/after whitespace (the positi
 });
 
 test('first-run prompt never fires for installed profiles and burns its flag before showing', () => {
-  const src = getContentScriptSource();
+  const src = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/nativeCompatibilityController.js'),
+    'utf8'
+  );
   const prompt = extractFunction(src, 'maybePromptFirstRunSetup');
+  const refresh = extractFunction(src, 'refreshBadge');
   assert.match(prompt, /codexOverleafNativeEverOk/, 'ever-worked profiles are exempt');
   // wired from the resolved-but-unreachable branch (a missing host resolves
   // {ok:false}; it does not throw), gated on no native version
-  assert.match(src, /if \(!compatibility\?\.native\?\.version\) \{\n\s+maybePromptFirstRunSetup\(\);/);
+  assert.match(refresh, /if \(!compatibility\?\.native\?\.version\) maybePromptFirstRunSetup\(\);/);
   // and the compatible branch records the ever-ok marker
   assert.match(src, /codexOverleafNativeEverOk', 'true'/);
 });
@@ -92,12 +96,15 @@ test('the composer copy promises @ again now that it is real (en+zh)', () => {
 });
 
 test('first-run setup prompt opens once and can never nag-loop', () => {
-  const src = getContentScriptSource();
+  const src = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/nativeCompatibilityController.js'),
+    'utf8'
+  );
   const prompt = extractFunction(src, 'maybePromptFirstRunSetup');
   // The once-flag is written BEFORE the modal shows, so a dismissal is final
   // even if the modal throws; storage failures bail out silently.
   const setAt = prompt.indexOf("setItem('codexOverleafSetupPromptShown'");
-  const showAt = prompt.indexOf('showNativeUpdateGuidanceModal');
+  const showAt = prompt.indexOf('showUpdateGuidance');
   assert.ok(setAt !== -1 && showAt !== -1);
   assert.ok(setAt < showAt, 'flag persists before the modal opens');
   assert.match(prompt, /catch \(_storageError\)/);

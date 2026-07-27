@@ -11,7 +11,7 @@
   function create(deps = {}) {
     const {
       tx,
-      callPageBridge,
+      callPageBridge, getCurrentProjectId,
       getCurrentProjectReferenceFiles,
       showPluginToast
     } = deps;
@@ -287,7 +287,7 @@
       button.disabled = true;
       button.dataset.status = 'pending';
       try {
-        const result = await callPageBridge('jumpToPosition', params);
+        const result = await callPageBridge('jumpToPosition', { ...params, runProjectId: getCurrentProjectId?.() || '' });
         if (result?.ok === false) {
           button.dataset.status = 'failed';
           button.title = tx('Could not open that referenced line.', '无法打开引用的行。');

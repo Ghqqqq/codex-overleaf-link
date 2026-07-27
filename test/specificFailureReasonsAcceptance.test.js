@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const failureReasons = require('../extension/src/shared/failureReasons');
 const projectFiles = require('../extension/src/shared/projectFiles');
+const writebackSettlement = require('../extension/src/shared/writebackSettlement');
 const writebackRouterModule = require('../extension/src/page/writebackRouter');
 const staleGuard = require('../extension/src/shared/staleGuard');
 
@@ -116,48 +117,54 @@ function extractFunctionBody(source, name) {
   return '';
 }
 
-// Build a minimal harness around a set of contentRuntime helpers. We extract
-// the buildContentFailure helper + its CONTENT_FAILURE_CATALOG and any
-// dependent pure helpers we want to exercise. The harness fakes the i18n
-// `tx` shim and exposes the helpers as a returned object.
+// Build a minimal harness around content-runtime helpers that have not moved
+// into a shared module. Settlement helpers use the production shared API so
+// these acceptance tests follow the same dependency injection as the runtime.
 function loadContentRuntimeHelpers(names = []) {
-  const CONTENT_FAILURE_CATALOG_SRC = CONTENT_RUNTIME_SOURCE.match(
-    /const CONTENT_FAILURE_CATALOG = \{[\s\S]*?\n\s*\};/
-  )?.[0];
-  assert.ok(
-    CONTENT_FAILURE_CATALOG_SRC,
-    'CONTENT_FAILURE_CATALOG declaration should exist'
+  const buildFailure = (code, operation, overrides) =>
+    writebackSettlement.buildContentFailure(
+      code,
+      operation,
+      overrides,
+      failureReasons
+    );
+  const helpers = {
+    buildContentFailure: buildFailure
+  };
+  const runtimeNames = names.filter(
+    name => typeof writebackSettlement[name] !== 'function'
   );
-  const buildContentFailureSrc = extractFunctionBody(
-    CONTENT_RUNTIME_SOURCE,
-    'buildContentFailure'
-  );
-  const extracted = names
+  const extracted = runtimeNames
     .map(name => extractFunctionBody(CONTENT_RUNTIME_SOURCE, name))
     .join('\n');
-  const exportedKeys = ['buildContentFailure', ...names];
-  // Real undo-operations module so buildNoTraceUndoRestore/buildSnapshotRestoreUndo
-  // resolve to their production implementations when callers need them.
-  const undoOperations = require('../extension/src/shared/undoOperations');
-  // Real shared catalog: buildContentFailure falls back to it for every code
-  // outside the small content-local catalog (v1.7.6).
-  const FailureReasons = require('../extension/src/shared/failureReasons');
-  return Function(
-    'undoOperations',
-    'FailureReasons',
-    `
+  if (runtimeNames.length) {
+    const runtimeHelpers = Function(
+      `
     'use strict';
-    function tx(english) { return english; }
-    function tr(key) { return key; }
-    const buildSnapshotRestoreUndo = undoOperations.buildSnapshotRestoreUndo;
-    ${CONTENT_FAILURE_CATALOG_SRC}
-    ${buildContentFailureSrc}
     ${extracted}
     const exported = {};
-    ${exportedKeys.map(key => `exported.${key} = ${key};`).join('\n')}
+    ${runtimeNames.map(key => `exported.${key} = ${key};`).join('\n')}
     return exported;
   `
-  )(undoOperations, FailureReasons);
+    )();
+    Object.assign(helpers, runtimeHelpers);
+  }
+  for (const name of names) {
+    if (typeof writebackSettlement[name] !== 'function') continue;
+    if (
+      name === 'attachAcceptNotVerifiedFailure'
+      || name === 'attachUndoNotVerifiedFailure'
+    ) {
+      helpers[name] = (run, result, options = {}) =>
+        writebackSettlement[name](run, result, {
+          ...options,
+          buildFailure: options.buildFailure || buildFailure
+        });
+      continue;
+    }
+    helpers[name] = writebackSettlement[name];
+  }
+  return helpers;
 }
 
 // Create a single-doc writeback harness mirrored on createPageBridgeHarness

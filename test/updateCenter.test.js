@@ -49,7 +49,10 @@ test('failed managed updates stop progress and expose an actionable recovery com
   assert.match(notice, /codex-overleaf-link@\$\{version\} -- install-managed/);
   assert.match(notice, /update_recovery_timeout/);
   assert.match(notice, /id: 'copy-manual'/);
-  assert.match(bootstrap, /initializeBootstrap\(\)\.catch\(async error => \{\s*await setUpdateState\(\{ state: 'failed'/);
+  assert.match(
+    bootstrap,
+    /initializeBootstrap\(\)\.catch\(async error => \{[\s\S]*?state: 'failed'[\s\S]*?\{ observed: true \}/
+  );
   assert.match(bootstrap, /method: 'update\.status'/);
   assert.match(bootstrap, /transaction\?\.state === 'awaiting_health'[\s\S]*confirmPendingUpdate\(transaction\)/);
   assert.match(bootstrap, /async function rollbackBrokenRuntime\(error\)[\s\S]*state: 'failed'/);

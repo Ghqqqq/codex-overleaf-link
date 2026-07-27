@@ -10,6 +10,9 @@
   const i18n = (typeof module === 'object' && module.exports)
     ? require('./i18n')
     : (typeof globalThis !== 'undefined' ? globalThis : window).CodexOverleafI18n;
+  const SettlementFacts = (typeof module === 'object' && module.exports)
+    ? require('./settlementFacts')
+    : (typeof globalThis !== 'undefined' ? globalThis : window).CodexOverleafSettlementFacts;
 
   const DEFAULT_PANEL_STATE = {
     mode: 'confirm',
@@ -226,7 +229,15 @@
       requireReviewing: session.requireReviewing !== false,
       focusFiles: normalizeFocusFiles(session.focusFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
-      pendingInputs: normalizePendingInputs(session.pendingInputs, options.restoreRunningRuns === true)
+      pendingInputs: normalizePendingInputs(
+        session.pendingInputs,
+        options.restoreRunningRuns === true,
+        {
+          ...fallbackState,
+          ...session,
+          focusFiles: normalizeFocusFiles(session.focusFiles)
+        }
+      )
     };
   }
 
@@ -626,6 +637,18 @@
       interruptedDraft: run.interruptedDraft ? sanitizeAssistantVisibleValue(run.interruptedDraft) : undefined
     };
 
+    if (run.executionSnapshot && typeof run.executionSnapshot === 'object') {
+      normalized.executionSnapshot = sanitizeAssistantVisibleValue(run.executionSnapshot);
+    }
+    const storedSettlement = run.settlement && typeof run.settlement === 'object'
+      ? run.settlement
+      : run.settlementFacts;
+    if (storedSettlement && typeof storedSettlement === 'object') {
+      normalized.settlement = sanitizeAssistantVisibleValue(storedSettlement);
+    }
+    if (run.changedDocument === true) {
+      normalized.changedDocument = true;
+    }
     applyTrackedChangeStatus(normalized, run.trackedChangeStatus);
 
     return normalized;
@@ -658,7 +681,7 @@
     // the run returns to the legacy-undo world. A terminal status with no refs
     // is kept — step 3 already empties terminal payloads and the label stays
     // meaningful.
-    if (!hasRefs && status !== undefined && !TERMINAL_TRACKED_CHANGE_STATUS.has(status)) {
+    if (!hasRefs && status === 'pending') {
       status = undefined;
     }
 
@@ -1121,10 +1144,18 @@
       .filter(run => Array.isArray(run.undoOperations) && run.undoOperations.length)
       .slice(0, limits.maxUndoRunsPerSession)
       .map(run => run.id));
-    return selectedRuns.map(run => compactRunForStorage(run, limits, undoRunIds.has(run.id)));
+    const settlementFactsByRunId = SettlementFacts.compactSessionSettlementFacts(selectedRuns, {
+      sanitize: sanitizeAssistantVisibleValue
+    });
+    return selectedRuns.map(run => compactRunForStorage(
+      run,
+      limits,
+      undoRunIds.has(run.id),
+      settlementFactsByRunId.get(run.id)
+    ));
   }
 
-  function compactRunForStorage(run, limits, keepUndoPayload) {
+  function compactRunForStorage(run, limits, keepUndoPayload, settlementFacts = null) {
     const undoPayload = compactUndoPayload(run, limits, keepUndoPayload);
     const compact = {
       id: run.id,
@@ -1151,6 +1182,15 @@
       nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,
       queueItemId: normalizeTextField(run.queueItemId, 160)
     };
+    if (run.executionSnapshot && typeof run.executionSnapshot === 'object') {
+      compact.executionSnapshot = sanitizeAssistantVisibleValue(run.executionSnapshot);
+    }
+    if (settlementFacts && typeof settlementFacts === 'object') {
+      compact.settlement = settlementFacts;
+    }
+    if (run.changedDocument === true) {
+      compact.changedDocument = true;
+    }
     if (run.interruptedDraft) {
       compact.interruptedDraft = sanitizeAssistantVisibleValue(run.interruptedDraft);
     }
@@ -1384,11 +1424,11 @@
       }));
   }
 
-  function normalizePendingInputs(value, recoverActive = false) {
+  function normalizePendingInputs(value, recoverActive = false, fallbackInput = {}) {
     const Queue = (typeof globalThis !== 'undefined' ? globalThis.CodexOverleafRunInputQueue : null)
       || (typeof module === 'object' && module.exports ? require('./runInputQueue') : null);
     if (Queue?.normalizeQueue) {
-      return Queue.normalizeQueue(value, { recoverActive });
+      return Queue.normalizeQueue(value, { recoverActive, fallbackInput });
     }
     return [];
   }

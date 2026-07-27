@@ -30,7 +30,7 @@ function noopEl() {
   };
 }
 
-function createSandbox() {
+function createSandbox(options = {}) {
   const storage = {
     get(keys, cb) {
       if (typeof cb === 'function') { cb({}); return undefined; }
@@ -58,7 +58,9 @@ function createSandbox() {
     chrome: {
       runtime: {
         onMessage: { addListener() {} },
-        sendMessage: () => new Promise(() => {}),
+        sendMessage: options.resolveRuntimeMessages
+          ? () => Promise.resolve({})
+          : () => new Promise(() => {}),
         getURL: p => `chrome-extension://test/${p}`,
         id: 'test'
       },
@@ -68,7 +70,10 @@ function createSandbox() {
     // Non-project route: the contract under test is the load + composition
     // path inside init(); a project route would auto-mount the panel, which
     // the minimal element stubs cannot support.
-    location: { pathname: '/', href: 'https://www.overleaf.com/' },
+    location: {
+      pathname: options.pathname || '/',
+      href: options.href || 'https://www.overleaf.com/'
+    },
     MutationObserver: class { observe() {} disconnect() {} },
     requestAnimationFrame: () => 0, cancelAnimationFrame() {},
     addEventListener() {}, removeEventListener() {},
@@ -108,4 +113,32 @@ test('every content script loads in manifest order and init() mounts the runtime
     await new Promise(resolve => setImmediate(resolve));
   }
   process.off('unhandledRejection', trap);
+});
+
+test('project route mounts the panel while account identity is still hydrating', async () => {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '../extension/manifest.json'), 'utf8')
+  );
+  const files = manifest.content_scripts[0].js;
+  const sandbox = createSandbox({
+    pathname: '/project/0123456789abcdef01234567',
+    href: 'https://www.overleaf.com/project/0123456789abcdef01234567',
+    resolveRuntimeMessages: true
+  });
+  const ctx = vm.createContext(sandbox);
+  for (const file of files) {
+    const src = fs.readFileSync(path.join(__dirname, '../extension', file), 'utf8');
+    vm.runInContext(src, ctx, { filename: file });
+  }
+
+  const trap = () => {};
+  process.on('unhandledRejection', trap);
+  for (let i = 0; i < 5; i++) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  process.off('unhandledRejection', trap);
+
+  const state = sandbox.__codexOverleafContentRuntimeState;
+  assert.ok(state, 'content runtime state should be recorded');
+  assert.equal(state.ok, true, `project-route init must not fail closed before panel mount: ${JSON.stringify(state)}`);
 });

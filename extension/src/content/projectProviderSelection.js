@@ -30,24 +30,16 @@
       const nextSpeedTier = deps.readSelectedSpeed?.() || state.speedTier;
       const runSelection = deps.getRunSelection?.(nextProviderId);
       const nextProviderRevision = Number(runSelection?.providerRevision || 0);
+      const providerConfigurationChanged = nextProviderId === (state.providerId || 'builtin')
+        && nextProviderRevision !== Number(state.providerRevision || 0);
+      const resetProviderThread = providerChanged || providerConfigurationChanged;
       const sessions = (state.sessions || []).map(session => ({
         ...session,
         providerId: nextProviderId,
         model: nextModel,
         reasoningEffort: nextReasoningEffort,
         speedTier: nextSpeedTier,
-        codexThreadId: providerChanged ? '' : session.codexThreadId,
-        pendingInputs: (session.pendingInputs || []).map(item => ({
-          ...item,
-          payload: {
-            ...(item.payload || {}),
-            providerId: nextProviderId,
-            providerRevision: nextProviderRevision,
-            model: nextModel,
-            reasoningEffort: nextReasoningEffort,
-            speedTier: nextSpeedTier
-          }
-        }))
+        codexThreadId: resetProviderThread ? '' : session.codexThreadId
       }));
       deps.setState?.(deps.normalizeState({
         ...state,

@@ -75,10 +75,14 @@ test('savePrefs normalizes custom instruction project prefs', async () => {
 });
 
 test('current-schema migration load path normalizes experimental OT map values', async () => {
+  const writes = [];
   const previousWindow = global.window;
   const previousChrome = global.chrome;
   const fakeStorageDb = {
     TARGET_SCHEMA_VERSION: 1,
+    claimSessionsForAccount() {
+      return Promise.resolve([]);
+    },
     getAllByIndex() {
       return Promise.resolve([]);
     }
@@ -107,27 +111,30 @@ test('current-schema migration load path normalizes experimental OT map values',
               }
             }
           });
+        },
+        set(payload) {
+          writes.push(payload);
+          return Promise.resolve();
         }
       }
     }
   };
 
   try {
-    const result = await Migration.runMigrationIfNeeded('project_1', 'legacy');
+    const result = await Migration.runMigrationIfNeeded('project_1', 'legacy', 'account-1');
     assert.equal(result.migrated, false);
     assert.deepEqual(result.prefs.experimentalOtByProject, {
-      project_1: true,
-      project_2: false,
-      project_3: false,
-      project_4: false,
-      project_5: false
+      project_1: true
     });
     assert.deepEqual(result.prefs.customInstructionsByProject, {
-      project_1: 'Prefer \\cref{}.',
-      project_2: '',
-      project_3: ''
+      project_1: 'Prefer \\cref{}.'
     });
-    assert.equal(result.activeSessionId, 'session_1');
+    const scopedPrefsKey = Migration.buildScopedProjectPreferenceKey('account-1', 'project_1');
+    const prefsWrites = writes.filter((payload) => payload[Migration.PREFS_KEY]);
+    const persistedPrefs = prefsWrites[prefsWrites.length - 1][Migration.PREFS_KEY];
+    assert.equal(persistedPrefs.experimentalOtByProject[scopedPrefsKey], true);
+    assert.equal(persistedPrefs.customInstructionsByProject[scopedPrefsKey], 'Prefer \\cref{}.');
+    assert.equal(result.activeSessionId, '');
   } finally {
     global.window = previousWindow;
     global.chrome = previousChrome;
@@ -223,7 +230,7 @@ test('migration preserves legacy session display fields and settings', async () 
   };
 
   try {
-    const result = await Migration.runMigrationIfNeeded('project_1', legacyStorageKey);
+    const result = await Migration.runMigrationIfNeeded('project_1', legacyStorageKey, 'account-1');
     const [record] = calls.putRecords[0].records;
 
     assert.equal(result.migrated, true);
@@ -242,14 +249,13 @@ test('migration preserves legacy session display fields and settings', async () 
     assert.equal(record.runs[0].events[0].status, 'completed');
     assert.deepEqual(result.prefs.experimentalOtByProject, { project_1: true });
     assert.deepEqual(result.prefs.customInstructionsByProject, {
-      project_1: 'Use ACL style.',
-      project_2: ''
+      project_1: 'Use ACL style.'
     });
-    assert.deepEqual(calls.set[0][Migration.PREFS_KEY].experimentalOtByProject, { project_1: true });
-    assert.deepEqual(calls.set[0][Migration.PREFS_KEY].customInstructionsByProject, {
-      project_1: 'Use ACL style.',
-      project_2: ''
-    });
+    const scopedPrefsKey = Migration.buildScopedProjectPreferenceKey('account-1', 'project_1');
+    const prefsWrites = calls.set.filter((payload) => payload[Migration.PREFS_KEY]);
+    const persistedPrefs = prefsWrites[prefsWrites.length - 1][Migration.PREFS_KEY];
+    assert.equal(persistedPrefs.experimentalOtByProject[scopedPrefsKey], true);
+    assert.equal(persistedPrefs.customInstructionsByProject[scopedPrefsKey], 'Use ACL style.');
     assert.equal(calls.remove[0], legacyStorageKey);
   } finally {
     global.window = previousWindow;
@@ -360,7 +366,11 @@ test('migration strips bulky legacy payloads while preserving displayable histor
   };
 
   try {
-    const result = await Migration.runMigrationIfNeeded('project_privacy', legacyStorageKey);
+    const result = await Migration.runMigrationIfNeeded(
+      'project_privacy',
+      legacyStorageKey,
+      'account-1'
+    );
     const persisted = JSON.stringify({
       result,
       putRecords: calls.putRecords

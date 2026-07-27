@@ -169,3 +169,196 @@ test('explicit Built-in activation preloads its catalog before the atomic projec
   assert.equal(selectedModel, 'gpt-5.4');
   assert.deepEqual(calls, ['refresh:builtin', 'provider:builtin', 'model:gpt-5.4', 'persist']);
 });
+
+test('same-id provider catalog changes commit the new revision to the project', async t => {
+  const previousWindow = global.window;
+  const coordinatorPath = require.resolve('../extension/src/content/providerSettingsCoordinator');
+  class FakeBroadcastChannel {
+    addEventListener() {}
+    postMessage() {}
+    close() {}
+  }
+  const fakeWindow = {
+    BroadcastChannel: FakeBroadcastChannel,
+    CodexOverleafProviderProfiles: ProviderProfiles,
+    CodexOverleafProviderSettingsDialog: {
+      create: () => ({ isOpen: () => false, destroy() {} })
+    }
+  };
+  global.window = fakeWindow;
+  delete require.cache[coordinatorPath];
+  require(coordinatorPath);
+  t.after(() => {
+    delete require.cache[coordinatorPath];
+    global.window = previousWindow;
+  });
+
+  let selectedProviderId = 'provider-a';
+  const calls = [];
+  const coordinator = fakeWindow.CodexOverleafProviderSettingsCoordinator.create({
+    document: {},
+    window: fakeWindow,
+    getSelectedProviderId: () => selectedProviderId,
+    setSelectedProviderId: (providerId, modelId) => {
+      selectedProviderId = providerId;
+      calls.push(`provider:${providerId}`);
+      calls.push(`model:${modelId}`);
+    },
+    refreshModelOptions: async selection => {
+      calls.push(`refresh:${selection.providerId}`);
+      return { stale: false, selectedModel: 'model-a' };
+    },
+    persistInputs: async () => calls.push('persist')
+  });
+  const catalog = ProviderProfiles.normalizeCatalog({
+    activeProviderId: 'provider-a',
+    providers: [customProvider('provider-a', 5, 'model-a')]
+  });
+  coordinator._instance.catalog = catalog;
+  coordinator._instance.loaded = true;
+
+  await coordinator._instance.onProviderChanged(catalog, {
+    changedProviderIds: ['provider-a']
+  });
+
+  assert.deepEqual(calls, [
+    'refresh:provider-a',
+    'provider:provider-a',
+    'model:model-a',
+    'persist'
+  ]);
+});
+
+test('cross-tab same-id provider revision changes invalidate the project binding', async t => {
+  const previousWindow = global.window;
+  const coordinatorPath = require.resolve('../extension/src/content/providerSettingsCoordinator');
+  let channel;
+  class FakeBroadcastChannel {
+    constructor() {
+      channel = this;
+    }
+    addEventListener(_type, listener) {
+      this.listener = listener;
+    }
+    postMessage() {}
+    close() {}
+  }
+  const fakeWindow = {
+    BroadcastChannel: FakeBroadcastChannel,
+    CodexOverleafProviderProfiles: ProviderProfiles,
+    CodexOverleafProviderSettingsDialog: {
+      create: () => ({ isOpen: () => false, destroy() {} })
+    }
+  };
+  global.window = fakeWindow;
+  delete require.cache[coordinatorPath];
+  require(coordinatorPath);
+  t.after(() => {
+    delete require.cache[coordinatorPath];
+    global.window = previousWindow;
+  });
+
+  const initialCatalog = ProviderProfiles.normalizeCatalog({
+    storeRevision: 4,
+    activeProviderId: 'provider-a',
+    providers: [customProvider('provider-a', 4, 'model-a')]
+  });
+  const updatedCatalog = ProviderProfiles.normalizeCatalog({
+    storeRevision: 5,
+    activeProviderId: 'provider-a',
+    providers: [customProvider('provider-a', 5, 'model-a')]
+  });
+  const calls = [];
+  const coordinator = fakeWindow.CodexOverleafProviderSettingsCoordinator.create({
+    document: {},
+    window: fakeWindow,
+    getSelectedProviderId: () => 'provider-a',
+    getSelectedModel: () => 'model-a',
+    setSelectedProviderId: (providerId, modelId) => {
+      calls.push(`provider:${providerId}`);
+      calls.push(`model:${modelId}`);
+    },
+    refreshModelOptions: async selection => {
+      calls.push(`refresh:${selection.providerId}`);
+      return { stale: false, selectedModel: 'model-a' };
+    },
+    persistInputs: async () => calls.push('persist'),
+    sendBackgroundNative: async () => ({ ok: true, result: updatedCatalog })
+  });
+  coordinator._instance.catalog = initialCatalog;
+  coordinator._instance.loaded = true;
+
+  channel.listener({ data: { type: 'provider-settings-changed' } });
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(calls, [
+    'refresh:provider-a',
+    'provider:provider-a',
+    'model:model-a',
+    'persist'
+  ]);
+});
+
+test('removing the project provider falls back to Built-in Codex atomically', async t => {
+  const previousWindow = global.window;
+  const coordinatorPath = require.resolve('../extension/src/content/providerSettingsCoordinator');
+  class FakeBroadcastChannel {
+    addEventListener() {}
+    postMessage() {}
+    close() {}
+  }
+  const fakeWindow = {
+    BroadcastChannel: FakeBroadcastChannel,
+    CodexOverleafProviderProfiles: ProviderProfiles,
+    CodexOverleafProviderSettingsDialog: {
+      create: () => ({ isOpen: () => false, destroy() {} })
+    }
+  };
+  global.window = fakeWindow;
+  delete require.cache[coordinatorPath];
+  require(coordinatorPath);
+  t.after(() => {
+    delete require.cache[coordinatorPath];
+    global.window = previousWindow;
+  });
+
+  let selectedProviderId = 'provider-a';
+  const calls = [];
+  const coordinator = fakeWindow.CodexOverleafProviderSettingsCoordinator.create({
+    document: {},
+    window: fakeWindow,
+    getSelectedProviderId: () => selectedProviderId,
+    setSelectedProviderId: (providerId, modelId) => {
+      selectedProviderId = providerId;
+      calls.push(`provider:${providerId}`);
+      calls.push(`model:${modelId}`);
+    },
+    refreshModelOptions: async selection => {
+      calls.push(`refresh:${selection.providerId}`);
+      return { stale: false, selectedModel: selection.providerId === 'builtin' ? 'gpt-5.4' : 'model-a' };
+    },
+    persistInputs: async () => calls.push('persist'),
+    confirmProviderSwitch: async () => {
+      calls.push('confirm');
+      return false;
+    }
+  });
+  const catalog = ProviderProfiles.normalizeCatalog({
+    activeProviderId: 'builtin',
+    providers: []
+  });
+  coordinator._instance.catalog = catalog;
+  coordinator._instance.loaded = true;
+
+  await coordinator._instance.onProviderChanged(catalog, {
+    changedProviderIds: ['provider-a']
+  });
+
+  assert.deepEqual(calls, [
+    'refresh:builtin',
+    'provider:builtin',
+    'model:gpt-5.4',
+    'persist'
+  ]);
+});

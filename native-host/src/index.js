@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const { decodeFrames, encodeMessage } = require('./nativeMessaging');
+const { decodeInputFrames, encodeOutputFrame } = require('./nativeTransportEnvelope');
 const { logDebug } = require('./debugLog');
 const { handleRequest } = require('./taskRunner');
 const { abortAllActiveOperations, getActiveNativeWorkState } = require('./taskRunnerRuntime');
@@ -21,7 +21,7 @@ process.stdin.on('data', chunk => {
 
   let decoded;
   try {
-    decoded = decodeFrames(buffered);
+    decoded = decodeInputFrames(buffered);
   } catch (error) {
     writeResponse({
       ok: false,
@@ -111,24 +111,7 @@ function writeResponse(response) {
     logDebug('stdout.write_skipped', { ok: response?.ok, code: response?.error?.code });
     return false;
   }
-  let frame;
-  try {
-    frame = encodeMessage(response);
-  } catch (error) {
-    const fallback = buildOversizeResponseFallback(response, error);
-    try {
-      frame = encodeMessage(fallback);
-    } catch (fallbackError) {
-      frame = encodeMessage({
-        id: response?.id,
-        ok: false,
-        error: {
-          code: 'native_response_too_large',
-          message: truncateForNativeFrame(fallbackError.message || error.message || 'Native response exceeded the browser frame limit.', 800)
-        }
-      });
-    }
-  }
+  const frame = encodeOutputFrame(response);
   logDebug('stdout.write', { bytes: frame.length, ok: response?.ok, code: response?.error?.code });
   try {
     process.stdout.write(frame, error => {
@@ -166,55 +149,6 @@ function handleNativeDisconnect(source, error) {
   process.exitCode = 0;
   const exitTimer = setTimeout(() => process.exit(0), 1500);
   exitTimer.unref?.();
-}
-
-function buildOversizeResponseFallback(response, error) {
-  if (response?.event) {
-    const event = response.event || {};
-    return {
-      id: response.id,
-      ok: true,
-      event: {
-        type: event.type || 'native.event.truncated',
-        title: truncateForNativeFrame(event.title || 'Native event was truncated', 500),
-        status: event.status || 'warning',
-        detail: {
-          code: 'native_event_truncated',
-          reason: truncateForNativeFrame(error?.message || 'Native event exceeded the browser frame limit.', 800),
-          originalType: truncateForNativeFrame(event.type || '', 160),
-          originalTitle: truncateForNativeFrame(event.title || '', 500),
-          originalDetailBytes: stringByteLength(safeJsonStringify(event.detail))
-        },
-        timestamp: event.timestamp || new Date().toISOString()
-      }
-    };
-  }
-
-  return {
-    id: response?.id,
-    ok: false,
-    error: {
-      code: 'native_response_too_large',
-      message: truncateForNativeFrame(error?.message || 'Native response exceeded the browser frame limit.', 800),
-      originalOk: response?.ok === true
-    }
-  };
-}
-
-function truncateForNativeFrame(value, limit) {
-  const text = String(value || '');
-  if (text.length <= limit) {
-    return text;
-  }
-  return `${text.slice(0, Math.max(0, limit - 24))}... [truncated]`;
-}
-
-function safeJsonStringify(value) {
-  try {
-    return JSON.stringify(value);
-  } catch (_error) {
-    return '';
-  }
 }
 
 function summarizeRequest(message) {

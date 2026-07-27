@@ -9,16 +9,23 @@ const repo = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
 test('diagnostics trigger shows a health dot driven by native compatibility', () => {
   const diag = repo('extension/src/content/diagnosticsPanel.js');
   const runtime = repo('extension/src/content/contentRuntime.js');
+  const compatibilityController = repo('extension/src/content/nativeCompatibilityController.js');
   const css = repo('extension/styles/panel.css');
 
   assert.match(diag, /data-diagnostics-health-dot/, 'trigger carries a health dot');
   const updateStatus = extractFunction(diag, 'updateStatus');
   assert.match(updateStatus, /data-diagnostics-health-dot/);
   assert.match(updateStatus, /dot\.dataset\.health/);
-  // The native-compatibility refresh pushes the health bucket to the dot.
-  assert.match(runtime, /setDiagnosticsHealth\('ok'\)/);
-  assert.match(runtime, /setDiagnosticsHealth\(classification === 'update-available' \? 'warn' : 'fail'\)/);
-  assert.match(runtime, /setDiagnosticsHealth\('fail'\)/);
+  // The native-compatibility owner pushes the health bucket through the
+  // callback injected by the runtime.
+  assert.match(runtime, /setDiagnosticsHealth,/);
+  assert.match(runtime, /nativeCompatibilityController\.refreshBadge\(\)/);
+  assert.match(compatibilityController, /setDiagnosticsHealth\?\.\('ok'\)/);
+  assert.match(
+    compatibilityController,
+    /setDiagnosticsHealth\?\.\(classification === 'update-available' \? 'warn' : 'fail'\)/
+  );
+  assert.match(compatibilityController, /setDiagnosticsHealth\?\.\('fail'\)/);
   // CSS colors the dot per state.
   assert.match(css, /\.codex-diagnostics-dot\[data-health="ok"\]/);
   assert.match(css, /\.codex-diagnostics-dot\[data-health="fail"\]/);

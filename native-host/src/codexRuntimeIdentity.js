@@ -7,7 +7,7 @@ const { spawnSync } = require('node:child_process');
 
 const RUNTIME_ENV_KEY = 'CODEX_OVERLEAF_CODEX_RUNTIME_JSON';
 const MAX_CODEX_CANDIDATES = 8;
-const VERSION_TIMEOUT_MS = 700;
+const VERSION_TIMEOUT_MS = 3000;
 
 function buildCodexRuntimeIdentity(options = {}) {
   const env = options.env || process.env;

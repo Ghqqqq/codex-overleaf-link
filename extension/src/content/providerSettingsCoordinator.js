@@ -143,11 +143,17 @@
 
   async function reconcileProviderSelection(instance, catalog, change = {}) {
     const previousProviderId = instance.getSelectedProviderId() || 'builtin';
-    const requestedProviderId = typeof change.sessionProviderId === 'string' && change.sessionProviderId
+    let requestedProviderId = typeof change.sessionProviderId === 'string' && change.sessionProviderId
       ? change.sessionProviderId
       : previousProviderId;
+    const requestedProviderAvailable = requestedProviderId === 'builtin'
+      || Boolean(window.CodexOverleafProviderProfiles.getProviderById(catalog, requestedProviderId));
+    const selectedProviderWasRemoved = !requestedProviderAvailable;
+    if (selectedProviderWasRemoved) {
+      requestedProviderId = 'builtin';
+    }
     const projectProviderChanged = requestedProviderId !== previousProviderId;
-    if (projectProviderChanged && change.providerSwitchApproved !== true) {
+    if (projectProviderChanged && !selectedProviderWasRemoved && change.providerSwitchApproved !== true) {
       const requestedProvider = window.CodexOverleafProviderProfiles.getProviderById(catalog, requestedProviderId);
       const approved = await instance.confirmProviderSwitch({
         providerId: requestedProviderId,
@@ -158,7 +164,8 @@
       }
     }
     const changedProviderIds = Array.isArray(change.changedProviderIds) ? change.changedProviderIds : [];
-    if (!change.forceSessionRefresh && !projectProviderChanged && !changedProviderIds.includes(requestedProviderId)) {
+    const providerConfigurationChanged = changedProviderIds.includes(requestedProviderId);
+    if (!change.forceSessionRefresh && !projectProviderChanged && !providerConfigurationChanged) {
       return;
     }
     const loadResult = change.modelsPreloaded === true
@@ -175,7 +182,7 @@
       error.details = loadResult?.error || {};
       throw error;
     }
-    if (projectProviderChanged) {
+    if (projectProviderChanged || providerConfigurationChanged) {
       await instance.setSelectedProviderId(requestedProviderId, loadResult?.selectedModel || '');
     }
     await instance.persistInputs();
@@ -550,6 +557,10 @@
   function modelCatalogSignature(provider = {}) {
     return JSON.stringify({
       id: provider.id || '',
+      revision: Number(provider.revision || 0),
+      baseUrl: provider.baseUrl || '',
+      wireApiPreference: provider.wireApiPreference || '',
+      resolvedWireApi: provider.resolvedWireApi || '',
       defaultModelId: provider.defaultModelId || '',
       reasoningAdapter: provider.reasoningAdapter || '',
       reasoningCapability: provider.reasoningCapability || '',

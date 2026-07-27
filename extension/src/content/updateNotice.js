@@ -11,7 +11,8 @@
   let settingsActionInFlight = false;
   let restartWatchdog = null;
   let manualCommandCopied = false;
-  const ACTIVE_UPDATE_STATES = new Set(['downloading', 'staged', 'waiting_for_idle', 'applying', 'awaiting_health']);
+  const UpdateProjection = root.CodexOverleafManagedUpdateProjection;
+  const ACTIVE_UPDATE_STATES = new Set(UpdateProjection.activePhases('panel'));
   const RESTART_WATCHDOG_MS = 30 * 1000;
 
   function mount(panelLike, options = {}) {

@@ -30,8 +30,10 @@ let runtimeLoadError = null;
 try {
   globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ = 'runtime';
   importScripts(
+    chrome.runtime.getURL('bootstrap/updateHealth.js'),
     chrome.runtime.getURL('bootstrap/updateStatus.js'),
     chrome.runtime.getURL('runtime/src/shared/compatibility.js'),
+    chrome.runtime.getURL('runtime/src/shared/managedUpdateProjection.js'),
     chrome.runtime.getURL('runtime/src/background.js')
   );
 } catch (error) {
@@ -68,7 +70,10 @@ chrome.alarms.onAlarm.addListener(alarm => {
 });
 
 initializeBootstrap().catch(async error => {
-  await setUpdateState({ state: 'failed', code: safeCode(error), message: safeMessage(error) });
+  await setUpdateState(
+    { state: 'failed', code: safeCode(error), message: safeMessage(error) },
+    { observed: true }
+  );
 });
 
 async function initializeBootstrap() {
@@ -383,7 +388,7 @@ async function confirmPendingUpdate(transaction) {
     currentVersion: targetVersion,
     latestVersion: targetVersion,
     lastCheckedAt: Date.now()
-  });
+  }, { observed: true });
   await chrome.storage.local.remove(UPDATE_RELOAD_TABS_KEY);
   await broadcastUpdateState('committed');
 }
@@ -395,6 +400,13 @@ async function verifyPendingRuntimeHealth(targetVersion) {
   const remaining = new Set(tabIds);
   const deadline = Date.now() + 20000;
   while (remaining.size && Date.now() < deadline) {
+    try {
+      const openTabs = await chrome.tabs.query({ url: OVERLEAF_MATCHES });
+      globalThis.CodexOverleafUpdateHealth.pruneClosedTabIds(remaining, openTabs);
+    } catch (_error) {
+      // A transient query failure keeps the previous target set for retry.
+    }
+    if (!remaining.size) break;
     await Promise.all([...remaining].map(async tabId => {
       try {
         const response = await withTimeout(
@@ -415,17 +427,26 @@ async function verifyPendingRuntimeHealth(targetVersion) {
 }
 
 async function rollbackBrokenRuntime(error) {
-  await setUpdateState({ state: 'rolling_back', code: safeCode(error), message: safeMessage(error) });
+  await setUpdateState(
+    { state: 'rolling_back', code: safeCode(error), message: safeMessage(error) },
+    { observed: true }
+  );
   const rolledBack = await requestInternal({
     method: 'update.rollback',
     params: { reasonCode: safeCode(error) }
   }).catch(() => null);
   if (rolledBack?.ok) {
-    await setUpdateState({ state: 'rolled_back', code: safeCode(error), currentVersion: rolledBack.result.version });
+    await setUpdateState(
+      { state: 'rolled_back', code: safeCode(error), currentVersion: rolledBack.result.version },
+      { observed: true }
+    );
     chrome.runtime.reload();
     return;
   }
-  await setUpdateState({ state: 'failed', code: safeCode(error), message: safeMessage(error) });
+  await setUpdateState(
+    { state: 'failed', code: safeCode(error), message: safeMessage(error) },
+    { observed: true }
+  );
 }
 
 async function reloadPendingOverleafTabs() {
@@ -468,33 +489,27 @@ async function requestInternal(payload) {
 
 async function getUpdateState() {
   const stored = await chrome.storage.local.get(UPDATE_STATE_KEY);
-  return stored[UPDATE_STATE_KEY] || {
+  return globalThis.CodexOverleafManagedUpdateProjection.normalize(stored[UPDATE_STATE_KEY] || {
     state: 'idle',
     managed: true,
     currentVersion: chrome.runtime.getManifest().version,
     latestVersion: chrome.runtime.getManifest().version
-  };
+  }, {
+    currentVersion: chrome.runtime.getManifest().version,
+    normalizeBlockers: globalThis.CodexOverleafUpdateStatus?.normalizeBlockers
+  });
 }
 
-async function setUpdateState(next) {
-  const blockers = globalThis.CodexOverleafUpdateStatus?.normalizeBlockers(
-    Array.isArray(next.blockers) ? next.blockers : (next.blocker ? [next.blocker] : [])
-  ) || [];
-  const value = {
-    state: next.state || 'idle',
-    managed: next.managed !== false,
-    currentVersion: next.currentVersion || chrome.runtime.getManifest().version,
-    latestVersion: next.latestVersion || next.currentVersion || chrome.runtime.getManifest().version,
-    etag: next.etag || '',
-    lastCheckedAt: Number(next.lastCheckedAt || 0),
-    stagedAt: Number(next.stagedAt || 0),
-    postponeUntil: Number(next.postponeUntil || 0),
-    transactionId: next.transactionId || '',
-    blocker: blockers[0] || '',
-    blockers,
-    code: next.code || '',
-    message: String(next.message || '').slice(0, 300)
-  };
+async function setUpdateState(next, options = {}) {
+  const current = await getUpdateState();
+  const transition = options.observed === true
+    ? globalThis.CodexOverleafManagedUpdateProjection.transition
+    : globalThis.CodexOverleafManagedUpdateProjection.transitionCommand;
+  const value = transition(current, next, {
+    merge: false,
+    currentVersion: chrome.runtime.getManifest().version,
+    normalizeBlockers: globalThis.CodexOverleafUpdateStatus?.normalizeBlockers
+  });
   await chrome.storage.local.set({ [UPDATE_STATE_KEY]: value });
   return value;
 }

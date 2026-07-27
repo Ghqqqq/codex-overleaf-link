@@ -87,6 +87,10 @@
       authorizedVersion: safeVersion(value.authorizedVersion),
       authorizationId: safeId(value.authorizationId),
       authorizedAt: finiteNumber(value.authorizedAt),
+      revokingAuthorizationId: safeId(value.revokingAuthorizationId),
+      revokingVersion: safeVersion(value.revokingVersion),
+      revokingTransactionId: safeId(value.revokingTransactionId),
+      revokingAt: finiteNumber(value.revokingAt),
       lastPromptedVersion: safeVersion(value.lastPromptedVersion),
       lastPromptedAt: finiteNumber(value.lastPromptedAt)
     };

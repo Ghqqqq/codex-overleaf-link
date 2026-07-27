@@ -17,6 +17,9 @@
     const callPageBridge = typeof deps.callPageBridge === 'function'
       ? deps.callPageBridge
       : () => Promise.resolve({ ok: false, reason: tr('diffHunkJumpFailed') });
+    const getCurrentProjectId = typeof deps.getCurrentProjectId === 'function'
+      ? deps.getCurrentProjectId
+      : () => '';
     const getRunEvents = typeof deps.getRunEvents === 'function' ? deps.getRunEvents : () => null;
     const appendRunEvent = typeof deps.appendRunEvent === 'function' ? deps.appendRunEvent : () => {};
     const scrollLogToBottom = typeof deps.scrollLogToBottom === 'function' ? deps.scrollLogToBottom : () => {};
@@ -249,7 +252,12 @@
         const view = hunkViews.get(reviewHunk.decisionKey);
         setHunkJumpStatus(view, 'pending', '');
         try {
-          const result = await callPageBridge('jumpToPosition', { path, from, to });
+          const result = await callPageBridge('jumpToPosition', {
+            path,
+            from,
+            to,
+            runProjectId: getCurrentProjectId()
+          });
           if (result?.ok === false) {
             setHunkJumpStatus(view, 'failed', result.reason || tr('diffHunkJumpFailed'));
           } else {

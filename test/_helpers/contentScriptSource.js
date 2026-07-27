@@ -4,6 +4,7 @@ const path = require('node:path');
 const { extractFunction } = require('./extractFunction');
 
 const CONTENT_DIR = path.join(__dirname, '..', '..', 'extension', 'src', 'content');
+const SHARED_DIR = path.join(__dirname, '..', '..', 'extension', 'src', 'shared');
 
 const CONTENT_SCRIPT_PATH = path.join(CONTENT_DIR, 'contentRuntime.js');
 
@@ -13,6 +14,8 @@ const CONTENT_SCRIPT_PATH = path.join(CONTENT_DIR, 'contentRuntime.js');
 // matching wherever they live. Modules come first so extractFunction finds the
 // real implementation, never a same-named runtime binding.
 const CONTENT_SOURCE_PATHS = [
+  path.join(SHARED_DIR, 'runExecutionSnapshot.js'),
+  path.join(SHARED_DIR, 'writebackSettlement.js'),
   path.join(CONTENT_DIR, 'markdownText.js'),
   path.join(CONTENT_DIR, 'diagnosticsController.js'),
   path.join(CONTENT_DIR, 'runTimelineView.js'),

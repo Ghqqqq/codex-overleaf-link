@@ -1412,20 +1412,31 @@ test('normalizeRun trackedChangeStatus normalization is idempotent', () => {
 
 const NON_TERMINAL_TRACKED_CHANGE_STATUSES = ['pending', 'needs_review'];
 
-for (const status of NON_TERMINAL_TRACKED_CHANGE_STATUSES) {
-  test(`normalizeRun drops a non-terminal trackedChangeStatus "${status}" when the reloaded run has no tracked-change refs`, () => {
-    const run = normalizeRun({
-      id: 'run_reloaded',
-      task: 'reloaded tracked change run',
-      status: 'completed',
-      trackedChangeStatus: status,
-      undoTrackedChanges: [],
-      undoExpectedFiles: []
-    });
-
-    assert.equal('trackedChangeStatus' in run, false, `non-terminal "${status}" with no refs`);
+test('normalizeRun drops pending when the reloaded run has no tracked-change refs', () => {
+  const run = normalizeRun({
+    id: 'run_reloaded_pending',
+    task: 'reloaded tracked change run',
+    status: 'completed',
+    trackedChangeStatus: 'pending',
+    undoTrackedChanges: [],
+    undoExpectedFiles: []
   });
-}
+
+  assert.equal('trackedChangeStatus' in run, false);
+});
+
+test('normalizeRun preserves needs_review as audit state without tracked-change refs', () => {
+  const run = normalizeRun({
+    id: 'run_reloaded_needs_review',
+    task: 'reloaded tracked change run',
+    status: 'completed',
+    trackedChangeStatus: 'needs_review',
+    undoTrackedChanges: [],
+    undoExpectedFiles: []
+  });
+
+  assert.equal(run.trackedChangeStatus, 'needs_review');
+});
 
 for (const status of NON_TERMINAL_TRACKED_CHANGE_STATUSES) {
   test(`normalizeRun keeps a non-terminal trackedChangeStatus "${status}" when tracked-change refs are present`, () => {
@@ -1844,4 +1855,20 @@ test('composer attachments persist across refresh within hard caps (v1.8.0 C4)',
   assert.equal(compact.composerAttachments.length, 3,
     'attachments survive the storage-compaction whitelist');
   assert.equal(compact.composerAttachments[0].contentBase64, 'QUJD');
+});
+
+test('normalizeRun migrates settlementFacts to canonical settlement storage', () => {
+  const run = normalizeRun({
+    id: 'run_settlement_alias',
+    task: 'migration',
+    status: 'completed',
+    settlementFacts: {
+      schemaVersion: 1,
+      documentEffect: 'changed',
+      evidence: { settled: 'complete' }
+    }
+  });
+
+  assert.equal(run.settlement.documentEffect, 'changed');
+  assert.equal('settlementFacts' in run, false);
 });

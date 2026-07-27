@@ -617,14 +617,18 @@
     var Migration = window.CodexOverleafStorageMigration;
     try {
       if (Migration && Migration.loadPrefs && Migration.savePrefs) {
-        var prefs = await Migration.loadPrefs();
+        var accountScopeId = getCachedAccountScopeId();
+        if (!accountScopeId) {
+          throw new Error('Account scope is unavailable.');
+        }
+        var prefs = await Migration.loadPrefs(accountScopeId, projectId);
         prefs = prefs && typeof prefs === 'object' ? prefs : {};
         var map = prefs.activeSessionByProject && typeof prefs.activeSessionByProject === 'object'
           ? prefs.activeSessionByProject
           : {};
         map[projectId] = record.id;
         prefs.activeSessionByProject = map;
-        await Migration.savePrefs(prefs);
+        await Migration.savePrefs(prefs, accountScopeId, projectId);
       }
     } catch (_error) { /* fall through: opening the project still works */ }
     openProjectFromRow(projectId);

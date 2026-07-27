@@ -40,6 +40,7 @@ test('dashboard rows expand into a per-project session list', () => {
   assert.match(load, /getAllByIndex\('sessions', 'projectId', projectId\)/);
   assert.match(load, /Persistence\.isVisibleRecord\(record, deletedIds, scope\)/);
   assert.match(isVisibleRecord, /record\.accountScopeId === accountScopeId/);
+  assert.match(isVisibleRecord, /Boolean\(accountScopeId\)/);
   assert.match(isVisibleRecord, /deletedIds \|\| \[\]/);
   assert.match(load, /localeCompare/);
   // running sessions are protected (badge derived from the stored record)
