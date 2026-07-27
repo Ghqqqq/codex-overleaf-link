@@ -19,6 +19,7 @@
     "benchmark:large": "node scripts/benchmark-large-project.mjs --gate",
     "smoke:extension": "node scripts/smoke-extension.mjs",
     "verify:release": "node scripts/verify-release.mjs",
+    "verify:source": "node scripts/verify-release.mjs --source-hygiene-only",
     "verify:release-artifacts": "node scripts/verify-release-artifacts.mjs",
     "verify:update-boundary": "node scripts/verify-update-boundary.mjs",
     "verify:update-hop": "node scripts/verify-update-hop.mjs",

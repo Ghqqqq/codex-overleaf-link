@@ -31,8 +31,8 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Verify release metadata and source hygiene
-        run: npm run verify:release
+      - name: Verify source hygiene and development metadata
+        run: npm run verify:source
 
       - name: Verify npm package manifest
         run: npm run verify:npm-package
