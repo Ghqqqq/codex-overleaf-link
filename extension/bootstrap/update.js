@@ -8,8 +8,18 @@
     later: 'codex-overleaf/consent-update-later',
     retry: 'codex-overleaf/consent-update-check'
   });
-  const UpdateProjection = globalThis.CodexOverleafManagedUpdateProjection;
-  const ACTIVE_PHASES = new Set(UpdateProjection.activePhases('update_page'));
+  const ACTIVE_PHASES = new Set([
+    'checking',
+    'downloading',
+    'staged',
+    'waiting',
+    'waiting_for_idle',
+    'waiting_for_safe_point',
+    'applying',
+    'awaiting_health',
+    'awaiting_health_check',
+    'health_checking'
+  ]);
 
   const elements = {
     badge: document.getElementById('status-badge'),
@@ -59,7 +69,8 @@
   }
 
   function phaseOf(view) {
-    return UpdateProjection.phaseOf(view);
+    const value = view.phase || view.status || view.state || view.lifecycle || 'idle';
+    return typeof value === 'string' ? value.toLowerCase().replace(/[- ]+/g, '_') : 'idle';
   }
 
   function versionOf(view, candidates, fallback = '') {
@@ -96,11 +107,35 @@
   }
 
   function progressFor(view, phase) {
-    return UpdateProjection.progressFor({ ...view, state: phase });
+    const raw = asObject(view.progress)?.percent ?? view.progressPercent ?? view.progress;
+    if (Number.isFinite(Number(raw))) {
+      const numeric = Number(raw);
+      return Math.max(0, Math.min(100, numeric <= 1 ? numeric * 100 : numeric));
+    }
+    const fallback = {
+      checking: 8,
+      update_available: 0,
+      downloading: 25,
+      staged: 48,
+      waiting: 55,
+      waiting_for_idle: 55,
+      waiting_for_safe_point: 55,
+      applying: 75,
+      awaiting_health: 90,
+      awaiting_health_check: 90,
+      health_checking: 90,
+      committed: 100,
+      rolled_back: 100
+    };
+    return fallback[phase] ?? 0;
   }
 
   function activeStageFor(phase) {
-    return UpdateProjection.activeStageFor(phase);
+    if (['downloading'].includes(phase)) return 0;
+    if (['staged', 'waiting', 'waiting_for_idle', 'waiting_for_safe_point'].includes(phase)) return 1;
+    if (['applying', 'awaiting_health', 'awaiting_health_check', 'health_checking'].includes(phase)) return 2;
+    if (phase === 'committed') return 3;
+    return -1;
   }
 
   function errorStageFor(view, phase) {

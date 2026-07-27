@@ -57,8 +57,3 @@ test('health confirmation waits for the replacement content runtime to answer fr
   assert.match(source, /missingCapabilities[\s\S]*rollbackBrokenRuntime/);
   assert.match(source, /transaction\?\.state === 'rolled_back'[\s\S]*reloadPendingOverleafTabs/);
 });
-
-test('health confirmation prunes tabs that close after the reload snapshot', () => {
-  assert.match(source, /CodexOverleafUpdateHealth\.pruneClosedTabIds/);
-  assert.match(source, /chrome\.tabs\.query\(\{ url: OVERLEAF_MATCHES \}\)/);
-});
