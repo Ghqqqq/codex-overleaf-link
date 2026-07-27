@@ -8,6 +8,7 @@ const compatibility = require('../extension/src/shared/compatibility');
 
 const REQUIRED_CAPABILITIES = compatibility.REQUIRED_CAPABILITIES;
 const UPDATE_AVAILABLE_CAPABILITIES = compatibility.UPDATE_AVAILABLE_CAPABILITIES;
+const CURRENT_VERSION = packageJson.version;
 
 function capabilityMap(capabilities = REQUIRED_CAPABILITIES) {
   return Object.fromEntries(capabilities.map(capability => [capability, true]));
@@ -36,8 +37,7 @@ function canonicalInstallCommand(platform) {
   return compatibility.buildInstallCommand(compatibility.BUILD_TARGET_VERSION, platform);
 }
 
-test('release version metadata is aligned for v2.2.1 while the RC handshake uses protocol 2', async () => {
-  assert.equal(packageJson.version, '2.2.1');
+test('release version metadata is aligned with the current package while the handshake uses protocol 2', async () => {
   assert.equal(extensionManifest.version, packageJson.version);
   assert.equal(compatibility.BUILD_TARGET_VERSION, packageJson.version);
   assert.equal(compatibility.MIN_COMPATIBLE_NATIVE_VERSION, '1.0.0');
@@ -55,10 +55,10 @@ test('release version metadata is aligned for v2.2.1 while the RC handshake uses
 });
 
 test('buildBridgePingParams returns protocol 2 metadata with protocol 1 compatibility', () => {
-  assert.equal(compatibility.BUILD_TARGET_VERSION, '2.2.1');
+  assert.equal(compatibility.BUILD_TARGET_VERSION, CURRENT_VERSION);
   assert.equal(compatibility.EXTENSION_PROTOCOL_VERSION, 2);
-  assert.deepEqual(compatibility.buildBridgePingParams({ version: '2.2.1' }), {
-    extensionVersion: '2.2.1',
+  assert.deepEqual(compatibility.buildBridgePingParams({ version: CURRENT_VERSION }), {
+    extensionVersion: CURRENT_VERSION,
     extensionProtocolVersion: 2,
     supportedNativeProtocol: { min: 1, max: 2 },
     requiredCapabilities: REQUIRED_CAPABILITIES
@@ -66,35 +66,35 @@ test('buildBridgePingParams returns protocol 2 metadata with protocol 1 compatib
 });
 
 test('classifyNativeCompatibility returns compatible for protocol 2 hosts with all required capabilities', () => {
-  const result = compatibility.evaluateNativeCompatibility(nativeResponse(), { version: '2.2.1' });
+  const result = compatibility.evaluateNativeCompatibility(nativeResponse(), { version: CURRENT_VERSION });
 
-  assert.equal(compatibility.classifyNativeCompatibility(nativeResponse(), '2.2.1'), 'compatible');
+  assert.equal(compatibility.classifyNativeCompatibility(nativeResponse(), CURRENT_VERSION), 'compatible');
   assert.equal(result.status, 'ok');
   assert.equal(result.classification, 'compatible');
   assert.equal(result.requiredVersion, '1.0.0');
-  assert.equal(result.recommendedVersion, '2.2.1');
+  assert.equal(result.recommendedVersion, CURRENT_VERSION);
   assert.equal(result.updateAvailable, false);
   assert.equal(result.updateCommand, canonicalInstallCommand('darwin'));
-  assert.equal(result.releaseUrl, 'https://github.com/Ghqqqq/codex-overleaf-link/releases/tag/v2.2.1');
+  assert.equal(result.releaseUrl, `https://github.com/Ghqqqq/codex-overleaf-link/releases/tag/v${CURRENT_VERSION}`);
 });
 
-test('classifyNativeCompatibility keeps v1.0 protocol 1 hosts with required capabilities operational under v2.1', () => {
+test('classifyNativeCompatibility keeps v1.0 protocol 1 hosts with required capabilities operational', () => {
   const response = nativeResponse({
     version: '1.0.0',
     minExtensionVersion: '1.0.0',
     protocolVersion: 1,
     supportedProtocol: { min: 1, max: 1 }
   });
-  const result = compatibility.evaluateNativeCompatibility(response, { version: '2.2.1' });
+  const result = compatibility.evaluateNativeCompatibility(response, { version: CURRENT_VERSION });
 
-  assert.equal(compatibility.classifyNativeCompatibility(response, '2.2.1'), 'compatible');
+  assert.equal(compatibility.classifyNativeCompatibility(response, CURRENT_VERSION), 'compatible');
   assert.equal(result.status, 'ok');
   assert.equal(result.classification, 'compatible');
   assert.equal(result.minimumNativeVersion, '1.0.0');
   assert.equal(result.requiredVersion, '1.0.0');
-  assert.equal(result.recommendedVersion, '2.2.1');
+  assert.equal(result.recommendedVersion, CURRENT_VERSION);
   assert.equal(result.updateAvailable, true);
-  assert.equal(result.updateCommand, compatibility.buildInstallCommand('2.2.1', 'darwin'));
+  assert.equal(result.updateCommand, compatibility.buildInstallCommand(CURRENT_VERSION, 'darwin'));
   assert.equal(compatibility.isNativeMethodAllowed('codex.run', result), true);
 });
 

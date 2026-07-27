@@ -4846,6 +4846,7 @@ test('Fix A: finishRunView still calls saveStateSoon on the happy path (no navig
     + "const state = { sessions: [{ id: 's1', runs: [{ id: 'r1', status: 'running' }] }] };"
     + "function sanitizeAssistantVisibleText(x){ return x; }"
     + "function findRunRecord(){ return state.sessions[0].runs[0]; }"
+    + "function touchSessionForTerminalRun(){}"
     + "function flushPendingStreamRenders(){}"
     + "const runGuidanceController = { settleView(){} };"
     + "function formatProcessedSummary(){ return ''; }"

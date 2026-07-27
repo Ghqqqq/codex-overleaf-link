@@ -1359,9 +1359,24 @@ test('native uninstall script continues when Windows registry key is already mis
   }
 });
 
+function readStableReleaseMetadata(readme) {
+  const version = readme.match(/img\.shields\.io\/badge\/version-(\d+\.\d+\.\d+)-blue/)?.[1] || '';
+  assert.match(version, /^\d+\.\d+\.\d+$/, 'expected README stable-version badge');
+  const ref = `v${version}`;
+  return {
+    version,
+    ref,
+    npmExecPrefix: `npm exec --yes codex-overleaf-link@${version} --`,
+    windowsInstallUrl: `https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/${ref}/install.ps1`,
+    windowsRefCommand: `$env:CODEX_OVERLEAF_REF='${ref}'`,
+    windowsRunCommand: 'powershell -ExecutionPolicy Bypass -File install.ps1'
+  };
+}
+
 test('repository ships a one-command macOS installer', () => {
   const installer = fs.readFileSync(path.join(__dirname, '../install.sh'), 'utf8');
   const readme = fs.readFileSync(path.join(__dirname, '../README.md'), 'utf8');
+  const stable = readStableReleaseMetadata(readme);
 
   assert.match(installer, /CODEX_OVERLEAF_INSTALL_DIR/);
   assert.match(installer, /CODEX_OVERLEAF_REF/);
@@ -1378,23 +1393,24 @@ test('repository ships a one-command macOS installer', () => {
   assert.match(installer, /pbcopy/);
   assert.match(installer, /open -a "Google Chrome" "chrome:\/\/extensions"/);
   assert.match(installer, /open -R/);
-  assert.match(readme, new RegExp(`CODEX_OVERLEAF_REF=${escapeRegExp(CURRENT_RELEASE_REF)}\\s+bash -c "\\$\\(curl -fsSL https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(CURRENT_RELEASE_REF)}/install\\.sh\\)"`));
-  assert.match(readme, new RegExp(`codex-overleaf-link-extension-${escapeRegExp(CURRENT_RELEASE_REF)}\\.zip`));
+  assert.match(readme, new RegExp(`CODEX_OVERLEAF_REF=${escapeRegExp(stable.ref)}\\s+bash -c "\\$\\(curl -fsSL https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(stable.ref)}/install\\.sh\\)"`));
+  assert.match(readme, new RegExp(`codex-overleaf-link-extension-${escapeRegExp(stable.ref)}\\.zip`));
   assert.doesNotMatch(readme, /select `~\/\.codex-overleaf\/source\/extension`/);
 });
 
-test('README documents current cross-platform manual install, uninstall, release artifacts, and bundled extension id flow', () => {
+test('README documents stable cross-platform manual install, uninstall, release artifacts, and bundled extension id flow', () => {
   const readme = fs.readFileSync(path.join(__dirname, '../README.md'), 'utf8');
+  const stable = readStableReleaseMetadata(readme);
 
-  assert.match(readme, new RegExp(`CODEX_OVERLEAF_REF=${escapeRegExp(CURRENT_RELEASE_REF)}\\s+bash -c "\\$\\(curl -fsSL https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(CURRENT_RELEASE_REF)}/install\\.sh\\)"`));
-  assert.ok(readme.includes(CANONICAL_RELEASE_INSTALL_COMMAND));
-  assert.match(readme, new RegExp(`iwr\\s+https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(CURRENT_RELEASE_REF)}/install\\.ps1`, 'i'));
+  assert.match(readme, new RegExp(`CODEX_OVERLEAF_REF=${escapeRegExp(stable.ref)}\\s+bash -c "\\$\\(curl -fsSL https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(stable.ref)}/install\\.sh\\)"`));
+  assert.ok(readme.includes(`${stable.npmExecPrefix} install-managed`));
+  assert.match(readme, new RegExp(`iwr\\s+https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(stable.ref)}/install\\.ps1`, 'i'));
   assert.match(readme, /powershell\s+-ExecutionPolicy\s+Bypass\s+-File\s+install\.ps1/i);
   assert.match(readme, /macOS\s+\/\s+Linux/i);
   assert.match(readme, /Windows/i);
-  assert.match(readme, new RegExp(`codex-overleaf-link-extension-${escapeRegExp(CURRENT_RELEASE_REF)}\\.zip`));
+  assert.match(readme, new RegExp(`codex-overleaf-link-extension-${escapeRegExp(stable.ref)}\\.zip`));
   assert.match(readme, /manual unpacked installation/i);
-  assert.match(readme, new RegExp(`codex-overleaf-native-host-${escapeRegExp(CURRENT_RELEASE_REF)}\\.tar\\.gz`));
+  assert.match(readme, new RegExp(`codex-overleaf-native-host-${escapeRegExp(stable.ref)}\\.tar\\.gz`));
   assert.match(readme, /native host runtime/i);
   assert.match(readme, /install\.sh/);
   assert.match(readme, /install\.ps1/);
@@ -1406,10 +1422,10 @@ test('README documents current cross-platform manual install, uninstall, release
   assert.match(readme, /allowed_origins/);
   assert.match(readme, /bundled extension key/i);
   assert.match(readme, /stable id/i);
-  assert.ok(readme.includes(`${CANONICAL_NPM_EXEC_PREFIX} install-native`));
-  assert.doesNotMatch(readme, new RegExp(`${escapeRegExp(CANONICAL_NPM_EXEC_PREFIX)} install-native --extension-id <chrome-extension-id>`));
-  assert.ok(readme.includes(`${CANONICAL_NPM_EXEC_PREFIX} doctor`));
-  assert.ok(readme.includes(`${CANONICAL_NPM_EXEC_PREFIX} uninstall-native`));
+  assert.ok(readme.includes(`${stable.npmExecPrefix} install-native`));
+  assert.doesNotMatch(readme, new RegExp(`${escapeRegExp(stable.npmExecPrefix)} install-native --extension-id <chrome-extension-id>`));
+  assert.ok(readme.includes(`${stable.npmExecPrefix} doctor`));
+  assert.ok(readme.includes(`${stable.npmExecPrefix} uninstall-native`));
   assert.match(readme, /npm installs, updates, and uninstalls the coordinated managed extension\/native pair/i);
   assert.match(readme, /legacy `install-native` command remains available only for explicitly unmanaged extension directories/i);
   assert.match(readme, /Use `--extension-id <chrome-extension-id>` only for a custom\/dev unpacked extension id/i);
@@ -1420,15 +1436,16 @@ test('README documents current cross-platform manual install, uninstall, release
 
 test('README documents Windows source installer with bundled extension id default', () => {
   const readme = fs.readFileSync(path.join(__dirname, '../README.md'), 'utf8');
-  const installCommand = `iwr ${CANONICAL_WINDOWS_RELEASE_INSTALL_URL} -OutFile install.ps1`;
+  const stable = readStableReleaseMetadata(readme);
+  const installCommand = `iwr ${stable.windowsInstallUrl} -OutFile install.ps1`;
   const installIndex = readme.indexOf(installCommand);
 
   assert.notEqual(installIndex, -1, 'expected Windows source installer download command');
   const segment = readme.slice(installIndex, installIndex + 320);
-  assert.ok(segment.includes(CANONICAL_WINDOWS_RELEASE_REF_COMMAND), segment);
-  assert.ok(segment.includes(CANONICAL_WINDOWS_RELEASE_RUN_COMMAND), segment);
+  assert.ok(segment.includes(stable.windowsRefCommand), segment);
+  assert.ok(segment.includes(stable.windowsRunCommand), segment);
   assert.ok(
-    segment.indexOf(CANONICAL_WINDOWS_RELEASE_REF_COMMAND) < segment.indexOf(CANONICAL_WINDOWS_RELEASE_RUN_COMMAND),
+    segment.indexOf(stable.windowsRefCommand) < segment.indexOf(stable.windowsRunCommand),
     segment
   );
 });

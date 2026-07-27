@@ -22,6 +22,11 @@ test('post-navigation settlement uses detached scoped persistence for the origin
     runtimeSource,
     /currentRunView\.runProjectId === activeProjectId[\s\S]{0,120}currentRunView\.runAccountScopeId === cachedAccountScopeId/
   );
-  assert.match(runtimeSource, /PostNavigationSettlementPersistence[\s\S]{0,240}persistRequired\(/);
+  assert.match(
+    runtimeSource,
+    /const persistence = window\.CodexOverleafPostNavigationSettlementPersistence/
+  );
+  assert.match(runtimeSource, /typeof persistence\.persistRequired !== 'function'/);
+  assert.match(runtimeSource, /return await persistence\.persistRequired\(\{/);
   assert.match(runtimeSource, /postNavigationPersistenceFailure\s*=\s*\{/);
 });
