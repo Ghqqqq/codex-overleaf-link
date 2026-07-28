@@ -867,6 +867,104 @@ test('attachUndoNotVerifiedFailure no-ops when every expected path verifies back
   assert.equal(result.skipped.length, 0);
 });
 
+test('attachUndoNotVerifiedFailure accepts verified editor-undo evidence when tracked node counts differ', () => {
+  const helpers = loadContentRuntimeHelpers([
+    'attachUndoNotVerifiedFailure',
+    'isUndoVerifiedContentMatching'
+  ]);
+  const run = {
+    undoExpectedFiles: [{ path: 'example/test2.tex', content: 'pre\n' }],
+    undoTrackedChanges: [
+      { path: 'example/test2.tex', key: 'change-1' },
+      { path: 'example/test2.tex', key: 'change-2' },
+      { path: 'example/test2.tex', key: 'change-3' }
+    ]
+  };
+  const result = {
+    ok: true,
+    applied: [{
+      trackedChange: {
+        path: 'example/test2.tex',
+        key: 'editor-undo:example/test2.tex'
+      },
+      result: {
+        ok: true,
+        method: 'overleaf-editor-undo',
+        undoClicks: 1,
+        verified: true,
+        verifiedContent: 'pre\n'
+      }
+    }],
+    skipped: []
+  };
+
+  helpers.attachUndoNotVerifiedFailure(run, result);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped.length, 0);
+});
+
+test('attachUndoNotVerifiedFailure accepts verified snapshot-undo wrapper evidence', () => {
+  const helpers = loadContentRuntimeHelpers([
+    'attachUndoNotVerifiedFailure',
+    'isUndoVerifiedContentMatching'
+  ]);
+  const run = {
+    undoExpectedFiles: [{ path: 'main.tex', content: 'pre\n' }],
+    undoTrackedChanges: [{ path: 'main.tex', key: 'change-1' }]
+  };
+  const result = {
+    ok: true,
+    applied: [{
+      trackedChange: {
+        path: 'main.tex',
+        key: 'snapshot-undo:main.tex'
+      },
+      result: {
+        ok: true,
+        verifiedContent: 'pre\n'
+      }
+    }],
+    skipped: []
+  };
+
+  helpers.attachUndoNotVerifiedFailure(run, result);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped.length, 0);
+});
+
+test('attachUndoNotVerifiedFailure still rejects editor-undo evidence without content proof', () => {
+  const helpers = loadContentRuntimeHelpers([
+    'attachUndoNotVerifiedFailure',
+    'isUndoVerifiedContentMatching'
+  ]);
+  const run = {
+    undoExpectedFiles: [{ path: 'main.tex', content: 'pre\n' }],
+    undoTrackedChanges: [{ path: 'main.tex', key: 'change-1' }]
+  };
+  const result = {
+    ok: true,
+    applied: [{
+      trackedChange: {
+        path: 'main.tex',
+        key: 'editor-undo:main.tex'
+      },
+      result: {
+        ok: true,
+        method: 'overleaf-editor-undo',
+        undoClicks: 1
+      }
+    }],
+    skipped: []
+  };
+
+  helpers.attachUndoNotVerifiedFailure(run, result);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.skipped[0].result.failure.code, 'undo_not_verified');
+});
+
 test('buildContentFailure resolves shared-catalog codes so their recovery buttons are reachable (v1.7.6 fleet P1)', () => {
   // The content-local catalog only holds 8 codes. Every other emitted code
   // (codex_not_found, codex_timeout, ...) must resolve through the shared

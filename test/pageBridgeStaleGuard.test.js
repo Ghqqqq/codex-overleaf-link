@@ -1686,6 +1686,8 @@ test('page bridge uses Overleaf editor undo to revert a tracked-change batch in 
   assert.equal(undo.applied.length, 1);
   assert.equal(undo.skipped.length, 0);
   assert.equal(undo.applied[0].result.method, 'overleaf-editor-undo');
+  assert.equal(undo.applied[0].result.verified, true);
+  assert.equal(undo.applied[0].result.verifiedContent, 'alpha beta gamma');
   assert.equal(bridge.getFile('main.tex'), 'alpha beta gamma');
   assert.equal(bridge.getEditorUndoClickCount(), 1);
   assert.equal(bridge.getRejectClickCount(), 0);

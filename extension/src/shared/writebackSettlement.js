@@ -485,35 +485,62 @@
   function isUndoVerifiedContentMatching(run, result) {
     const expectedByPath = new Map((run?.undoExpectedFiles || [])
       .filter(file => typeof file?.path === 'string' && typeof file?.content === 'string')
-      .map(file => [file.path, file.content]));
+      .map(file => [normalizeSettlementPath(file.path), file.content])
+      .filter(([path]) => path));
     if (!expectedByPath.size) return true;
     const applied = Array.isArray(result?.applied) ? result.applied : [];
-    return Array.from(expectedByPath).every(([path, expected]) => applied.some(entry =>
-      entry?.operation?.type === 'edit'
-      && entry.operation.path === path
-      && entry?.result?.ok !== false
-      && entry?.result?.verifiedContent === expected
-    ));
+    return Array.from(expectedByPath).every(([path, expected]) =>
+      applied.some(entry => isVerifiedUndoEntryForPath(entry, path, expected))
+    );
   }
 
   function isUndoResultEffectivelyApplied(run, result, undoOperations = []) {
     if (!result?.skipped?.length) return true;
     const expectedByPath = new Map((run?.undoExpectedFiles || [])
       .filter(file => file?.path && typeof file.content === 'string')
-      .map(file => [file.path, file.content]));
+      .map(file => [normalizeSettlementPath(file.path), file.content])
+      .filter(([path]) => path));
     if (!expectedByPath.size) return false;
     const editPaths = Array.from(new Set((Array.isArray(undoOperations) ? undoOperations : [])
       .filter(operation =>
         operation?.type === 'edit'
         && operation.path
-        && expectedByPath.has(operation.path)
+        && expectedByPath.has(normalizeSettlementPath(operation.path))
       )
-      .map(operation => operation.path)));
+      .map(operation => normalizeSettlementPath(operation.path))));
     return editPaths.length > 0 && editPaths.every(path => (result.applied || []).some(item =>
-      item?.operation?.type === 'edit'
-      && item.operation.path === path
-      && item?.result?.verifiedContent === expectedByPath.get(path)
+      isVerifiedUndoEntryForPath(item, path, expectedByPath.get(path))
     ));
+  }
+
+  function isVerifiedUndoEntryForPath(entry, path, expectedContent) {
+    const inner = entry?.result || {};
+    if (inner.ok === false) return false;
+    const normalizedPath = normalizeSettlementPath(path);
+    const operationPath = normalizeSettlementPath(entry?.operation?.path);
+    if (entry?.operation?.type === 'edit' && operationPath === normalizedPath) {
+      return inner.verifiedContent === expectedContent;
+    }
+
+    const trackedPath = normalizeSettlementPath(entry?.trackedChange?.path);
+    if (trackedPath !== normalizedPath) return false;
+    const key = String(entry?.trackedChange?.key || '');
+    if (key === `editor-undo:${normalizedPath}`) {
+      return inner.method === 'overleaf-editor-undo'
+        && inner.verified === true
+        && inner.verifiedContent === expectedContent;
+    }
+    if (key === `snapshot-undo:${normalizedPath}`) {
+      return inner.verifiedContent === expectedContent;
+    }
+    return false;
+  }
+
+  function normalizeSettlementPath(value) {
+    return String(value || '')
+      .replace(/\\/g, '/')
+      .replace(/\/+/g, '/')
+      .replace(/^\/+|\/+$/g, '');
   }
 
   function attachAcceptNotVerifiedFailure(run, result, options = {}) {
