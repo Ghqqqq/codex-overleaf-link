@@ -268,20 +268,27 @@
     }
 
     const authorizationId = crypto.randomUUID();
+    let authorizationIntent = revocation.prepareAuthorization(
+      consent,
+      authorizationId,
+      state.latestVersion,
+      Date.now()
+    );
     try {
+      authorizationIntent = await setConsentState(authorizationIntent);
       await requestNative('update.authorize', {
         authorizationId,
         targetVersion: state.latestVersion,
         currentVersion: currentVersion()
       });
-      await setConsentState({
-        ...consent,
+      await setConsentState(revocation.clear({
+        ...authorizationIntent,
         snoozedVersion: '',
         snoozedUntil: 0,
         authorizedVersion: state.latestVersion,
         authorizationId,
         authorizedAt: Date.now()
-      });
+      }));
       await setUpdateState({ ...state, postponeUntil: 0, code: '', message: '' });
       const executor = globalThis.CodexOverleafManagedUpdateExecutor;
       if (!executor || typeof executor.installAuthorizedUpdate !== 'function') {
@@ -294,12 +301,12 @@
       return getView();
     } catch (error) {
       const observedConsent = await getConsentState().catch(() => consent);
-      const pendingConsent = revocation.begin({
+      const pendingConsent = revocation.prepareAuthorization({
         ...observedConsent,
-        authorizedVersion: observedConsent.authorizedVersion || state.latestVersion,
-        authorizationId: observedConsent.authorizationId || authorizationId,
+        authorizedVersion: state.latestVersion,
+        authorizationId,
         authorizedAt: observedConsent.authorizedAt || Date.now()
-      }, state, Date.now());
+      }, authorizationId, state.latestVersion, Date.now());
       await setConsentState(pendingConsent);
       try {
         await requestNative('update.revoke', {

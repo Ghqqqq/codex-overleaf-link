@@ -290,6 +290,41 @@ test('a failed session action retains the fenced revision for claim recovery', a
   assert.equal(released.queueRevision, 2);
 });
 
+for (const mutationType of ['release', 'restore']) {
+  test(`a failed ${mutationType} action restores the durable claim fence`, async () => {
+    const adapter = createAdapter();
+    const coordinator = Transaction.createCoordinator({ adapter, writerId: 'tab-a' });
+    const scope = { accountScopeId: 'account', projectId: 'paper' };
+    let view = await coordinator.beginHydration(scope);
+    await coordinator.commit(view, async () => {}, {
+      queueMutation: {
+        type: 'claim',
+        sessionId: 'session',
+        itemId: 'queued-1',
+        claimToken: 'claim-1'
+      }
+    });
+    view = coordinator.getActiveView();
+
+    await assert.rejects(
+      coordinator.commit(view, async () => {
+        throw new Error('session recovery write failed');
+      }, {
+        queueMutation: {
+          type: mutationType,
+          sessionId: 'session',
+          itemId: 'queued-1',
+          claimToken: 'claim-1'
+        }
+      }),
+      /session recovery write failed/
+    );
+
+    const recovered = await adapter.read(scope);
+    assert.equal(recovered.queueClaims['queued-1'].claimToken, 'claim-1');
+  });
+}
+
 test('a failed queue removal restores its durable fence and can restore the input', async () => {
   const adapter = createAdapter();
   const coordinator = Transaction.createCoordinator({ adapter, writerId: 'tab-a' });

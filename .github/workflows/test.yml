@@ -40,6 +40,10 @@ jobs:
       - name: Verify managed update boundary
         run: npm run verify:update-boundary
 
+      - name: Rehearse previous-stable managed update hop
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run rehearse:update-hop
+
       - name: Check architecture budget
         run: npm run check:architecture
 

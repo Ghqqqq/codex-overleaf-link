@@ -33,7 +33,7 @@ test('post-navigation persistence applies canonical settlement and recovery to t
   const PersistenceCoordinator = {
     async commitDetached(projectId, accountScopeId, options, action) {
       detachedCommit = { projectId, accountScopeId, options };
-      return action();
+      return { ok: true, value: await action() };
     }
   };
 
@@ -61,10 +61,33 @@ test('post-navigation persistence applies canonical settlement and recovery to t
   const run = written.runs[0];
   assert.equal(run.status, 'background_completed');
   assert.equal(run.trackedChangeStatus, 'accepted');
+  assert.equal(result.run.trackedChangeStatus, 'accepted');
   assert.deepEqual(run.undoTrackedChanges, []);
   assert.deepEqual(run.undoExpectedFiles, []);
   assert.equal(run.settlement.evidence.settled, 'complete');
   assert.equal(written.updatedAt, '2026-07-26T12:00:01.000Z');
+});
+
+test('required post-navigation persistence rejects an inner detached action failure', async () => {
+  await assert.rejects(
+    Persistence.persistRequired({
+      projectId: 'project-a',
+      accountScopeId: 'account-a',
+      PersistenceCoordinator: {
+        async commitDetached() {
+          return {
+            ok: true,
+            value: { ok: false, reason: 'session_not_found' }
+          };
+        }
+      }
+    }),
+    error => {
+      assert.equal(error.code, 'post_navigation_settlement_persistence_failed');
+      assert.equal(error.reason, 'session_not_found');
+      return true;
+    }
+  );
 });
 
 test('post-navigation persistence fails closed without the original account scope', async () => {

@@ -19,7 +19,7 @@
         || typeof options.PersistenceCoordinator.commitDetached !== 'function') {
         return { ok: false, reason: 'scoped_persistence_unavailable' };
       }
-      return options.PersistenceCoordinator.commitDetached(
+      const committed = await options.PersistenceCoordinator.commitDetached(
         projectId,
         accountScopeId,
         { rebase: true },
@@ -28,6 +28,14 @@
           __insideScopedTransaction: true
         })
       );
+      if (!committed || typeof committed !== 'object') {
+        return { ok: false, reason: 'scoped_persistence_invalid_result' };
+      }
+      if (committed.ok !== true) return committed;
+      if (!Object.prototype.hasOwnProperty.call(committed, 'value')) return committed;
+      return committed.value && typeof committed.value === 'object'
+        ? committed.value
+        : { ok: false, reason: 'scoped_persistence_action_result_unavailable' };
     }
     const {
       StorageDb,

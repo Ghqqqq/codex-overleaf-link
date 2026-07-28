@@ -103,6 +103,34 @@ test('projection requires actual recovery payloads and terminal lifecycle states
   }
 });
 
+test('top-level tracked-change failure cannot become terminal from a partial applied entry', () => {
+  for (const kind of ['accept', 'reject']) {
+    const run = {
+      trackedChangeStatus: 'pending',
+      undoTrackedChanges: [{ id: 'change-1', path: 'main.tex' }],
+      undoExpectedFiles: [{ path: 'main.tex', content: 'before' }]
+    };
+    const settlement = Settlement.settleTrackedChangeLifecycle({
+      kind,
+      run,
+      result: {
+        ok: false,
+        applied: [{
+          trackedChange: { id: 'change-1', path: 'main.tex' },
+          result: { ok: true, changedDocument: true }
+        }],
+        skipped: []
+      }
+    });
+    const next = Settlement.applySettlementTransition(run, settlement);
+
+    assert.equal(settlement.decision, 'needs_review');
+    assert.equal(next.trackedChangeStatus, 'needs_review');
+    assert.equal(next.undoTrackedChanges.length, 1);
+    assert.equal(next.undoExpectedFiles.length, 1);
+  }
+});
+
 test('settlement compaction keeps mandatory top-level facts under the per-run budget', () => {
   const facts = Settlement.compactSettlementFacts({
     documentEffect: 'changed',

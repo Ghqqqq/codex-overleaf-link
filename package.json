@@ -23,6 +23,8 @@
     "verify:release-artifacts": "node scripts/verify-release-artifacts.mjs",
     "verify:update-boundary": "node scripts/verify-update-boundary.mjs",
     "verify:update-hop": "node scripts/verify-update-hop.mjs",
+    "verify:update-hop:local": "node scripts/verify-update-hop.mjs --local-test-key",
+    "rehearse:update-hop": "npm run build:release && npm run verify:update-hop:local",
     "build:release": "node scripts/build-release.mjs",
     "sign:release": "node scripts/sign-release-manifest.mjs",
     "install:managed": "node scripts/install-managed.mjs",

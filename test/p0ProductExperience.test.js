@@ -3197,9 +3197,9 @@ test('configureAcceptButton needs_review branch wires the inline-confirm flow so
   assert.equal(root.querySelectorAll('[data-run-accept-cancel]').length, 1, 'needs_review: Cancel button appears');
 });
 
-test('acceptRun settlement: successful page action routes to accepted even with warning-class proof codes (source)', () => {
-  // Two-state run-card lifecycle — verify the source keeps the settlement
-  // helper but lets successful page-side accept work become terminal.
+test('acceptRun settlement: failed or unverified page action remains actionable (source)', () => {
+  // The run-card keeps the same executable controls for needs_review, while
+  // the reducer retains recovery evidence until the page action is proven.
   // Behavioral acceptRun coverage requires a full content-runtime harness that
   // is out of scope for this test file; the source-level assertion locks the
   // contract that downstream subagents can rely on.
@@ -3215,6 +3215,17 @@ test('acceptRun settlement: successful page action routes to accepted even with 
   const acceptRunBody = contentScript.match(/async function acceptRun\(runId\) \{[\s\S]*?\n  (?:async )?function /)?.[0] || '';
   assert.match(acceptRunBody, /applyTrackedChangeSettlement\(runId,\s*'accept',\s*result\)/);
   assert.doesNotMatch(acceptRunBody, /applyTerminalTrackedChangeStatus\(runId,\s*'accepted'\)/);
+  assert.equal(
+    WritebackSettlement.settleTrackedChangeLifecycle({
+      kind: 'accept',
+      result: {
+        ok: false,
+        applied: [{ result: { ok: true } }],
+        skipped: []
+      }
+    }).decision,
+    'needs_review'
+  );
 });
 
 test('undoRunTrackedChanges settlement: successful page action routes to rejected even with warning-class proof codes (source)', () => {

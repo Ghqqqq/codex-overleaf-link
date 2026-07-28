@@ -145,7 +145,7 @@
           });
         } catch (error) {
           if (queueMutations.some(function (mutation) {
-            return cleanPart(mutation.type) === 'remove';
+            return ['remove', 'release', 'restore'].includes(cleanPart(mutation.type));
           })) {
             var recoveredMeta = {
               ...currentMeta,

@@ -353,7 +353,7 @@
     }
     const successful = isSuccessfulTrackedChangeSettlement(input.result);
     const reviewCodes = kind === 'accept' ? ACCEPT_NEEDS_REVIEW_CODES : REJECT_NEEDS_REVIEW_CODES;
-    const needsReview = !successful && failures.some(failure =>
+    const needsReview = !successful || failures.some(failure =>
       failure.terminalState === 'needs_review' || reviewCodes.has(failure.code)
     );
     const status = needsReview ? 'needs_review' : kind === 'accept' ? 'accepted' : 'rejected';
@@ -544,6 +544,36 @@
     const trackedChanges = Array.isArray(run?.undoTrackedChanges) ? run.undoTrackedChanges : [];
     if (!trackedChanges.length) return true;
     const applied = Array.isArray(result.applied) ? result.applied : [];
+
+    // The current Accept lifecycle first removes this run's tracked writeback,
+    // then replays each changed file in Editing mode. Its successful evidence
+    // is therefore file-scoped (`accept-replay:<path>`), while
+    // `undoTrackedChanges` contains the many node-scoped refs captured before
+    // the replay. Requiring every original node key to reappear in `applied`
+    // produces a false accept_not_verified result even when the page verified
+    // the final replayed content.
+    const normalizePath = value => String(value || '')
+      .replace(/\\/g, '/')
+      .replace(/\/+/g, '/')
+      .replace(/^\/+|\/+$/g, '');
+    const replayEntries = applied.filter(entry =>
+      String(entry?.trackedChange?.key || '').startsWith('accept-replay:')
+    );
+    if (replayEntries.length > 0) {
+      const expectedPaths = Array.from(new Set(expectedFiles
+        .map(file => normalizePath(file?.path))
+        .filter(Boolean)));
+      return expectedPaths.length > 0 && expectedPaths.every(path =>
+        replayEntries.some(entry => {
+          const inner = entry?.result || {};
+          return normalizePath(entry?.trackedChange?.path) === path
+            && inner.ok !== false
+            && (inner.verified === true || typeof inner.verifiedContent === 'string');
+        })
+      );
+    }
+
+    // Compatibility path for the earlier direct-node Accept implementation.
     return trackedChanges.every(change => {
       const key = change?.key || change?.id || change?.label;
       return Boolean(key) && applied.some(entry => {
@@ -577,6 +607,7 @@
 
   function isSuccessfulTrackedChangeSettlement(result) {
     if (!result || typeof result !== 'object') return false;
+    if (result.ok === false) return false;
     if (result.ok === true) return true;
     return collectTrackedChangeAppliedEntries(result).some(entry => {
       const inner = entry?.result || entry;

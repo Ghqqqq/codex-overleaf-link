@@ -30,6 +30,17 @@
     };
   }
 
+  function prepareAuthorization(consentState, authorizationId, targetVersion, now = Date.now()) {
+    const consent = consentState && typeof consentState === "object" ? consentState : {};
+    return {
+      ...consent,
+      revokingAuthorizationId: safeString(authorizationId),
+      revokingVersion: safeString(targetVersion),
+      revokingTransactionId: "",
+      revokingAt: safeTime(now)
+    };
+  }
+
   function hasPending(consentState) {
     const consent = consentState && typeof consentState === "object" ? consentState : {};
     return Boolean(
@@ -90,6 +101,7 @@
 
   return Object.freeze({
     begin,
+    prepareAuthorization,
     hasPending,
     clear,
     complete

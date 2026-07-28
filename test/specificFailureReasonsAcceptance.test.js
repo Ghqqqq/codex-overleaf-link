@@ -782,6 +782,67 @@ test('attachAcceptNotVerifiedFailure no-ops when every tracked change shows up i
   assert.equal(result.skipped.length, 0);
 });
 
+test('attachAcceptNotVerifiedFailure accepts verified file replay evidence when tracked node counts differ', () => {
+  const helpers = loadContentRuntimeHelpers([
+    'attachAcceptNotVerifiedFailure',
+    'isAcceptResultEffectivelyVerified'
+  ]);
+  const run = {
+    undoExpectedFiles: [{ path: 'example/test2.tex', content: 'pre\n' }],
+    undoTrackedChanges: [
+      { path: 'example/test2.tex', key: 'change-1' },
+      { path: 'example/test2.tex', key: 'change-2' },
+      { path: 'example/test2.tex', key: 'change-3' }
+    ]
+  };
+  const result = {
+    ok: true,
+    applied: [
+      {
+        trackedChange: {
+          path: 'example/test2.tex',
+          key: 'accept-replay:example/test2.tex'
+        },
+        result: {
+          ok: true,
+          verified: true,
+          verifiedContent: 'post\n'
+        }
+      }
+    ],
+    skipped: []
+  };
+
+  helpers.attachAcceptNotVerifiedFailure(run, result);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped.length, 0);
+});
+
+test('attachAcceptNotVerifiedFailure still rejects unverified file replay evidence', () => {
+  const helpers = loadContentRuntimeHelpers([
+    'attachAcceptNotVerifiedFailure',
+    'isAcceptResultEffectivelyVerified'
+  ]);
+  const run = {
+    undoExpectedFiles: [{ path: 'main.tex', content: 'pre\n' }],
+    undoTrackedChanges: [{ path: 'main.tex', key: 'change-1' }]
+  };
+  const result = {
+    ok: true,
+    applied: [{
+      trackedChange: { path: 'main.tex', key: 'accept-replay:main.tex' },
+      result: { ok: true }
+    }],
+    skipped: []
+  };
+
+  helpers.attachAcceptNotVerifiedFailure(run, result);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.skipped[0].result.failure.code, 'accept_not_verified');
+});
+
 test('attachUndoNotVerifiedFailure no-ops when every expected path verifies back to pre-run content', () => {
   const helpers = loadContentRuntimeHelpers([
     'attachUndoNotVerifiedFailure',

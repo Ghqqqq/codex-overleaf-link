@@ -102,6 +102,13 @@ test('postponing a staged update can return to the available state', () => {
     ).state,
     'update_available'
   );
+  assert.equal(
+    projection.transitionCommand(
+      { state: 'failed', currentVersion: '2.2.1', latestVersion: '2.2.2' },
+      { state: 'update_available', code: '', message: '' }
+    ).state,
+    'update_available'
+  );
 });
 
 test('managed update projection owns progress, stages, and surface activity', () => {

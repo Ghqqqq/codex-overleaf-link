@@ -83,7 +83,7 @@
     applying: Object.freeze(['staged', 'awaiting_health', 'rolling_back', 'failed']),
     awaiting_health: Object.freeze(['staged', 'committed', 'rolling_back', 'failed']),
     committed: Object.freeze(['checking', 'idle']),
-    failed: Object.freeze(['checking', 'rolling_back', 'idle']),
+    failed: Object.freeze(['checking', 'rolling_back', 'update_available', 'idle']),
     rolling_back: Object.freeze(['rolled_back', 'failed']),
     rolled_back: Object.freeze(['checking', 'idle']),
     deferred: Object.freeze(['checking', 'update_available', 'idle'])

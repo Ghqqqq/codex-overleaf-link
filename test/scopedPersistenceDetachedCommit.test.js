@@ -28,7 +28,7 @@ test('detached commits use an isolated transaction and preserve the active scope
         },
         async commit(token, action, options) {
           calls.push({ type: 'commit', token, options, writerId });
-          return action();
+          return { ok: true, value: await action() };
         }
       };
       transactions.push(transaction);
@@ -54,7 +54,10 @@ test('detached commits use an isolated transaction and preserve the active scope
     async () => ({ ok: true, value: 'settled' })
   );
 
-  assert.deepEqual(result, { ok: true, value: 'settled' });
+  assert.deepEqual(result, {
+    ok: true,
+    value: { ok: true, value: 'settled' }
+  });
   assert.equal(transactions.length, 2);
   assert.deepEqual(transactions[0].calls, [{
     type: 'hydrate',

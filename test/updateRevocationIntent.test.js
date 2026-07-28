@@ -38,6 +38,20 @@ test('revocation intent survives consent normalization and completes both stores
   assert.equal(Revocation.hasPending(completed.consentState), false);
 });
 
+test('new authorization identity is durably recorded as a revocation intent', () => {
+  const pending = Revocation.prepareAuthorization(
+    { authorizationId: 'older-authorization' },
+    'new-authorization',
+    '2.3.0',
+    200
+  );
+
+  assert.equal(pending.revokingAuthorizationId, 'new-authorization');
+  assert.equal(pending.revokingVersion, '2.3.0');
+  assert.equal(pending.revokingTransactionId, '');
+  assert.equal(pending.revokingAt, 200);
+});
+
 test('update coordinator records revocation intent before the native side effect', () => {
   const source = fs.readFileSync(
     path.resolve(__dirname, '../extension/src/backgroundUpdateCoordinator.js'),
@@ -62,7 +76,13 @@ test('install failure persists revocation intent and clears authorization only a
   )?.[0] || '';
   const catchBody = install.slice(install.indexOf('} catch (error) {'));
 
-  assert.match(catchBody, /revocation\.begin/);
+  assert.ok(
+    install.indexOf('setConsentState(authorizationIntent)') <
+      install.indexOf("requestNative('update.authorize'"),
+    'the new authorization id must be durable before the native side effect'
+  );
+  assert.match(install, /setConsentState\(revocation\.clear\(\{/);
+  assert.match(catchBody, /revocation\.prepareAuthorization/);
   assert.doesNotMatch(catchBody, /bestEffortRevoke/);
   assert.ok(
     catchBody.indexOf('setConsentState(pendingConsent)') <
