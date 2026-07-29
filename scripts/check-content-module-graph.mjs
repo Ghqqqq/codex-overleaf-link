@@ -35,12 +35,41 @@ if (metadata.byteLength > 6 * 1024 * 1024) {
   errors.push(`Browser bundle exceeds the 6 MiB architecture ceiling: ${metadata.byteLength} bytes.`);
 }
 errors.push(...findImplicitGlobalConsumers());
+errors.push(...findSelfAssignments());
 
 if (errors.length) {
   console.error(errors.join('\n'));
   process.exitCode = 1;
 } else {
   console.log(`Content module graph is valid: ${metadata.inputs.length} inputs, ${metadata.byteLength} bytes.`);
+}
+
+function findSelfAssignments() {
+  const sourceRoots = [
+    path.join(rootDir, 'extension', 'src', 'shared'),
+    path.join(rootDir, 'extension', 'src', 'content')
+  ];
+  const violations = [];
+  const selfAssignmentPattern = /^\s*(?:var|let|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*\1\s*;\s*(?:\/\/.*)?$/;
+
+  for (const sourceRoot of sourceRoots) {
+    for (const filePath of walkJavaScriptFiles(sourceRoot)) {
+      if (filePath.includes(`${path.sep}generated${path.sep}`)) {
+        continue;
+      }
+      const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
+      lines.forEach((line, index) => {
+        const match = line.match(selfAssignmentPattern);
+        if (!match) {
+          return;
+        }
+        violations.push(
+          path.relative(rootDir, filePath) + ":" + (index + 1) + ": self-assignment shadows injected dependency " + match[1] + "."
+        );
+      });
+    }
+  }
+  return violations;
 }
 
 function findImplicitGlobalConsumers() {

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 const { extractFunction } = require('./_helpers/extractFunction');
 const SessionState = require('../extension/src/shared/sessionState');
 
@@ -25,6 +26,34 @@ test('renameSession shared helper enforces the ghost guard (manual vs auto)', ()
   // unknown session id is a normalize-only no-op
   const untouched = SessionState.renameSession(base, 'nope', 'X', opts);
   assert.equal(untouched.sessions[0].title, base.sessions[0].title);
+});
+
+test('dashboard session loading uses the injected StorageDb dependency', async () => {
+  const src = repo('extension/src/content/recentProjects.js');
+  const load = extractFunction(src, 'loadProjectSessionRecords');
+  const sandbox = { storageReads: 0 };
+  vm.createContext(sandbox);
+
+  const records = await vm.runInContext(
+    "const StorageDb = {"
+      + "  getAllByIndex: async (store, index, projectId) => {"
+      + "    storageReads += 1;"
+      + "    return [{ id: 's1', projectId, accountScopeId: 'account-a', lastActivityAt: '2026-07-29T00:00:00.000Z' }];"
+      + "  }"
+      + "};"
+      + "const SessionPersistence = {"
+      + "  getDeletedSessionIds: async () => [],"
+      + "  isVisibleRecord: (record, _deletedIds, scope) => record.accountScopeId === scope"
+      + "};"
+      + "function getCachedAccountScopeId() { return 'account-a'; }"
+      + load
+      + ";loadProjectSessionRecords('project-a');",
+    sandbox
+  );
+
+  assert.equal(sandbox.storageReads, 1, 'dashboard must read through the StorageDb injected into RecentProjects.create');
+  assert.equal(records.length, 1);
+  assert.equal(records[0].projectId, 'project-a');
 });
 
 test('dashboard rows expand into a per-project session list', () => {

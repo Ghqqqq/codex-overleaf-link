@@ -498,7 +498,6 @@
   }
 
   function sessionRecordDisplayTitle(record) {
-    var SessionState = SessionState;
     if (record && typeof record.title === 'string' && record.title.trim()) {
       return record.title.trim();
     }
@@ -507,7 +506,6 @@
   }
 
   async function loadProjectSessionRecords(projectId) {
-    var StorageDb = StorageDb;
     if (!StorageDb) {
       return [];
     }
@@ -523,7 +521,6 @@
   }
 
   async function renderProjectSessions(sessionsEl, projectId) {
-    var StorageDb = StorageDb;
     sessionsEl.innerHTML = '';
     var sessionsLoading = document.createElement('div');
     sessionsLoading.className = 'recent-projects-loading';
@@ -546,7 +543,6 @@
   }
 
   function renderProjectSessionRow(sessionsEl, projectId, record) {
-    var StorageDb = StorageDb;
     var running = Boolean(StorageDb)
       && settleDashboardRunStatus(StorageDb.derivePrimaryStatusBadge(record), record.updatedAt || record.lastActivityAt) === 'running';
     var row = document.createElement('div');
@@ -642,7 +638,6 @@
   // panel-state blob is deliberately left alone — an empty projectId would
   // map getProjectStorageKey onto the global legacy key.
   async function cleanupDeadProjectEntry(projectId) {
-    var StorageDb = StorageDb;
     if (!StorageDb) {
       return;
     }
@@ -690,7 +685,6 @@
   }
 
   function projectPanelStateKey(projectId) {
-    var StorageKeys = StorageKeys;
     return StorageKeys.getProjectStorageKey(PANEL_STATE_BASE_KEY, 'https://www.overleaf.com/project/' + projectId);
   }
 
@@ -700,7 +694,6 @@
   // NOTE: if the project is open in another tab, that tab's in-memory state
   // wins on its next save; the IndexedDB record mutation below still holds.
   async function mutateProjectPanelState(projectId, mutate) {
-    var SessionState = SessionState;
     var key = projectPanelStateKey(projectId);
     var stored = await chrome.storage.local.get(key);
     var blob = stored && stored[key];
@@ -715,8 +708,6 @@
   }
 
   async function deleteDashboardSession(sessionsEl, projectId, record) {
-    var StorageDb = StorageDb;
-    var SessionState = SessionState;
     // v1.8.1 P1b: ANY record whose stored badge is 'running' gets the
     // stronger confirm — even one the 30-minute heuristic settled to
     // interrupted. Activity timestamps are only bumped once a minute during
@@ -779,8 +770,6 @@
   }
 
   function beginDashboardSessionRename(sessionsEl, projectId, record, row, titleEl) {
-    var SessionState = SessionState;
-    var StorageDb = StorageDb;
     if (row.querySelector('input')) {
       return;
     }
@@ -822,8 +811,6 @@
   }
 
   async function commitDashboardSessionRename(sessionsEl, projectId, record, rawTitle) {
-    var SessionState = SessionState;
-    var StorageDb = StorageDb;
     if (!SessionState) {
       return;
     }
@@ -969,7 +956,6 @@
     // there really is more than one page of projects.
     var pageLimit = 10;
     try {
-      var StorageDb = StorageDb;
       if (StorageDb) {
         var deletedSessionIdsByProject = await SessionPersistence.loadTombstones();
         rows = await StorageDb.listRecentProjectsAcrossAccount({

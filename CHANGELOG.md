@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Restore cross-project dashboard history reads by removing bundled dependency self-shadowing, and reject declaration self-assignment regressions during module-graph validation.
 - Include the generated isolated-world content bundle and provenance metadata in Extension, npm, and coordinated-update release artifacts.
 - Build the isolated-world content bundle during macOS/Linux and Windows source installation, and reject incomplete managed runtime trees before activation.
 - Continue queued follow-ups after a directly submitted run completes or is manually cancelled, without incorrectly pausing the queue.
