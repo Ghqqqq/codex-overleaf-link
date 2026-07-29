@@ -1,8 +1,28 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 
 const Migration = require('../extension/src/shared/storageMigration');
 const StorageDbModule = require('../extension/src/shared/storageDb');
+const registrySource = fs.readFileSync(
+  path.join(__dirname, '../extension/src/content/moduleRegistryKernel.js'),
+  'utf8'
+);
+const migrationSource = fs.readFileSync(
+  path.join(__dirname, '../extension/src/shared/storageMigration.js'),
+  'utf8'
+);
+
+function loadMigration(StorageDb, chromeApi) {
+  const window = { CodexOverleafStorageDb: StorageDb };
+  vm.runInNewContext(
+    `${registrySource}\n${migrationSource}`,
+    { window, globalThis: window, chrome: chromeApi, console }
+  );
+  return window.CodexOverleafStorageMigration;
+}
 
 test('storageMigration exports PREFS_KEY', () => {
   assert.strictEqual(Migration.PREFS_KEY, 'codexOverleafPrefs');
@@ -121,7 +141,8 @@ test('current-schema migration load path normalizes experimental OT map values',
   };
 
   try {
-    const result = await Migration.runMigrationIfNeeded('project_1', 'legacy', 'account-1');
+    const ScopedMigration = loadMigration(fakeStorageDb, global.chrome);
+    const result = await ScopedMigration.runMigrationIfNeeded('project_1', 'legacy', 'account-1');
     assert.equal(result.migrated, false);
     assert.deepEqual(result.prefs.experimentalOtByProject, {
       project_1: true
@@ -230,7 +251,8 @@ test('migration preserves legacy session display fields and settings', async () 
   };
 
   try {
-    const result = await Migration.runMigrationIfNeeded('project_1', legacyStorageKey, 'account-1');
+    const ScopedMigration = loadMigration(fakeStorageDb, global.chrome);
+    const result = await ScopedMigration.runMigrationIfNeeded('project_1', legacyStorageKey, 'account-1');
     const [record] = calls.putRecords[0].records;
 
     assert.equal(result.migrated, true);
@@ -366,7 +388,8 @@ test('migration strips bulky legacy payloads while preserving displayable histor
   };
 
   try {
-    const result = await Migration.runMigrationIfNeeded(
+    const ScopedMigration = loadMigration(fakeStorageDb, global.chrome);
+    const result = await ScopedMigration.runMigrationIfNeeded(
       'project_privacy',
       legacyStorageKey,
       'account-1'

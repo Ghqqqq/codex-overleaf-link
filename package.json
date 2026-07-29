@@ -14,10 +14,12 @@
   "homepage": "https://github.com/Ghqqqq/codex-overleaf-link#readme",
   "scripts": {
     "agent:codex": "node scripts/codex-json-agent.mjs",
-    "test": "node scripts/run-tests.mjs",
+    "build:content": "node scripts/build-content-bundle.mjs",
+    "check:module-graph": "node scripts/check-content-module-graph.mjs",
+    "test": "npm run check:module-graph && node scripts/run-tests.mjs",
     "check:architecture": "node scripts/check-architecture-budget.mjs --enforce-target",
     "benchmark:large": "node scripts/benchmark-large-project.mjs --gate",
-    "smoke:extension": "node scripts/smoke-extension.mjs",
+    "smoke:extension": "npm run build:content && node scripts/smoke-extension.mjs",
     "verify:release": "node scripts/verify-release.mjs",
     "verify:source": "node scripts/verify-release.mjs --source-hygiene-only",
     "verify:release-artifacts": "node scripts/verify-release-artifacts.mjs",
@@ -33,7 +35,7 @@
     "uninstall:native": "node scripts/uninstall-native-host.mjs",
     "bridge": "node native-host/src/index.js",
     "verify:npm-package": "node scripts/verify-npm-package.mjs",
-    "pack:npm": "node scripts/verify-npm-package.mjs --pack"
+    "pack:npm": "npm run build:content && node scripts/verify-npm-package.mjs --pack"
   },
   "engines": {
     "node": ">=20"
@@ -59,5 +61,8 @@
     "scripts/verify-npm-package.mjs",
     "README.md",
     "package.json"
-  ]
+  ],
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
 }

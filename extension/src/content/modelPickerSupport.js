@@ -1,4 +1,10 @@
-(function initCodexOverleafModelPickerSupport(root) {
+(function initCodexOverleafModelPickerSupport(root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('../shared/models'));
+  } else {
+    root.CodexOverleafModuleRegistry.define('ModelPickerSupport', ['Models'], factory);
+  }
+})(typeof window !== 'undefined' ? window : globalThis, function modelPickerSupportFactory(Models) {
   'use strict';
 
   function normalizeModelOptionId(id) {
@@ -37,7 +43,7 @@
   }
 
   function getModelCatalog({ getPanel } = {}) {
-    const shared = root.CodexOverleafModels;
+    const shared = Models;
     if (Array.isArray(shared?.FALLBACK_MODELS) && typeof shared?.normalizeDiscoveredModels === 'function') {
       return shared;
     }
@@ -110,6 +116,5 @@
     retainSelectedModel,
     shouldUseBuiltInFallback
   };
-  root.CodexOverleafModelPickerSupport = api;
-  if (typeof module === 'object' && module.exports) module.exports = api;
-})(typeof window !== 'undefined' ? window : globalThis);
+  return api;
+});

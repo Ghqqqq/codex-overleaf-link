@@ -6,6 +6,10 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import {
+  CONTENT_BUNDLE_GENERATED_FILES,
+  buildContentBundle
+} from './build-content-bundle.mjs';
 
 const require = createRequire(import.meta.url);
 const { buildManagedExtensionTree } = require('../native-host/src/managedInstall.js');
@@ -39,6 +43,11 @@ function main() {
 export function buildRelease(options = {}) {
   const rootDir = path.resolve(options.rootDir || repoRoot);
   const pkg = readJson(path.join(rootDir, 'package.json'));
+  const sourceExtensionManifest = readJson(path.join(rootDir, 'extension/manifest.json'));
+  const expectsContentBundle = sourceExtensionManifest.content_scripts?.some(contentScript =>
+    contentScript.js?.includes(CONTENT_BUNDLE_GENERATED_FILES[0])
+  );
+  const contentBuild = expectsContentBundle ? buildContentBundle({ rootDir }) : null;
   const version = pkg.version;
   if (!version) {
     throw new Error('package.json must define a version.');
@@ -63,11 +72,24 @@ export function buildRelease(options = {}) {
   const npmTarballPath = path.join(outputDir, npmTarballName);
   const updateBundlePath = path.join(outputDir, updateBundleName);
   const trackedFiles = getGitTrackedFiles(rootDir);
+  const packagedFiles = new Set([
+    ...trackedFiles,
+    ...(contentBuild ? CONTENT_BUNDLE_GENERATED_FILES : [])
+  ]);
   const headTrackedFiles = getGitHeadTrackedFiles(rootDir);
-  const releaseInputFiles = getReleaseInputFilesForProvenance({
+  let releaseInputFiles = getReleaseInputFilesForProvenance({
     headTrackedFiles,
     indexTrackedFiles: trackedFiles
   });
+  if (contentBuild) {
+    releaseInputFiles = [...new Set([
+      ...releaseInputFiles,
+      ...contentBuild.metadata.inputs,
+      'scripts/build-content-bundle.mjs',
+      'package.json',
+      'package-lock.json'
+    ])].sort();
+  }
 
   assertSafeReleaseOutputDir({ rootDir, outputDir });
   assertRequiredReleaseFilesTracked({ trackedFiles, version });
@@ -76,13 +98,13 @@ export function buildRelease(options = {}) {
   }
   prepareReleaseOutputDir({ rootDir, outputDir });
 
-  createExtensionZip({ rootDir, outputPath: extensionZipPath, trackedFiles, releaseRef, releaseChannel });
+  createExtensionZip({ rootDir, outputPath: extensionZipPath, trackedFiles: packagedFiles, releaseRef, releaseChannel });
   createNativeTarball({ rootDir, outputPath: nativeTarballPath, trackedFiles });
-  createNpmTarball({ rootDir, outputPath: npmTarballPath, expectedName: npmTarballName, trackedFiles });
+  createNpmTarball({ rootDir, outputPath: npmTarballPath, expectedName: npmTarballName, trackedFiles: packagedFiles });
   createCoordinatedUpdateBundle({
     rootDir,
     outputPath: updateBundlePath,
-    trackedFiles,
+    trackedFiles: packagedFiles,
     version,
     releaseRef,
     releaseChannel

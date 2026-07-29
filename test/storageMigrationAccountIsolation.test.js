@@ -2,8 +2,26 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const Migration = require('../extension/src/shared/storageMigration');
+const registrySource = fs.readFileSync(
+  path.join(__dirname, '../extension/src/content/moduleRegistryKernel.js'),
+  'utf8'
+);
+const migrationSource = fs.readFileSync(
+  path.join(__dirname, '../extension/src/shared/storageMigration.js'),
+  'utf8'
+);
+
+function loadMigration(StorageDb, chromeApi) {
+  const window = { CodexOverleafStorageDb: StorageDb };
+  vm.runInNewContext(
+    `${registrySource}\n${migrationSource}`,
+    { window, globalThis: window, chrome: chromeApi, console }
+  );
+  return window.CodexOverleafStorageMigration;
+}
 
 test('current-schema hydration returns only the requested account and claims legacy sessions once', async () => {
   const previousWindow = global.window;
@@ -19,7 +37,7 @@ test('current-schema hydration returns only the requested account and claims leg
       TARGET_SCHEMA_VERSION: 1,
       async claimSessionsForAccount(projectId, accountScopeId, deletedSessionIds) {
         assert.equal(projectId, 'project-1');
-        assert.deepEqual(deletedSessionIds, []);
+        assert.deepEqual(Array.from(deletedSessionIds), []);
         const visible = [];
         for (const record of records) {
           if (record.projectId !== projectId) continue;
@@ -51,7 +69,8 @@ test('current-schema hydration returns only the requested account and claims leg
   };
 
   try {
-    const result = await Migration.runMigrationIfNeeded(
+    const ScopedMigration = loadMigration(global.window.CodexOverleafStorageDb, global.chrome);
+    const result = await ScopedMigration.runMigrationIfNeeded(
       'project-1',
       'legacy-key',
       'account-b'
@@ -113,9 +132,10 @@ test('concurrent account hydration can claim an unscoped legacy session only onc
   };
 
   try {
+    const ScopedMigration = loadMigration(StorageDb, global.chrome);
     const [accountA, accountB] = await Promise.all([
-      Migration.runMigrationIfNeeded('project-1', 'legacy-key', 'account-a'),
-      Migration.runMigrationIfNeeded('project-1', 'legacy-key', 'account-b')
+      ScopedMigration.runMigrationIfNeeded('project-1', 'legacy-key', 'account-a'),
+      ScopedMigration.runMigrationIfNeeded('project-1', 'legacy-key', 'account-b')
     ]);
     const owners = [accountA, accountB]
       .filter(result => result.sessions.some(session => session.id === 'session-legacy'));

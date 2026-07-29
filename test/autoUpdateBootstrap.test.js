@@ -9,6 +9,11 @@ const contentRuntimeSource = fs.readFileSync(path.join(root, 'extension/src/cont
 const updateIdleSource = fs.readFileSync(path.join(root, 'extension/src/content/updateIdle.js'), 'utf8');
 const manifest = require('../extension/bootstrap/manifest.template.json');
 const runtimeManifest = require('../extension/runtime-manifest.json');
+const {
+  CONTENT_BUNDLE_ENTRY_MARKER,
+  CONTENT_BUNDLE_RUNTIME_PATH,
+  getContentBundleSourceOrder
+} = require('./_helpers/contentBundleEntry');
 
 test('managed Bootstrap owns alarms, scripting and native messaging while runtime stays replaceable', () => {
   assert.equal(manifest.permissions.includes('alarms'), true);
@@ -42,11 +47,13 @@ test('safe-point editors and post-update Overleaf refresh surfaces are tracked s
   assert.match(updateIdleSource, /'verified_saved', 'verified_quiet'/);
 });
 
-test('runtime manifest preserves content order and places idle probe before content runtime', () => {
-  const idle = runtimeManifest.js.indexOf('src/content/updateIdle.js');
-  const notice = runtimeManifest.js.indexOf('src/content/updateNotice.js');
-  const runtime = runtimeManifest.js.indexOf('src/content/contentRuntime.js');
-  const entry = runtimeManifest.js.indexOf('src/contentScript.js');
+test('runtime manifest loads one bundle whose entry preserves startup order', () => {
+  assert.deepEqual(runtimeManifest.js, [CONTENT_BUNDLE_RUNTIME_PATH]);
+  const sourceOrder = getContentBundleSourceOrder();
+  const idle = sourceOrder.indexOf('src/content/updateIdle.js');
+  const notice = sourceOrder.indexOf('src/content/updateNotice.js');
+  const runtime = sourceOrder.indexOf('src/content/contentRuntime.js');
+  const entry = sourceOrder.indexOf(CONTENT_BUNDLE_ENTRY_MARKER);
   assert.equal(idle >= 0 && idle < notice && notice < runtime && runtime < entry, true);
 });
 

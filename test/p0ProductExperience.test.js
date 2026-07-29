@@ -5,6 +5,10 @@ const test = require('node:test');
 const { extractFunction } = require('./_helpers/extractFunction');
 const { getContentScriptSource, extractFromContentScript } = require('./_helpers/contentScriptSource');
 const { runtimeStubs } = require('./_helpers/runtimeSandbox');
+const {
+  CONTENT_BUNDLE_ENTRY_MARKER,
+  getContentBundleSourceOrder
+} = require('./_helpers/contentBundleEntry');
 const vm = require('node:vm');
 
 const ReviewHunks = require('../extension/src/content/reviewHunks');
@@ -141,6 +145,7 @@ function collectElements(node, predicate, result = []) {
 function loadMarkdownRendererHarness(projectFiles = [], options = {}) {
   const contentScript = getContentScriptSource();
   const LineReferences = require('../extension/src/shared/lineReferences');
+  const MathText = require('../extension/src/content/mathText');
   const document = createMinimalDocument();
   const pageBridgeCalls = [];
   const toasts = [];
@@ -166,7 +171,8 @@ function loadMarkdownRendererHarness(projectFiles = [], options = {}) {
     extractFromContentScript( 'stripMarkdownListMarker')
   ].join('\n');
 
-  return Function('document', 'LineReferences', 'projectFiles', 'pageBridgeCalls', 'toasts', 'options', `
+  return Function('document', 'LineReferences', 'MathText', 'projectFiles', 'pageBridgeCalls', 'toasts', 'options', `
+    const window = globalThis;
     let state = {
       focusFiles: [],
       session: { focusFiles: [] },
@@ -195,7 +201,7 @@ function loadMarkdownRendererHarness(projectFiles = [], options = {}) {
       pageBridgeCalls,
       toasts
     };
-  `)(document, LineReferences, projectFiles, pageBridgeCalls, toasts, options);
+  `)(document, LineReferences, MathText, projectFiles, pageBridgeCalls, toasts, options);
 }
 
 function findLineReferenceButtons(node) {
@@ -571,7 +577,7 @@ test('project settings expose governed rules and local skills without Overleaf a
   assert.match(settingsSource, /data-load-codex-local-skills/);
   assert.match(settingsSource, /data-load-codex-overleaf-skills/);
   assert.match(settingsSource, /data-local-skill-list/);
-  assert.match(contentScript, /CodexOverleafLocalSkillsPanel/);
+  assert.match(contentScript, /Modules\.LocalSkillsPanel/);
   assert.match(contentScript, /getLocalSkillsPanel\(\)\.refreshLocalSkills/);
   assert.match(localSkillsPanel, /codexOverleafSkills/);
   assert.match(localSkillsPanel, /function getCodexOverleafSkillsForSettings/);
@@ -814,9 +820,9 @@ test('task runs use sensitive preflight, skill toggles, governance gating, binar
   const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
   const applyBody = contentScript.match(/async function applySyncChangesToOverleaf[\s\S]*?\n  async function verifyPostWriteSaveState/)?.[0] || '';
 
-  assert.match(contentScript, /CodexOverleafGovernanceRules/);
-  assert.match(contentScript, /CodexOverleafSensitiveScan/);
-  assert.match(contentScript, /CodexOverleafAuditRecords/);
+  assert.match(contentScript, /Modules\.GovernanceRules/);
+  assert.match(contentScript, /Modules\.SensitiveScan/);
+  assert.match(contentScript, /Modules\.AuditRecords/);
   assert.doesNotMatch(runTaskBody, /submittedSelectedSkillIds/);
   assert.match(runTaskBody, /const submittedSkillLoadingSettings = getSkillLoadingSettings\(\)/);
   assert.match(runTaskBody, /createAuditDraftForRun/);
@@ -851,12 +857,12 @@ test('composer supports pasted or dropped turn attachments without Overleaf asse
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../extension/manifest.json'), 'utf8'));
   const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
   const clearBody = extractFromContentScript( 'clearTaskComposer');
-  const scriptOrder = manifest.content_scripts[0].js;
+  const scriptOrder = getContentBundleSourceOrder();
 
   assert.match(composerPanel, /data-attachment-strip/);
   assert.ok(
-    scriptOrder.indexOf('src/content/composerAttachments.js') < scriptOrder.indexOf('src/contentScript.js'),
-    'composer attachment controller loads before contentScript'
+    scriptOrder.indexOf('src/content/composerAttachments.js') < scriptOrder.indexOf(CONTENT_BUNDLE_ENTRY_MARKER),
+    'composer attachment controller loads before the content entry starts the runtime'
   );
   assert.match(composerPanel, /'paste'/);
   assert.match(composerPanel, /'dragover'/);
@@ -1283,7 +1289,7 @@ test('experimental OT warm mirror polls page OT events and patches the native mi
   const pollBody = extractFromContentScript( 'pollOtEvents');
   const flushBody = extractFromContentScript( 'flushOtPatchBatch');
 
-  assert.match(contentScript, /CodexOverleafOtWarmMirrorController/);
+  assert.match(contentScript, /Modules\.OtWarmMirrorController/);
   assert.match(contentScript, /function scheduleOtEventPolling/);
   assert.match(contentScript, /function clearOtEventPolling/);
   assert.match(pollBody, /otWarmMirrorController\.shouldPauseOtWarmMirror\(\{\s*running:\s*Boolean\(getCurrentRunView\(\)\)\s*\}\)/);
@@ -1972,7 +1978,7 @@ test('native and raw agent events go through the human transcript mapper', () =>
   const contentScript = getContentScriptSource();
   const appendNativeEventBody = contentScript.match(/function appendNativeEvent\([^)]*\) \{[\s\S]*?\n  \}/)?.[0] || '';
 
-  assert.match(contentScript, /CodexOverleafAgentTranscript/);
+  assert.match(contentScript, /Modules\.AgentTranscript/);
   assert.match(appendNativeEventBody, /mapAgentEventToActivity\(event,\s*\{\s*locale:\s*getLocale\(\)\s*\}\)/);
   assert.match(contentScript, /appendTechnicalEvent/);
   assert.doesNotMatch(contentScript, /function mapAgentActivity\(event\)/);
@@ -2162,8 +2168,9 @@ test('confirm diff review renders hunk controls and resolves accepted hunk patch
   const createDiffBody = diffReviewPanel.match(/function createDiffReviewElement\(syncChanges[\s\S]*?\n    function renderDiffReview/)?.[0] || '';
   const renderDiffBody = diffReviewPanel.match(/function renderDiffReview\(syncChanges\) \{[\s\S]*?\n    function renderReadOnlyDiffReview/)?.[0] || '';
 
-  assert.match(contentScript, /CodexOverleafReviewHunks/);
-  assert.match(createDiffBody, /window\.CodexOverleafReviewHunks/);
+  assert.match(contentScript, /Modules\.ReviewHunks/);
+  assert.match(createDiffBody, /getReviewHunks\(\)/);
+  assert.doesNotMatch(createDiffBody, /CodexOverleafReviewHunks/);
   assert.match(createDiffBody, /data-diff-hunk-accept/);
   assert.match(createDiffBody, /data-diff-hunk-reject/);
   assert.match(createDiffBody, /data-diff-hunk-jump/);
@@ -3220,8 +3227,21 @@ test('acceptRun settlement: failed or unverified page action remains actionable 
       kind: 'accept',
       result: {
         ok: false,
-        applied: [{ result: { ok: true } }],
-        skipped: []
+        applied: [],
+        skipped: [{
+          result: {
+            ok: false,
+            failure: {
+              code: 'accept_not_verified',
+              stage: 'accept',
+              severity: 'warning',
+              userMessage: 'Review the tracked changes.',
+              retryable: true,
+              nextAction: 'Review the tracked changes before continuing.',
+              terminalState: 'needs_review'
+            }
+          }
+        }]
       }
     }).decision,
     'needs_review'
@@ -4034,6 +4054,12 @@ test('saveState merges latest lightweight prefs before saving project-scoped set
           return StorageDb.putRecords('sessions', sessionRecords);
         }
       }
+    };
+    const Modules = {
+      ScopedPersistenceCoordinator,
+      StorageDb,
+      StorageMigration: Migration,
+      SessionPersistence: window.CodexOverleafSessionPersistence
     };
     function getCurrentProjectId() { return 'project_a'; }
     function getCodexOverleafSkillEnabled() {
@@ -4934,6 +4960,12 @@ test('Fix A: saveState skips persistence when run is navigation-divergent and no
     + "    writeSessions: ({ StorageDb, sessionRecords }) => StorageDb.putRecords('sessions', sessionRecords)"
     + "  },"
     + "  location: { pathname: '/project/' + 'a'.repeat(24), href: 'http://x/project/' + 'a'.repeat(24) }"
+    + "};"
+    + "const Modules = {"
+    + "  ScopedPersistenceCoordinator,"
+    + "  StorageDb: window.CodexOverleafStorageDb,"
+    + "  StorageMigration: window.CodexOverleafStorageMigration,"
+    + "  SessionPersistence: window.CodexOverleafSessionPersistence"
     + "};"
     + "let currentRunView = null;"
     + "const state = { sessions: [{ id: 's1', task: 't' }], autoRecompile: true, loadCodexLocalSkills: true, loadCodexOverleafSkills: true, experimentalOtByProject: {}, customInstructionsByProject: {}, governanceRulesByProject: {}, activeSessionId: 's1' };"

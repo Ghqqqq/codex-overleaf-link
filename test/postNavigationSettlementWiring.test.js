@@ -24,7 +24,7 @@ test('post-navigation settlement uses detached scoped persistence for the origin
   );
   assert.match(
     runtimeSource,
-    /const persistence = window\.CodexOverleafPostNavigationSettlementPersistence/
+    /const persistence = Modules\.PostNavigationSettlementPersistence/
   );
   assert.match(runtimeSource, /typeof persistence\.persistRequired !== 'function'/);
   assert.match(runtimeSource, /return await persistence\.persistRequired\(\{/);

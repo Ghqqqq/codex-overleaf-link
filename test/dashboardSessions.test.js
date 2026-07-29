@@ -112,7 +112,7 @@ test('dashboard storage writeback uses the same key + normalize/prepare pipeline
   const runtime = repo('extension/src/content/contentRuntime.js');
   assert.match(runtime, /PANEL_STATE_BASE_KEY: LEGACY_STORAGE_KEY/);
   for (const dep of ['showPluginConfirm', 'showPluginToast', 'sendBackgroundNative']) {
-    const wiring = runtime.match(/const recentProjects = window\.CodexOverleafRecentProjects\.create\(\{[\s\S]*?\}\);/)?.[0] || '';
+    const wiring = runtime.match(/const recentProjects = Modules\.RecentProjects\.create\(\{[\s\S]*?\}\);/)?.[0] || '';
     assert.match(wiring, new RegExp(dep));
   }
 });

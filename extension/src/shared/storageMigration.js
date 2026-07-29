@@ -1,10 +1,10 @@
 (function initStorageMigration(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./storageDb'));
   } else {
-    root.CodexOverleafStorageMigration = factory();
+    root.CodexOverleafModuleRegistry.define('StorageMigration', ['StorageDb'], factory);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function storageMigrationFactory() {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function storageMigrationFactory(StorageDb) {
   'use strict';
 
   var PREFS_KEY = 'codexOverleafPrefs';
@@ -135,9 +135,6 @@
   }
 
   function runMigrationIfNeeded(projectId, legacyStorageKey, accountScopeId) {
-    var StorageDb = (typeof window !== 'undefined' && window.CodexOverleafStorageDb)
-      ? window.CodexOverleafStorageDb
-      : require('./storageDb');
     projectId = normalizeProjectPrefKey(projectId);
     var normalizedAccountScopeId = normalizeTextField(accountScopeId, PROJECT_PREF_KEY_MAX_CHARS);
     if (!normalizedAccountScopeId || !projectId) {

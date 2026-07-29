@@ -1,7 +1,15 @@
 (function initCodexOverleafContentRuntime(root) {
   'use strict';
-  function init() {
+  function init(dependencies) {
   'use strict';
+
+  dependencies = dependencies || {};
+  const Modules = dependencies.modules;
+  if (!Modules || typeof Modules !== 'object') {
+    throw Object.assign(new Error('Codex Overleaf content runtime requires validated dependencies.'), {
+      code: 'content_dependency_registry_required'
+    });
+  }
 
   const RUNTIME_INSTALLED_FLAG = '__codexOverleafContentRuntimeInstalled';
   const RUNTIME_STATE_KEY = '__codexOverleafContentRuntimeState';
@@ -52,18 +60,18 @@
     'skills.install',
     'skills.remove'
   ]);
-  const PageRpcContract = window.CodexOverleafPageRpcContract;
+  const PageRpcContract = Modules.PageRpcContract;
   const PANEL_DEFAULT_WIDTH = 380;
   const PANEL_MIN_WIDTH = 340;
   const PANEL_MAX_WIDTH = 760;
   const PAGE_MIN_WIDTH = 520;
-  const CodexOverleafCompatibility = window.CodexOverleafCompatibility;
+  const CodexOverleafCompatibility = Modules.Compatibility;
   const INSTALL_COMMAND = CodexOverleafCompatibility?.buildInstallCommand?.(
     undefined,
     undefined,
     getCurrentExtensionId()
   ) || 'curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/main/install.sh | bash -s -- --extension-id <chrome-extension-id>';
-  const pageBridgeClient = window.CodexOverleafPageBridgeClient.create({
+  const pageBridgeClient = Modules.PageBridgeClient.create({
     root,
     window,
     document,
@@ -86,45 +94,45 @@
     selectVisibleSessionsForList,
     setActiveSession,
     updateActiveSession
-  } = window.CodexOverleafSessionState;
-  const LineReferences = window.CodexOverleafLineReferences;
-  const { getProjectStorageKey } = window.CodexOverleafStorageKeys;
-  const { HIGH_RISK_TYPES, buildChangeSummaryLine, hasSkippedApplyOperations } = window.CodexOverleafSummary;
+  } = Modules.SessionState;
+  const LineReferences = Modules.LineReferences;
+  const { getProjectStorageKey } = Modules.StorageKeys;
+  const { HIGH_RISK_TYPES, buildChangeSummaryLine, hasSkippedApplyOperations } = Modules.Summary;
   const {
     buildExpectedFilesAfterOperations,
     buildSnapshotRestoreUndo,
     buildUndoCheckpoint
-  } = window.CodexOverleafUndoOperations;
+  } = Modules.UndoOperations;
   const { buildHumanCompletionReport, mapAgentEventToActivity, stripEmptyHtmlCommentPlaceholders,
-    translateRawError } = window.CodexOverleafAgentTranscript;
-  const i18n = window.CodexOverleafI18n;
-  const nativeChannel = window.CodexOverleafNativeChannel.create({
+    translateRawError } = Modules.AgentTranscript;
+  const i18n = Modules.I18n;
+  const nativeChannel = Modules.NativeChannel.create({
     chrome,
     crypto
   });
-  const writebackController = window.CodexOverleafWritebackController;
-  const ReviewHunks = window.CodexOverleafReviewHunks;
-  const DiffReviewPanel = window.CodexOverleafDiffReviewPanel;
-  const ContextTray = window.CodexOverleafContextTray;
-  const LocalSkillsPanel = window.CodexOverleafLocalSkillsPanel;
-  const runController = window.CodexOverleafRunController;
-  const RunInputQueue = window.CodexOverleafRunInputQueue;
-  const RunQueueScheduler = window.CodexOverleafRunQueueScheduler;
-  const ActiveTurnControl = window.CodexOverleafActiveTurnControl;
-  const PendingInputView = window.CodexOverleafPendingInputView;
-  const mirrorHealth = window.CodexOverleafMirrorHealth;
-  const otWarmMirrorController = window.CodexOverleafOtWarmMirrorController;
-  const PanelRenderer = window.CodexOverleafPanelRenderer;
-  const SessionPanel = window.CodexOverleafSessionPanel;
-  const SettingsPanel = window.CodexOverleafSettingsPanel;
-  const DiagnosticsPanel = window.CodexOverleafDiagnosticsPanel;
-  const ComposerPanel = window.CodexOverleafComposerPanel;
-  const GovernanceRules = window.CodexOverleafGovernanceRules;
-  const SensitiveScan = window.CodexOverleafSensitiveScan;
-  const AuditRecords = window.CodexOverleafAuditRecords;
-  const FailureReasons = window.CodexOverleafFailureReasons;
-  const RunExecutionSnapshot = window.CodexOverleafRunExecutionSnapshot;
-  const WritebackSettlement = window.CodexOverleafWritebackSettlement;
+  const writebackController = Modules.WritebackController;
+  const ReviewHunks = Modules.ReviewHunks;
+  const DiffReviewPanel = Modules.DiffReviewPanel;
+  const ContextTray = Modules.ContextTray;
+  const LocalSkillsPanel = Modules.LocalSkillsPanel;
+  const runController = Modules.RunController;
+  const RunInputQueue = Modules.RunInputQueue;
+  const RunQueueScheduler = Modules.RunQueueScheduler;
+  const ActiveTurnControl = Modules.ActiveTurnControl;
+  const PendingInputView = Modules.PendingInputView;
+  const mirrorHealth = Modules.MirrorHealth;
+  const otWarmMirrorController = Modules.OtWarmMirrorController;
+  const PanelRenderer = Modules.PanelRenderer;
+  const SessionPanel = Modules.SessionPanel;
+  const SettingsPanel = Modules.SettingsPanel;
+  const DiagnosticsPanel = Modules.DiagnosticsPanel;
+  const ComposerPanel = Modules.ComposerPanel;
+  const GovernanceRules = Modules.GovernanceRules;
+  const SensitiveScan = Modules.SensitiveScan;
+  const AuditRecords = Modules.AuditRecords;
+  const FailureReasons = Modules.FailureReasons;
+  const RunExecutionSnapshot = Modules.RunExecutionSnapshot;
+  const WritebackSettlement = Modules.WritebackSettlement;
 
   // Module composition (hoisted-safe zone). These wiring blocks MUST run
   // before any controller below consumes their destructured exports by
@@ -168,7 +176,9 @@
   // runtime collaborators they need; the destructured consts keep every
   // existing call site unchanged. Function declarations hoist, so passing them
   // here is safe; mutable state is handed over as lazy getters.
-  const markdownText = window.CodexOverleafMarkdownText.create({
+  const markdownText = Modules.MarkdownText.create({
+    LineReferences: Modules.LineReferences,
+    MathText: Modules.MathText,
     tx,
     callPageBridge,
     getCurrentProjectId,
@@ -186,8 +196,8 @@
     hasUnsafeRuntimePathSegments
   } = markdownText;
 
-  const projectSettingsCoordinator = window.CodexOverleafProjectSettingsCoordinator.create({
-    CodexOverleafTheme: window.CodexOverleafTheme,
+  const projectSettingsCoordinator = Modules.ProjectSettingsCoordinator.create({
+    CodexOverleafTheme: Modules.Theme,
     GovernanceRules,
     SettingsPanel,
     closeContextTray: () => closeContextTray(),
@@ -244,7 +254,11 @@
     updateSkillsEntrySummary
   } = projectSettingsCoordinator;
 
-  const otWarmMirror = window.CodexOverleafOtWarmMirror.create({
+  const otWarmMirror = Modules.OtWarmMirror.create({
+    otWarmMirrorController,
+    runController,
+    mirrorHealth,
+    projectFiles: Modules.ProjectFiles,
     tr,
     tx,
     closeDiagnosticsMenu,
@@ -304,7 +318,8 @@
     prepareMirrorStaleRetry
   } = otWarmMirror;
 
-  const diagnosticsController = window.CodexOverleafDiagnosticsController.create({
+  const diagnosticsController = Modules.DiagnosticsController.create({
+    Compatibility: Modules.Compatibility,
     tr,
     tx,
     getExtensionCompatibilityMetadata,
@@ -348,7 +363,8 @@
   // recovery-action handlers, change-history read path, history & storage
   // card, aggressive-compaction notice. Instantiated BEFORE runTimelineView,
   // whose deps reference the recovery handlers.
-  const panelMaintenance = window.CodexOverleafPanelMaintenance.create({
+  const panelMaintenance = Modules.PanelMaintenance.create({
+    StorageDb: Modules.StorageDb,
     tx,
     showPluginToast: (...args) => showPluginToast(...args),
     showPluginConfirm: (...args) => showPluginConfirm(...args),
@@ -382,7 +398,8 @@
     openStorageSettings
   } = panelMaintenance;
 
-  const runTimelineView = window.CodexOverleafRunTimelineView.create({
+  const runTimelineView = Modules.RunTimelineView.create({
+    RunGuidanceView: Modules.RunGuidanceView,
     tr,
     tx,
     getLocale,
@@ -432,7 +449,10 @@
     configureAcceptButton
   } = runTimelineView;
 
-  const sessionManager = window.CodexOverleafSessionManager.create({
+  const sessionManager = Modules.SessionManager.create({
+    SessionPanel: Modules.SessionPanel,
+    SessionState: Modules.SessionState,
+    SessionMenuView: Modules.SessionMenuView,
     tr,
     showPluginConfirm,
     showPluginToast,
@@ -463,7 +483,9 @@
     updateSessionById
   } = sessionManager;
 
-  const applyResultFormatters = window.CodexOverleafApplyResultFormatters.create({
+  const applyResultFormatters = Modules.ApplyResultFormatters.create({
+    i18n: Modules.I18n,
+    FailureReasons: Modules.FailureReasons,
     getLocale,
     tr,
     tx,
@@ -481,7 +503,7 @@
     formatOperationFiles
   } = applyResultFormatters;
 
-  const runSettlementPersistence = window.CodexOverleafRunSettlementPersistence.create({
+  const runSettlementPersistence = Modules.RunSettlementPersistence.create({
     writebackSettlement: WritebackSettlement,
     getCurrentRunView: () => currentRunView,
     findRunRecord,
@@ -494,7 +516,7 @@
   // lives in writebackOrchestrator.js. Every dep below is either a hoisted
   // function declaration, an already-initialized const above, or a lazy
   // accessor thunk — safe in the top-of-init() wiring zone.
-  const writebackOrchestrator = window.CodexOverleafWritebackOrchestrator.create({
+  const writebackOrchestrator = Modules.WritebackOrchestrator.create({
     tr,
     tx,
     getLocale,
@@ -535,6 +557,7 @@
     filterSyncChangesByOperations,
     writebackController,
     writebackSettlement: WritebackSettlement,
+    compileAdapter: Modules.CompileAdapter,
     RUN_SNAPSHOT_ZIP_TIMEOUT_MS,
     getState: () => state,
     getCurrentRunView: () => currentRunView,
@@ -577,7 +600,8 @@
     }
   }
 
-  const modelPicker = window.CodexOverleafModelPicker.create({
+  const modelPicker = Modules.ModelPicker.create({
+    Support: Modules.ModelPickerSupport,
     tr,
     tx,
     getLocale,
@@ -610,7 +634,7 @@
     updateModelDisplay
   } = modelPicker;
 
-  const projectProviderSelection = window.CodexOverleafProjectProviderSelection.create({
+  const projectProviderSelection = Modules.ProjectProviderSelection.create({
     tx, tr, getRunningSessionIds, showToast: showPluginToast, showConfirm: showPluginConfirm,
     getState: () => state, setState: next => { state = next; }, getPanel: () => panel,
     readSelectedModel: readSelectedModelInput, readSelectedSpeed: readSelectedSpeedInput,
@@ -618,7 +642,9 @@
     normalizeState: normalizePanelState, applyStateToPanel
   });
 
-  const providerSettingsCoordinator = window.CodexOverleafProviderSettingsCoordinator.create({
+  const providerSettingsCoordinator = Modules.ProviderSettingsCoordinator.create({
+    ProviderProfiles: Modules.ProviderProfiles,
+    ProviderSettingsDialog: Modules.ProviderSettingsDialog,
     tx,
     sendBackgroundNative,
     document,
@@ -665,7 +691,13 @@
     }
   });
 
-  const recentProjects = window.CodexOverleafRecentProjects.create({
+  const recentProjects = Modules.RecentProjects.create({
+    ProjectSessionCleanup: Modules.ProjectSessionCleanup,
+    SessionPersistence: Modules.SessionPersistence,
+    SessionState: Modules.SessionState,
+    StorageDb: Modules.StorageDb,
+    StorageKeys: Modules.StorageKeys,
+    StorageMigration: Modules.StorageMigration,
     tr,
     tx,
     openCustomInstructionsSettings,
@@ -697,7 +729,7 @@
   const MAX_COMPOSER_ATTACHMENT_TOTAL_BYTES = 32 * 1024 * 1024;
   const MAX_COMPOSER_ATTACHMENTS = 8;
   const MAX_ATTACHMENT_PREVIEW_DATA_URL_CHARS = 768 * 1024;
-  const composerAttachmentController = window.CodexOverleafComposerAttachments.createComposerAttachmentController({
+  const composerAttachmentController = Modules.ComposerAttachments.createComposerAttachmentController({
     getPanel: () => panel,
     tr,
     tx,
@@ -744,7 +776,7 @@
     closeDiagnosticsMenu,
     closeCustomInstructionsSettings,
     closeSlashMenu,
-    projectFiles: window.CodexOverleafProjectFiles
+    projectFiles: Modules.ProjectFiles
   });
   const localSkillsPanel = LocalSkillsPanel.createLocalSkillsPanelController({
     root: window,
@@ -817,7 +849,7 @@
   let runCancellationController = null;
   let pluginConfirmController = null;
   let scopedPersistenceCoordinator = null;
-  const nativeCompatibilityController = window.CodexOverleafNativeCompatibilityController.create({
+  const nativeCompatibilityController = Modules.NativeCompatibilityController.create({
     compatibility: CodexOverleafCompatibility,
     nativeChannel,
     gatedMethods: NATIVE_COMPATIBILITY_GATED_METHODS,
@@ -844,7 +876,7 @@
     tr,
     tx
   });
-  const updateIdleClient = root.CodexOverleafUpdateIdle?.create({
+  const updateIdleClient = Modules.UpdateIdle?.create({
     document,
     getBusyState: () => ({
       run: Boolean(currentRunView),
@@ -929,7 +961,7 @@
         .catch(() => {});
     }, 900);
     ensurePanelOpen();
-    root.CodexOverleafUpdateNotice?.mount?.(panel?.panelEl || panel, {
+    Modules.UpdateNotice?.mount?.(panel?.panelEl || panel, {
       getLocale: () => state?.locale || 'en'
     });
     // v1.8.1: on a non-editor route the panel must NEVER first paint the
@@ -1593,7 +1625,7 @@
   }
 
   async function getRecentAuditLogsForCurrentProject(limit = 12) {
-    const StorageDb = window.CodexOverleafStorageDb;
+    const StorageDb = Modules.StorageDb;
     if (!StorageDb?.getAllByIndex) {
       return [];
     }
@@ -1860,7 +1892,7 @@
         project,
         snapshotWarnings,
         focusFiles,
-        isUsableProjectFileContent: window.CodexOverleafProjectFiles.isUsableProjectFileContent
+        isUsableProjectFileContent: Modules.ProjectFiles.isUsableProjectFileContent
       });
       let restrictToFocusFiles = runController.shouldRestrictWritebackToFocus({ focusFiles, focusedPartialSnapshot });
       if (snapshotWarnings.blocking.length && !warmMirrorReuse.useExistingMirror && !focusedPartialSnapshot) {
@@ -2044,7 +2076,7 @@
         const userChoice = await showThreadResumeFailedPrompt();
         if (userChoice === 'new') {
           updateSessionById(runSessionId, { codexThreadId: '' });
-          const StorageDb = window.CodexOverleafStorageDb;
+          const StorageDb = Modules.StorageDb;
           if (StorageDb) {
             const record = await StorageDb.getRecord('sessions', runSessionId);
             if (record) {
@@ -2306,7 +2338,7 @@
         const returnedThreadId = response.result?.threadId || '';
         if (returnedThreadId && returnedThreadId !== codexThreadId) {
           updateSessionById(runSessionId, { codexThreadId: returnedThreadId });
-          const StorageDb = window.CodexOverleafStorageDb;
+          const StorageDb = Modules.StorageDb;
           if (StorageDb) {
             const record = await StorageDb.getRecord('sessions', runSessionId);
             if (record) {
@@ -2528,7 +2560,7 @@
     const returnedThreadId = response.result?.threadId || '';
     if (returnedThreadId && returnedThreadId !== codexThreadId) {
       updateSessionById(runSessionId, { codexThreadId: returnedThreadId });
-      const StorageDb = window.CodexOverleafStorageDb;
+      const StorageDb = Modules.StorageDb;
       if (StorageDb) {
         const record = await StorageDb.getRecord('sessions', runSessionId);
         if (record) {
@@ -2662,7 +2694,7 @@
     });
   }
 
-  const runGuidanceController = window.CodexOverleafRunGuidanceController.create({
+  const runGuidanceController = Modules.RunGuidanceController.create({
     findRunRecord, appendRunEvent, getCurrentRunView: () => currentRunView,
     renderRunEvent, cssEscape, bumpUnreadIfDetached
   });
@@ -3081,7 +3113,7 @@
   }
 
   async function createAuditDraftForRun(input = {}) {
-    const StorageDb = window.CodexOverleafStorageDb;
+    const StorageDb = Modules.StorageDb;
     if (!StorageDb || !AuditRecords) {
       return null;
     }
@@ -3119,7 +3151,7 @@
   }
 
   async function finalizeAuditDraftPartial(draft, updates = {}) {
-    const StorageDb = window.CodexOverleafStorageDb;
+    const StorageDb = Modules.StorageDb;
     if (!StorageDb || !draft) {
       return draft;
     }
@@ -3130,7 +3162,7 @@
   }
 
   async function finalizeAuditRecord(draft, updates = {}) {
-    const StorageDb = window.CodexOverleafStorageDb;
+    const StorageDb = Modules.StorageDb;
     if (!StorageDb || !AuditRecords || !draft) {
       return null;
     }
@@ -3925,8 +3957,8 @@
   }
 
   function normalizeSafeProjectPath(value) {
-    if (window.CodexOverleafProjectFiles?.normalizeSafeProjectPath) {
-      return window.CodexOverleafProjectFiles.normalizeSafeProjectPath(value);
+    if (Modules.ProjectFiles?.normalizeSafeProjectPath) {
+      return Modules.ProjectFiles.normalizeSafeProjectPath(value);
     }
     return String(value || '')
       .replace(/\s+/g, ' ')
@@ -4257,8 +4289,8 @@
 
   function getScopedPersistenceCoordinator() {
     if (scopedPersistenceCoordinator) return scopedPersistenceCoordinator;
-    scopedPersistenceCoordinator = window.CodexOverleafScopedPersistenceCoordinator?.createController({
-      Transaction: window.CodexOverleafScopedPersistenceTransaction,
+    scopedPersistenceCoordinator = Modules.ScopedPersistenceCoordinator?.createController({
+      Transaction: Modules.ScopedPersistenceTransaction,
       chromeApi: chrome,
       sessionStorage: window.sessionStorage,
       getAccountScopeId: () => window.codexOverleafDeriveAccountScopeId?.() || ''
@@ -4488,7 +4520,7 @@
           reason: 'session_scope_unavailable'
         });
       }
-      const persistence = window.CodexOverleafPostNavigationSettlementPersistence;
+      const persistence = Modules.PostNavigationSettlementPersistence;
       if (!persistence || typeof persistence.persistRequired !== 'function') {
         throw Object.assign(new Error('Post-navigation settlement persistence is unavailable.'), {
           code: 'post_navigation_settlement_persistence_failed',
@@ -4496,7 +4528,7 @@
         });
       }
       return await persistence.persistRequired({
-        StorageDb: window.CodexOverleafStorageDb,
+        StorageDb: Modules.StorageDb,
         PersistenceCoordinator: getScopedPersistenceCoordinator(),
         WritebackSettlement,
         projectId: currentRunView?.runProjectId || '',
@@ -4551,7 +4583,7 @@
     getCachedAccountScopeId: () => cachedAccountScopeId,
     // T5 surfaces: variant renderer + helpers. Tests drive
     // `renderRecentProjectsVariant` against a stubbed `panel` and
-    // `window.CodexOverleafStorageDb` to assert layout / row behavior.
+    // `Modules.StorageDb` to assert layout / row behavior.
     renderRecentProjectsVariant,
     renderRecentProjectRow,
     renderStatusBadge,
@@ -5266,7 +5298,7 @@
     }
 
     const mirrorStatus = await getMirrorFreshness();
-    const mirrorHealth = window.CodexOverleafMirrorHealth.classifyMirrorHealth(mirrorStatus);
+    const mirrorHealth = Modules.MirrorHealth.classifyMirrorHealth(mirrorStatus);
     if (!mirrorStatus?.exists || !mirrorHealth.reusable) {
       return { useExistingMirror: false, reason: 'mirror_not_fresh', mirrorStatus };
     }
@@ -5295,7 +5327,7 @@
     return candidates
       .filter(file =>
         typeof file.content === 'string' &&
-        window.CodexOverleafProjectFiles.isUsableProjectFileContent(file.content) &&
+        Modules.ProjectFiles.isUsableProjectFileContent(file.content) &&
         file.path &&
         !seen.has(file.path) &&
         seen.add(file.path)
@@ -5404,7 +5436,7 @@
       blocking.push('Full project snapshot was not captured.');
     }
 
-    const unusable = textFiles.filter(file => !window.CodexOverleafProjectFiles.isUsableProjectFileContent(file.content));
+    const unusable = textFiles.filter(file => !Modules.ProjectFiles.isUsableProjectFileContent(file.content));
     if (unusable.length === textFiles.length) {
       blocking.push('Captured file contents are empty or still loading.');
     } else if (unusable.length) {
@@ -5510,8 +5542,8 @@
 
   async function loadStoredStateForProject(accountScopeId = cachedAccountScopeId || '') {
     try {
-      const StorageDb = window.CodexOverleafStorageDb;
-      const Migration = window.CodexOverleafStorageMigration;
+      const StorageDb = Modules.StorageDb;
+      const Migration = Modules.StorageMigration;
       const projectId = getCurrentProjectId();
       const legacyKey = storageKey;
 
@@ -5611,8 +5643,8 @@
 
   async function saveState(options) {
     try {
-      const StorageDb = window.CodexOverleafStorageDb;
-      const Migration = window.CodexOverleafStorageMigration;
+      const StorageDb = Modules.StorageDb;
+      const Migration = Modules.StorageMigration;
       // Welcome-panel + write-guard:
       // post-navigation persistence gate. The normal URL-derived projectId
       // belongs to the route the user is *currently looking at*. When a run
@@ -5665,14 +5697,14 @@
         ? structuredClone(compactState)
         : JSON.parse(JSON.stringify(compactState));
 
-      const persistScopedState = persistenceContext => window.CodexOverleafScopedPersistenceCoordinator.persistPanelState({
+      const persistScopedState = persistenceContext => Modules.ScopedPersistenceCoordinator.persistPanelState({
         state: stateSnapshot,
         compactState: compactStateSnapshot,
         projectId,
         deletedSessionIds: options?.deletedSessionIds,
         Migration,
         StorageDb,
-        SessionPersistence: window.CodexOverleafSessionPersistence,
+        SessionPersistence: Modules.SessionPersistence,
         normalizeExperimentalOtByProject,
         normalizeGovernanceRulesByProject,
         normalizeCustomInstructionsByProject,

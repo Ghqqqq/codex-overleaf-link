@@ -3,6 +3,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const { extractFunction } = require('./_helpers/extractFunction');
+const {
+  CONTENT_BUNDLE_ENTRY_MARKER,
+  getContentBundleSourceOrder
+} = require('./_helpers/contentBundleEntry');
 
 const CONTENT_SCRIPT_PATH = path.join(__dirname, '../extension/src/content/contentRuntime.js');
 const CONTEXT_TRAY_PATH = path.join(__dirname, '../extension/src/content/contextTray.js');
@@ -127,7 +131,7 @@ test('add context button opens a visible Overleaf project file picker', () => {
   assert.match(panelSource, /data-context-file-list/);
   assert.match(panelSource, /data-context-refresh/);
   assert.match(contentScript, /function toggleContextTray\(/);
-  assert.match(contentScript, /CodexOverleafContextTray/);
+  assert.match(contentScript, /Modules\.ContextTray/);
   assert.match(extractFunction(contentScript, 'toggleContextTray'), /contextTrayController\.toggleContextTray\(\)/);
   assert.match(extractFunction(contentScript, 'renderContextFiles'), /contextTrayController\.renderContextFiles\(project\)/);
   assert.doesNotMatch(contentScript, /let contextProject\s*=/);
@@ -145,15 +149,16 @@ test('add context button opens a visible Overleaf project file picker', () => {
   assert.match(contextTray, /let contextProject\s*=\s*null/);
   assert.match(contextTray, /let contextLoadId\s*=\s*0/);
   assert.match(contextTray, /let contextExpandedFolders\s*=\s*new Set\(\)/);
+  const sourceOrder = getContentBundleSourceOrder();
   assert.ok(
-    manifest.content_scripts[0].js.indexOf('src/content/diffReviewPanel.js') <
-      manifest.content_scripts[0].js.indexOf('src/content/contextTray.js'),
+    sourceOrder.indexOf('src/content/diffReviewPanel.js') <
+      sourceOrder.indexOf('src/content/contextTray.js'),
     'context tray controller loads after diff review panel'
   );
   assert.ok(
-    manifest.content_scripts[0].js.indexOf('src/content/contextTray.js') <
-      manifest.content_scripts[0].js.indexOf('src/contentScript.js'),
-    'context tray controller loads before contentScript'
+    sourceOrder.indexOf('src/content/contextTray.js') <
+      sourceOrder.indexOf(CONTENT_BUNDLE_ENTRY_MARKER),
+    'context tray controller loads before the content entry starts the runtime'
   );
   assert.match(i18n, /clearFiles:\s*'清除全部 @file'/);
   assert.match(i18n, /removeContextFile:\s*'从 @context 移除 \{path\}'/);

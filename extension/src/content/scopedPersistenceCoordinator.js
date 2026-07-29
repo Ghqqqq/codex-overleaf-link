@@ -1,13 +1,16 @@
 (function (root, factory) {
-  var panelState = typeof module === 'object' && module.exports
-    ? require('./scopedPersistencePanelState')
-    : root?.CodexOverleafScopedPersistencePanelState;
-  var detachedCommit = typeof module === 'object' && module.exports
-    ? require('./scopedPersistenceDetachedCommit')
-    : root?.CodexOverleafScopedPersistenceDetachedCommit;
-  var api = factory(panelState, detachedCommit);
-  if (typeof module === 'object' && module.exports) module.exports = api;
-  if (root) root.CodexOverleafScopedPersistenceCoordinator = api;
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(
+      require('./scopedPersistencePanelState'),
+      require('./scopedPersistenceDetachedCommit')
+    );
+  } else {
+    root.CodexOverleafModuleRegistry.define(
+      'ScopedPersistenceCoordinator',
+      ['ScopedPersistencePanelState', 'ScopedPersistenceDetachedCommit'],
+      factory
+    );
+  }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (PanelState, DetachedCommit) {
   'use strict';
 

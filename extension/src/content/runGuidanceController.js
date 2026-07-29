@@ -47,7 +47,7 @@
     }
 
     function appendToView(event, view) {
-      const text = window.CodexOverleafRunGuidanceView?.getGuidanceText(event);
+      const text = deps.RunGuidanceView?.getGuidanceText(event);
       if (!text) return false;
       const guidance = view.guidance || view.root?.querySelector('[data-run-guidance]');
       const target = view.terminalStatus ? guidance : view.events;

@@ -143,6 +143,8 @@ test('explicit Built-in activation preloads its catalog before the atomic projec
   const coordinator = fakeWindow.CodexOverleafProviderSettingsCoordinator.create({
     document: {},
     window: fakeWindow,
+    ProviderProfiles,
+    ProviderSettingsDialog: fakeWindow.CodexOverleafProviderSettingsDialog,
     getSelectedProviderId: () => selectedProviderId,
     setSelectedProviderId: (providerId, modelId) => {
       selectedProviderId = providerId;
@@ -198,6 +200,8 @@ test('same-id provider catalog changes commit the new revision to the project', 
   const coordinator = fakeWindow.CodexOverleafProviderSettingsCoordinator.create({
     document: {},
     window: fakeWindow,
+    ProviderProfiles,
+    ProviderSettingsDialog: fakeWindow.CodexOverleafProviderSettingsDialog,
     getSelectedProviderId: () => selectedProviderId,
     setSelectedProviderId: (providerId, modelId) => {
       selectedProviderId = providerId;
@@ -272,6 +276,8 @@ test('cross-tab same-id provider revision changes invalidate the project binding
   const coordinator = fakeWindow.CodexOverleafProviderSettingsCoordinator.create({
     document: {},
     window: fakeWindow,
+    ProviderProfiles,
+    ProviderSettingsDialog: fakeWindow.CodexOverleafProviderSettingsDialog,
     getSelectedProviderId: () => 'provider-a',
     getSelectedModel: () => 'model-a',
     setSelectedProviderId: (providerId, modelId) => {
@@ -328,6 +334,8 @@ test('removing the project provider falls back to Built-in Codex atomically', as
   const coordinator = fakeWindow.CodexOverleafProviderSettingsCoordinator.create({
     document: {},
     window: fakeWindow,
+    ProviderProfiles,
+    ProviderSettingsDialog: fakeWindow.CodexOverleafProviderSettingsDialog,
     getSelectedProviderId: () => selectedProviderId,
     setSelectedProviderId: (providerId, modelId) => {
       selectedProviderId = providerId;

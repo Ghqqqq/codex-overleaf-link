@@ -1,8 +1,14 @@
-(function initCodexOverleafSessionPersistence() {
+(function initCodexOverleafSessionPersistence(root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('../shared/storageMigration'));
+  } else {
+    root.CodexOverleafModuleRegistry.define('SessionPersistence', ['StorageMigration'], factory);
+  }
+})(typeof window !== 'undefined' ? window : globalThis, function sessionPersistenceFactory(Migration) {
   'use strict';
 
   function migration() {
-    return window.CodexOverleafStorageMigration;
+    return Migration;
   }
 
   async function loadTombstones() {
@@ -105,11 +111,11 @@
     return unchanged ? record : { ...record, pendingInputs };
   }
 
-  window.CodexOverleafSessionPersistence = {
+  return {
     loadTombstones,
     getDeletedSessionIds,
     addTombstones,
     isVisibleRecord,
     writeSessions
   };
-})();
+});

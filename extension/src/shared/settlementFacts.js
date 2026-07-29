@@ -2,7 +2,7 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(require('./failureReasons'));
   } else {
-    root.CodexOverleafSettlementFacts = factory(root.CodexOverleafFailureReasons);
+    root.CodexOverleafModuleRegistry.define('SettlementFacts', ['FailureReasons'], factory);
   }
 })(typeof window !== 'undefined' ? window : globalThis, function settlementFactsFactory(DefaultFailureReasons) {
   'use strict';

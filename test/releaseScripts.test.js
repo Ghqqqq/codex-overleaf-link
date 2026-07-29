@@ -433,7 +433,7 @@ releaseTest('package exposes release verification and artifact build commands', 
   const pkg = readJson(path.join(repoRoot, 'package.json'));
   const runTests = fs.readFileSync(path.join(repoRoot, 'scripts/run-tests.mjs'), 'utf8');
 
-  assert.equal(pkg.scripts.test, 'node scripts/run-tests.mjs');
+  assert.equal(pkg.scripts.test, 'npm run check:module-graph && node scripts/run-tests.mjs');
   assert.match(runTests, /--test-concurrency=1/);
   assert.match(runTests, /--test-isolation=none/);
   assert.doesNotMatch(runTests, /--test-force-exit/);

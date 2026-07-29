@@ -1,26 +1,14 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
-const vm = require('node:vm');
 
 const Transaction = require('../extension/src/shared/scopedPersistenceTransaction');
-const SOURCE = fs.readFileSync(
-  path.resolve(__dirname, '../extension/src/content/scopedPersistenceCoordinator.js'),
-  'utf8'
-);
-
-function loadModule() {
-  const window = {};
-  vm.runInNewContext(SOURCE, { window, globalThis: window, console });
-  return window.CodexOverleafScopedPersistenceCoordinator;
-}
+const ScopedPersistenceCoordinator = require('../extension/src/content/scopedPersistenceCoordinator');
 
 test('scoped persistence keeps the hydrated account scope for later commits', async () => {
   let currentAccountScopeId = null;
   let actionCalls = 0;
   let committedScope = null;
-  const controller = loadModule().createController({
+  const controller = ScopedPersistenceCoordinator.createController({
     Transaction,
     sessionStorage: {},
     getAccountScopeId: () => currentAccountScopeId

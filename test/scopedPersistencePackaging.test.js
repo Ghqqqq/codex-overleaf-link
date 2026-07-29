@@ -4,6 +4,10 @@ const path = require('node:path');
 const test = require('node:test');
 
 const ROOT = path.resolve(__dirname, '..');
+const {
+  CONTENT_BUNDLE_RUNTIME_PATH,
+  getContentBundleSourceOrder
+} = require('./_helpers/contentBundleEntry');
 
 test('queue persistence policy loads before the transaction in direct and managed runtimes', () => {
   const extensionManifest = JSON.parse(fs.readFileSync(
@@ -14,10 +18,9 @@ test('queue persistence policy loads before the transaction in direct and manage
     path.join(ROOT, 'extension', 'runtime-manifest.json'),
     'utf8',
   ));
-  const scriptLists = [
-    extensionManifest.content_scripts[0].js,
-    runtimeManifest.js
-  ];
+  assert.deepEqual(extensionManifest.content_scripts[0].js, [CONTENT_BUNDLE_RUNTIME_PATH]);
+  assert.deepEqual(runtimeManifest.js, [CONTENT_BUNDLE_RUNTIME_PATH]);
+  const scriptLists = [getContentBundleSourceOrder()];
 
   for (const scripts of scriptLists) {
     const policyIndex = scripts.indexOf('src/shared/scopedPersistenceQueuePolicy.js');

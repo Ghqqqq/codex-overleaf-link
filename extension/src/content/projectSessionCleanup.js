@@ -23,8 +23,8 @@
     }
 
     async function clearProjectSessions(projectId, projectName) {
-      const StorageDb = window.CodexOverleafStorageDb;
-      const SessionState = window.CodexOverleafSessionState;
+      const StorageDb = deps.StorageDb;
+      const SessionState = deps.SessionState;
       if (!StorageDb || !SessionState) {
         return;
       }
@@ -49,7 +49,7 @@
       if (!approved) {
         return;
       }
-      const Migration = window.CodexOverleafStorageMigration;
+      const Migration = deps.StorageMigration;
       if (Migration?.addSessionTombstones) {
         await Migration.addSessionTombstones(projectId, records.map(record => record.id));
       }

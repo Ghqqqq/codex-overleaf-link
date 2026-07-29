@@ -29,6 +29,7 @@
       setState,
       getCurrentRunView,
       getSettingsPanelInstance,
+      StorageDb
     } = deps;
 
   // --- Change history (v1.7.5): the audit log finally gets a read path. ---
@@ -48,7 +49,6 @@
     list.textContent = tx('Loading\u2026', '正在加载…');
     let records = [];
     try {
-      const StorageDb = window.CodexOverleafStorageDb;
       records = StorageDb?.getAllByIndex
         ? await StorageDb.getAllByIndex('auditLogs', 'projectId', getCurrentProjectId())
         : [];
@@ -171,7 +171,7 @@
       return;
     }
     try {
-      await window.CodexOverleafStorageDb?.clearAllStores?.();
+      await StorageDb?.clearAllStores?.();
       // v1.8.1: the dashboard's project-name cache lives in
       // chrome.storage.local, outside the IndexedDB stores — clear it too so
       // no (potentially sensitive) project titles outlive the wipe.

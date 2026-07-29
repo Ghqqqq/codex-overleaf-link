@@ -8,10 +8,14 @@ const source = fs.readFileSync(
   path.join(__dirname, '../extension/src/content/sessionPersistence.js'),
   'utf8'
 );
+const registrySource = fs.readFileSync(
+  path.join(__dirname, '../extension/src/content/moduleRegistryKernel.js'),
+  'utf8'
+);
 
 function loadModule(Migration) {
   const window = { CodexOverleafStorageMigration: Migration };
-  vm.runInNewContext(source, { window, console });
+  vm.runInNewContext(`${registrySource}\n${source}`, { window, globalThis: window, console });
   return window.CodexOverleafSessionPersistence;
 }
 

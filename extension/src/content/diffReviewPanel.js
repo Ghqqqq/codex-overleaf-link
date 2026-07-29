@@ -1,10 +1,10 @@
 (function initCodexOverleafDiffReviewPanel(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./reviewHunks'));
   } else {
-    root.CodexOverleafDiffReviewPanel = factory();
+    root.CodexOverleafModuleRegistry.define('DiffReviewPanel', ['ReviewHunks'], factory);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function diffReviewPanelFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function diffReviewPanelFactory(ReviewHunks) {
   'use strict';
 
   const MAX_INITIAL_REVIEW_HUNKS = 20;
@@ -24,11 +24,7 @@
     const appendRunEvent = typeof deps.appendRunEvent === 'function' ? deps.appendRunEvent : () => {};
     const scrollLogToBottom = typeof deps.scrollLogToBottom === 'function' ? deps.scrollLogToBottom : () => {};
 
-    function getReviewHunks() {
-      return deps.reviewHunks ||
-        root.CodexOverleafReviewHunks ||
-        (typeof window !== 'undefined' ? window.CodexOverleafReviewHunks : null);
-    }
+    const getReviewHunks = () => deps.reviewHunks || ReviewHunks;
 
     function createDiffReviewElement(syncChanges, options = {}) {
       const readonly = Boolean(options.readonly);
@@ -40,10 +36,7 @@
       if (readonly) {
         container.dataset.readonly = 'true';
       }
-      const reviewHunks = options.reviewHunks ||
-        deps.reviewHunks ||
-        root.CodexOverleafReviewHunks ||
-        (typeof window !== 'undefined' ? window.CodexOverleafReviewHunks : null);
+      const reviewHunks = options.reviewHunks || getReviewHunks();
       const reviewModel = reviewHunks?.buildReviewModel?.(syncChanges) || { files: [], hunks: [] };
       const reviewFilesByIndex = new Map(reviewModel.files.map(file => [file.index, file]));
       const fileStates = new Map();

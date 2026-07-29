@@ -2,10 +2,10 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(require('./providerProfiles'), require('./runExecutionSnapshotCodec'));
   } else {
-    root.CodexOverleafRunExecutionSnapshot = factory(
-      root.CodexOverleafProviderProfiles,
-      root.CodexOverleafRunExecutionSnapshotCodec
-    );
+    root.CodexOverleafModuleRegistry.define('RunExecutionSnapshot', [
+      'ProviderProfiles',
+      'RunExecutionSnapshotCodec'
+    ], factory);
   }
 })(typeof window !== 'undefined' ? window : globalThis, function runExecutionSnapshotFactory(ProviderProfiles, Codec) {
   'use strict';

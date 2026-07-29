@@ -2,7 +2,7 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(require('./runExecutionSnapshot'));
   } else {
-    root.CodexOverleafRunInputQueue = factory(root.CodexOverleafRunExecutionSnapshot);
+    root.CodexOverleafModuleRegistry.define('RunInputQueue', ['RunExecutionSnapshot'], factory);
   }
 })(typeof window !== 'undefined' ? window : globalThis, function runInputQueueFactory(RunExecutionSnapshot) {
   'use strict';

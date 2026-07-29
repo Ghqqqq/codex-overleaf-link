@@ -103,7 +103,7 @@ test('projection requires actual recovery payloads and terminal lifecycle states
   }
 });
 
-test('top-level tracked-change failure cannot become terminal from a partial applied entry', () => {
+test('a stale top-level failure cannot override successful tracked-change evidence', () => {
   for (const kind of ['accept', 'reject']) {
     const run = {
       trackedChangeStatus: 'pending',
@@ -124,10 +124,9 @@ test('top-level tracked-change failure cannot become terminal from a partial app
     });
     const next = Settlement.applySettlementTransition(run, settlement);
 
-    assert.equal(settlement.decision, 'needs_review');
-    assert.equal(next.trackedChangeStatus, 'needs_review');
-    assert.equal(next.undoTrackedChanges.length, 1);
-    assert.equal(next.undoExpectedFiles.length, 1);
+    const expectedStatus = kind === 'accept' ? 'accepted' : 'rejected';
+    assert.equal(settlement.decision, expectedStatus);
+    assert.equal(next.trackedChangeStatus, expectedStatus);
   }
 });
 

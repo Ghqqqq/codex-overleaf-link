@@ -3,12 +3,12 @@
     module.exports = factory(require('./storageRunActions'), require('./runInputQueue'),
       require('./settlementFacts'), require('./storageSessionClaims'));
   } else {
-    root.CodexOverleafStorageDb = factory(
-      root.CodexOverleafStorageRunActions,
-      root.CodexOverleafRunInputQueue,
-      root.CodexOverleafSettlementFacts,
-      root.CodexOverleafStorageSessionClaims
-    );
+    root.CodexOverleafModuleRegistry.define('StorageDb', [
+      'StorageRunActions',
+      'RunInputQueue',
+      'SettlementFacts',
+      'StorageSessionClaims'
+    ], factory);
   }
 })(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue, SettlementFacts, StorageSessionClaims) {
   'use strict';

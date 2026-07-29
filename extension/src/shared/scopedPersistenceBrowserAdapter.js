@@ -1,11 +1,13 @@
 (function (root, factory) {
-  var QueuePolicy = root && root.CodexOverleafScopedPersistenceQueuePolicy;
-  if (!QueuePolicy && typeof module === 'object' && module.exports) {
-    QueuePolicy = require('./scopedPersistenceQueuePolicy');
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./scopedPersistenceQueuePolicy'));
+  } else {
+    root.CodexOverleafModuleRegistry.define(
+      'ScopedPersistenceBrowserAdapter',
+      ['ScopedPersistenceQueuePolicy'],
+      factory
+    );
   }
-  var api = factory(QueuePolicy);
-  if (typeof module === 'object' && module.exports) module.exports = api;
-  if (root) root.CodexOverleafScopedPersistenceBrowserAdapter = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function (QueuePolicy) {
   'use strict';
 

@@ -2,7 +2,7 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(require('../shared/runInputQueue'));
   } else {
-    root.CodexOverleafRunQueueScheduler = factory(root.CodexOverleafRunInputQueue);
+    root.CodexOverleafModuleRegistry.define('RunQueueScheduler', ['RunInputQueue'], factory);
   }
 })(typeof window !== 'undefined' ? window : globalThis, function runQueueSchedulerFactory(Queue) {
   'use strict';

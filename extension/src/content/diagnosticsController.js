@@ -1,8 +1,6 @@
 (function initCodexOverleafDiagnosticsController() {
   'use strict';
 
-  const CodexOverleafCompatibility = window.CodexOverleafCompatibility;
-
   // Diagnostics controller — the check runners (inspect*) and result formatters
   // carved out of contentRuntime.js (v1.4.5 structural-debt phase 1). The code
   // below moved verbatim (original indentation kept); runtime collaborators are
@@ -10,6 +8,7 @@
   // state, OT status) is read through injected getters.
   function create(deps = {}) {
     const {
+      Compatibility: CodexOverleafCompatibility,
       tr,
       tx,
       getExtensionCompatibilityMetadata,

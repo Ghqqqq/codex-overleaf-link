@@ -8,7 +8,7 @@
     }
     module.exports = factory(projectFiles);
   } else {
-    root.CodexOverleafGovernanceRules = factory(root.CodexOverleafProjectFiles);
+    root.CodexOverleafModuleRegistry.define('GovernanceRules', ['ProjectFiles'], factory);
   }
 })(typeof globalThis !== 'undefined' ? globalThis : window, function governanceRulesFactory(projectFiles) {
   'use strict';

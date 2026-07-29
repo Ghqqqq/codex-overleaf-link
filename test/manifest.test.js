@@ -22,10 +22,22 @@ const {
   getNativeHostRegistrationTarget
 } = require('../native-host/src/nativeHostPlatform');
 const extensionManifest = require('../extension/manifest.json');
+const {
+  CONTENT_BUNDLE_ENTRY_MARKER,
+  CONTENT_BUNDLE_RUNTIME_PATH,
+  getContentBundleSourceOrder
+} = require('./_helpers/contentBundleEntry');
+const contentBundleSourceOrder = getContentBundleSourceOrder();
 
 test('development package and extension metadata use the same semantic version', () => {
   assert.match(packageJson.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
   assert.equal(extensionManifest.version, packageJson.version);
+});
+
+test('isolated content runtime is packaged as one generated bundle', () => {
+  assert.deepEqual(extensionManifest.content_scripts[0].js, [CONTENT_BUNDLE_RUNTIME_PATH]);
+  assert.ok(contentBundleSourceOrder.includes('src/content/contentRuntime.js'));
+  assert.equal(contentBundleSourceOrder.at(-1), CONTENT_BUNDLE_ENTRY_MARKER);
 });
 
 test('public install docs describe the latest stable changelog release', () => {
@@ -41,25 +53,27 @@ test('public install docs describe the latest stable changelog release', () => {
   assert.doesNotMatch(changelog, /^## v1\.0\.0 - 2026-05-07[\s\S]*version-1\.1\.0-blue/m);
 });
 
-test('loads line reference shared module immediately after project files', () => {
-  const contentScript = extensionManifest.content_scripts[0];
-  const js = contentScript.js;
+test('loads reference sanitizers immediately after project files', () => {
+  const js = contentBundleSourceOrder;
   const projectFilesIndex = js.indexOf('src/shared/projectFiles.js');
   const lineReferencesIndex = js.indexOf('src/shared/lineReferences.js');
+  const pathRedactionIndex = js.indexOf('src/shared/pathRedaction.js');
   const sessionStateIndex = js.indexOf('src/shared/sessionState.js');
   const contentRuntimeIndex = js.indexOf('src/content/contentRuntime.js');
 
   assert.notEqual(projectFilesIndex, -1);
   assert.notEqual(lineReferencesIndex, -1);
+  assert.notEqual(pathRedactionIndex, -1);
   assert.notEqual(sessionStateIndex, -1);
   assert.notEqual(contentRuntimeIndex, -1);
   assert.equal(lineReferencesIndex, projectFilesIndex + 1);
-  assert.equal(lineReferencesIndex < sessionStateIndex, true);
+  assert.equal(pathRedactionIndex, lineReferencesIndex + 1);
+  assert.equal(pathRedactionIndex < sessionStateIndex, true);
   assert.equal(lineReferencesIndex < contentRuntimeIndex, true);
 });
 
 test('loads storage run-action helpers immediately before storageDb', () => {
-  const js = extensionManifest.content_scripts[0].js;
+  const js = contentBundleSourceOrder;
   const runActionsIndex = js.indexOf('src/shared/storageRunActions.js');
   const sessionClaimsIndex = js.indexOf('src/shared/storageSessionClaims.js');
   const storageDbIndex = js.indexOf('src/shared/storageDb.js');
@@ -308,28 +322,28 @@ test('rejects invalid extension ids when building the manifest', () => {
 });
 
 test('content script loads shared i18n before the panel script', () => {
-  const scripts = extensionManifest.content_scripts[0].js;
+  const scripts = contentBundleSourceOrder;
   assert.ok(scripts.indexOf('src/shared/i18n.js') > -1);
-  assert.ok(scripts.indexOf('src/shared/i18n.js') < scripts.indexOf('src/contentScript.js'));
+  assert.ok(scripts.indexOf('src/shared/i18n.js') < scripts.indexOf(CONTENT_BUNDLE_ENTRY_MARKER));
 });
 
 test('content script loads shared model catalog before the panel script', () => {
-  const scripts = extensionManifest.content_scripts[0].js;
+  const scripts = contentBundleSourceOrder;
   assert.ok(scripts.indexOf('src/shared/models.js') > -1);
-  assert.ok(scripts.indexOf('src/shared/models.js') < scripts.indexOf('src/contentScript.js'));
+  assert.ok(scripts.indexOf('src/shared/models.js') < scripts.indexOf(CONTENT_BUNDLE_ENTRY_MARKER));
 });
 
 test('content script loads shared compatibility before native and panel scripts', () => {
-  const scripts = extensionManifest.content_scripts[0].js;
+  const scripts = contentBundleSourceOrder;
   const compatibilityIndex = scripts.indexOf('src/shared/compatibility.js');
 
   assert.ok(compatibilityIndex > -1);
   assert.ok(compatibilityIndex < scripts.indexOf('src/content/nativeChannel.js'));
-  assert.ok(compatibilityIndex < scripts.indexOf('src/contentScript.js'));
+  assert.ok(compatibilityIndex < scripts.indexOf(CONTENT_BUNDLE_ENTRY_MARKER));
 });
 
 test('content script loads bridge and native compatibility controllers before runtime', () => {
-  const scripts = extensionManifest.content_scripts[0].js;
+  const scripts = contentBundleSourceOrder;
   const runtimeIndex = scripts.indexOf('src/content/contentRuntime.js');
   for (const helper of [
     'src/content/pageBridgeClient.js',
@@ -341,14 +355,14 @@ test('content script loads bridge and native compatibility controllers before ru
 });
 
 test('content script loads governance, sensitive scan, and audit helpers before the panel script', () => {
-  const scripts = extensionManifest.content_scripts[0].js;
+  const scripts = contentBundleSourceOrder;
   for (const helper of [
     'src/shared/governanceRules.js',
     'src/shared/sensitiveScan.js',
     'src/shared/auditRecords.js'
   ]) {
     assert.ok(scripts.indexOf(helper) > -1, `${helper} should be loaded`);
-    assert.ok(scripts.indexOf(helper) < scripts.indexOf('src/contentScript.js'), `${helper} should load before contentScript.js`);
+    assert.ok(scripts.indexOf(helper) < scripts.indexOf(CONTENT_BUNDLE_ENTRY_MARKER), `${helper} should load before contentScript.js`);
   }
 });
 
@@ -375,7 +389,7 @@ test('page bridge capability guard loads before the page bridge from web accessi
 });
 
 test('carved settings, session-menu, and save-state modules load before their consumers', () => {
-  const scripts = extensionManifest.content_scripts[0].js;
+  const scripts = contentBundleSourceOrder;
   const resources = extensionManifest.web_accessible_resources[0].resources;
   assert.ok(scripts.indexOf('src/content/projectSettingsCoordinator.js') < scripts.indexOf('src/content/contentRuntime.js'));
   assert.ok(scripts.indexOf('src/content/sessionMenuView.js') < scripts.indexOf('src/content/sessionManager.js'));
@@ -384,23 +398,23 @@ test('carved settings, session-menu, and save-state modules load before their co
 });
 
 test('manifest loads and exposes read-only OT page dependencies', () => {
-  const scripts = extensionManifest.content_scripts[0].js;
+  const scripts = contentBundleSourceOrder;
   const resources = extensionManifest.web_accessible_resources[0].resources;
 
   assert.ok(scripts.indexOf('src/shared/otText.js') > -1);
-  assert.ok(scripts.indexOf('src/shared/otText.js') < scripts.indexOf('src/contentScript.js'));
+  assert.ok(scripts.indexOf('src/shared/otText.js') < scripts.indexOf(CONTENT_BUNDLE_ENTRY_MARKER));
   assert.ok(resources.includes('src/shared/otText.js'));
   assert.ok(resources.includes('src/page/overleafRealtimeObserver.js'));
 });
 
 test('content script loads mirror health helper before the panel script', () => {
-  const scripts = extensionManifest.content_scripts[0].js;
+  const scripts = contentBundleSourceOrder;
   assert.ok(scripts.indexOf('src/content/mirrorHealth.js') > -1);
-  assert.ok(scripts.indexOf('src/content/mirrorHealth.js') < scripts.indexOf('src/contentScript.js'));
+  assert.ok(scripts.indexOf('src/content/mirrorHealth.js') < scripts.indexOf(CONTENT_BUNDLE_ENTRY_MARKER));
 });
 
 test('content script loads OT warm mirror controller after lower-level helpers and before the panel script', () => {
-  const scripts = extensionManifest.content_scripts[0].js;
+  const scripts = contentBundleSourceOrder;
   const controllerIndex = scripts.indexOf('src/content/otWarmMirrorController.js');
   assert.ok(controllerIndex > -1);
   for (const helper of [
@@ -411,15 +425,15 @@ test('content script loads OT warm mirror controller after lower-level helpers a
   ]) {
     assert.ok(scripts.indexOf(helper) < controllerIndex);
   }
-  assert.ok(controllerIndex < scripts.indexOf('src/contentScript.js'));
+  assert.ok(controllerIndex < scripts.indexOf(CONTENT_BUNDLE_ENTRY_MARKER));
 });
 
 test('content script loads review hunks helper after writeback and before run and panel scripts', () => {
-  const scripts = extensionManifest.content_scripts[0].js;
+  const scripts = contentBundleSourceOrder;
   const reviewHunksIndex = scripts.indexOf('src/content/reviewHunks.js');
 
   assert.ok(reviewHunksIndex > -1);
   assert.ok(scripts.indexOf('src/content/writebackController.js') < reviewHunksIndex);
   assert.ok(reviewHunksIndex < scripts.indexOf('src/content/runController.js'));
-  assert.ok(reviewHunksIndex < scripts.indexOf('src/contentScript.js'));
+  assert.ok(reviewHunksIndex < scripts.indexOf(CONTENT_BUNDLE_ENTRY_MARKER));
 });

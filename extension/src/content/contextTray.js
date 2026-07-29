@@ -1,10 +1,10 @@
 (function initCodexOverleafContextTray(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('../shared/projectFiles'));
   } else {
-    root.CodexOverleafContextTray = factory();
+    root.CodexOverleafModuleRegistry.define('ContextTray', ['ProjectFiles'], factory);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function contextTrayFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function contextTrayFactory(ProjectFiles) {
   'use strict';
 
   const DEFAULT_CONTEXT_EXACT_FILE_LIST_ZIP_TIMEOUT_MS = 30000;
@@ -38,9 +38,7 @@
       || root.document
       || (typeof globalThis !== 'undefined' ? globalThis.document : null);
     const getLocationHref = getLocationHrefDep || (() => root.location?.href || '');
-    const projectFiles = projectFilesDep
-      || root.CodexOverleafProjectFiles
-      || (typeof window !== 'undefined' ? window.CodexOverleafProjectFiles : null);
+    const projectFiles = projectFilesDep || ProjectFiles;
     const exactFileListZipTimeoutMs = Number(exactFileListZipTimeoutMsDep) ||
       DEFAULT_CONTEXT_EXACT_FILE_LIST_ZIP_TIMEOUT_MS;
 

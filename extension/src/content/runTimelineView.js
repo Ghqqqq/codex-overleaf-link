@@ -1,7 +1,6 @@
 (function initCodexOverleafRunTimelineView() {
   'use strict';
 
-  const RunGuidanceView = window.CodexOverleafRunGuidanceView;
   // Run-timeline view — the timeline render pipeline carved out of
   // contentRuntime.js (v1.4.6 structural-debt phase 2): the scroll engine +
   // jump-to-latest button, the live-elapsed tick and collapsed-header summary,
@@ -13,6 +12,7 @@
   // that owns it.
   function create(deps = {}) {
     const {
+      RunGuidanceView,
       tr,
       tx,
       getLocale,

@@ -53,6 +53,7 @@
   let buildReviewingBlockedApplyResult;
   let ensureReviewingBeforeWrite;
   let confirmBinaryOperations;
+  let compileAdapter;
   let filterSyncChangesByOperations;
   let writebackController;
   let RUN_SNAPSHOT_ZIP_TIMEOUT_MS;
@@ -680,7 +681,7 @@
       || (options.autoRecompile === undefined && getState().autoRecompile === false)) return null;
     if ((options.mode || getState().mode) === 'ask') return null;
 
-    const CompileAdapter = window.CodexOverleafCompileAdapter;
+    const CompileAdapter = compileAdapter;
     if (!CompileAdapter) return null;
 
     const hasCompilableFile = writtenPaths.some(filePath => CompileAdapter.isCompilableFile(filePath));
@@ -906,7 +907,8 @@
       getCurrentRunView,
     } = deps);
     onMirrorRefreshSettled = deps.onMirrorRefreshSettled;
-    writebackSettlement = deps.writebackSettlement || window.CodexOverleafWritebackSettlement;
+    writebackSettlement = deps.writebackSettlement;
+    compileAdapter = deps.compileAdapter;
     return {
       applySyncChangesToOverleaf,
       resolveCompileLogContext,

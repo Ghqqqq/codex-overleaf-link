@@ -1,18 +1,27 @@
 (function initSessionState(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(
+      require('./i18n'),
+      require('./settlementFacts'),
+      require('./runInputQueue'),
+      require('./lineReferences'),
+      require('./pathRedaction')
+    );
   } else {
-    root.CodexOverleafSessionState = factory();
+    root.CodexOverleafModuleRegistry.define(
+      'SessionState',
+      ['I18n', 'SettlementFacts', 'RunInputQueue', 'LineReferences', 'PathRedaction'],
+      factory
+    );
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function sessionStateFactory() {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function sessionStateFactory(
+  i18n,
+  SettlementFacts,
+  RunInputQueue,
+  LineReferences,
+  PathRedaction
+) {
   'use strict';
-
-  const i18n = (typeof module === 'object' && module.exports)
-    ? require('./i18n')
-    : (typeof globalThis !== 'undefined' ? globalThis : window).CodexOverleafI18n;
-  const SettlementFacts = (typeof module === 'object' && module.exports)
-    ? require('./settlementFacts')
-    : (typeof globalThis !== 'undefined' ? globalThis : window).CodexOverleafSettlementFacts;
 
   const DEFAULT_PANEL_STATE = {
     mode: 'confirm',
@@ -112,9 +121,6 @@
     /\b(?:sk|pk)-[A-Za-z0-9][A-Za-z0-9_-]{7,}\b/g,
     /\b(?:api[_-]?key|token|password|passwd|secret)\b\s*[:=]\s*["']?[^"'\s,;]+["']?/gi
   ];
-  const LineReferences = loadLineReferences();
-  const PathRedaction = loadPathRedaction();
-
   function normalizePanelState(input = {}, options = {}) {
     const state = {
       ...DEFAULT_PANEL_STATE,
@@ -1425,10 +1431,8 @@
   }
 
   function normalizePendingInputs(value, recoverActive = false, fallbackInput = {}) {
-    const Queue = (typeof globalThis !== 'undefined' ? globalThis.CodexOverleafRunInputQueue : null)
-      || (typeof module === 'object' && module.exports ? require('./runInputQueue') : null);
-    if (Queue?.normalizeQueue) {
-      return Queue.normalizeQueue(value, { recoverActive, fallbackInput });
+    if (RunInputQueue?.normalizeQueue) {
+      return RunInputQueue.normalizeQueue(value, { recoverActive, fallbackInput });
     }
     return [];
   }
@@ -1480,34 +1484,6 @@
 
   function mightContainLocalReferenceText(value) {
     return /(?:file:\/\/\/?|[A-Za-z]:[\\/]|\/(?:Users|home|private|var|tmp)\/|[\\/]\.codex-overleaf[\\/]projects[\\/]|\.codex-overleaf[\\/]projects[\\/])/i.test(String(value || ''));
-  }
-
-  function loadLineReferences() {
-    if (typeof globalThis !== 'undefined' && globalThis.CodexOverleafLineReferences) {
-      return globalThis.CodexOverleafLineReferences;
-    }
-    if (typeof require === 'function') {
-      try {
-        return require('./lineReferences');
-      } catch (_error) {
-        return null;
-      }
-    }
-    return null;
-  }
-
-  function loadPathRedaction() {
-    if (typeof globalThis !== 'undefined' && globalThis.CodexOverleafPathRedaction) {
-      return globalThis.CodexOverleafPathRedaction;
-    }
-    if (typeof require === 'function') {
-      try {
-        return require('./pathRedaction');
-      } catch (_error) {
-        return null;
-      }
-    }
-    return null;
   }
 
   function fallbackSanitizeLocalReferences(value) {
