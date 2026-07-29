@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import {
   CONTENT_BUNDLE_GENERATED_FILES,
+  CONTENT_BUNDLE_RELATIVE_PATH,
   buildContentBundle
 } from './build-content-bundle.mjs';
 
@@ -44,9 +45,7 @@ export function buildRelease(options = {}) {
   const rootDir = path.resolve(options.rootDir || repoRoot);
   const pkg = readJson(path.join(rootDir, 'package.json'));
   const sourceExtensionManifest = readJson(path.join(rootDir, 'extension/manifest.json'));
-  const expectsContentBundle = sourceExtensionManifest.content_scripts?.some(contentScript =>
-    contentScript.js?.includes(CONTENT_BUNDLE_GENERATED_FILES[0])
-  );
+  const expectsContentBundle = extensionManifestUsesContentBundle(sourceExtensionManifest);
   const contentBuild = expectsContentBundle ? buildContentBundle({ rootDir }) : null;
   const version = pkg.version;
   if (!version) {
@@ -178,6 +177,13 @@ export function buildRelease(options = {}) {
       'SHA256SUMS'
     ]
   };
+}
+
+export function extensionManifestUsesContentBundle(manifest) {
+  const manifestRelativeBundlePath = path.posix.relative('extension', CONTENT_BUNDLE_RELATIVE_PATH);
+  return Boolean(manifest?.content_scripts?.some(contentScript =>
+    Array.isArray(contentScript?.js) && contentScript.js.includes(manifestRelativeBundlePath)
+  ));
 }
 
 export function extractReleaseNotes(changelog, version) {

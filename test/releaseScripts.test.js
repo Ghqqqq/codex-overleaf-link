@@ -1031,6 +1031,18 @@ releaseTest('build-release derives the default output directory from version', a
   );
 });
 
+releaseTest('build-release recognizes the generated content bundle in extension-relative manifest paths', async () => {
+  const { extensionManifestUsesContentBundle } = await importScriptModule('scripts/build-release.mjs');
+
+  assert.equal(extensionManifestUsesContentBundle({
+    content_scripts: [{ js: ['src/content/generated/content.bundle.js'] }]
+  }), true);
+  assert.equal(extensionManifestUsesContentBundle({
+    content_scripts: [{ js: ['extension/src/content/generated/content.bundle.js'] }]
+  }), false);
+  assert.equal(extensionManifestUsesContentBundle({ content_scripts: [] }), false);
+});
+
 releaseTest('build-release rejects unsafe output paths before deletion', async () => {
   const { assertSafeReleaseOutputDir } = await importScriptModule('scripts/build-release.mjs');
   const unsafePaths = [
