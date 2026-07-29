@@ -20,7 +20,8 @@
 
     async function afterSettlement({ sessionId, status, queueItemId = '', continueQueue = false } = {}) {
       const originalQueue = options.getQueue?.(sessionId) || [];
-      const shouldRemove = Boolean(queueItemId && (status === 'completed' || continueQueue));
+      const shouldContinue = status === 'completed' || continueQueue;
+      const shouldRemove = Boolean(queueItemId && shouldContinue);
       const claimedItem = shouldRemove
         ? originalQueue.find(item => item?.id === queueItemId)
         : null;
@@ -41,7 +42,7 @@
             reason: status === 'completed' ? 'completed' : 'continue_queue'
           })
         );
-      } else {
+      } else if (!shouldContinue) {
         const paused = originalQueue.length
           ? Queue.pauseAll(originalQueue, status || 'run_did_not_complete')
           : originalQueue;
@@ -60,7 +61,7 @@
         }
       }
       options.onChange?.(sessionId);
-      if (status === 'completed' || continueQueue) {
+      if (shouldContinue) {
         scheduleOne(sessionId);
       }
     }

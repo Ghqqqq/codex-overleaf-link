@@ -76,6 +76,35 @@ test('manual cancellation discards the interrupted queue item and starts the nex
   assert.equal(queue[0].status, 'claimed');
 });
 
+for (const settlement of [
+  { name: 'completion', status: 'completed', continueQueue: false },
+  { name: 'manual cancellation', status: 'rejected', continueQueue: true }
+]) {
+  test(`direct-run ${settlement.name} starts the first queued follow-up without pausing it`, async () => {
+    let queue = [
+      { id: 'b', text: 'next', status: 'queued' }
+    ];
+    const started = [];
+    const scheduler = Scheduler.create({
+      getQueue: () => queue,
+      setQueue: (_sessionId, next) => { queue = next; },
+      persist: async () => {},
+      isRunning: () => false,
+      start: item => { started.push(item.id); }
+    });
+    await scheduler.afterSettlement({
+      sessionId: 's',
+      status: settlement.status,
+      queueItemId: '',
+      continueQueue: settlement.continueQueue
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(started, ['b']);
+    assert.equal(queue[0].id, 'b');
+    assert.equal(queue[0].status, 'claimed');
+  });
+}
+
 test('session state persists queued inputs and pauses active claims on reload', () => {
   const SessionState = require('../extension/src/shared/sessionState');
   const restored = SessionState.normalizePanelState({

@@ -13,6 +13,7 @@
 ### Fixed
 
 - Include the generated isolated-world content bundle and provenance metadata in Extension, npm, and coordinated-update release artifacts.
+- Continue queued follow-ups after a directly submitted run completes or is manually cancelled, without incorrectly pausing the queue.
 - Prevent stale cross-tab snapshots from overwriting a terminal run state.
 - Preserve project scope while flushing terminal state after navigation and surface detached settlement persistence failures.
 - Complete the paired session action after a scoped persistence fence has been written, preventing queue claim or removal half-commits.
