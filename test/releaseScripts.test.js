@@ -503,6 +503,34 @@ releaseTest('release workflow only publishes semver-like version tags', () => {
   assert.doesNotMatch(triggerSection, /^\s+schedule:/m);
 });
 
+releaseTest('CI installs locked development dependencies before tests and release builds', () => {
+  const testWorkflow = readTestWorkflow();
+  const releaseWorkflow = readReleaseWorkflow();
+  const releaseTestMatrix = releaseWorkflow.match(/^  test-matrix:\s*$[\s\S]*?(?=^  release:\s*$)/m)?.[0] || '';
+  const releaseJob = releaseWorkflow.match(/^  release:\s*$[\s\S]*$/m)?.[0] || '';
+
+  assert.notEqual(releaseTestMatrix, '', 'Release workflow must define the test-matrix job.');
+  assert.notEqual(releaseJob, '', 'Release workflow must define the release job.');
+  assertContainsInOrder(testWorkflow, [
+    'name: Set up Node.js',
+    'name: Install locked development dependencies',
+    'run: npm ci',
+    'name: Run tests'
+  ]);
+  assertContainsInOrder(releaseTestMatrix, [
+    'name: Set up Node.js',
+    'name: Install locked development dependencies',
+    'run: npm ci',
+    'name: Run tests'
+  ]);
+  assertContainsInOrder(releaseJob, [
+    'name: Set up npm CLI',
+    'name: Install locked development dependencies',
+    'run: npm ci',
+    'name: Build release artifacts'
+  ]);
+});
+
 releaseTest('release workflow grants publish permission and builds/verifies artifacts before npm publish', () => {
   const workflow = readReleaseWorkflow();
   const permissionsSection = getTopLevelYamlSection(workflow, 'permissions');

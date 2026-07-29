@@ -34,6 +34,9 @@ jobs:
           node-version: 24.18.0
           registry-url: https://registry.npmjs.org
 
+      - name: Install locked development dependencies
+        run: npm ci
+
       - name: Run tests
         run: npm test
 
@@ -67,6 +70,9 @@ jobs:
 
       - name: Set up npm CLI
         run: npm install -g npm@11.11.0
+
+      - name: Install locked development dependencies
+        run: npm ci
 
       - name: Verify release metadata
         shell: bash

@@ -28,6 +28,9 @@ jobs:
         with:
           node-version: 24.18.0
 
+      - name: Install locked development dependencies
+        run: npm ci
+
       - name: Run tests
         run: npm test
 
