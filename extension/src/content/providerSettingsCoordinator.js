@@ -26,13 +26,24 @@
       channel: null,
       dialog: null
     };
-    instance.onProviderChanged = options.onProviderChanged
+    const projectProviderChanged = options.onProviderChanged
       || ((catalog, change) => reconcileProviderSelection(instance, catalog, change));
+    instance.onProviderChanged = async (catalog, change) => {
+      const previousProviderId = instance.getSelectedProviderId() || 'builtin';
+      const result = await projectProviderChanged(catalog, change);
+      const nextProviderId = instance.getSelectedProviderId() || 'builtin';
+      updateSettingsSummary(instance);
+      if (previousProviderId !== nextProviderId && instance.dialog?.isOpen?.()) {
+        instance.dialog.setCatalog(instance.catalog, nextProviderId);
+      }
+      return result;
+    };
     instance.dialog = Dialog.create({
       document: options.document || document,
       tx: instance.tx,
       ProviderProfiles: Profiles,
       callbacks: {
+        getCurrentProjectProviderId: () => instance.getSelectedProviderId() || 'builtin',
         onTest: context => testProvider(instance, context),
         onCancelTest: () => cancelProviderTest(instance),
         onSave: (context, action) => saveProvider(instance, context, action),
@@ -306,7 +317,11 @@
         selectedId: result.savedProviderId
       });
       await notifyChanged(instance, applied.change, action.activate === true
-        ? { sessionProviderId: result.savedProviderId }
+        ? {
+          sessionProviderId: result.savedProviderId,
+          providerSwitchApproved: true,
+          requireProjection: true
+        }
         : {});
       instance.dialog.setBusy('', '');
       const fellBackToBuiltin = previousCatalog.activeProviderId === result.savedProviderId
@@ -561,6 +576,7 @@
   }
 
   function modelCatalogSignature(provider = {}) {
+    provider = provider || {};
     return JSON.stringify({
       id: provider.id || '',
       revision: Number(provider.revision || 0),

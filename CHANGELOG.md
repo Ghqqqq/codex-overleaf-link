@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Make the provider dialog, Settings summary, model catalog, and run routing consistently describe the current project's provider, while surfacing failed Save-and-Use projection instead of leaving a misleading active state.
 - Restore cross-project dashboard history reads by removing bundled dependency self-shadowing, and reject declaration self-assignment regressions during module-graph validation.
 - Include the generated isolated-world content bundle and provenance metadata in Extension, npm, and coordinated-update release artifacts.
 - Build the isolated-world content bundle during macOS/Linux and Windows source installation, and reject incomplete managed runtime trees before activation.

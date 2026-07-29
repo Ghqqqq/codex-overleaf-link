@@ -156,8 +156,8 @@
       '第三方实验性'
     );
     instance.root.querySelector('[data-provider-dialog-subtitle]').textContent = tx(
-      'Configure experimental third-party integrations used by future Codex runs. Compatibility varies by provider and gateway.',
-      '配置后续 Codex 任务使用的实验性第三方集成；兼容性取决于具体模型服务与网关。'
+      "Configure experimental third-party integrations used by this project's future Codex runs. Compatibility varies by provider and gateway.",
+      '配置当前项目后续 Codex 任务使用的实验性第三方集成；兼容性取决于具体模型服务与网关。'
     );
     renderProviderList(instance);
     renderDetail(instance);
@@ -170,10 +170,10 @@
     const list = instance.root.querySelector('[data-provider-list]');
     const rows = instance.catalog.providers.map(provider => {
       const selected = provider.id === instance.selectedId;
-      const active = provider.id === instance.catalog.activeProviderId;
+      const active = provider.id === getCurrentProjectProviderId(instance);
       const diagnosticCount = Object.values(provider.modelDiagnostics || {}).filter(item => item.status === 'tested').length;
       const status = active
-        ? tx('Active', '使用中')
+        ? tx('Current project', '当前项目')
         : diagnosticCount
           ? tx(`Tested ${diagnosticCount}/${Math.max(1, provider.models.length)}`, `已测试 ${diagnosticCount}/${Math.max(1, provider.models.length)}`)
           : provider.kind === 'custom'
@@ -212,7 +212,7 @@
       .map(model => model.id)
       .filter(id => id !== draft.defaultModelId)
       .join('\n');
-    const active = provider.id && provider.id === instance.catalog.activeProviderId;
+    const active = provider.id && provider.id === getCurrentProjectProviderId(instance);
     const acceptedHost = getEndpointHost(draft.baseUrl);
     const secretSavedAt = formatSecretSavedAt(instance, provider.secretUpdatedAt);
     const disclosureSatisfied = Boolean(
@@ -224,9 +224,9 @@
       <div class="codex-provider-detail-titleline">
         <div>
           <h3>${escapeHtml(draft.name || tx('Custom provider', '自定义模型服务'))}</h3>
-          <p>${escapeHtml(active ? tx('Used by new Codex runs', '新 Codex 任务将使用此服务') : tx('Saved provider profile', '已保存的模型服务配置'))}</p>
+          <p>${escapeHtml(active ? tx('Used by new runs in this project', '当前项目的新任务将使用此服务') : tx('Saved provider profile', '已保存的模型服务配置'))}</p>
         </div>
-        ${active ? `<span class="codex-provider-active-badge">${escapeHtml(tx('Active', '使用中'))}</span>` : ''}
+        ${active ? `<span class="codex-provider-active-badge">${escapeHtml(tx('Current project', '当前项目'))}</span>` : ''}
       </div>
       <div class="codex-provider-form-grid">
         <label class="codex-provider-field">
@@ -445,7 +445,7 @@
 
   function renderBuiltinDetail(instance, detail) {
     const tx = instance.tx;
-    const active = instance.catalog.activeProviderId === 'builtin';
+    const active = getCurrentProjectProviderId(instance) === 'builtin';
     detail.innerHTML = `
       <div class="codex-provider-builtin">
         <span class="codex-provider-builtin-mark" aria-hidden="true">
@@ -457,10 +457,17 @@
           '使用本地 Codex CLI 管理的身份验证、模型目录和服务配置。'
         ))}</p>
         ${active
-          ? `<span class="codex-provider-active-badge">${escapeHtml(tx('Active', '使用中'))}</span>`
-          : `<button type="button" class="codex-provider-primary-button" data-provider-action="activate-builtin">${escapeHtml(tx('Use built-in Codex', '使用内置 Codex'))}</button>`}
+          ? `<span class="codex-provider-active-badge">${escapeHtml(tx('Current project', '当前项目'))}</span>`
+          : `<button type="button" class="codex-provider-primary-button" data-provider-action="activate-builtin">${escapeHtml(tx('Use for this project', '用于当前项目'))}</button>`}
       </div>
     `;
+  }
+
+  function getCurrentProjectProviderId(instance) {
+    const providerId = instance.callbacks.getCurrentProjectProviderId?.();
+    return typeof providerId === 'string' && providerId.trim()
+      ? providerId.trim()
+      : 'builtin';
   }
 
   function renderFooter(instance) {
@@ -471,7 +478,7 @@
       actions.innerHTML = `<button type="button" class="codex-provider-secondary-button" data-provider-action="close">${escapeHtml(tx('Close', '关闭'))}</button>`;
       return;
     }
-    const active = provider.id && provider.id === instance.catalog.activeProviderId;
+    const active = provider.id && provider.id === getCurrentProjectProviderId(instance);
     const isNew = !provider.id;
     const destinationChanged = active && getCurrentBaseUrl(instance) !== provider.endpointDisclosureBaseUrl;
     const actionState = getFooterActionState({
@@ -490,8 +497,8 @@
       <span class="codex-provider-footer-spacer"></span>
       <button type="button" class="codex-provider-secondary-button" data-provider-action="close">${escapeHtml(tx('Cancel', '取消'))}</button>
       ${actionState.showSave ? `<button type="button" class="codex-provider-secondary-button" data-provider-action="save"${saveDisabled}>${escapeHtml(tx('Save', '保存'))}</button>` : ''}
-      ${actionState.showSaveAndUse ? `<button type="button" class="codex-provider-primary-button" data-provider-action="save-use"${saveDisabled}>${escapeHtml(tx('Save and use', '保存并使用'))}</button>` : ''}
-      ${actionState.showUse ? `<button type="button" class="codex-provider-primary-button" data-provider-action="use"${useDisabled}>${escapeHtml(tx('Use', '使用'))}</button>` : ''}
+      ${actionState.showSaveAndUse ? `<button type="button" class="codex-provider-primary-button" data-provider-action="save-use"${saveDisabled}>${escapeHtml(tx('Save and use for this project', '保存并用于当前项目'))}</button>` : ''}
+      ${actionState.showUse ? `<button type="button" class="codex-provider-primary-button" data-provider-action="use"${useDisabled}>${escapeHtml(tx('Use for this project', '用于当前项目'))}</button>` : ''}
     `;
   }
 

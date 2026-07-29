@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const ProviderProfiles = require('../extension/src/shared/providerProfiles');
 const SessionState = require('../extension/src/shared/sessionState');
@@ -369,4 +371,102 @@ test('removing the project provider falls back to Built-in Codex atomically', as
     'model:gpt-5.4',
     'persist'
   ]);
+});
+
+test('provider dialog presents the current project provider instead of the Native Host default', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/providerSettingsDialog.js'),
+    'utf8'
+  );
+
+  assert.match(source, /getCurrentProjectProviderId/);
+  assert.doesNotMatch(source, /provider\.id\s*===\s*instance\.catalog\.activeProviderId/);
+  assert.doesNotMatch(source, /instance\.catalog\.activeProviderId\s*===\s*['"]builtin['"]/);
+  assert.match(source, /Used by new runs in this project/);
+  assert.match(source, /Use for this project/);
+});
+
+test('Save and Use surfaces a failed project projection instead of reporting success', async t => {
+  const previousWindow = global.window;
+  const coordinatorPath = require.resolve('../extension/src/content/providerSettingsCoordinator');
+  let dialogCallbacks;
+  const busyStates = [];
+  class FakeBroadcastChannel {
+    addEventListener() {}
+    postMessage() {}
+    close() {}
+  }
+  const profile = customProvider('provider-a', 4, 'model-a');
+  const catalog = ProviderProfiles.normalizeCatalog({
+    storeRevision: 4,
+    activeProviderId: 'provider-a',
+    providers: [profile]
+  });
+  const fakeDialog = {
+    isOpen: () => true,
+    setCatalog() {},
+    setBusy(state, message) {
+      busyStates.push({ state, message });
+    },
+    setStatus() {},
+    destroy() {}
+  };
+  const fakeWindow = {
+    BroadcastChannel: FakeBroadcastChannel,
+    CodexOverleafProviderProfiles: ProviderProfiles,
+    CodexOverleafProviderSettingsDialog: {
+      create: options => {
+        dialogCallbacks = options.callbacks;
+        return fakeDialog;
+      }
+    }
+  };
+  global.window = fakeWindow;
+  delete require.cache[coordinatorPath];
+  require(coordinatorPath);
+  t.after(() => {
+    delete require.cache[coordinatorPath];
+    global.window = previousWindow;
+  });
+
+  const coordinator = fakeWindow.CodexOverleafProviderSettingsCoordinator.create({
+    document: {},
+    window: fakeWindow,
+    ProviderProfiles,
+    ProviderSettingsDialog: fakeWindow.CodexOverleafProviderSettingsDialog,
+    getSelectedProviderId: () => 'builtin',
+    getSelectedModel: () => 'gpt-5.4',
+    setSelectedProviderId: () => {
+      throw new Error('project persistence failed');
+    },
+    refreshModelOptions: async () => ({ stale: false, selectedModel: 'model-a' }),
+    persistInputs: async () => {},
+    sendBackgroundNative: async () => ({
+      ok: true,
+      result: { ...catalog, savedProviderId: profile.id }
+    })
+  });
+  coordinator._instance.catalog = ProviderProfiles.normalizeCatalog({
+    activeProviderId: 'builtin',
+    providers: [{
+      id: 'builtin',
+      kind: 'builtin',
+      name: 'Built-in Codex',
+      revision: 0,
+      models: []
+    }]
+  });
+  coordinator._instance.loaded = true;
+
+  await dialogCallbacks.onSave({
+    profileId: profile.id,
+    expectedRevision: 3,
+    draft: profile,
+    secretMutation: { kind: 'unchanged' },
+    disclosureHost: 'provider-a.example',
+    disclosureBaseUrl: profile.baseUrl
+  }, { activate: true });
+
+  assert.equal(busyStates.at(-1)?.state, 'failed');
+  assert.match(busyStates.at(-1)?.message || '', /project persistence failed/);
 });
