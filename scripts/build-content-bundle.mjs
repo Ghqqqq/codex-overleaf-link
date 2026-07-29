@@ -17,7 +17,11 @@ export const CONTENT_BUNDLE_GENERATED_FILES = Object.freeze([
 
 const BUILD_OPTIONS = Object.freeze({
   bundle: true,
-  charset: 'utf8',
+  // Chrome's dynamic content-script loader rejects raw Unicode
+  // noncharacters (for example U+FFFF from vendor regex ranges) with a
+  // misleading "not UTF-8" error. Keep the runtime source ASCII-only while
+  // preserving the original JavaScript values through escape sequences.
+  charset: 'ascii',
   format: 'iife',
   legalComments: 'eof',
   minify: false,
@@ -81,6 +85,25 @@ export function buildContentBundle(options = {}) {
   sourceHash.update(readPinnedEsbuildVersion(rootDir));
 
   const outputBytes = fs.readFileSync(outputPath);
+  const outputText = outputBytes.toString('utf8');
+  for (let offset = 0; offset < outputText.length;) {
+    const codePoint = outputText.codePointAt(offset);
+    const isUnicodeNoncharacter =
+      (codePoint >= 0xfdd0 && codePoint <= 0xfdef) ||
+      (codePoint & 0xffff) === 0xfffe ||
+      (codePoint & 0xffff) === 0xffff;
+    if (isUnicodeNoncharacter) {
+      fs.rmSync(outputPath, { force: true });
+      fs.rmSync(metadataPath, { force: true });
+      throw new Error(
+        `Content bundle contains raw Unicode noncharacter U+${codePoint
+          .toString(16)
+          .toUpperCase()} at UTF-16 offset ${offset}; ` +
+        'Chrome would reject the dynamic content script as invalid UTF-8.'
+      );
+    }
+    offset += codePoint > 0xffff ? 2 : 1;
+  }
   const metadata = {
     schemaVersion: 1,
     entry: 'extension/entries/content-entry.mjs',
