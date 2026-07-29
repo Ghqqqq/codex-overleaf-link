@@ -1,9 +1,12 @@
 # Changelog
 
-## v2.3.0 - Unreleased
+## v2.3.0 - 2026-07-29
 
 ### Changed
 
+- Bundle the isolated-world Extension runtime from an explicit module graph into one generated content-script artifact, while leaving page-world scripts unbundled and preserving their existing load boundaries.
+- Add generated provenance metadata, dependency-graph checks, hidden-global detection, and release-package verification for the bundled runtime.
+- Keep a narrow legacy-global compatibility adapter while migrating runtime modules toward explicit dependency registration.
 - Split runtime orchestration into explicit execution snapshot, writeback settlement, scoped persistence, Page RPC, managed update, and Native transport owners while preserving existing product behavior.
 - Added a source-hygiene verification mode for pull requests while keeping release metadata checks strict on version tags.
 
