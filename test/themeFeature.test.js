@@ -6,10 +6,11 @@ const test = require('node:test');
 const repo = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
 const manifest = require('../extension/manifest.json');
 const { DEFAULT_PANEL_STATE, normalizePanelState, prepareStateForStorage } = require('../extension/src/shared/sessionState');
+const { getContentBundleSourceOrder } = require('./_helpers/contentBundleEntry');
 
-test('themeController loads before contentRuntime in the manifest', () => {
-  const js = manifest.content_scripts[0].js;
-  assert.ok(js.includes('src/content/themeController.js'), 'themeController must be a content script');
+test('themeController loads before contentRuntime in the bundle entry', () => {
+  const js = getContentBundleSourceOrder();
+  assert.ok(js.includes('src/content/themeController.js'), 'themeController must be a bundled content module');
   assert.ok(
     js.indexOf('src/content/themeController.js') < js.indexOf('src/content/contentRuntime.js'),
     'themeController must load before contentRuntime (which calls it)'

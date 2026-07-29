@@ -14,6 +14,7 @@ const bootstrapPopupMarkup = fs.readFileSync(path.join(root, 'extension/bootstra
 const settingsSource = fs.readFileSync(path.join(root, 'extension/src/content/settingsPanel.js'), 'utf8');
 const extensionManifest = require('../extension/manifest.json');
 const runtimeManifest = require('../extension/runtime-manifest.json');
+const { getContentBundleSourceOrder } = require('./_helpers/contentBundleEntry');
 
 test('toolbar Popup stays focused on connection status and removes duplicate update controls', () => {
   const schedule = popupSource.match(/function scheduleConsentUpdateUi\(\) \{[\s\S]*?\n  \}(?=\n\n  function ensureUpdateSection)/)[0];
@@ -94,9 +95,10 @@ test('managed update actions trust exact Overleaf and toolbar senders without a 
 });
 
 test('panel notice loads after the idle gate and before content runtime', () => {
-  const idle = runtimeManifest.js.indexOf('src/content/updateIdle.js');
-  const notice = runtimeManifest.js.indexOf('src/content/updateNotice.js');
-  const runtime = runtimeManifest.js.indexOf('src/content/contentRuntime.js');
+  const sourceOrder = getContentBundleSourceOrder();
+  const idle = sourceOrder.indexOf('src/content/updateIdle.js');
+  const notice = sourceOrder.indexOf('src/content/updateNotice.js');
+  const runtime = sourceOrder.indexOf('src/content/contentRuntime.js');
   assert.equal(idle >= 0 && idle < notice && notice < runtime, true);
   assert.match(noticeSource, /data-update-notice-action/);
   assert.match(noticeSource, /waiting_for_idle/);

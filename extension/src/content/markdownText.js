@@ -1,8 +1,6 @@
 (function initCodexOverleafMarkdownText() {
   'use strict';
 
-  const LineReferences = window.CodexOverleafLineReferences;
-
   // Markdown / assistant-text rendering — block + inline markdown, the
   // assistant-visible sanitizers, and line-reference resolution/buttons carved
   // out of contentRuntime.js (v1.4.5 structural-debt phase 1). The code below
@@ -10,8 +8,10 @@
   // are factory-injected so behavior is unchanged.
   function create(deps = {}) {
     const {
+      LineReferences,
+      MathText,
       tx,
-      callPageBridge,
+      callPageBridge, getCurrentProjectId,
       getCurrentProjectReferenceFiles,
       showPluginToast
     } = deps;
@@ -63,9 +63,7 @@
 
   function buildMarkdownInlineNodes(value) {
     const source = String(value || '');
-    const mathText = typeof window !== 'undefined'
-      ? window.CodexOverleafMathText
-      : null;
+    const mathText = MathText;
     if (!mathText?.buildMathNodes) {
       return buildMarkdownInlineNodesWithoutMath(source);
     }
@@ -287,7 +285,7 @@
       button.disabled = true;
       button.dataset.status = 'pending';
       try {
-        const result = await callPageBridge('jumpToPosition', params);
+        const result = await callPageBridge('jumpToPosition', { ...params, runProjectId: getCurrentProjectId?.() || '' });
         if (result?.ok === false) {
           button.dataset.status = 'failed';
           button.title = tx('Could not open that referenced line.', '无法打开引用的行。');

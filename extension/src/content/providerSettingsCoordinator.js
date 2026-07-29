@@ -2,8 +2,13 @@
   'use strict';
 
   function create(options = {}) {
-    const Profiles = window.CodexOverleafProviderProfiles;
+    const Profiles = options.ProviderProfiles;
+    const Dialog = options.ProviderSettingsDialog;
+    if (!Profiles || !Dialog?.create) {
+      throw new Error('Provider settings require explicit profile and dialog dependencies.');
+    }
     const instance = {
+      Profiles,
       tx: options.tx || ((english) => english),
       sendBackgroundNative: options.sendBackgroundNative,
       getSettingsPanelInstance: options.getSettingsPanelInstance || (() => null),
@@ -23,9 +28,10 @@
     };
     instance.onProviderChanged = options.onProviderChanged
       || ((catalog, change) => reconcileProviderSelection(instance, catalog, change));
-    instance.dialog = window.CodexOverleafProviderSettingsDialog.create({
+    instance.dialog = Dialog.create({
       document: options.document || document,
       tx: instance.tx,
+      ProviderProfiles: Profiles,
       callbacks: {
         onTest: context => testProvider(instance, context),
         onCancelTest: () => cancelProviderTest(instance),
@@ -135,7 +141,7 @@
       await ensureLoadedWithRetry(instance);
     } catch (_error) {
       return instance.refreshModelOptions(
-        window.CodexOverleafProviderProfiles.buildRunSelection(instance.catalog, instance.getSelectedProviderId())
+        instance.Profiles.buildRunSelection(instance.catalog, instance.getSelectedProviderId())
       );
     }
     return reconcileProviderSelection(instance, instance.catalog, { forceSessionRefresh: true });
@@ -143,12 +149,18 @@
 
   async function reconcileProviderSelection(instance, catalog, change = {}) {
     const previousProviderId = instance.getSelectedProviderId() || 'builtin';
-    const requestedProviderId = typeof change.sessionProviderId === 'string' && change.sessionProviderId
+    let requestedProviderId = typeof change.sessionProviderId === 'string' && change.sessionProviderId
       ? change.sessionProviderId
       : previousProviderId;
+    const requestedProviderAvailable = requestedProviderId === 'builtin'
+      || Boolean(instance.Profiles.getProviderById(catalog, requestedProviderId));
+    const selectedProviderWasRemoved = !requestedProviderAvailable;
+    if (selectedProviderWasRemoved) {
+      requestedProviderId = 'builtin';
+    }
     const projectProviderChanged = requestedProviderId !== previousProviderId;
-    if (projectProviderChanged && change.providerSwitchApproved !== true) {
-      const requestedProvider = window.CodexOverleafProviderProfiles.getProviderById(catalog, requestedProviderId);
+    if (projectProviderChanged && !selectedProviderWasRemoved && change.providerSwitchApproved !== true) {
+      const requestedProvider = instance.Profiles.getProviderById(catalog, requestedProviderId);
       const approved = await instance.confirmProviderSwitch({
         providerId: requestedProviderId,
         providerName: requestedProvider?.name || requestedProviderId
@@ -158,13 +170,14 @@
       }
     }
     const changedProviderIds = Array.isArray(change.changedProviderIds) ? change.changedProviderIds : [];
-    if (!change.forceSessionRefresh && !projectProviderChanged && !changedProviderIds.includes(requestedProviderId)) {
+    const providerConfigurationChanged = changedProviderIds.includes(requestedProviderId);
+    if (!change.forceSessionRefresh && !projectProviderChanged && !providerConfigurationChanged) {
       return;
     }
     const loadResult = change.modelsPreloaded === true
       ? { stale: false, selectedModel: change.preloadedModelId || '' }
       : await instance.refreshModelOptions(
-        window.CodexOverleafProviderProfiles.buildRunSelection(catalog, requestedProviderId),
+        instance.Profiles.buildRunSelection(catalog, requestedProviderId),
         { persist: false }
       );
     if (loadResult?.stale || loadResult?.error) {
@@ -175,7 +188,7 @@
       error.details = loadResult?.error || {};
       throw error;
     }
-    if (projectProviderChanged) {
+    if (projectProviderChanged || providerConfigurationChanged) {
       await instance.setSelectedProviderId(requestedProviderId, loadResult?.selectedModel || '');
     }
     await instance.persistInputs();
@@ -185,7 +198,7 @@
 
   async function prepareProviderActivation(instance, providerId) {
     const previousProviderId = instance.getSelectedProviderId() || 'builtin';
-    const provider = window.CodexOverleafProviderProfiles.getProviderById(instance.catalog, providerId);
+    const provider = instance.Profiles.getProviderById(instance.catalog, providerId);
     if (providerId !== previousProviderId) {
       const approved = await instance.confirmProviderSwitch({
         providerId,
@@ -196,13 +209,13 @@
       }
     }
     const result = await instance.refreshModelOptions(
-      window.CodexOverleafProviderProfiles.buildRunSelection(instance.catalog, providerId),
+      instance.Profiles.buildRunSelection(instance.catalog, providerId),
       { persist: false }
     );
     if (result?.stale || result?.error) {
       if (providerId !== previousProviderId) {
         await instance.refreshModelOptions(
-          window.CodexOverleafProviderProfiles.buildRunSelection(instance.catalog, previousProviderId),
+          instance.Profiles.buildRunSelection(instance.catalog, previousProviderId),
           { persist: false }
         ).catch(() => {});
       }
@@ -389,7 +402,7 @@
     } catch (error) {
       if (preparation?.previousProviderId && preparation.previousProviderId !== context.profileId) {
         await instance.refreshModelOptions(
-          window.CodexOverleafProviderProfiles.buildRunSelection(instance.catalog, preparation.previousProviderId),
+          instance.Profiles.buildRunSelection(instance.catalog, preparation.previousProviderId),
           { persist: false }
         ).catch(() => {});
       }
@@ -423,7 +436,7 @@
     } catch (error) {
       if (preparation?.previousProviderId && preparation.previousProviderId !== 'builtin') {
         await instance.refreshModelOptions(
-          window.CodexOverleafProviderProfiles.buildRunSelection(instance.catalog, preparation.previousProviderId),
+          instance.Profiles.buildRunSelection(instance.catalog, preparation.previousProviderId),
           { persist: false }
         ).catch(() => {});
       }
@@ -448,7 +461,7 @@
   }
 
   function applyCatalog(instance, result, options = {}) {
-    const nextCatalog = window.CodexOverleafProviderProfiles.normalizeCatalog(result);
+    const nextCatalog = instance.Profiles.normalizeCatalog(result);
     if (instance.loaded && nextCatalog.storeRevision < instance.catalog.storeRevision) {
       return { applied: false, change: emptyCatalogChange() };
     }
@@ -463,19 +476,19 @@
         instance.dialog.setCatalog(instance.catalog, options.selectedId);
       }
     }
-    return { applied: true, change: describeCatalogChange(previousCatalog, nextCatalog) };
+    return { applied: true, change: describeCatalogChange(instance, previousCatalog, nextCatalog) };
   }
 
   function updateSettingsSummary(instance, override = {}) {
     const selectedProviderId = instance.getSelectedProviderId() || 'builtin';
-    const catalogProvider = window.CodexOverleafProviderProfiles.getProviderById(
+    const catalogProvider = instance.Profiles.getProviderById(
       instance.catalog,
       selectedProviderId
     );
     const selectedProvider = catalogProvider?.id === selectedProviderId
       ? catalogProvider
       : (selectedProviderId === 'builtin'
-        ? window.CodexOverleafProviderProfiles.getActiveProvider(instance.catalog)
+        ? instance.Profiles.getActiveProvider(instance.catalog)
         : {
           id: selectedProviderId,
           name: selectedProviderId,
@@ -528,16 +541,16 @@
     }
   }
 
-  function describeCatalogChange(previous, next) {
-    const previousActive = window.CodexOverleafProviderProfiles.getActiveProvider(previous);
-    const nextActive = window.CodexOverleafProviderProfiles.getActiveProvider(next);
+  function describeCatalogChange(instance, previous, next) {
+    const previousActive = instance.Profiles.getActiveProvider(previous);
+    const nextActive = instance.Profiles.getActiveProvider(next);
     const providerIds = new Set([
       ...(previous.providers || []).map(provider => provider.id),
       ...(next.providers || []).map(provider => provider.id)
     ]);
     const changedProviderIds = Array.from(providerIds).filter(providerId => {
-      const previousProvider = window.CodexOverleafProviderProfiles.getProviderById(previous, providerId);
-      const nextProvider = window.CodexOverleafProviderProfiles.getProviderById(next, providerId);
+      const previousProvider = instance.Profiles.getProviderById(previous, providerId);
+      const nextProvider = instance.Profiles.getProviderById(next, providerId);
       return modelCatalogSignature(previousProvider) !== modelCatalogSignature(nextProvider);
     });
     return {
@@ -550,6 +563,10 @@
   function modelCatalogSignature(provider = {}) {
     return JSON.stringify({
       id: provider.id || '',
+      revision: Number(provider.revision || 0),
+      baseUrl: provider.baseUrl || '',
+      wireApiPreference: provider.wireApiPreference || '',
+      resolvedWireApi: provider.resolvedWireApi || '',
       defaultModelId: provider.defaultModelId || '',
       reasoningAdapter: provider.reasoningAdapter || '',
       reasoningCapability: provider.reasoningCapability || '',
@@ -567,7 +584,7 @@
 
   function getProviderSnapshot(instance, providerId) {
     const requestedId = providerId || instance.getSelectedProviderId() || 'builtin';
-    const provider = window.CodexOverleafProviderProfiles.getProviderById(instance.catalog, requestedId);
+    const provider = instance.Profiles.getProviderById(instance.catalog, requestedId);
     if (!provider) {
       return {
         providerId: requestedId,

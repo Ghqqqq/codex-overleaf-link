@@ -8,6 +8,10 @@ const projectFiles = require('../extension/src/shared/projectFiles');
 const overleafEditor = require('../extension/src/page/overleafEditor');
 const reviewing = require('../extension/src/shared/reviewing');
 const staleGuard = require('../extension/src/shared/staleGuard');
+const pageRpcContractSource = fs.readFileSync(
+  path.join(__dirname, '../extension/src/shared/pageRpcContract.js'),
+  'utf8'
+);
 
 const pageBridgeSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/pageBridge.js'),
@@ -526,6 +530,7 @@ test('page bridge jumpToPosition opens target file and records CodeMirror select
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'refs.bib',
     from: 7,
     to: 10
@@ -551,6 +556,7 @@ test('page bridge jumpToPosition selects requested one-based line content', asyn
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'main.tex',
     line: 2,
     selectLine: true
@@ -572,6 +578,7 @@ test('page bridge jumpToPosition selectLine wins over requested column', async (
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'main.tex',
     line: 2,
     column: 1,
@@ -595,6 +602,7 @@ test('page bridge jumpToPosition line_out_of_range includes requested line and l
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'main.tex',
     line: 3
   });
@@ -615,6 +623,7 @@ test('page bridge jumpToPosition column_out_of_range includes requested line, co
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'main.tex',
     line: 2,
     column: 5
@@ -637,6 +646,7 @@ test('page bridge jumpToPosition places cursor at requested one-based column', a
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'main.tex',
     line: 2,
     column: 2,
@@ -658,6 +668,7 @@ test('page bridge jumpToPosition rejects out-of-range line requests', async () =
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'main.tex',
     line: 3,
     selectLine: true
@@ -678,6 +689,7 @@ test('page bridge jumpToPosition rejects out-of-range column requests', async ()
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'main.tex',
     line: 2,
     column: 5,
@@ -699,6 +711,7 @@ test('page bridge jumpToPosition accounts for CRLF line endings when selecting a
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'main.tex',
     line: 2,
     selectLine: true
@@ -719,6 +732,7 @@ test('page bridge jumpToPosition selects the last line without a trailing newlin
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'main.tex',
     line: 2,
     selectLine: true
@@ -739,6 +753,7 @@ test('page bridge jumpToPosition keeps offset ranges unchanged when line mode is
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'main.tex',
     from: 2,
     to: 4
@@ -762,6 +777,7 @@ test('page bridge jumpToPosition opens target file before resolving line positio
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'refs.bib',
     line: 2,
     selectLine: true
@@ -782,6 +798,7 @@ test('page bridge jumpToPosition rejects out-of-range offsets without modifying 
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'main.tex',
     from: 0,
     to: 99
@@ -807,6 +824,7 @@ test('page bridge jumpToPosition waits for delayed editor document switch before
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'refs.bib',
     from: 0,
     to: 10
@@ -831,6 +849,7 @@ test('page bridge jumpToPosition succeeds after delayed switch when target conte
   });
 
   const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
     path: 'refs.bib',
     from: 0,
     to: 9
@@ -1667,6 +1686,8 @@ test('page bridge uses Overleaf editor undo to revert a tracked-change batch in 
   assert.equal(undo.applied.length, 1);
   assert.equal(undo.skipped.length, 0);
   assert.equal(undo.applied[0].result.method, 'overleaf-editor-undo');
+  assert.equal(undo.applied[0].result.verified, true);
+  assert.equal(undo.applied[0].result.verifiedContent, 'alpha beta gamma');
   assert.equal(bridge.getFile('main.tex'), 'alpha beta gamma');
   assert.equal(bridge.getEditorUndoClickCount(), 1);
   assert.equal(bridge.getRejectClickCount(), 0);
@@ -2395,7 +2416,10 @@ test('pageBridge jumpToPosition emits structured failure for target_file_not_fou
     files: { 'main.tex': 'alpha beta gamma' }
   });
 
-  const result = await bridge.call('jumpToPosition', { path: 'missing.tex' });
+  const result = await bridge.call('jumpToPosition', {
+    runProjectId: 'test-project',
+    path: 'missing.tex'
+  });
 
   assert.equal(result.ok, false);
   assert.equal(result.code, 'path_not_found');
@@ -2950,6 +2974,7 @@ function createPageBridgeHarness({
   if (pageBridgeCapabilitySource) {
     vm.runInContext(pageBridgeCapabilitySource, context, { filename: 'pageBridgeCapability.js' });
   }
+  vm.runInContext(pageRpcContractSource, context, { filename: 'pageRpcContract.js' });
   vm.runInContext(pageBridgeSource, context, { filename: 'pageBridge.js' });
 
   // Hydration simulation: defer the `_ide.project` assignment so the first
@@ -3593,8 +3618,11 @@ test('writebackRouter applyOperationsCore captures the cancel sequence baseline 
 
 test('pageBridge exposes cancelActiveWrite as a dispatch method backed by a sequence counter', () => {
   const pageBridgeSrc = fs.readFileSync(path.join(__dirname, '..', 'extension', 'src', 'pageBridge.js'), 'utf8');
-  assert.match(pageBridgeSrc, /method === 'cancelActiveWrite'/,
-    'pageBridge dispatch must handle cancelActiveWrite');
+  const contract = require('../extension/src/shared/pageRpcContract.js');
+  assert.equal(contract.getMethod('cancelActiveWrite').capability, 'write.cancel',
+    'page RPC contract must expose cancelActiveWrite');
+  assert.match(pageBridgeSrc, /cancelActiveWrite\(\)/,
+    'pageBridge handler map must implement cancelActiveWrite');
   assert.match(pageBridgeSrc, /writeCancellationSequence\s*\+=\s*1/,
     'cancelActiveWrite must increment the sequence counter');
   assert.match(pageBridgeSrc, /readWriteCancellationSequence/,

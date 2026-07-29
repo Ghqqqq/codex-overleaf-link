@@ -5,9 +5,17 @@ const test = require('node:test');
 const { extractFunction } = require('./_helpers/extractFunction');
 const { getContentScriptSource, extractFromContentScript } = require('./_helpers/contentScriptSource');
 const { runtimeStubs } = require('./_helpers/runtimeSandbox');
+const {
+  CONTENT_BUNDLE_ENTRY_MARKER,
+  getContentBundleSourceOrder
+} = require('./_helpers/contentBundleEntry');
 const vm = require('node:vm');
 
 const ReviewHunks = require('../extension/src/content/reviewHunks');
+const PageRpcContract = require('../extension/src/shared/pageRpcContract');
+const WritebackSettlement = require('../extension/src/shared/writebackSettlement');
+const PageBridgeClient = require('../extension/src/content/pageBridgeClient');
+const NativeCompatibilityController = require('../extension/src/content/nativeCompatibilityController');
 
 const DIFF_REVIEW_PANEL_PATH = '../extension/src/content/diffReviewPanel.js';
 
@@ -137,6 +145,7 @@ function collectElements(node, predicate, result = []) {
 function loadMarkdownRendererHarness(projectFiles = [], options = {}) {
   const contentScript = getContentScriptSource();
   const LineReferences = require('../extension/src/shared/lineReferences');
+  const MathText = require('../extension/src/content/mathText');
   const document = createMinimalDocument();
   const pageBridgeCalls = [];
   const toasts = [];
@@ -162,7 +171,8 @@ function loadMarkdownRendererHarness(projectFiles = [], options = {}) {
     extractFromContentScript( 'stripMarkdownListMarker')
   ].join('\n');
 
-  return Function('document', 'LineReferences', 'projectFiles', 'pageBridgeCalls', 'toasts', 'options', `
+  return Function('document', 'LineReferences', 'MathText', 'projectFiles', 'pageBridgeCalls', 'toasts', 'options', `
+    const window = globalThis;
     let state = {
       focusFiles: [],
       session: { focusFiles: [] },
@@ -175,6 +185,7 @@ function loadMarkdownRendererHarness(projectFiles = [], options = {}) {
         ? options.callPageBridge(method, params)
         : Promise.resolve(options.pageBridgeResult || { ok: true });
     }
+    function getCurrentProjectId() { return 'project-test'; }
     function showPluginToast(text, options) {
       toasts.push({ text, options });
     }
@@ -190,7 +201,7 @@ function loadMarkdownRendererHarness(projectFiles = [], options = {}) {
       pageBridgeCalls,
       toasts
     };
-  `)(document, LineReferences, projectFiles, pageBridgeCalls, toasts, options);
+  `)(document, LineReferences, MathText, projectFiles, pageBridgeCalls, toasts, options);
 }
 
 function findLineReferenceButtons(node) {
@@ -336,10 +347,8 @@ function buildRunCardRoot(runId) {
   return root;
 }
 
-// Extracts the run-card control functions from contentRuntime.js and wires them
-// against fake runs, a fake panel DOM, and stubbed dependencies. configureUndo
-// is stubbed: applyTerminalTrackedChangeStatus -> refreshRunCardControls only
-// needs the Accept control rebuilt, and the undo machinery is out of scope here.
+// Extracts the run-card control functions and wires them against fake runs,
+// a fake panel DOM, and the canonical settlement projection.
 function loadRunCardControlsHarness(options = {}) {
   const contentScript = getContentScriptSource();
   const document = createRunCardDocument();
@@ -349,12 +358,11 @@ function loadRunCardControlsHarness(options = {}) {
     extractFromContentScript( 'configureAcceptButton'),
     extractFromContentScript( 'configureLifecycleUndoButton'),
     extractFromContentScript( 'wireAcceptInlineConfirm'),
-    extractFromContentScript( 'applyTerminalTrackedChangeStatus'),
     extractFromContentScript( 'refreshRunCardControls'),
     extractFromContentScript( 'cssEscape')
   ].join('\n');
 
-  return Function('document', 'state', 'panel', 'options', `
+  return Function('document', 'state', 'panel', 'options', 'WritebackSettlement', `
     const window = {};
     const trackedChangeInFlight = new Map(options.inFlight || []);
     let saveStateSoonCalls = 0;
@@ -367,6 +375,9 @@ function loadRunCardControlsHarness(options = {}) {
     function acceptRun(runId) { acceptRunCalls.push(runId); }
     function undoRun(runId) { undoRunCalls.push(runId); }
     function getRunUndoCount() { return 0; }
+    function projectRunSettlement(run) {
+      return WritebackSettlement.projectRunSettlement(run);
+    }
     function tr(key) { return key; }
     function configureUndoButton(root, run) {
       const existing = root.querySelector('[data-run-undo]');
@@ -378,14 +389,13 @@ function loadRunCardControlsHarness(options = {}) {
     return {
       configureAcceptButton,
       configureUndoButton,
-      applyTerminalTrackedChangeStatus,
       refreshRunCardControls,
       trackedChangeInFlight,
       acceptRunCalls,
       undoRunCalls,
       getSaveStateSoonCalls: () => saveStateSoonCalls
     };
-  `)(document, options.state || { runs: [] }, options.panel || null, options);
+  `)(document, options.state || { runs: [] }, options.panel || null, options, WritebackSettlement);
 }
 
 function loadCreateDiffReviewElementForTest(options = {}) {
@@ -396,6 +406,9 @@ function loadCreateDiffReviewElementForTest(options = {}) {
     document: createMinimalDocument(),
     root: { CodexOverleafReviewHunks: ReviewHunks },
     reviewHunks: ReviewHunks,
+    getCurrentProjectId() {
+      return 'project-test';
+    },
     callPageBridge(method, params) {
       pageBridgeCalls.push({ method, params });
       return Promise.resolve(options.pageBridgeResult || { ok: true });
@@ -564,7 +577,7 @@ test('project settings expose governed rules and local skills without Overleaf a
   assert.match(settingsSource, /data-load-codex-local-skills/);
   assert.match(settingsSource, /data-load-codex-overleaf-skills/);
   assert.match(settingsSource, /data-local-skill-list/);
-  assert.match(contentScript, /CodexOverleafLocalSkillsPanel/);
+  assert.match(contentScript, /Modules\.LocalSkillsPanel/);
   assert.match(contentScript, /getLocalSkillsPanel\(\)\.refreshLocalSkills/);
   assert.match(localSkillsPanel, /codexOverleafSkills/);
   assert.match(localSkillsPanel, /function getCodexOverleafSkillsForSettings/);
@@ -807,9 +820,9 @@ test('task runs use sensitive preflight, skill toggles, governance gating, binar
   const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
   const applyBody = contentScript.match(/async function applySyncChangesToOverleaf[\s\S]*?\n  async function verifyPostWriteSaveState/)?.[0] || '';
 
-  assert.match(contentScript, /CodexOverleafGovernanceRules/);
-  assert.match(contentScript, /CodexOverleafSensitiveScan/);
-  assert.match(contentScript, /CodexOverleafAuditRecords/);
+  assert.match(contentScript, /Modules\.GovernanceRules/);
+  assert.match(contentScript, /Modules\.SensitiveScan/);
+  assert.match(contentScript, /Modules\.AuditRecords/);
   assert.doesNotMatch(runTaskBody, /submittedSelectedSkillIds/);
   assert.match(runTaskBody, /const submittedSkillLoadingSettings = getSkillLoadingSettings\(\)/);
   assert.match(runTaskBody, /createAuditDraftForRun/);
@@ -844,12 +857,12 @@ test('composer supports pasted or dropped turn attachments without Overleaf asse
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../extension/manifest.json'), 'utf8'));
   const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function preflightWriteSafety/)?.[0] || '';
   const clearBody = extractFromContentScript( 'clearTaskComposer');
-  const scriptOrder = manifest.content_scripts[0].js;
+  const scriptOrder = getContentBundleSourceOrder();
 
   assert.match(composerPanel, /data-attachment-strip/);
   assert.ok(
-    scriptOrder.indexOf('src/content/composerAttachments.js') < scriptOrder.indexOf('src/contentScript.js'),
-    'composer attachment controller loads before contentScript'
+    scriptOrder.indexOf('src/content/composerAttachments.js') < scriptOrder.indexOf(CONTENT_BUNDLE_ENTRY_MARKER),
+    'composer attachment controller loads before the content entry starts the runtime'
   );
   assert.match(composerPanel, /'paste'/);
   assert.match(composerPanel, /'dragover'/);
@@ -1014,12 +1027,11 @@ test('task run snapshots bypass cache so Codex sees the latest Overleaf state', 
 test('whole-project ZIP sync waits long enough before falling back to focused files', () => {
   const contentScript = getContentScriptSource();
   const getRunProjectSnapshotBody = contentScript.match(/async function getRunProjectSnapshot\(\) \{[\s\S]*?\n  \}/)?.[0] || '';
-  const timeoutBody = contentScript.match(/function getPageBridgeTimeoutMs\(method\) \{[\s\S]*?\n  \}/)?.[0] || '';
 
   assert.match(contentScript, /const RUN_SNAPSHOT_ZIP_TIMEOUT_MS\s*=\s*30000/);
-  assert.match(contentScript, /const SNAPSHOT_PAGE_BRIDGE_TIMEOUT_MS\s*=\s*70000/);
   assert.match(getRunProjectSnapshotBody, /zipTimeoutMs:\s*RUN_SNAPSHOT_ZIP_TIMEOUT_MS/);
-  assert.match(timeoutBody, /return SNAPSHOT_PAGE_BRIDGE_TIMEOUT_MS/);
+  assert.equal(PageRpcContract.getMethod('getProjectSnapshot').timeoutClass, 'snapshot');
+  assert.equal(PageRpcContract.resolveTimeoutMs('getProjectSnapshot'), 70000);
 });
 
 test('task run blocks unfocused partial project snapshots before they can rewrite the local mirror', () => {
@@ -1065,7 +1077,7 @@ test('post-write side effects wait for verified Overleaf save state', () => {
   const applyIndex = applyBody.indexOf("await callPageBridge('applyOperations'");
   const verifyIndex = applyBody.indexOf('verifyPostWriteSaveState()');
   const refreshIndex = applyBody.indexOf('refreshProjectMirrorAfterWriteback(project, applied, saveVerification)');
-  const recompileIndex = applyBody.indexOf('autoRecompileAfterWriteback(appliedPaths, saveVerification)');
+  const recompileIndex = applyBody.indexOf('autoRecompileAfterWriteback(appliedPaths, saveVerification');
 
   assert.ok(applyIndex >= 0, 'applyOperations call is present');
   assert.ok(verifyIndex > applyIndex, 'save verification happens after applyOperations');
@@ -1133,7 +1145,7 @@ test('post-write mirror refresh waits for verified save but auto compile still d
   const saveWarningBody = contentScript.match(/function appendPostWriteSaveVerificationWarning[\s\S]*?\n  async function refreshProjectMirrorAfterWriteback/)?.[0] || '';
 
   assert.match(refreshBody, /async function refreshProjectMirrorAfterWriteback\(project = \{\}, applied = \{\}, saveVerification = \{\}\)/);
-  assert.match(autoCompileBody, /async function autoRecompileAfterWriteback\(writtenPaths = \[\], saveVerification = \{\}\)/);
+  assert.match(autoCompileBody, /async function autoRecompileAfterWriteback\(writtenPaths = \[\], saveVerification = \{\}, options = \{\}\)/);
   assert.match(refreshBody, /saveVerification\?\.state !== 'verified_saved'[\s\S]*?return;/);
   assert.doesNotMatch(autoCompileBody, /saveVerification\?\.state !== 'verified_saved'[\s\S]*?return;/);
   assert.ok(
@@ -1171,7 +1183,7 @@ test('post-write mirror refresh refuses partial snapshots before touching native
 
   assert.match(refreshBody, /capabilities\?\.fullProjectSnapshot/);
   assert.match(refreshBody, /没有读到完整项目/);
-  assert.match(refreshBody, /return;\s*\}\s*\n\s*const syncedProject/);
+  assert.match(refreshBody, /return 'failed';\s*\}\s*\n\s*const syncedProject/);
 });
 
 test('idle background sync does not poll or touch the Overleaf editor', () => {
@@ -1277,7 +1289,7 @@ test('experimental OT warm mirror polls page OT events and patches the native mi
   const pollBody = extractFromContentScript( 'pollOtEvents');
   const flushBody = extractFromContentScript( 'flushOtPatchBatch');
 
-  assert.match(contentScript, /CodexOverleafOtWarmMirrorController/);
+  assert.match(contentScript, /Modules\.OtWarmMirrorController/);
   assert.match(contentScript, /function scheduleOtEventPolling/);
   assert.match(contentScript, /function clearOtEventPolling/);
   assert.match(pollBody, /otWarmMirrorController\.shouldPauseOtWarmMirror\(\{\s*running:\s*Boolean\(getCurrentRunView\(\)\)\s*\}\)/);
@@ -1341,7 +1353,7 @@ test('ask mode is not blocked by write-safety preconditions', () => {
   );
 
   assert.doesNotMatch(runTaskBody, /state\.mode !== 'ask' && state\.requireReviewing/);
-  assert.match(runTaskBody, /const submittedMode = state\.mode/);
+  assert.match(runTaskBody, /const submittedMode = executionSnapshot\.mode/);
   assert.match(runTaskBody, /mode:\s*submittedMode/);
   assert.match(codexSessionRunner, /params\.mode === 'ask'/);
   assert.match(codexSessionRunner, /sandboxMode: 'read-only'/);
@@ -1350,7 +1362,8 @@ test('ask mode is not blocked by write-safety preconditions', () => {
 
 test('ask mode ignores unexpected local Codex writeback changes without failing the answer', () => {
   const contentScript = getContentScriptSource();
-  const applySyncBody = contentScript.match(/async function applySyncChangesToOverleaf[\s\S]*?\n  async function verifyPostWriteSaveState/)?.[0] || '';
+  const applySyncBody = extractFromContentScript('applySyncChangesToOverleaf');
+  const runTaskBody = extractFromContentScript('runTask');
   const guardEnd = applySyncBody.indexOf('let operations = buildSyncApplyOperations');
   const guardBody = guardEnd > -1 ? applySyncBody.slice(0, guardEnd) : applySyncBody;
 
@@ -1361,7 +1374,14 @@ test('ask mode ignores unexpected local Codex writeback changes without failing 
   assert.match(applySyncBody, /Ask mode ignored local file changes/);
   assert.match(contentScript, /mode:\s*submittedMode/);
   assert.match(contentScript, /resolveWarmMirrorReuse\(project,[\s\S]*mode:\s*submittedMode/);
-  assert.doesNotMatch(contentScript, /mode:\s*state\.mode,[\s\S]*unsupportedChanges: response\.result\.unsupportedChanges/);
+  assert.match(
+    runTaskBody,
+    /unsupportedChanges:\s*response\.result\.unsupportedChanges \|\| \[\],[\s\S]*?mode:\s*submittedMode/
+  );
+  assert.doesNotMatch(
+    runTaskBody,
+    /unsupportedChanges:\s*response\.result\.unsupportedChanges \|\| \[\],[\s\S]*?mode:\s*state\.mode/
+  );
   assert.ok(applySyncBody.indexOf("options.mode === 'ask'") < applySyncBody.indexOf('buildSyncApplyOperations'));
   assert.match(guardBody, /return \{/);
   assert.match(guardBody, /hasSkippedOperations:\s*false/);
@@ -1804,8 +1824,8 @@ test('write paths enforce Overleaf Reviewing before applying changes when reques
     path.join(__dirname, '../extension/src/pageBridge.js'),
     'utf8'
   );
-  const applySyncBody = contentScript.match(/async function applySyncChangesToOverleaf[\s\S]*?\n  function buildSyncApplyOperations/)?.[0] || '';
-  const applyTaskBody = contentScript.match(/async function applyTaskOperations[\s\S]*?\n  function partitionOperationsForApply/)?.[0] || '';
+  const applySyncBody = extractFromContentScript('applySyncChangesToOverleaf');
+  const applyTaskBody = extractFromContentScript('applyTaskOperations');
 
   assert.match(contentScript, /async function ensureReviewingBeforeWrite/);
   assert.match(applySyncBody, /const runRequireReviewing = typeof options\.requireReviewing === 'boolean'/);
@@ -1817,8 +1837,11 @@ test('write paths enforce Overleaf Reviewing before applying changes when reques
   assert.match(applyTaskBody, /requireReviewing:\s*runRequireReviewing/);
   assert.match(applyTaskBody, /requireEditing:\s*!runRequireReviewing/);
   assert.doesNotMatch(applyTaskBody, /requireReviewing:\s*state\.requireReviewing === true/);
-  assert.match(pageBridge, /method === 'ensureReviewing'/);
-  assert.match(pageBridge, /method === 'ensureEditing'/);
+  assert.match(pageBridge, /ensureReviewing,/);
+  assert.match(pageBridge, /ensureEditing,/);
+  assert.match(pageBridge, /contract\.projectIdentity === 'required'/);
+  assert.match(pageBridge, /contract\.projectIdentity === 'optional' && hasRunProjectId/);
+  assert.match(pageBridge, /writeGuard\.runWriteGuard\(params\)/);
   assert.match(pageBridge, /function ensureReviewing\(/);
   assert.match(pageBridge, /function ensureEditing\(/);
   assert.match(pageBridge, /requireReviewing:\s*params\.requireReviewing === true/);
@@ -1842,7 +1865,7 @@ test('write tasks preflight Reviewing or Editing before syncing or starting loca
   assert.ok(codexRunIndex > -1);
   assert.ok(preflightIndex < snapshotIndex);
   assert.ok(preflightIndex < codexRunIndex);
-  assert.match(runTaskBody, /const submittedRequireReviewing = state\.requireReviewing === true/);
+  assert.match(runTaskBody, /const submittedRequireReviewing = executionSnapshot\.requireReviewing === true/);
   assert.match(runTaskBody, /preflightWriteSafety\(\{\s*mode:\s*submittedMode,\s*requireReviewing:\s*submittedRequireReviewing\s*\}\)/);
   assert.match(preflightBody, /const mode = options\.mode \|\| state\.mode/);
   assert.match(preflightBody, /const requireReviewing = typeof options\.requireReviewing === 'boolean'/);
@@ -1859,9 +1882,10 @@ test('write tasks preflight Reviewing or Editing before syncing or starting loca
 
 test('native side-effecting requests are gated on compatibility before dispatch', () => {
   const contentScript = getContentScriptSource();
-  const sendNativeBody = extractFromContentScript( 'sendNative');
-  const sendBackgroundNativeBody = extractFromContentScript( 'sendBackgroundNative');
-  const ensureBody = extractFromContentScript( 'ensureNativeCompatibilityForMethod');
+  const controllerSource = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/nativeCompatibilityController.js'),
+    'utf8'
+  );
 
   assert.match(contentScript, /NATIVE_COMPATIBILITY_GATED_METHODS/);
   for (const method of [
@@ -1874,52 +1898,49 @@ test('native side-effecting requests are gated on compatibility before dispatch'
   ]) {
     assert.match(contentScript, new RegExp(method.replace(/[.]/g, '\\.')));
   }
-  assert.match(ensureBody, /CodexOverleafCompatibility\?\.buildBridgePingParams/);
-  assert.match(ensureBody, /CodexOverleafCompatibility\?\.evaluateNativeCompatibility/);
-  assert.match(ensureBody, /CodexOverleafCompatibility\?\.isNativeMethodAllowed/);
-  assert.match(ensureBody, /native_update_required/);
-  assert.match(ensureBody, /formatNativeCompatibilityBlockedMessage/);
-  assert.match(sendNativeBody, /await ensureNativeCompatibilityForMethod\(payload\?\.method\)/);
-  assert.match(sendNativeBody, /attachNativeCompatibilityEvidence/);
-  assert.match(sendBackgroundNativeBody, /await ensureNativeCompatibilityForMethod\(payload\?\.method\)/);
-  assert.match(sendBackgroundNativeBody, /attachNativeCompatibilityEvidence/);
+  assert.match(controllerSource, /Compatibility\?\.buildBridgePingParams/);
+  assert.match(controllerSource, /Compatibility\?\.evaluateNativeCompatibility/);
+  assert.match(controllerSource, /Compatibility\?\.isNativeMethodAllowed/);
+  assert.match(controllerSource, /native_update_required/);
+  assert.match(controllerSource, /formatBlockedMessage/);
+  assert.match(controllerSource, /const compatibilityGate = await ensureForMethod\(payload\?\.method\)/);
+  assert.match(controllerSource, /attachEvidence\(payload, compatibilityGate\.compatibility\)/);
 });
 
 test('cancellation during native compatibility gate prevents codex.run dispatch', async () => {
-  const contentScript = getContentScriptSource();
-  const sendNativeBody = extractFromContentScript( 'sendNative');
-
   let cancellationRequested = false;
   let nativeSent = false;
-  const sendNative = Function(
-    'ensureNativeCompatibilityForMethod',
-    'nativeChannel',
-    'attachNativeCompatibilityEvidence',
-    'throwIfCancelledBeforeNativeDispatch',
-    `return (${sendNativeBody});`
-  )(
-    async () => {
-      cancellationRequested = true;
-      return { ok: true, compatibility: { status: 'ok' } };
+  const controller = NativeCompatibilityController.create({
+    compatibility: {
+      buildBridgePingParams: () => ({}),
+      evaluateNativeCompatibility: () => ({ status: 'ok' }),
+      isNativeMethodAllowed: () => true
     },
-    {
+    nativeChannel: {
+      sendBackgroundNative() {
+        cancellationRequested = true;
+        return Promise.resolve({ ok: true });
+      },
       sendNative() {
         nativeSent = true;
         return Promise.resolve({ ok: true });
       }
     },
-    payload => payload,
-    () => {
+    gatedMethods: new Set(['codex.run']),
+    getExtensionCompatibilityMetadata: () => ({}),
+    throwIfCancellationRequested() {
       if (cancellationRequested) {
         const error = new Error('Codex run was cancelled by the user');
         error.code = 'codex_cancelled';
         throw error;
       }
-    }
-  );
+    },
+    tr: key => key,
+    tx: value => value
+  });
 
   await assert.rejects(
-    sendNative({ method: 'codex.run', params: { task: 'write' } }),
+    controller.sendNative({ method: 'codex.run', params: { task: 'write' } }),
     /Codex run was cancelled by the user/
   );
   assert.equal(nativeSent, false);
@@ -1957,7 +1978,7 @@ test('native and raw agent events go through the human transcript mapper', () =>
   const contentScript = getContentScriptSource();
   const appendNativeEventBody = contentScript.match(/function appendNativeEvent\([^)]*\) \{[\s\S]*?\n  \}/)?.[0] || '';
 
-  assert.match(contentScript, /CodexOverleafAgentTranscript/);
+  assert.match(contentScript, /Modules\.AgentTranscript/);
   assert.match(appendNativeEventBody, /mapAgentEventToActivity\(event,\s*\{\s*locale:\s*getLocale\(\)\s*\}\)/);
   assert.match(contentScript, /appendTechnicalEvent/);
   assert.doesNotMatch(contentScript, /function mapAgentActivity\(event\)/);
@@ -2147,8 +2168,9 @@ test('confirm diff review renders hunk controls and resolves accepted hunk patch
   const createDiffBody = diffReviewPanel.match(/function createDiffReviewElement\(syncChanges[\s\S]*?\n    function renderDiffReview/)?.[0] || '';
   const renderDiffBody = diffReviewPanel.match(/function renderDiffReview\(syncChanges\) \{[\s\S]*?\n    function renderReadOnlyDiffReview/)?.[0] || '';
 
-  assert.match(contentScript, /CodexOverleafReviewHunks/);
-  assert.match(createDiffBody, /window\.CodexOverleafReviewHunks/);
+  assert.match(contentScript, /Modules\.ReviewHunks/);
+  assert.match(createDiffBody, /getReviewHunks\(\)/);
+  assert.doesNotMatch(createDiffBody, /CodexOverleafReviewHunks/);
   assert.match(createDiffBody, /data-diff-hunk-accept/);
   assert.match(createDiffBody, /data-diff-hunk-reject/);
   assert.match(createDiffBody, /data-diff-hunk-jump/);
@@ -2364,7 +2386,7 @@ test('hunk jump button calls page bridge with path and offset metadata', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(createDiffReviewElement.pageBridgeCalls)), [
     {
       method: 'jumpToPosition',
-      params: { path: 'main.tex', from: 6, to: 10 }
+      params: { path: 'main.tex', from: 6, to: 10, runProjectId: 'project-test' }
     }
   ]);
 });
@@ -2597,7 +2619,7 @@ test('auto recompile is based on successfully applied Overleaf writes', () => {
 
   assert.doesNotMatch(runTaskBody, /response\.result\.syncChanges[\s\S]*autoRecompileAfterWriteback/);
   assert.match(applySyncBody, /const appliedPaths = getAppliedOperationPaths\(applied\)/);
-  assert.match(applySyncBody, /autoRecompileAfterWriteback\(appliedPaths, saveVerification\)/);
+  assert.match(applySyncBody, /autoRecompileAfterWriteback\(appliedPaths, saveVerification,\s*\{/);
   assert.match(contentScript, /preferUiClick:\s*true/);
 });
 
@@ -2614,24 +2636,28 @@ test('@compile-log context is preserved across Codex run retries', () => {
 test('runTask freezes submitted custom instructions for initial and retry codex runs', () => {
   const contentScript = getContentScriptSource();
   const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
-  const submittedModeIndex = runTaskBody.indexOf('const submittedMode = state.mode');
-  const submittedReviewingIndex = runTaskBody.indexOf('const submittedRequireReviewing = state.requireReviewing === true');
+  const submittedPanelStateIndex = runTaskBody.indexOf('const submittedPanelState = {');
   const submittedCustomInstructionsIndex = runTaskBody.indexOf('const submittedCustomInstructions = getCustomInstructionsForCurrentProject()');
   const taskIndex = runTaskBody.indexOf('const task = String(');
+  const ensureProviderIndex = runTaskBody.indexOf('await providerSettingsCoordinator.ensureLoaded()');
+  const submittedModeIndex = runTaskBody.indexOf('const submittedMode = executionSnapshot.mode');
+  const submittedReviewingIndex = runTaskBody.indexOf('const submittedRequireReviewing = executionSnapshot.requireReviewing === true');
   const runParamBlocks = Array.from(runTaskBody.matchAll(/buildCodexRunParams\(\{[\s\S]*?submittedMode\s*\}/g))
     .map(match => match[0]);
 
   assert.match(contentScript, /function getCustomInstructionsForCurrentProject\(/);
-  assert.ok(submittedModeIndex >= 0, 'runTask should freeze the submitted mode');
-  assert.ok(submittedReviewingIndex > submittedModeIndex, 'runTask should freeze reviewing after mode');
+  assert.ok(submittedPanelStateIndex > taskIndex, 'runTask should capture submitted panel state synchronously');
   assert.ok(
-    submittedCustomInstructionsIndex > submittedReviewingIndex,
+    submittedCustomInstructionsIndex > submittedPanelStateIndex,
     'runTask should freeze custom instructions with the submitted run options'
   );
   assert.ok(
-    taskIndex > submittedCustomInstructionsIndex,
-    'runTask should freeze custom instructions before later run setup can observe settings changes'
+    ensureProviderIndex > submittedCustomInstructionsIndex,
+    'runTask should freeze submitted settings before the asynchronous provider load'
   );
+  assert.ok(submittedModeIndex > ensureProviderIndex, 'runTask should resolve submitted mode from the immutable snapshot');
+  assert.ok(submittedReviewingIndex > submittedModeIndex, 'runTask should resolve reviewing from the immutable snapshot');
+  assert.match(runTaskBody, /captureCurrentExecutionSnapshot\(submittedPanelState\)/);
   assert.equal(
     runParamBlocks.length,
     3,
@@ -2660,12 +2686,24 @@ test('content script run-param wrapper uses explicit custom instructions before 
     };
     const state = {
       mode: 'auto',
+      providerId: 'builtin',
       model: 'gpt-5.5',
       reasoningEffort: 'xhigh',
+      speedTier: 'standard',
       codexOverleafSkills: [],
       codexOverleafSkillEnabled: {}
     };
+    const RunExecutionSnapshot = {
+      capture(value) { return { ...value, providerId: value.providerId || 'builtin' }; },
+      applyToState(current, snapshot) { return { ...current, ...snapshot }; },
+      toProviderSelection(snapshot) {
+        return { providerId: snapshot.providerId || 'builtin', providerRevision: 0 };
+      }
+    };
     let currentRunView = null;
+    function captureCurrentExecutionSnapshot() {
+      return RunExecutionSnapshot.capture(state);
+    }
     function getCurrentProjectId() { return 'project-123'; }
     function getCustomInstructionsForCurrentProject() {
       getterCalls++;
@@ -2764,21 +2802,14 @@ test('warm synthetic runs announce mirror reuse without logging empty snapshot c
 });
 
 test('compile page bridge calls use long-running timeouts', () => {
-  const contentScript = getContentScriptSource();
-
-  assert.match(contentScript, /function getPageBridgeTimeoutMs\(method\)/);
-  assert.match(contentScript, /const COMPILE_PAGE_BRIDGE_TIMEOUT_MS\s*=\s*75000/);
-  assert.match(contentScript, /method === 'triggerCompile' \|\| method === 'getCompileLog'/);
-  assert.match(contentScript, /return COMPILE_PAGE_BRIDGE_TIMEOUT_MS/);
-  assert.match(contentScript, /const timeoutMs = getPageBridgeTimeoutMs\(method\)/);
+  assert.equal(PageRpcContract.getMethod('triggerCompile').timeoutClass, 'compile');
+  assert.equal(PageRpcContract.getMethod('getCompileLog').timeoutClass, 'compile');
+  assert.equal(PageRpcContract.resolveTimeoutMs('triggerCompile'), 75000);
 });
 
 test('tracked-change undo page bridge calls have enough time to reject many changes', () => {
-  const contentScript = getContentScriptSource();
-  const timeoutBody = contentScript.match(/function getPageBridgeTimeoutMs\(method\) \{[\s\S]*?\n  \}/)?.[0] || '';
-
-  assert.match(timeoutBody, /method === 'rejectTrackedChanges'/);
-  assert.match(timeoutBody, /return 120000/);
+  assert.equal(PageRpcContract.getMethod('rejectTrackedChanges').timeoutClass, 'lifecycle');
+  assert.equal(PageRpcContract.resolveTimeoutMs('rejectTrackedChanges'), 120000);
 });
 
 test('partial writeback report tells the user what already changed and how to recover', () => {
@@ -2843,7 +2874,7 @@ test('no-trace undo marks button applied when verified restore succeeds despite 
   assert.match(contentScript, /function isUndoResultEffectivelyApplied\(run, result\)/);
   assert.match(undoRunBody, /const undoApplied = isUndoResultEffectivelyApplied\(run, result\)/);
   assert.match(undoRunBody, /status:\s*undoApplied \? 'completed' : result\.skipped\?\.length \? 'failed' : 'completed'/);
-  assert.match(undoRunBody, /setRunUndoStatus\(runId,\s*undoApplied && fullSelection \? 'applied' : 'partial'\)/);
+  assert.match(undoRunBody, /applyLegacyUndoSettlement\([\s\S]*?undoApplied && fullSelection \? 'applied' : 'partial'/);
 });
 
 test('reviewing write undo rejects Overleaf tracked changes instead of text patching', () => {
@@ -2987,32 +3018,26 @@ test('acceptRun uses an inline confirm flow before dispatching acceptTrackedChan
   assert.match(inlineConfirm, /confirmBtn\.addEventListener\('click'[\s\S]*?acceptRun\(runId\)/);
 });
 
-test('acceptRun drives the run to a decisive terminal accepted via the §7 settlement helper, with no partial / closed-ledger model', () => {
+test('acceptRun drives the run through the decisive §7 settlement reducer, with no partial / closed-ledger model', () => {
   const contentScript = getContentScriptSource();
 
-  // The closed-ledger classifier is gone; a single decisive terminal helper remains.
+  // The composition root delegates the decision and atomic state transition.
   assert.doesNotMatch(contentScript, /function applyTrackedChangeLedger\(/);
-  assert.match(contentScript, /function applyTerminalTrackedChangeStatus\(/);
-  const terminalBody = contentScript.match(/function applyTerminalTrackedChangeStatus\([\s\S]*?\n  \}/)?.[0] || '';
-  // It sets the terminal status and empties the heavy payload. The decision
-  // about *whether* to land in a terminal status is now made by the §7
-  // settlement helper (`applyAcceptSettlement`/`applyRejectSettlement`).
-  assert.match(terminalBody, /run\.trackedChangeStatus = status/);
-  assert.match(terminalBody, /run\.undoTrackedChanges = \[\]/);
-  assert.match(terminalBody, /run\.undoExpectedFiles = \[\]/);
-  // No partial / resolved-elsewhere branching.
-  assert.doesNotMatch(terminalBody, /partial_accept/);
-  assert.doesNotMatch(terminalBody, /resolved_elsewhere/);
+  assert.doesNotMatch(contentScript, /function applyTerminalTrackedChangeStatus\(/);
+  assert.match(contentScript, /function applyTrackedChangeSettlement\(/);
 
-  // acceptRun reaches terminal 'accepted' through the settlement helper, which
-  // calls `applyTerminalTrackedChangeStatus(runId, 'accepted')` only when
-  // post-action proof is sufficient.
   const acceptRunBody = contentScript.match(/async function acceptRun\(runId\) \{[\s\S]*?\n  (?:async )?function /)?.[0] || '';
-  assert.match(acceptRunBody, /applyAcceptSettlement\(runId,\s*result\)/);
-  // The applyAcceptSettlement helper still terminates at applyTerminalTrackedChangeStatus
-  // when the result is proof-clean.
-  const settlementBody = contentScript.match(/function applyAcceptSettlement\([\s\S]*?\n  function /)?.[0] || '';
-  assert.match(settlementBody, /applyTerminalTrackedChangeStatus\(runId,\s*'accepted'\)/);
+  assert.match(acceptRunBody, /applyTrackedChangeSettlement\(runId,\s*'accept',\s*result\)/);
+  const settlementBody = contentScript.match(/function applyTrackedChangeSettlement\([\s\S]*?\n  function /)?.[0] || '';
+  assert.match(settlementBody, /WritebackSettlement\.settleTrackedChangeLifecycle/);
+  assert.match(settlementBody, /WritebackSettlement\.applySettlementTransition/);
+  assert.equal(
+    WritebackSettlement.settleTrackedChangeLifecycle({
+      kind: 'accept',
+      result: { ok: true, applied: [], skipped: [] }
+    }).decision,
+    'accepted'
+  );
 });
 
 // Behavioral coverage for the run-card state machine: these drive the actual
@@ -3124,66 +3149,25 @@ test('configureAcceptButton drops orphaned inline-confirm buttons on mid-confirm
   assert.equal(accepts[0].hidden, false);
 });
 
-test('applyTerminalTrackedChangeStatus: accept reaches terminal accepted, refs emptied (behavioral)', () => {
-  const run = {
-    id: 'run-1',
-    trackedChangeStatus: 'pending',
-    undoTrackedChanges: trackedRefs(),
-    undoExpectedFiles: [{ path: 'main.tex', content: 'x' }]
-  };
-  const panel = new RunCardNode('div');
-  panel.append(buildRunCardRoot('run-1'));
-  const harness = loadRunCardControlsHarness({ state: { runs: [run] }, panel });
-
-  harness.applyTerminalTrackedChangeStatus('run-1', 'accepted');
-
-  assert.equal(run.trackedChangeStatus, 'accepted');
-  assert.deepEqual(run.undoTrackedChanges, []);
-  assert.deepEqual(run.undoExpectedFiles, []);
-});
-
-test('applyTerminalTrackedChangeStatus: reject reaches terminal rejected, refs emptied (behavioral)', () => {
-  const run = {
-    id: 'run-r',
-    trackedChangeStatus: 'pending',
-    undoTrackedChanges: trackedRefs(),
-    undoExpectedFiles: [{ path: 'main.tex', content: 'x' }]
-  };
-  const panel = new RunCardNode('div');
-  panel.append(buildRunCardRoot('run-r'));
-  const harness = loadRunCardControlsHarness({ state: { runs: [run] }, panel });
-
-  harness.applyTerminalTrackedChangeStatus('run-r', 'rejected');
-
-  assert.equal(run.trackedChangeStatus, 'rejected');
-  assert.deepEqual(run.undoTrackedChanges, []);
-  assert.deepEqual(run.undoExpectedFiles, []);
-});
-
-test('applyTerminalTrackedChangeStatus: terminal is unconditional and decisive — there is no partial state (behavioral)', () => {
-  // Even with refs still present (a best-effort accept that left some refs),
-  // the run reaches the terminal status and the payload is emptied — no retry.
-  const run = {
-    id: 'run-1',
-    trackedChangeStatus: 'pending',
-    undoTrackedChanges: trackedRefs(),
-    undoExpectedFiles: [{ path: 'main.tex', content: 'x' }]
-  };
-  const panel = new RunCardNode('div');
-  panel.append(buildRunCardRoot('run-1'));
-  const harness = loadRunCardControlsHarness({ state: { runs: [run] }, panel });
-
-  harness.applyTerminalTrackedChangeStatus('run-1', 'accepted');
-
-  assert.equal(run.trackedChangeStatus, 'accepted');
-  assert.deepEqual(run.undoTrackedChanges, []);
-  assert.deepEqual(run.undoExpectedFiles, []);
-  // A non-terminal value is ignored — only terminal transitions are allowed.
-  const pendingRun = { id: 'run-2', trackedChangeStatus: 'pending', undoTrackedChanges: trackedRefs(), undoExpectedFiles: [] };
-  const harness2 = loadRunCardControlsHarness({ state: { runs: [pendingRun] }, panel: (() => { const p = new RunCardNode('div'); p.append(buildRunCardRoot('run-2')); return p; })() });
-  harness2.applyTerminalTrackedChangeStatus('run-2', 'pending');
-  assert.equal(pendingRun.trackedChangeStatus, 'pending');
-  assert.equal(pendingRun.undoTrackedChanges.length, 2);
+test('canonical settlement reducer owns accepted and rejected terminal cleanup (behavioral)', () => {
+  for (const [kind, expectedStatus] of [['accept', 'accepted'], ['reject', 'rejected']]) {
+    const run = {
+      id: `run-${kind}`,
+      trackedChangeStatus: 'pending',
+      undoTrackedChanges: trackedRefs(),
+      undoExpectedFiles: [{ path: 'main.tex', content: 'x' }]
+    };
+    const settlement = WritebackSettlement.settleTrackedChangeLifecycle({
+      kind,
+      run,
+      result: { ok: true, applied: [], skipped: [] }
+    });
+    const next = WritebackSettlement.applySettlementTransition(run, settlement);
+    assert.equal(next.trackedChangeStatus, expectedStatus);
+    assert.deepEqual(next.undoTrackedChanges, []);
+    assert.deepEqual(next.undoExpectedFiles, []);
+    assert.equal(run.trackedChangeStatus, 'pending', 'the reducer leaves its input unchanged');
+  }
 });
 
 test('configureAcceptButton: needs_review keeps Accept actionable without exposing a third button state (behavioral)', () => {
@@ -3220,9 +3204,9 @@ test('configureAcceptButton needs_review branch wires the inline-confirm flow so
   assert.equal(root.querySelectorAll('[data-run-accept-cancel]').length, 1, 'needs_review: Cancel button appears');
 });
 
-test('acceptRun settlement: successful page action routes to accepted even with warning-class proof codes (source)', () => {
-  // Two-state run-card lifecycle — verify the source keeps the settlement
-  // helper but lets successful page-side accept work become terminal.
+test('acceptRun settlement: failed or unverified page action remains actionable (source)', () => {
+  // The run-card keeps the same executable controls for needs_review, while
+  // the reducer retains recovery evidence until the page action is proven.
   // Behavioral acceptRun coverage requires a full content-runtime harness that
   // is out of scope for this test file; the source-level assertion locks the
   // contract that downstream subagents can rely on.
@@ -3230,21 +3214,45 @@ test('acceptRun settlement: successful page action routes to accepted even with 
 
   // Settlement helper must exist and still know about needs_review codes for
   // explicit no-op/failure outcomes.
-  assert.match(contentScript, /function applyAcceptSettlement\(/);
+  assert.match(contentScript, /function applyTrackedChangeSettlement\(/);
   assert.match(contentScript, /tracked_changes_remain/);
   assert.match(contentScript, /accept_not_verified/);
   // The settlement helper, not the unconditional terminal call, is what
   // acceptRun invokes after the page bridge returns ok.
   const acceptRunBody = contentScript.match(/async function acceptRun\(runId\) \{[\s\S]*?\n  (?:async )?function /)?.[0] || '';
-  assert.match(acceptRunBody, /applyAcceptSettlement\(runId,\s*result\)/);
+  assert.match(acceptRunBody, /applyTrackedChangeSettlement\(runId,\s*'accept',\s*result\)/);
   assert.doesNotMatch(acceptRunBody, /applyTerminalTrackedChangeStatus\(runId,\s*'accepted'\)/);
+  assert.equal(
+    WritebackSettlement.settleTrackedChangeLifecycle({
+      kind: 'accept',
+      result: {
+        ok: false,
+        applied: [],
+        skipped: [{
+          result: {
+            ok: false,
+            failure: {
+              code: 'accept_not_verified',
+              stage: 'accept',
+              severity: 'warning',
+              userMessage: 'Review the tracked changes.',
+              retryable: true,
+              nextAction: 'Review the tracked changes before continuing.',
+              terminalState: 'needs_review'
+            }
+          }
+        }]
+      }
+    }).decision,
+    'needs_review'
+  );
 });
 
 test('undoRunTrackedChanges settlement: successful page action routes to rejected even with warning-class proof codes (source)', () => {
   const contentScript = getContentScriptSource();
 
   // Symmetric settlement helper for the lifecycle Undo path.
-  assert.match(contentScript, /function applyRejectSettlement\(/);
+  assert.match(contentScript, /function applyTrackedChangeSettlement\(/);
   assert.match(contentScript, /undo_not_verified/);
   assert.match(contentScript, /undo_operation_failed/);
   assert.match(contentScript, /undo_reviewing_restore_unverified/);
@@ -3253,22 +3261,46 @@ test('undoRunTrackedChanges settlement: successful page action routes to rejecte
   const undoTrackedBody = contentScript.match(/async function undoRunTrackedChanges\(runId, run\) \{[\s\S]*?\n  (?:async )?function /)?.[0] || '';
   // The lifecycle reject path now hands off to applyRejectSettlement, not the
   // unconditional terminal call.
-  assert.match(undoTrackedBody, /applyRejectSettlement\(runId,\s*result\)/);
+  assert.match(undoTrackedBody, /applyTrackedChangeSettlement\(runId,\s*'reject',\s*result\)/);
   assert.doesNotMatch(undoTrackedBody, /applyTerminalTrackedChangeStatus\(runId,\s*'rejected'\)/);
 });
 
-test('applyAcceptSettlement distinguishes blocked vs successful terminal vs retryable needs_review (source)', () => {
+test('tracked-change settlement distinguishes blocked vs terminal vs retryable needs_review (source)', () => {
   const contentScript = getContentScriptSource();
-  const body = contentScript.match(/function applyAcceptSettlement\([\s\S]*?\n  function /)?.[0] || '';
+  const body = contentScript.match(/function applyTrackedChangeSettlement\([\s\S]*?\n  function /)?.[0] || '';
 
-  // Three branches:
-  //   1. primary.terminalState === 'blocked' → stay pending (no terminal call).
-  //   2. successful page-side work → applyTerminalTrackedChangeStatus(runId, 'accepted').
-  //   3. otherwise needs_review code/terminalState → set 'needs_review'.
-  assert.match(body, /terminalState\s*===\s*'blocked'/);
-  assert.match(body, /isSuccessfulTrackedChangeSettlement\(result\)/);
-  assert.match(body, /'needs_review'/);
-  assert.match(body, /applyTerminalTrackedChangeStatus\(runId,\s*'accepted'\)/);
+  assert.match(body, /settlement\.decision === 'blocked'/);
+  assert.match(body, /WritebackSettlement\.settleTrackedChangeLifecycle/);
+  assert.match(body, /WritebackSettlement\.applySettlementTransition/);
+  const blocked = WritebackSettlement.settleTrackedChangeLifecycle({
+    kind: 'accept',
+    result: {
+      ok: false,
+      skipped: [{
+        result: {
+          ok: false,
+          failure: {
+            code: 'editor_project_id_unavailable',
+            stage: 'accept',
+            severity: 'blocked',
+            userMessage: 'Blocked',
+            retryable: true,
+            nextAction: 'Retry after the editor is ready.',
+            terminalState: 'blocked'
+          }
+        }
+      }]
+    }
+  });
+  const needsReview = WritebackSettlement.settleTrackedChangeLifecycle({
+    kind: 'accept',
+    result: {
+      ok: false,
+      skipped: [{ result: { ok: false, code: 'accept_not_verified' } }]
+    }
+  });
+  assert.equal(blocked.decision, 'blocked');
+  assert.equal(needsReview.decision, 'needs_review');
 });
 
 test('content runtime tracks needs_review as actionable without exposing a third button state (source)', () => {
@@ -3294,7 +3326,7 @@ test('lifecycle Undo defers terminal rejected to the settlement helper, not an u
 
   // The lifecycle reject path now hands off to applyRejectSettlement, which is
   // the §7 proof-aware replacement for the v1.3.7 unconditional terminal call.
-  assert.match(undoTrackedBody, /applyRejectSettlement\(runId,\s*result\)/);
+  assert.match(undoTrackedBody, /applyTrackedChangeSettlement\(runId,\s*'reject',\s*result\)/);
   // No closed-ledger machinery survives.
   assert.doesNotMatch(undoTrackedBody, /applyTrackedChangeLedger/);
 });
@@ -3398,54 +3430,45 @@ test('English locale is applied to dialogs, diff review, undo controls, and tran
 });
 
 test('page bridge messages require same-origin responses in both directions', () => {
-  const contentScript = getContentScriptSource();
+  const pageBridgeClient = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/pageBridgeClient.js'),
+    'utf8'
+  );
   const pageBridge = fs.readFileSync(
     path.join(__dirname, '../extension/src/pageBridge.js'),
     'utf8'
   );
 
-  assert.match(contentScript, /event\.origin !== window\.location\.origin/);
+  assert.match(pageBridgeClient, /event\.origin !== windowRef\.location\.origin/);
   assert.match(pageBridge, /event\.origin !== window\.location\.origin/);
-  assert.match(contentScript, /pageBridgeVersion !== CodexOverleafCompatibility\?\.BUILD_TARGET_VERSION/);
+  assert.match(pageBridgeClient, /pageBridgeVersion !== Compatibility\?\.BUILD_TARGET_VERSION/);
   assert.match(pageBridge, /pageBridgeVersion:\s*PAGE_BRIDGE_INSTALL_VERSION/);
   assert.match(pageBridge, /__codexOverleafPageBridgeInstalledVersion/);
 });
 
 test('page bridge exposes a read-only realtime OT observer', () => {
-  const contentScript = getContentScriptSource();
   const pageBridge = fs.readFileSync(
     path.join(__dirname, '../extension/src/pageBridge.js'),
     'utf8'
   );
-  const injectPageBridgeBody = contentScript.match(/async function injectPageBridge\(\) \{[\s\S]*?\n  \}/)?.[0] || '';
-  const optionalOtBody = contentScript.match(/async function injectOptionalOtDependencies\(\) \{[\s\S]*?\n  \}/)?.[0] || '';
-  const pageBridgeScripts = Array.from(
-    injectPageBridgeBody.matchAll(/injectScriptOnce\('([^']+)'/g),
-    match => match[1]
-  );
-  const optionalScripts = Array.from(
-    optionalOtBody.matchAll(/injectScriptOnce\('([^']+)'/g),
-    match => match[1]
-  );
+  const pageBridgeScripts = PageBridgeClient.PAGE_WORLD_SCRIPTS.map(entry => entry[0]);
+  const optionalScripts = PageBridgeClient.OPTIONAL_OT_SCRIPTS.map(entry => entry[0]);
   const otTextIndex = optionalScripts.indexOf('src/shared/otText.js');
   const observerIndex = optionalScripts.indexOf('src/page/overleafRealtimeObserver.js');
   const capabilityIndex = pageBridgeScripts.indexOf('src/page/pageBridgeCapability.js');
   const pageBridgeIndex = pageBridgeScripts.indexOf('src/pageBridge.js');
 
-  assert.ok(optionalOtBody, 'content script keeps optional OT dependency loading separate from page bridge loading');
   assert.ok(otTextIndex > -1, 'content script explicitly injects the OT text helper into the page world when available');
   assert.ok(observerIndex > -1, 'content script explicitly injects the realtime observer into the page world when available');
   assert.ok(capabilityIndex > -1, 'content script injects the page bridge capability guard');
   assert.ok(pageBridgeIndex > -1, 'content script injects the page bridge');
   assert.ok(otTextIndex < observerIndex, 'OT text helper loads before the realtime observer');
   assert.ok(capabilityIndex < pageBridgeIndex, 'page bridge capability guard loads before the page bridge');
-  assert.match(injectPageBridgeBody, /await injectOptionalOtDependencies\(\)[\s\S]*await injectScriptOnce\('src\/pageBridge\.js'/);
-  assert.match(optionalOtBody, /try\s*\{[\s\S]*src\/shared\/otText\.js[\s\S]*src\/page\/overleafRealtimeObserver\.js[\s\S]*\}\s*catch \(_error\) \{/);
   assert.match(pageBridge, /CodexOverleafRealtimeObserver\.create/);
-  assert.match(pageBridge, /method === 'startOtObserver'/);
-  assert.match(pageBridge, /method === 'stopOtObserver'/);
-  assert.match(pageBridge, /method === 'getOtStatus'/);
-  assert.match(pageBridge, /method === 'drainOtEvents'/);
+  for (const method of ['startOtObserver', 'stopOtObserver', 'getOtStatus', 'drainOtEvents']) {
+    assert.ok(PageRpcContract.getMethod(method), `${method} should remain in the Page RPC catalog`);
+    assert.match(pageBridge, new RegExp(`\\b${method}(?:\\(|:)`));
+  }
   assert.doesNotMatch(pageBridge, /\b(?:writeOt|applyOt|sendOt)\b/);
 });
 
@@ -3915,10 +3938,11 @@ test('stored project custom instructions are rehydrated before lightweight prefs
 
 test('saveState merges latest lightweight prefs before saving project-scoped settings', async () => {
   const contentScript = getContentScriptSource();
+  const ScopedPersistenceCoordinator = require('../extension/src/content/scopedPersistenceCoordinator');
   const StorageDbModule = require('../extension/src/shared/storageDb');
   const { prepareStateForStorage } = require('../extension/src/shared/sessionState');
 
-  const harness = Function('StorageDbModule', 'prepareStateForStorage', `
+  const harness = Function('ScopedPersistenceCoordinator', 'StorageDbModule', 'prepareStateForStorage', `
     const savedPrefs = [];
     const storedSessionRecords = [];
     const deletedSessionIds = [];
@@ -4024,11 +4048,18 @@ test('saveState merges latest lightweight prefs before saving project-scoped set
     const window = {
       CodexOverleafStorageDb: StorageDb,
       CodexOverleafStorageMigration: Migration,
+      CodexOverleafScopedPersistenceCoordinator: ScopedPersistenceCoordinator,
       CodexOverleafSessionPersistence: {
         writeSessions({ StorageDb, sessionRecords }) {
           return StorageDb.putRecords('sessions', sessionRecords);
         }
       }
+    };
+    const Modules = {
+      ScopedPersistenceCoordinator,
+      StorageDb,
+      StorageMigration: Migration,
+      SessionPersistence: window.CodexOverleafSessionPersistence
     };
     function getCurrentProjectId() { return 'project_a'; }
     function getCodexOverleafSkillEnabled() {
@@ -4036,6 +4067,7 @@ test('saveState merges latest lightweight prefs before saving project-scoped set
       return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
     }
     ${extractFromContentScript( 'normalizeExperimentalOtByProject')}
+    ${extractFromContentScript( 'normalizeGovernanceRulesByProject')}
     ${extractFromContentScript( 'normalizeCustomInstructionsByProject')}
     // Fix A inlined helpers: saveState now reads currentRunView through a
     // defensive accessor and the projectIdOverride / divergent-skip branch
@@ -4044,6 +4076,18 @@ test('saveState merges latest lightweight prefs before saving project-scoped set
     let currentRunView = null;
     function appendPlainLog() {}
     function tx(en) { return en; }
+    function isStorageQuotaError() { return false; }
+    const persistenceCoordinator = {
+      async commit(projectId, _options, action) {
+        const value = await action({
+          scope: { accountScopeId: 'account-a', projectId },
+          nextMeta: {},
+          writerId: 'test-writer'
+        });
+        return { ok: true, value };
+      }
+    };
+    function getScopedPersistenceCoordinator() { return persistenceCoordinator; }
     function notifyAggressiveCompactionOnce() {}
     ${extractFromContentScript( 'readLiveRunViewForSaveStateGuard')}
     ${extractFromContentScript( 'saveState')}
@@ -4054,7 +4098,7 @@ test('saveState merges latest lightweight prefs before saving project-scoped set
       getStoredSessionRecords: () => storedSessionRecords,
       getDeletedSessionIds: () => deletedSessionIds
     };
-  `)(StorageDbModule, prepareStateForStorage);
+  `)(ScopedPersistenceCoordinator, StorageDbModule, prepareStateForStorage);
 
   await harness.saveState();
 
@@ -4269,7 +4313,7 @@ test('markdown renderer turns resolvable plain line references into safe jump bu
 
   assert.deepEqual(harness.pageBridgeCalls[0], {
     method: 'jumpToPosition',
-    params: { path: 'main.tex', line: 117, selectLine: true }
+    params: { path: 'main.tex', line: 117, selectLine: true, runProjectId: 'project-test' }
   });
 });
 
@@ -4307,7 +4351,7 @@ test('markdown renderer turns standalone inline code location refs into jump but
 
   assert.deepEqual(harness.pageBridgeCalls[0], {
     method: 'jumpToPosition',
-    params: { path: 'main.tex', line: 28, selectLine: true }
+    params: { path: 'main.tex', line: 28, selectLine: true, runProjectId: 'project-test' }
   });
 });
 
@@ -4352,11 +4396,11 @@ test('line-reference button clicks distinguish line and line-column jumps', asyn
   assert.deepEqual(harness.pageBridgeCalls, [
     {
       method: 'jumpToPosition',
-      params: { path: 'main.tex', line: 42, selectLine: true }
+      params: { path: 'main.tex', line: 42, selectLine: true, runProjectId: 'project-test' }
     },
     {
       method: 'jumpToPosition',
-      params: { path: 'main.tex', line: 42, column: 7, selectLine: false }
+      params: { path: 'main.tex', line: 42, column: 7, selectLine: false, runProjectId: 'project-test' }
     }
   ]);
 });
@@ -4388,10 +4432,10 @@ test('markdown renderer makes every adjacent punctuation-separated line referenc
   assert.deepEqual(
     harness.pageBridgeCalls.map(call => call.params),
     [
-      { path: 'camera_ready.tex', line: 169, selectLine: true },
-      { path: 'camera_ready.tex', line: 225, selectLine: true },
-      { path: 'camera_ready.tex', line: 248, selectLine: true },
-      { path: 'camera_ready.tex', line: 252, selectLine: true }
+      { path: 'camera_ready.tex', line: 169, selectLine: true, runProjectId: 'project-test' },
+      { path: 'camera_ready.tex', line: 225, selectLine: true, runProjectId: 'project-test' },
+      { path: 'camera_ready.tex', line: 248, selectLine: true, runProjectId: 'project-test' },
+      { path: 'camera_ready.tex', line: 252, selectLine: true, runProjectId: 'project-test' }
     ]
   );
 });
@@ -4429,7 +4473,7 @@ test('markdown renderer turns target-only local markdown line refs into safe jum
 
   assert.deepEqual(harness.pageBridgeCalls[0], {
     method: 'jumpToPosition',
-    params: { path: 'main.tex', line: 117, selectLine: true }
+    params: { path: 'main.tex', line: 117, selectLine: true, runProjectId: 'project-test' }
   });
 });
 
@@ -4641,37 +4685,17 @@ test('settleRunAfterNavigation picks background_completed / needs_review_after_n
   // id from T2), NOT activeProjectId. This is the entire point of the
   // T2 immutability contract.
   assert.match(src, /run\.runProjectId/);
-  // Behavioral test: extract the function and exercise the three branches.
-  // Fix B: settleRunAfterNavigation now calls collectRunResultSkipped to
-  // accept both the full syncOutcome (with `applied.skipped`) AND the
-  // pre-flattened `{ skipped: [...] }` shape; include the helper so the
-  // legacy assertions still work against the new implementation.
-  const body = extractFunction(src, 'settleRunAfterNavigation');
-  const collectBody = extractFunction(src, 'collectRunResultSkipped');
-  const sandbox = { result: null };
-  vm.createContext(sandbox);
-  vm.runInContext(
-    "let activeProjectId = 'OTHER';" + collectBody + ";" + body + ";"
-      + "result = {"
-      + "sameProject: (function(){ activeProjectId = 'SAME'; return settleRunAfterNavigation({ runProjectId: 'SAME' }, { skipped: [] }); })(),"
-      + "guard: (function(){ activeProjectId = 'X'; return settleRunAfterNavigation({ runProjectId: 'Y' }, { skipped: [ { result: { code: 'aborted_project_changed' } } ] }); })(),"
-      + "guardEditor: (function(){ activeProjectId = 'X'; return settleRunAfterNavigation({ runProjectId: 'Y' }, { skipped: [ { result: { code: 'editor_project_id_unavailable' } } ] }); })(),"
-      + "needsReviewTracked: (function(){ activeProjectId = 'X'; return settleRunAfterNavigation({ runProjectId: 'Y' }, { skipped: [ { result: { code: 'tracked_changes_remain' } } ] }); })(),"
-      + "needsReviewAccept: (function(){ activeProjectId = 'X'; return settleRunAfterNavigation({ runProjectId: 'Y' }, { skipped: [ { result: { code: 'accept_not_verified' } } ] }); })(),"
-      + "needsReviewUndo: (function(){ activeProjectId = 'X'; return settleRunAfterNavigation({ runProjectId: 'Y' }, { skipped: [ { result: { code: 'undo_not_verified' } } ] }); })(),"
-      + "needsReviewMismatch: (function(){ activeProjectId = 'X'; return settleRunAfterNavigation({ runProjectId: 'Y' }, { skipped: [ { result: { code: 'write_observed_mismatch' } } ] }); })(),"
-      + "background: (function(){ activeProjectId = 'X'; return settleRunAfterNavigation({ runProjectId: 'Y' }, { skipped: [] }); })()"
-      + "};",
-    sandbox
-  );
-  assert.equal(sandbox.result.sameProject, null, 'same project returns null (normal settlement path)');
-  assert.equal(sandbox.result.guard, 'abandoned_after_navigation', 'aborted_project_changed classifies as abandoned');
-  assert.equal(sandbox.result.guardEditor, 'abandoned_after_navigation', 'editor_project_id_unavailable classifies as abandoned');
-  assert.equal(sandbox.result.needsReviewTracked, 'needs_review_after_navigation', 'tracked_changes_remain classifies as needs_review');
-  assert.equal(sandbox.result.needsReviewAccept, 'needs_review_after_navigation', 'accept_not_verified classifies as needs_review');
-  assert.equal(sandbox.result.needsReviewUndo, 'needs_review_after_navigation', 'undo_not_verified classifies as needs_review');
-  assert.equal(sandbox.result.needsReviewMismatch, 'needs_review_after_navigation', 'write_observed_mismatch classifies as needs_review');
-  assert.equal(sandbox.result.background, 'background_completed', 'clean run after navigation classifies as background_completed');
+  const settle = (runResult, occurred = true) => WritebackSettlement.settlePostNavigation({
+    navigation: { occurred },
+    runResult
+  });
+  assert.equal(settle({ skipped: [] }, false), null, 'same project returns null (normal settlement path)');
+  assert.equal(settle({ skipped: [{ result: { code: 'aborted_project_changed' } }] }), 'abandoned_after_navigation');
+  assert.equal(settle({ skipped: [{ result: { code: 'editor_project_id_unavailable' } }] }), 'abandoned_after_navigation');
+  for (const code of ['tracked_changes_remain', 'accept_not_verified', 'undo_not_verified', 'write_observed_mismatch']) {
+    assert.equal(settle({ skipped: [{ result: { code } }] }), 'needs_review_after_navigation');
+  }
+  assert.equal(settle({ skipped: [] }), 'background_completed');
 });
 
 // ---------------------------------------------------------------------------
@@ -4859,6 +4883,7 @@ test('Fix A: finishRunView still calls saveStateSoon on the happy path (no navig
     + "const state = { sessions: [{ id: 's1', runs: [{ id: 'r1', status: 'running' }] }] };"
     + "function sanitizeAssistantVisibleText(x){ return x; }"
     + "function findRunRecord(){ return state.sessions[0].runs[0]; }"
+    + "function touchSessionForTerminalRun(){}"
     + "function flushPendingStreamRenders(){}"
     + "const runGuidanceController = { settleView(){} };"
     + "function formatProcessedSummary(){ return ''; }"
@@ -4909,7 +4934,8 @@ test('Fix A: saveState skips persistence when run is navigation-divergent and no
   const guardAccessor = extractFunction(src, 'readLiveRunViewForSaveStateGuard');
   const sandbox = {
     result: { withOverride: null, divergent: null, happy: null },
-    storageWrites: []
+    storageWrites: [],
+    ScopedPersistenceCoordinator: require('../extension/src/content/scopedPersistenceCoordinator')
   };
   vm.createContext(sandbox);
   // Patched async runner: drive a stub StorageDb / Migration with a tiny
@@ -4929,10 +4955,17 @@ test('Fix A: saveState skips persistence when run is navigation-divergent and no
     + "    loadPrefs: () => Promise.resolve({}),"
     + "    savePrefs: () => Promise.resolve()"
     + "  },"
+    + "  CodexOverleafScopedPersistenceCoordinator: ScopedPersistenceCoordinator,"
     + "  CodexOverleafSessionPersistence: {"
     + "    writeSessions: ({ StorageDb, sessionRecords }) => StorageDb.putRecords('sessions', sessionRecords)"
     + "  },"
     + "  location: { pathname: '/project/' + 'a'.repeat(24), href: 'http://x/project/' + 'a'.repeat(24) }"
+    + "};"
+    + "const Modules = {"
+    + "  ScopedPersistenceCoordinator,"
+    + "  StorageDb: window.CodexOverleafStorageDb,"
+    + "  StorageMigration: window.CodexOverleafStorageMigration,"
+    + "  SessionPersistence: window.CodexOverleafSessionPersistence"
     + "};"
     + "let currentRunView = null;"
     + "const state = { sessions: [{ id: 's1', task: 't' }], autoRecompile: true, loadCodexLocalSkills: true, loadCodexOverleafSkills: true, experimentalOtByProject: {}, customInstructionsByProject: {}, governanceRulesByProject: {}, activeSessionId: 's1' };"
@@ -4942,6 +4975,10 @@ test('Fix A: saveState skips persistence when run is navigation-divergent and no
     + "function normalizeCustomInstructionsByProject(v){ return v || {}; }"
     + "function getCodexOverleafSkillEnabled(){ return {}; }"
     + "function isStorageQuotaError(){ return false; }"
+    + "const persistenceCoordinator = {"
+    + "  commit: async (projectId, _options, action) => ({ ok: true, value: await action({ scope: { accountScopeId: 'account-a', projectId }, nextMeta: {}, writerId: 'test-writer' }) })"
+    + "};"
+    + "function getScopedPersistenceCoordinator(){ return persistenceCoordinator; }"
     + "function appendStorageNoticeOnce(){}"
     + "function notifyAggressiveCompactionOnce(){}"
     + "function appendPlainLog(){ window.__skipLogged = true; }"
@@ -5002,80 +5039,33 @@ test('Fix A: saveState skips persistence when run is navigation-divergent and no
 // ---------------------------------------------------------------------------
 
 test('Fix B: settleRunAfterNavigation classifies hasSkippedOperations=true (no applied) as needs_review_after_navigation', () => {
-  const src = getContentScriptSource();
-  const settleBody = extractFunction(src, 'settleRunAfterNavigation');
-  const collectBody = extractFunction(src, 'collectRunResultSkipped');
-  const sandbox = { result: null };
-  vm.createContext(sandbox);
-  vm.runInContext(
-    "let activeProjectId = 'X';"
-    + collectBody + ";" + settleBody + ";"
-    + "result = {"
-    // Early-return branch: outcome has hasSkippedOperations=true but no
-    // `applied` field at all (matches the §3534 / §3613 / §3678 branches of
-    // applySyncChangesToOverleaf).
-    + "  earlyReturn: settleRunAfterNavigation({ runProjectId: 'Y' }, { hasSkippedOperations: true }),"
-    // Skip codes outside the previous allow-list — all three from the user's
-    // example list. These previously fell through to background_completed.
-    + "  deleteConfirmRejected: settleRunAfterNavigation({ runProjectId: 'Y' }, {"
-    + "    applied: { skipped: [ { result: { code: 'delete_confirmation_rejected' } } ] }"
-    + "  }),"
-    + "  governanceBlocked: settleRunAfterNavigation({ runProjectId: 'Y' }, {"
-    + "    applied: { skipped: [ { result: { code: 'governance_blocked' } } ] }"
-    + "  }),"
-    + "  binaryConfirmRejected: settleRunAfterNavigation({ runProjectId: 'Y' }, {"
-    + "    applied: { skipped: [ { result: { code: 'binary_confirmation_rejected' } } ] }"
-    + "  })"
-    + "};",
-    sandbox
-  );
-  assert.equal(sandbox.result.earlyReturn, 'needs_review_after_navigation',
+  const settle = runResult => WritebackSettlement.settlePostNavigation({
+    navigation: { occurred: true },
+    runResult
+  });
+  assert.equal(settle({ hasSkippedOperations: true }), 'needs_review_after_navigation',
     'hasSkippedOperations=true (no applied) classifies as needs_review_after_navigation, not background_completed');
-  assert.equal(sandbox.result.deleteConfirmRejected, 'needs_review_after_navigation',
-    'delete_confirmation_rejected classifies as needs_review_after_navigation');
-  assert.equal(sandbox.result.governanceBlocked, 'needs_review_after_navigation',
-    'governance_blocked classifies as needs_review_after_navigation');
-  assert.equal(sandbox.result.binaryConfirmRejected, 'needs_review_after_navigation',
-    'binary_confirmation_rejected classifies as needs_review_after_navigation');
+  for (const code of ['delete_confirmation_rejected', 'governance_blocked', 'binary_confirmation_rejected']) {
+    assert.equal(settle({ applied: { skipped: [{ result: { code } }] } }), 'needs_review_after_navigation');
+  }
 });
 
 test('Fix B: settleRunAfterNavigation still classifies guard codes as abandoned and clean outcomes as background_completed', () => {
-  const src = getContentScriptSource();
-  const settleBody = extractFunction(src, 'settleRunAfterNavigation');
-  const collectBody = extractFunction(src, 'collectRunResultSkipped');
-  const sandbox = { result: null };
-  vm.createContext(sandbox);
-  vm.runInContext(
-    "let activeProjectId = 'X';"
-    + collectBody + ";" + settleBody + ";"
-    + "result = {"
-    // Guard codes — abandoned remains the strongest signal.
-    + "  guardAborted: settleRunAfterNavigation({ runProjectId: 'Y' }, {"
-    + "    applied: { skipped: [ { result: { code: 'aborted_project_changed' } } ] },"
-    + "    hasSkippedOperations: true"
-    + "  }),"
-    + "  guardEditor: settleRunAfterNavigation({ runProjectId: 'Y' }, {"
-    + "    applied: { skipped: [ { result: { code: 'editor_project_id_unavailable' } } ] },"
-    + "    hasSkippedOperations: true"
-    + "  }),"
-    // Clean run — no skipped, no hasSkippedOperations, but at least one
-    // applied entry. Classifies as background_completed per rule 3.
-    + "  clean: settleRunAfterNavigation({ runProjectId: 'Y' }, {"
-    + "    applied: { ok: true, applied: [ { path: 'main.tex' } ], skipped: [] },"
-    + "    hasSkippedOperations: false"
-    + "  }),"
-    // True no-op (e.g. Ask mode) — empty syncOutcome shape. Rule 4: still
-    // background_completed.
-    + "  noop: settleRunAfterNavigation({ runProjectId: 'Y' }, {"
-    + "    hasSkippedOperations: false"
-    + "  })"
-    + "};",
-    sandbox
-  );
-  assert.equal(sandbox.result.guardAborted, 'abandoned_after_navigation');
-  assert.equal(sandbox.result.guardEditor, 'abandoned_after_navigation');
-  assert.equal(sandbox.result.clean, 'background_completed');
-  assert.equal(sandbox.result.noop, 'background_completed');
+  const settle = runResult => WritebackSettlement.settlePostNavigation({
+    navigation: { occurred: true },
+    runResult
+  });
+  for (const code of ['aborted_project_changed', 'editor_project_id_unavailable']) {
+    assert.equal(settle({
+      applied: { skipped: [{ result: { code } }] },
+      hasSkippedOperations: true
+    }), 'abandoned_after_navigation');
+  }
+  assert.equal(settle({
+    applied: { ok: true, applied: [{ path: 'main.tex' }], skipped: [] },
+    hasSkippedOperations: false
+  }), 'background_completed');
+  assert.equal(settle({ hasSkippedOperations: false }), 'background_completed');
 });
 
 test('Fix B: runCodexTask passes the full syncOutcome to settleRunAfterNavigation (not a pre-flattened skipped list)', () => {
@@ -5322,15 +5312,8 @@ test('runCodexTask catch passes codexReturned signal to translateRawError', () =
 // ---------------------------------------------------------------------------
 
 test('getPageBridgeTimeoutMs gives applyOperations 30s to accommodate the slow openFile path', () => {
-  const src = getContentScriptSource();
-  const body = extractFromContentScript('getPageBridgeTimeoutMs');
-  assert.match(body, /method === 'applyOperations'/,
-    'applyOperations must have a dedicated branch (not the 8000 default)');
-  // The carve-out branch must return at least 30000.
-  const applyMatch = body.match(/method === 'applyOperations'[\s\S]*?return\s+(\d+)/);
-  assert.ok(applyMatch, 'applyOperations branch must return a numeric timeout');
-  assert.ok(Number(applyMatch[1]) >= 30000,
-    `applyOperations timeout must be >= 30000ms, got ${applyMatch[1]}`);
+  assert.equal(PageRpcContract.getMethod('applyOperations').timeoutClass, 'writeback');
+  assert.equal(PageRpcContract.resolveTimeoutMs('applyOperations'), 30000);
 });
 
 // ---------------------------------------------------------------------------
@@ -5474,9 +5457,9 @@ test('every page-world module writebackRouter dereferences is actually injected 
   // v1.8.0's phase-7 carve shipped with the module in the manifest but NOT
   // in this list — the writeback pipeline was dead on every page while the
   // whole suite stayed green.
-  const body = extractFromContentScript('injectPageBridge');
-  const lifecycleAt = body.indexOf("src/page/trackedChangesLifecycle.js");
-  const routerAt = body.indexOf("src/page/writebackRouter.js");
+  const scripts = PageBridgeClient.PAGE_WORLD_SCRIPTS.map(entry => entry[0]);
+  const lifecycleAt = scripts.indexOf('src/page/trackedChangesLifecycle.js');
+  const routerAt = scripts.indexOf('src/page/writebackRouter.js');
   assert.ok(lifecycleAt !== -1, 'trackedChangesLifecycle.js must be injected');
   assert.ok(routerAt !== -1, 'writebackRouter.js must be injected');
   assert.ok(lifecycleAt < routerAt, 'lifecycle must load before the router that dereferences it');

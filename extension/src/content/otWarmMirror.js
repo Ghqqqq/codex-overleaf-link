@@ -1,10 +1,6 @@
 (function initCodexOverleafOtWarmMirror() {
   'use strict';
 
-  const otWarmMirrorController = window.CodexOverleafOtWarmMirrorController;
-  const runController = window.CodexOverleafRunController;
-  const mirrorHealth = window.CodexOverleafMirrorHealth;
-
   // Experimental OT warm-mirror glue carved out of contentRuntime.js (v1.4.9
   // structural-debt phase 5): the per-project enable toggle flow, the
   // poll/flush timers and patch queue, mirror prefetch, warm-start
@@ -15,6 +11,12 @@
   // runtime reads it through the exported accessors and clears it on project
   // navigation via clearMirrorPrefetchTimer()/releaseOtWarmMirrorProject().
   function create(deps = {}) {
+    const {
+      otWarmMirrorController,
+      runController,
+      mirrorHealth,
+      projectFiles
+    } = deps;
     const {
       tr,
       tx,
@@ -853,7 +855,7 @@
       project,
       snapshotWarnings,
       focusFiles,
-      isUsableProjectFileContent: window.CodexOverleafProjectFiles.isUsableProjectFileContent
+      isUsableProjectFileContent: projectFiles.isUsableProjectFileContent
     });
     if (snapshotWarnings.blocking.length && !focusedPartialSnapshot) {
       for (const warning of snapshotWarnings.blocking) {

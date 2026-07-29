@@ -2,7 +2,7 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(require('../shared/runInputQueue'));
   } else {
-    root.CodexOverleafRunQueueScheduler = factory(root.CodexOverleafRunInputQueue);
+    root.CodexOverleafModuleRegistry.define('RunQueueScheduler', ['RunInputQueue'], factory);
   }
 })(typeof window !== 'undefined' ? window : globalThis, function runQueueSchedulerFactory(Queue) {
   'use strict';
@@ -19,18 +19,49 @@
     }
 
     async function afterSettlement({ sessionId, status, queueItemId = '', continueQueue = false } = {}) {
-      let queue = options.getQueue?.(sessionId) || [];
-      if (status === 'completed') {
-        queue = dequeue(queue, queueItemId, { sessionId, reason: 'completed' });
-      } else if (continueQueue) {
-        queue = dequeue(queue, queueItemId, { sessionId, reason: 'continue_queue' });
-      } else if (queue.length) {
-        queue = Queue.pauseAll(queue, status || 'run_did_not_complete');
+      const originalQueue = options.getQueue?.(sessionId) || [];
+      const shouldContinue = status === 'completed' || continueQueue;
+      const shouldRemove = Boolean(queueItemId && shouldContinue);
+      const claimedItem = shouldRemove
+        ? originalQueue.find(item => item?.id === queueItemId)
+        : null;
+      if (shouldRemove) {
+        await options.persist?.({
+          queueMutation: {
+            type: 'remove',
+            sessionId,
+            itemId: queueItemId,
+            claimToken: claimedItem?.claimToken
+          }
+        });
+        const latestQueue = options.getQueue?.(sessionId) || originalQueue;
+        options.setQueue?.(
+          sessionId,
+          dequeue(latestQueue, queueItemId, {
+            sessionId,
+            reason: status === 'completed' ? 'completed' : 'continue_queue'
+          })
+        );
+      } else if (!shouldContinue) {
+        const paused = originalQueue.length
+          ? Queue.pauseAll(originalQueue, status || 'run_did_not_complete')
+          : originalQueue;
+        options.setQueue?.(sessionId, paused);
+        try {
+          await options.persist?.({
+            queueMutation: { type: 'transition', sessionId }
+          });
+        } catch (error) {
+          const latestQueue = options.getQueue?.(sessionId) || paused;
+          options.setQueue?.(
+            sessionId,
+            Queue.pauseAll(latestQueue, status || 'run_did_not_complete')
+          );
+          throw error;
+        }
       }
-      options.setQueue?.(sessionId, queue);
-      await options.persist?.();
       options.onChange?.(sessionId);
-      if (status === 'completed' || continueQueue) {
+      if (shouldContinue) {
         scheduleOne(sessionId);
       }
     }
@@ -39,15 +70,33 @@
       if (scheduling || options.isRunning?.() || options.canStart?.(sessionId) === false) {
         return false;
       }
-      const claimed = Queue.claimNext(options.getQueue?.(sessionId) || [], {
-        randomUUID: options.randomUUID
-      });
-      if (!claimed.ok) {
+      const initialQueue = options.getQueue?.(sessionId) || [];
+      if (!initialQueue.some(item => item?.status === 'queued')) {
         return false;
       }
       scheduling = true;
-      options.setQueue?.(sessionId, claimed.queue);
-      Promise.resolve(options.persist?.())
+      let claimed = null;
+      Promise.resolve(options.prepareClaim?.(sessionId))
+        .then(() => {
+          claimed = Queue.claimNext(options.getQueue?.(sessionId) || initialQueue, {
+            randomUUID: options.randomUUID,
+            resolveExecutionSnapshot: options.resolveExecutionSnapshot
+          });
+          if (!claimed.ok) {
+            const error = new Error(claimed.error?.message || claimed.error?.code || 'queue_claim_failed');
+            error.code = claimed.error?.code || 'queue_claim_failed';
+            throw error;
+          }
+          options.setQueue?.(sessionId, claimed.queue);
+          return options.persist?.({
+            queueMutation: {
+              type: 'claim',
+              sessionId,
+              itemId: claimed.item.id,
+              claimToken: claimed.item.claimToken
+            }
+          });
+        })
         .then(() => {
           options.onChange?.(sessionId);
           scheduling = false;
@@ -55,27 +104,64 @@
         })
         .catch(error => {
           scheduling = false;
-          const paused = Queue.pauseAll(options.getQueue?.(sessionId) || claimed.queue, error?.code || 'start_failed');
+          const paused = Queue.pauseAll(
+            options.getQueue?.(sessionId) || claimed?.queue || initialQueue,
+            error?.code || 'start_failed'
+          );
           options.setQueue?.(sessionId, paused);
           options.onChange?.(sessionId);
-          return options.persist?.();
+          return Promise.resolve(options.persist?.({
+            queueMutation: claimed?.item?.id
+              ? {
+                type: 'release',
+                sessionId,
+                itemId: claimed.item.id,
+                claimToken: claimed.item.claimToken
+              }
+              : { type: 'transition', sessionId }
+          })).catch(() => undefined);
         });
       return true;
     }
 
     async function markExecuting(sessionId, itemId, _runId) {
       const queue = options.getQueue?.(sessionId) || [];
+      const item = queue.find(entry => entry?.id === itemId);
+      try {
+        await options.persist?.({
+          queueMutation: { type: 'remove', sessionId, itemId, claimToken: item?.claimToken }
+        });
+      } catch (error) {
+        const latestQueue = options.getQueue?.(sessionId) || queue;
+        options.setQueue?.(
+          sessionId,
+          Queue.pauseAll(latestQueue, error?.code || 'queue_promotion_persistence_failed')
+        );
+        options.onChange?.(sessionId);
+        try {
+          await options.persist?.({
+            queueMutation: { type: 'restore', sessionId, itemId, claimToken: item?.claimToken }
+          });
+        } catch (recoveryError) {
+          if (error && typeof error === 'object') {
+            error.persistenceRecoveryError = recoveryError?.message || String(recoveryError);
+          }
+        }
+        throw error;
+      }
+      const latestQueue = options.getQueue?.(sessionId) || queue;
       options.setQueue?.(
         sessionId,
-        dequeue(queue, itemId, { sessionId, runId: _runId, reason: 'executing' })
+        dequeue(latestQueue, itemId, { sessionId, runId: _runId, reason: 'executing' })
       );
-      await options.persist?.();
       options.onChange?.(sessionId);
     }
 
     async function resume(sessionId) {
       options.setQueue?.(sessionId, Queue.resumeAll(options.getQueue?.(sessionId) || []));
-      await options.persist?.();
+      await options.persist?.({
+        queueMutation: { type: 'transition', sessionId }
+      });
       options.onChange?.(sessionId);
       scheduleOne(sessionId);
     }
@@ -88,7 +174,7 @@
     const scheduler = create({
       getQueue: sessionId => options.getSession?.(sessionId)?.pendingInputs || [],
       setQueue: (sessionId, pendingInputs) => options.setQueue?.(sessionId, pendingInputs),
-      persist: () => options.save?.(),
+      persist: persistenceOptions => options.save?.(persistenceOptions),
       isRunning: () => Boolean(options.getCurrentRun?.()),
       canStart: sessionId => options.canStart?.(sessionId) !== false,
       start: (item, sessionId) => startQueuedInput(item, sessionId),
@@ -97,6 +183,8 @@
         sessionId: context.sessionId,
         recordId: item.sourceRunId || ''
       }),
+      prepareClaim: options.prepareClaim,
+      resolveExecutionSnapshot: options.resolveExecutionSnapshot,
       randomUUID: options.randomUUID
     });
 
@@ -128,7 +216,9 @@
       // active turn, or until the scheduler promotes it to the next run.
       options.clearTask?.();
       render();
-      options.saveSoon?.();
+      options.saveSoon?.({
+        queueMutation: { type: 'enqueue', sessionId: session.id, itemId: result.item.id }
+      });
     }
 
     async function guide(itemId) {
@@ -142,7 +232,9 @@
       }
       options.setQueue?.(session.id, Queue.markSteering(session.pendingInputs, itemId));
       render();
-      await options.save?.();
+      await options.save?.({
+        queueMutation: { type: 'transition', sessionId: session.id, itemId }
+      });
       try {
         const response = await options.sendSteer?.({
           requestId: run.nativeRequestId,
@@ -174,7 +266,11 @@
           options.toast?.(response?.error?.message || options.tr?.('queuedInputGuideFailed'), 'warning');
         }
         render();
-        await options.save?.();
+        await options.save?.({
+          queueMutation: response?.ok
+            ? { type: 'remove', sessionId: session.id, itemId }
+            : { type: 'transition', sessionId: session.id, itemId }
+        });
       } catch (error) {
         const latest = options.getSession?.(session.id);
         const paused = (latest?.pendingInputs || []).map(entry => entry.id === itemId
@@ -183,7 +279,9 @@
         options.setQueue?.(session.id, Queue.normalizeQueue(paused));
         options.toast?.(error?.message || options.tr?.('queuedInputGuideFailed'), 'warning');
         render();
-        await options.save?.();
+        await options.save?.({
+          queueMutation: { type: 'transition', sessionId: session.id, itemId }
+        });
       }
     }
 
@@ -201,7 +299,9 @@
       }
       options.setQueue?.(session.id, Queue.remove(session.pendingInputs || [], itemId));
       render();
-      options.saveSoon?.();
+      options.saveSoon?.({
+        queueMutation: { type: 'remove', sessionId: session.id, itemId }
+      });
     }
 
     function resume() {
@@ -242,7 +342,7 @@
         error.code = 'queue_session_not_active';
         throw error;
       }
-      options.applyQueuedInput?.(item);
+      await options.applyQueuedInput?.(item);
       await options.run?.(item);
     }
 

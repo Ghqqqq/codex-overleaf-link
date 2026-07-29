@@ -25,7 +25,9 @@ test('architecture budget tracks v1.0 final split targets for the largest files'
       ['extension/src/contentScript.js', 4500],
       ['extension/src/pageBridge.js', 2000],
       ['extension/src/page/saveState.js', 350],
-      ['extension/src/content/contentRuntime.js', 8720],
+      ['extension/src/content/contentRuntime.js', 8000],
+      ['extension/src/content/pageBridgeClient.js', 260],
+      ['extension/src/content/nativeCompatibilityController.js', 360],
       ['extension/src/content/projectSettingsCoordinator.js', 420],
       ['extension/src/content/projectProviderSelection.js', 120],
       ['extension/src/content/sessionPersistence.js', 140],
@@ -41,16 +43,35 @@ test('architecture budget tracks v1.0 final split targets for the largest files'
       ['extension/src/content/modelPicker.js', 550],
       ['extension/src/content/recentProjects.js', 1080],
       ['extension/src/content/otWarmMirror.js', 1000],
-      ['extension/src/content/writebackOrchestrator.js', 880],
+      ['extension/src/content/writebackOrchestrator.js', 920],
+      ['extension/src/content/runSettlementPersistence.js', 80],
+      ['extension/src/content/scopedPersistenceCoordinator.js', 140],
+      ['extension/src/shared/runExecutionSnapshotCodec.js', 190],
+      ['extension/src/shared/runExecutionSnapshot.js', 260],
+      ['extension/src/shared/settlementFacts.js', 360],
+      ['extension/src/shared/writebackEvidenceProjection.js', 220],
+      ['extension/src/shared/writebackSettlement.js', 760],
+      ['extension/src/shared/scopedPersistenceQueuePolicy.js', 210],
+      ['extension/src/shared/scopedPersistenceBrowserAdapter.js', 180],
+      ['extension/src/shared/scopedPersistenceTransaction.js', 250],
+      ['extension/src/shared/pageRpcContract.js', 160],
+      ['extension/src/shared/managedUpdateProjection.js', 340],
       ['extension/src/page/writebackRouter.js', 1950],
       ['extension/src/page/trackedChangesLifecycle.js', 1650],
       ['extension/src/page/treeOperations.js', 1650],
-      ['extension/src/shared/storageDb.js', 1350],
+      ['extension/src/shared/storageDb.js', 1360],
+      ['native-host/src/nativeTransportEnvelope.js', 180],
       ['native-host/src/codexSessionRunner.js', 1500],
       ['native-host/src/subagentBroker.js', 640],
-      ['native-host/src/taskRunner.js', 1000]
+      ['native-host/src/taskRunner.js', 1000],
+      ['native-host/src/taskRunnerRuntime.js', 1350]
     ]
   );
+});
+
+test('the checked-in repository satisfies every architecture budget', async () => {
+  const { collectArchitectureBudgetErrors } = await loadBudgetModule();
+  assert.deepEqual(collectArchitectureBudgetErrors({ rootDir: repoRoot }), []);
 });
 
 test('architecture budget has no current ceiling exceptions in v1.0 mode', async () => {

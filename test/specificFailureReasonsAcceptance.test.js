@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const failureReasons = require('../extension/src/shared/failureReasons');
 const projectFiles = require('../extension/src/shared/projectFiles');
+const writebackSettlement = require('../extension/src/shared/writebackSettlement');
 const writebackRouterModule = require('../extension/src/page/writebackRouter');
 const staleGuard = require('../extension/src/shared/staleGuard');
 
@@ -116,48 +117,54 @@ function extractFunctionBody(source, name) {
   return '';
 }
 
-// Build a minimal harness around a set of contentRuntime helpers. We extract
-// the buildContentFailure helper + its CONTENT_FAILURE_CATALOG and any
-// dependent pure helpers we want to exercise. The harness fakes the i18n
-// `tx` shim and exposes the helpers as a returned object.
+// Build a minimal harness around content-runtime helpers that have not moved
+// into a shared module. Settlement helpers use the production shared API so
+// these acceptance tests follow the same dependency injection as the runtime.
 function loadContentRuntimeHelpers(names = []) {
-  const CONTENT_FAILURE_CATALOG_SRC = CONTENT_RUNTIME_SOURCE.match(
-    /const CONTENT_FAILURE_CATALOG = \{[\s\S]*?\n\s*\};/
-  )?.[0];
-  assert.ok(
-    CONTENT_FAILURE_CATALOG_SRC,
-    'CONTENT_FAILURE_CATALOG declaration should exist'
+  const buildFailure = (code, operation, overrides) =>
+    writebackSettlement.buildContentFailure(
+      code,
+      operation,
+      overrides,
+      failureReasons
+    );
+  const helpers = {
+    buildContentFailure: buildFailure
+  };
+  const runtimeNames = names.filter(
+    name => typeof writebackSettlement[name] !== 'function'
   );
-  const buildContentFailureSrc = extractFunctionBody(
-    CONTENT_RUNTIME_SOURCE,
-    'buildContentFailure'
-  );
-  const extracted = names
+  const extracted = runtimeNames
     .map(name => extractFunctionBody(CONTENT_RUNTIME_SOURCE, name))
     .join('\n');
-  const exportedKeys = ['buildContentFailure', ...names];
-  // Real undo-operations module so buildNoTraceUndoRestore/buildSnapshotRestoreUndo
-  // resolve to their production implementations when callers need them.
-  const undoOperations = require('../extension/src/shared/undoOperations');
-  // Real shared catalog: buildContentFailure falls back to it for every code
-  // outside the small content-local catalog (v1.7.6).
-  const FailureReasons = require('../extension/src/shared/failureReasons');
-  return Function(
-    'undoOperations',
-    'FailureReasons',
-    `
+  if (runtimeNames.length) {
+    const runtimeHelpers = Function(
+      `
     'use strict';
-    function tx(english) { return english; }
-    function tr(key) { return key; }
-    const buildSnapshotRestoreUndo = undoOperations.buildSnapshotRestoreUndo;
-    ${CONTENT_FAILURE_CATALOG_SRC}
-    ${buildContentFailureSrc}
     ${extracted}
     const exported = {};
-    ${exportedKeys.map(key => `exported.${key} = ${key};`).join('\n')}
+    ${runtimeNames.map(key => `exported.${key} = ${key};`).join('\n')}
     return exported;
   `
-  )(undoOperations, FailureReasons);
+    )();
+    Object.assign(helpers, runtimeHelpers);
+  }
+  for (const name of names) {
+    if (typeof writebackSettlement[name] !== 'function') continue;
+    if (
+      name === 'attachAcceptNotVerifiedFailure'
+      || name === 'attachUndoNotVerifiedFailure'
+    ) {
+      helpers[name] = (run, result, options = {}) =>
+        writebackSettlement[name](run, result, {
+          ...options,
+          buildFailure: options.buildFailure || buildFailure
+        });
+      continue;
+    }
+    helpers[name] = writebackSettlement[name];
+  }
+  return helpers;
 }
 
 // Create a single-doc writeback harness mirrored on createPageBridgeHarness
@@ -775,6 +782,67 @@ test('attachAcceptNotVerifiedFailure no-ops when every tracked change shows up i
   assert.equal(result.skipped.length, 0);
 });
 
+test('attachAcceptNotVerifiedFailure accepts verified file replay evidence when tracked node counts differ', () => {
+  const helpers = loadContentRuntimeHelpers([
+    'attachAcceptNotVerifiedFailure',
+    'isAcceptResultEffectivelyVerified'
+  ]);
+  const run = {
+    undoExpectedFiles: [{ path: 'example/test2.tex', content: 'pre\n' }],
+    undoTrackedChanges: [
+      { path: 'example/test2.tex', key: 'change-1' },
+      { path: 'example/test2.tex', key: 'change-2' },
+      { path: 'example/test2.tex', key: 'change-3' }
+    ]
+  };
+  const result = {
+    ok: true,
+    applied: [
+      {
+        trackedChange: {
+          path: 'example/test2.tex',
+          key: 'accept-replay:example/test2.tex'
+        },
+        result: {
+          ok: true,
+          verified: true,
+          verifiedContent: 'post\n'
+        }
+      }
+    ],
+    skipped: []
+  };
+
+  helpers.attachAcceptNotVerifiedFailure(run, result);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped.length, 0);
+});
+
+test('attachAcceptNotVerifiedFailure still rejects unverified file replay evidence', () => {
+  const helpers = loadContentRuntimeHelpers([
+    'attachAcceptNotVerifiedFailure',
+    'isAcceptResultEffectivelyVerified'
+  ]);
+  const run = {
+    undoExpectedFiles: [{ path: 'main.tex', content: 'pre\n' }],
+    undoTrackedChanges: [{ path: 'main.tex', key: 'change-1' }]
+  };
+  const result = {
+    ok: true,
+    applied: [{
+      trackedChange: { path: 'main.tex', key: 'accept-replay:main.tex' },
+      result: { ok: true }
+    }],
+    skipped: []
+  };
+
+  helpers.attachAcceptNotVerifiedFailure(run, result);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.skipped[0].result.failure.code, 'accept_not_verified');
+});
+
 test('attachUndoNotVerifiedFailure no-ops when every expected path verifies back to pre-run content', () => {
   const helpers = loadContentRuntimeHelpers([
     'attachUndoNotVerifiedFailure',
@@ -797,6 +865,104 @@ test('attachUndoNotVerifiedFailure no-ops when every expected path verifies back
   helpers.attachUndoNotVerifiedFailure(run, result);
   assert.equal(result.ok, true);
   assert.equal(result.skipped.length, 0);
+});
+
+test('attachUndoNotVerifiedFailure accepts verified editor-undo evidence when tracked node counts differ', () => {
+  const helpers = loadContentRuntimeHelpers([
+    'attachUndoNotVerifiedFailure',
+    'isUndoVerifiedContentMatching'
+  ]);
+  const run = {
+    undoExpectedFiles: [{ path: 'example/test2.tex', content: 'pre\n' }],
+    undoTrackedChanges: [
+      { path: 'example/test2.tex', key: 'change-1' },
+      { path: 'example/test2.tex', key: 'change-2' },
+      { path: 'example/test2.tex', key: 'change-3' }
+    ]
+  };
+  const result = {
+    ok: true,
+    applied: [{
+      trackedChange: {
+        path: 'example/test2.tex',
+        key: 'editor-undo:example/test2.tex'
+      },
+      result: {
+        ok: true,
+        method: 'overleaf-editor-undo',
+        undoClicks: 1,
+        verified: true,
+        verifiedContent: 'pre\n'
+      }
+    }],
+    skipped: []
+  };
+
+  helpers.attachUndoNotVerifiedFailure(run, result);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped.length, 0);
+});
+
+test('attachUndoNotVerifiedFailure accepts verified snapshot-undo wrapper evidence', () => {
+  const helpers = loadContentRuntimeHelpers([
+    'attachUndoNotVerifiedFailure',
+    'isUndoVerifiedContentMatching'
+  ]);
+  const run = {
+    undoExpectedFiles: [{ path: 'main.tex', content: 'pre\n' }],
+    undoTrackedChanges: [{ path: 'main.tex', key: 'change-1' }]
+  };
+  const result = {
+    ok: true,
+    applied: [{
+      trackedChange: {
+        path: 'main.tex',
+        key: 'snapshot-undo:main.tex'
+      },
+      result: {
+        ok: true,
+        verifiedContent: 'pre\n'
+      }
+    }],
+    skipped: []
+  };
+
+  helpers.attachUndoNotVerifiedFailure(run, result);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped.length, 0);
+});
+
+test('attachUndoNotVerifiedFailure still rejects editor-undo evidence without content proof', () => {
+  const helpers = loadContentRuntimeHelpers([
+    'attachUndoNotVerifiedFailure',
+    'isUndoVerifiedContentMatching'
+  ]);
+  const run = {
+    undoExpectedFiles: [{ path: 'main.tex', content: 'pre\n' }],
+    undoTrackedChanges: [{ path: 'main.tex', key: 'change-1' }]
+  };
+  const result = {
+    ok: true,
+    applied: [{
+      trackedChange: {
+        path: 'main.tex',
+        key: 'editor-undo:main.tex'
+      },
+      result: {
+        ok: true,
+        method: 'overleaf-editor-undo',
+        undoClicks: 1
+      }
+    }],
+    skipped: []
+  };
+
+  helpers.attachUndoNotVerifiedFailure(run, result);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.skipped[0].result.failure.code, 'undo_not_verified');
 });
 
 test('buildContentFailure resolves shared-catalog codes so their recovery buttons are reachable (v1.7.6 fleet P1)', () => {

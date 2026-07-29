@@ -415,15 +415,15 @@ releaseTest('CHANGELOG exposes structured release notes for the current version'
   const version = readJson(path.join(repoRoot, 'package.json')).version;
   const changelog = readText(path.join(repoRoot, 'CHANGELOG.md'));
   const escapedVersion = version.replace(/\./g, '\\.');
-  const headingPattern = new RegExp(`^## v${escapedVersion} - \\d{4}-\\d{2}-\\d{2}$`, 'gm');
+  const headingPattern = new RegExp(`^## v${escapedVersion} - (?:Unreleased|\\d{4}-\\d{2}-\\d{2})$`, 'gm');
   const headings = changelog.match(headingPattern) || [];
-  assert.equal(headings.length, 1, 'CHANGELOG.md should contain one ISO-dated heading for the current release');
+  assert.equal(headings.length, 1, 'CHANGELOG.md should contain one current-version heading');
   assert.doesNotMatch(changelog, new RegExp(`^## \\[${escapedVersion}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm'));
 
   const { extractReleaseNotes } = await importScriptModule('scripts/build-release.mjs');
   const section = extractReleaseNotes(changelog, version);
 
-  assert.match(section, new RegExp(`^## v${escapedVersion} - \\d{4}-\\d{2}-\\d{2}$`, 'm'));
+  assert.match(section, new RegExp(`^## v${escapedVersion} - (?:Unreleased|\\d{4}-\\d{2}-\\d{2})$`, 'm'));
   assert.match(section, /^### (Added|Changed|Deprecated|Removed|Fixed|Security)$/m);
   assert.match(section, /^- \S.+$/m);
   assert.doesNotMatch(section, new RegExp(`^## v(?!${escapedVersion}(?:\\s|$))`, 'm'));
@@ -433,7 +433,7 @@ releaseTest('package exposes release verification and artifact build commands', 
   const pkg = readJson(path.join(repoRoot, 'package.json'));
   const runTests = fs.readFileSync(path.join(repoRoot, 'scripts/run-tests.mjs'), 'utf8');
 
-  assert.equal(pkg.scripts.test, 'node scripts/run-tests.mjs');
+  assert.equal(pkg.scripts.test, 'npm run check:module-graph && node scripts/run-tests.mjs');
   assert.match(runTests, /--test-concurrency=1/);
   assert.match(runTests, /--test-isolation=none/);
   assert.doesNotMatch(runTests, /--test-force-exit/);
@@ -447,6 +447,7 @@ releaseTest('package exposes release verification and artifact build commands', 
   assert.match(runTests, /CODEX_OVERLEAF_RELEASE_SCRIPTS_TEST_TIMEOUT_MS/);
   assert.match(runTests, /CODEX_OVERLEAF_TEST_FILE_TIMEOUT_MS/);
   assert.equal(pkg.scripts['verify:release'], 'node scripts/verify-release.mjs');
+  assert.equal(pkg.scripts['verify:source'], 'node scripts/verify-release.mjs --source-hygiene-only');
   assert.equal(pkg.scripts['build:release'], 'node scripts/build-release.mjs');
 });
 
@@ -481,10 +482,12 @@ releaseTest('managed update boundary permits only the bootstrap manifest release
 });
 
 releaseTest('README documents the npm tarball in GitHub Release artifacts', () => {
-  const pkg = readJson(path.join(repoRoot, 'package.json'));
   const readme = readText(path.join(repoRoot, 'README.md'));
+  const changelog = readText(path.join(repoRoot, 'CHANGELOG.md'));
+  const latestStable = changelog.match(/^## v(\d+\.\d+\.\d+) - \d{4}-\d{2}-\d{2}$/m);
 
-  assert.match(readme, new RegExp(`codex-overleaf-link-${pkg.version.replace(/\./g, '\\.')}\\.tgz`));
+  assert.ok(latestStable, 'CHANGELOG must contain a stable release');
+  assert.match(readme, new RegExp(`codex-overleaf-link-${latestStable[1].replace(/\./g, '\\.')}\\.tgz`));
 });
 
 releaseTest('release workflow only publishes semver-like version tags', () => {
@@ -498,6 +501,34 @@ releaseTest('release workflow only publishes semver-like version tags', () => {
   assert.doesNotMatch(triggerSection, /^\s+pull_request:/m);
   assert.doesNotMatch(triggerSection, /^\s+workflow_dispatch:/m);
   assert.doesNotMatch(triggerSection, /^\s+schedule:/m);
+});
+
+releaseTest('CI installs locked development dependencies before tests and release builds', () => {
+  const testWorkflow = readTestWorkflow();
+  const releaseWorkflow = readReleaseWorkflow();
+  const releaseTestMatrix = releaseWorkflow.match(/^  test-matrix:\s*$[\s\S]*?(?=^  release:\s*$)/m)?.[0] || '';
+  const releaseJob = releaseWorkflow.match(/^  release:\s*$[\s\S]*$/m)?.[0] || '';
+
+  assert.notEqual(releaseTestMatrix, '', 'Release workflow must define the test-matrix job.');
+  assert.notEqual(releaseJob, '', 'Release workflow must define the release job.');
+  assertContainsInOrder(testWorkflow, [
+    'name: Set up Node.js',
+    'name: Install locked development dependencies',
+    'run: npm ci',
+    'name: Run tests'
+  ]);
+  assertContainsInOrder(releaseTestMatrix, [
+    'name: Set up Node.js',
+    'name: Install locked development dependencies',
+    'run: npm ci',
+    'name: Run tests'
+  ]);
+  assertContainsInOrder(releaseJob, [
+    'name: Set up npm CLI',
+    'name: Install locked development dependencies',
+    'run: npm ci',
+    'name: Build release artifacts'
+  ]);
 });
 
 releaseTest('release workflow grants publish permission and builds/verifies artifacts before npm publish', () => {
@@ -555,7 +586,7 @@ releaseTest('test workflow runs the test suite on macOS, Linux, and Windows', ()
   assert.match(workflow, /^\s+runs-on:\s+\$\{\{ matrix\.os \}\}\s*$/m);
   assertContainsInOrder(workflow, [
     'run: npm test',
-    'run: npm run verify:release',
+    'run: npm run verify:source',
     'run: npm run verify:npm-package',
     'run: npm run check:architecture'
   ]);
@@ -742,6 +773,31 @@ releaseTest('release verifier catches README badge mismatch', async () => {
       errors.some((error) => /README\.md.*version-1\.2\.3-blue/i.test(error)),
       errors.join('\n')
     );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+releaseTest('source verifier permits unreleased public docs while retaining source gates', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-source-verifier-'));
+  try {
+    writeReleaseFixture(tempDir, {
+      packageVersion: '1.2.3',
+      readmeVersion: '1.2.2',
+      changelogVersion: '1.2.2'
+    });
+    const { collectSourceVerificationErrors } = await importScriptModule('scripts/verify-release.mjs');
+
+    const errors = collectSourceVerificationErrors({
+      rootDir: tempDir,
+      trackedFiles: [
+        'README.md',
+        'CHANGELOG.md',
+        'extension/manifest.json'
+      ]
+    });
+
+    assert.deepEqual(errors, []);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -1001,6 +1057,18 @@ releaseTest('build-release derives the default output directory from version', a
     getDefaultReleaseOutputDir({ rootDir: '/tmp/codex-overleaf-link', version: '1.2.3' }),
     path.join('/tmp/codex-overleaf-link', 'dist/releases/v1.2.3')
   );
+});
+
+releaseTest('build-release recognizes the generated content bundle in extension-relative manifest paths', async () => {
+  const { extensionManifestUsesContentBundle } = await importScriptModule('scripts/build-release.mjs');
+
+  assert.equal(extensionManifestUsesContentBundle({
+    content_scripts: [{ js: ['src/content/generated/content.bundle.js'] }]
+  }), true);
+  assert.equal(extensionManifestUsesContentBundle({
+    content_scripts: [{ js: ['extension/src/content/generated/content.bundle.js'] }]
+  }), false);
+  assert.equal(extensionManifestUsesContentBundle({ content_scripts: [] }), false);
 });
 
 releaseTest('build-release rejects unsafe output paths before deletion', async () => {

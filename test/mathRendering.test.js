@@ -9,6 +9,7 @@ const path = require('node:path');
 const MathText = require('../extension/src/content/mathText.js');
 const { buildCodexTurnPrompt } = require('../native-host/src/codexPromptAssembly.js');
 const { buildManagedExtensionTree } = require('../native-host/src/managedInstall.js');
+const { getContentBundleSourceOrder } = require('./_helpers/contentBundleEntry');
 
 test('math parser recognizes explicit inline and display delimiters', () => {
   const segments = MathText.parseMathSegments('Inline $x_1^2$ and display $$\\sum_i x_i$$.');
@@ -69,7 +70,7 @@ test('math renderer falls back to readable delimited source when KaTeX rejects i
 test('extension loads local KaTeX before the isolated math and markdown renderers', () => {
   const root = path.join(__dirname, '..');
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'extension/manifest.json'), 'utf8'));
-  const scripts = manifest.content_scripts[0].js;
+  const scripts = getContentBundleSourceOrder();
   const styles = manifest.content_scripts[0].css;
   assert.ok(scripts.indexOf('vendor/katex/katex.min.js') < scripts.indexOf('src/content/mathText.js'));
   assert.ok(scripts.indexOf('vendor/markdown-it/markdown-it.min.js') < scripts.indexOf('src/content/mathText.js'));

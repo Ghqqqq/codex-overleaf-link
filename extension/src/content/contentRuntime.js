@@ -1,7 +1,15 @@
 (function initCodexOverleafContentRuntime(root) {
   'use strict';
-  function init() {
+  function init(dependencies) {
   'use strict';
+
+  dependencies = dependencies || {};
+  const Modules = dependencies.modules;
+  if (!Modules || typeof Modules !== 'object') {
+    throw Object.assign(new Error('Codex Overleaf content runtime requires validated dependencies.'), {
+      code: 'content_dependency_registry_required'
+    });
+  }
 
   const RUNTIME_INSTALLED_FLAG = '__codexOverleafContentRuntimeInstalled';
   const RUNTIME_STATE_KEY = '__codexOverleafContentRuntimeState';
@@ -24,9 +32,6 @@
   const LEGACY_STORAGE_KEY = 'codexOverleafPanelState';
   const RUN_PROJECT_SYNC_MAX_AGE_MS = 30000;
   const RUN_SNAPSHOT_ZIP_TIMEOUT_MS = 30000;
-  const SNAPSHOT_PAGE_BRIDGE_TIMEOUT_MS = 70000;
-  const COMPILE_PAGE_BRIDGE_TIMEOUT_MS = 75000;
-  const CONTEXT_FILE_LIST_PAGE_BRIDGE_TIMEOUT_MS = 35000;
   const STREAM_RENDER_FLUSH_MS = 80;
   const STREAM_SAVE_DELAY_MS = 1000;
   const MAX_RUN_EVENTS = 300;
@@ -55,31 +60,28 @@
     'skills.install',
     'skills.remove'
   ]);
-  const CANCELLABLE_PAGE_BRIDGE_METHODS = new Set([
-    'getProjectSnapshot',
-    'getProjectFileList',
-    'getCompileLog',
-    'ensureReviewing',
-    'ensureEditing',
-    'waitForSaveState',
-    'applyOperations',
-    'acceptTrackedChanges',
-    'rejectTrackedChanges'
-  ]);
-  const activePageBridgeCancellationHandlers = new Map();
+  const PageRpcContract = Modules.PageRpcContract;
   const PANEL_DEFAULT_WIDTH = 380;
   const PANEL_MIN_WIDTH = 340;
   const PANEL_MAX_WIDTH = 760;
   const PAGE_MIN_WIDTH = 520;
-  const CodexOverleafCompatibility = window.CodexOverleafCompatibility;
+  const CodexOverleafCompatibility = Modules.Compatibility;
   const INSTALL_COMMAND = CodexOverleafCompatibility?.buildInstallCommand?.(
     undefined,
     undefined,
     getCurrentExtensionId()
   ) || 'curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/main/install.sh | bash -s -- --extension-id <chrome-extension-id>';
-  const PAGE_BRIDGE_SCRIPT_REVISION = '2026-05-21-editor-readiness-v11';
-  const PAGE_BRIDGE_CAPABILITY = createPageBridgeCapability();
-  const pageBridgeReady = injectPageBridge();
+  const pageBridgeClient = Modules.PageBridgeClient.create({
+    root,
+    window,
+    document,
+    chromeApi: chrome,
+    crypto,
+    contract: PageRpcContract,
+    compatibility: CodexOverleafCompatibility,
+    isCancellationRequested: () => runCancellationRequested
+  });
+  pageBridgeClient.start();
   const {
     createSession,
     deleteSession,
@@ -92,43 +94,45 @@
     selectVisibleSessionsForList,
     setActiveSession,
     updateActiveSession
-  } = window.CodexOverleafSessionState;
-  const LineReferences = window.CodexOverleafLineReferences;
-  const { getProjectStorageKey } = window.CodexOverleafStorageKeys;
-  const { HIGH_RISK_TYPES, buildChangeSummaryLine, hasSkippedApplyOperations } = window.CodexOverleafSummary;
+  } = Modules.SessionState;
+  const LineReferences = Modules.LineReferences;
+  const { getProjectStorageKey } = Modules.StorageKeys;
+  const { HIGH_RISK_TYPES, buildChangeSummaryLine, hasSkippedApplyOperations } = Modules.Summary;
   const {
     buildExpectedFilesAfterOperations,
     buildSnapshotRestoreUndo,
     buildUndoCheckpoint
-  } = window.CodexOverleafUndoOperations;
+  } = Modules.UndoOperations;
   const { buildHumanCompletionReport, mapAgentEventToActivity, stripEmptyHtmlCommentPlaceholders,
-    translateRawError } = window.CodexOverleafAgentTranscript;
-  const i18n = window.CodexOverleafI18n;
-  const nativeChannel = window.CodexOverleafNativeChannel.create({
+    translateRawError } = Modules.AgentTranscript;
+  const i18n = Modules.I18n;
+  const nativeChannel = Modules.NativeChannel.create({
     chrome,
     crypto
   });
-  const writebackController = window.CodexOverleafWritebackController;
-  const ReviewHunks = window.CodexOverleafReviewHunks;
-  const DiffReviewPanel = window.CodexOverleafDiffReviewPanel;
-  const ContextTray = window.CodexOverleafContextTray;
-  const LocalSkillsPanel = window.CodexOverleafLocalSkillsPanel;
-  const runController = window.CodexOverleafRunController;
-  const RunInputQueue = window.CodexOverleafRunInputQueue;
-  const RunQueueScheduler = window.CodexOverleafRunQueueScheduler;
-  const ActiveTurnControl = window.CodexOverleafActiveTurnControl;
-  const PendingInputView = window.CodexOverleafPendingInputView;
-  const mirrorHealth = window.CodexOverleafMirrorHealth;
-  const otWarmMirrorController = window.CodexOverleafOtWarmMirrorController;
-  const PanelRenderer = window.CodexOverleafPanelRenderer;
-  const SessionPanel = window.CodexOverleafSessionPanel;
-  const SettingsPanel = window.CodexOverleafSettingsPanel;
-  const DiagnosticsPanel = window.CodexOverleafDiagnosticsPanel;
-  const ComposerPanel = window.CodexOverleafComposerPanel;
-  const GovernanceRules = window.CodexOverleafGovernanceRules;
-  const SensitiveScan = window.CodexOverleafSensitiveScan;
-  const AuditRecords = window.CodexOverleafAuditRecords;
-  const FailureReasons = window.CodexOverleafFailureReasons;
+  const writebackController = Modules.WritebackController;
+  const ReviewHunks = Modules.ReviewHunks;
+  const DiffReviewPanel = Modules.DiffReviewPanel;
+  const ContextTray = Modules.ContextTray;
+  const LocalSkillsPanel = Modules.LocalSkillsPanel;
+  const runController = Modules.RunController;
+  const RunInputQueue = Modules.RunInputQueue;
+  const RunQueueScheduler = Modules.RunQueueScheduler;
+  const ActiveTurnControl = Modules.ActiveTurnControl;
+  const PendingInputView = Modules.PendingInputView;
+  const mirrorHealth = Modules.MirrorHealth;
+  const otWarmMirrorController = Modules.OtWarmMirrorController;
+  const PanelRenderer = Modules.PanelRenderer;
+  const SessionPanel = Modules.SessionPanel;
+  const SettingsPanel = Modules.SettingsPanel;
+  const DiagnosticsPanel = Modules.DiagnosticsPanel;
+  const ComposerPanel = Modules.ComposerPanel;
+  const GovernanceRules = Modules.GovernanceRules;
+  const SensitiveScan = Modules.SensitiveScan;
+  const AuditRecords = Modules.AuditRecords;
+  const FailureReasons = Modules.FailureReasons;
+  const RunExecutionSnapshot = Modules.RunExecutionSnapshot;
+  const WritebackSettlement = Modules.WritebackSettlement;
 
   // Module composition (hoisted-safe zone). These wiring blocks MUST run
   // before any controller below consumes their destructured exports by
@@ -140,7 +144,6 @@
   // `rejected`; `accepted` and `rejected` are terminal. Kept in sync with
   // sessionState.js. A run is in the tracked-change lifecycle when it carries
   // one of these values or still holds tracked-change refs.
-  const TERMINAL_TRACKED_CHANGE_STATUS = new Set(['accepted', 'rejected']);
 
   // The UI-local in-flight lock for tracked-change accept/reject. Never written
   // to trackedChangeStatus and never persisted — it lives only on the controller.
@@ -173,9 +176,12 @@
   // runtime collaborators they need; the destructured consts keep every
   // existing call site unchanged. Function declarations hoist, so passing them
   // here is safe; mutable state is handed over as lazy getters.
-  const markdownText = window.CodexOverleafMarkdownText.create({
+  const markdownText = Modules.MarkdownText.create({
+    LineReferences: Modules.LineReferences,
+    MathText: Modules.MathText,
     tx,
     callPageBridge,
+    getCurrentProjectId,
     getCurrentProjectReferenceFiles,
     showPluginToast,
     recordRenderingDiagnostic: detail => appendTechnicalEvent({ type: 'rendering.diagnostic', detail })
@@ -190,8 +196,8 @@
     hasUnsafeRuntimePathSegments
   } = markdownText;
 
-  const projectSettingsCoordinator = window.CodexOverleafProjectSettingsCoordinator.create({
-    CodexOverleafTheme: window.CodexOverleafTheme,
+  const projectSettingsCoordinator = Modules.ProjectSettingsCoordinator.create({
+    CodexOverleafTheme: Modules.Theme,
     GovernanceRules,
     SettingsPanel,
     closeContextTray: () => closeContextTray(),
@@ -248,7 +254,11 @@
     updateSkillsEntrySummary
   } = projectSettingsCoordinator;
 
-  const otWarmMirror = window.CodexOverleafOtWarmMirror.create({
+  const otWarmMirror = Modules.OtWarmMirror.create({
+    otWarmMirrorController,
+    runController,
+    mirrorHealth,
+    projectFiles: Modules.ProjectFiles,
     tr,
     tx,
     closeDiagnosticsMenu,
@@ -308,7 +318,8 @@
     prepareMirrorStaleRetry
   } = otWarmMirror;
 
-  const diagnosticsController = window.CodexOverleafDiagnosticsController.create({
+  const diagnosticsController = Modules.DiagnosticsController.create({
+    Compatibility: Modules.Compatibility,
     tr,
     tx,
     getExtensionCompatibilityMetadata,
@@ -352,7 +363,8 @@
   // recovery-action handlers, change-history read path, history & storage
   // card, aggressive-compaction notice. Instantiated BEFORE runTimelineView,
   // whose deps reference the recovery handlers.
-  const panelMaintenance = window.CodexOverleafPanelMaintenance.create({
+  const panelMaintenance = Modules.PanelMaintenance.create({
+    StorageDb: Modules.StorageDb,
     tx,
     showPluginToast: (...args) => showPluginToast(...args),
     showPluginConfirm: (...args) => showPluginConfirm(...args),
@@ -386,7 +398,8 @@
     openStorageSettings
   } = panelMaintenance;
 
-  const runTimelineView = window.CodexOverleafRunTimelineView.create({
+  const runTimelineView = Modules.RunTimelineView.create({
+    RunGuidanceView: Modules.RunGuidanceView,
     tr,
     tx,
     getLocale,
@@ -413,7 +426,8 @@
     showNativeSetupGuidance: () => showNativeUpdateGuidanceModal({}),
     openProjectFileForFailure,
     openStorageSettings,
-    trackedChangeInFlight
+    trackedChangeInFlight,
+    projectRunSettlement: run => WritebackSettlement.projectRunSettlement(run)
   });
   const {
     resetAutoFollow,
@@ -435,7 +449,10 @@
     configureAcceptButton
   } = runTimelineView;
 
-  const sessionManager = window.CodexOverleafSessionManager.create({
+  const sessionManager = Modules.SessionManager.create({
+    SessionPanel: Modules.SessionPanel,
+    SessionState: Modules.SessionState,
+    SessionMenuView: Modules.SessionMenuView,
     tr,
     showPluginConfirm,
     showPluginToast,
@@ -466,7 +483,9 @@
     updateSessionById
   } = sessionManager;
 
-  const applyResultFormatters = window.CodexOverleafApplyResultFormatters.create({
+  const applyResultFormatters = Modules.ApplyResultFormatters.create({
+    i18n: Modules.I18n,
+    FailureReasons: Modules.FailureReasons,
     getLocale,
     tr,
     tx,
@@ -484,12 +503,20 @@
     formatOperationFiles
   } = applyResultFormatters;
 
+  const runSettlementPersistence = Modules.RunSettlementPersistence.create({
+    writebackSettlement: WritebackSettlement,
+    getCurrentRunView: () => currentRunView,
+    findRunRecord,
+    getCurrentProjectId,
+    saveStateSoon
+  });
+
   // v1.6.3 structural-debt phase 6: the sync-writeback orchestration
   // (applySyncChangesToOverleaf + post-write verify/mirror/compile pipeline)
   // lives in writebackOrchestrator.js. Every dep below is either a hoisted
   // function declaration, an already-initialized const above, or a lazy
   // accessor thunk — safe in the top-of-init() wiring zone.
-  const writebackOrchestrator = window.CodexOverleafWritebackOrchestrator.create({
+  const writebackOrchestrator = Modules.WritebackOrchestrator.create({
     tr,
     tx,
     getLocale,
@@ -529,9 +556,12 @@
     confirmBinaryOperations,
     filterSyncChangesByOperations,
     writebackController,
+    writebackSettlement: WritebackSettlement,
+    compileAdapter: Modules.CompileAdapter,
     RUN_SNAPSHOT_ZIP_TIMEOUT_MS,
     getState: () => state,
-    getCurrentRunView: () => currentRunView
+    getCurrentRunView: () => currentRunView,
+    onMirrorRefreshSettled: runSettlementPersistence.settleMirrorRefresh
   });
   const {
     applySyncChangesToOverleaf,
@@ -570,7 +600,8 @@
     }
   }
 
-  const modelPicker = window.CodexOverleafModelPicker.create({
+  const modelPicker = Modules.ModelPicker.create({
+    Support: Modules.ModelPickerSupport,
     tr,
     tx,
     getLocale,
@@ -603,7 +634,7 @@
     updateModelDisplay
   } = modelPicker;
 
-  const projectProviderSelection = window.CodexOverleafProjectProviderSelection.create({
+  const projectProviderSelection = Modules.ProjectProviderSelection.create({
     tx, tr, getRunningSessionIds, showToast: showPluginToast, showConfirm: showPluginConfirm,
     getState: () => state, setState: next => { state = next; }, getPanel: () => panel,
     readSelectedModel: readSelectedModelInput, readSelectedSpeed: readSelectedSpeedInput,
@@ -611,7 +642,9 @@
     normalizeState: normalizePanelState, applyStateToPanel
   });
 
-  const providerSettingsCoordinator = window.CodexOverleafProviderSettingsCoordinator.create({
+  const providerSettingsCoordinator = Modules.ProviderSettingsCoordinator.create({
+    ProviderProfiles: Modules.ProviderProfiles,
+    ProviderSettingsDialog: Modules.ProviderSettingsDialog,
     tx,
     sendBackgroundNative,
     document,
@@ -658,7 +691,13 @@
     }
   });
 
-  const recentProjects = window.CodexOverleafRecentProjects.create({
+  const recentProjects = Modules.RecentProjects.create({
+    ProjectSessionCleanup: Modules.ProjectSessionCleanup,
+    SessionPersistence: Modules.SessionPersistence,
+    SessionState: Modules.SessionState,
+    StorageDb: Modules.StorageDb,
+    StorageKeys: Modules.StorageKeys,
+    StorageMigration: Modules.StorageMigration,
     tr,
     tx,
     openCustomInstructionsSettings,
@@ -690,7 +729,7 @@
   const MAX_COMPOSER_ATTACHMENT_TOTAL_BYTES = 32 * 1024 * 1024;
   const MAX_COMPOSER_ATTACHMENTS = 8;
   const MAX_ATTACHMENT_PREVIEW_DATA_URL_CHARS = 768 * 1024;
-  const composerAttachmentController = window.CodexOverleafComposerAttachments.createComposerAttachmentController({
+  const composerAttachmentController = Modules.ComposerAttachments.createComposerAttachmentController({
     getPanel: () => panel,
     tr,
     tx,
@@ -708,6 +747,7 @@
     reviewHunks: ReviewHunks,
     tr,
     callPageBridge,
+    getCurrentProjectId: () => getCurrentProjectId(),
     getRunEvents: () => currentRunView?.events,
     appendRunEvent,
     scrollLogToBottom,
@@ -736,7 +776,7 @@
     closeDiagnosticsMenu,
     closeCustomInstructionsSettings,
     closeSlashMenu,
-    projectFiles: window.CodexOverleafProjectFiles
+    projectFiles: Modules.ProjectFiles
   });
   const localSkillsPanel = LocalSkillsPanel.createLocalSkillsPanelController({
     root: window,
@@ -795,6 +835,8 @@
   // (captured at the start of the in-flight save) be the last writer.
   let saveStateInFlight = false;
   let saveStateRunAfterFlight = false;
+  let saveStateInFlightPromise = null;
+  let pendingSaveStateOptions = null;
   let streamRenderTimer = null;
   let pendingStreamRenderEvents = new Map();
   let storageNoticeKeys = new Set();
@@ -806,7 +848,35 @@
   let runCancellationRequested = false;
   let runCancellationController = null;
   let pluginConfirmController = null;
-  const updateIdleClient = root.CodexOverleafUpdateIdle?.create({
+  let scopedPersistenceCoordinator = null;
+  const nativeCompatibilityController = Modules.NativeCompatibilityController.create({
+    compatibility: CodexOverleafCompatibility,
+    nativeChannel,
+    gatedMethods: NATIVE_COMPATIBILITY_GATED_METHODS,
+    getExtensionCompatibilityMetadata,
+    fallbackNativeCompatibility,
+    getNativeCompatibilityClassification,
+    installCommand: INSTALL_COMMAND,
+    throwIfCancellationRequested: throwIfRunCancellationRequested,
+    getCurrentRunView: () => currentRunView,
+    appendRunEvent,
+    showPluginToast,
+    getPanel: () => panel,
+    ensurePanelOpen,
+    getPanelRendererInstance: () => panelRendererInstance,
+    setBadge: (...args) => PanelRenderer.setBadge(...args),
+    setDiagnosticsHealth,
+    getState: () => state,
+    localStorage: root.localStorage,
+    document,
+    navigator,
+    chromeApi: chrome,
+    onboardingTipStorageKey: ONBOARDING_TIP_STORAGE_KEY,
+    setTimeout: (...args) => root.setTimeout(...args),
+    tr,
+    tx
+  });
+  const updateIdleClient = Modules.UpdateIdle?.create({
     document,
     getBusyState: () => ({
       run: Boolean(currentRunView),
@@ -878,6 +948,7 @@
   });
 
   async function init() {
+    await refreshAccountScopeId();
     storageKey = getProjectStorageKey(LEGACY_STORAGE_KEY, window.location.href);
     state = normalizePanelState(await loadStoredState(), { restoreRunningRuns: true });
     initializeRunQueueScheduler();
@@ -890,7 +961,7 @@
         .catch(() => {});
     }, 900);
     ensurePanelOpen();
-    root.CodexOverleafUpdateNotice?.mount?.(panel?.panelEl || panel, {
+    Modules.UpdateNotice?.mount?.(panel?.panelEl || panel, {
       getLocale: () => state?.locale || 'en'
     });
     // v1.8.1: on a non-editor route the panel must NEVER first paint the
@@ -1554,7 +1625,7 @@
   }
 
   async function getRecentAuditLogsForCurrentProject(limit = 12) {
-    const StorageDb = window.CodexOverleafStorageDb;
+    const StorageDb = Modules.StorageDb;
     if (!StorageDb?.getAllByIndex) {
       return [];
     }
@@ -1673,20 +1744,36 @@
       await pendingMirror.catch(() => {});
     }
     readPanelInputs();
-    // Freeze submitted run identity before the panel can change during the run.
-    const submittedMode = state.mode;
-    const submittedRequireReviewing = state.requireReviewing === true;
-    const submittedCustomInstructions = getCustomInstructionsForCurrentProject();
-    const submittedSkillLoadingSettings = getSkillLoadingSettings();
-    const submittedAttachments = getComposerAttachmentsForRun();
-    const submittedSkillInvocation = getComposerSkillInvocationForRun();
-
     const queuedInput = options.queuedInput || null;
     const task = String(queuedInput?.text || state.task || '').trim();
     if (!task) {
       appendLog(tx('Enter a task first.', '请先输入任务。'));
       return;
     }
+    const submittedPanelState = {
+      mode: state.mode,
+      providerId: state.providerId,
+      model: state.model,
+      reasoningEffort: state.reasoningEffort,
+      speedTier: state.speedTier,
+      autoRecompile: state.autoRecompile !== false,
+      requireReviewing: state.requireReviewing === true,
+      focusFiles: getActiveFocusFiles()
+    };
+    const submittedCustomInstructions = getCustomInstructionsForCurrentProject();
+    const submittedSkillLoadingSettings = getSkillLoadingSettings();
+    const submittedAttachments = getComposerAttachmentsForRun();
+    const submittedSkillInvocation = getComposerSkillInvocationForRun();
+    await providerSettingsCoordinator.ensureLoaded();
+    const executionSnapshot = queuedInput
+      ? RunExecutionSnapshot.resolveForExecution(
+        RunExecutionSnapshot.fromQueuePayload(queuedInput.payload),
+        { catalog: providerSettingsCoordinator.getCatalog() }
+      )
+      : captureCurrentExecutionSnapshot(submittedPanelState);
+    // Freeze submitted run identity before the panel can change during the run.
+    const submittedMode = executionSnapshot.mode;
+    const submittedRequireReviewing = executionSnapshot.requireReviewing === true;
 
     runCancellationRequested = false;
     runCancellationController = new AbortController();
@@ -1694,24 +1781,26 @@
     currentRunView = startRunView({
       task,
       mode: submittedMode,
-      model: state.model,
-      reasoningEffort: state.reasoningEffort,
-      speedTier: state.speedTier,
+      model: executionSnapshot.model,
+      reasoningEffort: executionSnapshot.reasoningEffort,
+      speedTier: executionSnapshot.speedTier,
+      executionSnapshot,
       attachments: submittedAttachments,
       skillInvocation: submittedSkillInvocation,
       queueItemId: queuedInput?.id || ''
     });
     const runSessionId = currentRunView.sessionId;
-    if (queuedInput?.id) {
-      await runQueueScheduler?.markExecuting(runSessionId, queuedInput.id, currentRunView.recordId);
-    }
     let runAuditDraft = null;
     try {
+      if (queuedInput?.id) {
+        await runQueueScheduler?.markExecuting(runSessionId, queuedInput.id, currentRunView.recordId);
+      }
       runAuditDraft = await awaitRunStep(createAuditDraftForRun({
         task,
         sessionId: runSessionId,
         mode: submittedMode,
-        focusFiles: getActiveFocusFiles()
+        focusFiles: executionSnapshot.focusFiles,
+        executionSnapshot
       }));
       announceCrossTabRunStart();
       // Binary attachments belong to this submitted turn. The run record has
@@ -1726,13 +1815,13 @@
         status: 'running',
         detail: {
           [tr('mode')]: formatModeLabel(submittedMode),
-          [tx('Model', '模型')]: state.model,
-          [tx('Reasoning effort', '推理强度')]: state.reasoningEffort,
-          [tx('Speed', '速度')]: state.speedTier,
+          [tx('Model', '模型')]: executionSnapshot.model,
+          [tx('Reasoning effort', '推理强度')]: executionSnapshot.reasoningEffort,
+          [tx('Speed', '速度')]: executionSnapshot.speedTier,
           [tx('Track required', '要求留痕')]: submittedRequireReviewing ? tx('yes', '是') : tx('no', '否'),
           [tx('Skill', '技能')]: submittedSkillInvocation?.title || tr('noneValue'),
           [tx('Attachments', '附件')]: submittedAttachments.map(attachment => attachment.name).join(listSeparator()) || tr('noneValue'),
-          '@context': formatContextItems(getActiveFocusFiles())
+          '@context': formatContextItems(executionSnapshot.focusFiles)
         }
       });
       if (submittedSkillInvocation?.id === 'skill-installer') {
@@ -1744,15 +1833,16 @@
           submittedCustomInstructions,
           submittedSkillLoadingSettings,
           submittedAttachments,
-          submittedSkillInvocation
+          submittedSkillInvocation,
+          executionSnapshot
         }));
         return;
       }
       appendRunEvent({
         // @context prioritizes these files; complete project runs may still update related files.
         title: tx(
-          `This run will prioritize: ${formatContextItems(getActiveFocusFiles())} (persists across turns; clear via ＋)`,
-          `本轮将优先处理：${formatContextItems(getActiveFocusFiles())}（跨轮保留，可在 ＋ 中清除）`
+          `This run will prioritize: ${formatContextItems(executionSnapshot.focusFiles)} (persists across turns; clear via ＋)`,
+          `本轮将优先处理：${formatContextItems(executionSnapshot.focusFiles)}（跨轮保留，可在 ＋ 中清除）`
         ),
         status: 'completed'
       });
@@ -1770,7 +1860,7 @@
         return;
       }
 
-      let focusFiles = getActiveFocusFiles();
+      let focusFiles = [...executionSnapshot.focusFiles];
       const warmStart = await awaitRunStep(resolveWarmRunStart({ focusFiles, mode: submittedMode }));
       let project = warmStart.project || null;
       let useExistingMirror = warmStart.useExistingMirror;
@@ -1802,7 +1892,7 @@
         project,
         snapshotWarnings,
         focusFiles,
-        isUsableProjectFileContent: window.CodexOverleafProjectFiles.isUsableProjectFileContent
+        isUsableProjectFileContent: Modules.ProjectFiles.isUsableProjectFileContent
       });
       let restrictToFocusFiles = runController.shouldRestrictWritebackToFocus({ focusFiles, focusedPartialSnapshot });
       if (snapshotWarnings.blocking.length && !warmMirrorReuse.useExistingMirror && !focusedPartialSnapshot) {
@@ -1986,7 +2076,7 @@
         const userChoice = await showThreadResumeFailedPrompt();
         if (userChoice === 'new') {
           updateSessionById(runSessionId, { codexThreadId: '' });
-          const StorageDb = window.CodexOverleafStorageDb;
+          const StorageDb = Modules.StorageDb;
           if (StorageDb) {
             const record = await StorageDb.getRecord('sessions', runSessionId);
             if (record) {
@@ -2169,8 +2259,10 @@
         assistantMessage,
         unsupportedChanges: response.result.unsupportedChanges || [],
         mode: submittedMode,
-        requireReviewing: submittedRequireReviewing
+        requireReviewing: submittedRequireReviewing,
+        autoRecompile: executionSnapshot.autoRecompile
       });
+      runSettlementPersistence.applyToCurrentRun(syncOutcome.settlement);
       if (runCancellationRequested) {
         throw createRunCancellationError();
       }
@@ -2213,7 +2305,11 @@
           // can catch early-return branches and unrecognized skip codes.
           const postNavigationStatus = settleRunAfterNavigation(finishedRunRecord, syncOutcome);
           if (postNavigationStatus) {
-            persistPostNavigationRunStatus(finishedRunRecord, postNavigationStatus);
+            await persistPostNavigationRunStatus(
+              finishedRunRecord,
+              postNavigationStatus,
+              syncOutcome.settlement
+            );
           }
         }
       } catch (_settlementError) {
@@ -2242,7 +2338,7 @@
         const returnedThreadId = response.result?.threadId || '';
         if (returnedThreadId && returnedThreadId !== codexThreadId) {
           updateSessionById(runSessionId, { codexThreadId: returnedThreadId });
-          const StorageDb = window.CodexOverleafStorageDb;
+          const StorageDb = Modules.StorageDb;
           if (StorageDb) {
             const record = await StorageDb.getRecord('sessions', runSessionId);
             if (record) {
@@ -2334,13 +2430,13 @@
       setRunning(false);
       nativeChannel.clearActiveRequest();
       stopRunElapsedTick();
-      currentRunView = null;
-      runCancellationRequested = false;
-      runCancellationController = null;
       if (isExperimentalOtEnabled()) {
         await resumeOtWarmMirror('run-settled');
       }
-      await saveState().catch(() => {});
+      await flushQueuedSaveState().catch(() => {});
+      currentRunView = null;
+      runCancellationRequested = false;
+      runCancellationController = null;
       activeTurnControl.release(settlement.requestId);
       if (settlement.requestId) {
         activeTurnControl.acknowledge(settlement.requestId).catch(() => {});
@@ -2357,7 +2453,8 @@
     submittedCustomInstructions,
     submittedSkillLoadingSettings,
     submittedAttachments,
-    submittedSkillInvocation
+    submittedSkillInvocation,
+    executionSnapshot
   }) {
     appendRunEvent({
       title: tx('Starting the Codex skill installer.', '正在启动 Codex skill installer。'),
@@ -2369,9 +2466,9 @@
       projectId: getCurrentProjectId(),
       mode: submittedMode,
       task,
-      model: state.model,
-      reasoningEffort: state.reasoningEffort,
-      speedTier: state.speedTier,
+      model: executionSnapshot.model,
+      reasoningEffort: executionSnapshot.reasoningEffort,
+      speedTier: executionSnapshot.speedTier,
       session: state.session,
       threadId: codexThreadId || undefined,
       customInstructions: submittedCustomInstructions || undefined,
@@ -2463,7 +2560,7 @@
     const returnedThreadId = response.result?.threadId || '';
     if (returnedThreadId && returnedThreadId !== codexThreadId) {
       updateSessionById(runSessionId, { codexThreadId: returnedThreadId });
-      const StorageDb = window.CodexOverleafStorageDb;
+      const StorageDb = Modules.StorageDb;
       if (StorageDb) {
         const record = await StorageDb.getRecord('sessions', runSessionId);
         if (record) {
@@ -2597,7 +2694,7 @@
     });
   }
 
-  const runGuidanceController = window.CodexOverleafRunGuidanceController.create({
+  const runGuidanceController = Modules.RunGuidanceController.create({
     findRunRecord, appendRunEvent, getCurrentRunView: () => currentRunView,
     renderRunEvent, cssEscape, bumpUnreadIfDetached
   });
@@ -2612,11 +2709,10 @@
       readInputs: readPanelInputs,
       getTask: () => panel?.querySelector('[data-task]')?.value || '',
       hasAttachments: () => getComposerAttachmentsForRun().length > 0,
-      capturePayload: () => ({
-        mode: state.mode,
-        autoRecompile: state.autoRecompile !== false,
-        requireReviewing: state.requireReviewing,
-        focusFiles: getActiveFocusFiles()
+      capturePayload: () => RunExecutionSnapshot.toQueuePayload(captureCurrentExecutionSnapshot()),
+      prepareClaim: () => providerSettingsCoordinator.ensureLoaded(),
+      resolveExecutionSnapshot: snapshot => RunExecutionSnapshot.resolveForExecution(snapshot, {
+        catalog: providerSettingsCoordinator.getCatalog()
       }),
       clearTask: () => {
         panel.querySelector('[data-task]').value = '';
@@ -2624,15 +2720,11 @@
         autosizeTaskTextarea();
         syncComposerSendAvailability();
       },
-      applyQueuedInput: item => {
-        state.autoRecompile = item.payload?.autoRecompile !== false;
-        state = updateActiveSession(state, {
-          task: item.text,
-          mode: item.payload?.mode || state.mode,
-          requireReviewing: item.payload?.requireReviewing !== false,
-          focusFiles: item.payload?.focusFiles || []
-        });
-        applyStateToPanel();
+      applyQueuedInput: async item => {
+        RunExecutionSnapshot.resolveForExecution(
+          RunExecutionSnapshot.fromQueuePayload(item.payload),
+          { catalog: providerSettingsCoordinator.getCatalog() }
+        );
       },
       run: item => runTask({ queuedInput: item }),
       sendSteer: params => sendBackgroundNative({ method: 'codex.steer', params }),
@@ -2643,11 +2735,31 @@
       removeGuidance: runGuidanceController.remove,
       toast: (message, status) => showPluginToast(message, { status }),
       tr,
-      save: () => saveState(),
-      saveSoon: () => saveStateSoon(),
+      save: persistenceOptions => saveState(persistenceOptions),
+      saveSoon: persistenceOptions => saveStateSoon(120, persistenceOptions),
       randomUUID: () => crypto.randomUUID()
     });
     runQueueScheduler = runInputCoordinator.scheduler;
+  }
+
+  function captureCurrentExecutionSnapshot(submitted = {}) {
+    const requestedProviderId = submitted.providerId || state?.providerId || 'builtin';
+    const selection = providerSettingsCoordinator.getRunSelection(requestedProviderId);
+    const providerId = selection?.providerId || requestedProviderId;
+    return RunExecutionSnapshot.capture({
+      mode: submitted.mode ?? state?.mode,
+      providerId,
+      providerRevision: selection?.providerRevision,
+      model: submitted.model ?? state?.model,
+      reasoningEffort: submitted.reasoningEffort ?? state?.reasoningEffort,
+      speedTier: submitted.speedTier ?? state?.speedTier,
+      autoRecompile: submitted.autoRecompile ?? state?.autoRecompile !== false,
+      requireReviewing: submitted.requireReviewing ?? state?.requireReviewing === true,
+      focusFiles: submitted.focusFiles ?? getActiveFocusFiles()
+    }, {
+      source: 'submitted',
+      requireProviderRevision: providerId !== 'builtin'
+    });
   }
 
   function queueComposerInput() {
@@ -2716,11 +2828,7 @@
   }
 
   function cancelActivePageBridgeRequests() {
-    const handlers = Array.from(activePageBridgeCancellationHandlers.values());
-    activePageBridgeCancellationHandlers.clear();
-    for (const cancel of handlers) {
-      cancel();
-    }
+    pageBridgeClient.cancelActiveRequests();
   }
 
   // Recovery path for the case where a previous Codex run leaked the
@@ -2884,9 +2992,11 @@
     skillInvocation,
     submittedMode
   } = {}) {
+    const executionSnapshot = currentRunView?.executionSnapshot || captureCurrentExecutionSnapshot();
+    const submittedState = RunExecutionSnapshot.applyToState(state, executionSnapshot);
     const params = runController.buildCodexRunParams({
       currentProjectId: getCurrentProjectId(),
-      state,
+      state: submittedState,
       task,
       project,
       useExistingMirror,
@@ -2913,17 +3023,17 @@
       ...params,
       clientRunId: currentRunView?.recordId || '',
       clientSessionId: currentRunView?.sessionId || '',
-      providerSelection: providerSettingsCoordinator.getRunSelection(state?.providerId)
+      providerSelection: RunExecutionSnapshot.toProviderSelection(executionSnapshot)
     };
   }
 
   async function sendTrackedCodexRun(params) {
-    const compatibilityGate = await ensureNativeCompatibilityForMethod('codex.run');
+    const compatibilityGate = await nativeCompatibilityController.ensureForMethod('codex.run');
     if (!compatibilityGate.ok) {
       return compatibilityGate.response;
     }
-    throwIfCancelledBeforeNativeDispatch('codex.run');
-    const tracked = nativeChannel.sendNativeTracked(attachNativeCompatibilityEvidence({
+    throwIfRunCancellationRequested();
+    const tracked = nativeChannel.sendNativeTracked(nativeCompatibilityController.attachEvidence({
       method: 'codex.run',
       params
     }, compatibilityGate.compatibility));
@@ -3003,19 +3113,23 @@
   }
 
   async function createAuditDraftForRun(input = {}) {
-    const StorageDb = window.CodexOverleafStorageDb;
+    const StorageDb = Modules.StorageDb;
     if (!StorageDb || !AuditRecords) {
       return null;
     }
+    const executionSnapshot = input.executionSnapshot
+      || currentRunView?.executionSnapshot
+      || captureCurrentExecutionSnapshot();
     const draft = AuditRecords.buildAuditDraftRecord({
       projectId: getCurrentProjectId(),
       sessionId: input.sessionId || '',
       turnId: currentRunView?.recordId || '',
-      mode: input.mode || state?.mode || '',
-      ...providerSettingsCoordinator.getProviderSnapshot(state?.providerId),
-      model: state?.model || '',
-      reasoningEffort: state?.reasoningEffort || '',
-      speedTier: state?.speedTier || '',
+      mode: input.mode || executionSnapshot.mode,
+      ...providerSettingsCoordinator.getProviderSnapshot(executionSnapshot.providerId),
+      providerRevision: executionSnapshot.providerRevision,
+      model: executionSnapshot.model,
+      reasoningEffort: executionSnapshot.reasoningEffort,
+      speedTier: executionSnapshot.speedTier,
       task: input.task || '',
       focusFiles: input.focusFiles || [],
       selectedSkillIds: input.selectedSkillIds || []
@@ -3037,7 +3151,7 @@
   }
 
   async function finalizeAuditDraftPartial(draft, updates = {}) {
-    const StorageDb = window.CodexOverleafStorageDb;
+    const StorageDb = Modules.StorageDb;
     if (!StorageDb || !draft) {
       return draft;
     }
@@ -3048,7 +3162,7 @@
   }
 
   async function finalizeAuditRecord(draft, updates = {}) {
-    const StorageDb = window.CodexOverleafStorageDb;
+    const StorageDb = Modules.StorageDb;
     if (!StorageDb || !AuditRecords || !draft) {
       return null;
     }
@@ -3843,8 +3957,8 @@
   }
 
   function normalizeSafeProjectPath(value) {
-    if (window.CodexOverleafProjectFiles?.normalizeSafeProjectPath) {
-      return window.CodexOverleafProjectFiles.normalizeSafeProjectPath(value);
+    if (Modules.ProjectFiles?.normalizeSafeProjectPath) {
+      return Modules.ProjectFiles.normalizeSafeProjectPath(value);
     }
     return String(value || '')
       .replace(/\s+/g, ' ')
@@ -4123,6 +4237,7 @@
   // `runProjectId` is that it survives navigation; `activeProjectId` does not.
   let activeProjectId = null;
   let lastSpaPathname = '';
+  let spaRouteGeneration = 0;
 
   function cancelPendingWritebacks(prevProjectId) {
     // The codebase does not maintain a separate pending-writeback queue;
@@ -4170,6 +4285,17 @@
       // Mirror init failures are non-fatal — the badge surfaces the
       // unavailable state and the user can retry from diagnostics.
     });
+  }
+
+  function getScopedPersistenceCoordinator() {
+    if (scopedPersistenceCoordinator) return scopedPersistenceCoordinator;
+    scopedPersistenceCoordinator = Modules.ScopedPersistenceCoordinator?.createController({
+      Transaction: Modules.ScopedPersistenceTransaction,
+      chromeApi: chrome,
+      sessionStorage: window.sessionStorage,
+      getAccountScopeId: () => window.codexOverleafDeriveAccountScopeId?.() || ''
+    });
+    return scopedPersistenceCoordinator;
   }
 
   async function reloadProjectRunHistory(newProjectId) {
@@ -4265,21 +4391,34 @@
     } catch (_error) { /* swallow */ }
   }
 
-  function onSpaRouteChange() {
-    const url = window.location;
+  async function onSpaRouteChange() {
+    const generation = ++spaRouteGeneration;
+    const url = new URL(window.location.href);
+    const pathname = url.pathname;
+    const previousProjectId = activeProjectId;
+    const previousAccountScopeId = cachedAccountScopeId;
+    const nextProjectId = isProjectEditorRoute(url)
+      ? url.pathname.match(/^\/project\/([^/?#]+)/)[1]
+      : null;
+    if (nextProjectId !== activeProjectId) {
+      leaveActiveProject(nextProjectId);
+    }
     // Recompute the account scope on every route change (spec §5.2 per-
     // project derivation: account menu is global chrome and should be
     // readable on per-project URLs too).
-    refreshAccountScopeId().catch(() => { /* fail-closed handled inside */ });
+    await refreshAccountScopeId();
+    if (generation !== spaRouteGeneration || pathname !== window.location.pathname) {
+      return;
+    }
     if (isProjectEditorRoute(url)) {
-      const newId = url.pathname.match(/^\/project\/([^/?#]+)/)[1];
-      if (newId !== activeProjectId) {
-        leaveActiveProject(newId);
-        enterProject(newId);
+      if (
+        nextProjectId !== previousProjectId
+        || cachedAccountScopeId !== previousAccountScopeId
+      ) {
+        enterProject(nextProjectId);
       }
       renderPerProjectVariant();
     } else {
-      leaveActiveProject(null);
       // Variant render is async (it awaits the IndexedDB query); the hook
       // does not await — subsequent renders pick up the rebound state.
       renderRecentProjectsVariant().catch(() => { /* swallow */ });
@@ -4303,11 +4442,9 @@
         return;
       }
       lastSpaPathname = next;
-      try {
-        onSpaRouteChange();
-      } catch (_error) {
+      onSpaRouteChange().catch(() => {
         // Route-hook failures must never crash the page.
-      }
+      });
     };
     const wrap = name => {
       const original = window.history[name];
@@ -4327,103 +4464,16 @@
     lastSpaPathname = window.location.pathname;
   }
 
-  // -----------------------------------------------------------------------
-  // Post-navigation run settlement (spec §5.7.1 + plan Step 6).
-  // -----------------------------------------------------------------------
-  //
-  // When a Codex run completes after the user navigated away from
-  // run.runProjectId, classify the outcome and persist the run on the
-  // ORIGINAL project's record (NOT activeProjectId — that's the whole
-  // point of the T2 immutability contract).
   function settleRunAfterNavigation(run, runResult) {
-    if (activeProjectId === run.runProjectId) {
-      // User is still on the project — normal settlement path; the caller
-      // continues unchanged.
-      return null;
-    }
-    // Welcome-panel + write-guard:
-    // accept the full `syncOutcome` (not just a pre-flattened skipped list).
-    // The previous shape — only `{ skipped: [...] }` from
-    // `collectRunResultSkipped` — silently classified runs as
-    // `background_completed` when (a) the skipped entries' codes were
-    // outside a small allow-list (e.g. delete_confirmation_rejected,
-    // governance_blocked, binary_confirmation_rejected) or (b) the
-    // syncOutcome was an early-return branch with
-    // `hasSkippedOperations === true` but no `applied` (which flattens to
-    // an empty skipped list).
-    //
-    // Spec §5.7.1 classification:
-    //   1. Any skipped entry with failure.code IN
-    //      { 'aborted_project_changed', 'editor_project_id_unavailable' }
-    //         → 'abandoned_after_navigation'.
-    //   2. Else if syncOutcome.hasSkippedOperations === true OR any skipped
-    //      entry exists (code-bearing or not)
-    //         → 'needs_review_after_navigation'.
-    //      (Spec defense-in-depth: when in doubt, claim needs_review rather
-    //      than background_completed.)
-    //   3. Else if at least one applied write AND no skipped/needs_review/
-    //      failed entries AND post-write verification was clean
-    //         → 'background_completed'.
-    //   4. Else (no skipped, no applied) — true no-op run (e.g. Ask-mode
-    //      where there was nothing to write) → 'background_completed'.
-    const skipped = collectRunResultSkipped(runResult);
-    const wasGuardAborted = skipped.some(entry => {
-      const code = entry && entry.result && entry.result.code;
-      return code === 'aborted_project_changed' || code === 'editor_project_id_unavailable';
+    return WritebackSettlement.settlePostNavigation({
+      run,
+      runResult,
+      navigation: { occurred: activeProjectId !== run.runProjectId }
     });
-    if (wasGuardAborted) {
-      return 'abandoned_after_navigation';
-    }
-    const hasSkippedOperations = runResult && runResult.hasSkippedOperations === true;
-    if (hasSkippedOperations || skipped.length > 0) {
-      // Rule 2: ANY skipped entry — code-bearing or not — and/or the
-      // outcome flag — yields needs_review_after_navigation. This is the
-      // defense-in-depth net for skip codes outside the recognized list
-      // (delete_confirmation_rejected, governance_blocked,
-      // binary_confirmation_rejected, etc.) and for early-return branches
-      // where `applied` is absent but `hasSkippedOperations` is true.
-      return 'needs_review_after_navigation';
-    }
-    // Rule 3 / 4: no skipped, no failed. Either at least one clean applied
-    // write (post-write verification implicitly clean because rule 2
-    // already caught write_observed_mismatch / accept_not_verified /
-    // undo_not_verified / tracked_changes_remain via their skipped-entry
-    // form), OR a true no-op run with nothing to write. Both classify as
-    // background_completed per spec §5.7.1 rule 4.
-    return 'background_completed';
   }
 
-  // Flatten the `applied.skipped` arrays from a syncOutcome into the
-  // shape `settleRunAfterNavigation` expects: `{ skipped: [{ result: { code } }] }`.
-  // Accepts both shapes:
-  //   1. The full syncOutcome from `applySyncChangesToOverleaf` — reads
-  //      `syncOutcome.applied.skipped`.
-  //   2. A pre-flattened shape `{ skipped: [...] }` — used by tests and by
-  //      historical call sites.
-  // Spec §5.7.1: settleRunAfterNavigation now consumes the full
-  // syncOutcome directly, but this helper remains useful for the
-  // applied-array path AND keeps the legacy test surface intact.
   function collectRunResultSkipped(syncOutcome) {
-    if (!syncOutcome) {
-      return [];
-    }
-    const skipped = [];
-    const applied = syncOutcome.applied;
-    if (applied && Array.isArray(applied.skipped)) {
-      for (const entry of applied.skipped) {
-        if (entry) {
-          skipped.push(entry);
-        }
-      }
-    }
-    if (Array.isArray(syncOutcome.skipped)) {
-      for (const entry of syncOutcome.skipped) {
-        if (entry) {
-          skipped.push(entry);
-        }
-      }
-    }
-    return skipped;
+    return WritebackSettlement.collectRunResultSkipped(syncOutcome);
   }
 
   // Persist the post-navigation status to the run's original
@@ -4438,50 +4488,73 @@
   //      `reloadProjectRunHistory`), so the in-memory mutation would not
   //      reach the right record. Go directly through StorageDb to update
   //      the original project's session record by id.
-  async function persistPostNavigationRunStatus(run, postNavigationStatus) {
+  async function persistPostNavigationRunStatus(run, postNavigationStatus, settlementResult) {
     if (!run || !postNavigationStatus) {
-      return;
+      return { ok: false, reason: 'invalid_post_navigation_settlement' };
     }
     const postNavigationStatusText = getPostNavigationRunStatusText(postNavigationStatus);
-    run.status = postNavigationStatus;
-    run.statusText = postNavigationStatusText;
-    run.finishedAt = run.finishedAt || new Date().toISOString();
-    if (currentRunView && currentRunView.runProjectId === activeProjectId) {
+    Object.assign(run, WritebackSettlement.applySettlementTransition(
+      run,
+      WritebackSettlement.transitionPostNavigationStatus({
+        status: postNavigationStatus,
+        statusText: postNavigationStatusText,
+        finishedAt: run.finishedAt || new Date().toISOString()
+      })
+    ));
+    if (
+      currentRunView
+      && currentRunView.runProjectId === activeProjectId
+      && currentRunView.runAccountScopeId === cachedAccountScopeId
+    ) {
       // Same project still active — the run record is reachable through the
       // normal state and the regular save path will persist it.
       saveStateSoon();
-      return;
+      return { ok: true, lane: 'active_project' };
     }
     // Different project. Update the original session's run record directly.
     try {
-      const StorageDb = window.CodexOverleafStorageDb;
-      if (!StorageDb) {
-        return;
-      }
       const sessionId = currentRunView ? currentRunView.sessionId : '';
       if (!sessionId) {
-        return;
+        throw Object.assign(new Error('Post-navigation settlement has no original session identity.'), {
+          code: 'post_navigation_settlement_persistence_failed',
+          reason: 'session_scope_unavailable'
+        });
       }
-      const record = await StorageDb.getRecord('sessions', sessionId);
-      if (!record) {
-        return;
+      const persistence = Modules.PostNavigationSettlementPersistence;
+      if (!persistence || typeof persistence.persistRequired !== 'function') {
+        throw Object.assign(new Error('Post-navigation settlement persistence is unavailable.'), {
+          code: 'post_navigation_settlement_persistence_failed',
+          reason: 'persistence_module_unavailable'
+        });
       }
-      const runs = Array.isArray(record.runs) ? record.runs : [];
-      const targetRun = runs.find(item => item && item.id === run.id);
-      if (!targetRun) {
-        return;
-      }
-      targetRun.status = postNavigationStatus;
-      targetRun.statusText = postNavigationStatusText;
-      targetRun.finishedAt = run.finishedAt;
-      record.lastActivityAt = new Date().toISOString();
-      record.updatedAt = record.lastActivityAt;
-      await StorageDb.putRecord('sessions', record);
-    } catch (_error) {
-      // Settlement persistence is best-effort. The original project's
-      // existing record still holds the run; the worst-case is that the
-      // dashboard badge does not show the post-navigation reclassification
-      // for this one run.
+      return await persistence.persistRequired({
+        StorageDb: Modules.StorageDb,
+        PersistenceCoordinator: getScopedPersistenceCoordinator(),
+        WritebackSettlement,
+        projectId: currentRunView?.runProjectId || '',
+        accountScopeId: currentRunView?.runAccountScopeId || '',
+        sessionId,
+        runId: run.id,
+        status: postNavigationStatus,
+        statusText: postNavigationStatusText,
+        finishedAt: run.finishedAt,
+        settlementResult
+      });
+    } catch (error) {
+      const reason = String(error?.reason || error?.code || 'unknown_failure');
+      run.postNavigationPersistenceFailure = {
+        code: 'post_navigation_settlement_persistence_failed',
+        reason,
+        at: new Date().toISOString()
+      };
+      appendPlainLog(tx(
+        `Could not persist the completed run to its original project (${reason}). Reopen that project to recover the interrupted record.`,
+        `无法将已完成运行保存到原项目（${reason}）。请重新打开该项目以恢复中断记录。`
+      ));
+      return {
+        ok: false,
+        reason
+      };
     }
   }
 
@@ -4510,7 +4583,7 @@
     getCachedAccountScopeId: () => cachedAccountScopeId,
     // T5 surfaces: variant renderer + helpers. Tests drive
     // `renderRecentProjectsVariant` against a stubbed `panel` and
-    // `window.CodexOverleafStorageDb` to assert layout / row behavior.
+    // `Modules.StorageDb` to assert layout / row behavior.
     renderRecentProjectsVariant,
     renderRecentProjectRow,
     renderStatusBadge,
@@ -5225,7 +5298,7 @@
     }
 
     const mirrorStatus = await getMirrorFreshness();
-    const mirrorHealth = window.CodexOverleafMirrorHealth.classifyMirrorHealth(mirrorStatus);
+    const mirrorHealth = Modules.MirrorHealth.classifyMirrorHealth(mirrorStatus);
     if (!mirrorStatus?.exists || !mirrorHealth.reusable) {
       return { useExistingMirror: false, reason: 'mirror_not_fresh', mirrorStatus };
     }
@@ -5254,7 +5327,7 @@
     return candidates
       .filter(file =>
         typeof file.content === 'string' &&
-        window.CodexOverleafProjectFiles.isUsableProjectFileContent(file.content) &&
+        Modules.ProjectFiles.isUsableProjectFileContent(file.content) &&
         file.path &&
         !seen.has(file.path) &&
         seen.add(file.path)
@@ -5363,7 +5436,7 @@
       blocking.push('Full project snapshot was not captured.');
     }
 
-    const unusable = textFiles.filter(file => !window.CodexOverleafProjectFiles.isUsableProjectFileContent(file.content));
+    const unusable = textFiles.filter(file => !Modules.ProjectFiles.isUsableProjectFileContent(file.content));
     if (unusable.length === textFiles.length) {
       blocking.push('Captured file contents are empty or still loading.');
     } else if (unusable.length) {
@@ -5401,545 +5474,84 @@
   }
 
   function sendNative(payload) {
-    return (async () => {
-      const compatibilityGate = await ensureNativeCompatibilityForMethod(payload?.method);
-      if (!compatibilityGate.ok) {
-        return compatibilityGate.response;
-      }
-      throwIfCancelledBeforeNativeDispatch(payload?.method);
-      return nativeChannel.sendNative(attachNativeCompatibilityEvidence(payload, compatibilityGate.compatibility));
-    })();
+    return nativeCompatibilityController.sendNative(payload);
   }
 
   function sendBackgroundNative(payload) {
-    return (async () => {
-      const compatibilityGate = await ensureNativeCompatibilityForMethod(payload?.method);
-      if (!compatibilityGate.ok) {
-        return compatibilityGate.response;
-      }
-      throwIfCancelledBeforeNativeDispatch(payload?.method);
-      return nativeChannel.sendBackgroundNative(attachNativeCompatibilityEvidence(payload, compatibilityGate.compatibility));
-    })();
-  }
-
-  function throwIfCancelledBeforeNativeDispatch(method) {
-    if (NATIVE_COMPATIBILITY_GATED_METHODS.has(method)) {
-      throwIfRunCancellationRequested();
-    }
-  }
-
-  async function ensureNativeCompatibilityForMethod(method) {
-    const params = CodexOverleafCompatibility?.buildBridgePingParams
-      ? CodexOverleafCompatibility.buildBridgePingParams(getExtensionCompatibilityMetadata())
-      : {};
-    const response = await nativeChannel.sendBackgroundNative({
-      method: 'bridge.ping',
-      params
-    });
-    const compatibility = CodexOverleafCompatibility?.evaluateNativeCompatibility
-      ? CodexOverleafCompatibility.evaluateNativeCompatibility(response, getExtensionCompatibilityMetadata())
-      : fallbackNativeCompatibility(response);
-    const allowed = !NATIVE_COMPATIBILITY_GATED_METHODS.has(method) ||
-      (CodexOverleafCompatibility?.isNativeMethodAllowed
-        ? CodexOverleafCompatibility.isNativeMethodAllowed(method, compatibility)
-        : compatibility.status === 'ok');
-    if (allowed) {
-      return { ok: true, compatibility };
-    }
-
-    const message = formatNativeCompatibilityBlockedMessage(method, compatibility);
-    const error = {
-      code: 'native_update_required',
-      message,
-      status: compatibility.status || 'unknown_native',
-      classification: getNativeCompatibilityClassification(compatibility),
-      installCommand: compatibility.installCommand || INSTALL_COMMAND,
-      updateCommand: compatibility.updateCommand || compatibility.installCommand || INSTALL_COMMAND,
-      currentNativeVersion: compatibility.currentNativeVersion || compatibility.nativeVersion || compatibility.native?.version || '',
-      requiredVersion: compatibility.requiredVersion || CodexOverleafCompatibility?.BUILD_TARGET_VERSION || '',
-      releaseUrl: compatibility.releaseUrl || ''
-    };
-    notifyNativeCompatibilityBlocked(error, compatibility);
-    return {
-      ok: false,
-      compatibility,
-      response: {
-        ok: false,
-        error
-      }
-    };
-  }
-
-  function attachNativeCompatibilityEvidence(payload = {}, compatibility) {
-    if (!compatibility || !NATIVE_COMPATIBILITY_GATED_METHODS.has(payload?.method)) {
-      return payload;
-    }
-    return {
-      ...payload,
-      params: {
-        ...(payload.params || {}),
-        nativeCompatibility: compatibility
-      }
-    };
-  }
-
-  function notifyNativeCompatibilityBlocked(error, compatibility = {}) {
-    const message = error?.message || String(error || '');
-    if (currentRunView) {
-      appendRunEvent({
-        title: message,
-        status: 'failed'
-      });
-      showNativeUpdateGuidanceModal(compatibility);
-    } else {
-      showNativeUpdateGuidanceModal(compatibility);
-      showPluginToast(message, { status: 'failed', sticky: true });
-    }
+    return nativeCompatibilityController.sendBackgroundNative(payload);
   }
 
   async function refreshNativeCompatibilityBadge() {
-    if (!panelRendererInstance?.headerEl || !CodexOverleafCompatibility?.evaluateNativeCompatibility) {
-      return;
-    }
-    try {
-      const params = CodexOverleafCompatibility.buildBridgePingParams
-        ? CodexOverleafCompatibility.buildBridgePingParams(getExtensionCompatibilityMetadata())
-        : {};
-      const response = await sendBackgroundNative({ method: 'bridge.ping', params });
-      const compatibility = CodexOverleafCompatibility.evaluateNativeCompatibility(response, getExtensionCompatibilityMetadata());
-      const classification = getNativeCompatibilityClassification(compatibility);
-      if (classification === 'compatible') {
-        PanelRenderer.setBadge(panelRendererInstance.headerEl, { type: 'none' });
-        setDiagnosticsHealth('ok');
-        try {
-          window.localStorage.setItem('codexOverleafNativeEverOk', 'true');
-        } catch (_storageError) { /* private mode etc.; the wizard just stays eligible */ }
-        return;
-      }
-      // update-available reads as attention; anything else (incompatible /
-      // unsupported) reads as a hard problem on the diagnostics dot.
-      setDiagnosticsHealth(classification === 'update-available' ? 'warn' : 'fail');
-      PanelRenderer.setBadge(panelRendererInstance.headerEl, {
-        type: 'update',
-        tooltip: tx('Native host update available', 'Native host 可更新'),
-        onClick: () => showNativeUpdateGuidanceModal(compatibility)
-      });
-      // A never-installed host does NOT throw: background resolves
-      // {ok:false, native_connection_failed} and classification lands here.
-      if (!compatibility?.native?.version) {
-        maybePromptFirstRunSetup();
-      }
-    } catch (_error) {
-      setDiagnosticsHealth('fail');
-      // No ping response at all means the native host is missing or not
-      // running — telling a never-installed user an "update" exists is
-      // misleading; point them at setup instead.
-      PanelRenderer.setBadge(panelRendererInstance.headerEl, {
-        type: 'update',
-        tooltip: tx('Native host is not responding — click for setup steps', 'Native host 未响应——点击查看安装步骤'),
-        onClick: () => showNativeUpdateGuidanceModal(fallbackNativeCompatibility({ ok: false }))
-      });
-      maybePromptFirstRunSetup();
-    }
-  }
-
-  // First-run wizard (v1.7): the native host is the one hard prerequisite,
-  // and pre-1.7 its absence was a 9px red dot. Auto-open the install guidance
-  // ONCE per browser profile; the flag is set before showing so a dismissal
-  // is respected forever (no nag loop).
-  function maybePromptFirstRunSetup() {
-    let storage = null;
-    try {
-      storage = window.localStorage;
-      if (!storage || storage.getItem('codexOverleafSetupPromptShown') === 'true') {
-        return;
-      }
-      // A profile that ever completed a successful ping is an installed user
-      // having a transient outage, not a first run — never auto-modal them.
-      if (storage.getItem('codexOverleafNativeEverOk') === 'true') {
-        return;
-      }
-      storage.setItem('codexOverleafSetupPromptShown', 'true');
-    } catch (_storageError) {
-      return;
-    }
-    showNativeUpdateGuidanceModal(fallbackNativeCompatibility({ ok: false }));
+    return nativeCompatibilityController.refreshBadge();
   }
 
   function showNativeUpdateGuidanceModal(compatibility = {}) {
-    if (!panel) {
-      ensurePanelOpen();
-    }
-    const existing = panel.querySelector('[data-native-update-guidance]');
-    existing?.remove();
-
-    const native = compatibility.native || {};
-    const extensionVersion = compatibility.extensionVersion || CodexOverleafCompatibility?.BUILD_TARGET_VERSION || '';
-    const nativeVersion = compatibility.currentNativeVersion || compatibility.nativeVersion || native.version || tx('missing', '未安装');
-    const command = compatibility.updateCommand || compatibility.installCommand || INSTALL_COMMAND;
-    const releaseUrl = compatibility.releaseUrl || '';
-
-    const overlay = document.createElement('div');
-    overlay.className = 'codex-plugin-confirm';
-    overlay.dataset.nativeUpdateGuidance = 'true';
-    overlay.setAttribute('role', 'dialog');
-    overlay.setAttribute('aria-modal', 'true');
-    const nativeMissing = !native.version;
-    overlay.setAttribute('aria-label', nativeMissing
-      ? tx('Set up the native host', '安装 Native host')
-      : tx('Native host update available', 'Native host 可更新'));
-
-    const card = document.createElement('section');
-    card.className = 'codex-plugin-confirm-card';
-
-    const title = document.createElement('div');
-    title.className = 'codex-plugin-confirm-title';
-    title.textContent = nativeMissing
-      ? tx('One step left: install the native host', '还差一步：安装 Native host')
-      : tx('Native host update available', 'Native host 可更新');
-
-    const body = document.createElement('div');
-    body.className = 'codex-plugin-confirm-body';
-    body.textContent = [
-      nativeMissing
-        ? tx(`Extension v${extensionVersion} is ready; Codex still needs its local bridge to read and edit this project.`, `扩展 v${extensionVersion} 已就绪；Codex 还需要本地桥接程序才能读写这个项目。`)
-        : tx(`Extension v${extensionVersion} / Native v${nativeVersion}`, `扩展 v${extensionVersion} / Native v${nativeVersion}`),
-      tx('Run the platform-specific command below, reload the extension, then refresh Overleaf.', '运行下面的平台命令，重新加载扩展，然后刷新 Overleaf。')
-    ].join('\n\n');
-
-    const commandCode = document.createElement('code');
-    commandCode.textContent = command;
-    commandCode.style.display = 'block';
-    commandCode.style.whiteSpace = 'pre-wrap';
-    commandCode.style.marginTop = '0.75rem';
-    body.append(commandCode);
-
-    if (releaseUrl) {
-      const link = document.createElement('a');
-      link.href = releaseUrl;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.textContent = tx('Open GitHub Release', '打开 GitHub Release');
-      link.style.display = 'block';
-      link.style.marginTop = '0.75rem';
-      body.append(link);
-    }
-
-    const actions = document.createElement('div');
-    actions.className = 'codex-plugin-confirm-actions';
-    const copy = document.createElement('button');
-    copy.type = 'button';
-    copy.className = 'codex-plugin-confirm-confirm';
-    copy.textContent = tx('Copy command', '复制命令');
-    copy.addEventListener('click', async () => {
-      await navigator.clipboard.writeText(command);
-      copy.textContent = tx('Copied', '已复制');
-    });
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'codex-plugin-confirm-cancel';
-    close.textContent = tx('Close', '关闭');
-    close.addEventListener('click', () => overlay.remove());
-    actions.append(close, copy);
-
-    card.append(title, body, actions);
-    overlay.append(card);
-    overlay.addEventListener('click', event => {
-      if (event.target === overlay) {
-        overlay.remove();
-      }
-    });
-    panel.append(overlay);
-    copy.focus();
+    return nativeCompatibilityController.showUpdateGuidance(compatibility);
   }
 
   function scheduleFirstUseOnboardingTip() {
-    setTimeout(() => {
-      maybeShowFirstUseOnboardingTip().catch(() => {});
-    }, 250);
-  }
-
-  async function maybeShowFirstUseOnboardingTip() {
-    if (!panel || (state?.sessions || []).length > 0) {
-      return;
-    }
-    const stored = await chrome.storage.local.get([ONBOARDING_TIP_STORAGE_KEY]);
-    if (stored?.[ONBOARDING_TIP_STORAGE_KEY]) {
-      return;
-    }
-    const modeSelect = panel.querySelector('[data-mode]');
-    if (!modeSelect) {
-      return;
-    }
-    const tip = document.createElement('div');
-    tip.className = 'codex-onboarding-tip';
-    tip.dataset.onboardingTip = 'true';
-    tip.setAttribute('role', 'status');
-    tip.textContent = tx(
-      'Tip: Start with Ask mode to explore safely. Switch to Suggest to review edits before applying.',
-      '提示：先用 Ask 模式安全探索；需要修改时切到 Suggest，应用前可先审阅。'
-    );
-    Object.assign(tip.style, {
-      position: 'absolute',
-      zIndex: '2147483647',
-      maxWidth: '280px'
-    });
-    panel.append(tip);
-    const panelRect = panel.getBoundingClientRect();
-    const modeRect = modeSelect.getBoundingClientRect();
-    tip.style.left = `${Math.max(12, modeRect.left - panelRect.left)}px`;
-    tip.style.bottom = `${Math.max(72, panelRect.bottom - modeRect.top + 8)}px`;
-
-    const dismiss = () => {
-      tip.remove();
-      chrome.storage.local.set({ [ONBOARDING_TIP_STORAGE_KEY]: true }).catch?.(() => {});
-      panel.removeEventListener('click', dismiss, true);
-      panel.removeEventListener('keydown', dismiss, true);
-    };
-    panel.addEventListener('click', dismiss, true);
-    panel.addEventListener('keydown', dismiss, true);
-    setTimeout(dismiss, 8000);
-  }
-
-  function formatNativeCompatibilityBlockedMessage(method, compatibility = {}) {
-    const statusValue = compatibility.status || 'unknown_native';
-    const params = { method: method || 'native request' };
-    switch (statusValue) {
-      case 'native_too_old':
-        return tr('nativeCompatibilityBlockedNativeTooOld', params);
-      case 'extension_too_old':
-        return tr('nativeCompatibilityBlockedExtensionTooOld', params);
-      case 'protocol_unsupported':
-        return tr('nativeCompatibilityBlockedProtocol', params);
-      case 'native_unhealthy':
-        return tr('nativeCompatibilityBlockedUnhealthy', params);
-      case 'native_missing':
-        return tr('nativeCompatibilityBlockedMissing', params);
-      default:
-        return tr('nativeCompatibilityBlockedGeneric', params);
-    }
+    nativeCompatibilityController.scheduleFirstUseOnboardingTip();
   }
 
   async function callPageBridge(method, params) {
-    try {
-      await pageBridgeReady;
-    } catch (error) {
-      return {
-        ok: false,
-        error: `Page bridge unavailable: ${error.message}`
-      };
-    }
-    const timeoutMs = getPageBridgeTimeoutMs(method);
-    return sendPageBridgeRequest(method, params, {
-      timeoutMs
-    });
-  }
-
-  function sendPageBridgeRequest(method, params, options = {}) {
-    const id = crypto.randomUUID();
-    return new Promise((resolve, reject) => {
-      const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 8000;
-      const cancellable = CANCELLABLE_PAGE_BRIDGE_METHODS.has(method);
-      let settled = false;
-      let timeout = null;
-
-      function cleanup() {
-        if (timeout !== null) {
-          window.clearTimeout(timeout);
-        }
-        window.removeEventListener('message', onMessage);
-        if (cancellable) {
-          activePageBridgeCancellationHandlers.delete(id);
-        }
-      }
-
-      function resolveOnce(value) {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        resolve(value);
-      }
-
-      function rejectOnce(error) {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        reject(error);
-      }
-
-      function cancelRequest() {
-        const error = new Error('Codex run was cancelled by the user');
-        error.code = 'codex_cancelled';
-        error.cancelled = true;
-        rejectOnce(error);
-      }
-
-      timeout = window.setTimeout(() => {
-        resolveOnce({ ok: false, error: 'Page bridge timed out' });
-      }, timeoutMs);
-
-      function onMessage(event) {
-        if (event.source !== window
-          || event.origin !== window.location.origin
-          || event.data?.source !== 'codex-overleaf/page'
-          || event.data?.pageBridgeVersion !== CodexOverleafCompatibility?.BUILD_TARGET_VERSION
-          || event.data?.pageBridgeRevision !== PAGE_BRIDGE_SCRIPT_REVISION
-          || event.data.id !== id) {
-          return;
-        }
-        resolveOnce(event.data.result);
-      }
-
-      if (cancellable) {
-        activePageBridgeCancellationHandlers.set(id, cancelRequest);
-        if (runCancellationRequested) {
-          window.queueMicrotask(cancelRequest);
-        }
-      }
-
-      window.addEventListener('message', onMessage);
-      // This capability narrows accidental/spoofed page-bridge calls. It is not
-      // a secret from malicious same-page Overleaf scripts because postMessage
-      // traffic is page-visible.
-      window.postMessage({
-        source: 'codex-overleaf/content',
-        id,
-        method,
-        params,
-        capability: PAGE_BRIDGE_CAPABILITY
-      }, window.location.origin);
-    });
+    return pageBridgeClient.call(method, params);
   }
 
   function getPageBridgeTimeoutMs(method) {
-    if (method === 'getProjectSnapshot') {
-      return SNAPSHOT_PAGE_BRIDGE_TIMEOUT_MS;
-    }
-    if (method === 'getProjectFileList') {
-      return CONTEXT_FILE_LIST_PAGE_BRIDGE_TIMEOUT_MS;
-    }
-    if (method === 'triggerCompile' || method === 'getCompileLog') {
-      return COMPILE_PAGE_BRIDGE_TIMEOUT_MS;
-    }
-    if (method === 'rejectTrackedChanges' || method === 'acceptTrackedChanges') {
-      return 120000;
-    }
-    if (method === 'applyOperations') {
-      // Each per-op step inside writebackRouter.applyOperationsCore can wait
-      // up to 5s for openFileByPath (treeOperations.js:230, :259) plus up to
-      // 5s for waitForActiveEditorText plus reviewing/save-state polling.
-      // A multi-op write on a freshly-loaded Overleaf editor can run 15-30s
-      // in the wild. The pre-fix default of 8000ms timed out mid-write and
-      // left the page-side promise running uncontrolled — a 'zombie' write
-      // could still land after the content-side reported failure. 30s is a
-      // sane upper bound that covers the realistic slow path without
-      // letting a genuinely hung dispatch tie up the UI indefinitely.
-      return 30000;
-    }
-    return 8000;
-  }
-
-  async function injectPageBridge() {
-    await injectScriptOnce('src/shared/reviewing.js', 'codex-overleaf-reviewing-script');
-    await injectScriptOnce('src/shared/projectFiles.js', 'codex-overleaf-project-files-script');
-    await injectScriptOnce('src/shared/compatibility.js', 'codex-overleaf-compatibility-page-script');
-    await injectScriptOnce('src/shared/staleGuard.js', 'codex-overleaf-stale-guard-script');
-    await injectScriptOnce('src/shared/compileAdapter.js', 'codex-overleaf-compile-adapter-script');
-    await injectScriptOnce('src/shared/governanceRules.js', 'codex-overleaf-governance-rules-script');
-    await injectScriptOnce('src/shared/sensitiveScan.js', 'codex-overleaf-sensitive-scan-script');
-    await injectScriptOnce('src/shared/auditRecords.js', 'codex-overleaf-audit-records-script');
-    await injectScriptOnce('src/page/saveState.js', 'codex-overleaf-save-state-script', { force: true });
-    await injectScriptOnce('src/page/overleafCapabilities.js', 'codex-overleaf-capabilities-script');
-    await injectScriptOnce('src/page/compileBridge.js', 'codex-overleaf-compile-bridge-script');
-    await injectScriptOnce('src/page/overleafEditor.js', 'codex-overleaf-editor-script');
-    await injectScriptOnce('src/page/overleafProjectSnapshot.js', 'codex-overleaf-project-snapshot-script');
-    await injectOptionalOtDependencies();
-    await injectScriptOnce('src/page/pageBridgeCapability.js', 'codex-overleaf-page-bridge-capability-script');
-    await injectScriptOnce('src/page/treeOperations.js', 'codex-overleaf-tree-operations-script', { force: true });
-    await injectScriptOnce('src/page/snapshotRouter.js', 'codex-overleaf-snapshot-router-script');
-    await injectScriptOnce('src/page/writeGuard.js', 'codex-overleaf-write-guard-script', { force: true });
-    // Phase 7 (v1.8.0): the tracked-changes lifecycle must be defined in the
-    // page world BEFORE writebackRouter.create() dereferences it — the vm
-    // test harnesses inject it manually, so only this list proves it loads.
-    await injectScriptOnce('src/page/trackedChangesLifecycle.js', 'codex-overleaf-tracked-changes-lifecycle-script', { force: true });
-    await injectScriptOnce('src/page/writebackRouter.js', 'codex-overleaf-writeback-router-script', { force: true });
-    await injectScriptOnce('src/pageBridge.js', 'codex-overleaf-page-bridge-script', { force: true });
-    await initializePageBridgeCapability();
-  }
-
-  async function injectOptionalOtDependencies() {
-    try {
-      await injectScriptOnce('src/shared/otText.js', 'codex-overleaf-ot-text-script');
-      await injectScriptOnce('src/page/overleafRealtimeObserver.js', 'codex-overleaf-realtime-observer-script');
-    } catch (_error) {
-      // The page bridge has a read-only unavailable fallback for these optional OT helpers.
-    }
-  }
-
-  function injectScriptOnce(src, id, options = {}) {
-    return new Promise((resolve, reject) => {
-      const existing = document.getElementById(id);
-      if (existing && options.force !== true) {
-        resolve();
-        return;
-      }
-      existing?.remove?.();
-      const script = document.createElement('script');
-      const timeout = window.setTimeout(() => {
-        cleanup();
-        reject(new Error(`Timed out loading ${src}`));
-      }, 8000);
-      function cleanup() {
-        window.clearTimeout(timeout);
-        script.onload = null;
-        script.onerror = null;
-        script.remove();
-      }
-      script.id = id;
-      const runtimePrefix = String(root.__CODEX_OVERLEAF_RUNTIME_PREFIX__ || '');
-      script.src = chrome.runtime.getURL(runtimePrefix + src);
-      script.onload = () => {
-        cleanup();
-        resolve();
-      };
-      script.onerror = () => {
-        cleanup();
-        reject(new Error(`Failed to load ${src}`));
-      };
-      (document.head || document.documentElement).append(script);
-    });
-  }
-
-  async function initializePageBridgeCapability() {
-    const result = await sendPageBridgeRequest('initializeCapability', {}, {
-      timeoutMs: 8000
-    });
-    if (!result?.ok) {
-      throw new Error(result?.error || result?.reason || 'Page bridge capability initialization failed');
-    }
-  }
-
-  function createPageBridgeCapability() {
-    if (crypto?.randomUUID) {
-      return crypto.randomUUID();
-    }
-    const bytes = new Uint8Array(24);
-    crypto.getRandomValues(bytes);
-    return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    return pageBridgeClient.resolveTimeoutMs(method);
   }
 
   async function loadStoredState() {
+    const projectId = getCurrentProjectId();
+    const persistenceCoordinator = getScopedPersistenceCoordinator();
+    const hydrationView = projectId && persistenceCoordinator
+      ? await persistenceCoordinator.beginHydration(projectId)
+      : null;
+    const hydrationAccountScopeId = hydrationView?.accountScopeId || cachedAccountScopeId || '';
+    const loaded = await loadStoredStateForProject(hydrationAccountScopeId);
+    if (
+      hydrationView
+      && persistenceCoordinator
+      && !persistenceCoordinator.isCurrent(hydrationView)
+    ) {
+      throw Object.assign(new Error('Scoped hydration was superseded.'), {
+        code: 'stale_hydration'
+      });
+    }
+    return loaded;
+  }
+
+  function buildScopedFallbackStorageKey(baseKey, accountScopeId) {
+    const account = typeof accountScopeId === 'string' ? accountScopeId.trim() : '';
+    if (!account) {
+      throw Object.assign(new Error('Scoped fallback storage requires an account identity.'), {
+        code: 'account_scope_unavailable'
+      });
+    }
+    return `${baseKey}:account:${encodeURIComponent(account)}`;
+  }
+
+  function isScopedPersistenceIdentityFailure(error) {
+    return [
+      'account_scope_unavailable',
+      'scoped_claim_unavailable',
+      'stale_hydration',
+      'stale_view'
+    ].includes(error?.code);
+  }
+
+  async function loadStoredStateForProject(accountScopeId = cachedAccountScopeId || '') {
     try {
-      const StorageDb = window.CodexOverleafStorageDb;
-      const Migration = window.CodexOverleafStorageMigration;
+      const StorageDb = Modules.StorageDb;
+      const Migration = Modules.StorageMigration;
       const projectId = getCurrentProjectId();
       const legacyKey = storageKey;
 
-      const { prefs, sessions, activeSessionId } = await Migration.runMigrationIfNeeded(projectId, legacyKey);
+      const { prefs, sessions, activeSessionId } = await Migration.runMigrationIfNeeded(
+        projectId,
+        legacyKey,
+        accountScopeId
+      );
 
       return {
         model: prefs.model || '', providerId: prefs.providerId || 'builtin',
@@ -5958,6 +5570,7 @@
         panelWidth: prefs.panelWidth || PANEL_DEFAULT_WIDTH,
         sessions: sessions.map(session => ({
           id: session.id,
+          accountScopeId: session.accountScopeId || accountScopeId,
           title: session.title || '',
           titleSource: session.titleSource || 'auto',
           focusFiles: session.focusFiles || [],
@@ -5980,13 +5593,16 @@
         runs: []
       };
     } catch (error) {
-      // Fallback to legacy loading if IndexedDB fails
-      const keys = storageKey === LEGACY_STORAGE_KEY
-        ? [LEGACY_STORAGE_KEY]
-        : [storageKey, LEGACY_STORAGE_KEY];
-      const stored = await chrome.storage.local.get(keys);
-      const fallback = stored[storageKey] || stored[LEGACY_STORAGE_KEY] || {};
-      if (fallback?.__codexOverleafCompactFallback === true) {
+      if (!accountScopeId || isScopedPersistenceIdentityFailure(error)) {
+        throw error;
+      }
+      const fallbackKey = buildScopedFallbackStorageKey(storageKey, accountScopeId);
+      const stored = await chrome.storage.local.get([fallbackKey]);
+      const fallback = stored[fallbackKey] || {};
+      if (
+        fallback?.__codexOverleafCompactFallback === true
+        && fallback.__codexOverleafFallbackAccountScopeId === accountScopeId
+      ) {
         return {
           mode: fallback.mode || '', providerId: fallback.providerId || 'builtin',
           model: fallback.model || '',
@@ -6007,7 +5623,7 @@
           runs: []
         };
       }
-      return fallback;
+      throw error;
     }
   }
 
@@ -6027,8 +5643,8 @@
 
   async function saveState(options) {
     try {
-      const StorageDb = window.CodexOverleafStorageDb;
-      const Migration = window.CodexOverleafStorageMigration;
+      const StorageDb = Modules.StorageDb;
+      const Migration = Modules.StorageMigration;
       // Welcome-panel + write-guard:
       // post-navigation persistence gate. The normal URL-derived projectId
       // belongs to the route the user is *currently looking at*. When a run
@@ -6074,86 +5690,85 @@
       compactState.experimentalOtByProject = state.experimentalOtByProject;
       compactState.customInstructionsByProject = state.customInstructionsByProject;
       compactState.governanceRulesByProject = state.governanceRulesByProject;
+      const stateSnapshot = typeof structuredClone === 'function'
+        ? structuredClone(state)
+        : JSON.parse(JSON.stringify(state));
+      const compactStateSnapshot = typeof structuredClone === 'function'
+        ? structuredClone(compactState)
+        : JSON.parse(JSON.stringify(compactState));
 
-      // Save lightweight prefs to chrome.storage.local
-      const latestPrefs = typeof Migration.loadPrefs === 'function'
-        ? await Migration.loadPrefs()
-        : {};
-      const prefsFromState = StorageDb.extractLightweightPrefs(compactState, projectId);
-      const prefs = {
-        ...(latestPrefs && typeof latestPrefs === 'object' ? latestPrefs : {}),
-        ...prefsFromState
-      };
-      prefs.activeSessionByProject = StorageDb.buildActiveSessionByProject(
-        latestPrefs?.activeSessionByProject || {},
+      const persistScopedState = persistenceContext => Modules.ScopedPersistenceCoordinator.persistPanelState({
+        state: stateSnapshot,
+        compactState: compactStateSnapshot,
         projectId,
-        compactState.activeSessionId || state.activeSessionId || ''
-      );
-      prefs.experimentalOtByProject = {
-        ...(latestPrefs?.experimentalOtByProject || {}),
-        [projectId]: normalizeExperimentalOtByProject(state?.experimentalOtByProject)[projectId] === true
-      };
-      const normalizedGovernanceByProject = typeof normalizeGovernanceRulesByProject === 'function'
-        ? normalizeGovernanceRulesByProject(state?.governanceRulesByProject)
-        : (state?.governanceRulesByProject || {});
-      prefs.governanceRulesByProject = {
-        ...(latestPrefs?.governanceRulesByProject || {}),
-        ...normalizedGovernanceByProject
-      };
-      const normalizedCustomProject = normalizeCustomInstructionsByProject({ [projectId]: '' });
-      const normalizedCustomProjectId = Object.keys(normalizedCustomProject)[0] || '';
-      const currentCustomInstructions = normalizeCustomInstructionsByProject(state?.customInstructionsByProject);
-      prefs.customInstructionsByProject = {
-        ...(latestPrefs?.customInstructionsByProject || {})
-      };
-      if (normalizedCustomProjectId) {
-        prefs.customInstructionsByProject[normalizedCustomProjectId] =
-          Object.prototype.hasOwnProperty.call(currentCustomInstructions, normalizedCustomProjectId)
-            ? currentCustomInstructions[normalizedCustomProjectId]
-            : '';
-      }
-      await Migration.savePrefs(prefs);
-
-      // Save all displayable session state to IndexedDB. The panel history lives here;
-      // chrome.storage.local only keeps small pointers/preferences.
-      const sessionRecords = (state.sessions || []).map(session => (
-        StorageDb.buildSessionRecord({
-          ...session,
-          projectId,
-          title: session.title || '',
-          titleSource: session.titleSource || 'auto',
-          codexThreadId: session.codexThreadId || '',
-          status: 'active',
-          focusFiles: Array.isArray(session.focusFiles) ? session.focusFiles : [],
-          createdAt: session.createdAt,
-          updatedAt: session.updatedAt
-        }, { preserveRunActionPayload: true })
-      ));
-      await window.CodexOverleafSessionPersistence.writeSessions({
-        Migration, StorageDb, projectId,
         deletedSessionIds: options?.deletedSessionIds,
-        sessionRecords
+        Migration,
+        StorageDb,
+        SessionPersistence: Modules.SessionPersistence,
+        normalizeExperimentalOtByProject,
+        normalizeGovernanceRulesByProject,
+        normalizeCustomInstructionsByProject,
+        persistenceContext
       });
+
+      const persistenceCoordinator = getScopedPersistenceCoordinator();
+      if (!persistenceCoordinator) {
+        throw Object.assign(new Error('Scoped persistence coordinator is unavailable.'), {
+          code: 'scoped_persistence_unavailable'
+        });
+      } else {
+        const committed = await persistenceCoordinator.commit(
+          projectId,
+          {
+            detached: Boolean(projectIdOverride),
+            rebase: true,
+            queueMutation: options?.queueMutation,
+            queueMutations: options?.queueMutations,
+            sessionTombstones: options?.deletedSessionIds
+          },
+          persistScopedState
+        );
+        if (!committed.ok && (
+          options?.queueMutation
+          || options?.queueMutations?.length
+          || committed.reason !== 'stale_view'
+        )) {
+          throw Object.assign(new Error(`Scoped persistence failed: ${committed.reason}`), {
+            code: committed.reason
+          });
+        }
+      }
     } catch (error) {
-      // Fallback: try legacy save
+      if (
+        error?.code === 'account_scope_unavailable' &&
+        !options?.queueMutation &&
+        !(Array.isArray(options?.queueMutations) && options.queueMutations.length)
+      ) {
+        return;
+      }
+      if (options?.queueMutation || options?.queueMutations?.length) {
+        throw error;
+      }
+      let fallbackError = null;
       try {
-        await chrome.storage.local.set({ [storageKey]: prepareCompactFallbackState(state) });
-      } catch (fallbackError) {
-        // Structured FailureReason §9.8: persistence raised a quota error.
-        // Surface a `storage_quota_exceeded` failure (warning, retryable)
-        // alongside the legacy toast notice so downstream renderers and tests
-        // can detect the quota-specific class. The structured emit fires for
-        // both the original `error` (primary IndexedDB write) and the
-        // `fallbackError` (chrome.storage.local fallback).
-        const quotaHit = isStorageQuotaError(error) || isStorageQuotaError(fallbackError);
-        if (quotaHit) {
-          emitStorageQuotaFailure(error, fallbackError);
-        }
-        if (typeof appendStorageNoticeOnce === 'function') {
-          appendStorageNoticeOnce('save-failed', tx(`Failed to save session state: ${error.message}`, `保存会话状态失败：${error.message}`));
-        } else {
-          throw fallbackError;
-        }
+        const accountScopeId = cachedAccountScopeId || '';
+        const fallbackKey = buildScopedFallbackStorageKey(storageKey, accountScopeId);
+        await chrome.storage.local.set({
+          [fallbackKey]: {
+            ...prepareCompactFallbackState(state),
+            __codexOverleafFallbackAccountScopeId: accountScopeId
+          }
+        });
+      } catch (caughtFallbackError) {
+        fallbackError = caughtFallbackError;
+      }
+      if (isStorageQuotaError(error)) {
+        emitStorageQuotaFailure(error, fallbackError);
+      }
+      if (typeof appendStorageNoticeOnce === 'function') {
+        appendStorageNoticeOnce('save-failed', tx(`Failed to save session state: ${error.message}`, `保存会话状态失败：${error.message}`));
+      } else {
+        throw error;
       }
     }
   }
@@ -6216,7 +5831,8 @@
     showPluginToast(text, { status: 'warning', sticky: true });
   }
 
-  function saveStateSoon(delayMs = 120) {
+  function saveStateSoon(delayMs = 120, persistenceOptions = null) {
+    pendingSaveStateOptions = mergeSaveStateOptions(pendingSaveStateOptions, persistenceOptions);
     // If a saveState() is already in flight, do NOT start a parallel one.
     // Mark the trailing flag so the in-flight save's completion callback
     // schedules another one — that way the final disk snapshot reflects
@@ -6238,9 +5854,15 @@
   }
 
   function runQueuedSaveState() {
+    if (saveStateInFlightPromise) {
+      saveStateRunAfterFlight = true;
+      return saveStateInFlightPromise;
+    }
     saveStateInFlight = true;
     saveStateRunAfterFlight = false;
-    saveState()
+    const persistenceOptions = pendingSaveStateOptions;
+    pendingSaveStateOptions = null;
+    const runPromise = saveState(persistenceOptions)
       .catch(error => {
         if (isStorageQuotaError(error)) {
           // Structured FailureReason §9.8: timer-driven saveState raised a
@@ -6252,6 +5874,9 @@
         appendPlainLog(tx(`Failed to save session state: ${formatStateSaveError(error)}`, `保存会话状态失败：${formatStateSaveError(error)}`));
       })
       .finally(() => {
+        if (saveStateInFlightPromise === runPromise) {
+          saveStateInFlightPromise = null;
+        }
         saveStateInFlight = false;
         if (saveStateRunAfterFlight) {
           // A saveStateSoon() landed during the in-flight phase. Flush it
@@ -6260,6 +5885,52 @@
           saveStateSoon(0);
         }
       });
+    saveStateInFlightPromise = runPromise;
+    return runPromise;
+  }
+
+  async function flushQueuedSaveState(persistenceOptions = null) {
+    pendingSaveStateOptions = mergeSaveStateOptions(pendingSaveStateOptions, persistenceOptions);
+    let persistLatestSnapshot = true;
+    while (persistLatestSnapshot) {
+      if (saveStateTimer) {
+        clearTimeout(saveStateTimer);
+        saveStateTimer = null;
+      }
+      if (saveStateInFlightPromise) {
+        await saveStateInFlightPromise;
+        if (saveStateTimer) {
+          clearTimeout(saveStateTimer);
+          saveStateTimer = null;
+        }
+      }
+
+      saveStateRunAfterFlight = false;
+      await runQueuedSaveState();
+      persistLatestSnapshot = Boolean(
+        saveStateTimer
+        || saveStateRunAfterFlight
+        || pendingSaveStateOptions
+      );
+    }
+  }
+
+  function mergeSaveStateOptions(current, incoming) {
+    if (!incoming) return current;
+    const queueMutations = [
+      ...(current?.queueMutations || (current?.queueMutation ? [current.queueMutation] : [])),
+      ...(incoming?.queueMutations || (incoming?.queueMutation ? [incoming.queueMutation] : []))
+    ];
+    return {
+      ...(current || {}),
+      ...incoming,
+      queueMutation: undefined,
+      queueMutations,
+      deletedSessionIds: Array.from(new Set([
+        ...(current?.deletedSessionIds || []),
+        ...(incoming?.deletedSessionIds || [])
+      ]))
+    };
   }
 
   function scheduleRunStateSave(kind) {
@@ -6511,7 +6182,15 @@
     renderPendingInputs();
   }
 
-  function startRunView({ task, mode, model, reasoningEffort, speedTier, queueItemId = '' }) {
+  function startRunView({
+    task,
+    mode,
+    model,
+    reasoningEffort,
+    speedTier,
+    queueItemId = '',
+    executionSnapshot = null
+  }) {
     let attachments = [];
     if (Array.isArray(arguments[0]?.attachments)) {
       attachments = arguments[0].attachments;
@@ -6521,7 +6200,8 @@
       id: createRunId(),
       task,
       mode,
-      ...providerSettingsCoordinator.getProviderSnapshot(state?.providerId),
+      ...providerSettingsCoordinator.getProviderSnapshot(executionSnapshot?.providerId || state?.providerId),
+      providerRevision: executionSnapshot?.providerRevision || '',
       model,
       reasoningEffort,
       speedTier,
@@ -6539,6 +6219,9 @@
       nativeRequestId: '',
       codexTurnId: '',
       nativeEventSeq: 0,
+      executionSnapshot: executionSnapshot
+        ? RunExecutionSnapshot.cloneSnapshot(executionSnapshot)
+        : undefined,
       // Welcome-panel + write-guard:
       // Immutable per-run capture of the project this run was submitted
       // against. Every writeback / accept / undo dispatch attaches this id
@@ -6546,7 +6229,8 @@
       // is still acting on the same project before mutating the editor. No
       // language-level enforcement — the field is treated as immutable by
       // convention and never reassigned anywhere downstream.
-      runProjectId: getCurrentProjectId() || ''
+      runProjectId: getCurrentProjectId() || '',
+      runAccountScopeId: cachedAccountScopeId || ''
     };
     const active = getActiveSession(state);
     const titlePatch = active?.titleSource !== 'manual'
@@ -6576,6 +6260,8 @@
       // Mirror the immutable runProjectId on the view so writeback /
       // accept / undo dispatches don't need to re-look up the record.
       runProjectId: record.runProjectId,
+      runAccountScopeId: record.runAccountScopeId,
+      executionSnapshot: record.executionSnapshot,
       root,
       runProcess: root.querySelector('[data-run-process]'),
       processLabel: root.querySelector('[data-run-process-summary]'),
@@ -6588,6 +6274,19 @@
       nativeRequestId: '',
       activeTurn: null
     };
+  }
+
+  function touchSessionForTerminalRun(sessionId, finishedAt) {
+    const session = Array.isArray(state.sessions)
+      ? state.sessions.find(item => item?.id === sessionId)
+      : null;
+    if (!session) return '';
+    const previousUpdatedAt = Date.parse(session.updatedAt || '') || 0;
+    const requestedUpdatedAt = Date.parse(finishedAt || '') || Date.now();
+    const updatedAt = new Date(Math.max(requestedUpdatedAt, previousUpdatedAt + 1)).toISOString();
+    session.updatedAt = updatedAt;
+    session.lastActivityAt = updatedAt;
+    return updatedAt;
   }
 
   function finishRunView(text, status) {
@@ -6603,6 +6302,7 @@
       record.status = status;
       record.statusText = statusText;
       record.finishedAt = new Date().toISOString();
+      touchSessionForTerminalRun(currentRunView.sessionId, record.finishedAt);
       currentRunView.terminalStatus = status;
       runGuidanceController.settleView(currentRunView);
       // Welcome-panel + write-guard:
@@ -7032,31 +6732,11 @@
 
 
   function isUndoResultEffectivelyApplied(run, result) {
-    if (!result?.skipped?.length) {
-      return true;
-    }
-    const expectedByPath = new Map((run?.undoExpectedFiles || [])
-      .filter(file => file?.path && typeof file.content === 'string')
-      .map(file => [file.path, file.content]));
-    if (!expectedByPath.size) {
-      return false;
-    }
-    const undoRestore = buildNoTraceUndoRestore(run);
-    const editPaths = Array.from(new Set((undoRestore.operations || [])
-      .filter(operation => (
-        operation?.type === 'edit'
-        && operation.path
-        && expectedByPath.has(operation.path)
-      ))
-      .map(operation => operation.path)));
-    if (!editPaths.length) {
-      return false;
-    }
-    return editPaths.every(path => (result.applied || []).some(item => (
-      item?.operation?.type === 'edit'
-      && item.operation.path === path
-      && item?.result?.verifiedContent === expectedByPath.get(path)
-    )));
+    return WritebackSettlement.isUndoResultEffectivelyApplied(
+      run,
+      result,
+      buildNoTraceUndoRestore(run).operations
+    );
   }
 
   async function undoRun(runId) {
@@ -7166,7 +6846,11 @@
       // A subset undo never closes the ledger: unselected files can still
       // be undone later, so the run stays 'partial' and the button usable.
       const fullSelection = selectedOperations.length === undoOperations.length;
-      setRunUndoStatus(runId, undoApplied && fullSelection ? 'applied' : 'partial');
+      applyLegacyUndoSettlement(
+        runId,
+        undoApplied && fullSelection ? 'applied' : 'partial',
+        result
+      );
   }
 
   async function undoRunTrackedChanges(runId, run) {
@@ -7239,91 +6923,13 @@
       }
     });
     if (lifecycleReject) {
-      // Structured FailureReason §9.5: post-undo proof step. If the page op
-      // reported ok-ish (no skipped items) but the per-path verifiedContent
-      // does not match this run's expected pre-write content, synthesize an
-      // `undo_not_verified` failure (warning, retryable, needs_review,
-      // changedDocument:true) and attach it to the result so the §7
-      // settlement matrix routes the run to `needs_review`.
-      attachUndoNotVerifiedFailure(run, result);
-      // §7 settlement matrix: only land in terminal `rejected` when post-action
-      // proof is sufficient. If any per-op failure marks `needs_review` (or
-      // matches a known unverified code), settle as `needs_review` so both
-      // Accept and Undo stay actionable and the user can reconcile.
-      applyRejectSettlement(runId, result);
+      WritebackSettlement.attachUndoNotVerifiedFailure(run, result, {
+        buildFailure: buildContentFailure
+      });
+      applyTrackedChangeSettlement(runId, 'reject', result);
       return;
     }
-    setRunUndoStatus(runId, result.skipped?.length ? 'partial' : 'applied');
-  }
-
-  // Post-undo proof step (§9.5). Called only on lifecycle reject paths after
-  // the page bridge has returned. We only synthesize an `undo_not_verified`
-  // failure when:
-  //   - The page op did not already emit a needs_review-class failure (the
-  //     settlement matrix would have caught it).
-  //   - The reject result has no skipped items (otherwise the existing
-  //     skipped failures drive settlement).
-  //   - At least one expected pre-run path has no matching `applied` entry
-  //     whose `verifiedContent` equals the expected content. (Note: we do
-  //     NOT delegate to `isUndoResultEffectivelyApplied` because that helper
-  //     short-circuits to true on `skipped.length === 0` — the §9.5 contract
-  //     requires real per-path verifiedContent proof.)
-  // The synthesized failure is appended to `result.skipped` as a synthetic
-  // proof entry so `collectFailuresFromResult` picks it up.
-  function attachUndoNotVerifiedFailure(run, result) {
-    if (!result || typeof result !== 'object') return;
-    if (result.ok === false) return;
-    if (Array.isArray(result.skipped) && result.skipped.length > 0) return;
-    const expectedFiles = Array.isArray(run?.undoExpectedFiles) ? run.undoExpectedFiles : [];
-    if (!expectedFiles.length) return;
-    if (isUndoVerifiedContentMatching(run, result)) return;
-    const firstPath = expectedFiles.find(entry => entry && typeof entry.path === 'string')?.path || '';
-    const failure = buildContentFailure('undo_not_verified', { path: firstPath, type: 'undo' }, {
-      changedDocument: true,
-      terminalState: 'needs_review',
-      evidence: {
-        undoApplied: true,
-        verified: false,
-        expectedFileCount: expectedFiles.length
-      }
-    });
-    const synthetic = {
-      operation: { path: firstPath, type: 'undo' },
-      result: {
-        ok: false,
-        code: 'undo_not_verified',
-        reason: failure.userMessage,
-        failure
-      }
-    };
-    if (!Array.isArray(result.skipped)) {
-      result.skipped = [];
-    }
-    result.skipped.push(synthetic);
-    result.ok = false;
-  }
-
-  // Per-path verifiedContent match for the §9.5 proof step. Returns true
-  // only when every expected pre-run path has a matching `applied` entry
-  // whose `result.verifiedContent` equals the expected content. Empty
-  // expected files map → true (nothing to prove).
-  function isUndoVerifiedContentMatching(run, result) {
-    const expectedByPath = new Map((run?.undoExpectedFiles || [])
-      .filter(file => file && typeof file.path === 'string' && typeof file.content === 'string')
-      .map(file => [file.path, file.content]));
-    if (!expectedByPath.size) return true;
-    const applied = Array.isArray(result.applied) ? result.applied : [];
-    for (const [path, expected] of expectedByPath.entries()) {
-      const matched = applied.some(entry => {
-        if (!entry || !entry.operation) return false;
-        if (entry.operation.path !== path) return false;
-        if (entry.operation.type !== 'edit') return false;
-        if (entry.result && entry.result.ok === false) return false;
-        return entry.result && entry.result.verifiedContent === expected;
-      });
-      if (!matched) return false;
-    }
-    return true;
+    applyLegacyUndoSettlement(runId, result.skipped?.length ? 'partial' : 'applied', result);
   }
 
   async function acceptRun(runId) {
@@ -7345,8 +6951,6 @@
       return;
     }
 
-    // UI-local in-flight lock: disables the acting button with progress. Never
-    // written to trackedChangeStatus, never persisted.
     trackedChangeInFlight.set(runId, 'accept');
     refreshRunCardControls(runId);
     appendRunRecordEvent(runId, {
@@ -7361,25 +6965,12 @@
         trackedChanges: run.undoTrackedChanges || [],
         expectedFiles: run.undoExpectedFiles || [],
         postFiles: buildTrackedUndoPostFiles(run),
-        // The run's own forward writeback operations. The Accept replay
-        // re-applies these exact patches so it writes only the changed
-        // fragments, never a whole-file overwrite.
         appliedOperations: Array.isArray(run.appliedOperations) ? run.appliedOperations : [],
-        // Welcome-panel + write-guard:
-        // bind the accept replay to the run's original project. If the user
-        // has navigated to a different project the page-side guard refuses
-        // with `aborted_project_changed` before any mutation.
         runProjectId: getRunProjectIdForWriteback(run)
       });
     } finally {
       trackedChangeInFlight.delete(runId);
     }
-    // Surface every page-layer step as its own run-card event row so the user
-    // can copy-paste the full Accept trace if the sticky-Editing reconfirm
-    // ever still cannot keep the replay untracked. Each entry is
-    // self-contained — the diagnostic info inline carries the reviewing
-    // detector verdict, the strict gate booleans, and per-op
-    // re-toggle/verify outcomes so no extra page-state query is needed.
     appendAcceptDiagnosticEvents(runId, Array.isArray(result.diagnostics) ? result.diagnostics : []);
     appendRunRecordEvent(runId, {
       title: tr('runAcceptTrackedResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
@@ -7396,10 +6987,6 @@
         }))
       }
     });
-    // Accept All is editor-undo + untracked replay. If the editor-undo could not
-    // reach the pre-write state (content drifted), the page layer bails without
-    // re-writing and returns not-ok. The run then stays `pending` so the user
-    // can retry — it does NOT go to a decisive terminal status.
     if (result.ok === false) {
       appendRunRecordEvent(runId, {
         title: tr('runAcceptTrackedFailed'),
@@ -7408,119 +6995,20 @@
           [tr('detailReason')]: tr('runAcceptTrackedFailedReason')
         }
       });
-      refreshRunCardControls(runId);
-      return;
+      if (!WritebackSettlement.isSuccessfulTrackedChangeSettlement(result)) {
+        refreshRunCardControls(runId);
+      }
     }
-    // Structured FailureReason §9.6: post-accept proof step. If the page op
-    // returned ok but cannot prove a clean post-accept state (no skipped
-    // items, no remaining tracked-change refs proven, and the post-files
-    // content of at least one path is missing or mismatched), synthesize an
-    // `accept_not_verified` failure (warning, retryable, needs_review,
-    // changedDocument:true) and attach it so the §7 settlement matrix routes
-    // the run to `needs_review` rather than terminal `accepted`.
-    attachAcceptNotVerifiedFailure(run, result);
-    // §7 settlement matrix: only land in terminal `accepted` when post-action
-    // proof is sufficient. If any per-op failure marks `needs_review` (or
-    // matches a known unverified code), settle as `needs_review` so both
-    // Accept and Undo stay actionable and the user can reconcile.
-    applyAcceptSettlement(runId, result);
+    WritebackSettlement.attachAcceptNotVerifiedFailure(run, result, {
+      buildFailure: buildContentFailure
+    });
+    applyTrackedChangeSettlement(runId, 'accept', result);
   }
 
-  // Fail-closed when the run record carries no runProjectId of its own.
-  //
-  // Older persisted runs (pre-v1.3.8) and restored-from-history runs may have
-  // an empty runProjectId. Returning the editor's current projectId as a
-  // fallback would let the page-side write-guard pass when the user happens
-  // to be in the project they originally ran the task on — but the run
-  // itself has NO authoritative binding, so we can't actually prove it.
-  // Returning '' triggers the runProjectId-missing branch of writeGuard /
-  // checkWritebackRunProjectId, which surfaces editor_project_id_unavailable
-  // with the canonical 'Refresh Overleaf and retry' next-step text.
   function getRunProjectIdForWriteback(run) {
     return typeof run?.runProjectId === 'string' && run.runProjectId
       ? run.runProjectId
       : '';
-  }
-
-  // Post-accept proof step (§9.6). Called only on lifecycle accept paths
-  // after the page bridge has returned. We only synthesize an
-  // `accept_not_verified` failure when:
-  //   - The page op did not already emit a needs_review-class failure (the
-  //     settlement matrix would have caught it).
-  //   - The accept result has no skipped items (otherwise the existing
-  //     skipped failures drive settlement).
-  //   - The page bridge did not confirm clean post-accept state — either no
-  //     `verified` flag, or the per-path applied items do not show the
-  //     trackedChange was confirmed cleared.
-  // The synthesized failure is appended to `result.skipped` as a synthetic
-  // proof entry so `collectFailuresFromResult` picks it up.
-  function attachAcceptNotVerifiedFailure(run, result) {
-    if (!result || typeof result !== 'object') return;
-    if (result.ok === false) return;
-    if (Array.isArray(result.skipped) && result.skipped.length > 0) return;
-    if (isAcceptResultEffectivelyVerified(run, result)) return;
-    const expectedFiles = Array.isArray(run?.undoExpectedFiles) ? run.undoExpectedFiles : [];
-    const firstPath = expectedFiles.find(entry => entry && typeof entry.path === 'string')?.path
-      || (run?.undoTrackedChanges || []).find(change => change && typeof change.path === 'string')?.path
-      || '';
-    const failure = buildContentFailure('accept_not_verified', { path: firstPath, type: 'accept' }, {
-      changedDocument: true,
-      terminalState: 'needs_review',
-      evidence: {
-        acceptApplied: true,
-        verified: false,
-        expectedFileCount: expectedFiles.length,
-        trackedChangeCount: Array.isArray(run?.undoTrackedChanges) ? run.undoTrackedChanges.length : 0
-      }
-    });
-    const synthetic = {
-      operation: { path: firstPath, type: 'accept' },
-      result: {
-        ok: false,
-        code: 'accept_not_verified',
-        reason: failure.userMessage,
-        failure
-      }
-    };
-    if (!Array.isArray(result.skipped)) {
-      result.skipped = [];
-    }
-    result.skipped.push(synthetic);
-    result.ok = false;
-  }
-
-  // Mirrors `isUndoResultEffectivelyApplied` for the accept side. Returns
-  // true when the page-bridge result carries proof that the run's tracked
-  // changes are gone: each tracked-change ref has a matching `applied` entry
-  // whose `result.verifiedContent` equals the run's known post-write content
-  // for that path. Returns false when proof is missing or contradicted —
-  // §9.6 `accept_not_verified`. Falls back to true when there are no
-  // expected files (defensive: the page bridge already returned ok, and
-  // there is nothing to verify against).
-  function isAcceptResultEffectivelyVerified(run, result) {
-    if (!result || typeof result !== 'object') return true;
-    const expectedFiles = Array.isArray(run?.undoExpectedFiles) ? run.undoExpectedFiles : [];
-    if (!expectedFiles.length) return true;
-    if (result.verified === true) return true;
-    const trackedChanges = Array.isArray(run?.undoTrackedChanges) ? run.undoTrackedChanges : [];
-    if (!trackedChanges.length) return true;
-    const applied = Array.isArray(result.applied) ? result.applied : [];
-    if (!applied.length) return false;
-    // Every tracked-change ref must show up in `applied` with a result
-    // carrying ok:true. If any tracked change does not appear as applied,
-    // proof is missing.
-    return trackedChanges.every(change => {
-      const key = change && (change.key || change.id || change.label);
-      if (!key) return false;
-      return applied.some(entry => {
-        const ref = entry && entry.trackedChange;
-        if (!ref) return false;
-        const refKey = ref.key || ref.id || ref.label;
-        if (refKey !== key) return false;
-        if (entry.result && entry.result.ok === false) return false;
-        return true;
-      });
-    });
   }
 
   // Translates the page bridge's Accept All `diagnostics` array into one
@@ -7532,14 +7020,14 @@
     for (const entry of diagnostics || []) {
       const step = entry && entry.step;
       const info = (entry && entry.info) || {};
-      const titleKey = ACCEPT_DIAGNOSTIC_TITLE_KEYS[step];
+      const titleKey = WritebackSettlement.ACCEPT_DIAGNOSTIC_TITLE_KEYS[step];
       if (!titleKey) {
         continue;
       }
       const title = titleKey === 'runAcceptTrackedStepReplayStart' || titleKey === 'runAcceptTrackedStepReplayDone'
         ? tr(titleKey, { path: info.path || tr('unknownFile') })
         : tr(titleKey);
-      const status = acceptDiagnosticStatus(step, info);
+      const status = WritebackSettlement.acceptDiagnosticStatus(step, info);
       appendRunRecordEvent(runId, {
         title,
         kind: 'activity',
@@ -7549,289 +7037,28 @@
     }
   }
 
-  // Maps each diagnostic step name to its i18n title key. Kept out of the
-  // function body so any future step rename surfaces as a missing entry.
-  const ACCEPT_DIAGNOSTIC_TITLE_KEYS = {
-    editorUndo: 'runAcceptTrackedStepEditorUndo',
-    modeBefore: 'runAcceptTrackedStepModeBefore',
-    forceEditing: 'runAcceptTrackedStepForceEditing',
-    replayStart: 'runAcceptTrackedStepReplayStart',
-    replayDone: 'runAcceptTrackedStepReplayDone',
-    restoreReviewing: 'runAcceptTrackedStepRestoreReviewing'
-  };
-
-  function acceptDiagnosticStatus(step, info) {
-    if (step === 'modeBefore' || step === 'replayStart') {
-      // Pre-state reads: never a failure, only context.
-      return 'info';
-    }
-    if (step === 'editorUndo' || step === 'forceEditing' || step === 'restoreReviewing') {
-      return info && info.ok === true ? 'info' : 'failed';
-    }
-    if (step === 'replayDone') {
-      return info && info.ok === true ? 'info' : 'failed';
-    }
-    return 'info';
-  }
-
-  // Drives a tracked-change-lifecycle run to a decisive terminal status when
-  // post-action proof is sufficient. Called by `applyAcceptSettlement` /
-  // `applyRejectSettlement` only after the §7 settlement matrix has cleared
-  // the run: if the page-layer returned per-op failures that imply unverified
-  // post-action state, the settlement helper routes to `needs_review` instead,
-  // and this helper is never called. The heavy payload is emptied here so
-  // stale refs never re-enter retention.
-  function applyTerminalTrackedChangeStatus(runId, status) {
-    const run = findRunRecord(runId);
-    if (!run || !TERMINAL_TRACKED_CHANGE_STATUS.has(status)) {
-      return;
-    }
-    run.trackedChangeStatus = status;
-    run.undoTrackedChanges = [];
-    run.undoExpectedFiles = [];
-    saveStateSoon();
-    refreshRunCardControls(runId);
-  }
-
-  // Inline mirror of the content-side subset of the FailureReason §9 catalog
-  // used by T5 emit sites. Mirrors the page-side `PAGE_FAILURE_CATALOG` in
-  // `extension/src/page/writebackRouter.js` so neither runtime has to depend on
-  // load order with `shared/failureReasons.js`. Each entry mirrors stage /
-  // severity / defaultRetryable / fallbackUserMessage / fallbackNextAction
-  // from `FAILURE_CODE_CATALOG`; keep in sync when adding codes.
-  const CONTENT_FAILURE_CATALOG = {
-    project_snapshot_unavailable: {
-      stage: 'context', severity: 'error', defaultRetryable: true,
-      fallbackUserMessage: 'Codex could not read the Overleaf project snapshot.',
-      fallbackNextAction: 'Refresh Overleaf, then rerun the task.'
-    },
-    selected_context_unresolved: {
-      stage: 'context', severity: 'warning', defaultRetryable: true,
-      fallbackUserMessage: 'Codex could not resolve the requested selection or context.',
-      fallbackNextAction: 'Select the target again or specify the file/section explicitly.'
-    },
-    codex_no_usable_result: {
-      stage: 'codex', severity: 'error', defaultRetryable: true,
-      fallbackUserMessage: 'Local Codex returned no usable final report or operations.',
-      fallbackNextAction: 'Open Technical Details and resolve the local Codex error.'
-    },
-    codex_project_locked: {
-      stage: 'codex', severity: 'blocked', defaultRetryable: true,
-      fallbackUserMessage: 'Another Codex task is already running for this Overleaf project.',
-      fallbackNextAction: 'Wait for the active task to finish, or cancel it before retrying.'
-    },
-    storage_quota_exceeded: {
-      stage: 'storage', severity: 'warning', defaultRetryable: true,
-      fallbackUserMessage: 'Browser storage quota was exceeded.',
-      fallbackNextAction: 'Clear old run history or reduce attachments.'
-    },
-    native_bridge_unavailable: {
-      stage: 'native', severity: 'blocked', defaultRetryable: true,
-      fallbackUserMessage: 'Extension cannot connect to the Codex native host.',
-      fallbackNextAction: 'Run install-native or reload the extension.'
-    },
-    undo_not_verified: {
-      stage: 'undo', severity: 'warning', defaultRetryable: true,
-      fallbackUserMessage: 'Undo ran, but Codex could not prove the file returned to pre-run content.',
-      fallbackNextAction: 'Inspect the file manually before continuing.'
-    },
-    accept_not_verified: {
-      stage: 'accept', severity: 'warning', defaultRetryable: true,
-      fallbackUserMessage: 'Accept appeared to run but Codex could not prove final content/state.',
-      fallbackNextAction: 'Inspect Overleaf Reviewing before continuing.'
-    }
-  };
-
-  // Build a structured FailureReason record (§7) for emit at the content
-  // runtime layer. `overrides` merges into the entry: callers supply `file` /
-  // `activeFile` / `userMessage` / `evidence` / `changedDocument` /
-  // `terminalState` etc. The `op` argument is the operation context that
-  // augments `file` / `operationType` when not explicitly overridden.
-  function buildContentFailure(code, op, overrides) {
-    // The local catalog holds content-runtime-specific codes; every other
-    // code (codex_not_found, codex_timeout, codex_output_limit,
-    // stale_source_changed, native_protocol_incompatible, ...) resolves
-    // through the shared §9 catalog. Without this fallback the function
-    // returned null for every shared-only code, so completion reports
-    // carried no structured failure and the recovery-action registry never
-    // fired for them (v1.7.6 fleet P1).
-    const entry = CONTENT_FAILURE_CATALOG[code] || FailureReasons?.FAILURE_CODE_CATALOG?.[code];
-    if (!entry) {
-      return null;
-    }
-    const merged = overrides || {};
-    const opCtx = op || {};
-    const failure = {
+  function buildContentFailure(code, operation, overrides) {
+    return WritebackSettlement.buildContentFailure(
       code,
-      stage: entry.stage,
-      severity: entry.severity,
-      userMessage: merged.userMessage || entry.fallbackUserMessage,
-      retryable: merged.retryable === undefined ? entry.defaultRetryable : merged.retryable === true,
-      nextAction: merged.nextAction || entry.fallbackNextAction
-    };
-    const file = merged.file !== undefined ? merged.file : opCtx.path;
-    if (file) failure.file = file;
-    const operationType = merged.operationType !== undefined ? merged.operationType : opCtx.type;
-    if (operationType) failure.operationType = operationType;
-    if (merged.activeFile !== undefined) failure.activeFile = merged.activeFile;
-    if (merged.changedDocument !== undefined) failure.changedDocument = merged.changedDocument === true;
-    if (merged.terminalState !== undefined) failure.terminalState = merged.terminalState;
-    if (merged.technicalMessage !== undefined) failure.technicalMessage = merged.technicalMessage;
-    if (merged.evidence !== undefined) failure.evidence = merged.evidence;
-    return failure;
-  }
-
-  // Accept / Undo has a two-state user lifecycle: actionable before the page
-  // action, terminal after a successful page action. Warning-class verification
-  // evidence can still be recorded in technical details, but it must not keep
-  // the primary buttons actionable after Overleaf accepted the operation.
-
-  // Codes that imply post-Accept proof is missing or contradicted. A page-side
-  // emitter (T4) is expected to fill these in; render-time normalization from
-  // the FailureReasons module repairs legacy `{ ok: false, code, reason }`
-  // shapes into the same structured failure record so this matrix works
-  // uniformly across both shapes.
-  const ACCEPT_NEEDS_REVIEW_CODES = new Set([
-    'tracked_changes_remain',
-    'accept_not_verified',
-    'tracked_changes_created_unexpectedly',
-    'accept_replay_created_tracked_changes',
-    'write_observed_mismatch'
-  ]);
-
-  const REJECT_NEEDS_REVIEW_CODES = new Set([
-    'undo_not_verified',
-    'undo_operation_failed',
-    'undo_reviewing_restore_unverified',
-    'tracked_change_nodes_not_identified',
-    'tracked_changes_remain',
-    'write_observed_mismatch'
-  ]);
-
-  // Walks the page-layer result's applied/skipped lists, normalizing each
-  // item's `result` (whether structured `failure` or legacy `code` + `reason`)
-  // into a `FailureReason` record. Used by `applyAcceptSettlement` /
-  // `applyRejectSettlement` to decide between `accepted`/`rejected`,
-  // `needs_review`, and "stay pending" (blocked).
-  function collectFailuresFromResult(result) {
-    const failures = [];
-    if (!result || typeof result !== 'object') {
-      return failures;
-    }
-    if (FailureReasons && FailureReasons.normalizeFailureReason instanceof Function) {
-      for (const entry of Array.isArray(result.skipped) ? result.skipped : []) {
-        const inner = (entry && entry.result) || entry;
-        if (!inner || inner.ok === true) continue;
-        const operation = (entry && entry.operation) || (entry && entry.trackedChange ? { path: entry.trackedChange.path } : undefined);
-        failures.push(FailureReasons.normalizeFailureReason(inner, operation));
-      }
-      for (const entry of Array.isArray(result.applied) ? result.applied : []) {
-        const inner = entry && entry.result;
-        if (!inner || inner.ok !== false) continue;
-        const operation = (entry && entry.operation) || (entry && entry.trackedChange ? { path: entry.trackedChange.path } : undefined);
-        failures.push(FailureReasons.normalizeFailureReason(inner, operation));
-      }
-    } else {
-      // Defensive fallback: the FailureReasons module should be present in
-      // production (loaded by the content script bundle) but tests that strip
-      // it out should still see the legacy code-only path treated as a
-      // generic non-blocking failure.
-      for (const entry of Array.isArray(result.skipped) ? result.skipped : []) {
-        const inner = (entry && entry.result) || entry;
-        if (inner && inner.ok !== true) {
-          failures.push({
-            code: (inner && typeof inner.code === 'string' ? inner.code : '') || 'unknown_legacy_failure',
-            severity: 'error'
-          });
-        }
-      }
-    }
-    return failures;
-  }
-
-  // Run-card settlement for Accept changes. Three branches:
-  //   1. The primary failure is `blocked` (e.g. preflight / navigation refused
-  //      to touch Overleaf) — stay pending so the user can retry without the
-  //      card claiming terminal accepted.
-  //   2. Any successful page-side accept work — settle as terminal `accepted`.
-  //   3. Otherwise, unverified/no-op failures can remain retryable.
-  function applyAcceptSettlement(runId, result) {
-    const failures = collectFailuresFromResult(result);
-    const primary = FailureReasons && FailureReasons.selectPrimaryFailure instanceof Function
-      ? FailureReasons.selectPrimaryFailure(failures)
-      : (failures[0] || null);
-    if (primary && primary.terminalState === 'blocked') {
-      // Stay pending — page bridge declined the operation before any document
-      // change. The preceding result event already showed the user the reason.
-      refreshRunCardControls(runId);
-      return;
-    }
-    if (isSuccessfulTrackedChangeSettlement(result)) {
-      applyTerminalTrackedChangeStatus(runId, 'accepted');
-      return;
-    }
-    const needsReview = failures.some(failure =>
-      failure.terminalState === 'needs_review' ||
-      ACCEPT_NEEDS_REVIEW_CODES.has(failure.code)
+      operation,
+      overrides,
+      FailureReasons
     );
-    if (needsReview) {
-      applyNeedsReviewTrackedChangeStatus(runId);
-      return;
-    }
-    applyTerminalTrackedChangeStatus(runId, 'accepted');
   }
 
-  // Same three-branch shape as `applyAcceptSettlement`, using the undo-side
-  // unverified-proof codes only when no successful reject/undo work happened.
-  function applyRejectSettlement(runId, result) {
-    const failures = collectFailuresFromResult(result);
-    const primary = FailureReasons && FailureReasons.selectPrimaryFailure instanceof Function
-      ? FailureReasons.selectPrimaryFailure(failures)
-      : (failures[0] || null);
-    if (primary && primary.terminalState === 'blocked') {
-      refreshRunCardControls(runId);
-      return;
-    }
-    if (isSuccessfulTrackedChangeSettlement(result)) {
-      applyTerminalTrackedChangeStatus(runId, 'rejected');
-      return;
-    }
-    const needsReview = failures.some(failure =>
-      failure.terminalState === 'needs_review' ||
-      REJECT_NEEDS_REVIEW_CODES.has(failure.code)
-    );
-    if (needsReview) {
-      applyNeedsReviewTrackedChangeStatus(runId);
-      return;
-    }
-    applyTerminalTrackedChangeStatus(runId, 'rejected');
-  }
-
-  function isSuccessfulTrackedChangeSettlement(result) {
-    if (!result || typeof result !== 'object') {
-      return false;
-    }
-    if (result.ok === true) {
-      return true;
-    }
-    if (!Array.isArray(result.applied)) {
-      return false;
-    }
-    return result.applied.some(entry => {
-      const inner = entry && (entry.result || entry);
-      return !inner || inner.ok !== false;
-    });
-  }
-
-  // Sets `needs_review` on a run without emptying refs — the user is supposed
-  // to retry Accept or Undo after inspecting Overleaf, so the heavy payload
-  // (tracked-change refs + expected files) must survive.
-  function applyNeedsReviewTrackedChangeStatus(runId) {
+  function applyTrackedChangeSettlement(runId, kind, result) {
     const run = findRunRecord(runId);
-    if (!run) {
+    const settlement = WritebackSettlement.settleTrackedChangeLifecycle({
+      kind,
+      run,
+      result,
+      failureReasons: FailureReasons
+    });
+    if (settlement.decision === 'blocked') {
+      refreshRunCardControls(runId);
       return;
     }
-    run.trackedChangeStatus = 'needs_review';
+    Object.assign(run, WritebackSettlement.applySettlementTransition(run, settlement));
     saveStateSoon();
     refreshRunCardControls(runId);
   }
@@ -7908,13 +7135,7 @@
   // possibly-divergent base. This keeps wide paragraph patches safe: their
   // whole-paragraph `expected` would otherwise silently fail to re-apply.
   function attachVerifiedContentToOperation(operation, result) {
-    if (!operation || typeof operation !== 'object') {
-      return operation;
-    }
-    if (operation.type === 'edit' && typeof result?.verifiedContent === 'string') {
-      return { ...operation, verifiedContent: result.verifiedContent };
-    }
-    return operation;
+    return WritebackSettlement.attachVerifiedContentToOperation(operation, result);
   }
 
   function recordUndoFromApply(project, applyResult) {
@@ -7938,8 +7159,8 @@
     ];
     record.appliedOperations = combinedAppliedOperations;
 
-    if (state.requireReviewing === true) {
-      const combinedTrackedChanges = mergeTrackedChanges([
+    if ((currentRunView?.executionSnapshot?.requireReviewing ?? state.requireReviewing) === true) {
+      const combinedTrackedChanges = normalizeApplyTrackedChanges([
         ...(Array.isArray(record.undoTrackedChanges) ? record.undoTrackedChanges : []),
         ...trackedChanges
       ]);
@@ -8011,49 +7232,11 @@
   }
 
   function normalizeApplyTrackedChanges(changes = []) {
-    const seen = new Set();
-    const normalized = [];
-    for (const change of changes || []) {
-      const key = typeof change?.key === 'string' ? change.key : '';
-      if (!key || seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      normalized.push({
-        key,
-        id: typeof change.id === 'string' ? change.id : '',
-        path: typeof change.path === 'string' ? change.path : '',
-        label: typeof change.label === 'string' ? change.label : ''
-      });
-    }
-    return normalized;
-  }
-
-  function mergeTrackedChanges(changes = []) {
-    return normalizeApplyTrackedChanges(changes);
+    return WritebackSettlement.normalizeApplyTrackedChanges(changes);
   }
 
   function selectExpectedFilesForTrackedUndo(project, operations = [], trackedChanges = []) {
-    const paths = new Set();
-    for (const change of trackedChanges || []) {
-      if (change.path) {
-        paths.add(change.path);
-      }
-    }
-    for (const operation of operations || []) {
-      if (operation?.path) {
-        paths.add(operation.path);
-      }
-      if (operation?.to) {
-        paths.add(operation.to);
-      }
-    }
-    return (project?.files || [])
-      .filter(file => paths.has(file.path) && typeof file.content === 'string')
-      .map(file => ({
-        path: file.path,
-        content: file.content
-      }));
+    return WritebackSettlement.selectExpectedFilesForTrackedUndo(project, operations, trackedChanges);
   }
 
   function buildTrackedUndoPostFiles(run) {
@@ -8132,6 +7315,21 @@
       return;
     }
     run.undoStatus = undoStatus;
+    saveStateSoon();
+    refreshRunCardControls(runId);
+  }
+
+  function applyLegacyUndoSettlement(runId, undoStatus, result) {
+    const run = findRunRecord(runId);
+    if (!run) return;
+    Object.assign(run, WritebackSettlement.applySettlementTransition(
+      run,
+      WritebackSettlement.settleLegacyUndo({
+        run,
+        status: undoStatus,
+        result
+      })
+    ));
     saveStateSoon();
     refreshRunCardControls(runId);
   }
@@ -8290,13 +7488,16 @@
     const operations = input.operations || [];
     const applyResults = input.applyResults || [];
     const record = currentRunView?.recordId ? findRunRecord(currentRunView.recordId, currentRunView.sessionId) : null;
-    const undoCount = getRunUndoCount(record);
+    const settlementProjection = WritebackSettlement.projectRunSettlement(record || {});
+    const undoCount = settlementProjection.canUndo ? getRunUndoCount(record) : 0;
     const report = buildHumanCompletionReport({
       ...input,
       locale: getLocale(),
       operations,
       applyResults,
       undoCount,
+      settlementProjection,
+      failure: input.failure || settlementProjection.primaryFailure || undefined,
       includeWriteResult: true
     });
 
@@ -8315,7 +7516,7 @@
       // which recovery button to render. (Fixed in v1.7.5: callers passed
       // input.failure since v1.6.2 but it was never forwarded, so recovery
       // buttons on completion reports could never appear.)
-      failure: input.failure || undefined,
+      failure: input.failure || settlementProjection.primaryFailure || undefined,
       compileErrors: input.compileErrors || undefined,
       rejectedHunks: input.rejectedHunks || currentRunView?.rejectedHunks || undefined
     });

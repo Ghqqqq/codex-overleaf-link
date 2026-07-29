@@ -4,6 +4,7 @@ docs/
 native-host/bin/
 node_modules/
 dist/
+extension/src/content/generated/
 build/
 *.log
 *.zip

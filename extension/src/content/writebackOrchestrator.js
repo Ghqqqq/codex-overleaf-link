@@ -53,11 +53,21 @@
   let buildReviewingBlockedApplyResult;
   let ensureReviewingBeforeWrite;
   let confirmBinaryOperations;
+  let compileAdapter;
   let filterSyncChangesByOperations;
   let writebackController;
   let RUN_SNAPSHOT_ZIP_TIMEOUT_MS;
   let getState;
   let getCurrentRunView;
+  let onMirrorRefreshSettled;
+  let writebackSettlement;
+  let injectedWritebackSettlement;
+
+  function buildSettlement(input = {}) {
+    return writebackSettlement?.settle instanceof Function
+      ? writebackSettlement.settle(input)
+      : null;
+  }
 
   async function applySyncChangesToOverleaf(syncChanges = [], project = {}, options = {}) {
     const runMode = options.mode || getState().mode;
@@ -93,6 +103,10 @@
       return {
         summaryLine: assistantMessage || tx('Ask mode completed without Overleaf changes', 'Ask 模式已完成，未修改 Overleaf'),
         hasSkippedOperations: false,
+        settlement: buildSettlement({
+          operations: [],
+          applyResult: { ok: true, applied: [], skipped: [] }
+        }),
         audit: buildAuditSummaryFromApply({
           operations: [],
           resultStatus: 'ask_ignored_local_changes',
@@ -148,6 +162,14 @@
       return {
         summaryLine: assistantMessage || tx('No changes to sync', '没有需要同步的改动'),
         hasSkippedOperations: additionalSkippedEntries.length > 0,
+        settlement: buildSettlement({
+          operations: buildSyncApplyOperations(syncChanges, project),
+          applyResult: {
+            ok: additionalSkippedEntries.length === 0,
+            applied: [],
+            skipped: additionalSkippedEntries
+          }
+        }),
         audit: buildAuditSummaryFromApply({
           operations: buildSyncApplyOperations(syncChanges, project),
           applyResults: additionalSkippedEntries.length ? [{ ok: false, applied: [], skipped: additionalSkippedEntries }] : [],
@@ -182,6 +204,10 @@
         return {
           summaryLine: tx('Sync cancelled', '已取消同步'),
           hasSkippedOperations: additionalSkippedEntries.length > 0,
+          settlement: buildSettlement({
+            operations,
+            applyResult: { ok: false, applied: [], skipped: additionalSkippedEntries }
+          }),
           audit: buildAuditSummaryFromApply({
             operations,
             applyResults: additionalSkippedEntries.length ? [{ ok: false, applied: [], skipped: additionalSkippedEntries }] : [],
@@ -247,6 +273,14 @@
       return {
         summaryLine: tx('No changes applied', '没有应用改动'),
         hasSkippedOperations: additionalSkippedEntries.length > 0,
+        settlement: buildSettlement({
+          operations: buildSyncApplyOperations(syncChanges, project),
+          applyResult: {
+            ok: additionalSkippedEntries.length === 0,
+            applied: [],
+            skipped: additionalSkippedEntries
+          }
+        }),
         audit: buildAuditSummaryFromApply({
           operations: buildSyncApplyOperations(syncChanges, project),
           applyResults: additionalSkippedEntries.length ? [{ ok: false, applied: [], skipped: additionalSkippedEntries }] : [],
@@ -283,6 +317,7 @@
           '已阻止写入：未确认 Overleaf Reviewing/Track Changes'
         ),
         hasSkippedOperations: true,
+        settlement: buildSettlement({ operations, applyResult: blocked }),
         audit: buildAuditSummaryFromApply({
           operations,
           applyResults: [blocked],
@@ -342,6 +377,7 @@
     // pending promise is exposed so undoRun and the next runTask barrier on
     // it — a mirror.sync landing AFTER an undo would otherwise push the
     // pre-undo snapshot as the local baseline.
+    const mirrorSettlementTarget = getCurrentRunView?.();
     pendingMirrorRefresh = refreshProjectMirrorAfterWriteback(project, applied, saveVerification)
       .catch(error => {
         appendRunEvent({
@@ -351,12 +387,25 @@
           ),
           status: 'failed'
         });
+        return 'failed';
+      })
+      .then(state => {
+        if (typeof onMirrorRefreshSettled !== 'function') return;
+        return onMirrorRefreshSettled({
+          recordId: mirrorSettlementTarget?.recordId || '',
+          sessionId: mirrorSettlementTarget?.sessionId || '',
+          runProjectId: mirrorSettlementTarget?.runProjectId || '',
+          state: state || 'not-attempted'
+        });
       })
       .finally(() => {
         pendingMirrorRefresh = null;
       });
     const compileSummary = appliedPaths.length
-      ? await autoRecompileAfterWriteback(appliedPaths, saveVerification).catch(error => {
+      ? await autoRecompileAfterWriteback(appliedPaths, saveVerification, {
+        autoRecompile: options.autoRecompile,
+        mode: runMode
+      }).catch(error => {
         appendRunEvent({
           title: tx(`Post-write compile failed: ${error.message}`, `写后编译出错：${error.message}`),
           status: 'failed'
@@ -419,6 +468,17 @@
       // Existing call sites that only read `summaryLine` / `hasSkippedOperations`
       // / `audit` are unaffected.
       applied,
+      settlement: buildSettlement({
+        operations,
+        applyResult: applied,
+        saveVerification,
+        mirror: {
+          state: appliedPaths.length && saveVerification?.state === 'verified_saved'
+            ? 'pending'
+            : 'not_started'
+        },
+        compile: compileSummary
+      }),
       audit: buildAuditSummaryFromApply({
         operations,
         applyResults: [applied],
@@ -447,8 +507,8 @@
       if (result?.ok === true && !result?.state) {
         return {
           ...result,
-          ok: true,
-          state: 'verified_saved'
+          ok: false,
+          state: 'verified_quiet'
         };
       }
       if (result?.state === 'unknown_timeout' || result?.state === 'unavailable') {
@@ -522,10 +582,10 @@
 
   async function refreshProjectMirrorAfterWriteback(project = {}, applied = {}, saveVerification = {}) {
     if (saveVerification?.state !== 'verified_saved') {
-      return;
+      return 'not-attempted';
     }
     if (!Array.isArray(applied?.applied) || !applied.applied.length) {
-      return;
+      return 'not-attempted';
     }
 
     if (await tryConfirmMirrorWriteback(applied)) {
@@ -536,7 +596,7 @@
         ),
         status: 'completed'
       });
-      return;
+      return 'complete';
     }
 
     appendRunEvent({
@@ -567,7 +627,7 @@
         ),
         status: 'failed'
       });
-      return;
+      return 'failed';
     }
 
     const syncedProject = mergeVerifiedAppliedFiles(freshProject, project, applied);
@@ -584,7 +644,7 @@
         title: tx('Local Codex workspace refreshed. The next run will start from the latest Overleaf content.', '已刷新本地 Codex workspace，下一轮会从最新 Overleaf 内容开始。'),
         status: 'completed'
       });
-      return;
+      return 'complete';
     }
 
     const message = response?.error?.message || tx('native host did not respond', 'native host 没有响应');
@@ -595,6 +655,7 @@
       ),
       status: 'failed'
     });
+    return 'failed';
   }
 
   function mergeVerifiedAppliedFiles(freshProject = {}, originalProject = {}, applied = {}) {
@@ -615,11 +676,12 @@
     return writebackController.formatUnsupportedLocalChangeSummary(changes, getLocale());
   }
 
-  async function autoRecompileAfterWriteback(writtenPaths = [], saveVerification = {}) {
-    if (getState().autoRecompile === false) return null;
-    if (getState().mode === 'ask') return null;
+  async function autoRecompileAfterWriteback(writtenPaths = [], saveVerification = {}, options = {}) {
+    if (options.autoRecompile === false
+      || (options.autoRecompile === undefined && getState().autoRecompile === false)) return null;
+    if ((options.mode || getState().mode) === 'ask') return null;
 
-    const CompileAdapter = window.CodexOverleafCompileAdapter;
+    const CompileAdapter = compileAdapter;
     if (!CompileAdapter) return null;
 
     const hasCompilableFile = writtenPaths.some(filePath => CompileAdapter.isCompilableFile(filePath));
@@ -642,7 +704,8 @@
       const result = await callPageBridge('triggerCompile', {
         preferUiClick: true,
         waitForSaveMs: 5000,
-        requireVerifiedSave: saveVerification?.state === 'verified_saved'
+        requireVerifiedSave: saveVerification?.state === 'verified_saved',
+        runProjectId: getCurrentRunView()?.runProjectId || getCurrentProjectId()
       });
       if (result?.ok) {
         let logResult = null;
@@ -650,7 +713,8 @@
           logResult = await callPageBridge('getCompileLog', {
             triggerIfStale: false,
             maxAgeMs: 30000,
-            waitForSaveMs: 0
+            waitForSaveMs: 0,
+            runProjectId: getCurrentRunView()?.runProjectId || getCurrentProjectId()
           });
         } catch (_error) {
           logResult = null;
@@ -775,7 +839,8 @@
       const result = await callPageBridge('getCompileLog', {
         triggerIfStale: true,
         maxAgeMs: 30000,
-        waitForSaveMs: 5000
+        waitForSaveMs: 5000,
+        runProjectId: getCurrentRunView()?.runProjectId || getCurrentProjectId()
       });
 
       if (!result?.ok) {
@@ -841,6 +906,9 @@
       getState,
       getCurrentRunView,
     } = deps);
+    onMirrorRefreshSettled = deps.onMirrorRefreshSettled;
+    writebackSettlement = deps.writebackSettlement;
+    compileAdapter = deps.compileAdapter;
     return {
       applySyncChangesToOverleaf,
       resolveCompileLogContext,

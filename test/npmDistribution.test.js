@@ -188,7 +188,7 @@ function bridgePathForHome(tempDir) {
 
 test('package metadata is configured for npm distribution', () => {
   assert.equal(packageJson.name, 'codex-overleaf-link');
-  assert.equal(packageJson.version, '2.2.1');
+  assert.match(packageJson.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
   assert.equal(packageJson.bin['codex-overleaf-link'], 'bin/codex-overleaf-link.mjs');
   assert.match(packageJson.packageManager, /^npm@/);
   assert.deepEqual(packageJson.repository, {

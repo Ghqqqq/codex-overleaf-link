@@ -1,15 +1,27 @@
 (function initSessionState(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(
+      require('./i18n'),
+      require('./settlementFacts'),
+      require('./runInputQueue'),
+      require('./lineReferences'),
+      require('./pathRedaction')
+    );
   } else {
-    root.CodexOverleafSessionState = factory();
+    root.CodexOverleafModuleRegistry.define(
+      'SessionState',
+      ['I18n', 'SettlementFacts', 'RunInputQueue', 'LineReferences', 'PathRedaction'],
+      factory
+    );
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function sessionStateFactory() {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function sessionStateFactory(
+  i18n,
+  SettlementFacts,
+  RunInputQueue,
+  LineReferences,
+  PathRedaction
+) {
   'use strict';
-
-  const i18n = (typeof module === 'object' && module.exports)
-    ? require('./i18n')
-    : (typeof globalThis !== 'undefined' ? globalThis : window).CodexOverleafI18n;
 
   const DEFAULT_PANEL_STATE = {
     mode: 'confirm',
@@ -109,9 +121,6 @@
     /\b(?:sk|pk)-[A-Za-z0-9][A-Za-z0-9_-]{7,}\b/g,
     /\b(?:api[_-]?key|token|password|passwd|secret)\b\s*[:=]\s*["']?[^"'\s,;]+["']?/gi
   ];
-  const LineReferences = loadLineReferences();
-  const PathRedaction = loadPathRedaction();
-
   function normalizePanelState(input = {}, options = {}) {
     const state = {
       ...DEFAULT_PANEL_STATE,
@@ -226,7 +235,15 @@
       requireReviewing: session.requireReviewing !== false,
       focusFiles: normalizeFocusFiles(session.focusFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
-      pendingInputs: normalizePendingInputs(session.pendingInputs, options.restoreRunningRuns === true)
+      pendingInputs: normalizePendingInputs(
+        session.pendingInputs,
+        options.restoreRunningRuns === true,
+        {
+          ...fallbackState,
+          ...session,
+          focusFiles: normalizeFocusFiles(session.focusFiles)
+        }
+      )
     };
   }
 
@@ -626,6 +643,18 @@
       interruptedDraft: run.interruptedDraft ? sanitizeAssistantVisibleValue(run.interruptedDraft) : undefined
     };
 
+    if (run.executionSnapshot && typeof run.executionSnapshot === 'object') {
+      normalized.executionSnapshot = sanitizeAssistantVisibleValue(run.executionSnapshot);
+    }
+    const storedSettlement = run.settlement && typeof run.settlement === 'object'
+      ? run.settlement
+      : run.settlementFacts;
+    if (storedSettlement && typeof storedSettlement === 'object') {
+      normalized.settlement = sanitizeAssistantVisibleValue(storedSettlement);
+    }
+    if (run.changedDocument === true) {
+      normalized.changedDocument = true;
+    }
     applyTrackedChangeStatus(normalized, run.trackedChangeStatus);
 
     return normalized;
@@ -658,7 +687,7 @@
     // the run returns to the legacy-undo world. A terminal status with no refs
     // is kept — step 3 already empties terminal payloads and the label stays
     // meaningful.
-    if (!hasRefs && status !== undefined && !TERMINAL_TRACKED_CHANGE_STATUS.has(status)) {
+    if (!hasRefs && status === 'pending') {
       status = undefined;
     }
 
@@ -1121,10 +1150,18 @@
       .filter(run => Array.isArray(run.undoOperations) && run.undoOperations.length)
       .slice(0, limits.maxUndoRunsPerSession)
       .map(run => run.id));
-    return selectedRuns.map(run => compactRunForStorage(run, limits, undoRunIds.has(run.id)));
+    const settlementFactsByRunId = SettlementFacts.compactSessionSettlementFacts(selectedRuns, {
+      sanitize: sanitizeAssistantVisibleValue
+    });
+    return selectedRuns.map(run => compactRunForStorage(
+      run,
+      limits,
+      undoRunIds.has(run.id),
+      settlementFactsByRunId.get(run.id)
+    ));
   }
 
-  function compactRunForStorage(run, limits, keepUndoPayload) {
+  function compactRunForStorage(run, limits, keepUndoPayload, settlementFacts = null) {
     const undoPayload = compactUndoPayload(run, limits, keepUndoPayload);
     const compact = {
       id: run.id,
@@ -1151,6 +1188,15 @@
       nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,
       queueItemId: normalizeTextField(run.queueItemId, 160)
     };
+    if (run.executionSnapshot && typeof run.executionSnapshot === 'object') {
+      compact.executionSnapshot = sanitizeAssistantVisibleValue(run.executionSnapshot);
+    }
+    if (settlementFacts && typeof settlementFacts === 'object') {
+      compact.settlement = settlementFacts;
+    }
+    if (run.changedDocument === true) {
+      compact.changedDocument = true;
+    }
     if (run.interruptedDraft) {
       compact.interruptedDraft = sanitizeAssistantVisibleValue(run.interruptedDraft);
     }
@@ -1384,11 +1430,9 @@
       }));
   }
 
-  function normalizePendingInputs(value, recoverActive = false) {
-    const Queue = (typeof globalThis !== 'undefined' ? globalThis.CodexOverleafRunInputQueue : null)
-      || (typeof module === 'object' && module.exports ? require('./runInputQueue') : null);
-    if (Queue?.normalizeQueue) {
-      return Queue.normalizeQueue(value, { recoverActive });
+  function normalizePendingInputs(value, recoverActive = false, fallbackInput = {}) {
+    if (RunInputQueue?.normalizeQueue) {
+      return RunInputQueue.normalizeQueue(value, { recoverActive, fallbackInput });
     }
     return [];
   }
@@ -1440,34 +1484,6 @@
 
   function mightContainLocalReferenceText(value) {
     return /(?:file:\/\/\/?|[A-Za-z]:[\\/]|\/(?:Users|home|private|var|tmp)\/|[\\/]\.codex-overleaf[\\/]projects[\\/]|\.codex-overleaf[\\/]projects[\\/])/i.test(String(value || ''));
-  }
-
-  function loadLineReferences() {
-    if (typeof globalThis !== 'undefined' && globalThis.CodexOverleafLineReferences) {
-      return globalThis.CodexOverleafLineReferences;
-    }
-    if (typeof require === 'function') {
-      try {
-        return require('./lineReferences');
-      } catch (_error) {
-        return null;
-      }
-    }
-    return null;
-  }
-
-  function loadPathRedaction() {
-    if (typeof globalThis !== 'undefined' && globalThis.CodexOverleafPathRedaction) {
-      return globalThis.CodexOverleafPathRedaction;
-    }
-    if (typeof require === 'function') {
-      try {
-        return require('./pathRedaction');
-      } catch (_error) {
-        return null;
-      }
-    }
-    return null;
   }
 
   function fallbackSanitizeLocalReferences(value) {

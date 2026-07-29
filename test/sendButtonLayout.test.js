@@ -188,7 +188,7 @@ test('task failures after a user cancellation request render as interrupted', ()
   assert.match(contentScript, /if \(runCancellationRequested \|\| isRunCancellationError\(error\)\)/);
 });
 
-test('panel persistence uses hybrid IndexedDB storage with legacy fallback', () => {
+test('panel persistence uses scoped IndexedDB storage without an unsafe legacy session fallback', () => {
   const contentScript = fs.readFileSync(
     path.join(__dirname, '../extension/src/content/contentRuntime.js'),
     'utf8'
@@ -197,27 +197,34 @@ test('panel persistence uses hybrid IndexedDB storage with legacy fallback', () 
     path.join(__dirname, '../extension/src/content/sessionPersistence.js'),
     'utf8'
   );
+  const scopedPersistencePanelState = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/scopedPersistencePanelState.js'),
+    'utf8'
+  );
 
   assert.match(contentScript, /prepareStateForStorage/);
-  // The chrome.storage.local quota fallback writes a COMPACT shape
-  // (prepareCompactFallbackState) — not the full prepareStateForStorage(state).
-  // The compact form strips task/sessions/runs and tags the blob with
-  // __codexOverleafCompactFallback so the loader returns prefs-only instead
-  // of re-persisting redacted '[task omitted]' markers as real session data
-  // (the B4 data-loss fix). Assert the fallback writes the compact form and
-  // that the compact builder strips the session payload.
-  assert.match(contentScript, /chrome\.storage\.local\.set\(\{ \[storageKey\]: prepareCompactFallbackState\(state\) \}\)/);
-  assert.match(contentScript, /function prepareCompactFallbackState/);
-  assert.match(contentScript, /__codexOverleafCompactFallback: true/);
+  // Scoped sessions must never fall back to an account-agnostic local-storage
+  // write. Such a fallback could resurrect stale sessions under another
+  // account after an IndexedDB or lock failure.
+  assert.doesNotMatch(
+    contentScript,
+    /chrome\.storage\.local\.set\(\{ \[storageKey\]: prepareCompactFallbackState\(state\) \}\)/
+  );
   // saveState() is wrapped in a .catch/.finally chain inside runQueuedSaveState
   // (the in-flight serialization fix). The chain may be single-line or split
   // across lines; either form is acceptable.
   assert.match(contentScript, /saveState\(\)\s*\.catch/);
   // Hybrid approach: prefs via Migration, sessions via StorageDb
-  assert.match(contentScript, /Migration\.savePrefs\(prefs\)/);
-  assert.match(contentScript, /CodexOverleafSessionPersistence\.writeSessions/);
-  assert.match(sessionPersistence, /StorageDb\.putRecords\('sessions', writable\)/);
-  assert.match(contentScript, /StorageDb\.extractLightweightPrefs\(compactState, projectId\)/);
+  assert.match(
+    scopedPersistencePanelState,
+    /Migration\.savePrefs\(prefs,\s*accountScopeId,\s*projectId\)/
+  );
+  assert.match(scopedPersistencePanelState, /SessionPersistence\.writeSessions/);
+  assert.match(
+    sessionPersistence,
+    /StorageDb\.putRecords\('sessions', \[\.\.\.cleanedExisting, \.\.\.writable\]\)/
+  );
+  assert.match(scopedPersistencePanelState, /StorageDb\.extractLightweightPrefs\(compactState, projectId\)/);
   assert.match(contentScript, /runs:\s*Array\.isArray\(session\.runs\)/);
   assert.match(contentScript, /history:\s*Array\.isArray\(session\.history\)/);
 });

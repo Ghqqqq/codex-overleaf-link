@@ -22,7 +22,7 @@ function runSmokeModuleScript(source) {
 
 test('package exposes a real Chrome extension smoke-test entrypoint', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'));
-  assert.equal(pkg.scripts['smoke:extension'], 'node scripts/smoke-extension.mjs');
+  assert.equal(pkg.scripts['smoke:extension'], 'npm run build:content && node scripts/smoke-extension.mjs');
 });
 
 test('extension smoke script loads the unpacked extension and probes the Overleaf panel', () => {

@@ -1,15 +1,14 @@
 (function initCodexOverleafApplyResultFormatters() {
   'use strict';
 
-  const i18n = window.CodexOverleafI18n;
-  const FailureReasons = window.CodexOverleafFailureReasons;
-
   // Apply-result / failure-reason formatters carved out of contentRuntime.js
   // (v1.4.7 structural-debt phase 3): the skipped-detail renderer and the
   // bilingual apply/bridge reason formatters. Code moved verbatim; the few
   // runtime collaborators are factory-injected.
   function create(deps = {}) {
     const {
+      i18n,
+      FailureReasons,
       getLocale,
       tr,
       tx,

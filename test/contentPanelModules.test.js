@@ -10,11 +10,11 @@ function read(relativePath) {
 test('contentScript delegates panel construction to focused content modules', () => {
   const contentScript = read('extension/src/content/contentRuntime.js');
 
-  assert.match(contentScript, /CodexOverleafPanelRenderer/);
-  assert.match(contentScript, /CodexOverleafSessionPanel/);
-  assert.match(contentScript, /CodexOverleafSettingsPanel/);
-  assert.match(contentScript, /CodexOverleafDiagnosticsPanel/);
-  assert.match(contentScript, /CodexOverleafComposerPanel/);
+  assert.match(contentScript, /Modules\.PanelRenderer/);
+  assert.match(contentScript, /Modules\.SessionPanel/);
+  assert.match(contentScript, /Modules\.SettingsPanel/);
+  assert.match(contentScript, /Modules\.DiagnosticsPanel/);
+  assert.match(contentScript, /Modules\.ComposerPanel/);
   assert.match(contentScript, /PanelRenderer\.create/);
   assert.match(contentScript, /SessionPanel\.create/);
   assert.match(contentScript, /SettingsPanel\.create/);

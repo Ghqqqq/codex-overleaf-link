@@ -1,6 +1,20 @@
 if (!globalThis.CodexOverleafCompatibility) {
   importScripts('shared/compatibility.js');
 }
+if (!globalThis.CodexOverleafManagedUpdateProjection) {
+  const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
+  const projectionPath = runtimeBase
+    ? `${runtimeBase}/src/shared/managedUpdateProjection.js`
+    : 'shared/managedUpdateProjection.js';
+  importScripts(runtimeBase ? chrome.runtime.getURL(projectionPath) : projectionPath);
+}
+if (!globalThis.CodexOverleafNativeRequestIdentity) {
+  const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
+  const identityPath = runtimeBase
+    ? `${runtimeBase}/src/shared/nativeRequestIdentity.js`
+    : 'shared/nativeRequestIdentity.js';
+  importScripts(runtimeBase ? chrome.runtime.getURL(identityPath) : identityPath);
+}
 
 (function initBackground() {
   'use strict';
@@ -14,11 +28,6 @@ if (!globalThis.CodexOverleafCompatibility) {
     'https://www.overleaf.com/project/*',
     'https://overleaf.com/project/*'
   ];
-  const MANAGED_UPDATE_PHASE_TIMEOUT_MS = Object.freeze({
-    applying: 90 * 1000,
-    awaiting_health: 2 * 60 * 1000,
-    rolling_back: 60 * 1000
-  });
   const COMPATIBILITY_REQUIRED_METHODS = new Set([
     'codex.run',
     'codex.steer',
@@ -47,6 +56,8 @@ if (!globalThis.CodexOverleafCompatibility) {
     'codex.cancel'
   ]);
   const CodexOverleafCompatibility = globalThis.CodexOverleafCompatibility;
+  const ManagedUpdateProjection = globalThis.CodexOverleafManagedUpdateProjection;
+  const NativeRequestIdentity = globalThis.CodexOverleafNativeRequestIdentity;
   let port = null;
   let managedUpdateExecutionLocked = false;
   const pending = new Map();
@@ -222,7 +233,14 @@ if (!globalThis.CodexOverleafCompatibility) {
   }
 
   function sendNativeRequest(payload, sender, options = {}) {
-    const id = payload.id || crypto.randomUUID();
+    const identity = NativeRequestIdentity.resolve(payload?.id, () => crypto.randomUUID());
+    if (!identity.ok) {
+      return Promise.resolve({
+        ok: false,
+        error: identity.error
+      });
+    }
+    const id = identity.id;
     const requestWithEvidence = { ...payload, id };
     const compatibilityBlock = options.skipCompatibility ? null : getNativeCompatibilityBlock(requestWithEvidence);
     if (compatibilityBlock) {
@@ -366,18 +384,14 @@ if (!globalThis.CodexOverleafCompatibility) {
   }
 
   async function repairManagedUpdatePhaseMetadata(state) {
-    const timeoutMs = MANAGED_UPDATE_PHASE_TIMEOUT_MS[state?.state] || 0;
-    if (!timeoutMs || Number(state.deadlineAt || 0) > 0) {
+    const repaired = ManagedUpdateProjection.ensurePhaseMetadata(state, {
+      currentVersion: chrome.runtime.getManifest().version
+    });
+    if (Number(repaired.deadlineAt || 0) === Number(state?.deadlineAt || 0)) {
       return;
     }
-    const now = Date.now();
     await chrome.storage.local.set({
-      [MANAGED_UPDATE_STATE_KEY]: {
-        ...state,
-        phaseStartedAt: now,
-        deadlineAt: now + timeoutMs,
-        heartbeatAt: now
-      }
+      [MANAGED_UPDATE_STATE_KEY]: repaired
     });
   }
 
@@ -393,77 +407,37 @@ if (!globalThis.CodexOverleafCompatibility) {
 
     const transaction = response.result?.transaction || null;
     const state = await getManagedUpdateState();
-    if (transaction?.state === 'rolled_back') {
-      await setManagedUpdateState({
-        ...state,
-        state: 'rolled_back',
-        currentVersion: transaction.sourceVersion || state.currentVersion,
-        transactionId: transaction.id || state.transactionId,
-        code: transaction.reasonCode || state.code || 'update_rolled_back'
-      });
+    const reconciled = ManagedUpdateProjection.reconcile(state, transaction, {
+      currentVersion: chrome.runtime.getManifest().version
+    });
+    await setManagedUpdateState(reconciled.state);
+    if (reconciled.action === 'reload_tabs') {
       await reloadManagedUpdateTabs();
       return;
     }
-    if (transaction?.state === 'committed') {
-      const targetVersion = transaction.targetVersion || state.latestVersion || state.currentVersion;
-      await setManagedUpdateState({
-        ...state,
-        state: 'committed',
-        currentVersion: targetVersion,
-        latestVersion: targetVersion,
-        transactionId: '',
-        blocker: '',
-        blockers: [],
-        code: '',
-        message: ''
-      });
-      await reloadManagedUpdateTabs();
-      return;
-    }
-    if (transaction?.state === 'staged' && ['applying', 'awaiting_health'].includes(state.state)) {
-      await setManagedUpdateState({
-        ...state,
-        state: 'staged',
-        transactionId: transaction.id || state.transactionId,
-        blocker: '',
-        blockers: [],
-        code: '',
-        message: '',
-        phaseStartedAt: 0,
-        deadlineAt: 0,
-        heartbeatAt: 0
-      });
+    if (reconciled.action === 'retry_install') {
       setTimeout(() => {
         void globalThis.CodexOverleafManagedUpdateExecutor?.installAuthorizedUpdate?.().catch?.(() => {});
       }, 250);
-      return;
-    }
-    if (!transaction && ['applying', 'awaiting_health', 'rolling_back'].includes(state.state)) {
-      await setManagedUpdateState({
-        ...state,
-        state: 'failed',
-        code: 'update_transaction_lost',
-        message: 'The managed update transaction could not be recovered. Use the manual update command.',
-        phaseStartedAt: 0,
-        deadlineAt: 0,
-        heartbeatAt: 0
-      });
     }
   }
 
   async function getManagedUpdateState() {
     const stored = await chrome.storage.local.get(MANAGED_UPDATE_STATE_KEY);
-    return stored?.[MANAGED_UPDATE_STATE_KEY] || {
+    return ManagedUpdateProjection.normalize(stored?.[MANAGED_UPDATE_STATE_KEY] || {
       state: 'idle',
       managed: true,
       currentVersion: chrome.runtime.getManifest().version,
       latestVersion: chrome.runtime.getManifest().version
-    };
+    }, { currentVersion: chrome.runtime.getManifest().version });
   }
 
   async function setManagedUpdateState(state) {
-    await chrome.storage.local.set({ [MANAGED_UPDATE_STATE_KEY]: state });
-    return state;
+    const value = ManagedUpdateProjection.ensurePhaseMetadata(state, {
+      currentVersion: chrome.runtime.getManifest().version
+    });
+    await chrome.storage.local.set({ [MANAGED_UPDATE_STATE_KEY]: value });
+    return value;
   }
 
   async function reloadManagedUpdateTabs() {
@@ -638,7 +612,14 @@ if (!globalThis.CodexOverleafCompatibility) {
 
   function sendNativeCancel(payload) {
     const nativePort = ensurePort();
-    const id = payload.id || crypto.randomUUID();
+    const identity = NativeRequestIdentity.resolve(payload?.id, () => crypto.randomUUID());
+    if (!identity.ok) {
+      const error = new Error(identity.error.message);
+      error.code = identity.error.code;
+      error.details = identity.error.details;
+      throw error;
+    }
+    const id = identity.id;
     const request = sanitizeNativeRequest({ ...payload, id });
     try {
       nativePort.postMessage(request);
@@ -1045,6 +1026,9 @@ if (!globalThis.CodexOverleafCompatibility) {
     const runtimePrefix = workerPath.startsWith('bootstrap/') ? 'runtime/' : '';
     if (!root.CodexOverleafUpdateConsent) {
       importScripts(chrome.runtime.getURL(runtimePrefix + 'src/shared/updateConsent.js'));
+    }
+    if (!root.CodexOverleafUpdateRevocation) {
+      importScripts(chrome.runtime.getURL(runtimePrefix + 'src/shared/updateRevocationIntent.js'));
     }
     if (!root.CodexOverleafUpdateCoordinator) {
       importScripts(chrome.runtime.getURL(runtimePrefix + 'src/backgroundUpdateCoordinator.js'));

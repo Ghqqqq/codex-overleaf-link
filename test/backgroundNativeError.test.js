@@ -6,6 +6,10 @@ const vm = require('node:vm');
 
 const compatibility = require('../extension/src/shared/compatibility');
 const backgroundPath = path.join(__dirname, '../extension/src/background.js');
+const managedUpdateProjectionSource = fs.readFileSync(
+  path.join(__dirname, '../extension/src/shared/managedUpdateProjection.js'),
+  'utf8'
+);
 
 function readBackground() {
   return fs.readFileSync(backgroundPath, 'utf8');
@@ -742,6 +746,16 @@ function loadBackgroundHarness(options = {}) {
       for (const scriptPath of scriptPaths) {
         if (scriptPath === 'shared/compatibility.js') {
           sandbox.CodexOverleafCompatibility = compatibility;
+          continue;
+        }
+        if (scriptPath === 'shared/managedUpdateProjection.js') {
+          vm.runInNewContext(managedUpdateProjectionSource, sandbox);
+          continue;
+        }
+        if (scriptPath === 'shared/nativeRequestIdentity.js') {
+          sandbox.CodexOverleafNativeRequestIdentity = require(
+            '../extension/src/shared/nativeRequestIdentity'
+          );
           continue;
         }
         throw new Error(`Unexpected importScripts path: ${scriptPath}`);

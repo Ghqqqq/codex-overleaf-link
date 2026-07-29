@@ -40,12 +40,13 @@ const FORBIDDEN_PACKAGED_SOURCE_PATH_TOKENS = new Set([
 export function collectReleaseVerificationErrors(options = {}) {
   const rootDir = path.resolve(options.rootDir || getRepoRoot());
   const releaseDate = options.releaseDate;
+  const sourceHygieneOnly = options.sourceHygieneOnly === true;
   const errors = [];
   const pkg = readJsonFile(rootDir, 'package.json', errors);
   const packageLock = readJsonFile(rootDir, 'package-lock.json', errors);
   const manifest = readJsonFile(rootDir, 'extension/manifest.json', errors);
-  const readme = readTextFile(rootDir, 'README.md', errors);
-  const changelog = readTextFile(rootDir, 'CHANGELOG.md', errors);
+  const readme = sourceHygieneOnly ? '' : readTextFile(rootDir, 'README.md', errors);
+  const changelog = sourceHygieneOnly ? '' : readTextFile(rootDir, 'CHANGELOG.md', errors);
   const compatibility = readTextFile(rootDir, 'extension/src/shared/compatibility.js', errors);
 
   if (errors.length > 0) {
@@ -78,7 +79,7 @@ export function collectReleaseVerificationErrors(options = {}) {
     }
   }
 
-  if (version) {
+  if (version && !sourceHygieneOnly) {
     const expectedBadge = `version-${version}-blue`;
     if (!readme.includes(expectedBadge)) {
       errors.push(`README.md must contain the release badge fragment "${expectedBadge}".`);
@@ -103,6 +104,13 @@ export function collectReleaseVerificationErrors(options = {}) {
   errors.push(...collectForbiddenTrackedPathErrors(rootDir, options.trackedFiles));
   errors.push(...collectInstallerArtifactErrors(rootDir));
   return errors;
+}
+
+export function collectSourceVerificationErrors(options = {}) {
+  return collectReleaseVerificationErrors({
+    ...options,
+    sourceHygieneOnly: true
+  });
 }
 
 function collectPackageMetadataErrors({ rootDir, pkg, packageLock }) {
@@ -253,6 +261,8 @@ function parseArgs(argv) {
     } else if (arg === '--release-date') {
       parsed.releaseDate = argv[index + 1];
       index += 1;
+    } else if (arg === '--source-hygiene-only') {
+      parsed.sourceHygieneOnly = true;
     }
   }
   return parsed;
@@ -288,7 +298,8 @@ async function main() {
   }
 
   const pkg = JSON.parse(fs.readFileSync(path.join(path.resolve(args.rootDir || getRepoRoot()), 'package.json'), 'utf8'));
-  console.log(`Release verification passed for v${pkg.version}.`);
+  const label = args.sourceHygieneOnly ? 'Source verification' : 'Release verification';
+  console.log(`${label} passed for v${pkg.version}.`);
 }
 
 if (

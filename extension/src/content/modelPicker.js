@@ -24,7 +24,7 @@
       getPanel,
       getState
     } = deps;
-    const Support = window.CodexOverleafModelPickerSupport;
+    const Support = deps.Support;
     const {
       formatCompactModelLabel,
       normalizeModelOptionId,

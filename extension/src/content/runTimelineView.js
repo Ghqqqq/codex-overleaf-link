@@ -1,7 +1,6 @@
 (function initCodexOverleafRunTimelineView() {
   'use strict';
 
-  const RunGuidanceView = window.CodexOverleafRunGuidanceView;
   // Run-timeline view — the timeline render pipeline carved out of
   // contentRuntime.js (v1.4.6 structural-debt phase 2): the scroll engine +
   // jump-to-latest button, the live-elapsed tick and collapsed-header summary,
@@ -13,6 +12,7 @@
   // that owns it.
   function create(deps = {}) {
     const {
+      RunGuidanceView,
       tr,
       tx,
       getLocale,
@@ -40,7 +40,8 @@
       showNativeSetupGuidance,
       openProjectFileForFailure,
       openStorageSettings,
-      trackedChangeInFlight
+      trackedChangeInFlight,
+      projectRunSettlement
     } = deps;
 
   let logAutoFollow = true;
@@ -884,8 +885,8 @@
       return;
     }
 
-    const undoCount = getRunUndoCount(run);
-    if (!undoCount && run.undoStatus !== 'applied') {
+    const projection = projectRunSettlement(run);
+    if (!projection.canUndo && run.undoStatus !== 'applied') {
       button.hidden = true;
       return;
     }
@@ -912,13 +913,14 @@
   // same executable state as `pending`.
   function configureLifecycleUndoButton(button, run) {
     const status = run.trackedChangeStatus || '';
+    const projection = projectRunSettlement(run);
     // §7 settlement matrix: needs_review keeps BOTH controls visible AND
     // actionable. Branch placed before the terminal branches so a
     // needs_review run is never treated as terminal.
     if (status === 'needs_review') {
       const inFlight = trackedChangeInFlight.get(run.id);
       button.hidden = false;
-      button.disabled = inFlight === 'reject' || inFlight === 'accept';
+      button.disabled = !projection.canUndo || inFlight === 'reject' || inFlight === 'accept';
       button.textContent = tr('undoRun');
       button.title = tr('undoRunTitle');
       button.addEventListener('click', event => {
@@ -949,7 +951,7 @@
     }
     const inFlight = trackedChangeInFlight.get(run.id);
     button.hidden = false;
-    button.disabled = inFlight === 'reject' || inFlight === 'accept';
+    button.disabled = !projection.canUndo || inFlight === 'reject' || inFlight === 'accept';
     button.textContent = tr('undoRun');
     button.title = tr('undoRunTitle');
     button.addEventListener('click', event => {
@@ -980,13 +982,14 @@
     }
 
     const status = run.trackedChangeStatus || '';
+    const projection = projectRunSettlement(run);
     // §7 settlement matrix: needs_review keeps BOTH controls visible AND
     // actionable. It remains an internal retryable proof state, while the
     // primary button label stays in the same executable state as `pending`.
     if (status === 'needs_review') {
       const inFlight = trackedChangeInFlight.get(run.id);
       button.hidden = false;
-      button.disabled = inFlight === 'accept' || inFlight === 'reject';
+      button.disabled = !projection.canAccept || inFlight === 'accept' || inFlight === 'reject';
       if (inFlight === 'accept') {
         button.textContent = tr('runAcceptTrackedConfirming');
         button.title = tr('runAcceptTrackedConfirming');
@@ -1020,7 +1023,7 @@
 
     const inFlight = trackedChangeInFlight.get(run.id);
     button.hidden = false;
-    button.disabled = inFlight === 'accept' || inFlight === 'reject';
+    button.disabled = !projection.canAccept || inFlight === 'accept' || inFlight === 'reject';
     if (inFlight === 'accept') {
       button.textContent = tr('runAcceptTrackedConfirming');
       button.title = tr('runAcceptTrackedConfirming');

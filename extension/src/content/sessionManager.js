@@ -1,17 +1,6 @@
 (function initCodexOverleafSessionManager() {
   'use strict';
 
-  const SessionPanel = window.CodexOverleafSessionPanel;
-  const {
-    createSession,
-    deleteSession,
-    setActiveSession,
-    getActiveSession,
-    isDisplayableSession,
-    normalizePanelState,
-    deriveSessionTitle
-  } = window.CodexOverleafSessionState;
-
   // Session manager — the session lifecycle + list/delete surface
   // carved out of contentRuntime.js (v1.4.7 structural-debt phase 3). Code
   // moved verbatim except that mutable runtime state is read through
@@ -19,6 +8,20 @@
   // setState() (sessions are immutable-update: every mutation rebuilds state
   // via the shared sessionState helpers and hands it back to the runtime).
   function create(deps = {}) {
+    const {
+      SessionPanel,
+      SessionState,
+      SessionMenuView
+    } = deps;
+    const {
+      createSession,
+      deleteSession,
+      setActiveSession,
+      getActiveSession,
+      isDisplayableSession,
+      normalizePanelState,
+      deriveSessionTitle
+    } = SessionState;
     const {
       tr,
       showPluginConfirm,
@@ -36,7 +39,7 @@
       formatSessionTime
     } = deps;
 
-    const sessionMenuView = window.CodexOverleafSessionMenuView.create({
+    const sessionMenuView = SessionMenuView.create({
       commitSessionRename,
       deleteSessionWithConfirm,
       document,

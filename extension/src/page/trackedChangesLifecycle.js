@@ -1008,7 +1008,12 @@
         result: {
           ok: true,
           method: 'overleaf-editor-undo',
-          undoClicks: result.clicks
+          undoClicks: result.clicks,
+          // undoEditorHistoryUntilContent returns ok only after the active
+          // editor exactly matches this run's pre-write checkpoint. Preserve
+          // that proof for the content-side lifecycle settlement.
+          verified: true,
+          verifiedContent: expectedByPath.get(path)
         }
       });
     }

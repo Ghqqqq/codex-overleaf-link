@@ -1,6 +1,6 @@
 {
   "name": "codex-overleaf-link",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "description": "Cross-platform Chrome bridge that connects Codex to the active Overleaf project.",
   "license": "MIT",
   "type": "commonjs",
@@ -14,14 +14,19 @@
   "homepage": "https://github.com/Ghqqqq/codex-overleaf-link#readme",
   "scripts": {
     "agent:codex": "node scripts/codex-json-agent.mjs",
-    "test": "node scripts/run-tests.mjs",
+    "build:content": "node scripts/build-content-bundle.mjs",
+    "check:module-graph": "node scripts/check-content-module-graph.mjs",
+    "test": "npm run check:module-graph && node scripts/run-tests.mjs",
     "check:architecture": "node scripts/check-architecture-budget.mjs --enforce-target",
     "benchmark:large": "node scripts/benchmark-large-project.mjs --gate",
-    "smoke:extension": "node scripts/smoke-extension.mjs",
+    "smoke:extension": "npm run build:content && node scripts/smoke-extension.mjs",
     "verify:release": "node scripts/verify-release.mjs",
+    "verify:source": "node scripts/verify-release.mjs --source-hygiene-only",
     "verify:release-artifacts": "node scripts/verify-release-artifacts.mjs",
     "verify:update-boundary": "node scripts/verify-update-boundary.mjs",
     "verify:update-hop": "node scripts/verify-update-hop.mjs",
+    "verify:update-hop:local": "node scripts/verify-update-hop.mjs --local-test-key",
+    "rehearse:update-hop": "npm run build:release && npm run verify:update-hop:local",
     "build:release": "node scripts/build-release.mjs",
     "sign:release": "node scripts/sign-release-manifest.mjs",
     "install:managed": "node scripts/install-managed.mjs",
@@ -30,7 +35,7 @@
     "uninstall:native": "node scripts/uninstall-native-host.mjs",
     "bridge": "node native-host/src/index.js",
     "verify:npm-package": "node scripts/verify-npm-package.mjs",
-    "pack:npm": "node scripts/verify-npm-package.mjs --pack"
+    "pack:npm": "npm run build:content && node scripts/verify-npm-package.mjs --pack"
   },
   "engines": {
     "node": ">=20"
@@ -56,5 +61,8 @@
     "scripts/verify-npm-package.mjs",
     "README.md",
     "package.json"
-  ]
+  ],
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
 }

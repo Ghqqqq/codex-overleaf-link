@@ -274,26 +274,7 @@
 
   function hashText(text) {
     const value = String(text ?? '');
-    const nodeCrypto = getNodeCrypto();
-    if (nodeCrypto) {
-      return nodeCrypto.createHash('sha256').update(value, 'utf8').digest('hex');
-    }
     return sha256Hex(utf8Bytes(value));
-  }
-
-  function getNodeCrypto() {
-    if (typeof require !== 'function') {
-      return null;
-    }
-    try {
-      return require('node:crypto');
-    } catch (error) {
-      try {
-        return require('crypto');
-      } catch (fallbackError) {
-        return null;
-      }
-    }
   }
 
   function normalizePath(value) {

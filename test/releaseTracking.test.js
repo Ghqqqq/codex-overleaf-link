@@ -9,9 +9,14 @@ const packageJson = require('../package.json');
 const packageLock = require('../package-lock.json');
 const extensionManifest = require('../extension/manifest.json');
 const compatibility = require('../extension/src/shared/compatibility');
+const { CONTENT_BUNDLE_RUNTIME_PATH } = require('./_helpers/contentBundleEntry');
 
-test('current release version surfaces are aligned for v2.2.1 packaging', () => {
-  assert.equal(packageJson.version, '2.2.1');
+const GENERATED_RUNTIME_FILES = new Set([
+  `extension/${CONTENT_BUNDLE_RUNTIME_PATH}`
+]);
+
+test('current development version surfaces are aligned for packaging', () => {
+  assert.match(packageJson.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[''].version, packageJson.version);
   assert.equal(extensionManifest.version, packageJson.version);
@@ -112,6 +117,11 @@ function collectNativeRelativeRequireTargets() {
 test('manifest-referenced extension files are git-tracked for release packaging', () => {
   const trackedFiles = readGitTrackedFiles();
   for (const relativePath of collectManifestExtensionPaths()) {
+    if (GENERATED_RUNTIME_FILES.has(relativePath)) {
+      assert.equal(fs.existsSync(path.join(repoRoot, relativePath)), true, `${relativePath} must be built before packaging`);
+      assert.equal(trackedFiles.has(relativePath), false, `${relativePath} must remain generated and untracked`);
+      continue;
+    }
     if (relativePath.endsWith('/*')) {
       const trackedPrefix = relativePath.slice(0, -1);
       assert.ok(

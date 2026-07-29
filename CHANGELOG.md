@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.3.0 - 2026-07-29
+
+### Changed
+
+- Bundle the isolated-world Extension runtime from an explicit module graph into one generated content-script artifact, while leaving page-world scripts unbundled and preserving their existing load boundaries.
+- Add generated provenance metadata, dependency-graph checks, hidden-global detection, and release-package verification for the bundled runtime.
+- Keep a narrow legacy-global compatibility adapter while migrating runtime modules toward explicit dependency registration.
+- Split runtime orchestration into explicit execution snapshot, writeback settlement, scoped persistence, Page RPC, managed update, and Native transport owners while preserving existing product behavior.
+- Added a source-hygiene verification mode for pull requests while keeping release metadata checks strict on version tags.
+
+### Fixed
+
+- Include the generated isolated-world content bundle and provenance metadata in Extension, npm, and coordinated-update release artifacts.
+- Continue queued follow-ups after a directly submitted run completes or is manually cancelled, without incorrectly pausing the queue.
+- Prevent stale cross-tab snapshots from overwriting a terminal run state.
+- Preserve project scope while flushing terminal state after navigation and surface detached settlement persistence failures.
+- Complete the paired session action after a scoped persistence fence has been written, preventing queue claim or removal half-commits.
+
 ## v2.2.1 - 2026-07-24
 
 ### Fixed

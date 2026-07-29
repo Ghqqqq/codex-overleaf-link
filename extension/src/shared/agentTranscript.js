@@ -5,11 +5,14 @@
       getI18n: function getI18nCjs() { return require('./i18n.js'); }
     });
   } else {
-    // Browser script-tag load order is determined by manifest.json content_scripts;
-    // resolve dependencies lazily so this module can be listed before its deps.
-    root.CodexOverleafAgentTranscript = factory({
-      getFailureReasons: function getFailureReasonsWindow() { return root.CodexOverleafFailureReasons || null; },
-      getI18n: function getI18nWindow() { return root.CodexOverleafI18n || null; }
+    root.CodexOverleafModuleRegistry.define('AgentTranscript', [
+      'FailureReasons',
+      'I18n'
+    ], function createAgentTranscript(FailureReasons, I18n) {
+      return factory({
+        getFailureReasons: function getFailureReasonsWindow() { return FailureReasons; },
+        getI18n: function getI18nWindow() { return I18n; }
+      });
     });
   }
 })(typeof globalThis !== 'undefined' ? globalThis : window, function agentTranscriptFactory(deps) {

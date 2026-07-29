@@ -1,4 +1,10 @@
-(function initCodexOverleafUpdateNotice(root) {
+(function initCodexOverleafUpdateNotice(root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('../shared/managedUpdateProjection'));
+  } else {
+    root.CodexOverleafModuleRegistry.define('UpdateNotice', ['ManagedUpdateProjection'], factory);
+  }
+})(typeof window !== 'undefined' ? window : globalThis, function updateNoticeFactory(UpdateProjection) {
   'use strict';
 
   let notice = null;
@@ -11,7 +17,7 @@
   let settingsActionInFlight = false;
   let restartWatchdog = null;
   let manualCommandCopied = false;
-  const ACTIVE_UPDATE_STATES = new Set(['downloading', 'staged', 'waiting_for_idle', 'applying', 'awaiting_health']);
+  const ACTIVE_UPDATE_STATES = new Set(UpdateProjection.activePhases('panel'));
   const RESTART_WATCHDOG_MS = 30 * 1000;
 
   function mount(panelLike, options = {}) {
@@ -467,5 +473,5 @@
     return /^zh\b/i.test(locale) ? chinese : english;
   }
 
-  root.CodexOverleafUpdateNotice = Object.freeze({ mount });
-})(window);
+  return Object.freeze({ mount });
+});

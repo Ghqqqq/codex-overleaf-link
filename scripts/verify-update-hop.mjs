@@ -6,9 +6,15 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import {
+  createEphemeralReleaseSignature,
+  replaceTrustedUpdateKeySource
+} from './update-hop-test-signing.mjs';
+import { downloadReleaseAsset } from './update-hop-download.mjs';
 
 const require = createRequire(import.meta.url);
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const cliOptions = parseArgs(process.argv.slice(2));
 const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 const currentVersion = pkg.version;
 const currentTag = `v${currentVersion}`;
@@ -32,6 +38,23 @@ try {
   run('unzip', ['-q', baseExtensionZip, '-d', extensionRoot]);
   run('tar', ['-xzf', baseNativeTar, '-C', oldSourceRoot]);
 
+  const bootstrapHashesBefore = hashDirectory(path.join(extensionRoot, 'bootstrap'));
+  const manifestBytes = fs.readFileSync(path.join(releaseDir, 'release-manifest.json'));
+  const targetManifest = JSON.parse(manifestBytes);
+  let signatureBytes;
+  if (cliOptions.localTestKey) {
+    const signed = createEphemeralReleaseSignature(manifestBytes);
+    const trustPath = path.join(oldSourceRoot, 'native-host', 'src', 'updateTrust.js');
+    const trustSource = fs.readFileSync(trustPath, 'utf8');
+    fs.writeFileSync(trustPath, replaceTrustedUpdateKeySource(trustSource, {
+      keyId: signed.keyId,
+      publicKeyPem: signed.publicKeyPem
+    }));
+    signatureBytes = signed.signatureBytes;
+  } else {
+    signatureBytes = fs.readFileSync(path.join(releaseDir, 'release-manifest.sig'));
+  }
+
   const oldVersionRoot = path.join(nativeRoot, 'versions', baseVersion);
   fs.mkdirSync(path.dirname(oldVersionRoot), { recursive: true });
   fs.cpSync(oldSourceRoot, oldVersionRoot, { recursive: true });
@@ -49,9 +72,6 @@ try {
     writeJson(extensionMarkerPath, marker('extension', baseVersion, baseBootstrapProtocol));
   }
 
-  const manifestBytes = fs.readFileSync(path.join(releaseDir, 'release-manifest.json'));
-  const targetManifest = JSON.parse(manifestBytes);
-  const signatureBytes = fs.readFileSync(path.join(releaseDir, 'release-manifest.sig'));
   const bundlePath = path.join(releaseDir, `codex-overleaf-update-v${currentVersion}.tar.gz`);
   const bundleBytes = fs.readFileSync(bundlePath);
   const oldUpdateManager = require(path.join(oldSourceRoot, 'native-host', 'src', 'updateManager.js'));
@@ -110,6 +130,17 @@ try {
     if (extensionManifest.background?.service_worker !== 'bootstrap/background.js') {
       throw new Error('Managed update replaced the immutable bootstrap entry point.');
     }
+    const bootstrapHashesAfter = hashDirectory(path.join(extensionRoot, 'bootstrap'));
+    if (JSON.stringify(bootstrapHashesAfter) !== JSON.stringify(bootstrapHashesBefore)) {
+      throw new Error('Managed update changed immutable Bootstrap files.');
+    }
+    const updatedExtensionMarker = JSON.parse(fs.readFileSync(extensionMarkerPath, 'utf8'));
+    if (Number(updatedExtensionMarker.bootstrapProtocol) !== baseBootstrapProtocol) {
+      throw new Error(
+        `Managed update changed Bootstrap protocol: ${baseBootstrapProtocol} -> ` +
+        `${updatedExtensionMarker.bootstrapProtocol}.`
+      );
+    }
     const committed = await invoke('update.confirm', {
       transactionId: staged.transactionId,
       extensionVersion: currentVersion,
@@ -118,7 +149,11 @@ try {
     if (committed.state !== 'committed') {
       throw new Error(`Previous updater did not commit the healthy pair: ${committed.state}`);
     }
-    console.log(`Managed update hop passed with the real ${baseTag} updater: ${baseVersion} -> ${currentVersion}.`);
+    const signingMode = cliOptions.localTestKey ? 'ephemeral local signature' : 'production signature';
+    console.log(
+      `Managed update hop passed with the real ${baseTag} updater and ${signingMode}: ` +
+      `${baseVersion} -> ${currentVersion}.`
+    );
   }
 } finally {
   fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -147,15 +182,6 @@ function response(bytes, url, status) {
   };
 }
 
-async function downloadReleaseAsset(tag, name, target) {
-  const url = `https://github.com/Ghqqqq/codex-overleaf-link/releases/download/${tag}/${name}`;
-  const result = await fetch(url, { redirect: 'follow' });
-  if (!result.ok) throw new Error(`Unable to download ${name}: HTTP ${result.status}`);
-  const bytes = Buffer.from(await result.arrayBuffer());
-  if (!bytes.length || bytes.length > 64 * 1024 * 1024) throw new Error(`Downloaded asset has an invalid size: ${name}`);
-  fs.writeFileSync(target, bytes);
-}
-
 function marker(kind, version, bootstrapProtocol) {
   return { managedBy: 'codex-overleaf-link', kind, version, bootstrapProtocol, updatedAt: new Date().toISOString() };
 }
@@ -163,6 +189,40 @@ function marker(kind, version, bootstrapProtocol) {
 function writeJson(target, value) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function hashDirectory(root) {
+  const hashes = {};
+  for (const filePath of walkFiles(root)) {
+    const relativePath = path.relative(root, filePath).replace(/\\/g, '/');
+    hashes[relativePath] = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  }
+  return Object.fromEntries(Object.entries(hashes).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function walkFiles(root) {
+  const files = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...walkFiles(fullPath));
+    } else if (entry.isFile()) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+function parseArgs(argv) {
+  const options = { localTestKey: false };
+  for (const arg of argv) {
+    if (arg === '--local-test-key') {
+      options.localTestKey = true;
+    } else {
+      throw new Error(`Unknown update-hop option: ${arg}`);
+    }
+  }
+  return options;
 }
 
 function findPreviousStableTag() {

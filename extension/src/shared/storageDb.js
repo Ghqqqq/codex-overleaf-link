@@ -1,12 +1,18 @@
 (function initStorageDb(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./storageRunActions'), require('./runInputQueue'));
+    module.exports = factory(require('./storageRunActions'), require('./runInputQueue'),
+      require('./settlementFacts'), require('./storageSessionClaims'));
   } else {
-    root.CodexOverleafStorageDb = factory(root.CodexOverleafStorageRunActions, root.CodexOverleafRunInputQueue);
+    root.CodexOverleafModuleRegistry.define('StorageDb', [
+      'StorageRunActions',
+      'RunInputQueue',
+      'SettlementFacts',
+      'StorageSessionClaims'
+    ], factory);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue) {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue, SettlementFacts, StorageSessionClaims) {
   'use strict';
-  if (!StorageRunActions?.compactRunsForStorage || !StorageRunActions?.compactRunActionPayload || !StorageRunActions?.compactProviderSnapshot || !StorageRunActions?.compactStructuredEventValue || !StorageRunActions?.hashString || !RunInputQueue?.compactForStorage) {
+  if (!StorageRunActions?.compactRunsForStorage || !StorageRunActions?.compactRunActionPayload || !StorageRunActions?.compactProviderSnapshot || !StorageRunActions?.compactStructuredEventValue || !StorageRunActions?.hashString || !RunInputQueue?.compactForStorage || !SettlementFacts?.compactSettlementFacts || !StorageSessionClaims?.createSessionClaimer) {
     throw new Error('Codex Overleaf storage run-action helpers are unavailable.');
   }
   // IndexedDB versions are monotonic; v2.0 RC profiles have already opened v3.
@@ -127,6 +133,7 @@
       };
     });
   }
+  var claimSessionsForAccount = StorageSessionClaims.createSessionClaimer(openDb, function () { return IDBKeyRange; });
 
   function putRecord(storeName, record) {
     return openDb().then(function (db) {
@@ -687,6 +694,12 @@
     }
     if (VALID_TRACKED_CHANGE_STATUSES[run.trackedChangeStatus] === true) {
       compact.trackedChangeStatus = run.trackedChangeStatus;
+    }
+    var settlement = run.settlement && typeof run.settlement === 'object'
+      ? run.settlement
+      : run.settlementFacts;
+    if (settlement && typeof settlement === 'object') {
+      compact.settlement = compactStructuredEventValueForStorage(SettlementFacts.compactSettlementFacts(settlement), 0);
     }
     return compact;
   }
@@ -1325,6 +1338,7 @@
     putRecords: putRecords,
     getRecord: getRecord,
     getAllByIndex: getAllByIndex,
+    claimSessionsForAccount: claimSessionsForAccount,
     deleteRecord: deleteRecord,
     deleteByIndex: deleteByIndex,
     clearStore: clearStore,

@@ -2,7 +2,8 @@
   'use strict';
 
   const PAGE_BRIDGE_INSTALL_VERSION = window.CodexOverleafCompatibility?.BUILD_TARGET_VERSION || 'dev';
-  const PAGE_BRIDGE_INSTALL_REVISION = '2026-05-21-editor-readiness-v11';
+  const pageRpcContract = window.CodexOverleafPageRpcContract;
+  const PAGE_BRIDGE_INSTALL_REVISION = pageRpcContract.REVISION;
   if (window.__codexOverleafPageBridgeInstalledVersion === PAGE_BRIDGE_INSTALL_VERSION
     && window.__codexOverleafPageBridgeInstalledRevision === PAGE_BRIDGE_INSTALL_REVISION) {
     return;
@@ -152,10 +153,7 @@
         result = await dispatch(method, params || {});
       }
     } catch (error) {
-      result = {
-        ok: false,
-        error: error.message
-      };
+      result = pageRpcContract.normalizeFailure(method, error);
     }
 
     window.postMessage({
@@ -187,111 +185,62 @@
     return writeCancellationSequence;
   }
 
-  async function dispatch(method, params) {
-    if (method === 'probe') {
-      return probe(params);
-    }
-    if (method === 'cancelActiveWrite') {
+  const pageRpcHandlers = {
+    probe,
+    cancelActiveWrite() {
       const sequence = bumpWriteCancellationSequence();
       return { ok: true, cancelled: true, sequence };
-    }
-    if (method === 'getProjectSnapshot') {
-      return projectSnapshotBridge.getProjectSnapshot(withSnapshotCacheIdentity(params));
-    }
-    if (method === 'getProjectFileList') {
-      return projectSnapshotBridge.getProjectFileList(params);
-    }
-    if (method === 'invalidateProjectSnapshot') {
+    },
+    getProjectSnapshot: params => projectSnapshotBridge.getProjectSnapshot(withSnapshotCacheIdentity(params)),
+    getProjectFileList: params => projectSnapshotBridge.getProjectFileList(params),
+    invalidateProjectSnapshot(params) {
       projectSnapshotBridge.invalidateProjectSnapshot(params);
       return { ok: true };
-    }
-    if (method === 'createCheckpoint') {
-      return createCheckpoint(params.label);
-    }
-    if (method === 'ensureReviewing') {
-      // Gate the Reviewing-mode toggle with the same writeGuard the per-write
-      // path uses. Without this, a mid-flight SPA navigation could leave the
-      // pre-flight toggle flipping Track Changes in a different Overleaf
-      // project than the run was bound to. params.runProjectId is set by
-      // the content-side caller (preflightWriteSafety / ensureReviewingBeforeWrite);
-      // when absent (defensive), the guard short-circuits via its own
-      // missing-runProjectId branch.
-      if (typeof params?.runProjectId === 'string' && params.runProjectId) {
-        const blocked = await writeGuard.runWriteGuard(params);
-        if (blocked) return blocked;
-      }
-      return ensureReviewing(params);
-    }
-    if (method === 'ensureEditing') {
-      if (typeof params?.runProjectId === 'string' && params.runProjectId) {
-        const blocked = await writeGuard.runWriteGuard(params);
-        if (blocked) return blocked;
-      }
-      return ensureEditing(params);
-    }
-    if (method === 'applyOperations') {
-      // Welcome-panel + write-guard:
-      // First gate: runProjectId vs page-side editorProjectId. Runs before
-      // any reviewing / save-state / open-file readiness check so a
-      // mid-run navigation cannot write into a different project. runWriteGuard
-      // is async because it retries the page-side editorProjectId reader with
-      // backoff to ride out Overleaf's hydration window.
-      const blocked = await writeGuard.runWriteGuard(params);
-      if (blocked) return blocked;
-      return applyOperations(params.operations || [], {
+    },
+    createCheckpoint: params => createCheckpoint(params.label),
+    ensureReviewing,
+    ensureEditing,
+    applyOperations: params => applyOperations(params.operations || [], {
         baseFiles: params.baseFiles || null,
         reviewingPolicy: params.reviewingPolicy || '',
         requireReviewing: params.requireReviewing === true,
         requireEditing: params.requireEditing === true,
-        // Propagate runProjectId so the writeback router's defense-in-depth
-        // missing-runProjectId check sees it on this in-bridge dispatch path.
         runProjectId: typeof params.runProjectId === 'string' ? params.runProjectId : ''
-      });
+      }),
+    jumpToPosition,
+    rejectTrackedChanges,
+    acceptTrackedChanges,
+    triggerCompile: params => compileBridge.triggerCompile(params),
+    getCompileLog: params => compileBridge.getCompileLog(params),
+    getCompileState: () => compileBridge.getCompileState(),
+    waitForSaveState,
+    startOtObserver: params => otObserver.start(params),
+    stopOtObserver: () => otObserver.stop(),
+    getOtStatus: () => otObserver.getStatus(),
+    drainOtEvents() {
+      return { ok: true, events: otObserver.drainEvents().map(sanitizeOtEventForContent) };
     }
-    if (method === 'jumpToPosition') {
-      return jumpToPosition(params);
+  };
+
+  async function dispatch(method, params) {
+    const contract = pageRpcContract.getMethod(method);
+    if (!contract || method === PAGE_BRIDGE_CAPABILITY_METHOD) {
+      return { ok: false, error: `Unknown page bridge method: ${method}` };
     }
-    if (method === 'rejectTrackedChanges') {
+    const handler = pageRpcHandlers[method];
+    if (typeof handler !== 'function') {
+      return { ok: false, error: `Page bridge handler unavailable: ${method}` };
+    }
+    const hasRunProjectId = typeof params?.runProjectId === 'string'
+      && params.runProjectId.trim().length > 0;
+    if (
+      contract.projectIdentity === 'required'
+      || (contract.projectIdentity === 'optional' && hasRunProjectId)
+    ) {
       const blocked = await writeGuard.runWriteGuard(params);
       if (blocked) return blocked;
-      return rejectTrackedChanges(params);
     }
-    if (method === 'acceptTrackedChanges') {
-      const blocked = await writeGuard.runWriteGuard(params);
-      if (blocked) return blocked;
-      return acceptTrackedChanges(params);
-    }
-    if (method === 'triggerCompile') {
-      return compileBridge.triggerCompile(params);
-    }
-    if (method === 'getCompileLog') {
-      return compileBridge.getCompileLog(params);
-    }
-    if (method === 'getCompileState') {
-      return compileBridge.getCompileState();
-    }
-    if (method === 'waitForSaveState') {
-      return waitForSaveState(params);
-    }
-    if (method === 'startOtObserver') {
-      return otObserver.start(params);
-    }
-    if (method === 'stopOtObserver') {
-      return otObserver.stop();
-    }
-    if (method === 'getOtStatus') {
-      return otObserver.getStatus();
-    }
-    if (method === 'drainOtEvents') {
-      return {
-        ok: true,
-        events: otObserver.drainEvents().map(sanitizeOtEventForContent)
-      };
-    }
-    return {
-      ok: false,
-      error: `Unknown page bridge method: ${method}`
-    };
+    return handler(params);
   }
 
   function sanitizeOtEventForContent(event = {}) {
@@ -468,7 +417,7 @@
       reviewing: window.CodexOverleafReviewing.detectReviewingFromSignals(reviewingSignals),
       reviewingDiagnostics: reviewingSignals.diagnostics,
       editor,
-      capabilities: collectPageCapabilities(editor),
+      capabilities: pageRpcContract.withCapabilityReport(collectPageCapabilities(editor)),
       editorDiagnostics: buildEditorDiagnostics(editor),
       projectDiagnostics: {
         internalRootKeys: collectInternalRootKeys(),

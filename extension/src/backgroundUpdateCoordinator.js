@@ -19,13 +19,6 @@
   const SLOW_IDLE_RETRY_MS = 15000;
   const FAST_IDLE_RETRY_BLOCKERS = new Set(['recent_user_activity', 'save_state_not_stable']);
   const WATCHDOG_INTERVAL_MINUTES = 1;
-  const PHASE_TIMEOUT_MS = Object.freeze({
-    checking: 30 * 1000,
-    downloading: 2 * 60 * 1000,
-    applying: 90 * 1000,
-    awaiting_health: 2 * 60 * 1000,
-    rolling_back: 60 * 1000
-  });
   const LEGACY_GUARD = Number.MAX_SAFE_INTEGER;
   const OVERLEAF_MATCHES = [
     'https://www.overleaf.com/project',
@@ -42,6 +35,7 @@
   ]);
 
   const policy = root.CodexOverleafUpdateConsent;
+  const revocation = root.CodexOverleafUpdateRevocation;
   let nativeBridge = null;
   let initialized = false;
   let policyTail = Promise.resolve();
@@ -49,7 +43,7 @@
   let activationPromise = null;
 
   function init(options = {}) {
-    if (initialized || !policy) return;
+    if (initialized || !policy || !revocation) return;
     initialized = true;
     nativeBridge = options.nativeBridge || root.CodexOverleafNativeBridge;
 
@@ -70,7 +64,7 @@
         void enqueuePolicyAction(() => checkOnly({ manual: false })).catch(() => {});
       }
       if (alarm?.name === WATCHDOG_ALARM) {
-        void enqueuePolicyAction(() => reconcileExpiredPhase()).catch(() => {});
+        void enqueuePolicyAction(() => reconcileRecoveryState()).catch(() => {});
       }
       if (alarm?.name === IDLE_ALARM) {
         void enqueuePolicyAction(() => tryActivateStagedUpdate()).catch(() => {});
@@ -95,7 +89,7 @@
       periodInMinutes: WATCHDOG_INTERVAL_MINUTES
     });
     await recoverInterruptedCheck();
-    await reconcileExpiredPhase();
+    await reconcileRecoveryState();
     await settleTerminalConsent();
     await armLegacyGuard();
     await publishView();
@@ -274,20 +268,27 @@
     }
 
     const authorizationId = crypto.randomUUID();
+    let authorizationIntent = revocation.prepareAuthorization(
+      consent,
+      authorizationId,
+      state.latestVersion,
+      Date.now()
+    );
     try {
+      authorizationIntent = await setConsentState(authorizationIntent);
       await requestNative('update.authorize', {
         authorizationId,
         targetVersion: state.latestVersion,
         currentVersion: currentVersion()
       });
-      await setConsentState({
-        ...consent,
+      await setConsentState(revocation.clear({
+        ...authorizationIntent,
         snoozedVersion: '',
         snoozedUntil: 0,
         authorizedVersion: state.latestVersion,
         authorizationId,
         authorizedAt: Date.now()
-      });
+      }));
       await setUpdateState({ ...state, postponeUntil: 0, code: '', message: '' });
       const executor = globalThis.CodexOverleafManagedUpdateExecutor;
       if (!executor || typeof executor.installAuthorizedUpdate !== 'function') {
@@ -299,17 +300,31 @@
       await executor.installAuthorizedUpdate();
       return getView();
     } catch (error) {
-      await bestEffortRevoke({
+      const observedConsent = await getConsentState().catch(() => consent);
+      const pendingConsent = revocation.prepareAuthorization({
+        ...observedConsent,
+        authorizedVersion: state.latestVersion,
         authorizationId,
-        targetVersion: state.latestVersion,
-        transactionId: ''
-      });
-      await setConsentState({
-        ...consent,
-        authorizedVersion: '',
-        authorizationId: '',
-        authorizedAt: 0
-      });
+        authorizedAt: observedConsent.authorizedAt || Date.now()
+      }, authorizationId, state.latestVersion, Date.now());
+      await setConsentState(pendingConsent);
+      try {
+        await requestNative('update.revoke', {
+          authorizationId: pendingConsent.revokingAuthorizationId,
+          targetVersion: pendingConsent.revokingVersion,
+          transactionId: pendingConsent.revokingTransactionId
+        });
+        await setConsentState(revocation.clear({
+          ...pendingConsent,
+          authorizedVersion: '',
+          authorizationId: '',
+          authorizedAt: 0
+        }));
+      } catch (revokeError) {
+        if (error && typeof error === 'object') {
+          error.revocationError = safeMessage(revokeError);
+        }
+      }
       const observed = await getUpdateState().catch(() => state);
       if (!['awaiting_health', 'committed', 'rolled_back'].includes(observed.state)) {
         await setUpdateState({
@@ -486,15 +501,19 @@
     if (['applying', 'awaiting_health'].includes(state.state)) {
       throw codedError('update_revoke_too_late', 'The update is already being installed.');
     }
+    let pendingConsent = consent;
     if (consent.authorizationId) {
+      pendingConsent = revocation.begin(consent, state, Date.now());
+      await setConsentState(pendingConsent);
       try {
         await requestNative('update.revoke', {
-          authorizationId: consent.authorizationId,
-          targetVersion: consent.authorizedVersion || state.latestVersion,
-          transactionId: state.transactionId || ''
+          authorizationId: pendingConsent.revokingAuthorizationId,
+          targetVersion: pendingConsent.revokingVersion,
+          transactionId: pendingConsent.revokingTransactionId
         });
       } catch (error) {
         if (error?.code === 'update_revoke_too_late') {
+          await setConsentState(revocation.clear(pendingConsent));
           return getView();
         }
         throw error;
@@ -503,29 +522,54 @@
       throw codedError('update_consent_mismatch', 'The staged update has no matching runtime authorization.');
     }
 
-    const snoozedUntil = Date.now() + SNOOZE_MS;
     clearIdleRetryTimer();
     await chrome.alarms?.clear?.(IDLE_ALARM).catch(() => {});
-    await setUpdateState({
-      ...state,
-      state: 'update_available',
-      transactionId: '',
-      stagedAt: 0,
-      blocker: '',
-      blockers: [],
-      postponeUntil: LEGACY_GUARD,
-      code: '',
-      message: ''
+    const completed = revocation.complete(state, pendingConsent, {
+      now: Date.now(),
+      snoozeMs: SNOOZE_MS,
+      postponeUntil: LEGACY_GUARD
     });
-    await setConsentState({
-      ...consent,
-      snoozedVersion: state.latestVersion,
-      snoozedUntil,
-      authorizedVersion: '',
-      authorizationId: '',
-      authorizedAt: 0
-    });
+    await setUpdateAndConsentState(completed.updateState, completed.consentState);
     return getView();
+  }
+
+  async function reconcileRecoveryState() {
+    await reconcilePendingRevocation();
+    return reconcileExpiredPhase();
+  }
+
+  async function reconcilePendingRevocation() {
+    const [state, consent] = await Promise.all([getUpdateState(), getConsentState()]);
+    if (!revocation.hasPending(consent)) return state;
+
+    try {
+      await requestNative('update.revoke', {
+        authorizationId: consent.revokingAuthorizationId,
+        targetVersion: consent.revokingVersion,
+        transactionId: consent.revokingTransactionId
+      });
+    } catch (error) {
+      if (error?.code === 'update_revoke_too_late') {
+        await setConsentState(revocation.clear(consent));
+        return state;
+      }
+      if (!['update_already_revoked', 'update_authorization_revoked'].includes(error?.code)) {
+        return state;
+      }
+    }
+
+    clearIdleRetryTimer();
+    await chrome.alarms?.clear?.(IDLE_ALARM).catch(() => {});
+    const completed = revocation.complete(state, consent, {
+      now: Date.now(),
+      snoozeMs: SNOOZE_MS,
+      postponeUntil: LEGACY_GUARD
+    });
+    const settled = await setUpdateAndConsentState(
+      completed.updateState,
+      completed.consentState
+    );
+    return settled.updateState;
   }
 
   async function settleTerminalConsent() {
@@ -558,7 +602,7 @@
           currentVersion: transaction.sourceVersion || state.currentVersion,
           code: 'update_health_timeout',
           message: 'The updated runtime did not complete its health check and was rolled back. Retry, or use the manual update command.'
-        });
+        }, { observed: true });
       }
       if (transaction?.state === 'committed') {
         return setUpdateState({
@@ -568,7 +612,7 @@
           latestVersion: transaction.targetVersion,
           code: '',
           message: ''
-        });
+        }, { observed: true });
       }
       if (transaction?.state === 'rolled_back') {
         return setUpdateState({
@@ -577,7 +621,7 @@
           currentVersion: transaction.sourceVersion || state.currentVersion,
           code: transaction.reasonCode || 'update_rolled_back',
           message: 'The managed update was rolled back after activation did not complete.'
-        });
+        }, { observed: true });
       }
     }
     return setUpdateState({
@@ -641,20 +685,34 @@
     return policy.normalizeUpdateState(stored?.[UPDATE_STATE_KEY], currentVersion());
   }
 
-  async function setUpdateState(value) {
+  async function setUpdateState(value, options = {}) {
     const stored = await chrome.storage.local.get(UPDATE_STATE_KEY);
     const previous = policy.normalizeUpdateState(stored?.[UPDATE_STATE_KEY], currentVersion());
-    const now = Date.now();
-    const changedPhase = value.state && value.state !== previous.state;
-    const timeoutMs = PHASE_TIMEOUT_MS[value.state] || 0;
-    const next = policy.normalizeUpdateState({
-      ...value,
-      initiatedBy: value.initiatedBy || previous.initiatedBy,
-      phaseStartedAt: changedPhase ? now : (value.phaseStartedAt || previous.phaseStartedAt),
-      deadlineAt: changedPhase ? (timeoutMs ? now + timeoutMs : 0) : (value.deadlineAt || previous.deadlineAt),
-      heartbeatAt: now
-    }, currentVersion());
+    const next = projectUpdateState(previous, value, options);
     await chrome.storage.local.set({ [UPDATE_STATE_KEY]: next });
+    return next;
+  }
+
+  function projectUpdateState(previous, value, options = {}) {
+    const now = Date.now();
+    const candidate = {
+      ...value,
+      initiatedBy: value.initiatedBy || previous.initiatedBy
+    };
+    const projection = root.CodexOverleafManagedUpdateProjection;
+    let next;
+    if (projection) {
+      const transition = options.observed === true
+        ? projection.transition
+        : projection.transitionCommand;
+      next = transition(previous, candidate, {
+        merge: true,
+        currentVersion: currentVersion(),
+        now
+      });
+    } else {
+      next = policy.normalizeUpdateState(candidate, currentVersion());
+    }
     return next;
   }
 
@@ -667,6 +725,18 @@
     const next = policy.normalizeConsentState(value);
     await chrome.storage.local.set({ [CONSENT_STATE_KEY]: next });
     return next;
+  }
+
+  async function setUpdateAndConsentState(updateValue, consentValue, options = {}) {
+    const stored = await chrome.storage.local.get([UPDATE_STATE_KEY, CONSENT_STATE_KEY]);
+    const previous = policy.normalizeUpdateState(stored?.[UPDATE_STATE_KEY], currentVersion());
+    const updateState = projectUpdateState(previous, updateValue, options);
+    const consentState = policy.normalizeConsentState(consentValue);
+    await chrome.storage.local.set({
+      [UPDATE_STATE_KEY]: updateState,
+      [CONSENT_STATE_KEY]: consentState
+    });
+    return { updateState, consentState };
   }
 
   async function requestNative(method, params = {}) {
@@ -682,14 +752,6 @@
       );
     }
     return response.result || {};
-  }
-
-  async function bestEffortRevoke(params) {
-    try {
-      await requestNative('update.revoke', params);
-    } catch (_error) {
-      // Native authorization remains the hard gate if cleanup cannot connect.
-    }
   }
 
   function enqueuePolicyAction(action) {
