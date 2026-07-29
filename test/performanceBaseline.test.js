@@ -99,6 +99,9 @@ test('large project benchmark timing thresholds fail only in strict mode', () =>
     const strictOutputPath = path.join(tempDir, 'strict.json');
     const strictResult = runBenchmark(['--strict', '--max-sync-ms', '-1', '--output', strictOutputPath]);
     assert.notEqual(strictResult.status, 0);
+    assert.match(strictResult.stderr, /Synthetic large-project regression gate failed/);
+    assert.match(strictResult.stderr, /timing_threshold_exceeded/);
+    assert.match(strictResult.stderr, /mirror\.sync_ms/);
     const strictReport = JSON.parse(fs.readFileSync(strictOutputPath, 'utf8'));
     assert.equal(strictReport.failures.some(failure => failure.code === 'timing_threshold_exceeded'), true);
   } finally {

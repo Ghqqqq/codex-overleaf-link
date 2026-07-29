@@ -794,6 +794,13 @@ async function main() {
     process.stdout.write(json);
   }
   if (report.failures.length) {
+    console.error(JSON.stringify({
+      message: 'Synthetic large-project regression gate failed.',
+      platform: process.platform,
+      failures: report.failures,
+      warnings: report.warnings,
+      metrics: report.metrics
+    }, null, 2));
     process.exitCode = 1;
   }
 }
