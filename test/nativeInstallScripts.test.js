@@ -922,8 +922,15 @@ test('repository ships a one-command Windows installer', () => {
   assert.match(installer, /github\.com\/Ghqqqq\/codex-overleaf-link\.git/);
   assert.match(installer, /Get-Command\s+git/);
   assert.match(installer, /Get-Command\s+node/);
+  assert.match(installer, /Get-Command\s+npm/);
   assert.match(installer, /git clone/);
   assert.match(installer, /git -C/);
+  assert.match(installer, /npm ci/);
+  assert.match(installer, /npm run build:content/);
+  assert.ok(
+    installer.indexOf('npm run build:content') < installer.indexOf('$InstallManagedScript'),
+    'Windows installer should build the content bundle before managed installation'
+  );
   assert.match(installer, /scripts[\\/]install-managed\.mjs/);
   assert.match(installer, /--json/);
   assert.match(installer, /--extension-id/);
@@ -1381,6 +1388,13 @@ test('repository ships a one-command macOS installer', () => {
   assert.match(installer, /CODEX_OVERLEAF_INSTALL_DIR/);
   assert.match(installer, /CODEX_OVERLEAF_REF/);
   assert.match(installer, /github\.com\/Ghqqqq\/codex-overleaf-link\.git/);
+  assert.match(installer, /need_command npm/);
+  assert.match(installer, /npm ci/);
+  assert.match(installer, /npm run build:content/);
+  assert.ok(
+    installer.indexOf('npm run build:content') < installer.indexOf('scripts/install-managed.mjs'),
+    'shell installer should build the content bundle before managed installation'
+  );
   assert.match(installer, /scripts\/install-managed\.mjs/);
   assert.doesNotMatch(installer, /rm -rf "\$INSTALL_DIR"/);
   assert.match(installer, /Package version/);
@@ -1480,6 +1494,7 @@ test('one-command installer works on macOS Bash 3.2 with bundled extension id de
   const installDir = path.join(tempDir, 'source');
   const visibleExtensionLink = path.join(tempDir, 'Codex Overleaf Link Extension');
   const nodeLog = path.join(tempDir, 'node-args.json');
+  const npmLog = path.join(tempDir, 'npm-args.txt');
   const openLog = path.join(tempDir, 'open-args.txt');
   const pbcopyLog = path.join(tempDir, 'pbcopy.txt');
   fs.mkdirSync(binDir, { recursive: true });
@@ -1502,6 +1517,11 @@ test('one-command installer works on macOS Bash 3.2 with bundled extension id de
     `echo '{"version":"${CURRENT_PACKAGE_VERSION}","extensionRoot":"'"$HOME"'/.codex-overleaf/managed/extension","nativeRoot":"'"$HOME"'/.codex-overleaf/managed/native"}'`,
     'exit 0'
   ].join('\n'));
+  fs.writeFileSync(path.join(binDir, 'npm'), [
+    '#!/bin/bash',
+    `printf '%s\\n' "$*" >> "${npmLog}"`,
+    'exit 0'
+  ].join('\n'));
   fs.writeFileSync(path.join(binDir, 'open'), [
     '#!/bin/bash',
     `for arg in "$@"; do printf '%s\\n' "$arg"; done >> "${openLog}"`,
@@ -1514,6 +1534,7 @@ test('one-command installer works on macOS Bash 3.2 with bundled extension id de
   ].join('\n'));
   fs.chmodSync(path.join(binDir, 'git'), 0o755);
   fs.chmodSync(path.join(binDir, 'node'), 0o755);
+  fs.chmodSync(path.join(binDir, 'npm'), 0o755);
   fs.chmodSync(path.join(binDir, 'open'), 0o755);
   fs.chmodSync(path.join(binDir, 'pbcopy'), 0o755);
 
@@ -1538,6 +1559,10 @@ test('one-command installer works on macOS Bash 3.2 with bundled extension id de
   assert.match(nodeArgs, /scripts\/install-managed\.mjs/);
   assert.match(nodeArgs, /--json/);
   assert.doesNotMatch(nodeArgs, /--extension-id/);
+  assert.deepEqual(
+    fs.readFileSync(npmLog, 'utf8').trim().split('\n'),
+    ['ci', 'run build:content']
+  );
   assert.equal(fs.readlinkSync(visibleExtensionLink), path.join(tempDir, '.codex-overleaf', 'managed', 'extension'));
   assert.equal(fs.readFileSync(pbcopyLog, 'utf8'), visibleExtensionLink);
   const openArgs = fs.readFileSync(openLog, 'utf8');

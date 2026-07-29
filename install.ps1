@@ -71,6 +71,9 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   throw 'Missing required command: node'
 }
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+  throw 'Missing required command: npm'
+}
 
 Write-Host "CODEX_OVERLEAF_REF: $Ref"
 
@@ -93,6 +96,20 @@ if (Test-Path $GitDir) {
   git clone --depth 1 $RepoUrl $InstallDir
   git -C $InstallDir fetch --depth 1 origin $Ref
   git -C $InstallDir checkout --detach FETCH_HEAD | Out-Null
+}
+
+Push-Location $InstallDir
+try {
+  & npm ci
+  if ($LASTEXITCODE -ne 0) {
+    throw 'Dependency installation failed.'
+  }
+  & npm run build:content
+  if ($LASTEXITCODE -ne 0) {
+    throw 'Content bundle build failed.'
+  }
+} finally {
+  Pop-Location
 }
 
 $PackageVersion = 'unknown'

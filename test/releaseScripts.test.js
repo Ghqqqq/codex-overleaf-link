@@ -1494,6 +1494,7 @@ releaseTest('build-release writes a version-pinned install artifact while root i
   const installDir = path.join(tempDir, 'source');
   const visibleExtensionLink = path.join(tempDir, 'Codex Overleaf Link Extension');
   const nodeLog = path.join(tempDir, 'node-args.txt');
+  const npmLog = path.join(tempDir, 'npm-args.txt');
   const gitLog = path.join(tempDir, 'git-args.txt');
   const openLog = path.join(tempDir, 'open-args.txt');
   const pbcopyLog = path.join(tempDir, 'pbcopy-input.txt');
@@ -1545,6 +1546,11 @@ releaseTest('build-release writes a version-pinned install artifact while root i
       `echo '{"version":"${version}","extensionRoot":"'"$HOME"'/.codex-overleaf/managed/extension","nativeRoot":"'"$HOME"'/.codex-overleaf/managed/native"}'`,
       'exit 0'
     ].join('\n'));
+    fs.writeFileSync(path.join(binDir, 'npm'), [
+      '#!/bin/bash',
+      `printf '%s\\n' "$*" >> "${npmLog}"`,
+      'exit 0'
+    ].join('\n'));
     fs.writeFileSync(path.join(binDir, 'open'), [
       '#!/bin/bash',
       `printf '%s\\n' "$*" >> "${openLog}"`,
@@ -1555,7 +1561,7 @@ releaseTest('build-release writes a version-pinned install artifact while root i
       `cat > "${pbcopyLog}"`,
       'exit 0'
     ].join('\n'));
-    for (const command of ['git', 'node', 'open', 'pbcopy']) {
+    for (const command of ['git', 'node', 'npm', 'open', 'pbcopy']) {
       fs.chmodSync(path.join(binDir, command), 0o755);
     }
 
@@ -1575,6 +1581,7 @@ releaseTest('build-release writes a version-pinned install artifact while root i
     assert.match(readText(gitLog), new RegExp(`fetch --depth 1 origin ${releaseRef}`));
     assert.match(readText(nodeLog), /scripts\/install-managed\.mjs/);
     assert.match(readText(nodeLog), /--json/);
+    assert.deepEqual(readText(npmLog).trim().split('\n'), ['ci', 'run build:content']);
     assert.match(readText(openLog), /chrome:\/\/extensions/);
     assert.equal(readText(pbcopyLog), visibleExtensionLink);
   } finally {

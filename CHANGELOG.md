@@ -13,6 +13,7 @@
 ### Fixed
 
 - Include the generated isolated-world content bundle and provenance metadata in Extension, npm, and coordinated-update release artifacts.
+- Build the isolated-world content bundle during macOS/Linux and Windows source installation, and reject incomplete managed runtime trees before activation.
 - Continue queued follow-ups after a directly submitted run completes or is manually cancelled, without incorrectly pausing the queue.
 - Prevent stale cross-tab snapshots from overwriting a terminal run state.
 - Preserve project scope while flushing terminal state after navigation and surface detached settlement persistence failures.

@@ -14,6 +14,7 @@ need_command() {
 
 need_command git
 need_command node
+need_command npm
 
 echo "CODEX_OVERLEAF_REF: $REF"
 
@@ -52,6 +53,12 @@ else
   git -C "$INSTALL_DIR" fetch --depth 1 origin "$REF"
   git -C "$INSTALL_DIR" checkout --detach FETCH_HEAD >/dev/null
 fi
+
+(
+  cd "$INSTALL_DIR"
+  npm ci
+  npm run build:content
+)
 
 PACKAGE_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$INSTALL_DIR/package.json" | head -n 1)"
 if [ -z "$PACKAGE_VERSION" ]; then

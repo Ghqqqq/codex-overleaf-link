@@ -7,6 +7,7 @@ const test = require('node:test');
 const packageJson = require('../package.json');
 const {
   EXTENSION_MARKER,
+  assertManagedRuntimeManifestFiles,
   assertSafeManagedRoot,
   buildManagedExtensionTree
 } = require('../native-host/src/managedInstall');
@@ -35,12 +36,36 @@ test('builds a loadable managed extension with stable Bootstrap and replaceable 
     assert.deepEqual(runtimeManifest.matches, sourceManifest.content_scripts[0].matches);
     assert.deepEqual(runtimeManifest.js, sourceManifest.content_scripts[0].js);
     assert.deepEqual(runtimeManifest.css, sourceManifest.content_scripts[0].css);
+    for (const relativePath of [...runtimeManifest.js, ...runtimeManifest.css]) {
+      assert.equal(
+        fs.statSync(path.join(root, 'runtime', relativePath)).isFile(),
+        true,
+        `managed runtime file should exist: ${relativePath}`
+      );
+    }
     assert.equal(manifest.web_accessible_resources[0].resources.includes('runtime/vendor/katex/fonts/*'), true);
     assert.equal(fs.existsSync(path.join(root, 'bootstrap/update.html')), true);
     assert.equal(fs.existsSync(path.join(root, 'bootstrap/update.css')), true);
     assert.equal(fs.existsSync(path.join(root, 'bootstrap/update.js')), true);
     const marker = JSON.parse(fs.readFileSync(path.join(root, EXTENSION_MARKER), 'utf8'));
     assert.equal(marker.bootstrapProtocol, 2);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects a managed runtime whose manifest references a missing generated bundle', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-managed-incomplete-'));
+  try {
+    fs.mkdirSync(path.join(root, 'runtime'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'runtime', 'runtime-manifest.json'), JSON.stringify({
+      js: ['src/content/generated/content.bundle.js'],
+      css: []
+    }));
+    assert.throws(
+      () => assertManagedRuntimeManifestFiles(root),
+      /missing file\(s\): src\/content\/generated\/content\.bundle\.js/
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

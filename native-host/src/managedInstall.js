@@ -54,14 +54,19 @@ function installManagedDistribution(options = {}) {
   const unique = process.pid + '-' + Date.now() + '-' + Math.random().toString(16).slice(2);
   const extensionStage = path.join(parent, '.extension.staging-' + unique);
   const extensionRollback = path.join(parent, '.extension.rollback-' + unique);
-  buildManagedExtensionTree({
-    packageRoot,
-    targetRoot: extensionStage,
-    version,
-    releaseRef,
-    releaseChannel,
-    allowedFiles: options.allowedFiles
-  });
+  try {
+    buildManagedExtensionTree({
+      packageRoot,
+      targetRoot: extensionStage,
+      version,
+      releaseRef,
+      releaseChannel,
+      allowedFiles: options.allowedFiles
+    });
+  } catch (error) {
+    safeRemove(extensionStage);
+    throw error;
+  }
 
   const previousExtensionMarker = readManagedMarker(extensionRoot, EXTENSION_MARKER);
   if (fs.existsSync(extensionRoot) && !isManagedMarker(previousExtensionMarker, 'extension')) {
@@ -145,6 +150,7 @@ function buildManagedExtensionTree(options = {}) {
   copyPackageTree(packageRoot, 'extension/vendor', targetRoot, 'runtime/vendor', { allowedFiles });
   copyPackageFile(packageRoot, 'extension/runtime-manifest.json', targetRoot, 'runtime/runtime-manifest.json', allowedFiles);
   rewriteManagedRuntimeAssetPaths(targetRoot);
+  assertManagedRuntimeManifestFiles(targetRoot);
   fs.writeFileSync(path.join(targetRoot, EXTENSION_MARKER), JSON.stringify({
     managedBy: MANAGED_BY,
     kind: 'extension',
@@ -413,6 +419,41 @@ function resolveForPlatform(value, platformPath) {
   return platformPath.isAbsolute(value) ? value : platformPath.resolve(value);
 }
 
+function assertManagedRuntimeManifestFiles(targetRoot) {
+  const runtimeRoot = path.join(targetRoot, 'runtime');
+  const runtimeManifest = readJson(path.join(runtimeRoot, 'runtime-manifest.json'));
+  const runtimeFiles = [
+    ...(Array.isArray(runtimeManifest.js) ? runtimeManifest.js : []),
+    ...(Array.isArray(runtimeManifest.css) ? runtimeManifest.css : [])
+  ];
+  const missing = [];
+
+  for (const relativePath of runtimeFiles) {
+    if (
+      typeof relativePath !== 'string'
+      || relativePath.length === 0
+      || path.isAbsolute(relativePath)
+      || relativePath.split(/[\\/]+/).includes('..')
+    ) {
+      throw new Error('Managed runtime manifest contains an unsafe path: ' + String(relativePath));
+    }
+    const filePath = path.resolve(runtimeRoot, relativePath);
+    const relativeToRuntime = path.relative(runtimeRoot, filePath);
+    if (
+      relativeToRuntime.startsWith('..')
+      || path.isAbsolute(relativeToRuntime)
+      || !fs.existsSync(filePath)
+      || !fs.statSync(filePath).isFile()
+    ) {
+      missing.push(relativePath);
+    }
+  }
+
+  if (missing.length > 0) {
+    throw new Error('Managed runtime is incomplete; missing file(s): ' + missing.join(', '));
+  }
+}
+
 function safeRemove(target) {
   fs.rmSync(target, { recursive: true, force: true });
 }
@@ -425,6 +466,7 @@ module.exports = {
   EXTENSION_MARKER,
   MANAGED_BY,
   NATIVE_MARKER,
+  assertManagedRuntimeManifestFiles,
   assertSafeManagedRoot,
   buildManagedExtensionTree,
   installManagedDistribution,
