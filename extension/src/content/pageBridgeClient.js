@@ -12,7 +12,6 @@
     ['src/shared/pageRpcContract.js', 'codex-overleaf-page-rpc-contract-script'],
     ['src/shared/staleGuard.js', 'codex-overleaf-stale-guard-script'],
     ['src/shared/compileAdapter.js', 'codex-overleaf-compile-adapter-script'],
-    ['src/shared/governanceRules.js', 'codex-overleaf-governance-rules-script'],
     ['src/shared/sensitiveScan.js', 'codex-overleaf-sensitive-scan-script'],
     ['src/shared/auditRecords.js', 'codex-overleaf-audit-records-script'],
     ['src/page/saveState.js', 'codex-overleaf-save-state-script', true],

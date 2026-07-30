@@ -69,6 +69,27 @@
       : null;
   }
 
+  function buildSkippedOnlyApplyResults(skippedEntries = []) {
+    return skippedEntries.length
+      ? [{ ok: false, applied: [], skipped: skippedEntries }]
+      : [];
+  }
+
+  function resolveSkippedOnlyReason(skippedEntries = [], fallback = '') {
+    return skippedEntries.find(item => item?.result?.reason)?.result.reason || fallback;
+  }
+
+  function resolveSkippedOnlyNextStep(skippedEntries = [], fallback = '') {
+    if (!skippedEntries.length || typeof formatWritebackSkippedNextStep !== 'function') {
+      return fallback;
+    }
+    return formatWritebackSkippedNextStep({
+      ok: false,
+      applied: [],
+      skipped: skippedEntries
+    });
+  }
+
   async function applySyncChangesToOverleaf(syncChanges = [], project = {}, options = {}) {
     const runMode = options.mode || getState().mode;
     const runRequireReviewing = typeof options.requireReviewing === 'boolean'
@@ -144,6 +165,13 @@
       visibleSyncChanges = filterSyncChangesByOperations(syncChanges, operations);
     }
     if (!operations.length) {
+      const fallbackUnchangedReason = assistantMessage
+        ? tx('No file changes need to sync back to Overleaf.', '没有产生需要同步回 Overleaf 的文件改动。')
+        : formatUnsupportedLocalChangeSummary(unsupportedChanges);
+      const fallbackNextStep = tx(
+        'You can continue the conversation, or adjust @context and run again.',
+        '可以继续追问，或调整 @context 后重新运行。'
+      );
       appendRunEvent({
         title: tx('Codex did not produce file changes that need to sync back to Overleaf.', 'Codex 没有产生需要同步回 Overleaf 的文件改动。'),
         status: 'completed'
@@ -152,12 +180,10 @@
         conclusion: assistantMessage || tx('Codex finished locally. There are no changes to sync back to Overleaf.', 'Codex 已完成本地处理，没有需要同步回 Overleaf 的改动。'),
         status: runMode === 'ask' ? tr('modeAsk') : 'completed',
         operations: [],
-        applyResults: [],
-        unchangedReason: assistantMessage
-          ? tx('No file changes need to sync back to Overleaf.', '没有产生需要同步回 Overleaf 的文件改动。')
-          : formatUnsupportedLocalChangeSummary(unsupportedChanges),
+        applyResults: buildSkippedOnlyApplyResults(additionalSkippedEntries),
+        unchangedReason: resolveSkippedOnlyReason(additionalSkippedEntries, fallbackUnchangedReason),
         mode: runMode,
-        nextStep: tx('You can continue the conversation, or adjust @context and run again.', '可以继续追问，或调整 @context 后重新运行。')
+        nextStep: resolveSkippedOnlyNextStep(additionalSkippedEntries, fallbackNextStep)
       });
       return {
         summaryLine: assistantMessage || tx('No changes to sync', '没有需要同步的改动'),
@@ -257,6 +283,14 @@
     additionalSkippedEntries.push(...binaryDecision.skipped);
 
     if (!operations.length) {
+      const fallbackUnchangedReason = tx(
+        'No approved file changes remain to sync back to Overleaf.',
+        '没有剩余已确认的文件改动需要同步回 Overleaf。'
+      );
+      const fallbackNextStep = tx(
+        'You can continue the conversation, or adjust @context and run again.',
+        '可以继续追问，或调整 @context 后重新运行。'
+      );
       appendRunEvent({
         title: tx('No approved file changes remain to sync back to Overleaf.', '没有剩余已确认的文件改动需要同步回 Overleaf。'),
         status: 'completed'
@@ -265,10 +299,10 @@
         conclusion: assistantMessage || tx('No approved changes were written back to Overleaf.', '没有已确认的改动写回 Overleaf。'),
         status: runMode === 'ask' ? tr('modeAsk') : 'completed',
         operations: [],
-        applyResults: [],
-        unchangedReason: tx('No approved file changes remain to sync back to Overleaf.', '没有剩余已确认的文件改动需要同步回 Overleaf。'),
+        applyResults: buildSkippedOnlyApplyResults(additionalSkippedEntries),
+        unchangedReason: resolveSkippedOnlyReason(additionalSkippedEntries, fallbackUnchangedReason),
         mode: runMode,
-        nextStep: tx('You can continue the conversation, or adjust @context and run again.', '可以继续追问，或调整 @context 后重新运行。')
+        nextStep: resolveSkippedOnlyNextStep(additionalSkippedEntries, fallbackNextStep)
       });
       return {
         summaryLine: tx('No changes applied', '没有应用改动'),

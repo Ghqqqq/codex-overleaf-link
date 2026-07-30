@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.3.0 - 2026-07-29
+## v2.3.0 - 2026-07-30
 
 ### Changed
 
@@ -20,6 +20,8 @@
 - Prevent stale cross-tab snapshots from overwriting a terminal run state.
 - Preserve project scope while flushing terminal state after navigation and surface detached settlement persistence failures.
 - Complete the paired session action after a scoped persistence fence has been written, preventing queue claim or removal half-commits.
+- Preserve governance and confirmation skip evidence in zero-write completion reports so the final summary matches the run activity and next action.
+- Stop injecting isolated-world governance rules into the page world, eliminating the module-registry initialization error on every Overleaf page load.
 
 ## v2.2.1 - 2026-07-24
 

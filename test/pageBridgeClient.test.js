@@ -40,6 +40,11 @@ test('page bridge client keeps document mutations single-attempt and cancellable
 
 test('page bridge injection catalog preserves page-world dependency order', () => {
   const scripts = PageBridgeClient.PAGE_WORLD_SCRIPTS.map(entry => entry[0]);
+  assert.equal(
+    scripts.includes('src/shared/governanceRules.js'),
+    false,
+    'isolated-world governance rules must not execute as an unregistered page-world module'
+  );
   assert.ok(scripts.indexOf('src/page/trackedChangesLifecycle.js') > -1);
   assert.ok(
     scripts.indexOf('src/page/trackedChangesLifecycle.js')

@@ -56,7 +56,6 @@
         "src/shared/staleGuard.js",
         "src/shared/compileAdapter.js",
         "src/shared/otText.js",
-        "src/shared/governanceRules.js",
         "src/shared/sensitiveScan.js",
         "src/shared/auditRecords.js",
         "src/page/overleafCapabilities.js",

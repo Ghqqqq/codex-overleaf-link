@@ -366,16 +366,20 @@ test('content script loads governance, sensitive scan, and audit helpers before 
   }
 });
 
-test('page bridge injection can load shared helpers from web accessible resources', () => {
+test('page bridge exposes only page-world shared helpers as web accessible resources', () => {
   const resources = extensionManifest.web_accessible_resources[0].resources;
   for (const helper of [
     'src/shared/compatibility.js',
-    'src/shared/governanceRules.js',
     'src/shared/sensitiveScan.js',
     'src/shared/auditRecords.js'
   ]) {
     assert.ok(resources.includes(helper), `${helper} should be web accessible`);
   }
+  assert.equal(
+    resources.includes('src/shared/governanceRules.js'),
+    false,
+    'governanceRules is isolated-world-only and must not be injected into the page'
+  );
 });
 
 test('page bridge capability guard loads before the page bridge from web accessible resources', () => {
