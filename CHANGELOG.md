@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.3.0 - 2026-07-30
+## v2.3.0 - 2026-07-31
 
 ### Changed
 
@@ -22,6 +22,7 @@
 - Complete the paired session action after a scoped persistence fence has been written, preventing queue claim or removal half-commits.
 - Preserve governance and confirmation skip evidence in zero-write completion reports so the final summary matches the run activity and next action.
 - Stop injecting isolated-world governance rules into the page world, eliminating the module-registry initialization error on every Overleaf page load.
+- Document the required dependency installation and content-bundle build steps for manual checkout installations.
 
 ## v2.2.1 - 2026-07-24
 

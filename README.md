@@ -73,6 +73,8 @@ The bundled extension key gives the official build a stable id, so normal instal
 ```bash
 git clone https://github.com/Ghqqqq/codex-overleaf-link.git
 cd codex-overleaf-link
+npm ci
+npm run build:content
 npm run install:native
 ```
 

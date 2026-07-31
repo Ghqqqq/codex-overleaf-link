@@ -490,6 +490,22 @@ releaseTest('README documents the npm tarball in GitHub Release artifacts', () =
   assert.match(readme, new RegExp(`codex-overleaf-link-${latestStable[1].replace(/\./g, '\\.')}\\.tgz`));
 });
 
+releaseTest('README manual checkout builds the generated content bundle before native installation', () => {
+  const readme = readText(path.join(repoRoot, 'README.md'));
+  const manualCheckout = readme.match(
+    /<summary><strong>Manual checkout install<\/strong>[\s\S]*?<\/details>/
+  )?.[0] || '';
+
+  assert.notEqual(manualCheckout, '', 'README must document the manual checkout installation flow');
+  assertContainsInOrder(manualCheckout, [
+    'git clone https://github.com/Ghqqqq/codex-overleaf-link.git',
+    'npm ci',
+    'npm run build:content',
+    'npm run install:native',
+    'load `extension/`'
+  ]);
+});
+
 releaseTest('release workflow only publishes semver-like version tags', () => {
   const workflow = readReleaseWorkflow();
   const triggerSection = getTopLevelYamlSection(workflow, 'on');
