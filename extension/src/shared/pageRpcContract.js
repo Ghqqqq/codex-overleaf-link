@@ -5,7 +5,7 @@
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this), function () {
   'use strict';
 
-  var REVISION = '2026-07-26-page-rpc-contract-v13';
+  var REVISION = '2026-07-31-page-rpc-contract-v14';
   var METHODS = freezeCatalog({
     initializeCapability: entry('bridge.initialize', 'control', 'none', 'default', false, 'none'),
     probe: entry('bridge.probe', 'read', 'none', 'default', false, 'safe'),
@@ -67,7 +67,7 @@
       file_list: 35000,
       compile: 75000,
       lifecycle: 120000,
-      writeback: 30000
+      writeback: 45000
     };
     var candidate = Number(overrides[timeoutClass]);
     return Number.isFinite(candidate) && candidate > 0 ? candidate : defaults[timeoutClass];

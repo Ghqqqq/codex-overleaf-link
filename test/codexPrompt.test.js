@@ -5,7 +5,7 @@ const { buildCodexPrompt, buildOutputSchema } = require('../native-host/src/code
 
 test('builds a Codex prompt with task, mode, and file inventory', () => {
   const prompt = buildCodexPrompt({
-    mode: 'confirm',
+    mode: 'auto',
     model: 'gpt-5.4',
     reasoningEffort: 'high',
     session: {
@@ -26,7 +26,7 @@ test('builds a Codex prompt with task, mode, and file inventory', () => {
   });
 
   assert.match(prompt, /Fix citations/);
-  assert.match(prompt, /Mode: confirm/);
+  assert.match(prompt, /Mode: auto/);
   assert.match(prompt, /Model: gpt-5.4/);
   assert.match(prompt, /Reasoning effort: high/);
   assert.match(prompt, /Session: session_abc/);

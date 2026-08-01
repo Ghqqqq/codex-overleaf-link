@@ -868,7 +868,7 @@
         applyResults: [],
         nextStep: tr('warmMirrorStaleBlockedNextStep')
       });
-      finishRunView(tr('warmMirrorStaleBlockedTitle'), 'failed');
+      await finishRunView(tr('warmMirrorStaleBlockedTitle'), 'failed');
       return { ok: false };
     }
     if (focusedPartialSnapshot) {

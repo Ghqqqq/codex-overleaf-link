@@ -114,12 +114,22 @@
   }
 
   function normalizeTrackedChanges(value) {
-    return (Array.isArray(value) ? value : []).map(item => ({
-      key: normalizeText(item?.key),
-      id: normalizeText(item?.id),
-      path: normalizeText(item?.path),
-      label: normalizeText(item?.label)
-    })).filter(item => item.key || item.id || item.path);
+    const normalized = [];
+    const seen = new Set();
+    for (const item of Array.isArray(value) ? value : []) {
+      const change = {
+        key: normalizeText(item?.key),
+        id: normalizeText(item?.id),
+        path: normalizeText(item?.path),
+        label: normalizeText(item?.label)
+      };
+      if (!change.key && !change.id && !change.path) continue;
+      const identity = `${change.path}\u0000${change.key || change.id || 'path-only'}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      normalized.push(change);
+    }
+    return normalized;
   }
 
   function normalizeStringArray(value) {

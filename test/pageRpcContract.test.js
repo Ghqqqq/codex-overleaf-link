@@ -14,12 +14,12 @@ test('page RPC catalog owns every public page bridge method', () => {
   ]);
 });
 
-test('page RPC timeout and cancellation policy preserves existing behavior', () => {
+test('page RPC catalog owns timeout and cancellation policy', () => {
   assert.equal(Contract.resolveTimeoutMs('getProjectSnapshot'), 70000);
   assert.equal(Contract.resolveTimeoutMs('getProjectFileList'), 35000);
   assert.equal(Contract.resolveTimeoutMs('triggerCompile'), 75000);
   assert.equal(Contract.resolveTimeoutMs('acceptTrackedChanges'), 120000);
-  assert.equal(Contract.resolveTimeoutMs('applyOperations'), 30000);
+  assert.equal(Contract.resolveTimeoutMs('applyOperations'), 45000);
   assert.equal(Contract.resolveTimeoutMs('probe'), 8000);
   assert.equal(Contract.isCancellable('applyOperations'), true);
   assert.equal(Contract.isCancellable('triggerCompile'), false);

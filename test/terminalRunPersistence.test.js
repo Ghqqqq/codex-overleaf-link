@@ -91,6 +91,32 @@ test('run settlement uses the serialized terminal-state flush', () => {
   );
 });
 
+test('terminal status becomes visible only after its durable save barrier', () => {
+  const finishBody = extractFunction(runtimeSource, 'finishRunView');
+  assert.match(finishBody, /^async function finishRunView/);
+
+  const flushIndex = finishBody.indexOf('await flushQueuedSaveState().catch(() => {})');
+  const sessionRenderIndex = finishBody.indexOf('renderSessionList()');
+  const statusRenderIndex = finishBody.indexOf('visibleView.root.dataset.status = status');
+  const collapseIndex = finishBody.indexOf('collapseRunProcess(visibleView, statusText)');
+
+  assert.ok(flushIndex >= 0, 'finishRunView must await a durable terminal-state flush');
+  assert.ok(sessionRenderIndex > flushIndex, 'session terminal state must render after persistence');
+  assert.ok(statusRenderIndex > flushIndex, 'run terminal badge must render after persistence');
+  assert.ok(collapseIndex > flushIndex, 'terminal process summary must render after persistence');
+});
+
+test('every content-runtime terminal settlement awaits the persistence barrier', () => {
+  const invocationLines = runtimeSource
+    .split('\n')
+    .filter(line => line.includes('finishRunView(') && !line.includes('function finishRunView('));
+
+  assert.ok(invocationLines.length > 0);
+  for (const line of invocationLines) {
+    assert.match(line, /await finishRunView\(/, `unawaited terminal settlement: ${line.trim()}`);
+  }
+});
+
 test('terminal settlement advances the owning session activity monotonically', () => {
   const createHarness = new Function(`
     const state = {

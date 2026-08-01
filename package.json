@@ -1,6 +1,6 @@
 {
   "name": "codex-overleaf-link",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Cross-platform Chrome bridge that connects Codex to the active Overleaf project.",
   "license": "MIT",
   "type": "commonjs",

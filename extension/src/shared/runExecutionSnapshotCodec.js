@@ -8,7 +8,7 @@
   'use strict';
 
   const SCHEMA_VERSION = 1;
-  const VALID_MODES = new Set(['ask', 'confirm', 'auto']);
+  const VALID_MODES = new Set(['ask', 'auto']);
   const VALID_SOURCES = new Set(['submitted', 'legacy-captured', 'legacy-inferred']);
   const TUPLE_FIELDS = Object.freeze([
     'mode', 'providerId', 'providerRevision', 'model', 'reasoningEffort',
@@ -19,12 +19,15 @@
   function normalizeSnapshot(value = {}, options = {}) {
     const input = value && typeof value === 'object' ? value : {};
     assertNoSecretFields(input);
+    if (input.mode === 'confirm' && options.migrateLegacyConfirm !== true) {
+      throw snapshotError('suggest_mode_removed', 'Suggest mode has been removed. Choose Ask or Auto.');
+    }
     const providerId = normalizeText(input.providerId) || 'builtin';
     const revision = normalizeRevisionResult(input.providerRevision);
     if (!revision.ok) throw snapshotError('provider_revision_conflict', revision.error);
     const snapshot = {
       schemaVersion: SCHEMA_VERSION,
-      mode: VALID_MODES.has(input.mode) ? input.mode : 'ask',
+      mode: input.mode === 'auto' ? 'auto' : 'ask',
       providerId,
       providerRevision: providerId === 'builtin' ? '' : revision.value,
       model: normalizeText(input.model).slice(0, 160),

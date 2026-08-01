@@ -35,8 +35,27 @@
   }
 
   function normalizeMeta(value) {
+    var revision = normalizeRevision(value && value.revision);
+    var hasDurableRevision = Boolean(value
+      && Object.prototype.hasOwnProperty.call(value, 'durableRevision'));
+    var durableRevision = hasDurableRevision
+      ? Math.min(normalizeRevision(value.durableRevision), revision)
+      : revision;
+    var pendingValue = value && value.pendingCommit;
+    var pendingRevision = normalizeRevision(pendingValue && pendingValue.revision);
+    var pendingCommit = pendingValue && typeof pendingValue === 'object'
+      && pendingRevision > durableRevision
+      && pendingRevision <= revision
+      ? {
+          revision: pendingRevision,
+          writerId: cleanPart(pendingValue.writerId),
+          startedAt: cleanPart(pendingValue.startedAt)
+        }
+      : null;
     return {
-      revision: normalizeRevision(value && value.revision),
+      revision: revision,
+      durableRevision: durableRevision,
+      pendingCommit: pendingCommit,
       queueRevision: normalizeRevision(value && value.queueRevision),
       writerId: cleanPart(value && value.writerId),
       updatedAt: cleanPart(value && value.updatedAt),

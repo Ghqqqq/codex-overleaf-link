@@ -21,6 +21,7 @@ if (!globalThis.CodexOverleafNativeRequestIdentity) {
 
   const HOST_NAME = 'com.codex.overleaf';
   const MANAGED_UPDATE_STATE_KEY = 'codex-overleaf-managed-update-state-v1';
+  const MANAGED_UPDATE_CONSENT_KEY = 'codex-overleaf-update-consent-v1';
   const MANAGED_UPDATE_TABS_KEY = 'codex-overleaf-managed-update-tabs-v1';
   const MANAGED_OVERLEAF_MATCHES = [
     'https://www.overleaf.com/project',
@@ -406,6 +407,25 @@ if (!globalThis.CodexOverleafNativeRequestIdentity) {
     }
 
     const transaction = response.result?.transaction || null;
+    if (transaction?.state === 'superseded') {
+      const activeVersion = response.result?.activeVersion || chrome.runtime.getManifest().version;
+      await chrome.storage.local.remove([
+        MANAGED_UPDATE_CONSENT_KEY,
+        MANAGED_UPDATE_TABS_KEY
+      ]);
+      await setManagedUpdateState({
+        state: 'idle',
+        managed: true,
+        currentVersion: activeVersion,
+        latestVersion: activeVersion,
+        transactionId: '',
+        blocker: '',
+        blockers: [],
+        code: '',
+        message: ''
+      });
+      return;
+    }
     const state = await getManagedUpdateState();
     const reconciled = ManagedUpdateProjection.reconcile(state, transaction, {
       currentVersion: chrome.runtime.getManifest().version

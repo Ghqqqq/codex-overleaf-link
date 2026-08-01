@@ -1086,7 +1086,7 @@ test('passes recent UI session history into the Codex turn prompt', async () => 
   }
 });
 
-test('auto and confirm prompts require direct edits for explicit fix requests', () => {
+test('auto prompts require direct edits for explicit fix requests', () => {
   const prompt = buildCodexTurnPrompt({
     projectId: 'project-edit-intent',
     task: '帮我检查语法问题并修正',

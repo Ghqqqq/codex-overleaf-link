@@ -256,8 +256,8 @@
       tip.dataset.onboardingTip = 'true';
       tip.setAttribute('role', 'status');
       tip.textContent = tx(
-        'Tip: Start with Ask mode to explore safely. Switch to Suggest to review edits before applying.',
-        '提示：先用 Ask 模式安全探索；需要修改时切换到 Suggest，应用前可先审阅。'
+        'Tip: Start with Ask mode to explore safely. Switch to Auto only when you want Codex to edit files.',
+        '提示：先用 Ask 模式安全探索；只有需要 Codex 修改文件时才切换到 Auto。'
       );
       Object.assign(tip.style, {
         position: 'absolute',

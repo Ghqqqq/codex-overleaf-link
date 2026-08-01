@@ -690,7 +690,7 @@ test('task.run rejects oversized operation lists before external agent work', as
     id: 'task-operation-quota',
     method: 'task.run',
     params: {
-      mode: 'confirm',
+      mode: 'auto',
       task: 'Prepare edits',
       project: { id: 'abc', files: [{ path: 'main.tex', content: 'hello' }] },
       proposedOperations: Array.from({ length: TEST_QUOTAS.maxOperations + 1 }, (_, index) => ({
@@ -712,7 +712,7 @@ test('task.run rejects oversized secondary operations lists even when proposedOp
     id: 'task-secondary-operation-quota',
     method: 'task.run',
     params: {
-      mode: 'confirm',
+      mode: 'auto',
       task: 'Prepare edits',
       project: { id: 'abc', files: [{ path: 'main.tex', content: 'hello' }] },
       proposedOperations: [],
@@ -730,12 +730,12 @@ test('task.run rejects oversized secondary operations lists even when proposedOp
   });
 });
 
-test('task.run rejects oversized proposed operation text before creating a confirm plan', async () => {
+test('task.run rejects oversized proposed operation text before external agent work', async () => {
   const response = await handleRequest({
     id: 'task-proposed-operation-text-quota',
     method: 'task.run',
     params: {
-      mode: 'confirm',
+      mode: 'auto',
       task: 'Prepare edits',
       project: { id: 'abc', files: [{ path: 'main.tex', content: 'hello' }] },
       proposedOperations: [{
@@ -753,13 +753,13 @@ test('task.run rejects oversized proposed operation text before creating a confi
   assert.equal(response.result?.planId, undefined);
 });
 
-test('task.run rejects oversized secondary operation binary payloads before creating a confirm plan', async () => {
+test('task.run rejects oversized secondary operation binary payloads before external agent work', async () => {
   const oversizedBase64 = 'A'.repeat(Math.ceil((TEST_QUOTAS.maxProjectBinaryBytes + 1) * 4 / 3) + 4);
   const response = await handleRequest({
     id: 'task-secondary-operation-binary-quota',
     method: 'task.run',
     params: {
-      mode: 'confirm',
+      mode: 'auto',
       task: 'Prepare edits',
       project: { id: 'abc', files: [{ path: 'main.tex', content: 'hello' }] },
       proposedOperations: [{
@@ -783,12 +783,12 @@ test('task.run rejects oversized secondary operation binary payloads before crea
   assert.equal(response.result?.planId, undefined);
 });
 
-test('task.run rejects oversized text file overlays before creating a confirm plan', async () => {
+test('task.run rejects oversized text file overlays before external agent work', async () => {
   const response = await handleRequest({
     id: 'task-file-overlay-text-quota',
     method: 'task.run',
     params: {
-      mode: 'confirm',
+      mode: 'auto',
       task: 'Prepare edits',
       project: { id: 'abc', files: [{ path: 'main.tex', content: 'hello' }] },
       fileOverlays: [{
@@ -811,13 +811,13 @@ test('task.run rejects oversized text file overlays before creating a confirm pl
   assert.equal(response.result?.planId, undefined);
 });
 
-test('task.run rejects oversized binary file overlays before creating a confirm plan', async () => {
+test('task.run rejects oversized binary file overlays before external agent work', async () => {
   const oversizedBase64 = 'A'.repeat(Math.ceil((TEST_QUOTAS.maxProjectBinaryBytes + 1) * 4 / 3) + 4);
   const response = await handleRequest({
     id: 'task-file-overlay-binary-quota',
     method: 'task.run',
     params: {
-      mode: 'confirm',
+      mode: 'auto',
       task: 'Prepare edits',
       project: { id: 'abc', files: [{ path: 'main.tex', content: 'hello' }] },
       fileOverlays: [{
@@ -1425,26 +1425,26 @@ test('task.run rejects Auto Mode when Reviewing is only a manual override', asyn
   assert.equal(response.error.code, 'safety_required');
 });
 
-test('task.run returns summary-only confirmation for Confirm Mode', async () => {
+test('task.run rejects removed Suggest mode', async () => {
   const response = await handleRequest({
-    id: '3',
+    id: 'suggest-removed-run',
     method: 'task.run',
-    params: {
-      mode: 'confirm',
-      task: 'Prepare appendix',
-      project: { id: 'abc', files: [{ path: 'main.tex', content: 'hello' }] },
-      proposedOperations: [
-        { type: 'edit', path: 'main.tex', hunks: [{ before: 'hello', after: 'hello world' }] }
-      ]
-    }
+    params: { mode: 'confirm', task: 'Prepare edits', project: { id: 'abc', files: [] } }
   }, {});
 
-  assert.equal(response.ok, true);
-  assert.equal(response.result.status, 'requires_task_confirmation');
-  assert.equal(response.result.summary.counts.edit, 1);
-  assert.equal(typeof response.result.planId, 'string');
-  assert.equal(Array.isArray(response.result.operations), false);
-  assert.equal(JSON.stringify(response.result).includes('hello world'), false);
+  assert.equal(response.ok, false);
+  assert.equal(response.error.code, 'suggest_mode_removed');
+});
+
+test('task.confirm returns the removed Suggest compatibility error', async () => {
+  const response = await handleRequest({
+    id: 'suggest-removed-confirm',
+    method: 'task.confirm',
+    params: { planId: 'legacy-plan' }
+  }, {});
+
+  assert.equal(response.ok, false);
+  assert.equal(response.error.code, 'suggest_mode_removed');
 });
 
 test('task.run in Ask Mode returns analysis without write operations', async () => {
@@ -1540,53 +1540,6 @@ test('task.run in Ask Mode preserves external-agent userReport', async () => {
   assert.deepEqual(response.result.operations, []);
 });
 
-test('Confirm Mode redaction keeps userReport while hiding operations', async () => {
-  const response = await handleRequest({
-    id: '3e',
-    method: 'task.run',
-    params: {
-      mode: 'confirm',
-      task: 'Prepare grammar edit',
-      project: { id: 'abc', files: [{ path: 'main.tex', content: 'old' }] }
-    }
-  }, fixtureAgentEnv('agentUserReportWithOps.cjs'));
-
-  assert.equal(response.ok, true);
-  assert.equal(response.result.status, 'requires_task_confirmation');
-  assert.equal(typeof response.result.planId, 'string');
-  assert.equal(Array.isArray(response.result.operations), false);
-  assert.equal(response.result.userReport.conclusion, '我准备修改 main.tex 中的一句话，让语法更自然。');
-  assert.deepEqual(response.result.userReport.plannedChanges, ['main.tex：编辑摘要中的一句话。']);
-});
-
-test('task.confirm returns stored operations after task-level approval', async () => {
-  const response = await handleRequest({
-    id: '5',
-    method: 'task.run',
-    params: {
-      mode: 'confirm',
-      task: 'Prepare appendix',
-      project: { id: 'abc', files: [{ path: 'main.tex', content: 'hello' }] },
-      proposedOperations: [
-        { type: 'edit', path: 'main.tex', hunks: [{ before: 'hello', after: 'hello world' }] }
-      ]
-    }
-  }, {});
-
-  const confirmed = await handleRequest({
-    id: '6',
-    method: 'task.confirm',
-    params: {
-      planId: response.result.planId
-    }
-  }, {});
-
-  assert.equal(confirmed.ok, true);
-  assert.deepEqual(confirmed.result.operations, [
-    { type: 'edit', path: 'main.tex', hunks: [{ before: 'hello', after: 'hello world' }] }
-  ]);
-});
-
 test('unknown methods return a structured error', async () => {
   const response = await handleRequest({ id: '4', method: 'nope', params: {} }, {});
 
@@ -1620,43 +1573,6 @@ test('Auto Mode pauses external-agent delete operations behind a delete plan', a
   assert.deepEqual(response.result.deletePlan, [
     { path: 'unused.tex', reason: 'not referenced' }
   ]);
-});
-
-test('Confirm Mode forces external-agent operations behind task confirmation', async () => {
-  const response = await handleRequest({
-    id: '7b',
-    method: 'task.run',
-    params: {
-      mode: 'confirm',
-      task: 'Edit main',
-      project: { id: 'abc', files: [{ path: 'main.tex', content: 'old' }] }
-    }
-  }, fixtureAgentEnv('agentCompletedWithOps.cjs'));
-
-  assert.equal(response.ok, true);
-  assert.equal(response.result.status, 'requires_task_confirmation');
-  assert.equal(typeof response.result.planId, 'string');
-  assert.equal(Array.isArray(response.result.operations), false);
-  assert.equal(response.result.summary.counts.edit, 1);
-});
-
-test('Confirm Mode forces external-agent pendingOperations behind task confirmation', async () => {
-  const response = await handleRequest({
-    id: '7bb',
-    method: 'task.run',
-    params: {
-      mode: 'confirm',
-      task: 'Edit pending',
-      project: { id: 'abc', files: [{ path: 'main.tex', content: 'old' }] }
-    }
-  }, fixtureAgentEnv('agentConfirmPending.cjs'));
-
-  assert.equal(response.ok, true);
-  assert.equal(response.result.status, 'requires_task_confirmation');
-  assert.equal(typeof response.result.planId, 'string');
-  assert.equal(Array.isArray(response.result.operations), false);
-  assert.equal(Array.isArray(response.result.pendingOperations), false);
-  assert.equal(response.result.summary.counts.edit, 1);
 });
 
 test('Auto Mode re-splits unsafe delete_plan_required agent operations', async () => {
@@ -1740,24 +1656,6 @@ test('task.run ignores legacy shell command env var', async () => {
   assert.deepEqual(response.result.operations, []);
 });
 
-test('Confirm Mode plan ids use random UUIDs', async () => {
-  const response = await handleRequest({
-    id: '8d',
-    method: 'task.run',
-    params: {
-      mode: 'confirm',
-      task: 'Prepare appendix',
-      project: { id: 'abc', files: [{ path: 'main.tex', content: 'hello' }] },
-      proposedOperations: [
-        { type: 'edit', path: 'main.tex', hunks: [{ before: 'hello', after: 'hello world' }] }
-      ]
-    }
-  }, {});
-
-  assert.equal(response.ok, true);
-  assert.match(response.result.planId, /^plan_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
-});
-
 test('task.run emits realtime lifecycle events while external agent runs', async () => {
   const events = [];
   const response = await handleRequest({
@@ -1791,8 +1689,9 @@ test('task.run fails a hanging external agent after the configured timeout', asy
     id: '10',
     method: 'task.run',
     params: {
-      mode: 'confirm',
+      mode: 'auto',
       task: 'Hang',
+      checkpoint: { ok: true },
       project: { id: 'abc', files: [] }
     }
   }, fixtureAgentEnv('agentHang.cjs', {
@@ -1809,8 +1708,9 @@ test('task.run fails an external agent that exceeds the output byte limit', asyn
     id: '11',
     method: 'task.run',
     params: {
-      mode: 'confirm',
+      mode: 'auto',
       task: 'Too much output',
+      checkpoint: { ok: true },
       project: { id: 'abc', files: [] }
     }
   }, fixtureAgentEnv('agentHugeStdout.cjs', {

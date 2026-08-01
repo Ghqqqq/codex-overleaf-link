@@ -761,7 +761,7 @@ test('migrates legacy single-session state into a switchable session list', () =
   assert.equal(state.activeSessionId, 'session_legacy');
   assert.equal(state.session.id, 'session_legacy');
   assert.equal(state.task, 'legacy draft');
-  assert.equal(state.mode, 'confirm');
+  assert.equal(state.mode, 'ask');
   assert.equal(state.model, 'gpt-5.5');
   assert.equal(state.reasoningEffort, 'xhigh');
   assert.equal(state.speedTier, 'fast');
@@ -800,7 +800,7 @@ test('switches active session while preserving project-wide model settings', () 
 
   assert.equal(state.session.id, 'session_b');
   assert.equal(state.task, 'draft b');
-  assert.equal(state.mode, 'confirm');
+  assert.equal(state.mode, 'ask');
   assert.equal(state.providerId, 'builtin');
   assert.equal(state.model, 'gpt-5.4');
   assert.equal(state.reasoningEffort, 'high');
@@ -898,7 +898,7 @@ test('deleting the final session creates a fresh empty active session', () => {
   assert.equal(updated.session.id, updated.activeSessionId);
   assert.equal(updated.task, '');
   assert.deepEqual(updated.runs, []);
-  assert.equal(updated.mode, 'confirm');
+  assert.equal(updated.mode, 'ask');
   assert.equal(updated.model, 'gpt-5.5');
   assert.equal(updated.reasoningEffort, 'xhigh');
 });
@@ -1871,4 +1871,31 @@ test('normalizeRun migrates settlementFacts to canonical settlement storage', ()
 
   assert.equal(run.settlement.documentEffect, 'changed');
   assert.equal('settlementFacts' in run, false);
+});
+
+test('project reference inventory survives session normalization and storage compaction', () => {
+  const state = normalizePanelState({
+    activeSessionId: 'session_refs',
+    sessions: [{
+      id: 'session_refs',
+      title: 'Reference inventory',
+      projectReferenceFiles: [
+        { path: 'main.tex', kind: 'text' },
+        { path: 'sections/intro.tex', kind: 'text' },
+        { path: 'frog.jpg', kind: 'binary' },
+        { path: '../unsafe.tex', kind: 'text' }
+      ],
+      runs: []
+    }]
+  });
+
+  assert.deepEqual(state.sessions[0].projectReferenceFiles, [
+    { path: 'main.tex', kind: 'text' },
+    { path: 'sections/intro.tex', kind: 'text' },
+    { path: 'frog.jpg', kind: 'binary' }
+  ]);
+  assert.deepEqual(
+    prepareStateForStorage(state).sessions[0].projectReferenceFiles,
+    state.sessions[0].projectReferenceFiles
+  );
 });

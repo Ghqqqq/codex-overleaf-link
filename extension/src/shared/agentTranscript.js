@@ -727,10 +727,17 @@
     if (providerError) {
       return providerError;
     }
-    if (/Mode must be "confirm" or "auto"/i.test(text)) {
+    if (/suggest_mode_removed|Suggest mode has been removed/i.test(text)) {
+      return {
+        conclusion: textFor(locale, '建议修改模式已经移除。', 'Suggest mode has been removed.'),
+        nextStep: textFor(locale, '请刷新扩展，然后选择“只问不改”或“自动写入”。', 'Reload the extension, then choose Ask or Auto.'),
+        failureCode: 'suggest_mode_removed'
+      };
+    }
+    if (/Mode must be "(?:confirm|ask)" or "auto"/i.test(text)) {
       return {
         conclusion: textFor(locale, '这轮没有写入：当前是“只问不改”，但这个任务需要写入权限。', 'No files were written: this task needs write access, but the current mode is Ask.'),
-        nextStep: textFor(locale, '请切换到“建议修改”或“自动写入”后重新运行。', 'Switch to Suggest or Auto and run the task again.'),
+        nextStep: textFor(locale, '请切换到“自动写入”后重新运行。', 'Switch to Auto and run the task again.'),
         failureCode: null  // no direct catalog match — preflight / governance
       };
     }
@@ -797,7 +804,7 @@
     if (/checkpoint/i.test(text)) {
       return {
         conclusion: textFor(locale, '这轮没有自动写入：Codex 没有拿到可恢复版本。', 'This run did not auto-write: Codex did not get a recoverable version.'),
-        nextStep: textFor(locale, '请切换到“建议修改”，或确认 Overleaf Reviewing 已开启后再用“自动写入”。', 'Switch to Suggest, or confirm Overleaf Reviewing is enabled before using Auto.'),
+        nextStep: textFor(locale, '请确认 Overleaf Reviewing 已开启后再用“自动写入”。', 'Confirm that Overleaf Reviewing is enabled before using Auto.'),
         failureCode: null  // no current catalog code; preflight reviewing issue
       };
     }

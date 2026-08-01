@@ -9,6 +9,19 @@
   ]);
   const LONG_INLINE_MATH_CHARS = 120;
   const COMPLEX_INLINE_MATH_CHARS = 80;
+  const MAX_PROJECT_MACRO_SOURCES = 12;
+  const MAX_PROJECT_MACRO_SOURCE_CHARS = 256 * 1024;
+  const MAX_PROJECT_MACROS = 64;
+  const MAX_MACRO_EXPANSION_CHARS = 512;
+  const DEFAULT_MATH_MACROS = Object.freeze({
+    '\\E': '\\mathbb{E}',
+    '\\Var': '\\operatorname{Var}',
+    '\\Cov': '\\operatorname{Cov}',
+    '\\R': '\\mathbb{R}',
+    '\\N': '\\mathbb{N}',
+    '\\Z': '\\mathbb{Z}'
+  });
+  const UNSAFE_MACRO_PATTERN = /\\(?:href|url|includegraphics|input|include|write|openout|read|html\w*|class|style|data|def|gdef|edef|xdef|newcommand|renewcommand|providecommand|DeclareMathOperator)\b/i;
 
   function parseMathSegments(value) {
     const source = String(value || '');
@@ -74,9 +87,10 @@
         searchFrom = start + delimiter.open.length;
         continue;
       }
-      const value = source.slice(start + delimiter.open.length, closeStart);
+      const rawValue = source.slice(start + delimiter.open.length, closeStart);
+      const value = rawValue.trim();
       const end = closeStart + delimiter.close.length;
-      if (!isValidMathValue(value, delimiter) || overlapsCodeRange(start, end, codeRanges)) {
+      if (!isValidMathValue(rawValue, delimiter) || overlapsCodeRange(start, end, codeRanges)) {
         searchFrom = start + delimiter.open.length;
         continue;
       }
@@ -94,7 +108,7 @@
     }
     const previous = source[index - 1] || '';
     const next = source[index + 1] || '';
-    return previous !== '$' && next !== '$' && next !== '' && !/\s/.test(next);
+    return previous !== '$' && next !== '$' && next !== '';
   }
 
   function findClosingDelimiter(source, fromIndex, delimiter, codeRanges) {
@@ -107,7 +121,7 @@
       const previous = source[index - 1] || '';
       const next = source[index + delimiter.close.length] || '';
       const invalidSingleDollar = delimiter.singleDollar
-        && (previous === '$' || next === '$' || /\s/.test(previous));
+        && (previous === '$' || next === '$');
       if (!isEscaped(source, index) && !isInsideRange(index, codeRanges) && !invalidSingleDollar) {
         return index;
       }
@@ -118,10 +132,24 @@
 
   function isValidMathValue(value, delimiter) {
     const source = String(value || '');
-    if (!source.trim()) {
+    const trimmed = source.trim();
+    if (!trimmed) {
       return false;
     }
-    return delimiter.display || !/[\r\n]/.test(source);
+    if (!delimiter.display && /[\r\n]/.test(source)) {
+      return false;
+    }
+    if (!delimiter.singleDollar || (!/^\s/.test(source) && !/\s$/.test(source))) {
+      return true;
+    }
+    return looksLikeWhitespaceWrappedMath(trimmed);
+  }
+
+  function looksLikeWhitespaceWrappedMath(value) {
+    const source = String(value || '').trim();
+    return /\\[A-Za-z]+/.test(source)
+      || /[_^=<>+\-*/()[\]{}|]/.test(source)
+      || /^[A-Za-z](?:_[A-Za-z0-9{}]+|\^[A-Za-z0-9{}]+)?$/.test(source);
   }
 
   function collectInlineCodeRanges(source) {
@@ -179,7 +207,8 @@
       }
       nodes.push(createMathNode(segment, {
         document: documentRef,
-        katex: options.katex || root.katex
+        katex: options.katex || root.katex,
+        macros: options.macros || buildMathMacros(options.projectSources)
       }));
     }
     return nodes;
@@ -206,6 +235,7 @@
         strict: 'warn',
         maxExpand: 200,
         maxSize: 20,
+        macros: options.macros || buildMathMacros(),
         output: 'htmlAndMathml'
       });
       node.dataset.mathRendered = 'true';
@@ -213,7 +243,7 @@
     } catch (_error) {
       node.classList.add('run-math--fallback');
       node.dataset.mathRendered = 'false';
-      node.textContent = segment.raw;
+      node.textContent = source;
       return node;
     }
   }
@@ -233,6 +263,120 @@
       return false;
     }
     return /(?:=|\\(?:le|ge|approx|sim|to|Rightarrow|Longrightarrow)\b|\\begin\{(?:aligned|gathered|split|array)\}|\\\\)/.test(source);
+  }
+
+  function parseStandaloneMath(value) {
+    const source = String(value || '').trim();
+    if (!source) {
+      return null;
+    }
+    const segments = parseMathSegments(source);
+    if (segments.length !== 1 || segments[0].type !== 'math' || segments[0].raw !== source) {
+      return null;
+    }
+    return segments[0];
+  }
+
+  function buildMathMacros(projectSources = []) {
+    const macros = { ...DEFAULT_MATH_MACROS };
+    let remainingChars = MAX_PROJECT_MACRO_SOURCE_CHARS;
+    let projectMacroCount = 0;
+    for (const sourceRecord of Array.isArray(projectSources)
+      ? projectSources.slice(0, MAX_PROJECT_MACRO_SOURCES)
+      : []) {
+      if (projectMacroCount >= MAX_PROJECT_MACROS || remainingChars <= 0) {
+        break;
+      }
+      const path = String(sourceRecord?.path || '');
+      if (!/\.(?:tex|sty|cls|ltx)$/i.test(path)) {
+        continue;
+      }
+      const source = stripLatexComments(
+        String(sourceRecord?.content || '').slice(0, remainingChars)
+      );
+      remainingChars -= source.length;
+      const pattern = /\\(newcommand|renewcommand|providecommand|DeclareMathOperator)(\*)?/g;
+      let match;
+      while ((match = pattern.exec(source)) !== null && projectMacroCount < MAX_PROJECT_MACROS) {
+        let cursor = skipWhitespace(source, pattern.lastIndex);
+        const nameGroup = readBracedGroup(source, cursor);
+        if (!nameGroup) {
+          continue;
+        }
+        const macroName = nameGroup.value.trim();
+        cursor = skipWhitespace(source, nameGroup.end);
+        if (source[cursor] === '[') {
+          continue;
+        }
+        const expansionGroup = readBracedGroup(source, cursor);
+        if (!expansionGroup) {
+          continue;
+        }
+        let expansion = expansionGroup.value.trim();
+        if (match[1] === 'DeclareMathOperator') {
+          expansion = `\\operatorname${match[2] ? '*' : ''}{${expansion}}`;
+        }
+        if (!isSafeMacroDefinition(macroName, expansion)) {
+          continue;
+        }
+        macros[macroName] = expansion;
+        projectMacroCount++;
+        pattern.lastIndex = expansionGroup.end;
+      }
+    }
+    return macros;
+  }
+
+  function readBracedGroup(source, start) {
+    if (source[start] !== '{') {
+      return null;
+    }
+    let depth = 0;
+    for (let index = start; index < source.length; index++) {
+      if (source[index] === '{' && !isEscaped(source, index)) {
+        depth++;
+      } else if (source[index] === '}' && !isEscaped(source, index)) {
+        depth--;
+        if (depth === 0) {
+          return {
+            value: source.slice(start + 1, index),
+            end: index + 1
+          };
+        }
+      }
+    }
+    return null;
+  }
+
+  function skipWhitespace(source, start) {
+    let index = start;
+    while (index < source.length && /\s/.test(source[index])) {
+      index++;
+    }
+    return index;
+  }
+
+  function stripLatexComments(source) {
+    return String(source || '').split(/\r?\n/).map(line => {
+      for (let index = 0; index < line.length; index++) {
+        if (line[index] === '%' && !isEscaped(line, index)) {
+          return line.slice(0, index);
+        }
+      }
+      return line;
+    }).join('\n');
+  }
+
+  function isSafeMacroDefinition(name, expansion) {
+    const macroName = String(name || '');
+    const body = String(expansion || '');
+    return /^\\[A-Za-z@]+$/.test(macroName)
+      && body.length > 0
+      && body.length <= MAX_MACRO_EXPANSION_CHARS
+      && !body.includes('#')
+      && !body.includes(macroName)
+      && !UNSAFE_MACRO_PATTERN.test(macroName)
+      && !UNSAFE_MACRO_PATTERN.test(body);
   }
 
   function toNodeArray(value) {
@@ -265,11 +409,13 @@
   }
 
   const api = {
+    buildMathMacros,
     buildMathNodes,
     createMathNode,
     matchMathAt,
     normalizeMathForRendering,
-    parseMathSegments
+    parseMathSegments,
+    parseStandaloneMath
   };
   root.CodexOverleafMathText = api;
   if (typeof module !== 'undefined' && module.exports) {

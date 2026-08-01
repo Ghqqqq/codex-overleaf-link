@@ -113,7 +113,6 @@ body:
       label: Task mode or surface
       options:
         - Ask-only
-        - Suggest-edit
         - Auto-write
         - Compile
         - Diagnostics

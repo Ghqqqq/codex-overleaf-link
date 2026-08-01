@@ -106,12 +106,16 @@ test('a commit invalidated after writing its fence completes its paired action',
     projectId: 'paper'
   });
   const originalWrite = adapter.write;
+  let blockedFirstWrite = false;
   let releaseWrite;
   let signalWrite;
   const writeStarted = new Promise(resolve => { signalWrite = resolve; });
   adapter.write = async (scope, value) => {
-    signalWrite();
-    await new Promise(resolve => { releaseWrite = resolve; });
+    if (!blockedFirstWrite) {
+      blockedFirstWrite = true;
+      signalWrite();
+      await new Promise(resolve => { releaseWrite = resolve; });
+    }
     return originalWrite(scope, value);
   };
   let called = false;
@@ -127,6 +131,63 @@ test('a commit invalidated after writing its fence completes its paired action',
   assert.equal(result.ok, true);
   assert.equal(result.superseded, true);
   assert.equal(called, true);
+});
+
+test('a successful commit records a pending fence before its durable receipt', async () => {
+  const adapter = createAdapter();
+  const writes = [];
+  const originalWrite = adapter.write;
+  adapter.write = async (scope, value) => {
+    writes.push(structuredClone(value));
+    return originalWrite(scope, value);
+  };
+  const coordinator = Transaction.createCoordinator({ adapter, writerId: 'tab-a' });
+  const scope = { accountScopeId: 'account', projectId: 'paper' };
+  const view = await coordinator.beginHydration(scope);
+  const result = await coordinator.commit(view, async context => {
+    assert.equal(context.nextMeta.pendingCommit.revision, 1);
+    assert.equal(context.durableRevision, 0);
+    return 'saved';
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.value, 'saved');
+  assert.equal(result.revision, 1);
+  assert.equal(result.durableRevision, 1);
+  assert.equal(writes.length, 2);
+  assert.equal(writes[0].durableRevision, 0);
+  assert.equal(writes[0].pendingCommit.revision, 1);
+  assert.equal(writes[1].durableRevision, 1);
+  assert.equal(writes[1].pendingCommit, null);
+  assert.equal(coordinator.getActiveView().pendingCommit, null);
+});
+
+test('a failed action leaves an incomplete receipt that the next commit resolves', async () => {
+  const adapter = createAdapter();
+  const coordinator = Transaction.createCoordinator({ adapter, writerId: 'tab-a' });
+  const scope = { accountScopeId: 'account', projectId: 'paper' };
+  let view = await coordinator.beginHydration(scope);
+
+  await assert.rejects(
+    coordinator.commit(view, async () => {
+      throw new Error('session write failed');
+    }),
+    /session write failed/
+  );
+  const incomplete = await adapter.read(scope);
+  assert.equal(incomplete.revision, 1);
+  assert.equal(incomplete.durableRevision, 0);
+  assert.equal(incomplete.pendingCommit.revision, 1);
+
+  view = coordinator.getActiveView();
+  const recovered = await coordinator.commit(view, async context => {
+    assert.equal(context.previousCommitIncomplete, true);
+  });
+  const durable = await adapter.read(scope);
+  assert.equal(recovered.recoveredIncompleteCommit, true);
+  assert.equal(durable.revision, 2);
+  assert.equal(durable.durableRevision, 2);
+  assert.equal(durable.pendingCommit, null);
 });
 
 test('queue claims require item, owner, and revision equality', () => {

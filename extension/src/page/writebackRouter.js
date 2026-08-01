@@ -1667,13 +1667,17 @@
         continue;
       }
       const key = typeof ref.key === 'string' ? ref.key : '';
-      if (!key || seen.has(key)) {
+      if (!key) {
         continue;
       }
-      seen.add(key);
       const hasPath = typeof ref.path === 'string';
       const hasExplicitPath = hasPath && ref.path.trim() !== '';
       const path = hasPath ? normalizeSafeProjectPath(ref.path) : '';
+      const identity = `${path}\u0000${key}`;
+      if (seen.has(identity)) {
+        continue;
+      }
+      seen.add(identity);
       normalized.push({
         key,
         id: typeof ref.id === 'string' ? ref.id : '',

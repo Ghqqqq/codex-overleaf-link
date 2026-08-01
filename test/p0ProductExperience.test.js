@@ -18,6 +18,11 @@ const PageBridgeClient = require('../extension/src/content/pageBridgeClient');
 const NativeCompatibilityController = require('../extension/src/content/nativeCompatibilityController');
 
 const DIFF_REVIEW_PANEL_PATH = '../extension/src/content/diffReviewPanel.js';
+const CONTENT_RUNTIME_PATH = '../extension/src/content/contentRuntime.js';
+
+function getContentRuntimeSource() {
+  return fs.readFileSync(path.join(__dirname, CONTENT_RUNTIME_PATH), 'utf8');
+}
 
 
 function createMinimalDocument() {
@@ -162,6 +167,7 @@ function loadMarkdownRendererHarness(projectFiles = [], options = {}) {
   const end = markdownSource.indexOf(endFunction) + endFunction.length;
   const markdownRegion = [
     extractFromContentScript( 'getCurrentProjectReferenceFiles'),
+    extractFromContentScript( 'getCurrentProjectMathSources'),
     extractFromContentScript( 'captureProjectReferenceFiles'),
     markdownSource.slice(start, end),
     extractFromContentScript( 'isMarkdownHeadingLine'),
@@ -172,13 +178,18 @@ function loadMarkdownRendererHarness(projectFiles = [], options = {}) {
   ].join('\n');
 
   return Function('document', 'LineReferences', 'MathText', 'projectFiles', 'pageBridgeCalls', 'toasts', 'options', `
-    const window = globalThis;
+    const window = options.window || globalThis;
     let state = {
       focusFiles: [],
       session: { focusFiles: [] },
       sessions: []
     };
     let currentRunView = { projectFiles };
+    const contextTrayController = {
+      getContextProject() {
+        return options.contextProject || null;
+      }
+    };
     function callPageBridge(method, params) {
       pageBridgeCalls.push({ method, params });
       return options.callPageBridge
@@ -483,14 +494,13 @@ test('composer defaults to English task modes and keeps Chinese translations ava
   );
 
   assert.match(composerPanel, /data-mode-choice="ask"[\s\S]*>Ask<\/button>/);
-  assert.match(composerPanel, /data-mode-choice="confirm"[\s\S]*>Suggest<\/button>/);
   assert.match(composerPanel, /data-mode-choice="auto"[\s\S]*>Auto<\/button>/);
+  assert.doesNotMatch(composerPanel, /data-mode-choice="confirm"|>Suggest<\/button>/);
   assert.match(i18n, /modeAsk:\s*'只问不改'/);
-  assert.match(i18n, /modeConfirm:\s*'建议修改'/);
   assert.match(i18n, /modeAuto:\s*'自动写入'/);
 });
 
-test('composer shows confirm and auto as explicit visible write-mode choices', () => {
+test('composer shows Ask and Auto as the only visible task modes', () => {
   const contentScript = getContentScriptSource();
   const composerPanel = fs.readFileSync(
     path.join(__dirname, '../extension/src/content/composerPanel.js'),
@@ -505,12 +515,12 @@ test('composer shows confirm and auto as explicit visible write-mode choices', (
   assert.match(contentSurface, /class="codex-mode-row"/);
   assert.match(contentSurface, /class="codex-mode-switch"/);
   assert.match(contentSurface, /data-mode-choice="ask"/);
-  assert.match(contentSurface, /data-mode-choice="confirm"/);
   assert.match(contentSurface, /data-mode-choice="auto"/);
+  assert.doesNotMatch(contentSurface, /data-mode-choice="confirm"|>Suggest<\/button>/);
   assert.match(contentScript, /function selectMode\(/);
   assert.match(contentScript, /function syncModeControls\(/);
   assert.match(contentScript, /querySelectorAll\('\[data-mode-choice\]'\)/);
-  assert.match(css, /\.codex-mode-switch\s*\{[\s\S]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(css, /\.codex-mode-switch\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(css, /\[data-mode-choice\]\[data-active="true"\]/);
 });
 
@@ -946,7 +956,7 @@ test('composer attachment adds dedupe the same file while async reads are pendin
 });
 
 test('composer and run history render image previews and file attachment icons', () => {
-  const contentScript = getContentScriptSource();
+  const contentScript = getContentRuntimeSource();
   const attachmentScript = fs.readFileSync(
     path.join(__dirname, '../extension/src/content/composerAttachments.js'),
     'utf8'
@@ -955,13 +965,17 @@ test('composer and run history render image previews and file attachment icons',
     path.join(__dirname, '../extension/src/content/composerPanel.js'),
     'utf8'
   );
+  const runTimelineView = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/runTimelineView.js'),
+    'utf8'
+  );
   const css = fs.readFileSync(
     path.join(__dirname, '../extension/styles/panel.css'),
     'utf8'
   );
   const composerMarkup = composerPanel.match(/<form class="codex-composer" data-composer-form>[\s\S]*?<\/form>/)?.[0] || '';
-  const startRunBody = contentScript.match(/function startRunView\(\{[\s\S]*?\n  function finishRunView/)?.[0] || '';
-  const renderCardBody = contentScript.match(/function renderRunCard\(run\) \{[\s\S]*?\n  function getRunStatusText/)?.[0] || '';
+  const startRunBody = contentScript.match(/function startRunView\(\{[\s\S]*?\n  async function finishRunView/)?.[0] || '';
+  const renderCardBody = runTimelineView.match(/function renderRunCard\(run\) \{[\s\S]*?\n  function getRunStatusText/)?.[0] || '';
   const renderAttachmentsBody = attachmentScript.match(/function renderAttachmentPreviewList[\s\S]*?\n  function showAttachmentPreviewDialog/)?.[0] || '';
 
   assert.ok(
@@ -1758,7 +1772,7 @@ test('session list keeps the selected historical session reachable', () => {
 });
 
 test('session titles auto-name once and can be manually renamed inline', () => {
-  const contentScript = getContentScriptSource();
+  const contentScript = getContentRuntimeSource();
   const css = fs.readFileSync(
     path.join(__dirname, '../extension/styles/panel.css'),
     'utf8'
@@ -1767,7 +1781,11 @@ test('session titles auto-name once and can be manually renamed inline', () => {
     path.join(__dirname, '../extension/src/content/sessionPanel.js'),
     'utf8'
   );
-  const startRunBody = contentScript.match(/function startRunView\([^)]*\) \{[\s\S]*?\n  function finishRunView/)?.[0] || '';
+  const sessionManager = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/sessionManager.js'),
+    'utf8'
+  );
+  const startRunBody = contentScript.match(/function startRunView\([^)]*\) \{[\s\S]*?\n  async function finishRunView/)?.[0] || '';
 
   assert.match(startRunBody, /active\?\.titleSource !== 'manual'/);
   assert.match(startRunBody, /deriveSessionTitle/);
@@ -1777,7 +1795,7 @@ test('session titles auto-name once and can be manually renamed inline', () => {
   // A real custom title pins to 'manual'; an empty value, the New Session
   // placeholder, or the auto-derived title stay 'auto' (so renaming an empty
   // session can't resurrect a ghost).
-  assert.match(contentScript, /titleSource: isCustom \? 'manual' : 'auto'/);
+  assert.match(sessionManager, /titleSource: isCustom \? 'manual' : 'auto'/);
   assert.match(css, /\.codex-session-rename/);
   assert.match(css, /\.codex-session-title-input/);
 });
@@ -1891,7 +1909,6 @@ test('native side-effecting requests are gated on compatibility before dispatch'
   for (const method of [
     'codex.run',
     'task.run',
-    'task.confirm',
     'mirror.sync',
     'mirror.patchFiles',
     'codex.history.clearPlugin'
@@ -2129,7 +2146,7 @@ test('auto mode shows a readonly diff after applying Codex changes', () => {
 });
 
 test('confirm diff review uses immediate per-file decisions and batch accept reject actions', () => {
-  const contentScript = getContentScriptSource();
+  const contentScript = getContentRuntimeSource();
   const diffReviewPanel = fs.readFileSync(
     path.join(__dirname, '../extension/src/content/diffReviewPanel.js'),
     'utf8'
@@ -2143,7 +2160,6 @@ test('confirm diff review uses immediate per-file decisions and batch accept rej
   const renderDiffBody = diffReviewPanel.match(/function renderDiffReview\(syncChanges\) \{[\s\S]*?\n    function renderReadOnlyDiffReview/)?.[0] || '';
 
   assert.match(wrapperBody, /return diffReviewPanel\.createDiffReviewElement\(syncChanges,\s*options\)/);
-  assert.match(wrapperBody, /return diffReviewPanel\.renderDiffReview\(syncChanges\)/);
   assert.match(createDiffBody, /card\.dataset\.decision = readonly \? 'accepted' : 'pending'/);
   assert.match(createDiffBody, /function decideFileChange\(path, accepted\)/);
   assert.match(createDiffBody, /status\.textContent = accepted \? tr\('diffAccepted'\) : tr\('diffRejected'\)/);
@@ -2852,7 +2868,7 @@ test('undo flow uses no-trace restoring instead of requiring Reviewing write mod
 });
 
 test('no-trace undo restores original file snapshots in one operation per file', () => {
-  const contentScript = getContentScriptSource();
+  const contentScript = getContentRuntimeSource();
   const undoRunBody = contentScript.match(/async function undoRun\(runId\) \{[\s\S]*?\n  async function undoRunTrackedChanges/)?.[0] || '';
   const recordUndoBody = contentScript.match(/function recordUndoFromApply\(project, applyResult\) \{[\s\S]*?\n  function normalizeApplyTrackedChanges/)?.[0] || '';
 
@@ -2863,7 +2879,7 @@ test('no-trace undo restores original file snapshots in one operation per file',
   assert.match(undoRunBody, /const undoOperations = undoRestore\.operations/);
   assert.match(undoRunBody, /operations:\s*selectedOperations/);
   assert.match(undoRunBody, /baseFiles:\s*run\.undoBaseFiles \|\| \[\]/);
-  assert.match(recordUndoBody, /record\.undoExpectedFiles = selectExpectedFilesForTrackedUndo\(project, combinedAppliedOperations, \[\]\)/);
+  assert.match(recordUndoBody, /record\.undoExpectedFiles = selectExpectedFilesForTrackedUndo\([\s\S]*?project,[\s\S]*?combinedAppliedOperations,[\s\S]*?\[\],[\s\S]*?record\.undoExpectedFiles[\s\S]*?\)/);
   assert.doesNotMatch(recordUndoBody, /record\.undoExpectedFiles = \[\]/);
 });
 
@@ -3951,7 +3967,7 @@ test('saveState merges latest lightweight prefs before saving project-scoped set
       model: 'gpt-5.4',
       reasoningEffort: 'high',
       speedTier: 'standard',
-      mode: 'confirm',
+      mode: 'auto',
       locale: 'en',
       requireReviewing: true,
       autoRecompile: false,
@@ -3994,7 +4010,7 @@ test('saveState merges latest lightweight prefs before saving project-scoped set
           at: '2026-05-06T00:00:07.000Z'
         }],
         task: 'Current task',
-        mode: 'confirm',
+        mode: 'auto',
         model: 'gpt-5.4',
         reasoningEffort: 'high',
         speedTier: 'standard',
@@ -4168,7 +4184,7 @@ test('experimental OT input persistence does not leak checked state after projec
       model: 'gpt-5.4',
       reasoningEffort: 'high',
       speedTier: 'standard',
-      mode: 'confirm',
+      mode: 'auto',
       task: '',
       requireReviewing: true,
       autoRecompile: true,
@@ -4177,7 +4193,7 @@ test('experimental OT input persistence does not leak checked state after projec
     const experimentalOtCheckbox = { checked: true };
     const controls = {
       '[data-reasoning]': { value: 'high' },
-      '[data-mode]': { value: 'confirm' },
+      '[data-mode]': { value: 'auto' },
       '[data-task]': { value: '' },
       '[data-require-reviewing]': { checked: true },
       '[data-auto-recompile]': { checked: true },
@@ -4440,6 +4456,60 @@ test('markdown renderer makes every adjacent punctuation-separated line referenc
   );
 });
 
+test('production Markdown DOM renderer makes every comma-separated line reference clickable', () => {
+  const MarkdownDomRenderer = require('../extension/src/content/markdownDomRenderer');
+  const markdownIt = require('../extension/vendor/markdown-it/markdown-it.min.js');
+  const MathText = require('../extension/src/content/mathText');
+  const harness = loadMarkdownRendererHarness(
+    [{ path: 'main.tex', kind: 'text' }],
+    {
+      window: {
+        CodexOverleafMarkdownDomRenderer: MarkdownDomRenderer,
+        CodexOverleafMathText: MathText,
+        markdownit: markdownIt
+      }
+    }
+  );
+  const target = createMinimalDocument().createElement('div');
+
+  harness.renderMarkdownBlockText(target, 'Locations: main.tex:28, main.tex:30, main.tex:32');
+
+  assert.deepEqual(
+    findLineReferenceButtons(target).map(button => button.textContent),
+    ['main.tex:28', 'main.tex:30', 'main.tex:32']
+  );
+});
+
+test('production Markdown DOM renderer resolves references from the prefetched project inventory during a warm run', () => {
+  const MarkdownDomRenderer = require('../extension/src/content/markdownDomRenderer');
+  const markdownIt = require('../extension/vendor/markdown-it/markdown-it.min.js');
+  const MathText = require('../extension/src/content/mathText');
+  const harness = loadMarkdownRendererHarness(
+    [{ path: 'example/test.tex', kind: 'text' }],
+    {
+      contextProject: {
+        files: [
+          { path: 'main.tex', kind: 'text' },
+          { path: 'example/test.tex', kind: 'text' }
+        ]
+      },
+      window: {
+        CodexOverleafMarkdownDomRenderer: MarkdownDomRenderer,
+        CodexOverleafMathText: MathText,
+        markdownit: markdownIt
+      }
+    }
+  );
+  const target = createMinimalDocument().createElement('div');
+
+  harness.renderMarkdownBlockText(target, 'Locations: main.tex:28, main.tex:30, main.tex:32');
+
+  assert.deepEqual(
+    findLineReferenceButtons(target).map(button => button.textContent),
+    ['main.tex:28', 'main.tex:30', 'main.tex:32']
+  );
+});
+
 test('markdown renderer sanitizes local path labels while preserving HTTPS links', () => {
   const rawLocalPath = '/Users/alice/.codex-overleaf/projects/p/workspace/main.tex:42';
   const harness = loadMarkdownRendererHarness([{ path: 'main.tex', kind: 'text' }]);
@@ -4538,11 +4608,14 @@ test('line-reference buttons show pending state and failure feedback without lea
 });
 
 test('run view captures safe project file inventory for final report line references beyond focus files', () => {
-  const contentScript = getContentScriptSource();
+  const contentScript = getContentRuntimeSource();
 
   assert.match(contentScript, /function captureProjectReferenceFiles\(/);
-  assert.match(contentScript, /currentRunView\.projectFiles = captureProjectReferenceFiles\(project\)/);
-  assert.match(contentScript, /projectFiles:\s*captureProjectReferenceFiles\(arguments\[0\]\?\.project\)/);
+  assert.match(contentScript, /function persistCurrentProjectReferenceFiles\(/);
+  assert.match(contentScript, /currentRunView\.projectFiles = projectFiles/);
+  assert.match(contentScript, /projectReferenceFiles:\s*projectFiles/);
+  assert.match(contentScript, /addFiles\(activeSession\?\.projectReferenceFiles\)/);
+  assert.match(contentScript, /persistCurrentProjectReferenceFiles\(project\)/);
 });
 
 test('session row controls do not interpolate translated strings through innerHTML', () => {
@@ -4853,7 +4926,7 @@ test('Recent-projects CSS variant + badge styles reuse panel palette tokens for 
 // original project's in-memory sessions under the WRONG projectId key.
 // ---------------------------------------------------------------------------
 
-test('Fix A: finishRunView gates saveStateSoon on navigation divergence (currentRunView.runProjectId !== activeProjectId)', () => {
+test('Fix A: finishRunView gates durable terminal persistence on navigation divergence', () => {
   const src = getContentScriptSource();
   const body = extractFunction(src, 'finishRunView');
   // The body must read activeProjectId / runProjectId divergence and skip
@@ -4861,23 +4934,23 @@ test('Fix A: finishRunView gates saveStateSoon on navigation divergence (current
   // load-bearing because tests downstream search for them.
   assert.match(body, /navigationDivergent/);
   assert.match(body, /activeProjectId !== currentRunView\.runProjectId/);
-  // The saveStateSoon call inside finishRunView must be gated, not bare.
-  // Look for the if (!navigationDivergent) shape.
-  assert.match(body, /if\s*\(\s*!\s*navigationDivergent\s*\)\s*\{\s*\n[\s\S]*?saveStateSoon\(\)/);
+  // Same-project terminal state must be durably flushed before its badge is
+  // exposed. Navigation-divergent settlement owns its separate persistence.
+  assert.match(body, /if\s*\(\s*!\s*navigationDivergent\s*\)\s*\{\s*\n[\s\S]*?await\s+flushQueuedSaveState\(\)/);
 });
 
-test('Fix A: finishRunView still calls saveStateSoon on the happy path (no navigation, currentRunView aligned)', () => {
+test('Fix A: finishRunView durably flushes the happy path and skips the divergent path', async () => {
   // Behavioral check via extracted function + a minimal driver harness. The
   // harness simulates the finishRunView body's prerequisites and asserts the
-  // saveStateSoon counter ticks when navigationDivergent is false.
+  // durable-flush counter ticks when navigationDivergent is false.
   const src = getContentScriptSource();
   const body = extractFunction(src, 'finishRunView');
   const sandbox = {
     result: { divergent: null, aligned: null },
-    saveCount: 0
+    flushCount: 0
   };
   vm.createContext(sandbox);
-  vm.runInContext(
+  const completion = vm.runInContext(
     "let activeProjectId = 'P_aligned';"
     + "let currentRunView = { recordId: 'r1', sessionId: 's1', runProjectId: 'P_aligned', startedAt: 0 };"
     + "const state = { sessions: [{ id: 's1', runs: [{ id: 'r1', status: 'running' }] }] };"
@@ -4887,20 +4960,22 @@ test('Fix A: finishRunView still calls saveStateSoon on the happy path (no navig
     + "function flushPendingStreamRenders(){}"
     + "const runGuidanceController = { settleView(){} };"
     + "function formatProcessedSummary(){ return ''; }"
-    + "function saveStateSoon(){ saveCount++; }"
+    + "function flushQueuedSaveState(){ flushCount++; return Promise.resolve(); }"
     + "function renderSessionList(){}"
     + "function getCurrentRunViewForRender(){ return null; }"
     + "function stopRunElapsedTick(){}"
     + body
-    + ";"
-    + "saveCount = 0; finishRunView('done', 'completed'); result.aligned = saveCount;"
+    + ";(async () => {"
+    + "flushCount = 0; await finishRunView('done', 'completed'); result.aligned = flushCount;"
     + "activeProjectId = 'P_other'; currentRunView = { recordId: 'r2', sessionId: 's2', runProjectId: 'P_original', startedAt: 0 };"
     + "state.sessions.push({ id: 's2', runs: [{ id: 'r2', status: 'running' }] });"
-    + "saveCount = 0; finishRunView('done', 'completed'); result.divergent = saveCount;",
+    + "flushCount = 0; await finishRunView('done', 'completed'); result.divergent = flushCount;"
+    + "})();",
     sandbox
   );
-  assert.equal(sandbox.result.aligned, 1, 'happy path: saveStateSoon is called when runProjectId === activeProjectId');
-  assert.equal(sandbox.result.divergent, 0, 'navigation-divergent: saveStateSoon is NOT called (settlement owns persistence)');
+  await completion;
+  assert.equal(sandbox.result.aligned, 1, 'happy path: terminal state is durably flushed');
+  assert.equal(sandbox.result.divergent, 0, 'navigation-divergent: settlement owns persistence');
 });
 
 test('Fix A: saveState honors options.projectIdOverride instead of getCurrentProjectId()', () => {
@@ -5311,9 +5386,9 @@ test('runCodexTask catch passes codexReturned signal to translateRawError', () =
 // left a zombie write running on the page side. Verify the carve-out.
 // ---------------------------------------------------------------------------
 
-test('getPageBridgeTimeoutMs gives applyOperations 30s to accommodate the slow openFile path', () => {
+test('getPageBridgeTimeoutMs gives applyOperations 45s for multi-file tracked writeback', () => {
   assert.equal(PageRpcContract.getMethod('applyOperations').timeoutClass, 'writeback');
-  assert.equal(PageRpcContract.resolveTimeoutMs('applyOperations'), 30000);
+  assert.equal(PageRpcContract.resolveTimeoutMs('applyOperations'), 45000);
 });
 
 // ---------------------------------------------------------------------------

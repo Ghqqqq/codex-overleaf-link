@@ -13,12 +13,14 @@
       tx,
       callPageBridge, getCurrentProjectId,
       getCurrentProjectReferenceFiles,
+      getCurrentProjectMathSources,
       showPluginToast
     } = deps;
 
   function renderMarkdownInlineText(target, value) {
     target.replaceChildren(...buildMarkdownInlineNodes(value));
   }
+  function getMathMacros() { return MathText?.buildMathMacros?.(getCurrentProjectMathSources?.() || []) || {}; }
 
   function sanitizeAssistantVisibleText(value) {
     if (typeof value !== 'string' || !value) {
@@ -67,11 +69,8 @@
     if (!mathText?.buildMathNodes) {
       return buildMarkdownInlineNodesWithoutMath(source);
     }
-    return mathText.buildMathNodes(source, {
-      document,
-      katex: window.katex,
-      renderText: buildMarkdownInlineNodesWithoutMath
-    });
+    return mathText.buildMathNodes(source, { document, katex: window.katex,
+      macros: getMathMacros(), renderText: buildMarkdownInlineNodesWithoutMath });
   }
 
   function buildMarkdownInlineNodesWithoutMath(value) {
@@ -109,6 +108,10 @@
   function buildInlineCodeNodes(value) {
     const source = String(value || '');
     const trimmed = source.trim();
+    const standaloneMath = MathText?.parseStandaloneMath?.(trimmed);
+    if (standaloneMath && MathText?.createMathNode) return [MathText.createMathNode(
+      standaloneMath, { document, katex: window.katex, macros: getMathMacros() }
+    )];
     const refs = trimmed ? parseRuntimeLineReferences(trimmed, 'plain-text-token') : [];
     const ref = refs.length === 1 && refs[0]?.rawText === trimmed ? refs[0] : null;
     if (ref && !isRuntimeLocalPathLike(ref.rawPath)) {
@@ -492,12 +495,11 @@
               `[${safeLabel.replace(/]/g, '\\]')}](${target.replace(/\)/g, '\\)')})`
             );
           },
-          renderCodeNodes: text => buildMarkdownInlineNodes(`\`${String(text || '').replace(/`/g, '\\`')}\``),
+          renderCodeNodes: text => buildInlineCodeNodes(text),
           sanitizeText: sanitizeAssistantVisibleText,
-          createMathNode: segment => runtimeRoot.CodexOverleafMathText.createMathNode(segment, {
-            document, katex: runtimeRoot.katex,
-            renderText: text => buildMarkdownInlineNodes(text)
-          }),
+          createMathNode: segment => runtimeRoot.CodexOverleafMathText.createMathNode(segment,
+            { document, katex: runtimeRoot.katex, macros: getMathMacros(),
+              renderText: text => buildMarkdownInlineNodes(text) }),
           recordDiagnostic: recordRenderingDiagnostic
         });
         return;

@@ -743,6 +743,8 @@ function cleanupOrphanStageRoots(updatesRoot, retainedRoots = []) {
 
 function recoverAndReadStatus(context) {
   let journal = readJournal(context);
+  const alignedVersion = readAlignedManagedVersion(context);
+  journal = supersedeObsoleteJournal(context, journal, alignedVersion);
   if (journal?.state === 'activation_pending') {
     journal = { ...journal, state: 'staged', reasonCode: 'update_activation_interrupted', updatedAt: new Date().toISOString() };
     writeJournal(context, journal);
@@ -753,7 +755,7 @@ function recoverAndReadStatus(context) {
     writeJournal(context, journal);
     settleAuthorization(context, journal.authorizationId, 'revoked');
   }
-  if (journal?.state === 'rolled_back') {
+  if (journal?.state === 'rolled_back' || journal?.state === 'superseded') {
     pruneNativeVersions(context.nativeRoot, new Set([
       readVersionPointer(context.nativeRoot, 'active-version'),
       readVersionPointer(context.nativeRoot, 'previous-version')
@@ -766,6 +768,36 @@ function recoverAndReadStatus(context) {
     transaction: journal ? publicTransaction(journal) : null,
     authorization: publicAuthorization(readAuthorization(context))
   };
+}
+
+function readAlignedManagedVersion(context) {
+  try {
+    return assertManagedLayout(context);
+  } catch (_error) {
+    return '';
+  }
+}
+
+function supersedeObsoleteJournal(context, journal, activeVersion) {
+  if (!journal || journal.state === 'superseded' || !parseSemver(activeVersion) ||
+      !parseSemver(journal.sourceVersion) || !parseSemver(journal.targetVersion) ||
+      compareSemver(activeVersion, journal.sourceVersion) <= 0 ||
+      compareSemver(activeVersion, journal.targetVersion) <= 0) {
+    return journal;
+  }
+  const timestamp = new Date().toISOString();
+  const superseded = {
+    ...journal,
+    state: 'superseded',
+    supersededFromState: journal.state,
+    supersededByVersion: activeVersion,
+    supersededAt: timestamp,
+    updatedAt: timestamp
+  };
+  writeJournal(context, superseded);
+  cleanupStage(journal.stageRoot);
+  cleanupOrphanStageRoots(context.updatesRoot);
+  return superseded;
 }
 
 function pruneNativeVersions(nativeRoot, retainedVersions) {
@@ -960,6 +992,9 @@ function publicTransaction(journal) {
     appliedAt: journal.appliedAt,
     confirmedAt: journal.confirmedAt,
     rolledBackAt: journal.rolledBackAt,
+    supersededAt: journal.supersededAt,
+    supersededByVersion: journal.supersededByVersion,
+    supersededFromState: journal.supersededFromState,
     reasonCode: journal.reasonCode || ''
   };
 }

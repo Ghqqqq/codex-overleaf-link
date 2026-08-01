@@ -611,7 +611,6 @@ releaseTest('test workflow runs the test suite on macOS, Linux, and Windows', ()
 releaseTest('issue templates require task mode and release triage fields', () => {
   const taskModeOptions = [
     'Ask-only',
-    'Suggest-edit',
     'Auto-write',
     'Compile',
     'Diagnostics',

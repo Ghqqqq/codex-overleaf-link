@@ -2686,13 +2686,23 @@
 }
 
 #codex-overleaf-panel .run-math--fallback {
-  border-radius: 4px;
-  background: var(--tl-surface-2);
-  color: var(--tl-review);
-  padding: 1px 4px;
+  border-bottom: 1px dotted var(--tl-fg-4);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0 2px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 0.96em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font: inherit;
+}
+
+#codex-overleaf-panel .run-math--display.run-math--fallback {
+  border: 1px solid var(--tl-border);
+  border-left: 3px solid var(--tl-fg-4);
+  border-radius: 6px;
+  background: var(--tl-surface-2);
+  padding: 8px 10px;
+  text-align: left;
 }
 
 #codex-overleaf-panel .run-stream[data-stream-role="reasoning"] .run-stream-text {
@@ -3173,12 +3183,12 @@
   white-space: nowrap;
 }
 
-/* Mode switch (Ask/Suggest/Auto) — a real segmented control: a bordered track
-   holding three choices. Inactive choices are muted; hover is a light fill
+/* Mode switch (Ask/Auto) — a real segmented control: a bordered track
+   holding two choices. Inactive choices are muted; hover is a light fill
    (distinct from the active accent-wash fill) so hover never reads as active. */
 #codex-overleaf-panel .codex-mode-switch {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 2px;
   min-width: 0;
   padding: 2px;

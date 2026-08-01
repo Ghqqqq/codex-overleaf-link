@@ -64,7 +64,7 @@ function buildCodexTurnPrompt(options = {}) {
     'Mode for this turn:',
     `- ${context.mode}`,
     '- ask: inspect and explain only; do not edit files.',
-    '- confirm/auto: edit the local workspace directly when the request calls for changes. The browser bridge handles review, confirmation, deletion approval, and syncing back to Overleaf.',
+    '- auto: edit the local workspace directly when the request calls for changes. The browser bridge handles authorization, deletion approval, and syncing back to Overleaf.',
     '',
     'Write expectation for this turn:',
     formatWriteExpectation({

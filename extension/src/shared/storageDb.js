@@ -287,7 +287,7 @@
       history: compactHistoryForStorage(input.history),
       runs: compactRunsForStorage(input.runs, options),
       task: normalizeDisplayTextForStorage(input.task, SESSION_STORAGE_LIMITS.taskChars),
-      mode: typeof input.mode === 'string' ? input.mode : '', providerId: typeof input.providerId === 'string' && input.providerId ? input.providerId : 'builtin',
+      mode: normalizeCurrentMode(input.mode), providerId: typeof input.providerId === 'string' && input.providerId ? input.providerId : 'builtin',
       model: typeof input.model === 'string' ? input.model : '',
       reasoningEffort: typeof input.reasoningEffort === 'string' ? input.reasoningEffort : '',
       speedTier: typeof input.speedTier === 'string' ? input.speedTier : '',
@@ -436,13 +436,17 @@
 
   // --- Helpers ---
 
+  function normalizeCurrentMode(mode) {
+    return mode === 'auto' ? 'auto' : 'ask';
+  }
+
   function extractLightweightPrefs(state, projectId) {
     var prefs = {
       storageSchemaVersion: TARGET_SCHEMA_VERSION, providerId: typeof state.providerId === 'string' && state.providerId ? state.providerId : 'builtin',
       model: typeof state.model === 'string' ? state.model : '',
       reasoningEffort: typeof state.reasoningEffort === 'string' ? state.reasoningEffort : '',
       speedTier: typeof state.speedTier === 'string' ? state.speedTier : '',
-      mode: typeof state.mode === 'string' ? state.mode : '',
+      mode: normalizeCurrentMode(state.mode),
       locale: typeof state.locale === 'string' ? state.locale : '',
       requireReviewing: state.requireReviewing !== false,
       autoRecompile: state.autoRecompile !== false,
@@ -1314,11 +1318,9 @@
   }
 
   // --- Utilities ---
-
   function generateId(prefix) {
     return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
   }
-
   function safeJsonStringify(value) {
     try {
       return JSON.stringify(value) || '';
@@ -1326,7 +1328,6 @@
       return '[unserializable]';
     }
   }
-
   var hashString = StorageRunActions.hashString;
 
   return {

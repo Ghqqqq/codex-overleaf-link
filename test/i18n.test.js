@@ -19,10 +19,8 @@ test('language switch label describes the target language', () => {
 
 test('i18n keeps internal mode ids while translating labels', () => {
   assert.equal(I18n.t('en', 'modeAsk'), 'Ask');
-  assert.equal(I18n.t('en', 'modeConfirm'), 'Suggest');
   assert.equal(I18n.t('en', 'modeAuto'), 'Auto');
   assert.equal(I18n.t('zh', 'modeAsk'), '只问不改');
-  assert.equal(I18n.t('zh', 'modeConfirm'), '建议修改');
   assert.equal(I18n.t('zh', 'modeAuto'), '自动写入');
 });
 

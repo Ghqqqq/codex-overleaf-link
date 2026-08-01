@@ -14,7 +14,7 @@ test('defaults missing locale to English for user-facing remediation', () => {
   const translated = translateRawError('Mode must be "confirm" or "auto"', { mode: 'ask' });
 
   assert.equal(translated.conclusion, 'No files were written: this task needs write access, but the current mode is Ask.');
-  assert.equal(translated.nextStep, 'Switch to Suggest or Auto and run the task again.');
+  assert.equal(translated.nextStep, 'Switch to Auto and run the task again.');
   assert.doesNotMatch(JSON.stringify(translated), /Mode must be/);
 });
 
@@ -22,8 +22,15 @@ test('translates raw errors in English when the panel locale is English', () => 
   const translated = translateRawError('Mode must be "confirm" or "auto"', { mode: 'ask', locale: 'en' });
 
   assert.equal(translated.conclusion, 'No files were written: this task needs write access, but the current mode is Ask.');
-  assert.equal(translated.nextStep, 'Switch to Suggest or Auto and run the task again.');
+  assert.equal(translated.nextStep, 'Switch to Auto and run the task again.');
   assert.doesNotMatch(JSON.stringify(translated), /Mode must be/);
+});
+
+test('translates the removed Suggest compatibility error', () => {
+  const translated = translateRawError('suggest_mode_removed: Suggest mode has been removed.', { locale: 'en' });
+
+  assert.equal(translated.failureCode, 'suggest_mode_removed');
+  assert.equal(translated.nextStep, 'Reload the extension, then choose Ask or Auto.');
 });
 
 test('timeout remediation does not tell users to raise a default Codex timeout', () => {

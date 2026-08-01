@@ -25,6 +25,16 @@ test('math parser recognizes explicit inline and display delimiters', () => {
   );
 });
 
+test('math parser accepts delimiter whitespace for math-like content without treating prose as math', () => {
+  const source = '$ \\E[Y_t] \\le \\theta + \\frac{\\log C}{\\lambda} $ and $ plain words $.';
+  const math = MathText.parseMathSegments(source).filter(segment => segment.type === 'math');
+  assert.deepEqual(math.map(segment => segment.value), [
+    '\\E[Y_t] \\le \\theta + \\frac{\\log C}{\\lambda}'
+  ]);
+  assert.equal(MathText.parseStandaloneMath('$ x_t^2 $').value, 'x_t^2');
+  assert.equal(MathText.parseStandaloneMath('$ 25 $'), null);
+});
+
 test('math parser preserves inline code, escaped dollars, and unmatched delimiters', () => {
   const source = 'Keep `$not_math$`, \\$5, and unmatched $text; render \\(a+b\\).';
   const segments = MathText.parseMathSegments(source);
@@ -53,18 +63,45 @@ test('math renderer uses bounded untrusted KaTeX options and keeps text order', 
   assert.equal(calls[0].options.throwOnError, true);
   assert.equal(calls[0].options.maxExpand, 200);
   assert.equal(calls[0].options.output, 'htmlAndMathml');
+  assert.equal(calls[0].options.macros['\\E'], '\\mathbb{E}');
 });
 
-test('math renderer falls back to readable delimited source when KaTeX rejects input', () => {
+test('math renderer falls back to a readable formula body when KaTeX rejects input', () => {
   const document = createFakeDocument();
   const nodes = MathText.buildMathNodes('$\\unsupported{x}$', {
     document,
     katex: { render() { throw new Error('unsupported'); } },
     renderText: value => [{ textContent: value }]
   });
-  assert.equal(nodes[0].textContent, '$\\unsupported{x}$');
+  assert.equal(nodes[0].textContent, '\\unsupported{x}');
   assert.equal(nodes[0].dataset.mathRendered, 'false');
   assert.match(nodes[0].className, /run-math--fallback/);
+});
+
+test('project math macros are bounded and reject unsafe definitions', () => {
+  const macros = MathText.buildMathMacros([{
+    path: 'main.tex',
+    content: [
+      '\\newcommand{\\E}{\\mathbf{E}}',
+      '\\DeclareMathOperator{\\rank}{rank}',
+      '\\newcommand{\\leak}{\\href{https://example.com}{x}}',
+      '\\newcommand{\\self}{\\self}'
+    ].join('\n')
+  }]);
+  assert.equal(macros['\\E'], '\\mathbf{E}');
+  assert.equal(macros['\\rank'], '\\operatorname{rank}');
+  assert.equal(macros['\\leak'], undefined);
+  assert.equal(macros['\\self'], undefined);
+});
+
+test('standalone backtick payloads can be promoted only when the complete value is delimited math', () => {
+  assert.equal(MathText.parseStandaloneMath('$x+y$').value, 'x+y');
+  assert.equal(MathText.parseStandaloneMath('const x = 1;'), null);
+  const markdownSource = fs.readFileSync(
+    path.join(__dirname, '../extension/src/content/markdownText.js'),
+    'utf8'
+  );
+  assert.match(markdownSource, /renderCodeNodes:\s*text\s*=>\s*buildInlineCodeNodes\(text\)/);
 });
 
 test('extension loads local KaTeX before the isolated math and markdown renderers', () => {

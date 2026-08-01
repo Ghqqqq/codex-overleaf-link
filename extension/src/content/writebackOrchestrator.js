@@ -25,7 +25,6 @@
   let appendOperationsPreview;
   let appendPartialWritebackWarning;
   let appendApplyResult;
-  let renderDiffReview;
   let renderReadOnlyDiffReview;
   let showPluginConfirm;
   let callPageBridge;
@@ -96,8 +95,8 @@
         applyResults: [],
         mode: runMode,
         nextStep: tx(
-          'Switch to Suggest or Auto only when you want Codex to edit files.',
-          '只有希望 Codex 修改文件时，才需要切换到建议修改或自动写入。'
+          'Switch to Auto only when you want Codex to edit files.',
+          '只有希望 Codex 修改文件时，才需要切换到自动写入。'
         )
       });
       return {
@@ -176,51 +175,6 @@
           resultStatus: additionalSkippedEntries.length ? 'blocked' : 'completed'
         })
       };
-    }
-
-    if (runMode === 'confirm') {
-      appendRunEvent({
-        title: tx(
-          `Local Codex produced ${operations.length} change(s). Review the diff before applying.`,
-          `本地 Codex 产生了 ${operations.length} 项改动，请查看差异后确认。`
-        ),
-        status: 'running'
-      });
-      const accepted = await renderDiffReview(visibleSyncChanges);
-      if (!accepted.length) {
-        appendRunEvent({
-          title: tx('Sync cancelled: Overleaf was not modified.', '已取消同步：Overleaf 没有被修改。'),
-          status: 'completed'
-        });
-        appendCompletionReport({
-          conclusion: tx('You cancelled syncing. Local Codex changes were not written back to Overleaf.', '你取消了同步，本地 Codex 改动没有写回 Overleaf。'),
-          status: 'rejected',
-          operations: [],
-          applyResults: [],
-          mode: runMode,
-          nextStep: tx('Run the task again, or switch to Auto if you want changes synced directly.', '可以重新运行任务，或切换到自动写入后再同步。')
-        });
-        return {
-          summaryLine: tx('Sync cancelled', '已取消同步'),
-          hasSkippedOperations: additionalSkippedEntries.length > 0,
-          settlement: buildSettlement({
-            operations,
-            applyResult: { ok: false, applied: [], skipped: additionalSkippedEntries }
-          }),
-          audit: buildAuditSummaryFromApply({
-            operations,
-            applyResults: additionalSkippedEntries.length ? [{ ok: false, applied: [], skipped: additionalSkippedEntries }] : [],
-            blockedFiles: additionalSkippedEntries.map(item => summarizeOperationForAudit(item.operation, item.result, 'blocked')),
-            resultStatus: 'rejected'
-          })
-        };
-      }
-      operations = buildSyncApplyOperations(accepted, project);
-      const acceptedPathSafety = partitionUnsafeProjectPathOperations(operations);
-      if (acceptedPathSafety.skipped.length) {
-        additionalSkippedEntries.push(...acceptedPathSafety.skipped);
-        operations = acceptedPathSafety.safe;
-      }
     }
 
     const deleteOperations = operations.filter(operation => operation.type === 'delete');
@@ -872,7 +826,6 @@
       appendOperationsPreview,
       appendPartialWritebackWarning,
       appendApplyResult,
-      renderDiffReview,
       renderReadOnlyDiffReview,
       showPluginConfirm,
       callPageBridge,

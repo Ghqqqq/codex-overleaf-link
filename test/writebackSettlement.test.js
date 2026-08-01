@@ -4,6 +4,50 @@ const test = require('node:test');
 const Settlement = require('../extension/src/shared/writebackSettlement');
 const SettlementFacts = require('../extension/src/shared/settlementFacts');
 
+test('tracked undo expected files accumulate across partial writeback snapshots', () => {
+  const operations = [
+    { type: 'edit', path: 'main.tex' },
+    { type: 'edit', path: 'example/test.tex' }
+  ];
+  const trackedChanges = [
+    { key: 'change-1', path: 'main.tex' },
+    { key: 'change-1', path: 'example/test.tex' }
+  ];
+  const first = Settlement.selectExpectedFilesForTrackedUndo(
+    { files: [{ path: 'main.tex', content: 'root before' }] },
+    operations.slice(0, 1),
+    trackedChanges.slice(0, 1)
+  );
+  const second = Settlement.selectExpectedFilesForTrackedUndo(
+    { files: [{ path: 'example/test.tex', content: 'nested before' }] },
+    operations,
+    trackedChanges,
+    first
+  );
+  const afterLaterRootSnapshot = Settlement.selectExpectedFilesForTrackedUndo(
+    { files: [{ path: 'main.tex', content: 'root after' }] },
+    operations,
+    trackedChanges,
+    second
+  );
+
+  assert.deepEqual(afterLaterRootSnapshot, [
+    { path: 'main.tex', content: 'root before' },
+    { path: 'example/test.tex', content: 'nested before' }
+  ]);
+});
+
+test('tracked change identity is scoped to its project-relative path', () => {
+  assert.deepEqual(Settlement.normalizeApplyTrackedChanges([
+    { key: 'change-1', id: '1', path: 'main.tex', label: 'root' },
+    { key: 'change-1', id: '1', path: 'example/test.tex', label: 'nested' },
+    { key: 'change-1', id: '1', path: 'main.tex', label: 'duplicate' }
+  ]), [
+    { key: 'change-1', id: '1', path: 'main.tex', label: 'root' },
+    { key: 'change-1', id: '1', path: 'example/test.tex', label: 'nested' }
+  ]);
+});
+
 test('verified_quiet stays quiet-observed and never becomes verified_saved', () => {
   assert.deepEqual(Settlement.normalizeSaveEvidence({ ok: true, state: 'verified_quiet' }), {
     state: 'verified_quiet',
@@ -383,6 +427,39 @@ test('tracked lifecycle keeps nested failures as evidence without overturning a 
   assert.equal(settlement.decision, 'accepted');
   assert.equal(settlement.facts.failures.length, 1);
   assert.equal(settlement.facts.failures[0].code, 'accept_not_verified');
+});
+
+test('tracked reject stays actionable when a multi-file undo restores only one file', () => {
+  const settlement = Settlement.settleTrackedChangeLifecycle({
+    kind: 'reject',
+    run: {
+      trackedChangeStatus: 'pending',
+      undoTrackedChanges: [
+        { path: 'main.tex', key: 'change-main' },
+        { path: 'example/test.tex', key: 'change-test' }
+      ]
+    },
+    result: {
+      ok: false,
+      applied: [{
+        trackedChange: { path: 'main.tex', key: 'editor-undo:main.tex' },
+        result: { ok: true, method: 'overleaf-editor-undo', verified: true }
+      }],
+      skipped: [{
+        trackedChange: { path: 'example/test.tex', key: 'change-test' },
+        result: {
+          ok: false,
+          code: 'editor_undo_no_progress',
+          reason: 'The second file did not return to its pre-run content.'
+        }
+      }]
+    }
+  });
+
+  assert.equal(settlement.decision, 'needs_review');
+  assert.equal(settlement.statePatch.trackedChangeStatus, 'needs_review');
+  assert.equal(settlement.facts.evidence.settled, 'needs-review');
+  assert.equal(settlement.facts.recoveryDisposition.undoTrackedChanges, 'preserve');
 });
 
 test('legacy undo terminal state is projected through the settlement reducer', () => {

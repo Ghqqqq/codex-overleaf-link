@@ -270,9 +270,17 @@
     }
     const successful = isSuccessfulTrackedChangeSettlement(input.result);
     const reviewCodes = kind === 'accept' ? ACCEPT_NEEDS_REVIEW_CODES : REJECT_NEEDS_REVIEW_CODES;
-    const needsReview = !successful && failures.some(failure =>
+    // Reject/Undo is an all-target recovery transaction. A successful entry
+    // only proves that one tracked target was restored; any failed/skipped
+    // sibling can still leave this run's content in another file. Keep that
+    // recovery actionable instead of collapsing a partial multi-file reject
+    // into the terminal `rejected` state. Accept retains its established
+    // best-effort terminal policy.
+    const incompleteReject = kind === 'reject'
+      && collectRunResultSkipped(input.result).length > 0;
+    const needsReview = incompleteReject || (!successful && failures.some(failure =>
       failure.terminalState === 'needs_review' || reviewCodes.has(failure.code)
-    );
+    ));
     const status = needsReview ? 'needs_review' : kind === 'accept' ? 'accepted' : 'rejected';
     return {
       decision: status,
@@ -595,7 +603,12 @@
       : operation;
   }
 
-  function selectExpectedFilesForTrackedUndo(project, operations = [], trackedChanges = []) {
+  function selectExpectedFilesForTrackedUndo(
+    project,
+    operations = [],
+    trackedChanges = [],
+    previousExpectedFiles = []
+  ) {
     const paths = new Set();
     for (const change of trackedChanges || []) {
       if (change?.path) paths.add(change.path);
@@ -604,9 +617,18 @@
       if (operation?.path) paths.add(operation.path);
       if (operation?.to) paths.add(operation.to);
     }
-    return (project?.files || [])
-      .filter(file => paths.has(file.path) && typeof file.content === 'string')
-      .map(file => ({ path: file.path, content: file.content }));
+    const expectedByPath = new Map();
+    for (const file of previousExpectedFiles || []) {
+      if (paths.has(file?.path) && typeof file?.content === 'string' && !expectedByPath.has(file.path)) {
+        expectedByPath.set(file.path, { path: file.path, content: file.content });
+      }
+    }
+    for (const file of project?.files || []) {
+      if (paths.has(file?.path) && typeof file?.content === 'string' && !expectedByPath.has(file.path)) {
+        expectedByPath.set(file.path, { path: file.path, content: file.content });
+      }
+    }
+    return Array.from(expectedByPath.values());
   }
 
   function acceptDiagnosticStatus(step, info) {

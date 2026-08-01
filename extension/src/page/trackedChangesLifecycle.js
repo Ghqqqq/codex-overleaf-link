@@ -971,8 +971,15 @@
     }
 
     for (const path of paths) {
-      if (path && getActiveFilePath() !== path) {
-        const opened = await openFileByPath(path);
+      const postContent = postByPath.get(path);
+      const activePathMatches = getActiveFilePath() === path;
+      const activeContentMatches = readActiveEditorText() === postContent;
+      // Overleaf can update the selected tree path before CodeMirror swaps its
+      // document. In that state getActiveFilePath() already names `path`, while
+      // readActiveEditorText() still belongs to the previously viewed file.
+      // Force-reopen the target whenever either identity signal disagrees.
+      if (path && (!activePathMatches || !activeContentMatches)) {
+        const opened = await openFileByPath(path, { force: true });
         if (!opened.ok) {
           return {
             ok: false,
@@ -983,8 +990,7 @@
         }
       }
 
-      const postContent = postByPath.get(path);
-      const postReady = await waitForActiveEditorExpectedText(path, postContent, 2500);
+      const postReady = await waitForActiveEditorExpectedText(path, postContent, 9000);
       if (!postReady.ok) {
         return {
           ok: false,

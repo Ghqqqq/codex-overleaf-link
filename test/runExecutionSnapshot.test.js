@@ -6,7 +6,7 @@ const Queue = require('../extension/src/shared/runInputQueue');
 
 function customInput(overrides = {}) {
   return {
-    mode: 'confirm',
+    mode: 'auto',
     providerId: 'provider-a',
     providerRevision: 7,
     model: 'model-a',
@@ -19,6 +19,18 @@ function customInput(overrides = {}) {
     ...overrides
   };
 }
+
+test('new confirm snapshots are rejected while persisted confirm snapshots migrate to Ask', () => {
+  assert.throws(
+    () => Snapshot.create(customInput({ mode: 'confirm' })),
+    error => error.code === 'suggest_mode_removed'
+  );
+
+  const restored = Snapshot.captureRawQueueTuple({
+    executionSnapshot: customInput({ mode: 'confirm', source: 'submitted' })
+  }, customInput());
+  assert.equal(restored.mode, 'ask');
+});
 
 test('create captures one immutable, secret-free execution tuple', () => {
   const input = customInput();

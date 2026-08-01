@@ -28,7 +28,10 @@
       : rawQueueItem;
     const persisted = rawQueueItem?.executionSnapshot || rawPayload?.executionSnapshot;
     if (persisted && typeof persisted === 'object') {
-      return Codec.normalizeSnapshot(persisted, { source: persisted.source || 'submitted' });
+      return Codec.normalizeSnapshot(persisted, {
+        source: persisted.source || 'submitted',
+        migrateLegacyConfirm: true
+      });
     }
     const raw = rawPayload && typeof rawPayload === 'object' ? rawPayload : {};
     const fallback = fallbackInput && typeof fallbackInput === 'object' ? fallbackInput : {};
@@ -48,13 +51,17 @@
       inferred = true;
     }
     return Codec.normalizeSnapshot(captured, {
-      source: inferred ? 'legacy-inferred' : 'legacy-captured'
+      source: inferred ? 'legacy-inferred' : 'legacy-captured',
+      migrateLegacyConfirm: true
     });
   }
 
   function resolveForExecution(value = {}, options = {}) {
     const persisted = value.executionSnapshot || value;
-    const snapshot = Codec.normalizeSnapshot(persisted, { source: persisted.source || 'submitted' });
+    const snapshot = Codec.normalizeSnapshot(persisted, {
+      source: persisted.source || 'submitted',
+      migrateLegacyConfirm: true
+    });
     if (snapshot.providerId === 'builtin') return Codec.normalizeSnapshot(snapshot, { source: snapshot.source });
     const catalog = options.catalog || {};
     const provider = ProviderProfiles?.getProviderById
@@ -80,7 +87,10 @@
 
   function snapshotOf(value = {}) {
     const persisted = value.executionSnapshot || value;
-    return Codec.normalizeSnapshot(persisted, { source: persisted.source || 'submitted' });
+    return Codec.normalizeSnapshot(persisted, {
+      source: persisted.source || 'submitted',
+      migrateLegacyConfirm: true
+    });
   }
 
   function cloneSnapshot(value = {}) {

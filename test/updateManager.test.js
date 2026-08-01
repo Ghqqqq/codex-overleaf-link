@@ -256,6 +256,71 @@ test('unmanaged native runtime returns migration guidance', async () => {
   assert.equal(result.error.code, 'update_not_managed');
 });
 
+test('status supersedes an obsolete rollback after a newer aligned managed install', async () => {
+  const fixture = createAppliedUpdateFixture();
+  try {
+    const journalPath = path.join(fixture.context.updatesRoot, 'transaction.json');
+    const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
+    journal.state = 'rolled_back';
+    journal.reasonCode = 'update_health_failed';
+    fs.writeFileSync(journalPath, JSON.stringify(journal, null, 2) + '\n');
+
+    fs.writeFileSync(path.join(fixture.context.nativeRoot, 'active-version'), '2.3.0\n');
+    for (const markerPath of [
+      path.join(fixture.context.nativeRoot, '.codex-overleaf-managed-native.json'),
+      path.join(fixture.context.extensionRoot, '.codex-overleaf-managed-extension.json')
+    ]) {
+      const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+      marker.version = '2.3.0';
+      fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2) + '\n');
+    }
+    const manifestPath = path.join(fixture.context.extensionRoot, 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.version = '2.3.0';
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+
+    const result = await handleUpdateRequest({ id: 'status', method: 'update.status', params: {} }, {
+      env: {
+        CODEX_OVERLEAF_MANAGED: '1',
+        CODEX_OVERLEAF_MANAGED_NATIVE_ROOT: fixture.context.nativeRoot,
+        CODEX_OVERLEAF_MANAGED_EXTENSION_ROOT: fixture.context.extensionRoot
+      }
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.result.activeVersion, '2.3.0');
+    assert.equal(result.result.transaction.state, 'superseded');
+    assert.equal(result.result.transaction.supersededFromState, 'rolled_back');
+    assert.equal(result.result.transaction.supersededByVersion, '2.3.0');
+    assert.equal(JSON.parse(fs.readFileSync(journalPath, 'utf8')).state, 'superseded');
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('status preserves a rollback that still describes the active managed version', async () => {
+  const fixture = createAppliedUpdateFixture();
+  try {
+    const journalPath = path.join(fixture.context.updatesRoot, 'transaction.json');
+    const journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'));
+    journal.state = 'rolled_back';
+    journal.reasonCode = 'update_health_failed';
+    fs.writeFileSync(journalPath, JSON.stringify(journal, null, 2) + '\n');
+
+    const result = await handleUpdateRequest({ id: 'status', method: 'update.status', params: {} }, {
+      env: {
+        CODEX_OVERLEAF_MANAGED: '1',
+        CODEX_OVERLEAF_MANAGED_NATIVE_ROOT: fixture.context.nativeRoot,
+        CODEX_OVERLEAF_MANAGED_EXTENSION_ROOT: fixture.context.extensionRoot
+      }
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.result.transaction.state, 'rolled_back');
+    assert.equal(result.result.transaction.supersededByVersion, undefined);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('a committed update restores its source manifest without retaining the failed target as fallback', () => {
   const fixture = createAppliedUpdateFixture();
   try {

@@ -1726,6 +1726,38 @@ test('page bridge native undo waits when active path switches before editor cont
   assert.equal(bridge.getEditorUndoClickCount(), 1);
 });
 
+test('page bridge native undo force-reopens a selected path whose editor document is still stale', async () => {
+  const bridge = createPageBridgeHarness({
+    activePath: 'main.tex',
+    initialEditorPath: 'refs.bib',
+    reviewingOk: true,
+    editorUndoTargets: {
+      'main.tex': 'alpha beta gamma'
+    },
+    files: {
+      'main.tex': 'alpha delta gamma',
+      'refs.bib': '@book{stale}'
+    }
+  });
+
+  const undo = await bridge.call('rejectTrackedChanges', {
+    trackedChanges: [],
+    expectedFiles: [
+      { path: 'main.tex', content: 'alpha beta gamma' }
+    ],
+    postFiles: [
+      { path: 'main.tex', content: 'alpha delta gamma' }
+    ]
+  });
+
+  assert.equal(undo.ok, true, undo.error || JSON.stringify(undo));
+  assert.equal(undo.applied.length, 1);
+  assert.equal(undo.skipped.length, 0);
+  assert.equal(bridge.getEditorPath(), 'main.tex');
+  assert.equal(bridge.getFile('main.tex'), 'alpha beta gamma');
+  assert.equal(bridge.getEditorUndoClickCount(), 1);
+});
+
 test('page bridge does not use editor undo after user edits change the post-run content', async () => {
   const bridge = createPageBridgeHarness({
     activePath: 'main.tex',
@@ -2607,7 +2639,7 @@ test('page-bridge applyOperations waits out the Overleaf hydration window (edito
 });
 
 test('applyOperationsCore re-checks editor project before each operation in a multi-op write', () => {
-  // Source-grep regression: a multi-op applyOperations call can span 10-30s
+  // Source-grep regression: a multi-op applyOperations call can span 10-45s
   // (openFileByPath + save-state verification per op). If the user SPA-
   // navigates to a different project mid-flight, the remaining operations
   // would land in the wrong project. The fix re-checks runWriteGuard before

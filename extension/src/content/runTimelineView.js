@@ -274,6 +274,9 @@
     if (status === 'failed') {
       return tr('processedFailed', { elapsed });
     }
+    if (status === 'rejected' || status === 'cancelled') {
+      return tr('processedCancelled', { elapsed });
+    }
     if (status === 'running') {
       return tr('processing', { elapsed });
     }
@@ -410,6 +413,9 @@
     }
     if (run.startedAt && run.finishedAt) {
       return formatProcessedSummary(run.status || 'completed', new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime());
+    }
+    if (run.status === 'rejected' || run.status === 'cancelled') {
+      return tx('Cancelled', '已取消');
     }
     return run.status === 'failed' ? tx('Failed', '处理失败') : tx('Done', '已处理');
   }

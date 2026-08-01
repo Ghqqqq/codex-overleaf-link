@@ -2,15 +2,17 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(
       require('./scopedPersistenceQueuePolicy'),
-      require('./scopedPersistenceBrowserAdapter')
+      require('./scopedPersistenceBrowserAdapter'),
+      require('./scopedPersistenceReceipt')
     );
   } else {
     root.CodexOverleafModuleRegistry.define('ScopedPersistenceTransaction', [
       'ScopedPersistenceQueuePolicy',
-      'ScopedPersistenceBrowserAdapter'
+      'ScopedPersistenceBrowserAdapter',
+      'ScopedPersistenceReceipt'
     ], factory);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (QueuePolicy, BrowserAdapter) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (QueuePolicy, BrowserAdapter, Receipt) {
   'use strict';
 
   var applyQueueMutations = QueuePolicy.applyQueueMutations;
@@ -43,9 +45,9 @@
       var scope = normalizeScope(inputScope);
       generation += 1;
       var tokenGeneration = generation;
-      active = makeToken(scope, tokenGeneration, 0, false, 0);
+      active = tokenFromMeta(scope, tokenGeneration, false, {});
       var meta = await strictRead(adapter, scope);
-      var token = makeToken(scope, tokenGeneration, meta.revision, false, meta.queueRevision);
+      var token = tokenFromMeta(scope, tokenGeneration, false, meta);
       if (active && active.generation === tokenGeneration && sameScope(active, token)) active = token;
       return token;
     }
@@ -60,10 +62,10 @@
         });
       }
       if (!detached && active && sameScope(active, scope)) {
-        return makeToken(scope, active.generation, active.revision, false, active.queueRevision);
+        return tokenFromMeta(scope, active.generation, false, active);
       }
       var meta = await strictRead(adapter, scope);
-      return makeToken(scope, detached ? 0 : generation, meta.revision, detached, meta.queueRevision);
+      return tokenFromMeta(scope, detached ? 0 : generation, detached, meta);
     }
 
     function isCurrent(token) {
@@ -94,13 +96,7 @@
         if (queueMutations.length
           && currentMeta.queueRevision !== normalizeRevision(token.queueRevision)) {
           if (!token.detached && isCurrent(token)) {
-            active = makeToken(
-              scope,
-              token.generation,
-              currentMeta.revision,
-              false,
-              currentMeta.queueRevision
-            );
+            active = tokenFromMeta(scope, token.generation, false, currentMeta);
           }
           return {
             ok: false,
@@ -112,33 +108,26 @@
         }
         var projected = applyQueueMutations(currentMeta, queueMutations, writerId);
         if (!projected.ok) return projected;
-        var nextMeta = {
+        var nextMeta = Receipt.createFenceMeta({
           ...projected.meta,
-          revision: currentMeta.revision + 1,
-          writerId: writerId,
-          updatedAt: new Date().toISOString(),
           sessionTombstones: mergeTombstones(
             projected.meta.sessionTombstones,
             commitOptions && commitOptions.sessionTombstones,
             200
           )
-        };
+        }, currentMeta, writerId);
         await adapter.write(scope, nextMeta);
         if (!token.detached && isCurrent(token)) {
-          active = makeToken(
-            scope,
-            token.generation,
-            nextMeta.revision,
-            false,
-            nextMeta.queueRevision
-          );
+          active = tokenFromMeta(scope, token.generation, false, nextMeta);
         }
         var value;
         try {
           value = await action({
             scope: scope,
             baseRevision: currentMeta.revision,
+            durableRevision: currentMeta.durableRevision,
             conflict: conflict,
+            previousCommitIncomplete: Boolean(currentMeta.pendingCommit),
             writerId: writerId,
             currentMeta: currentMeta,
             nextMeta: nextMeta
@@ -147,23 +136,11 @@
           if (queueMutations.some(function (mutation) {
             return ['remove', 'release', 'restore'].includes(cleanPart(mutation.type));
           })) {
-            var recoveredMeta = {
-              ...currentMeta,
-              revision: nextMeta.revision + 1,
-              queueRevision: nextMeta.queueRevision + 1,
-              writerId: writerId,
-              updatedAt: new Date().toISOString()
-            };
+            var recoveredMeta = Receipt.createRecoveredMeta(currentMeta, nextMeta, writerId);
             try {
               await adapter.write(scope, recoveredMeta);
               if (!token.detached && isCurrent(token)) {
-                active = makeToken(
-                  scope,
-                  token.generation,
-                  recoveredMeta.revision,
-                  false,
-                  recoveredMeta.queueRevision
-                );
+                active = tokenFromMeta(scope, token.generation, false, recoveredMeta);
               }
             } catch (recoveryError) {
               if (error && typeof error === 'object') {
@@ -173,13 +150,24 @@
           }
           throw error;
         }
+        var committedMeta = Receipt.createCommittedMeta(nextMeta);
+        try {
+          await adapter.write(scope, committedMeta);
+        } catch (error) {
+          throw Receipt.decorateReceiptError(error, nextMeta.revision);
+        }
+        if (!token.detached && isCurrent(token)) {
+          active = tokenFromMeta(scope, token.generation, false, committedMeta);
+        }
         return {
           ok: true,
           value: value,
-          revision: nextMeta.revision,
-          queueRevision: nextMeta.queueRevision,
-          queueClaims: nextMeta.queueClaims,
+          revision: committedMeta.revision,
+          durableRevision: committedMeta.durableRevision,
+          queueRevision: committedMeta.queueRevision,
+          queueClaims: committedMeta.queueClaims,
           rebased: conflict,
+          recoveredIncompleteCommit: Boolean(currentMeta.pendingCommit),
           superseded: !token.detached && !isCurrent(token)
         };
       });
@@ -190,9 +178,7 @@
       captureCommitView: captureCommitView,
       commit: commit,
       getActiveView: function () {
-        return active
-          ? makeToken(active, active.generation, active.revision, false, active.queueRevision)
-          : null;
+        return active ? tokenFromMeta(active, active.generation, false, active) : null;
       },
       getWriterId: function () { return writerId; },
       invalidate: function () {
@@ -203,15 +189,32 @@
     });
   }
 
-  function makeToken(scope, tokenGeneration, revision, detached, queueRevision) {
+  function makeToken(
+    scope,
+    tokenGeneration,
+    revision,
+    detached,
+    queueRevision,
+    durableRevision,
+    pendingCommit
+  ) {
     return Object.freeze({
       accountScopeId: scope.accountScopeId,
       projectId: scope.projectId,
       generation: normalizeRevision(tokenGeneration),
       revision: normalizeRevision(revision),
+      durableRevision: normalizeRevision(durableRevision),
+      pendingCommit: pendingCommit && typeof pendingCommit === 'object'
+        ? Object.freeze({ ...pendingCommit })
+        : null,
       queueRevision: normalizeRevision(queueRevision),
       detached: detached === true
     });
+  }
+
+  function tokenFromMeta(scope, tokenGeneration, detached, meta) {
+    return makeToken(scope, tokenGeneration, meta.revision, detached, meta.queueRevision,
+      meta.durableRevision, meta.pendingCommit);
   }
 
   async function strictRead(adapter, scope) {

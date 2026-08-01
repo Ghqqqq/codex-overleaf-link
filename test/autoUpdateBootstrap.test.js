@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'extension/bootstrap/background.js'), 'utf8');
+const backgroundRuntimeSource = fs.readFileSync(path.join(root, 'extension/src/background.js'), 'utf8');
 const contentRuntimeSource = fs.readFileSync(path.join(root, 'extension/src/content/contentRuntime.js'), 'utf8');
 const updateIdleSource = fs.readFileSync(path.join(root, 'extension/src/content/updateIdle.js'), 'utf8');
 const manifest = require('../extension/bootstrap/manifest.template.json');
@@ -63,4 +64,19 @@ test('health confirmation waits for the replacement content runtime to answer fr
   assert.match(source, /if \(!tabIds\.length\) return false/);
   assert.match(source, /missingCapabilities[\s\S]*rollbackBrokenRuntime/);
   assert.match(source, /transaction\?\.state === 'rolled_back'[\s\S]*reloadPendingOverleafTabs/);
+});
+
+test('replaceable background runtime retires stale rollback UI and consent state', () => {
+  const supersededBranch = backgroundRuntimeSource.match(
+    /if \(transaction\?\.state === 'superseded'\) \{[\s\S]*?\n      return;\n    }/
+  )?.[0] || '';
+  assert.doesNotMatch(source, /transaction\?\.state === 'superseded'/);
+  assert.match(supersededBranch, /MANAGED_UPDATE_CONSENT_KEY/);
+  assert.match(supersededBranch, /MANAGED_UPDATE_TABS_KEY/);
+  assert.match(supersededBranch, /chrome\.storage\.local\.remove/);
+  assert.match(supersededBranch, /state:\s*'idle'/);
+  assert.match(supersededBranch, /currentVersion:\s*activeVersion/);
+  assert.match(supersededBranch, /transactionId:\s*''/);
+  assert.match(supersededBranch, /code:\s*''/);
+  assert.match(supersededBranch, /message:\s*''/);
 });

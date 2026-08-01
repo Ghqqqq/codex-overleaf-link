@@ -29,12 +29,10 @@
           <span class="codex-mode-label" data-i18n="mode">Mode</span>
           <div class="codex-mode-switch" role="group" aria-label="Write mode">
             <button type="button" data-mode-choice="ask" aria-pressed="false" title="Read and analyze only. Do not write to Overleaf.">Ask</button>
-            <button type="button" data-mode-choice="confirm" aria-pressed="false" title="Show a change plan first, then write after approval.">Suggest</button>
             <button type="button" data-mode-choice="auto" aria-pressed="false" title="Write directly after authorization. Deletes still require confirmation.">Auto</button>
           </div>
           <select data-mode aria-label="Mode" hidden>
             <option value="ask">Ask</option>
-            <option value="confirm">Suggest</option>
             <option value="auto">Auto</option>
           </select>
         </div>

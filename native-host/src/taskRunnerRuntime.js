@@ -3,7 +3,6 @@
 const { buildCodexRuntimeEvent } = require('./codexRuntimeIdentity');
 
 const { spawn } = require('node:child_process');
-const crypto = require('node:crypto');
 const { buildOperationSummary, splitDeletePlan } = require('../../extension/src/shared/summary');
 const {
   MIN_COMPATIBLE_EXTENSION_VERSION,
@@ -40,8 +39,6 @@ const activeRunEntries = new Map();
 // Overleaf tab was reloaded — the requestId lived in content-side JS state
 // and is gone, but the native-host-side controller is still running).
 const activeRunByProject = new Map();
-const pendingPlans = new Map();
-const PENDING_PLAN_TTL_MS = 30 * 60 * 1000;
 const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result']);
 
 async function handleRequest(request, env = process.env, emit = () => {}) {
@@ -136,7 +133,7 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
   }
 
   if (request.method === 'task.confirm') {
-    return handleTaskConfirm(request);
+    return errorResponse(request.id, 'suggest_mode_removed', 'Suggest mode has been removed. Reload the extension and choose Ask or Auto.');
   }
 
   return errorResponse(request.id, 'method_not_found', `Unknown method: ${request.method}`);
@@ -716,8 +713,11 @@ async function handleTaskRun(request, env, emit) {
   const params = request.params || {};
   const mode = params.mode;
 
-  if (!['ask', 'confirm', 'auto'].includes(mode)) {
-    return errorResponse(request.id, 'invalid_mode', 'Mode must be "ask", "confirm", or "auto"');
+  if (mode === 'confirm') {
+    return errorResponse(request.id, 'suggest_mode_removed', 'Suggest mode has been removed. Choose Ask or Auto.');
+  }
+  if (!['ask', 'auto'].includes(mode)) {
+    return errorResponse(request.id, 'invalid_mode', 'Mode must be "ask" or "auto"');
   }
 
   if (mode === 'auto' && !params.checkpoint?.ok && !isVerifiedReviewing(params.reviewing)) {
@@ -805,24 +805,6 @@ function isVerifiedReviewing(reviewing) {
   return reviewing?.ok === true && reviewing.status !== 'manual-override';
 }
 
-async function handleTaskConfirm(request) {
-  const planId = request.params?.planId;
-  purgeExpiredPendingPlans();
-  if (!planId || !pendingPlans.has(planId)) {
-    return errorResponse(request.id, 'plan_not_found', 'No pending task plan matched the supplied planId');
-  }
-
-  const plan = pendingPlans.get(planId);
-  pendingPlans.delete(planId);
-
-  return okResponse(request.id, {
-    status: 'confirmed',
-    notes: plan.notes || '',
-    userReport: plan.userReport,
-    operations: plan.operations
-  });
-}
-
 function buildDefaultTaskResult(mode, operations, params = {}) {
   if (mode === 'ask') {
     return {
@@ -835,16 +817,6 @@ function buildDefaultTaskResult(mode, operations, params = {}) {
   }
 
   const summary = buildOperationSummary(operations);
-
-  if (mode === 'confirm') {
-    return {
-      status: 'requires_task_confirmation',
-      summary,
-      notes: '',
-      userReport: buildDefaultUserReport(mode, operations, params),
-      operations
-    };
-  }
 
   const split = splitDeletePlan(operations);
   if (split.needsConfirmation.length > 0) {
@@ -889,7 +861,7 @@ function normalizeAgentResult(mode, result, params = {}) {
   };
 
   if (!normalized.status) {
-    normalized.status = mode === 'confirm' ? 'requires_task_confirmation' : 'completed';
+    normalized.status = 'completed';
   }
 
   return normalized;
@@ -911,40 +883,7 @@ function prepareResultForResponse(mode, result) {
     }
   }
 
-  const confirmOperations = mode === 'confirm' ? collectResultOperations(result) : [];
-  if (confirmOperations.length > 0) {
-    result = {
-      ...result,
-      status: 'requires_task_confirmation',
-      summary: buildOperationSummary(confirmOperations),
-      operations: confirmOperations
-    };
-  }
-
-  if (mode !== 'confirm' || result.status !== 'requires_task_confirmation') {
-    return result;
-  }
-
-  purgeExpiredPendingPlans();
-  const planId = `plan_${crypto.randomUUID()}`;
-  pendingPlans.set(planId, {
-    createdAt: Date.now(),
-    expiresAt: Date.now() + PENDING_PLAN_TTL_MS,
-    notes: result.notes || '',
-    userReport: result.userReport,
-    operations: Array.isArray(result.operations) ? result.operations : []
-  });
-
-  const {
-    operations: _operations,
-    pendingOperations: _pendingOperations,
-    deletePlan: _deletePlan,
-    ...redacted
-  } = result;
-  return {
-    ...redacted,
-    planId
-  };
+  return result;
 }
 
 function validateTaskResultOperationQuotas(result = {}) {
@@ -965,7 +904,7 @@ function buildDefaultUserReport(mode, operations = [], params = {}) {
 
   return {
     conclusion: hasOperations
-      ? reportText(locale, 'Codex prepared proposed changes and is waiting for confirmation or writeback.', 'Codex 已准备好建议修改，等待确认或写入。')
+      ? reportText(locale, 'Codex prepared changes for writeback.', 'Codex 已准备好写回修改。')
       : reportText(locale, 'This task completed without writing Overleaf files.', '这轮任务已完成，没有写入 Overleaf 文件。'),
     checked,
     findings: [],
@@ -975,7 +914,7 @@ function buildDefaultUserReport(mode, operations = [], params = {}) {
       ? ''
       : (mode === 'ask' ? reportText(locale, 'This run was Ask mode.', '这轮是只问不改。') : ''),
     nextStep: hasOperations
-      ? reportText(locale, 'Review and confirm the proposed changes before writing them to Overleaf.', '请确认修改方案后写入 Overleaf。')
+      ? reportText(locale, 'Review the written changes in Overleaf.', '请在 Overleaf 中检查写入的修改。')
       : reportText(locale, 'Continue the conversation, or add more @context and run another check.', '可以继续追问，或加入更多 @context 后再检查。')
   };
 }
@@ -1193,14 +1132,6 @@ function runExternalAgent(agentSpec, params, emit = () => {}, options = {}) {
   });
 }
 
-function purgeExpiredPendingPlans(now = Date.now()) {
-  for (const [planId, plan] of pendingPlans.entries()) {
-    if (Number.isFinite(plan?.expiresAt) && plan.expiresAt <= now) {
-      pendingPlans.delete(planId);
-    }
-  }
-}
-
 function parsePositiveInteger(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -1295,6 +1226,5 @@ module.exports = {
   buildDefaultTaskResult,
   getActiveNativeWorkState,
   handleRequest,
-  parseAgentEventLines,
-  purgeExpiredPendingPlans
+  parseAgentEventLines
 };

@@ -50,7 +50,6 @@
     'codex.providers.clear-secret',
     'codex.providers.delete',
     'task.run',
-    'task.confirm',
     'mirror.sync',
     'mirror.patchFiles',
     'mirror.confirmWriteback',
@@ -183,6 +182,7 @@
     callPageBridge,
     getCurrentProjectId,
     getCurrentProjectReferenceFiles,
+    getCurrentProjectMathSources,
     showPluginToast,
     recordRenderingDiagnostic: detail => appendTechnicalEvent({ type: 'rendering.diagnostic', detail })
   });
@@ -526,7 +526,6 @@
     appendOperationsPreview,
     appendPartialWritebackWarning,
     appendApplyResult,
-    renderDiffReview,
     renderReadOnlyDiffReview,
     showPluginConfirm,
     callPageBridge,
@@ -1512,9 +1511,6 @@
     if (mode === 'ask') {
       return 'Ask';
     }
-    if (mode === 'confirm') {
-      return 'Confirm';
-    }
     if (mode === 'auto') {
       return 'Auto';
     }
@@ -1877,7 +1873,7 @@
       if (!useExistingMirror) {
         appendLog(formatProjectSnapshotUserLog(project));
       }
-      currentRunView.projectFiles = captureProjectReferenceFiles(project);
+      persistCurrentProjectReferenceFiles(project);
       const snapshotWarnings = useExistingMirror
         ? { blocking: [], nonBlocking: [] }
         : getProjectSnapshotWarnings(project);
@@ -1924,7 +1920,7 @@
           skippedFiles: [],
           blockedFiles: snapshotWarnings.blocking.map(reason => ({ path: 'project', reason }))
         });
-        finishRunView(tx('Blocked: full project was not read', '已阻止：没有读到完整项目'), 'failed');
+        await finishRunView(tx('Blocked: full project was not read', '已阻止：没有读到完整项目'), 'failed');
         return;
       }
 
@@ -2011,7 +2007,7 @@
             reason: finding.detectorId || 'sensitive'
           }))
         });
-        finishRunView(tx('Blocked: sensitive content review required', '已阻止：需要处理敏感内容'), 'failed');
+        await finishRunView(tx('Blocked: sensitive content review required', '已阻止：需要处理敏感内容'), 'failed');
         return;
       }
       if (sensitiveFindings.findings.length) {
@@ -2049,7 +2045,7 @@
           return;
         }
         project = staleRetry.project;
-        currentRunView.projectFiles = captureProjectReferenceFiles(project);
+        persistCurrentProjectReferenceFiles(project);
         useExistingMirror = false;
         fileOverlays = null;
         otWarmStart = false;
@@ -2104,7 +2100,7 @@
         } else {
           appendRunEvent({ title: tx('Cancelled: user chose not to create a new thread.', '已取消：用户选择不新建线程。'), status: 'rejected' });
           await finalizeAuditRecord(runAuditDraft, { resultStatus: 'rejected' });
-          finishRunView(tx('Cancelled', '已取消'), 'rejected');
+          await finishRunView(tx('Cancelled', '已取消'), 'rejected');
           return;
         }
       }
@@ -2112,7 +2108,7 @@
       if (!response.ok) {
         if (runCancellationRequested || isRunCancellationError(response.error)) {
           appendRunCancelledReport();
-          finishRunView(tx('Cancelled', '已中断'), 'rejected');
+          await finishRunView(tx('Cancelled', '已中断'), 'rejected');
           void finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
           return;
         }
@@ -2199,7 +2195,7 @@
           sensitiveFindings: sensitiveFindings.findings,
           blockedFiles: [{ path: 'codex.run', reason: response.error?.code || response.error?.message || 'native_error' }]
         });
-        finishRunView(response.error?.code === 'project_locked'
+        await finishRunView(response.error?.code === 'project_locked'
           ? tx('Codex task already running', 'Codex 任务正在运行')
           : tx('Local Codex error', '本地 Codex 错误'), 'failed');
         return;
@@ -2249,7 +2245,7 @@
           sensitiveFindings: sensitiveFindings.findings,
           blockedFiles: [{ path: 'codex.run', reason: 'codex_no_usable_result' }]
         });
-        finishRunView(tx('Local Codex returned nothing usable', '本地 Codex 没有返回可用结果'), 'failed');
+        await finishRunView(tx('Local Codex returned nothing usable', '本地 Codex 没有返回可用结果'), 'failed');
         return;
       }
       const writebackProject = useExistingMirror
@@ -2272,7 +2268,7 @@
         resultStatus: syncOutcome.hasSkippedOperations ? 'completed_with_skips' : 'completed'
       });
 
-      finishRunView(
+      await finishRunView(
         syncOutcome.hasSkippedOperations ? tx('Sync completed with skipped items', '同步完成但有跳过项') : tx('Sync completed', '同步完成'),
         syncOutcome.hasSkippedOperations ? 'failed' : 'completed'
       );
@@ -2366,7 +2362,7 @@
     } catch (error) {
       if (runCancellationRequested || isRunCancellationError(error)) {
         appendRunCancelledReport();
-        finishRunView(tx('Cancelled', '已中断'), 'rejected');
+        await finishRunView(tx('Cancelled', '已中断'), 'rejected');
         void finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
         return;
       }
@@ -2416,7 +2412,7 @@
         resultStatus: 'failed',
         blockedFiles: [{ path: 'task', reason: error.message }]
       });
-      finishRunView(tx('Task failed', '任务失败'), 'failed');
+      await finishRunView(tx('Task failed', '任务失败'), 'failed');
     } finally {
       const settledView = currentRunView;
       const settledRecord = settledView ? findRunRecord(settledView.recordId, settledView.sessionId) : null;
@@ -2489,7 +2485,7 @@
       if (runCancellationRequested || isRunCancellationError(response.error)) {
         appendRunCancelledReport();
         await finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
-        finishRunView(tx('Cancelled', '已中断'), 'rejected');
+        await finishRunView(tx('Cancelled', '已中断'), 'rejected');
         return;
       }
       const translated = translateRawError(response.error.message, { mode: submittedMode, locale: getLocale() });
@@ -2522,7 +2518,7 @@
         resultStatus: 'failed',
         blockedFiles: [{ path: 'skill-installer', reason: response.error?.code || response.error?.message || 'native_error' }]
       });
-      finishRunView(tx('Skill installer failed', 'Skill installer 失败'), 'failed');
+      await finishRunView(tx('Skill installer failed', 'Skill installer 失败'), 'failed');
       return;
     }
 
@@ -2536,7 +2532,7 @@
       mode: submittedMode
     });
     await finalizeAuditRecord(runAuditDraft, { resultStatus: 'completed' });
-    finishRunView(tx('Skill installer completed', 'Skill installer 已完成'), 'completed');
+    await finishRunView(tx('Skill installer completed', 'Skill installer 已完成'), 'completed');
 
     const runSessionForHistory = findSessionById(runSessionId) || getActiveSession(state);
     const rawAssistantMessage = assistantMessage;
@@ -2659,7 +2655,7 @@
     const finishTitle = requireReviewing
       ? tx('Not started: could not enable Track Changes', '未开始：无法开启留痕')
       : tx('Not started: could not switch to Editing', '未开始：无法切换到 Editing');
-    finishRunView(finishTitle, 'failed');
+    await finishRunView(finishTitle, 'failed');
     return {
       ok: false,
       reason,
@@ -3857,10 +3853,6 @@
     return diffReviewPanel.createDiffReviewElement(syncChanges, options);
   }
 
-  function renderDiffReview(syncChanges) {
-    return diffReviewPanel.renderDiffReview(syncChanges);
-  }
-
   function renderReadOnlyDiffReview(syncChanges, title = tr('diffWrittenChangesTitle')) {
     return diffReviewPanel.renderReadOnlyDiffReview(syncChanges, title);
   }
@@ -4623,78 +4615,9 @@
         mode,
         operations: [],
         applyResults: [],
-        nextStep: tx('Continue the conversation, or switch to Suggest/Auto to let Codex edit files.', '可以继续追问，或切换到建议修改/自动写入后让 Codex 修改文件。')
+        nextStep: tx('Continue the conversation, or switch to Auto to let Codex edit files.', '可以继续追问，或切换到自动写入后让 Codex 修改文件。')
       });
       return { status: tr('modeAsk'), summaryLine };
-    }
-
-    if (result.status === 'requires_task_confirmation') {
-      appendPlannedChangeSummary(result.summary, tx('Preparing changes', '准备修改'));
-      const approved = await showPluginConfirm({
-        title: tx('Apply these changes?', '应用这些修改？'),
-        message: formatSummary(tx('Change Summary', '修改摘要'), result.summary),
-        confirmLabel: tx('Apply changes', '应用修改'),
-        cancelLabel: tr('confirmDefaultCancel')
-      });
-      if (!approved) {
-        appendLog(tx('Cancelled: Codex did not write any files.', '已取消：Codex 没有写入任何文件。'));
-        const summaryLine = appendChangeSummary({ notes, summary: result.summary, status: 'rejected' });
-        appendCompletionReport({
-          conclusion: tx('You cancelled this change. Codex did not write files.', '你取消了这轮修改，Codex 没有写入文件。'),
-          status: 'rejected',
-          notes,
-          summary: result.summary,
-          userReport: result.userReport,
-          mode,
-          operations: [],
-          applyResults: [],
-          nextStep: tx('Adjust the task and run again, or switch to Ask first so Codex can explain the plan.', '可以调整任务描述后重新运行，或切到只问不改先让 Codex 解释方案。')
-        });
-        return { status: 'rejected', summaryLine };
-      }
-      const confirmed = result.planId
-        ? await sendNative({ method: 'task.confirm', params: { planId: result.planId } })
-        : { ok: true, result: { operations: result.operations || [] } };
-      if (!confirmed.ok) {
-        appendLog(`Confirm failed: ${confirmed.error.message}`);
-        const summaryLine = appendChangeSummary({ notes, operations: [], status: 'confirm failed' });
-        appendCompletionReport({
-          conclusion: tx('No writable changes were returned after confirmation.', '确认后没有拿到可写入的修改。'),
-          status: 'confirm failed',
-          notes,
-          userReport: result.userReport,
-          mode,
-          operations: [],
-          applyResults: [],
-          nextStep: confirmed.error.message
-        });
-        return { status: 'confirm failed', summaryLine };
-      }
-      const operations = confirmed.result.operations || [];
-      appendOperationsPreview(operations, tx('Confirmed; preparing to write', '用户已确认，准备写入'));
-      const applied = await applyTaskOperations(project, operations, { allowHighRisk: true });
-      appendApplyResult(applied);
-      recordUndoFromApply(project, applied);
-      const summaryLine = appendChangeSummary({
-        notes,
-        operations,
-        applyResults: [applied],
-        status: 'confirmed and applied'
-      });
-      appendCompletionReport({
-        conclusion: notes || tx('Changes were written after your confirmation.', '已按你的确认写入修改。'),
-        status: 'confirmed and applied',
-        notes,
-        userReport: result.userReport,
-        mode,
-        operations,
-        applyResults: [applied]
-      });
-      return {
-        status: 'confirmed and applied',
-        summaryLine,
-        hasSkippedOperations: hasSkippedApplyOperations([applied])
-      };
     }
 
     if (result.status === 'delete_plan_required') {
@@ -4769,7 +4692,7 @@
 
     const operations = result.operations || [];
     appendOperationsPreview(operations, tx('Preparing to write', '准备写入'));
-    const applied = await applyTaskOperations(project, operations, { allowHighRisk: mode === 'confirm' });
+    const applied = await applyTaskOperations(project, operations);
     appendApplyResult(applied);
     recordUndoFromApply(project, applied);
     appendLog(mode === 'auto' ? tx('Auto write task completed.', '自动写入任务完成。') : tx('Task completed.', '任务完成。'));
@@ -5089,9 +5012,6 @@
     if (mode === 'ask') {
       return tr('modeAsk');
     }
-    if (mode === 'confirm') {
-      return tr('modeConfirm');
-    }
     if (mode === 'auto') {
       return tr('modeAuto');
     }
@@ -5103,8 +5023,6 @@
     const labels = {
       completed: tx('Completed', '已完成'),
       rejected: tx('Cancelled', '已取消'),
-      'confirm failed': tx('Confirmation failed', '确认失败'),
-      'confirmed and applied': tx('Suggested changes applied', '已应用建议修改'),
       'applied with delete plan': tx('Applied with confirmed deletes', '已应用并删除确认项'),
       'applied without deletes': tx('Applied without deletes', '已应用非删除修改'),
       '只问不改': tr('modeAsk')
@@ -5581,7 +5499,7 @@
           history: Array.isArray(session.history) ? session.history : [],
           task: typeof session.task === 'string' ? session.task : '',
           pendingInputs: Array.isArray(session.pendingInputs) ? session.pendingInputs : [],
-          mode: session.mode || prefs.mode || 'confirm', providerId: session.providerId || 'builtin',
+          mode: session.mode || prefs.mode || 'ask', providerId: session.providerId || 'builtin',
           model: session.model || prefs.model || 'gpt-5.4',
           reasoningEffort: session.reasoningEffort || prefs.reasoningEffort || 'high',
           speedTier: session.speedTier || prefs.speedTier || 'standard',
@@ -5984,7 +5902,7 @@
   }
 
   async function selectMode(mode) {
-    if (!['ask', 'confirm', 'auto'].includes(mode)) {
+    if (!['ask', 'auto'].includes(mode)) {
       return;
     }
     const modeSelect = panel?.querySelector('[data-mode]');
@@ -6268,7 +6186,11 @@
       events: root.querySelector('[data-run-events]'),
       report: root.querySelector('[data-run-report]'),
       status: root.querySelector('[data-run-status]'),
-      projectFiles: captureProjectReferenceFiles(arguments[0]?.project),
+      // A run starts before warm-mirror resolution has produced its lightweight
+      // project snapshot. Seed references from the already-prefetched project
+      // inventory so early stream events and fast Ask responses can still
+      // resolve project-relative locations.
+      projectFiles: getCurrentProjectReferenceFiles(),
       startedAt: Date.now(),
       queueItemId,
       nativeRequestId: '',
@@ -6289,7 +6211,7 @@
     return updatedAt;
   }
 
-  function finishRunView(text, status) {
+  async function finishRunView(text, status) {
     if (!currentRunView) {
       return;
     }
@@ -6316,7 +6238,11 @@
       const navigationDivergent = currentRunView.runProjectId
         && activeProjectId !== currentRunView.runProjectId;
       if (!navigationDivergent) {
-        saveStateSoon();
+        // A terminal badge is a durability promise: once the user can see
+        // Done/Failed/Cancelled, an immediate reload must hydrate that same
+        // terminal state. Drain any older running snapshot and persist the
+        // latest record before exposing the terminal UI.
+        await flushQueuedSaveState().catch(() => {});
       }
       renderSessionList();
     }
@@ -6636,6 +6562,39 @@
 
 
 
+  function getCurrentProjectMathSources() {
+    const sources = [];
+    const seen = new Set();
+    let remainingChars = 256 * 1024;
+    const add = item => {
+      if (!item || typeof item !== 'object' || typeof item.content !== 'string') return;
+      const path = normalizeReferencePathForRuntime(item.path || item.filePath || '');
+      if (!path || seen.has(path) || hasUnsafeRuntimePathSegments(path)
+        || !/\.(?:tex|sty|cls|ltx)$/i.test(path) || remainingChars <= 0) return;
+      const content = item.content.slice(0, Math.min(64 * 1024, remainingChars));
+      remainingChars -= content.length;
+      seen.add(path);
+      sources.push({ path, content });
+    };
+    for (const collection of [
+      currentRunView?.projectFiles,
+      currentRunView?.files,
+      currentRunView?.project?.files,
+      currentRunView?.snapshot?.files,
+      currentRunView?.projectSnapshot?.files,
+      currentRunView?.contextFiles,
+      state?.projectFiles,
+      state?.files,
+      state?.project?.files,
+      state?.snapshot?.files,
+      state?.projectSnapshot?.files,
+      state?.contextFiles
+    ]) {
+      if (Array.isArray(collection)) collection.forEach(add);
+    }
+    return sources;
+  }
+
   function getCurrentProjectReferenceFiles() {
     const files = [];
     const seen = new Set();
@@ -6686,7 +6645,14 @@
       }
     };
 
+    const activeSession = typeof getActiveSession === 'function' ? getActiveSession(state) : null;
     addFiles(currentRunView?.projectFiles);
+    addFiles(activeSession?.projectReferenceFiles);
+    // ContextTray owns the exact, background-prefetched project file list.
+    // Warm-mirror runs intentionally carry only the active/focused overlay, so
+    // omitting this inventory makes valid references to every other project
+    // file render as plain text.
+    addFiles(contextTrayController?.getContextProject?.()?.files);
     addFiles(currentRunView?.files);
     addFiles(currentRunView?.project?.files);
     addFiles(currentRunView?.snapshot?.files);
@@ -6700,12 +6666,24 @@
     addFiles(state?.contextFiles);
     addTextPaths(state?.focusFiles);
     addTextPaths(state?.session?.focusFiles);
-    const activeSession = typeof getActiveSession === 'function' ? getActiveSession(state) : null;
     addTextPaths(activeSession?.focusFiles);
     for (const session of Array.isArray(state?.sessions) ? state.sessions : []) {
+      addFiles(session?.projectReferenceFiles);
       addTextPaths(session?.focusFiles);
     }
     return files;
+  }
+
+  function persistCurrentProjectReferenceFiles(project) {
+    const projectFiles = captureProjectReferenceFiles(project);
+    if (currentRunView) {
+      currentRunView.projectFiles = projectFiles;
+    }
+    if (getActiveSession(state)) {
+      state = updateActiveSession(state, { projectReferenceFiles: projectFiles });
+      saveStateSoon();
+    }
+    return projectFiles;
   }
 
   function captureProjectReferenceFiles(project) {
@@ -7167,7 +7145,12 @@
       record.undoOperations = [];
       record.undoBaseFiles = [];
       record.undoTrackedChanges = combinedTrackedChanges;
-      record.undoExpectedFiles = selectExpectedFilesForTrackedUndo(project, combinedAppliedOperations, combinedTrackedChanges);
+      record.undoExpectedFiles = selectExpectedFilesForTrackedUndo(
+        project,
+        combinedAppliedOperations,
+        combinedTrackedChanges,
+        record.undoExpectedFiles
+      );
       record.undoStatus = '';
       record.partialWriteback = skippedEntries.length > 0;
       // Recording tracked-change refs enters the run into the tracked-change
@@ -7215,7 +7198,12 @@
     record.undoOperations = checkpoint.undoOperations;
     record.undoBaseFiles = checkpoint.undoBaseFiles;
     record.undoTrackedChanges = [];
-    record.undoExpectedFiles = selectExpectedFilesForTrackedUndo(project, combinedAppliedOperations, []);
+    record.undoExpectedFiles = selectExpectedFilesForTrackedUndo(
+      project,
+      combinedAppliedOperations,
+      [],
+      record.undoExpectedFiles
+    );
     record.undoStatus = '';
     record.partialWriteback = skippedEntries.length > 0;
     refreshRunCardControls(record.id);
@@ -7235,8 +7223,18 @@
     return WritebackSettlement.normalizeApplyTrackedChanges(changes);
   }
 
-  function selectExpectedFilesForTrackedUndo(project, operations = [], trackedChanges = []) {
-    return WritebackSettlement.selectExpectedFilesForTrackedUndo(project, operations, trackedChanges);
+  function selectExpectedFilesForTrackedUndo(
+    project,
+    operations = [],
+    trackedChanges = [],
+    previousExpectedFiles = []
+  ) {
+    return WritebackSettlement.selectExpectedFilesForTrackedUndo(
+      project,
+      operations,
+      trackedChanges,
+      previousExpectedFiles
+    );
   }
 
   function buildTrackedUndoPostFiles(run) {

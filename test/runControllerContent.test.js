@@ -71,7 +71,7 @@ test('run controller ignores legacy project-local selected skill ids', () => {
   const params = RunController.buildCodexRunParams({
     currentProjectId: 'project-123',
     state: {
-      mode: 'confirm',
+      mode: 'auto',
       model: 'gpt-5.5',
       reasoningEffort: 'high',
       speedTier: 'standard',

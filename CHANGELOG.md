@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.3.1 - 2026-08-02
+
+### Changed
+
+- Completed the first post-2.3 architecture stabilization pass with canonical run snapshots, scoped persistence receipts, and consolidated settlement projections while preserving the existing Ask, Auto, Track, Accept, and Undo workflows.
+- Removed Suggest mode and its dormant paths so the product surface matches the maintained execution modes.
+- Improved Markdown and LaTeX recovery for malformed display-math output, long formulas, and responsive panel rendering.
+
+### Fixed
+
+- Persist terminal run state before reload recovery so completed and cancelled runs retain their correct status.
+- Strengthened writeback settlement, delayed verification, provider-state hydration, cancellation labels, and session deletion persistence.
+- Cleared obsolete managed-update rollback journals from replaceable runtime code while preserving the immutable v2.3.0 bootstrap update boundary.
+
 ## v2.3.0 - 2026-07-31
 
 ### Changed

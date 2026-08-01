@@ -20,6 +20,7 @@ import '../src/shared/runExecutionSnapshotCodec.js';
 import '../src/shared/runExecutionSnapshot.js';
 import '../src/shared/scopedPersistenceQueuePolicy.js';
 import '../src/shared/scopedPersistenceBrowserAdapter.js';
+import '../src/shared/scopedPersistenceReceipt.js';
 import '../src/shared/scopedPersistenceTransaction.js';
 import '../src/shared/runInputQueue.js';
 import '../src/shared/settlementFacts.js';

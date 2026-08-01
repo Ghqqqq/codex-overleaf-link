@@ -24,7 +24,7 @@
   'use strict';
 
   const DEFAULT_PANEL_STATE = {
-    mode: 'confirm',
+    mode: 'ask',
     providerId: 'builtin',
     model: 'gpt-5.4',
     reasoningEffort: 'high',
@@ -47,7 +47,7 @@
     customInstructionsByProject: {}
   };
 
-  const VALID_MODES = new Set(['ask', 'confirm', 'auto']);
+  const VALID_MODES = new Set(['ask', 'auto']);
   // Keep the persisted/session-level contract aligned with the model picker
   // and native provider bridge. Custom providers can explicitly disable
   // reasoning (`none`) or expose the lightest Codex tier (`minimal`). Dropping
@@ -127,9 +127,7 @@
       ...input
     };
 
-    if (!VALID_MODES.has(state.mode)) {
-      state.mode = DEFAULT_PANEL_STATE.mode;
-    }
+    state.mode = normalizeMode(state.mode);
     if (!VALID_REASONING.has(state.reasoningEffort)) {
       state.reasoningEffort = DEFAULT_PANEL_STATE.reasoningEffort;
     }
@@ -221,7 +219,7 @@
       history,
       runs,
       task: sanitizeAssistantVisibleText(session.task),
-      mode: VALID_MODES.has(session.mode) ? session.mode : fallbackState.mode,
+      mode: normalizeMode(session.mode, fallbackState.mode),
       providerId: typeof session.providerId === 'string' && session.providerId.trim()
         ? session.providerId.trim()
         : (fallbackState.providerId || 'builtin'),
@@ -234,6 +232,7 @@
         : fallbackState.speedTier,
       requireReviewing: session.requireReviewing !== false,
       focusFiles: normalizeFocusFiles(session.focusFiles),
+      projectReferenceFiles: normalizeProjectReferenceFiles(session.projectReferenceFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
       pendingInputs: normalizePendingInputs(
         session.pendingInputs,
@@ -311,13 +310,14 @@
       id: active.id,
       history: Array.isArray(active.history) ? active.history.slice(-10) : [],
       focusFiles: normalizeFocusFiles(active.focusFiles),
+      projectReferenceFiles: normalizeProjectReferenceFiles(active.projectReferenceFiles),
       codexThreadId: active.codexThreadId || '',
       providerId: state.providerId || 'builtin'
     };
     state.runs = Array.isArray(active.runs) ? active.runs : [];
     state.task = typeof active.task === 'string' ? active.task : '';
     state.focusFiles = normalizeFocusFiles(active.focusFiles);
-    state.mode = VALID_MODES.has(active.mode) ? active.mode : DEFAULT_PANEL_STATE.mode;
+    state.mode = normalizeMode(active.mode);
     state.requireReviewing = active.requireReviewing !== false;
 
     return state;
@@ -339,7 +339,7 @@
       history: normalizeHistoryEntries(overrides.history),
       runs,
       task: sanitizeAssistantVisibleText(overrides.task),
-      mode: VALID_MODES.has(overrides.mode) ? overrides.mode : DEFAULT_PANEL_STATE.mode,
+      mode: normalizeMode(overrides.mode),
       providerId: typeof overrides.providerId === 'string' && overrides.providerId.trim()
         ? overrides.providerId.trim()
         : 'builtin',
@@ -352,6 +352,7 @@
         : DEFAULT_PANEL_STATE.speedTier,
       requireReviewing: overrides.requireReviewing !== false,
       focusFiles: normalizeFocusFiles(overrides.focusFiles),
+      projectReferenceFiles: normalizeProjectReferenceFiles(overrides.projectReferenceFiles),
       codexThreadId: typeof overrides.codexThreadId === 'string' ? overrides.codexThreadId : '',
       pendingInputs: normalizePendingInputs(overrides.pendingInputs)
     };
@@ -904,6 +905,33 @@
     return files.slice(0, 5);
   }
 
+  function normalizeProjectReferenceFiles(value) {
+    const seen = new Set();
+    const files = [];
+    for (const item of Array.isArray(value) ? value : []) {
+      const rawPath = typeof item === 'string' ? item : item?.path;
+      if (typeof rawPath !== 'string' || !rawPath.trim() || rawPath.length > 512) {
+        continue;
+      }
+      if (/^(?:[A-Za-z]:|[\\/])/.test(rawPath) || rawPath.includes('\0')) {
+        continue;
+      }
+      const path = rawPath.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\//, '').trim();
+      if (!path || path.split('/').some(segment => !segment || segment === '.' || segment === '..') || seen.has(path)) {
+        continue;
+      }
+      seen.add(path);
+      files.push({
+        path,
+        kind: item?.kind === 'binary' ? 'binary' : 'text'
+      });
+      if (files.length >= 5000) {
+        break;
+      }
+    }
+    return files;
+  }
+
   function normalizeCustomInstructionsByProject(value) {
     const result = {};
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -994,7 +1022,7 @@
       // Skills page was reopened.
       codexOverleafSkills: compactCodexOverleafSkillsForStorage(source.codexOverleafSkills),
       composerAttachments: normalizeComposerAttachmentsForPersistence(source.composerAttachments),
-      mode: VALID_MODES.has(active?.mode) ? active.mode : normalizeMode(source.mode),
+      mode: normalizeMode(active?.mode, source.mode),
       providerId: typeof source.providerId === 'string' && source.providerId.trim()
         ? source.providerId.trim()
         : 'builtin',
@@ -1092,6 +1120,7 @@
       speedTier: normalizeSpeedTier(session.speedTier || fallbackState.speedTier),
       requireReviewing: session.requireReviewing !== false,
       focusFiles: normalizeFocusFiles(session.focusFiles),
+      projectReferenceFiles: normalizeProjectReferenceFiles(session.projectReferenceFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
       pendingInputs: normalizePendingInputs(session.pendingInputs)
     };
@@ -1339,8 +1368,14 @@
     };
   }
 
-  function normalizeMode(mode) {
-    return VALID_MODES.has(mode) ? mode : DEFAULT_PANEL_STATE.mode;
+  function normalizeMode(mode, fallback = DEFAULT_PANEL_STATE.mode) {
+    if (mode === 'confirm') {
+      return 'ask';
+    }
+    if (VALID_MODES.has(mode)) {
+      return mode;
+    }
+    return VALID_MODES.has(fallback) ? fallback : DEFAULT_PANEL_STATE.mode;
   }
 
   function normalizeReasoning(reasoningEffort) {

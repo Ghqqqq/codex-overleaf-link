@@ -16,7 +16,7 @@ test('buildCodexTurnPrompt separates system context from the user request', () =
     activePath: 'main.tex',
     contextFiles: ['sections/intro.tex'],
     compileContext: { enabled: true, logSummary: 'LaTeX Warning: Citation undefined.' },
-    mode: 'confirm',
+    mode: 'auto',
     session: {
       id: 'session-1',
       history: [{ task: 'Earlier task', result: 'Done' }]
