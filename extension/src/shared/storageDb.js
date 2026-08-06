@@ -448,6 +448,7 @@
       speedTier: typeof state.speedTier === 'string' ? state.speedTier : '',
       mode: normalizeCurrentMode(state.mode),
       locale: typeof state.locale === 'string' ? state.locale : '',
+      theme: state.theme === 'light' || state.theme === 'auto' ? state.theme : 'dark',
       requireReviewing: state.requireReviewing !== false,
       autoRecompile: state.autoRecompile !== false,
       loadCodexLocalSkills: state.loadCodexLocalSkills !== false,

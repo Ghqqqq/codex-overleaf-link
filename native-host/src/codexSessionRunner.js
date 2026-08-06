@@ -1465,7 +1465,7 @@ function extractCodexAppServerErrorMessage(params = {}) {
 }
 
 function normalizeReasoningEffort(value) {
-  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'].includes(value) ? value : null;
+  return ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(value) ? value : null;
 }
 
 function normalizeSpeedTier(value) {

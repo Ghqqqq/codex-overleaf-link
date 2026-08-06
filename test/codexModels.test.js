@@ -20,6 +20,24 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+test('resolveCodexModels preserves distinct Codex max and ultra reasoning tiers', () => {
+  withTempHome(home => {
+    const codexHome = path.join(home, '.codex');
+    writeJson(path.join(codexHome, 'models_cache.json'), {
+      models: [{
+        slug: 'gpt-test',
+        display_name: 'GPT Test',
+        default_reasoning_level: 'max',
+        supported_reasoning_levels: [{ effort: 'low' }, { effort: 'xhigh' }, { effort: 'max' }, { effort: 'ultra' }]
+      }]
+    });
+
+    const result = resolveCodexModels({}, { HOME: home });
+    assert.deepEqual(result.models[0].reasoningEfforts, ['low', 'xhigh', 'max', 'ultra']);
+    assert.equal(result.models[0].defaultReasoningEffort, 'max');
+  });
+});
+
 test('resolveCodexModels reads the Codex models cache before fallback models', () => {
   withTempHome(home => {
     const codexHome = path.join(home, '.codex');

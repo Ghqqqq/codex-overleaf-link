@@ -452,8 +452,8 @@
       if (effort === 'xhigh') return 'Max';
     }
     const labels = getLocale() === 'zh'
-      ? { none: '关闭', minimal: '最小', low: '低', medium: '中', high: '高', xhigh: '超高' }
-      : { none: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh' };
+      ? { none: '关闭', minimal: '最小', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最大', ultra: '极限' }
+      : { none: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', max: 'Max', ultra: 'Ultra' };
     return labels[effort] || effort || '';
   }
 

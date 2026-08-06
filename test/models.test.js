@@ -113,3 +113,17 @@ test('normalize trims ids, dedupes by id, and keeps reasoning metadata', () => {
     }
   ]);
 });
+
+test('normalize preserves distinct Codex max and ultra reasoning tiers', () => {
+  const result = normalizeDiscoveredModels({
+    models: [{
+      id: 'gpt-max-default',
+      label: 'GPT Max Default',
+      defaultReasoningEffort: 'max',
+      reasoningEfforts: ['low', 'xhigh', 'max', 'ultra']
+    }]
+  });
+
+  assert.deepEqual(result.models[0].reasoningEfforts, ['low', 'xhigh', 'max', 'ultra']);
+  assert.equal(result.models[0].defaultReasoningEffort, 'max');
+});

@@ -53,7 +53,7 @@
   // reasoning (`none`) or expose the lightest Codex tier (`minimal`). Dropping
   // either value here silently restores the global `high` default after the
   // user has selected it in the composer.
-  const VALID_REASONING = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+  const VALID_REASONING = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
   const VALID_SPEED_TIERS = new Set(['standard', 'fast']);
   const VALID_LOCALES = new Set(['en', 'zh']);
   const VALID_EVENT_STATUSES = new Set(['info', 'running', 'completed', 'failed', 'warning', 'blocked', 'skipped', 'pending']);
@@ -128,9 +128,7 @@
     };
 
     state.mode = normalizeMode(state.mode);
-    if (!VALID_REASONING.has(state.reasoningEffort)) {
-      state.reasoningEffort = DEFAULT_PANEL_STATE.reasoningEffort;
-    }
+    state.reasoningEffort = normalizeReasoning(state.reasoningEffort);
     if (!VALID_SPEED_TIERS.has(state.speedTier)) {
       state.speedTier = DEFAULT_PANEL_STATE.speedTier;
     }

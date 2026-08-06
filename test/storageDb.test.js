@@ -691,6 +691,7 @@ test('extractLightweightPrefs extracts correct fields', () => {
     speedTier: 'fast',
     mode: 'confirm',
     locale: 'zh',
+    theme: 'light',
     requireReviewing: true,
     autoRecompile: true,
     loadCodexLocalSkills: false,
@@ -723,6 +724,7 @@ test('extractLightweightPrefs extracts correct fields', () => {
   assert.equal(prefs.speedTier, 'fast');
   assert.equal(prefs.mode, 'ask');
   assert.equal(prefs.locale, 'zh');
+  assert.equal(prefs.theme, 'light');
   assert.equal(prefs.requireReviewing, true);
   assert.equal(prefs.autoRecompile, true);
   assert.equal(prefs.loadCodexLocalSkills, false);

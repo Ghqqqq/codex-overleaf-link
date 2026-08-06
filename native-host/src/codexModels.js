@@ -181,7 +181,7 @@ function buildModelEntry({
   defaultSpeedTier = 'standard'
 }) {
   const normalizedEfforts = normalizeReasoningEfforts(reasoningEfforts);
-  const normalizedDefault = getString(defaultReasoningEffort) || 'medium';
+  const normalizedDefault = normalizeReasoningEffort(defaultReasoningEffort) || 'medium';
   const normalizedSpeedTiers = normalizeSpeedTiers(speedTiers);
   const normalizedDefaultSpeedTier = getString(defaultSpeedTier) || 'standard';
   return {
@@ -202,7 +202,7 @@ function normalizeReasoningEfforts(rawEfforts) {
   const seen = new Set();
   const result = [];
   for (const rawEffort of rawEfforts) {
-    const effort = getString(typeof rawEffort === 'string' ? rawEffort : rawEffort?.effort);
+    const effort = normalizeReasoningEffort(typeof rawEffort === 'string' ? rawEffort : rawEffort?.effort);
     if (!effort || seen.has(effort)) {
       continue;
     }
@@ -210,6 +210,10 @@ function normalizeReasoningEfforts(rawEfforts) {
     result.push(effort);
   }
   return result;
+}
+
+function normalizeReasoningEffort(rawEffort) {
+  return getString(rawEffort);
 }
 
 function normalizeSpeedTiers(rawTiers) {

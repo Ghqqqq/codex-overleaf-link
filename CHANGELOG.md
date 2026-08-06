@@ -11,6 +11,8 @@
 
 - Restored tracked-change evidence across asset-aware writeback so Accept and Undo remain available after root and nested-file writes and after reload.
 - Made nested-file navigation, delayed write verification, binary upload fallbacks, and run settlement preserve accurate applied and skipped evidence.
+- Preserved the distinct Codex `Max` and `Ultra` reasoning tiers through model discovery, picker normalization, Session persistence, and Native Host turn startup.
+- Persisted the global appearance theme through scoped and fallback hydration so Light and Follow system remain selected after an Overleaf page refresh.
 - Updated Page RPC contracts, release packaging coverage, large-project benchmarks, and VM integration harnesses for the binary upload transport.
 - Split run-result actions from the timeline renderer to keep the content runtime within its architecture budget.
 

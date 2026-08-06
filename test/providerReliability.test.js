@@ -409,6 +409,13 @@ test('model discovery fallback is limited to confirmed Built-in Codex catalogs',
   }), false);
 });
 
+test('model picker preserves distinct Codex max and ultra tiers', () => {
+  assert.deepEqual(
+    ModelPickerSupport.normalizeReasoningEffortsForSelect(['low', 'xhigh', 'max', 'ultra']),
+    ['low', 'xhigh', 'max', 'ultra']
+  );
+});
+
 test('custom models use the portable shell-only Codex catalog', () => {
   const catalog = buildProviderModelCatalogData({
     modelId: 'vendor-model',

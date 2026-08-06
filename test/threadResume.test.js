@@ -69,6 +69,26 @@ test('buildTurnStartParams requests detailed reasoning summaries for supported m
   assert.strictEqual(params.summary, 'detailed');
 });
 
+test('buildTurnStartParams preserves max and ultra reasoning tiers', () => {
+  const maxParams = buildTurnStartParams({
+    threadId: 'thread_max',
+    workspacePath: '/tmp/ws',
+    task: 'solve a hard problem',
+    model: 'gpt-5.6-sol',
+    reasoningEffort: 'max'
+  });
+  const ultraParams = buildTurnStartParams({
+    threadId: 'thread_ultra',
+    workspacePath: '/tmp/ws',
+    task: 'delegate a hard problem',
+    model: 'gpt-5.6-sol',
+    reasoningEffort: 'ultra'
+  });
+
+  assert.strictEqual(maxParams.effort, 'max');
+  assert.strictEqual(ultraParams.effort, 'ultra');
+});
+
 test('buildTurnStartParams omits reasoning summary for gpt-5.3-codex-spark', () => {
   const params = buildTurnStartParams({
     threadId: 'thread_spark',

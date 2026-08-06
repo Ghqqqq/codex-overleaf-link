@@ -19,7 +19,7 @@
   }
 
   function normalizeReasoningEffortsForSelect(efforts) {
-    const allowed = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+    const allowed = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
     return Array.from(new Set((Array.isArray(efforts) ? efforts : [])
       .map(effort => normalizeModelOptionId(effort))
       .filter(effort => allowed.has(effort))));
@@ -92,12 +92,12 @@
       const normalized = {
         id,
         label: typeof model?.label === 'string' && model.label.length > 0 ? model.label : id,
-        reasoningEfforts: Array.isArray(model?.reasoningEfforts) ? model.reasoningEfforts.slice() : [],
+        reasoningEfforts: normalizeReasoningEffortsForSelect(model?.reasoningEfforts),
         reasoningPresentation: typeof model?.reasoningPresentation === 'string' ? model.reasoningPresentation : '',
         speedTiers: normalizeSpeedTiersForSelect(model?.speedTiers)
       };
       if (Object.prototype.hasOwnProperty.call(Object(model), 'defaultReasoningEffort')) {
-        normalized.defaultReasoningEffort = model.defaultReasoningEffort;
+        normalized.defaultReasoningEffort = normalizeModelOptionId(model.defaultReasoningEffort);
       }
       if (Object.prototype.hasOwnProperty.call(Object(model), 'defaultSpeedTier')) {
         normalized.defaultSpeedTier = model.defaultSpeedTier;

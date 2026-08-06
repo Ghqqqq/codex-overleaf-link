@@ -50,6 +50,8 @@ test('contentRuntime applies the theme on render and persists the global prefere
   assert.match(runtime, /applyPanelTheme\(getThemePreference\(\)\)/, 'theme must apply in applyStateToPanel');
   assert.match(settingsCoordinator, /CodexOverleafTheme\.applyTheme/);
   assert.match(runtime, /state\.theme = themePref/, 'settings change must persist theme onto state');
+  assert.match(runtime, /theme:\s*\['dark', 'light', 'auto'\]\.includes\(prefs\.theme\)/, 'scoped hydration must restore the saved theme');
+  assert.match(runtime, /theme:\s*\['dark', 'light', 'auto'\]\.includes\(fallback\.theme\)/, 'fallback hydration must restore the saved theme');
 });
 
 test('panel state defaults, normalizes, and persists the theme preference', () => {
@@ -58,6 +60,8 @@ test('panel state defaults, normalizes, and persists the theme preference', () =
   assert.equal(normalizePanelState({ theme: 'light' }).theme, 'light');
   assert.equal(normalizePanelState({ theme: 'auto' }).theme, 'auto');
   assert.equal(normalizePanelState({ theme: 'neon' }).theme, 'dark', 'invalid theme falls back to dark');
+  assert.equal(normalizePanelState({ reasoningEffort: 'max' }).reasoningEffort, 'max');
+  assert.equal(normalizePanelState({ reasoningEffort: 'ultra' }).reasoningEffort, 'ultra');
   // It is a global preference and must survive the storage round-trip (like skill toggles).
   assert.equal(prepareStateForStorage({ ...DEFAULT_PANEL_STATE, theme: 'auto' }).theme, 'auto');
   assert.equal(prepareStateForStorage({ ...DEFAULT_PANEL_STATE, theme: 'bogus' }).theme, 'dark');
