@@ -435,7 +435,6 @@
   }
 
   // --- Helpers ---
-
   function normalizeCurrentMode(mode) {
     return mode === 'auto' ? 'auto' : 'ask';
   }
