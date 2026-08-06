@@ -114,6 +114,21 @@ function collectNativeRelativeRequireTargets() {
   return [...targets].sort();
 }
 
+function collectContentBundleInputs() {
+  const entryPath = path.join(repoRoot, 'extension/entries/content-entry.mjs');
+  const source = fs.readFileSync(entryPath, 'utf8');
+  const inputs = new Set([normalizeRelativePath(entryPath)]);
+  const importPattern = /^\s*import\s+['"](\.[^'"]+)['"]\s*;?/gm;
+
+  for (const match of source.matchAll(importPattern)) {
+    const resolved = resolveRelativeRequire(entryPath, match[1]);
+    assert.ok(resolved, `${normalizeRelativePath(entryPath)} should resolve ${match[1]}`);
+    inputs.add(normalizeRelativePath(resolved));
+  }
+
+  return [...inputs].sort();
+}
+
 test('manifest-referenced extension files are git-tracked for release packaging', () => {
   const trackedFiles = readGitTrackedFiles();
   for (const relativePath of collectManifestExtensionPaths()) {
@@ -143,6 +158,16 @@ test('native source files and relative require targets are git-tracked for relea
     assert.ok(
       trackedFiles.has(relativePath),
       `${relativePath} must be git-tracked because release packaging uses git ls-files`
+    );
+  }
+});
+
+test('content bundle entry and static imports are git-tracked for release packaging', () => {
+  const trackedFiles = readGitTrackedFiles();
+  for (const relativePath of collectContentBundleInputs()) {
+    assert.ok(
+      trackedFiles.has(relativePath),
+      `${relativePath} must be git-tracked because the content bundle imports it`
     );
   }
 });

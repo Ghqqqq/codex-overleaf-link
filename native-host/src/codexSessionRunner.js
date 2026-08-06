@@ -22,6 +22,7 @@ const {
   loadSelectedProjectSkills
 } = require('./localSkills');
 const { createSubagentBroker } = require('./subagentBroker');
+const { prepareBinaryAssetChanges } = require('./nativeAssetTransfer');
 const { resolveCodexCommand, shouldUseShellForCommand } = require('./codexCommand');
 const { applyProviderEnvironment, buildProviderConfigArgs, prepareProviderLaunch } = require('./codexProviderLaunch');
 const { buildReadProgressRules, createReadProgressController } = require('./readProgressGuard');
@@ -259,6 +260,9 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
     });
   }
 
+  const preparedAssets = prepareBinaryAssetChanges({ projectId, rootDir, changes: rawSyncChanges });
+  rawSyncChanges = preparedAssets.changes;
+  unsupportedChanges.push(...preparedAssets.unsupportedChanges);
   const syncChanges = rawSyncChanges.map(change => {
     if (change.type === 'write' && typeof change.previousContent === 'string') {
       return {

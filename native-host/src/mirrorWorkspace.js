@@ -152,34 +152,19 @@ async function collectMirrorChangesDetailed({ projectId, rootDir }) {
         if (hashBytes(bytes) === previous.hash) {
           continue;
         }
-        if (stat.size > SAFE_INLINE_BINARY_CHANGE_BYTES) {
-          unsupportedChanges.push(buildOversizedBinaryPayloadChange({
-            filePath,
-            size: stat.size,
-            previous
-          }));
-          continue;
-        }
         currentByPath.set(filePath, {
           binary: true,
-          bytes,
+          sha256: hashBytes(bytes),
           size: stat.size,
           previous
         });
         continue;
       }
       if (!previous) {
-        if (stat.size > SAFE_INLINE_BINARY_CHANGE_BYTES) {
-          unsupportedChanges.push(buildOversizedBinaryPayloadChange({
-            filePath,
-            size: stat.size,
-            previous
-          }));
-          continue;
-        }
+        const bytes = fs.readFileSync(target);
         currentByPath.set(filePath, {
           binary: true,
-          bytes: fs.readFileSync(target),
+          sha256: hashBytes(bytes),
           size: stat.size,
           previous
         });
@@ -218,7 +203,8 @@ async function collectMirrorChangesDetailed({ projectId, rootDir }) {
       changes.push({
         type: previous ? 'overwrite-binary' : 'binary-create',
         path: filePath,
-        contentBase64: contentOrBinary.bytes.toString('base64'),
+        assetSourcePath: filePath,
+        sha256: contentOrBinary.sha256,
         previousExists: Boolean(previous),
         previousKind: previous?.kind || '',
         previousSize: previous?.size,

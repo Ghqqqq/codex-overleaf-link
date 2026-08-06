@@ -234,6 +234,8 @@
       focusFiles: normalizeFocusFiles(session.focusFiles),
       projectReferenceFiles: normalizeProjectReferenceFiles(session.projectReferenceFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
+      forkedFromSessionId: typeof session.forkedFromSessionId === 'string' ? session.forkedFromSessionId : '',
+      forkedFromRunId: typeof session.forkedFromRunId === 'string' ? session.forkedFromRunId : '',
       pendingInputs: normalizePendingInputs(
         session.pendingInputs,
         options.restoreRunningRuns === true,
@@ -354,6 +356,8 @@
       focusFiles: normalizeFocusFiles(overrides.focusFiles),
       projectReferenceFiles: normalizeProjectReferenceFiles(overrides.projectReferenceFiles),
       codexThreadId: typeof overrides.codexThreadId === 'string' ? overrides.codexThreadId : '',
+      forkedFromSessionId: typeof overrides.forkedFromSessionId === 'string' ? overrides.forkedFromSessionId : '',
+      forkedFromRunId: typeof overrides.forkedFromRunId === 'string' ? overrides.forkedFromRunId : '',
       pendingInputs: normalizePendingInputs(overrides.pendingInputs)
     };
   }
@@ -639,6 +643,8 @@
       undoStatus: sanitizeAssistantVisibleText(run.undoStatus),
       nativeRequestId: sanitizeAssistantVisibleText(run.nativeRequestId),
       codexTurnId: sanitizeAssistantVisibleText(run.codexTurnId),
+      forkSnapshot: run.forkSnapshot === true,
+      forkSourceRunId: sanitizeAssistantVisibleText(run.forkSourceRunId),
       nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,
       queueItemId: sanitizeAssistantVisibleText(run.queueItemId),
       interruptedDraft: run.interruptedDraft ? sanitizeAssistantVisibleValue(run.interruptedDraft) : undefined
@@ -1122,6 +1128,8 @@
       focusFiles: normalizeFocusFiles(session.focusFiles),
       projectReferenceFiles: normalizeProjectReferenceFiles(session.projectReferenceFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
+      forkedFromSessionId: normalizeTextField(session.forkedFromSessionId, 160),
+      forkedFromRunId: normalizeTextField(session.forkedFromRunId, 160),
       pendingInputs: normalizePendingInputs(session.pendingInputs)
     };
     // Welcome-panel + write-guard: preserve the four
@@ -1214,6 +1222,8 @@
       undoStatus: summarizeTextForStorage(run.undoStatus, 'undo status'),
       nativeRequestId: normalizeTextField(run.nativeRequestId, 160),
       codexTurnId: normalizeTextField(run.codexTurnId, 160),
+      forkSnapshot: run.forkSnapshot === true,
+      forkSourceRunId: normalizeTextField(run.forkSourceRunId, 160),
       nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,
       queueItemId: normalizeTextField(run.queueItemId, 160)
     };

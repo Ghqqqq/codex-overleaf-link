@@ -19,6 +19,8 @@ const {
   resolveRunProviderForRun
 } = require('./providerRuntime');
 const { clearPluginCodexHistory } = require('./codexHome');
+const { forkCodexThread } = require('./codexThreadFork');
+const { readAssetChunk, releaseAsset } = require('./nativeAssetTransfer');
 const { logDebug, truncateText } = require('./debugLog');
 const { HOST_NAME } = require('./manifest');
 const { getNativeRuntimePlatform, summarizeNativeEnvironment } = require('./nativeEnvironment');
@@ -114,6 +116,26 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
 
   if (request.method === 'codex.history.clearPlugin') {
     return handleCodexHistoryClear(request, env);
+  }
+
+  if (request.method === 'codex.thread.fork') {
+    try {
+      return okResponse(request.id, await forkCodexThread(request.params || {}, env));
+    } catch (error) {
+      return errorResponse(request.id, error.code || 'codex_thread_fork_failed', error.message);
+    }
+  }
+
+  if (request.method === 'asset.readChunk') {
+    try {
+      return okResponse(request.id, readAssetChunk(request.params || {}));
+    } catch (error) {
+      return errorResponse(request.id, error.code || 'asset_chunk_read_failed', error.message);
+    }
+  }
+
+  if (request.method === 'asset.release') {
+    return okResponse(request.id, releaseAsset(request.params || {}));
   }
 
   if (request.method === 'skills.list') {

@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.3.2 - 2026-08-06
+
+### Added
+
+- Added run-result copy and turn-level Session Fork actions with stable duplicate naming and durable Session cleanup.
+- Added chunked binary-asset transfer from the Native Host to Overleaf so generated images and PDFs avoid Native Messaging frame limits.
+
+### Fixed
+
+- Restored tracked-change evidence across asset-aware writeback so Accept and Undo remain available after root and nested-file writes and after reload.
+- Made nested-file navigation, delayed write verification, binary upload fallbacks, and run settlement preserve accurate applied and skipped evidence.
+- Updated Page RPC contracts, release packaging coverage, large-project benchmarks, and VM integration harnesses for the binary upload transport.
+- Split run-result actions from the timeline renderer to keep the content runtime within its architecture budget.
+
 ## v2.3.1 - 2026-08-02
 
 ### Changed

@@ -5,7 +5,7 @@
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this), function () {
   'use strict';
 
-  var REVISION = '2026-07-31-page-rpc-contract-v14';
+  var REVISION = '2026-08-04-page-rpc-contract-v15';
   var METHODS = freezeCatalog({
     initializeCapability: entry('bridge.initialize', 'control', 'none', 'default', false, 'none'),
     probe: entry('bridge.probe', 'read', 'none', 'default', false, 'safe'),
@@ -17,6 +17,10 @@
     ensureReviewing: entry('reviewing.enable', 'page_state', 'optional', 'default', true, 'idempotent'),
     ensureEditing: entry('reviewing.disable', 'page_state', 'optional', 'default', true, 'idempotent'),
     applyOperations: entry('document.write', 'document', 'required', 'writeback', true, 'no_retry'),
+    binaryUploadBegin: entry('asset.stage', 'cache', 'required', 'default', false, 'no_retry'),
+    binaryUploadAppend: entry('asset.stage', 'cache', 'none', 'writeback', true, 'no_retry'),
+    binaryUploadCommit: entry('asset.write', 'document', 'required', 'writeback', true, 'no_retry'),
+    binaryUploadAbort: entry('asset.stage', 'cache', 'none', 'default', false, 'idempotent'),
     jumpToPosition: entry('editor.navigate', 'navigation', 'required', 'default', false, 'idempotent'),
     rejectTrackedChanges: entry('tracked_changes.reject', 'document', 'required', 'lifecycle', true, 'no_retry'),
     acceptTrackedChanges: entry('tracked_changes.accept', 'document', 'required', 'lifecycle', true, 'no_retry'),

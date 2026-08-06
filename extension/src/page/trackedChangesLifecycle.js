@@ -1498,6 +1498,8 @@
       '[data-track-change-id]',
       '[data-ol-change-id]',
       '[data-path][class*="change" i]',
+      '.ol-cm-change',
+      '.review-panel-entry-change',
       '[class*="track-change" i]',
       '[class*="review-change" i]',
       '[class*="suggest" i]',

@@ -19,9 +19,14 @@ const NativeCompatibilityController = require('../extension/src/content/nativeCo
 
 const DIFF_REVIEW_PANEL_PATH = '../extension/src/content/diffReviewPanel.js';
 const CONTENT_RUNTIME_PATH = '../extension/src/content/contentRuntime.js';
+const WRITEBACK_ORCHESTRATOR_PATH = '../extension/src/content/writebackOrchestrator.js';
 
 function getContentRuntimeSource() {
   return fs.readFileSync(path.join(__dirname, CONTENT_RUNTIME_PATH), 'utf8');
+}
+
+function getWritebackOrchestratorSource() {
+  return fs.readFileSync(path.join(__dirname, WRITEBACK_ORCHESTRATOR_PATH), 'utf8');
 }
 
 
@@ -1084,16 +1089,16 @@ test('successful Overleaf writeback refreshes page snapshot cache and native mir
 });
 
 test('post-write side effects wait for verified Overleaf save state', () => {
-  const contentScript = getContentScriptSource();
-  const applyBody = contentScript.match(/async function applySyncChangesToOverleaf[\s\S]*?\n  function buildSyncApplyOperations/)?.[0] || '';
-  const verifyBody = contentScript.match(/async function verifyPostWriteSaveState[\s\S]*?\n  async function refreshProjectMirrorAfterWriteback/)?.[0] || '';
+  const writebackOrchestrator = getWritebackOrchestratorSource();
+  const applyBody = writebackOrchestrator.match(/async function applySyncChangesToOverleaf[\s\S]*?\n  async function verifyPostWriteSaveState/)?.[0] || '';
+  const verifyBody = writebackOrchestrator.match(/async function verifyPostWriteSaveState[\s\S]*?\n  function appendPostWriteSaveVerificationWarning/)?.[0] || '';
 
-  const applyIndex = applyBody.indexOf("await callPageBridge('applyOperations'");
+  const applyIndex = applyBody.indexOf('await assetTransferBroker.applyOperations({');
   const verifyIndex = applyBody.indexOf('verifyPostWriteSaveState()');
   const refreshIndex = applyBody.indexOf('refreshProjectMirrorAfterWriteback(project, applied, saveVerification)');
   const recompileIndex = applyBody.indexOf('autoRecompileAfterWriteback(appliedPaths, saveVerification');
 
-  assert.ok(applyIndex >= 0, 'applyOperations call is present');
+  assert.ok(applyIndex >= 0, 'asset-aware applyOperations call is present');
   assert.ok(verifyIndex > applyIndex, 'save verification happens after applyOperations');
   assert.ok(refreshIndex > verifyIndex, 'mirror refresh happens after save verification');
   assert.ok(recompileIndex > verifyIndex, 'auto compile happens after save verification');

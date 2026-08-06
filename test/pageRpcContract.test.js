@@ -7,7 +7,9 @@ test('page RPC catalog owns every public page bridge method', () => {
   assert.deepEqual(Contract.listMethods(), [
     'initializeCapability', 'probe', 'cancelActiveWrite', 'getProjectSnapshot',
     'getProjectFileList', 'invalidateProjectSnapshot', 'createCheckpoint',
-    'ensureReviewing', 'ensureEditing', 'applyOperations', 'jumpToPosition',
+    'ensureReviewing', 'ensureEditing', 'applyOperations',
+    'binaryUploadBegin', 'binaryUploadAppend', 'binaryUploadCommit', 'binaryUploadAbort',
+    'jumpToPosition',
     'rejectTrackedChanges', 'acceptTrackedChanges', 'triggerCompile',
     'getCompileLog', 'getCompileState', 'waitForSaveState', 'startOtObserver',
     'stopOtObserver', 'getOtStatus', 'drainOtEvents'
@@ -32,12 +34,25 @@ test('page RPC catalog owns timeout and cancellation policy', () => {
 });
 
 test('document mutations declare project identity and non-retry semantics', () => {
-  for (const method of ['applyOperations', 'acceptTrackedChanges', 'rejectTrackedChanges']) {
+  for (const method of [
+    'applyOperations', 'binaryUploadCommit',
+    'acceptTrackedChanges', 'rejectTrackedChanges'
+  ]) {
     const entry = Contract.getMethod(method);
     assert.equal(entry.mutation, 'document', method);
     assert.equal(entry.projectIdentity, 'required', method);
     assert.equal(entry.retryClass, 'no_retry', method);
   }
+});
+
+test('binary upload staging remains cache-scoped until commit', () => {
+  for (const method of ['binaryUploadBegin', 'binaryUploadAppend', 'binaryUploadAbort']) {
+    const entry = Contract.getMethod(method);
+    assert.equal(entry.mutation, 'cache', method);
+    assert.notEqual(entry.capability, 'asset.write', method);
+  }
+  assert.equal(Contract.getMethod('binaryUploadCommit').capability, 'asset.write');
+  assert.equal(Contract.getMethod('binaryUploadCommit').mutation, 'document');
 });
 
 test('navigation and compile side effects require explicit project identity', () => {

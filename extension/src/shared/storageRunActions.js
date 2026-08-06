@@ -38,8 +38,18 @@
       && Array.isArray(run.undoTrackedChanges) && run.undoTrackedChanges.length > 0
       && Array.isArray(run.undoExpectedFiles) && run.undoExpectedFiles.length > 0
       && Array.isArray(run.appliedOperations) && run.appliedOperations.length > 0;
+    // Overleaf can expose a working native editor-undo checkpoint before its
+    // Reviewing DOM markers are discoverable. Preserve that checkpoint too so
+    // a reload does not erase the only safe rollback path while the document
+    // still contains an unresolved tracked change.
+    var reviewingEditorUndo = trackedStatus !== 'accepted'
+      && trackedStatus !== 'rejected'
+      && run && run.undoStatus !== 'applied'
+      && run.executionSnapshot && run.executionSnapshot.requireReviewing === true
+      && Array.isArray(run.undoExpectedFiles) && run.undoExpectedFiles.length > 0
+      && Array.isArray(run.appliedOperations) && run.appliedOperations.length > 0;
     var legacyUndo = Array.isArray(run && run.undoOperations) && run.undoOperations.length > 0;
-    return trackedLifecycle || legacyUndo;
+    return trackedLifecycle || reviewingEditorUndo || legacyUndo;
   }
 
   function compactRunActionPayload(run, keepActionPayload) {

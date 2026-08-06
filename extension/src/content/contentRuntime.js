@@ -398,8 +398,24 @@
     openStorageSettings
   } = panelMaintenance;
 
+  const sessionForkController = Modules.SessionForkController.create({
+    SessionState: Modules.SessionState,
+    getState: () => state,
+    setState: next => { state = next; },
+    sendBackgroundNative,
+    saveState,
+    applyStateToPanel,
+    showPluginToast,
+    tr
+  });
+  const runResultActions = Modules.RunResultActions.create({
+    tr,
+    getLocale,
+    forkRunFromNode: sessionForkController.forkRunFromNode
+  });
   const runTimelineView = Modules.RunTimelineView.create({
     RunGuidanceView: Modules.RunGuidanceView,
+    RunResultActions: runResultActions,
     tr,
     tx,
     getLocale,
@@ -516,6 +532,7 @@
   // lives in writebackOrchestrator.js. Every dep below is either a hoisted
   // function declaration, an already-initialized const above, or a lazy
   // accessor thunk — safe in the top-of-init() wiring zone.
+  const assetTransferBroker = Modules.AssetTransferBroker.create({ callPageBridge, sendBackgroundNative });
   const writebackOrchestrator = Modules.WritebackOrchestrator.create({
     tr,
     tx,
@@ -555,6 +572,7 @@
     confirmBinaryOperations,
     filterSyncChangesByOperations,
     writebackController,
+    assetTransferBroker,
     writebackSettlement: WritebackSettlement,
     compileAdapter: Modules.CompileAdapter,
     RUN_SNAPSHOT_ZIP_TIMEOUT_MS,
@@ -5876,7 +5894,13 @@
       saveStateSoon();
       return;
     }
-    if (event?.target?.matches?.('[data-speed]')) renderReasoningOptions(getRenderedModelEntries());
+    if (event?.target?.matches?.('[data-speed]')) {
+      // Capability rendering consults state.speedTier. Capture the user's
+      // choice before rebuilding the select, otherwise the rebuild projects
+      // the previous tier back into the DOM and makes Fast appear inert.
+      state.speedTier = event.target.value || 'standard';
+      renderReasoningOptions(getRenderedModelEntries());
+    }
     renderSpeedOptions(getRenderedModelEntries());
     readPanelInputs();
     renderModelConfigChoices();

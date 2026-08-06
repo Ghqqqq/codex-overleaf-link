@@ -628,13 +628,15 @@ function addHardInvariantFindings(report, context) {
     });
   }
 
-  const oversizedUnsupported = (context.collected.unsupportedChanges || []).find(change =>
+  const oversizedDescriptor = (context.collected.changes || []).find(change =>
     change.path === context.oversizedPath
-      && change.reason === 'binary_payload_exceeds_native_message_limit'
+      && (change.type === 'binary-create' || change.type === 'overwrite-binary')
+      && change.assetSourcePath === context.oversizedPath
+      && typeof change.contentBase64 !== 'string'
   );
-  if (!oversizedUnsupported) {
+  if (!oversizedDescriptor) {
     report.failures.push({
-      code: 'oversized_binary_response_not_degraded',
+      code: 'oversized_binary_descriptor_missing',
       path: context.oversizedPath,
       limit: SAFE_INLINE_BINARY_CHANGE_BYTES
     });

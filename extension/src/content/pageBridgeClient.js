@@ -21,6 +21,7 @@
     ['src/page/overleafProjectSnapshot.js', 'codex-overleaf-project-snapshot-script'],
     ['src/page/pageBridgeCapability.js', 'codex-overleaf-page-bridge-capability-script'],
     ['src/page/treeOperations.js', 'codex-overleaf-tree-operations-script', true],
+    ['src/page/binaryAssetUploader.js', 'codex-overleaf-binary-asset-uploader-script', true],
     ['src/page/snapshotRouter.js', 'codex-overleaf-snapshot-router-script'],
     ['src/page/writeGuard.js', 'codex-overleaf-write-guard-script', true],
     ['src/page/trackedChangesLifecycle.js', 'codex-overleaf-tracked-changes-lifecycle-script', true],

@@ -2359,6 +2359,67 @@
   margin-left: auto;
 }
 
+#codex-overleaf-panel .run-result-actions {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 2px;
+  min-height: 30px;
+  margin: 10px 0 0;
+}
+
+#codex-overleaf-panel .run-result-actions[hidden] { display: none; }
+
+#codex-overleaf-panel .run-copy-action,
+#codex-overleaf-panel .run-fork-action {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--tl-fg-4);
+  opacity: 1;
+  transition: color 120ms ease, background 120ms ease, opacity 120ms ease;
+}
+
+#codex-overleaf-panel .run-copy-action:hover:not(:disabled),
+#codex-overleaf-panel .run-fork-action:hover:not(:disabled) {
+  background: var(--tl-hover);
+  color: var(--tl-accent);
+}
+
+#codex-overleaf-panel .run-copy-action:disabled,
+#codex-overleaf-panel .run-fork-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+#codex-overleaf-panel .run-copy-action svg,
+#codex-overleaf-panel .run-fork-action svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#codex-overleaf-panel .run-copy-action[hidden],
+#codex-overleaf-panel .run-fork-action[hidden] { display: none; }
+
+#codex-overleaf-panel .run-completed-time {
+  margin-left: 5px;
+  color: var(--tl-fg-4);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 30px;
+}
+
+#codex-overleaf-panel .run-completed-time[hidden] { display: none; }
+
 /* When Accept All is hidden, the Undo button takes the right-aligned slot. */
 #codex-overleaf-panel .run-turn-meta [data-run-accept][hidden] + [data-run-undo] {
   margin-left: auto;

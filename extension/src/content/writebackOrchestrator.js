@@ -61,6 +61,7 @@
   let onMirrorRefreshSettled;
   let writebackSettlement;
   let injectedWritebackSettlement;
+  let assetTransferBroker;
 
   function buildSettlement(input = {}) {
     return writebackSettlement?.settle instanceof Function
@@ -283,7 +284,7 @@
       };
     }
     const applied = operations.length
-      ? mergeApplyResultSkipped(await callPageBridge('applyOperations', {
+      ? mergeApplyResultSkipped(await assetTransferBroker.applyOperations({
         operations,
         baseFiles: project?.files || [],
         requireReviewing: runRequireReviewing,
@@ -859,6 +860,7 @@
       getState,
       getCurrentRunView,
     } = deps);
+    assetTransferBroker = deps.assetTransferBroker;
     onMirrorRefreshSettled = deps.onMirrorRefreshSettled;
     writebackSettlement = deps.writebackSettlement;
     compileAdapter = deps.compileAdapter;

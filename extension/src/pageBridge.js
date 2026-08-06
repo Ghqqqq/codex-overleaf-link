@@ -22,6 +22,7 @@
   let projectSnapshotBridge = null;
   let writebackRouter = null;
   let writeGuard = null;
+  let binaryAssetUploader = null;
   const saveState = requirePageModule('CodexOverleafSaveState').create({
     delay,
     detectEditor,
@@ -63,6 +64,12 @@
   snapshotRouter = requirePageModule('CodexOverleafSnapshotRouter').create({
     normalizePath: normalizeSafeProjectPath,
     readActiveEditorText,
+    treeOperations,
+    window
+  });
+  binaryAssetUploader = requirePageModule('CodexOverleafBinaryAssetUploader').create({
+    document,
+    snapshotRouter,
     treeOperations,
     window
   });
@@ -207,6 +214,10 @@
         requireEditing: params.requireEditing === true,
         runProjectId: typeof params.runProjectId === 'string' ? params.runProjectId : ''
       }),
+    binaryUploadBegin: params => binaryAssetUploader.begin(params),
+    binaryUploadAppend: params => binaryAssetUploader.append(params),
+    binaryUploadCommit: params => binaryAssetUploader.commit(params),
+    binaryUploadAbort: params => binaryAssetUploader.abort(params),
     jumpToPosition,
     rejectTrackedChanges,
     acceptTrackedChanges,
@@ -613,12 +624,30 @@
       return range;
     }
 
-    const focused = editorAdapter.focusActiveEditorRange(range.from, range.to);
+    let focused = editorAdapter.focusActiveEditorRange(range.from, range.to);
     if (!focused.ok) {
       return {
         ...focused,
         path: filePath
       };
+    }
+
+    if (params.line !== undefined) {
+      // Overleaf can publish the new file path and text before its unstable
+      // store swaps in the final CodeMirror view. Re-resolve the editor after
+      // two short settlement windows so a first dispatch to the retiring view
+      // cannot leave the visible cursor at its old line. Repeating an already
+      // successful selection is idempotent.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await delay(120);
+        if (getActiveFilePath() !== filePath) {
+          break;
+        }
+        const settled = editorAdapter.focusActiveEditorRange(range.from, range.to);
+        if (settled.ok) {
+          focused = settled;
+        }
+      }
     }
 
     return {

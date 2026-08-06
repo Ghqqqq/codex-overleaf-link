@@ -13,6 +13,7 @@
   function create(deps = {}) {
     const {
       RunGuidanceView,
+      RunResultActions,
       tr,
       tx,
       getLocale,
@@ -346,6 +347,11 @@
           </summary>
         </details>
         <div class="run-activity-list" data-run-events></div>
+        <div class="run-result-actions" hidden>
+          <button type="button" class="run-copy-action" data-run-copy hidden></button>
+          <button type="button" class="run-fork-action" data-run-fork hidden></button>
+          <span class="run-completed-time" data-run-completed-time hidden></span>
+        </div>
         <div class="run-report" data-run-report aria-live="polite" hidden></div>
       </div>
     `;
@@ -399,6 +405,7 @@
       }
     }
 
+    RunResultActions.configureResultActions(root, run);
     configureAcceptButton(root, run);
     configureUndoButton(root, run);
     return root;
@@ -886,6 +893,11 @@
     const button = existing.cloneNode(true);
     existing.replaceWith(button);
 
+    if (run.forkSnapshot === true) {
+      button.hidden = true;
+      return;
+    }
+
     if (isTrackedChangeLifecycleRun(run)) {
       configureLifecycleUndoButton(button, run);
       return;
@@ -981,6 +993,11 @@
     const existing = root.querySelector('[data-run-accept]');
     const button = existing.cloneNode(true);
     existing.replaceWith(button);
+
+    if (run.forkSnapshot === true) {
+      button.hidden = true;
+      return;
+    }
 
     if (!isTrackedChangeLifecycleRun(run)) {
       button.hidden = true;

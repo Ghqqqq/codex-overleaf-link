@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Codex Overleaf Link",
-  "version": "2.3.1",
+  "version": "2.3.2",
   "description": "Connect the active Overleaf project to a local Codex bridge.",
   "icons": {
     "16": "assets/icons/icon16.png",
@@ -66,6 +66,7 @@
         "src/page/overleafRealtimeObserver.js",
         "src/page/pageBridgeCapability.js",
         "src/page/treeOperations.js",
+        "src/page/binaryAssetUploader.js",
         "src/page/snapshotRouter.js",
         "src/page/writeGuard.js",
         "src/page/trackedChangesLifecycle.js",

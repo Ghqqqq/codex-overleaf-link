@@ -14,6 +14,10 @@ const pageBridgeSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/pageBridge.js'),
   'utf8'
 );
+const binaryAssetUploaderSource = fs.readFileSync(
+  path.join(__dirname, '../extension/src/page/binaryAssetUploader.js'),
+  'utf8'
+);
 const pageRpcContractSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/shared/pageRpcContract.js'),
   'utf8'
@@ -192,6 +196,7 @@ function createMinimalPageBridgeHarness({ activePath, files }) {
   vm.runInContext(overleafEditorSource, context, { filename: 'overleafEditor.js' });
   vm.runInContext(treeOperationsSource, context, { filename: 'treeOperations.js' });
   vm.runInContext(snapshotRouterSource, context, { filename: 'snapshotRouter.js' });
+  vm.runInContext(binaryAssetUploaderSource, context, { filename: 'binaryAssetUploader.js' });
   vm.runInContext(overleafProjectSnapshotSource, context, { filename: 'overleafProjectSnapshot.js' });
   vm.runInContext(writeGuardSource, context, { filename: 'writeGuard.js' });
   vm.runInContext(trackedChangesLifecycleSource, context, { filename: 'trackedChangesLifecycle.js' });
