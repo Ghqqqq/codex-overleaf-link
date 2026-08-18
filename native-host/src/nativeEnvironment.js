@@ -16,6 +16,7 @@ const SUPPORTED_PLATFORMS = new Set(['darwin', 'linux', 'win32']);
 
 function buildNativeRuntimeEnv(baseEnv = process.env, options = {}) {
   const env = { ...baseEnv };
+  const explicitCodexPath = String(baseEnv.CODEX_OVERLEAF_CODEX_PATH || '').trim();
   const runtimeOptions = { ...options, platform: getNativeRuntimePlatform(options) };
   const loginShellEnv = options.readLoginShellEnv
     ? options.readLoginShellEnv(baseEnv, runtimeOptions)
@@ -38,12 +39,14 @@ function buildNativeRuntimeEnv(baseEnv = process.env, options = {}) {
     env[getToolEnvName(tool)] = resolveExecutable(tool, env.PATH, { ...runtimeOptions, env }) || '';
   }
   const codexRuntime = buildCodexRuntimeIdentity({
-    selectedPath: env.CODEX_OVERLEAF_CODEX_PATH,
+    selectedPath: explicitCodexPath || env.CODEX_OVERLEAF_CODEX_PATH,
+    selectionPolicy: explicitCodexPath ? 'explicit-path' : 'newest-version',
     pathValue: env.PATH,
     delimiter: runtimeOptions.delimiter,
     env,
     platform: runtimeOptions.platform
   });
+  env.CODEX_OVERLEAF_CODEX_PATH = codexRuntime.selected?.path || '';
   env.CODEX_OVERLEAF_CODEX_RUNTIME_JSON = serializeCodexRuntimeIdentity(codexRuntime);
   env.CODEX_OVERLEAF_CODEX_VERSION = codexRuntime.selected?.version || '';
   env.CODEX_OVERLEAF_CODEX_SOURCE = codexRuntime.selected?.source || '';

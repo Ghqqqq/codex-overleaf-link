@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.3.3 - 2026-08-18
+
+### Changed
+
+- Refined completion reports with restrained system labels, compact aggregated file receipts, and a lighter follow-up queue presentation.
+- Improved the light-theme third-party provider dialog with complete high-contrast surface, text, field, and state tokens.
+- Moved completion-report DOM decoration behind the Markdown renderer interface to keep the run timeline within its architecture budget.
+
+### Fixed
+
+- Kept sparse and repeated local edits as natural local review patches in large files, while preserving sentence-, paragraph-, and annotated-block rewrites.
+- Prevented diff budget limits from swallowing long unchanged regions into a single file-spanning review patch.
+- Selected the newest discovered Codex CLI by default when multiple installations exist, while preserving explicit path overrides.
+
 ## v2.3.2 - 2026-08-06
 
 ### Added

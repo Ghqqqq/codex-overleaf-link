@@ -432,6 +432,7 @@
     cssEscape,
     renderMarkdownInlineText,
     renderMarkdownBlockText,
+    decorateCompletionReport: Modules.MarkdownDomRenderer.decorateCompletionReport,
     sanitizeAssistantVisibleText,
     sanitizeAssistantVisibleValue,
     buildMarkdownInlineNodes,

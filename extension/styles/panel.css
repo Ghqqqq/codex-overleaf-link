@@ -177,11 +177,43 @@
   --provider-muted: #a0a59f;
   --provider-accent: #79d58a;
   --provider-danger: #ef8176;
+  --provider-text: var(--provider-panel-color, #eef0ec);
+  --provider-field-label: #dfe3dd;
+  --provider-control-bg: rgba(255, 255, 255, 0.035);
+  --provider-hover: rgba(255, 255, 255, 0.07);
+  --provider-sidebar-bg: rgba(0, 0, 0, 0.09);
+  --provider-footer-bg: rgba(0, 0, 0, 0.08);
+  --provider-select-bg: rgba(7, 12, 10, 0.58);
+  --provider-backdrop: rgba(4, 7, 5, 0.68);
+  --provider-glow: rgba(83, 177, 105, 0.13);
+  --provider-shadow: 0 28px 80px rgba(0, 0, 0, 0.48);
+  --provider-disabled-opacity: 0.5;
   position: fixed;
   inset: 0;
   z-index: 2147483600;
-  color: var(--provider-panel-color, #eef0ec);
+  color: var(--provider-text);
   font-family: "Aptos", "SF Pro Text", sans-serif;
+}
+
+.codex-provider-dialog-root[data-theme="light"] {
+  --provider-bg: #f4f6f7;
+  --provider-surface: #ffffff;
+  --provider-surface-raised: #e9edf0;
+  --provider-line: rgba(31, 35, 40, 0.16);
+  --provider-muted: #5f6873;
+  --provider-accent: #247d3b;
+  --provider-danger: #bd352f;
+  --provider-text: #252a30;
+  --provider-field-label: #343b44;
+  --provider-control-bg: #ffffff;
+  --provider-hover: rgba(31, 35, 40, 0.065);
+  --provider-sidebar-bg: #e8ebee;
+  --provider-footer-bg: #eceff1;
+  --provider-select-bg: #ffffff;
+  --provider-backdrop: rgba(31, 35, 40, 0.38);
+  --provider-glow: rgba(53, 139, 74, 0.09);
+  --provider-shadow: 0 24px 64px rgba(31, 35, 40, 0.24);
+  --provider-disabled-opacity: 0.68;
 }
 
 .codex-provider-dialog-root[hidden] { display: none !important; }
@@ -189,7 +221,7 @@
 .codex-provider-dialog-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(4, 7, 5, 0.68);
+  background: var(--provider-backdrop);
   backdrop-filter: blur(3px);
 }
 
@@ -207,9 +239,9 @@
   border: 1px solid var(--provider-line);
   border-radius: 16px;
   background:
-    radial-gradient(circle at 92% -8%, rgba(83, 177, 105, 0.13), transparent 34%),
+    radial-gradient(circle at 92% -8%, var(--provider-glow), transparent 34%),
     var(--provider-bg);
-  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.48);
+  box-shadow: var(--provider-shadow);
 }
 
 .codex-provider-dialog-head,
@@ -259,7 +291,7 @@
   cursor: pointer;
 }
 
-.codex-provider-dialog-close:hover { background: rgba(255, 255, 255, 0.07); color: inherit; }
+.codex-provider-dialog-close:hover { background: var(--provider-hover); color: inherit; }
 
 .codex-provider-dialog-body {
   min-height: 0;
@@ -273,7 +305,7 @@
   padding: 14px 10px;
   overflow: auto;
   border-right: 1px solid var(--provider-line);
-  background: rgba(0, 0, 0, 0.09);
+  background: var(--provider-sidebar-bg);
 }
 
 .codex-provider-row,
@@ -297,7 +329,7 @@
 }
 
 .codex-provider-row:hover,
-.codex-provider-row[aria-current="true"] { background: rgba(255, 255, 255, 0.07); }
+.codex-provider-row[aria-current="true"] { background: var(--provider-hover); }
 .codex-provider-row[aria-current="true"] { box-shadow: inset 2px 0 var(--provider-accent); }
 .codex-provider-row-main { display: block; width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 13px; font-weight: 650; white-space: nowrap; }
 .codex-provider-row-status { color: var(--provider-muted); font-size: 11px; }
@@ -341,7 +373,7 @@
   display: flex;
   flex-direction: column;
   gap: 7px;
-  color: #dfe3dd;
+  color: var(--provider-field-label);
   font-size: 12px;
   font-weight: 650;
 }
@@ -358,7 +390,7 @@
   border: 1px solid var(--provider-line);
   border-radius: 8px;
   outline: 0;
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--provider-control-bg);
   color: inherit;
   font: inherit;
   font-weight: 450;
@@ -438,7 +470,7 @@
   border-radius: 9px;
   appearance: none;
   -webkit-appearance: none;
-  background: rgba(7, 12, 10, 0.58);
+  background: var(--provider-select-bg);
   color: var(--provider-text);
   color-scheme: dark;
   font: inherit;
@@ -506,7 +538,7 @@
   padding-bottom: 14px;
   border-top: 1px solid var(--provider-line);
   border-bottom: 0;
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--provider-footer-bg);
 }
 
 .codex-provider-operation-status { min-width: 0; color: var(--provider-muted); font-size: 11px; }
@@ -524,7 +556,7 @@
   padding: 0 13px;
   border: 1px solid var(--provider-line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--provider-control-bg);
   color: inherit;
   font: inherit;
   font-size: 12px;
@@ -544,7 +576,7 @@
 }
 .codex-provider-secondary-button[data-provider-action="save"]:disabled {
   border-color: var(--provider-line);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--provider-control-bg);
   color: var(--provider-muted);
   box-shadow: none;
 }
@@ -553,7 +585,22 @@
 .codex-provider-dialog-root button:disabled,
 .codex-provider-dialog-root input:disabled,
 .codex-provider-dialog-root select:disabled,
-.codex-provider-dialog-root textarea:disabled { cursor: not-allowed; opacity: 0.5; }
+.codex-provider-dialog-root textarea:disabled { cursor: not-allowed; opacity: var(--provider-disabled-opacity); }
+
+.codex-provider-dialog-root[data-theme="light"] .codex-provider-experimental-badge {
+  border-color: rgba(148, 102, 8, 0.34);
+  background: rgba(148, 102, 8, 0.08);
+  color: #855d09;
+}
+
+.codex-provider-dialog-root[data-theme="light"] .codex-provider-test-select-shell select {
+  color-scheme: light;
+}
+
+.codex-provider-dialog-root[data-theme="light"] .codex-provider-disclosure {
+  background: rgba(148, 102, 8, 0.08);
+  color: #72500b;
+}
 
 .codex-provider-builtin { max-width: 430px; padding-top: 34px; }
 .codex-provider-builtin-mark { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: 18px; border-radius: 14px; background: linear-gradient(145deg, #3f8d51, #255932); color: #fff; font-size: 21px; font-weight: 800; }
@@ -2949,6 +2996,62 @@
   font-weight: 600;
 }
 
+#codex-overleaf-panel .run-final-answer .run-system-label {
+  color: var(--tl-accent);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+#codex-overleaf-panel .run-completion-report[data-status="failed"] .run-system-label[data-system-label="conclusion"] {
+  color: var(--tl-fail);
+}
+
+#codex-overleaf-panel .run-final-answer .run-change-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 7px 0 8px;
+  color: var(--tl-ok);
+  font-size: 12px;
+}
+
+#codex-overleaf-panel .run-final-answer .run-change-summary__check {
+  font-weight: 650;
+}
+
+#codex-overleaf-panel .run-final-answer .run-change-receipts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 13px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#codex-overleaf-panel .run-final-answer .run-change-receipt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.32em;
+  margin: 0;
+  min-width: 0;
+}
+
+#codex-overleaf-panel .run-final-answer .run-change-receipt + .run-change-receipt {
+  margin-top: 0;
+}
+
+#codex-overleaf-panel .run-final-answer .run-change-receipt__file {
+  color: var(--tl-fg-1);
+  font: 600 0.94em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+#codex-overleaf-panel .run-final-answer .run-change-receipt__operation {
+  color: var(--tl-fg-3);
+  font-size: 0.88em;
+}
+
 #codex-overleaf-panel .run-final-answer p + p,
 #codex-overleaf-panel .run-final-answer p + ul,
 #codex-overleaf-panel .run-final-answer p + ol,
@@ -3789,8 +3892,10 @@
 
 #codex-overleaf-panel .codex-pending-inputs {
   display: grid;
-  gap: 6px;
-  padding: 0 6px 7px;
+  gap: 0;
+  margin: 0 6px 7px;
+  padding: 7px 4px 0;
+  border-top: 1px solid var(--tl-border);
 }
 
 #codex-overleaf-panel .codex-pending-inputs[hidden] {
@@ -3799,38 +3904,56 @@
 
 #codex-overleaf-panel .codex-pending-input {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
-  padding: 8px 9px;
-  border: 1px solid var(--tl-border);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--tl-surface-1) 86%, var(--tl-accent) 14%);
+  padding: 8px 5px;
+  border-top: 1px solid var(--tl-border);
+  background: transparent;
 }
 
-#codex-overleaf-panel .codex-pending-input[data-status="paused"] {
-  background: color-mix(in srgb, var(--tl-surface-1) 90%, var(--tl-warn) 10%);
+#codex-overleaf-panel .codex-pending-input:first-of-type {
+  border-top: 0;
+}
+
+#codex-overleaf-panel .codex-pending-input:hover,
+#codex-overleaf-panel .codex-pending-input:focus-within {
+  border-radius: 8px;
+  background: var(--tl-hover);
+}
+
+#codex-overleaf-panel .codex-pending-input-marker {
+  display: inline-grid;
+  place-items: center;
+  color: var(--tl-fg-3);
+}
+
+#codex-overleaf-panel .codex-pending-input[data-status="paused"] .codex-pending-input-marker {
+  color: var(--tl-warn);
+}
+
+#codex-overleaf-panel .codex-pending-input[data-status="steering"] .codex-pending-input-marker,
+#codex-overleaf-panel .codex-pending-input[data-status="executing"] .codex-pending-input-marker {
+  color: var(--tl-accent);
 }
 
 #codex-overleaf-panel .codex-pending-input-copy {
   display: grid;
   min-width: 0;
-  gap: 2px;
+  gap: 3px;
 }
 
 #codex-overleaf-panel .codex-pending-input-status {
   color: var(--tl-fg-3);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 10.5px;
+  font-weight: 500;
 }
 
 #codex-overleaf-panel .codex-pending-input-text {
   color: var(--tl-fg-1);
-  font-size: 12px;
-  line-height: 1.35;
+  font-size: 13px;
+  line-height: 1.4;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -3838,6 +3961,13 @@
 #codex-overleaf-panel .codex-pending-input-actions {
   display: inline-flex;
   gap: 4px;
+  color: var(--tl-fg-3);
+  opacity: 0.72;
+}
+
+#codex-overleaf-panel .codex-pending-input:hover .codex-pending-input-actions,
+#codex-overleaf-panel .codex-pending-input:focus-within .codex-pending-input-actions {
+  opacity: 1;
 }
 
 #codex-overleaf-panel .codex-pending-input-actions button {
@@ -3875,6 +4005,16 @@
   fill: none;
   stroke: currentColor;
   stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#codex-overleaf-panel .codex-pending-input-marker svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.55;
   stroke-linecap: round;
   stroke-linejoin: round;
 }

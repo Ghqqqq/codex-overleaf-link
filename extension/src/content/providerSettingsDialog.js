@@ -985,6 +985,7 @@
       return;
     }
     const style = instance.document.defaultView.getComputedStyle(panel);
+    instance.root.dataset.theme = panel.dataset.theme === 'light' ? 'light' : 'dark';
     instance.root.style.setProperty('--provider-panel-bg', style.backgroundColor || '#151716');
     instance.root.style.setProperty('--provider-panel-color', style.color || '#eceeea');
   }

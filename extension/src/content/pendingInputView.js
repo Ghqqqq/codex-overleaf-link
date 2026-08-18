@@ -16,10 +16,17 @@
       }
       container.replaceChildren();
       container.hidden = !items.length;
+      if (!items.length) {
+        return;
+      }
       for (const item of items) {
         const row = document.createElement('article');
         row.className = 'codex-pending-input';
         row.dataset.status = item.status || 'queued';
+        const marker = document.createElement('span');
+        marker.className = 'codex-pending-input-marker';
+        marker.setAttribute('aria-hidden', 'true');
+        marker.append(createIcon('queue'));
         const copy = document.createElement('div');
         copy.className = 'codex-pending-input-copy';
         const status = document.createElement('span');
@@ -34,7 +41,10 @@
         const text = document.createElement('span');
         text.className = 'codex-pending-input-text';
         text.textContent = item.text;
-        copy.append(status, text);
+        copy.append(text);
+        if (item.status && item.status !== 'queued') {
+          copy.append(status);
+        }
         const actions = document.createElement('div');
         actions.className = 'codex-pending-input-actions';
         if (item.status === 'paused') {
@@ -60,7 +70,8 @@
         remove.disabled = item.status === 'steering' || item.status === 'executing';
         text.title = item.text;
         actions.append(remove);
-        row.append(copy, actions);
+        row.setAttribute('aria-label', `${status.textContent || options.tr?.('queuedInputQueued') || 'Queued'}: ${item.text}`);
+        row.append(marker, copy, actions);
         container.append(row);
       }
     }
@@ -93,7 +104,9 @@
     svg.setAttribute('focusable', 'false');
     const paths = icon === 'guide'
       ? ['M4 4.5v4a4 4 0 0 0 4 4h7', 'm12 9 3.5 3.5L12 16']
-      : ['M6 6h8', 'M8 6V4.5h4V6', 'm7.2 8 0.6 7.5h4.4l.6-7.5'];
+      : icon === 'queue'
+        ? ['M4 5.5h12', 'M4 10h12', 'M4 14.5h8']
+        : ['M6 6h8', 'M8 6V4.5h4V6', 'm7.2 8 0.6 7.5h4.4l.6-7.5'];
     for (const value of paths) {
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       path.setAttribute('d', value);

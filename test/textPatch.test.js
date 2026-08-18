@@ -307,14 +307,22 @@ test('computeLineAnchoredChangeGroups returns separate groups for far-apart edit
   });
 });
 
-test('computeLineAnchoredChangeGroups returns no groups when line-level limits are exceeded', () => {
-  const oldLines = Array.from({ length: 6000 }, (_, index) => `line ${index}\n`);
-  const newLines = oldLines.slice();
-  newLines[10] = 'line 10 changed\n';
-  const oldText = oldLines.join('');
-  const newText = newLines.join('');
+test('computeLineAnchoredChangeGroups preserves local windows when exact LCS limits are exceeded', () => {
+  const oldLines = Array.from(
+    { length: 2100 },
+    (_, index) => 'line ' + index + ': stable unique content.\n'
+  );
+  const newLines = [...oldLines];
+  newLines[10] = newLines[10].replace('stable', 'updated');
+  newLines[2000] = newLines[2000].replace('stable', 'updated');
 
-  assert.deepEqual(computeLineAnchoredChangeGroups(oldText, newText), []);
+  const groups = computeLineAnchoredChangeGroups(
+    oldLines.join(''),
+    newLines.join('')
+  );
+
+  assert.equal(groups.length, 2);
+  assert.ok(groups.every(group => group.oldText.length < 100));
 });
 
 test('countNonEmptyLines counts only lines with non-empty trimmed content', () => {
@@ -560,7 +568,7 @@ test('classifyChangedGroup keeps annotated_block precedence over paragraph thres
   assert.deepEqual(classifyGroup(group), { type: 'annotated_block' });
 });
 
-test('classifyChangedGroup classifies a multi-line rewrite without markers as paragraph_rewrite', () => {
+test('classifyChangedGroup keeps sparse repeated edits across multiple lines as small_edit', () => {
   const oldText = [
     'old first line of the paragraph body.\n',
     'old second line of the paragraph body.\n',
@@ -573,7 +581,7 @@ test('classifyChangedGroup classifies a multi-line rewrite without markers as pa
   ].join('');
   const group = { oldStart: 0, oldText, newText };
 
-  assert.deepEqual(classifyGroup(group), { type: 'paragraph_rewrite' });
+  assert.deepEqual(classifyGroup(group), { type: 'small_edit' });
 });
 
 test('classifyChangedGroup classifies a dense single-line token rewrite as paragraph_rewrite', () => {
@@ -882,3 +890,146 @@ test('coalesceTokenPatches leaves far-apart token patches unchanged', () => {
   assert.deepEqual(coalesced, tokenPatches);
   assertGroupPatchInvariant(group, coalesced);
 });
+
+test('keeps sparse edits local in very large files', () => {
+  for (const lineCount of [2100, 6000]) {
+    const oldLines = Array.from(
+      { length: lineCount },
+      (_, index) => `Line ${index + 1}: stable project prose with a unique anchor.\n`
+    );
+    const newLines = [...oldLines];
+    newLines[9] = newLines[9].replace('stable', 'carefully revised');
+    newLines[lineCount - 101] = newLines[lineCount - 101].replace(
+      'project prose',
+      'project argument'
+    );
+
+    const oldText = oldLines.join('');
+    const newText = newLines.join('');
+    const patches = computeTextPatches(oldText, newText);
+
+    assert.equal(applyNaturalPatchRegressionResult(oldText, patches), newText);
+    assert.ok(patches.length >= 2);
+    assert.ok(patches.every(patch => patch.expected.length < 500));
+    assert.ok(
+      patches.every(patch => !patch.expected.includes(`Line ${Math.floor(lineCount / 2)}:`))
+    );
+  }
+});
+
+test('keeps consecutive local LaTeX command edits as local patches', () => {
+  const oldText = [
+    '\\section{Related Work}\n',
+    'First result follows \\cite{alpha} under the standard assumptions.\n',
+    'Second result follows \\cite{beta} under the same assumptions.\n',
+    'Third result follows \\cite{gamma} under a weaker assumption.\n',
+    '\\section{Discussion}\n'
+  ].join('');
+  const newText = oldText.replaceAll('\\cite{', '\\parencite{');
+
+  const patches = computeTextPatches(oldText, newText);
+  assert.equal(applyNaturalPatchRegressionResult(oldText, patches), newText);
+  assert.ok(patches.length >= 3);
+  assert.ok(patches.every(patch => patch.expected.length < 80));
+});
+
+test('keeps a long run of repeated local edits bounded', () => {
+  const oldLines = Array.from(
+    { length: 240 },
+    (_, index) => `Claim ${index + 1}: evidence uses \\cite{source-${index + 1}}.\n`
+  );
+  const newLines = [...oldLines];
+  for (let index = 60; index < 180; index += 1) {
+    newLines[index] = newLines[index].replace('\\cite{', '\\textcite{');
+  }
+
+  const oldText = oldLines.join('');
+  const newText = newLines.join('');
+  const patches = computeTextPatches(oldText, newText);
+
+  assert.equal(applyNaturalPatchRegressionResult(oldText, patches), newText);
+  assert.ok(patches.length >= 100);
+  assert.ok(patches.every(patch => patch.expected.length < 100));
+});
+
+test('treats a long unchanged token gap as a hard patch boundary', () => {
+  const middle = Array.from(
+    { length: 120 },
+    (_, index) => ` stable-token-${index}`
+  ).join('');
+  const oldText = `prefix old-word${middle} suffix old-tail`;
+  const newText = `prefix new-word${middle} suffix new-tail`;
+  const patches = computeTextPatches(oldText, newText);
+
+  assert.equal(applyNaturalPatchRegressionResult(oldText, patches), newText);
+  assert.ok(patches.length >= 2);
+  assert.ok(patches.every(patch => !patch.expected.includes('stable-token-60')));
+});
+
+test('keeps 200 sparse edits in a 10000-line file within the performance budget', () => {
+  const oldLines = Array.from(
+    { length: 10_000 },
+    (_, index) => `Row ${index + 1}: stable unique text for natural diff anchoring.\n`
+  );
+  const newLines = [...oldLines];
+  for (let index = 0; index < 200; index += 1) {
+    const lineIndex = 20 + index * 47;
+    newLines[lineIndex] = newLines[lineIndex].replace('stable', 'updated');
+  }
+
+  const oldText = oldLines.join('');
+  const newText = newLines.join('');
+  const startedAt = Date.now();
+  const patches = computeTextPatches(oldText, newText);
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.equal(applyNaturalPatchRegressionResult(oldText, patches), newText);
+  assert.ok(patches.length >= 180);
+  assert.ok(elapsedMs < 2000, `natural diff took ${elapsedMs}ms`);
+});
+
+test('preserves patch invariants across deterministic mixed edits', () => {
+  let seed = 0x2f3a3;
+  const random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 0x100000000;
+  };
+
+  for (let caseIndex = 0; caseIndex < 24; caseIndex += 1) {
+    const oldLines = Array.from(
+      { length: 180 },
+      (_, index) => `Case ${caseIndex} line ${index}: stable text ${index % 11}.\n`
+    );
+    const newLines = [...oldLines];
+    for (let editIndex = 0; editIndex < 18; editIndex += 1) {
+      const lineIndex = Math.floor(random() * newLines.length);
+      newLines[lineIndex] = newLines[lineIndex].replace(
+        'stable',
+        `revised-${caseIndex}-${editIndex}`
+      );
+    }
+    if (caseIndex % 3 === 0) {
+      newLines.splice(30, 0, `Case ${caseIndex} inserted line.\n`);
+    }
+    if (caseIndex % 4 === 0) {
+      newLines.splice(120, 1);
+    }
+
+    const oldText = oldLines.join('');
+    const newText = newLines.join('');
+    const patches = computeTextPatches(oldText, newText);
+    assert.equal(applyNaturalPatchRegressionResult(oldText, patches), newText);
+  }
+});
+
+function applyNaturalPatchRegressionResult(text, patches) {
+  const ordered = [...patches].sort(
+    (left, right) => right.from - left.from || right.to - left.to
+  );
+  let result = text;
+  for (const patch of ordered) {
+    assert.equal(result.slice(patch.from, patch.to), patch.expected);
+    result = result.slice(0, patch.from) + patch.insert + result.slice(patch.to);
+  }
+  return result;
+}

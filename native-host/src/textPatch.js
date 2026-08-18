@@ -1,31 +1,54 @@
 'use strict';
 
+
 function computeTextPatches(oldText, newText) {
-  const oldValue = String(oldText ?? '');
-  const newValue = String(newText ?? '');
-  if (oldValue === newValue) {
+  if (oldText === newText) {
     return [];
   }
 
-  const groups = computeLineAnchoredChangeGroups(oldValue, newValue);
-  if (!groups.length) {
-    return [computeSingleTextPatch(oldValue, newValue)];
+  const groups = computeLineAnchoredChangeGroups(oldText, newText);
+  const naturalPatches = groups.flatMap(group => computeNaturalGroupPatches(group));
+  if (isValidNaturalPatchSet(oldText, newText, naturalPatches)) {
+    return naturalPatches;
   }
 
-  const patches = [];
-  for (const group of groups) {
-    patches.push(...computeNaturalGroupPatches(group));
-  }
-  return patches.length ? patches : [computeSingleTextPatch(oldValue, newValue)];
+  // Semantic fallback stays scoped to the line-anchored windows. A budget
+  // overflow must never turn sparse file-wide edits into one first-to-last
+  // replacement.
+  return groups.flatMap(singleGroupPatch);
 }
 
-// Computes the natural-granularity patches for one changed group (spec
-// "Algorithm sketch"). Builds token patches and metrics, classifies the group,
-// then dispatches to the matching builder. `singleGroupPatch` already returns
-// a one-element array; `computeParagraphPatches` / `computeSentencePatches`
-// return an array or `null`, so a null/empty result falls back to a single
-// group patch. `coalesceTokenPatches` always returns a non-empty array when it
-// receives non-empty token patches.
+function isValidNaturalPatchSet(oldText, newText, patches) {
+  if (!Array.isArray(patches) || patches.length === 0) {
+    return false;
+  }
+
+  const ordered = [...patches].sort((left, right) => left.from - right.from || left.to - right.to);
+  let previousEnd = 0;
+  for (const patch of ordered) {
+    if (
+      !patch
+      || !Number.isInteger(patch.from)
+      || !Number.isInteger(patch.to)
+      || patch.from < previousEnd
+      || patch.to < patch.from
+      || oldText.slice(patch.from, patch.to) !== patch.expected
+    ) {
+      return false;
+    }
+    previousEnd = patch.to;
+  }
+
+  let applied = oldText;
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const patch = ordered[index];
+    applied = applied.slice(0, patch.from) + patch.insert + applied.slice(patch.to);
+  }
+  return applied === newText;
+}
+
+
+
 function computeNaturalGroupPatches(group) {
   const tokenPatches = computeTokenAnchoredPatches(
     group.oldText,
@@ -33,27 +56,30 @@ function computeNaturalGroupPatches(group) {
     group.oldStart
   );
   const metrics = computeGroupMetrics(group, tokenPatches);
-  const { type } = classifyChangedGroup(group, tokenPatches, metrics);
+  const classification = classifyChangedGroup(group, tokenPatches, metrics);
 
-  if (type === 'annotated_block') {
+  if (classification.type === 'annotated_block') {
     return singleGroupPatch(group);
   }
-  if (type === 'paragraph_rewrite') {
+  if (classification.type === 'paragraph_rewrite') {
     const paragraphPatches = computeParagraphPatches(group);
-    return (paragraphPatches && paragraphPatches.length)
+    return paragraphPatches !== null
       ? paragraphPatches
       : singleGroupPatch(group);
   }
-  if (type === 'sentence_rewrite') {
+  if (classification.type === 'sentence_rewrite') {
     const sentencePatches = computeSentencePatches(group, tokenPatches);
-    return (sentencePatches && sentencePatches.length)
+    return sentencePatches !== null
       ? sentencePatches
-      : singleGroupPatch(group);
+      : coalesceTokenPatches(group, tokenPatches);
   }
-  if (type === 'small_edit' && tokenPatches && tokenPatches.length) {
+  if (classification.type === 'small_edit') {
     return coalesceTokenPatches(group, tokenPatches);
   }
-  return singleGroupPatch(group);
+
+  return tokenPatches.length > 0
+    ? coalesceTokenPatches(group, tokenPatches)
+    : singleGroupPatch(group);
 }
 
 function computeSingleTextPatch(oldValue, newValue, offset = 0) {
@@ -82,149 +108,586 @@ function computeSingleTextPatch(oldValue, newValue, offset = 0) {
   };
 }
 
-function computeLineAnchoredChangeGroups(oldValue, newValue) {
-  const oldParts = splitTextParts(oldValue);
-  const newParts = splitTextParts(newValue);
-  const MAX_PARTS = 5000;
-  const MAX_PRODUCT = 4000000;
 
-  if (
-    oldParts.length === 0
-    || newParts.length === 0
-    || oldParts.length > MAX_PARTS
-    || newParts.length > MAX_PARTS
-    || oldParts.length * newParts.length > MAX_PRODUCT
-  ) {
+function computeLineAnchoredChangeGroups(oldValue, newValue) {
+  if (oldValue === newValue) {
     return [];
   }
 
-  const edits = computePartEdits(oldParts, newParts);
+  const oldParts = splitTextParts(oldValue);
+  const newParts = splitTextParts(newValue);
+  const oldOffsets = computeNaturalPartOffsets(oldParts);
   const groups = [];
-  let oldOffset = 0;
-  let newOffset = 0;
-  let group = null;
 
-  for (const edit of edits) {
-    if (edit.type === 'equal') {
-      flushGroup();
-      oldOffset += oldParts[edit.oldIndex].length;
-      newOffset += newParts[edit.newIndex].length;
+  collectNaturalLineGroups({
+    oldParts,
+    newParts,
+    oldOffsets,
+    oldFrom: 0,
+    oldTo: oldParts.length,
+    newFrom: 0,
+    newTo: newParts.length,
+    groups,
+    depth: 0
+  });
+
+  if (groups.length === 0) {
+    groups.push({
+      oldStart: 0,
+      oldText: oldValue,
+      newText: newValue
+    });
+  }
+  return groups;
+}
+
+function computeNaturalPartOffsets(parts) {
+  const offsets = new Array(parts.length + 1);
+  offsets[0] = 0;
+  for (let index = 0; index < parts.length; index += 1) {
+    offsets[index + 1] = offsets[index] + parts[index].length;
+  }
+  return offsets;
+}
+
+function pushNaturalLineGroup(state, oldFrom, oldTo, newFrom, newTo) {
+  const oldText = state.oldParts.slice(oldFrom, oldTo).join('');
+  const newText = state.newParts.slice(newFrom, newTo).join('');
+  if (oldText === newText) {
+    return;
+  }
+  state.groups.push({
+    oldStart: state.oldOffsets[oldFrom],
+    oldText,
+    newText
+  });
+}
+
+function collectNaturalLineGroups(state) {
+  let { oldFrom, oldTo, newFrom, newTo } = state;
+
+  while (
+    oldFrom < oldTo
+    && newFrom < newTo
+    && state.oldParts[oldFrom] === state.newParts[newFrom]
+  ) {
+    oldFrom += 1;
+    newFrom += 1;
+  }
+  while (
+    oldFrom < oldTo
+    && newFrom < newTo
+    && state.oldParts[oldTo - 1] === state.newParts[newTo - 1]
+  ) {
+    oldTo -= 1;
+    newTo -= 1;
+  }
+
+  if (oldFrom === oldTo || newFrom === newTo) {
+    pushNaturalLineGroup(state, oldFrom, oldTo, newFrom, newTo);
+    return;
+  }
+
+  const oldCount = oldTo - oldFrom;
+  const newCount = newTo - newFrom;
+  const MAX_PARTS = 5000;
+  const MAX_PRODUCT = 4_000_000;
+  if (
+    oldCount <= MAX_PARTS
+    && newCount <= MAX_PARTS
+    && oldCount * newCount <= MAX_PRODUCT
+  ) {
+    appendNaturalExactLineGroups(state, oldFrom, oldTo, newFrom, newTo);
+    return;
+  }
+
+  let anchors = discoverNaturalLineAnchors(
+    state.oldParts,
+    state.newParts,
+    oldFrom,
+    oldTo,
+    newFrom,
+    newTo,
+    4
+  );
+  if (anchors.length === 0) {
+    anchors = discoverNaturalLineAnchors(
+      state.oldParts,
+      state.newParts,
+      oldFrom,
+      oldTo,
+      newFrom,
+      newTo,
+      8
+    );
+  }
+
+  if (anchors.length > 0 && state.depth < 10) {
+    let oldCursor = oldFrom;
+    let newCursor = newFrom;
+    for (const anchor of anchors) {
+      collectNaturalLineGroups({
+        ...state,
+        oldFrom: oldCursor,
+        oldTo: anchor.oldIndex,
+        newFrom: newCursor,
+        newTo: anchor.newIndex,
+        depth: state.depth + 1
+      });
+      oldCursor = anchor.oldIndex + 1;
+      newCursor = anchor.newIndex + 1;
+    }
+    collectNaturalLineGroups({
+      ...state,
+      oldFrom: oldCursor,
+      oldTo,
+      newFrom: newCursor,
+      newTo,
+      depth: state.depth + 1
+    });
+    return;
+  }
+
+  if (
+    oldCount === newCount
+    && appendNaturalPositionalLineGroups(state, oldFrom, oldTo, newFrom, newTo)
+  ) {
+    return;
+  }
+
+  pushNaturalLineGroup(state, oldFrom, oldTo, newFrom, newTo);
+}
+
+function appendNaturalExactLineGroups(state, oldFrom, oldTo, newFrom, newTo) {
+  const matches = computeNaturalLcsMatches(
+    state.oldParts.slice(oldFrom, oldTo),
+    state.newParts.slice(newFrom, newTo)
+  );
+  let oldCursor = oldFrom;
+  let newCursor = newFrom;
+  for (const match of matches) {
+    const oldIndex = oldFrom + match.oldIndex;
+    const newIndex = newFrom + match.newIndex;
+    pushNaturalLineGroup(state, oldCursor, oldIndex, newCursor, newIndex);
+    oldCursor = oldIndex + 1;
+    newCursor = newIndex + 1;
+  }
+  pushNaturalLineGroup(state, oldCursor, oldTo, newCursor, newTo);
+}
+
+function computeNaturalLcsMatches(oldItems, newItems) {
+  const oldCount = oldItems.length;
+  const newCount = newItems.length;
+  const width = newCount + 1;
+  const table = new Uint32Array((oldCount + 1) * width);
+
+  for (let oldIndex = oldCount - 1; oldIndex >= 0; oldIndex -= 1) {
+    for (let newIndex = newCount - 1; newIndex >= 0; newIndex -= 1) {
+      const cell = oldIndex * width + newIndex;
+      table[cell] = oldItems[oldIndex] === newItems[newIndex]
+        ? table[(oldIndex + 1) * width + newIndex + 1] + 1
+        : Math.max(
+          table[(oldIndex + 1) * width + newIndex],
+          table[oldIndex * width + newIndex + 1]
+        );
+    }
+  }
+
+  const matches = [];
+  let oldIndex = 0;
+  let newIndex = 0;
+  while (oldIndex < oldCount && newIndex < newCount) {
+    if (oldItems[oldIndex] === newItems[newIndex]) {
+      matches.push({ oldIndex, newIndex });
+      oldIndex += 1;
+      newIndex += 1;
+    } else if (
+      table[(oldIndex + 1) * width + newIndex]
+      >= table[oldIndex * width + newIndex + 1]
+    ) {
+      oldIndex += 1;
+    } else {
+      newIndex += 1;
+    }
+  }
+  return matches;
+}
+
+function discoverNaturalLineAnchors(
+  oldParts,
+  newParts,
+  oldFrom,
+  oldTo,
+  newFrom,
+  newTo,
+  occurrenceLimit
+) {
+  const oldOccurrences = collectNaturalOccurrences(oldParts, oldFrom, oldTo, 1);
+  const newOccurrences = collectNaturalOccurrences(newParts, newFrom, newTo, 1);
+  const candidates = [];
+
+  for (const [signature, oldIndexes] of oldOccurrences) {
+    const newIndexes = newOccurrences.get(signature);
+    if (
+      !newIndexes
+      || oldIndexes.length > occurrenceLimit
+      || newIndexes.length > occurrenceLimit
+      || signature.trim() === ''
+    ) {
+      continue;
+    }
+    for (const oldIndex of oldIndexes) {
+      for (const newIndex of newIndexes) {
+        candidates.push({ oldIndex, newIndex });
+      }
+    }
+  }
+  return selectNaturalMonotonicAnchors(candidates, 1);
+}
+
+function collectNaturalOccurrences(items, from, to, span) {
+  const occurrences = new Map();
+  for (let index = from; index + span <= to; index += 1) {
+    const signature = span === 1
+      ? items[index]
+      : JSON.stringify(items.slice(index, index + span));
+    const indexes = occurrences.get(signature);
+    if (indexes) {
+      indexes.push(index);
+    } else {
+      occurrences.set(signature, [index]);
+    }
+  }
+  return occurrences;
+}
+
+function selectNaturalMonotonicAnchors(candidates, span) {
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  candidates.sort((left, right) => (
+    left.oldIndex - right.oldIndex || right.newIndex - left.newIndex
+  ));
+  const tailValues = [];
+  const tailCandidateIndexes = [];
+  const predecessors = new Int32Array(candidates.length);
+  predecessors.fill(-1);
+
+  for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+    const candidate = candidates[candidateIndex];
+    let low = 0;
+    let high = tailValues.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (tailValues[middle] < candidate.newIndex) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    if (low > 0) {
+      predecessors[candidateIndex] = tailCandidateIndexes[low - 1];
+    }
+    tailValues[low] = candidate.newIndex;
+    tailCandidateIndexes[low] = candidateIndex;
+  }
+
+  const selected = [];
+  let cursor = tailCandidateIndexes[tailCandidateIndexes.length - 1];
+  while (cursor >= 0) {
+    selected.push(candidates[cursor]);
+    cursor = predecessors[cursor];
+  }
+  selected.reverse();
+
+  const nonOverlapping = [];
+  let previousOldEnd = -1;
+  let previousNewEnd = -1;
+  for (const anchor of selected) {
+    if (
+      anchor.oldIndex >= previousOldEnd
+      && anchor.newIndex >= previousNewEnd
+    ) {
+      nonOverlapping.push(anchor);
+      previousOldEnd = anchor.oldIndex + span;
+      previousNewEnd = anchor.newIndex + span;
+    }
+  }
+  return nonOverlapping;
+}
+
+function appendNaturalPositionalLineGroups(state, oldFrom, oldTo, newFrom, newTo) {
+  if (oldTo - oldFrom !== newTo - newFrom) {
+    return false;
+  }
+
+  let changed = false;
+  let lowSimilarityOldStart = -1;
+  let lowSimilarityNewStart = -1;
+
+  const flushLowSimilarityRun = (oldEnd, newEnd) => {
+    if (lowSimilarityOldStart < 0) {
+      return;
+    }
+    pushNaturalLineGroup(
+      state,
+      lowSimilarityOldStart,
+      oldEnd,
+      lowSimilarityNewStart,
+      newEnd
+    );
+    lowSimilarityOldStart = -1;
+    lowSimilarityNewStart = -1;
+  };
+
+  for (let offset = 0; offset < oldTo - oldFrom; offset += 1) {
+    const oldIndex = oldFrom + offset;
+    const newIndex = newFrom + offset;
+    const oldLine = state.oldParts[oldIndex];
+    const newLine = state.newParts[newIndex];
+
+    if (oldLine === newLine) {
+      flushLowSimilarityRun(oldIndex, newIndex);
       continue;
     }
 
-    if (!group) {
-      group = {
-        oldStart: oldOffset,
-        oldText: '',
-        newText: ''
-      };
-    }
-
-    if (edit.type === 'remove') {
-      const text = oldParts[edit.oldIndex];
-      group.oldText += text;
-      oldOffset += text.length;
-    } else if (edit.type === 'add') {
-      const text = newParts[edit.newIndex];
-      group.newText += text;
-      newOffset += text.length;
+    changed = true;
+    if (computeNaturalLineSimilarity(oldLine, newLine) >= 0.55) {
+      flushLowSimilarityRun(oldIndex, newIndex);
+      pushNaturalLineGroup(state, oldIndex, oldIndex + 1, newIndex, newIndex + 1);
+    } else if (lowSimilarityOldStart < 0) {
+      lowSimilarityOldStart = oldIndex;
+      lowSimilarityNewStart = newIndex;
     }
   }
-  flushGroup();
-
-  return groups;
-
-  function flushGroup() {
-    if (!group) {
-      return;
-    }
-    groups.push(group);
-    group = null;
-  }
+  flushLowSimilarityRun(oldTo, newTo);
+  return changed;
 }
 
-function computeTokenAnchoredPatches(oldValue, newValue, offset = 0) {
-  const MAX_GROUP_CHARS = 20000;
-  const MAX_TOKENS = 3000;
-  const MAX_PRODUCT = 4000000;
-  const MAX_PATCHES = 80;
-
-  if (
-    oldValue.length > MAX_GROUP_CHARS
-    || newValue.length > MAX_GROUP_CHARS
+function computeNaturalLineSimilarity(oldLine, newLine) {
+  if (oldLine === newLine) {
+    return 1;
+  }
+  const denominator = Math.max(oldLine.length, newLine.length, 1);
+  let prefix = 0;
+  while (
+    prefix < oldLine.length
+    && prefix < newLine.length
+    && oldLine[prefix] === newLine[prefix]
   ) {
-    return null;
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < oldLine.length - prefix
+    && suffix < newLine.length - prefix
+    && oldLine[oldLine.length - 1 - suffix] === newLine[newLine.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  return (prefix + suffix) / denominator;
+}
+
+
+function computeTokenAnchoredPatches(oldValue, newValue, offset = 0) {
+  if (oldValue === newValue) {
+    return [];
   }
 
   const oldTokens = splitTextTokens(oldValue);
   const newTokens = splitTextTokens(newValue);
-  if (
-    oldTokens.length === 0
-    || newTokens.length === 0
-    || oldTokens.length > MAX_TOKENS
-    || newTokens.length > MAX_TOKENS
-    || oldTokens.length * newTokens.length > MAX_PRODUCT
+  const oldOffsets = computeNaturalTokenOffsets(oldTokens, oldValue.length);
+  const newOffsets = computeNaturalTokenOffsets(newTokens, newValue.length);
+  const patches = [];
+
+  collectNaturalTokenPatches({
+    oldValue,
+    newValue,
+    oldTokens,
+    newTokens,
+    oldTokenTexts: oldTokens.map(token => token.text),
+    newTokenTexts: newTokens.map(token => token.text),
+    oldOffsets,
+    newOffsets,
+    offset,
+    patches,
+    oldFrom: 0,
+    oldTo: oldTokens.length,
+    newFrom: 0,
+    newTo: newTokens.length,
+    depth: 0
+  });
+
+  return patches.sort((left, right) => left.from - right.from || left.to - right.to);
+}
+
+
+function computeNaturalTokenOffsets(tokens, textLength) {
+  const offsets = new Array(tokens.length + 1);
+  for (let index = 0; index < tokens.length; index += 1) {
+    offsets[index] = tokens[index].start;
+  }
+  offsets[tokens.length] = textLength;
+  return offsets;
+}
+
+function collectNaturalTokenPatches(state) {
+  let { oldFrom, oldTo, newFrom, newTo } = state;
+
+  while (
+    oldFrom < oldTo
+    && newFrom < newTo
+    && state.oldTokenTexts[oldFrom] === state.newTokenTexts[newFrom]
   ) {
-    return null;
+    oldFrom += 1;
+    newFrom += 1;
+  }
+  while (
+    oldFrom < oldTo
+    && newFrom < newTo
+    && state.oldTokenTexts[oldTo - 1] === state.newTokenTexts[newTo - 1]
+  ) {
+    oldTo -= 1;
+    newTo -= 1;
   }
 
-  const edits = computePartEdits(
-    oldTokens.map(token => token.text),
-    newTokens.map(token => token.text)
-  );
-  const patches = [];
-  let oldOffset = 0;
-  let newOffset = 0;
-  let group = null;
+  if (oldFrom === oldTo || newFrom === newTo) {
+    pushNaturalTokenPatch(state, oldFrom, oldTo, newFrom, newTo);
+    return;
+  }
 
-  for (const edit of edits) {
-    if (edit.type === 'equal') {
-      flushGroup();
-      oldOffset = oldTokens[edit.oldIndex].end;
-      newOffset = newTokens[edit.newIndex].end;
+  const oldCount = oldTo - oldFrom;
+  const newCount = newTo - newFrom;
+  const oldChars = state.oldOffsets[oldTo] - state.oldOffsets[oldFrom];
+  const newChars = state.newOffsets[newTo] - state.newOffsets[newFrom];
+  const MAX_GROUP_CHARS = 20_000;
+  const MAX_TOKENS = 3000;
+  const MAX_PRODUCT = 4_000_000;
+
+  if (
+    oldChars + newChars <= MAX_GROUP_CHARS
+    && oldCount <= MAX_TOKENS
+    && newCount <= MAX_TOKENS
+    && oldCount * newCount <= MAX_PRODUCT
+  ) {
+    appendNaturalExactTokenPatches(state, oldFrom, oldTo, newFrom, newTo);
+    return;
+  }
+
+  const anchors = discoverNaturalTokenAnchors(
+    state.oldTokenTexts,
+    state.newTokenTexts,
+    oldFrom,
+    oldTo,
+    newFrom,
+    newTo
+  );
+  if (anchors.length > 0 && state.depth < 8) {
+    const ANCHOR_SPAN = 3;
+    let oldCursor = oldFrom;
+    let newCursor = newFrom;
+    for (const anchor of anchors) {
+      collectNaturalTokenPatches({
+        ...state,
+        oldFrom: oldCursor,
+        oldTo: anchor.oldIndex,
+        newFrom: newCursor,
+        newTo: anchor.newIndex,
+        depth: state.depth + 1
+      });
+      oldCursor = anchor.oldIndex + ANCHOR_SPAN;
+      newCursor = anchor.newIndex + ANCHOR_SPAN;
+    }
+    collectNaturalTokenPatches({
+      ...state,
+      oldFrom: oldCursor,
+      oldTo,
+      newFrom: newCursor,
+      newTo,
+      depth: state.depth + 1
+    });
+    return;
+  }
+
+  pushNaturalTokenPatch(state, oldFrom, oldTo, newFrom, newTo);
+}
+
+function pushNaturalTokenPatch(state, oldFrom, oldTo, newFrom, newTo) {
+  const oldStart = state.oldOffsets[oldFrom];
+  const oldEnd = state.oldOffsets[oldTo];
+  const newStart = state.newOffsets[newFrom];
+  const newEnd = state.newOffsets[newTo];
+  const expected = state.oldValue.slice(oldStart, oldEnd);
+  const insert = state.newValue.slice(newStart, newEnd);
+  if (expected === insert) {
+    return;
+  }
+  state.patches.push({
+    from: state.offset + oldStart,
+    to: state.offset + oldEnd,
+    expected,
+    insert
+  });
+}
+
+function appendNaturalExactTokenPatches(state, oldFrom, oldTo, newFrom, newTo) {
+  const matches = computeNaturalLcsMatches(
+    state.oldTokenTexts.slice(oldFrom, oldTo),
+    state.newTokenTexts.slice(newFrom, newTo)
+  );
+  let oldCursor = oldFrom;
+  let newCursor = newFrom;
+  for (const match of matches) {
+    const oldIndex = oldFrom + match.oldIndex;
+    const newIndex = newFrom + match.newIndex;
+    pushNaturalTokenPatch(state, oldCursor, oldIndex, newCursor, newIndex);
+    oldCursor = oldIndex + 1;
+    newCursor = newIndex + 1;
+  }
+  pushNaturalTokenPatch(state, oldCursor, oldTo, newCursor, newTo);
+}
+
+function discoverNaturalTokenAnchors(
+  oldTokens,
+  newTokens,
+  oldFrom,
+  oldTo,
+  newFrom,
+  newTo
+) {
+  const ANCHOR_SPAN = 3;
+  const oldOccurrences = collectNaturalOccurrences(
+    oldTokens,
+    oldFrom,
+    oldTo,
+    ANCHOR_SPAN
+  );
+  const newOccurrences = collectNaturalOccurrences(
+    newTokens,
+    newFrom,
+    newTo,
+    ANCHOR_SPAN
+  );
+  const candidates = [];
+
+  for (const [signature, oldIndexes] of oldOccurrences) {
+    const newIndexes = newOccurrences.get(signature);
+    if (
+      !newIndexes
+      || oldIndexes.length > 4
+      || newIndexes.length > 4
+    ) {
       continue;
     }
-
-    if (!group) {
-      group = {
-        oldStart: oldOffset,
-        newStart: newOffset,
-        oldEnd: oldOffset,
-        newEnd: newOffset
-      };
-    }
-
-    if (edit.type === 'remove') {
-      group.oldEnd = oldTokens[edit.oldIndex].end;
-      oldOffset = group.oldEnd;
-    } else if (edit.type === 'add') {
-      group.newEnd = newTokens[edit.newIndex].end;
-      newOffset = group.newEnd;
+    for (const oldIndex of oldIndexes) {
+      for (const newIndex of newIndexes) {
+        candidates.push({ oldIndex, newIndex });
+      }
     }
   }
-  flushGroup();
-
-  if (!patches.length || patches.length > MAX_PATCHES) {
-    return null;
-  }
-  return patches;
-
-  function flushGroup() {
-    if (!group) {
-      return;
-    }
-    const oldText = oldValue.slice(group.oldStart, group.oldEnd);
-    const newText = newValue.slice(group.newStart, group.newEnd);
-    if (oldText !== newText) {
-      patches.push({
-        from: offset + group.oldStart,
-        to: offset + group.oldEnd,
-        expected: oldText,
-        insert: newText
-      });
-    }
-    group = null;
-  }
+  return selectNaturalMonotonicAnchors(candidates, ANCHOR_SPAN);
 }
 
 function splitTextTokens(text) {
@@ -519,40 +982,28 @@ function splitSentences(text) {
   return spans;
 }
 
+
+
 function computeGroupMetrics(group, tokenPatches) {
   const oldNonEmptyLineCount = countNonEmptyLines(group.oldText);
   const newNonEmptyLineCount = countNonEmptyLines(group.newText);
-
   return {
     oldNonEmptyLineCount,
     newNonEmptyLineCount,
     maxNonEmptyLineCount: Math.max(oldNonEmptyLineCount, newNonEmptyLineCount),
     changedSpanChars: Math.max(group.oldText.length, group.newText.length),
-    tokenPatchCount: tokenPatches === null ? null : tokenPatches.length,
-    totalTokenChangedChars: tokenPatches === null
-      ? null
-      : tokenPatches.reduce((sum, patch) => (
-          sum + Math.max(patch.to - patch.from, patch.insert.length)
-        ), 0),
+    tokenPatchCount: Array.isArray(tokenPatches) ? tokenPatches.length : null,
+    totalTokenChangedChars: Array.isArray(tokenPatches)
+      ? tokenPatches.reduce(
+        (sum, patch) => sum + Math.max(patch.expected.length, patch.insert.length),
+        0
+      )
+      : null,
     oldSentenceTerminatorCount: countSentenceTerminators(group.oldText),
     newSentenceTerminatorCount: countSentenceTerminators(group.newText)
   };
 }
 
-// Resolves the sentence-span quantities used by the `isSentenceRewrite`
-// predicate (the design spec leaves them undefined). It segments the changed
-// group's OLD text into sentence spans and checks whether every token patch's
-// old range maps within a single span.
-//
-// Returns:
-// - `fitsOneSpan`: true iff exactly one sentence span contains every token
-//   patch's old range (relative to the group).
-// - `spanChars` / `spanTokenCount`: the char length / token count of that
-//   single span when `fitsOneSpan` is true; `0` otherwise (irrelevant then).
-// - `spanStart` / `spanEnd`: the group-relative `[start,end)` offsets of that
-//   single span when `fitsOneSpan` is true; `0` otherwise (irrelevant then).
-//
-// When `tokenPatches` is `null` or empty, `fitsOneSpan` is false.
 function resolveTokenPatchSentenceSpan(group, tokenPatches) {
   const empty = {
     fitsOneSpan: false,
@@ -611,74 +1062,99 @@ function resolveTokenPatchSentenceSpan(group, tokenPatches) {
 // `tokenPatches === null`, every token-dependent predicate is false, so the
 // only reachable results are `annotated_block`, `paragraph_rewrite` (via the
 // line-count or sentence-terminator branch), and `fallback`.
-function classifyChangedGroup(group, tokenPatches, metrics) {
-  const newGroupText = group.newText;
-  const {
-    maxNonEmptyLineCount,
-    changedSpanChars,
-    tokenPatchCount,
-    totalTokenChangedChars,
-    oldSentenceTerminatorCount,
-    newSentenceTerminatorCount
-  } = metrics;
 
-  const isAnnotatedBlock = hasOriginalMarkerLine(newGroupText)
-    && hasLaterRevisedMarkerLine(newGroupText)
-    && maxNonEmptyLineCount >= 3;
-  if (isAnnotatedBlock) {
+
+
+function classifyChangedGroup(group, tokenPatches, metrics) {
+  if (hasAnyAnnotatedMarker(group.oldText) || hasAnyAnnotatedMarker(group.newText)) {
     return { type: 'annotated_block' };
   }
 
-  const isDenseTokenRewrite = tokenPatches !== null
-    && tokenPatchCount >= 6
-    && changedSpanChars >= 160
-    && tokenPatchCount / Math.max(1, maxNonEmptyLineCount) >= 2;
+  const hasTokenPatches = Array.isArray(tokenPatches) && tokenPatches.length > 0;
+  const maxTokenPatchChars = hasTokenPatches
+    ? tokenPatches.reduce(
+      (maximum, patch) => Math.max(
+        maximum,
+        patch.expected.length,
+        patch.insert.length
+      ),
+      0
+    )
+    : null;
+  const editDensity = hasTokenPatches
+    ? metrics.totalTokenChangedChars / Math.max(1, metrics.changedSpanChars)
+    : null;
+  const sentenceSpan = hasTokenPatches
+    ? resolveTokenPatchSentenceSpan(group, tokenPatches)
+    : null;
+  const sentenceEditDensity = sentenceSpan?.fitsOneSpan
+    ? metrics.totalTokenChangedChars / Math.max(1, sentenceSpan.spanChars)
+    : null;
 
-  const isParagraphRewrite = !isAnnotatedBlock
-    && (
-      maxNonEmptyLineCount >= 3
-      || (oldSentenceTerminatorCount >= 2 && newSentenceTerminatorCount >= 2)
-      || isDenseTokenRewrite
-    );
-  if (isParagraphRewrite) {
+  const isDenseTokenRewrite = hasTokenPatches
+    && metrics.tokenPatchCount >= 6
+    && metrics.changedSpanChars >= 160
+    && editDensity >= 0.20
+    && metrics.tokenPatchCount / Math.max(1, metrics.maxNonEmptyLineCount) >= 2;
+  if (isDenseTokenRewrite) {
     return { type: 'paragraph_rewrite' };
   }
 
-  const sentenceSpan = resolveTokenPatchSentenceSpan(group, tokenPatches);
-
-  const isSentenceRewrite = !isAnnotatedBlock
-    && !isParagraphRewrite
-    && tokenPatches !== null
-    && tokenPatchCount >= 3
+  // A dense rewrite wholly contained in one confident sentence stays a
+  // sentence patch even when the surrounding line contains unchanged prose.
+  if (
+    hasTokenPatches
+    && metrics.tokenPatchCount >= 3
     && sentenceSpan.fitsOneSpan
-    && (sentenceSpan.spanChars >= 80 || sentenceSpan.spanTokenCount >= 12);
-  if (isSentenceRewrite) {
+    && sentenceSpan.spanChars >= 80
+    && sentenceEditDensity >= 0.20
+  ) {
     return { type: 'sentence_rewrite' };
   }
 
-  const isSmallEdit = !isAnnotatedBlock
-    && !isParagraphRewrite
-    && !isSentenceRewrite
-    && tokenPatches !== null
+  // A collection of bounded, low-density edits stays local regardless of the
+  // file size, line count, or number of repeated replacements.
+  if (
+    hasTokenPatches
+    && maxTokenPatchChars <= 96
+    && editDensity < 0.20
+  ) {
+    return { type: 'small_edit' };
+  }
+
+  if (metrics.maxNonEmptyLineCount >= 3) {
+    return { type: 'paragraph_rewrite' };
+  }
+  if (
+    metrics.oldSentenceTerminatorCount >= 2
+    && metrics.newSentenceTerminatorCount >= 2
+    && !sentenceSpan?.fitsOneSpan
+  ) {
+    return { type: 'paragraph_rewrite' };
+  }
+
+  if (
+    hasTokenPatches
+    && metrics.tokenPatchCount >= 3
+    && sentenceSpan.fitsOneSpan
+    && sentenceSpan.spanChars >= 80
+  ) {
+    return { type: 'sentence_rewrite' };
+  }
+
+  if (
+    hasTokenPatches
     && (
-      tokenPatchCount <= 2
-      || (
-        totalTokenChangedChars < 80
-        && maxNonEmptyLineCount <= 2
-        && !hasAnyAnnotatedMarker(newGroupText)
-      )
-    );
-  if (isSmallEdit) {
+      metrics.tokenPatchCount <= 2
+      || metrics.totalTokenChangedChars < 80
+    )
+  ) {
     return { type: 'small_edit' };
   }
 
   return { type: 'fallback' };
 }
 
-// The single-patch fallback for a whole changed group (spec algorithm sketch).
-// Returns a one-element array so callers can treat every builder uniformly.
-// The patch's `from`/`to` are absolute offsets into the full original text:
-// `computeSingleTextPatch` adds `group.oldStart` to its segment-local offsets.
 function singleGroupPatch(group) {
   return [computeSingleTextPatch(group.oldText, group.newText, group.oldStart)];
 }
@@ -811,89 +1287,61 @@ function isCoalesceFillerGap(gap) {
 // `expected` the original slice and `insert` the merged inserts interleaved
 // with the unchanged gap text. When nothing qualifies the token patches are
 // returned unchanged. Absolute offsets are preserved throughout.
+
 function coalesceTokenPatches(group, tokenPatches) {
-  if (tokenPatches === null || tokenPatches.length < 3) {
-    return tokenPatches;
+  if (!Array.isArray(tokenPatches) || tokenPatches.length <= 1) {
+    return Array.isArray(tokenPatches) && tokenPatches.length > 0
+      ? tokenPatches
+      : singleGroupPatch(group);
   }
 
-  const spans = splitSentences(group.oldText);
-  // Index of the sentence span that fully contains a patch's group-relative
-  // range, or -1 when it is not cleanly inside any single span.
-  const spanOf = patch => {
-    const relativeFrom = patch.from - group.oldStart;
-    const relativeTo = patch.to - group.oldStart;
-    return spans.findIndex(span => (
-      relativeFrom >= span.start && relativeTo <= span.end
-    ));
-  };
-
-  // Count patches per sentence span so the ">= 3 in the span" gate can be
-  // checked before merging any run.
-  const patchesPerSpan = new Map();
-  for (const patch of tokenPatches) {
-    const spanIndex = spanOf(patch);
-    patchesPerSpan.set(spanIndex, (patchesPerSpan.get(spanIndex) || 0) + 1);
-  }
-
+  const ordered = [...tokenPatches].sort(
+    (left, right) => left.from - right.from || left.to - right.to
+  );
   const result = [];
-  let run = [];
-  let runSpanIndex = -1;
+  let run = [ordered[0]];
 
   const flushRun = () => {
-    if (run.length === 0) {
-      return;
-    }
-    if (run.length === 1) {
-      result.push(run[0]);
-    } else {
+    if (run.length >= 3 && computeNaturalPatchRunDensity(group, run) >= 0.35) {
       result.push(mergeTokenPatchRun(group, run));
+    } else {
+      result.push(...run);
     }
     run = [];
   };
 
-  for (const patch of tokenPatches) {
-    const spanIndex = spanOf(patch);
-    const eligibleSpan = spanIndex !== -1 && patchesPerSpan.get(spanIndex) >= 3;
-
-    if (run.length === 0) {
-      run = eligibleSpan ? [patch] : [];
-      runSpanIndex = eligibleSpan ? spanIndex : -1;
-      if (!eligibleSpan) {
-        result.push(patch);
-      }
-      continue;
-    }
-
-    const prev = run[run.length - 1];
-    const gap = group.oldText.slice(
-      prev.to - group.oldStart,
-      patch.from - group.oldStart
-    );
-    const mergeable = eligibleSpan
-      && spanIndex === runSpanIndex
+  for (let index = 1; index < ordered.length; index += 1) {
+    const previous = run[run.length - 1];
+    const current = ordered[index];
+    const gapStart = Math.max(0, previous.to - group.oldStart);
+    const gapEnd = Math.max(gapStart, current.from - group.oldStart);
+    const gap = group.oldText.slice(gapStart, gapEnd);
+    const canJoin = gap.length <= 40
+      && !/\n\s*\n/.test(gap)
       && isCoalesceFillerGap(gap);
 
-    if (mergeable) {
-      run.push(patch);
-      continue;
-    }
-
-    flushRun();
-    run = eligibleSpan ? [patch] : [];
-    runSpanIndex = eligibleSpan ? spanIndex : -1;
-    if (!eligibleSpan) {
-      result.push(patch);
+    if (canJoin) {
+      run.push(current);
+    } else {
+      flushRun();
+      run = [current];
     }
   }
   flushRun();
-
   return result;
 }
 
-// Merges a run of >= 2 adjacent token patches into one patch spanning
-// `[firstFrom, lastTo)`. `expected` is the original-text slice (the patches'
-// expecteds interleaved with the unchanged gap text); `insert` is the patches'
-// inserts interleaved with the same gap text.
+function computeNaturalPatchRunDensity(group, run) {
+  const first = run[0];
+  const last = run[run.length - 1];
+  const oldSpan = Math.max(1, last.to - first.from);
+  const changedChars = run.reduce(
+    (sum, patch) => sum + Math.max(patch.expected.length, patch.insert.length),
+    0
+  );
+  return Math.min(1, changedChars / oldSpan);
+}
+
 function mergeTokenPatchRun(group, run) {
   const first = run[0];
   const last = run[run.length - 1];

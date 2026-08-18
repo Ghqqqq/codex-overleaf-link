@@ -50,6 +50,31 @@ test('runtime identity pins PATH order and records duplicate Codex versions', ()
   }
 });
 
+test('runtime identity can select the newest discovered Codex version', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-runtime-newest-'));
+  try {
+    const olderBin = path.join(root, 'older', 'bin');
+    const newerBin = path.join(root, 'newer', 'bin');
+    const olderPath = writeFakeCodex(olderBin, '0.146.0');
+    const newerPath = writeFakeCodex(newerBin, '0.148.0-alpha.9');
+    const identity = buildCodexRuntimeIdentity({
+      selectedPath: olderPath,
+      selectionPolicy: 'newest-version',
+      pathValue: [olderBin, newerBin].join(path.delimiter),
+      delimiter: path.delimiter,
+      env: { HOME: root, PATH: [olderBin, newerBin].join(path.delimiter) },
+      platform: process.platform
+    });
+
+    assert.equal(identity.selected.path, newerPath);
+    assert.equal(identity.selected.version, '0.148.0-alpha.9');
+    assert.equal(identity.selectedBy, 'newest-version');
+    assert.deepEqual(identity.candidates.map(candidate => candidate.selected), [false, true]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('runtime identity survives the native environment boundary and builds a technical event', () => {
   const identity = {
     schemaVersion: 1,

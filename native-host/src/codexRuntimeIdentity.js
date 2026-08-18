@@ -22,22 +22,97 @@ function buildCodexRuntimeIdentity(options = {}) {
   const candidatePaths = selectedPath
     ? [selectedPath, ...discovered.filter(candidate => !sameExecutablePath(candidate, selectedPath, platform))]
     : discovered;
-  const candidates = candidatePaths.slice(0, MAX_CODEX_CANDIDATES).map((candidatePath, index) => ({
+  const candidates = candidatePaths.slice(0, MAX_CODEX_CANDIDATES).map(candidatePath => ({
     path: candidatePath,
     displayPath: compactHomePath(candidatePath, env, platform),
     version: readCodexVersion(candidatePath, { env, platform }),
     source: classifyCodexSource(candidatePath),
-    selected: index === 0 && Boolean(selectedPath)
+    selected: false
   }));
-  const selected = candidates.find(candidate => candidate.selected) || null;
+  const selectedIndex = selectCodexCandidateIndex(candidates, {
+    selectedPath,
+    selectionPolicy: options.selectionPolicy,
+    platform
+  });
+  if (selectedIndex >= 0) {
+    candidates[selectedIndex].selected = true;
+  }
+  const selected = selectedIndex >= 0 ? candidates[selectedIndex] : null;
 
   return {
     schemaVersion: 1,
     selected,
     candidates,
     multipleInstallations: candidates.length > 1,
-    selectedBy: selected ? 'path-order' : 'not-found'
+    selectedBy: selected
+      ? options.selectionPolicy === 'newest-version' ? 'newest-version' : options.selectionPolicy === 'explicit-path' ? 'explicit-path' : 'path-order'
+      : 'not-found'
   };
+}
+
+function selectCodexCandidateIndex(candidates, options = {}) {
+  if (!candidates.length) return -1;
+  if (options.selectionPolicy !== 'newest-version') {
+    if (!options.selectedPath) return -1;
+    return candidates.findIndex(candidate => sameExecutablePath(
+      candidate.path,
+      options.selectedPath,
+      options.platform
+    ));
+  }
+
+  let selectedIndex = 0;
+  for (let index = 1; index < candidates.length; index += 1) {
+    if (compareCodexVersions(candidates[index].version, candidates[selectedIndex].version) > 0) {
+      selectedIndex = index;
+    }
+  }
+  return selectedIndex;
+}
+
+function compareCodexVersions(left, right) {
+  const leftVersion = parseCodexVersion(left);
+  const rightVersion = parseCodexVersion(right);
+  if (!leftVersion && !rightVersion) return 0;
+  if (!leftVersion) return -1;
+  if (!rightVersion) return 1;
+
+  for (let index = 0; index < 3; index += 1) {
+    if (leftVersion.core[index] !== rightVersion.core[index]) {
+      return leftVersion.core[index] - rightVersion.core[index];
+    }
+  }
+  if (!leftVersion.prerelease && rightVersion.prerelease) return 1;
+  if (leftVersion.prerelease && !rightVersion.prerelease) return -1;
+  if (!leftVersion.prerelease && !rightVersion.prerelease) return 0;
+  return comparePrerelease(leftVersion.prerelease, rightVersion.prerelease);
+}
+
+function parseCodexVersion(value) {
+  const match = String(value || '').trim().match(/^(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?/);
+  if (!match) return null;
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4] || ''
+  };
+}
+
+function comparePrerelease(left, right) {
+  const leftParts = left.split('.');
+  const rightParts = right.split('.');
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    if (leftParts[index] === undefined) return -1;
+    if (rightParts[index] === undefined) return 1;
+    if (leftParts[index] === rightParts[index]) continue;
+    const leftNumber = /^\d+$/.test(leftParts[index]) ? Number(leftParts[index]) : null;
+    const rightNumber = /^\d+$/.test(rightParts[index]) ? Number(rightParts[index]) : null;
+    if (leftNumber !== null && rightNumber !== null) return leftNumber - rightNumber;
+    if (leftNumber !== null) return -1;
+    if (rightNumber !== null) return 1;
+    return leftParts[index].localeCompare(rightParts[index]);
+  }
+  return 0;
 }
 
 function discoverCodexCandidates(pathValue, options = {}) {

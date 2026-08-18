@@ -442,9 +442,79 @@
     return error;
   }
 
+  function decorateCompletionReport(container, options = {}) {
+    const tx = typeof options.tx === 'function' ? options.tx : en => en;
+    const document = container?.ownerDocument || globalThis.document;
+    if (!container || !document) return;
+
+    for (const block of Array.from(container.children || [])) {
+      const textNode = Array.from(block.childNodes || [])
+        .find(node => node?.nodeType === 3 && String(node.textContent || '').trim());
+      if (!textNode) continue;
+      const text = String(textNode.textContent || '');
+      const match = text.match(/^(\s*)(Conclusion:|结论：|Changes:|修改：)(\s*)/);
+      if (!match || !textNode.parentNode) continue;
+      const label = document.createElement('span');
+      label.className = 'run-system-label';
+      label.dataset.systemLabel = ['Conclusion:', '结论：'].includes(match[2])
+        ? 'conclusion'
+        : 'changes';
+      label.textContent = `${match[2]}${match[3]}`;
+      textNode.textContent = `${match[1]}${text.slice(match[0].length)}`;
+      textNode.parentNode.insertBefore(label, textNode);
+    }
+    decorateChangeReceipts(container, document, tx);
+  }
+
+  function decorateChangeReceipts(container, document, tx) {
+    const label = container.querySelector?.('.run-system-label[data-system-label="changes"]');
+    const list = label?.closest?.('p')?.nextElementSibling;
+    if (!list || !['UL', 'OL'].includes(list.tagName)) return;
+
+    const receipts = [];
+    for (const item of Array.from(list.children || [])) {
+      const original = String(item.textContent || '').trim();
+      const match = original.match(/^(.+?):\s+(edit|create|rename|move|delete)(?:\s+\((.+)\))?$/i)
+        || original.match(/^(.+?)：\s*(编辑|新建|重命名|移动|删除)(?:（(.+)）)?$/);
+      if (!match) return;
+      receipts.push({ item, original, file: match[1], operation: match[2] });
+    }
+    if (!receipts.length) return;
+
+    const syncedFiles = new Set(receipts.map(receipt => receipt.file)).size;
+    const summary = document.createElement('div');
+    summary.className = 'run-change-summary';
+    const check = document.createElement('span');
+    check.className = 'run-change-summary__check';
+    check.setAttribute('aria-hidden', 'true');
+    check.textContent = '✓';
+    const text = document.createElement('span');
+    text.textContent = tx(
+      `${syncedFiles} ${syncedFiles === 1 ? 'file' : 'files'} synced`,
+      `已同步 ${syncedFiles} 个文件`
+    );
+    summary.append(check, text);
+    list.parentNode?.insertBefore(summary, list);
+    list.classList.add('run-change-receipts');
+
+    for (const receipt of receipts) {
+      const file = document.createElement('span');
+      file.className = 'run-change-receipt__file';
+      file.textContent = receipt.file;
+      const operation = document.createElement('span');
+      operation.className = 'run-change-receipt__operation';
+      operation.textContent = receipt.operation;
+      receipt.item.classList.add('run-change-receipt');
+      receipt.item.setAttribute('aria-label', receipt.original);
+      receipt.item.title = receipt.original;
+      receipt.item.replaceChildren(file, operation);
+    }
+  }
+
   return {
     DEFAULT_LIMITS,
     countTokens,
+    decorateCompletionReport,
     renderMarkdown,
     stripEmptyHtmlComments
   };

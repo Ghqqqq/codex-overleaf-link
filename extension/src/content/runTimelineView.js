@@ -30,6 +30,7 @@
       cssEscape,
       renderMarkdownInlineText,
       renderMarkdownBlockText,
+      decorateCompletionReport,
       sanitizeAssistantVisibleText,
       sanitizeAssistantVisibleValue,
       stripEmptyHtmlCommentPlaceholders = value => value,
@@ -709,6 +710,7 @@
       }
       if (mainSections.length) {
         renderMarkdownBlockText(main, mainSections.join('\n\n'));
+        decorateCompletionReport(main, { tx });
         report.append(main);
       }
 
@@ -729,6 +731,7 @@
     const body = document.createElement('div');
     body.className = 'run-final-answer';
     renderMarkdownBlockText(body, split.body || flatText);
+    decorateCompletionReport(body, { tx });
     report.append(body);
     appendCompileFix(report);
     appendRejectedRedo(report);

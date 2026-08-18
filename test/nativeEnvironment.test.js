@@ -12,6 +12,17 @@ const {
   summarizeNativeEnvironment
 } = require('../native-host/src/nativeEnvironment');
 
+function writeVersionedCodex(binDir, version) {
+  fs.mkdirSync(binDir, { recursive: true });
+  const fileName = process.platform === 'win32' ? 'codex.cmd' : 'codex';
+  const target = path.join(binDir, fileName);
+  const content = process.platform === 'win32'
+    ? `@echo off\r\necho codex-cli ${version}\r\n`
+    : `#!/bin/sh\nprintf 'codex-cli ${version}\\n'\n`;
+  fs.writeFileSync(target, content, { mode: 0o755 });
+  return target;
+}
+
 test('native runtime env discovers Codex and TeX tools from the user login shell path', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-env-'));
   const shellBin = path.join(root, 'shell-bin');
@@ -34,6 +45,56 @@ test('native runtime env discovers Codex and TeX tools from the user login shell
     assert.equal(env.CODEX_OVERLEAF_CODEX_PATH, path.join(shellBin, 'codex'));
     assert.equal(env.CODEX_OVERLEAF_LATEXMK_PATH, path.join(shellBin, 'latexmk'));
     assert.equal(env.PATH.split(path.delimiter)[0], shellBin);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('native runtime env selects the newest Codex when PATH contains multiple installations', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-env-newest-'));
+  try {
+    const olderBin = path.join(root, 'older', 'bin');
+    const newerBin = path.join(root, 'newer', 'bin');
+    writeVersionedCodex(olderBin, '0.146.0');
+    const newerPath = writeVersionedCodex(newerBin, '0.148.0-alpha.9');
+    const env = buildNativeRuntimeEnv({
+      HOME: root,
+      PATH: olderBin,
+      SHELL: '/bin/zsh'
+    }, {
+      readLoginShellEnv: () => ({ PATH: olderBin }),
+      defaultPathSegments: [newerBin]
+    });
+
+    assert.equal(env.CODEX_OVERLEAF_CODEX_PATH, newerPath);
+    assert.equal(env.CODEX_OVERLEAF_CODEX_VERSION, '0.148.0-alpha.9');
+    assert.equal(env.CODEX_OVERLEAF_CODEX_SOURCE, 'path');
+    assert.equal(JSON.parse(env.CODEX_OVERLEAF_CODEX_RUNTIME_JSON).selectedBy, 'newest-version');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('native runtime env preserves an explicit Codex path override', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-env-explicit-'));
+  try {
+    const olderBin = path.join(root, 'older', 'bin');
+    const newerBin = path.join(root, 'newer', 'bin');
+    const explicitPath = writeVersionedCodex(olderBin, '0.146.0');
+    writeVersionedCodex(newerBin, '0.148.0-alpha.9');
+    const env = buildNativeRuntimeEnv({
+      HOME: root,
+      PATH: olderBin,
+      SHELL: '/bin/zsh',
+      CODEX_OVERLEAF_CODEX_PATH: explicitPath
+    }, {
+      readLoginShellEnv: () => ({ PATH: olderBin }),
+      defaultPathSegments: [newerBin]
+    });
+
+    assert.equal(env.CODEX_OVERLEAF_CODEX_PATH, explicitPath);
+    assert.equal(env.CODEX_OVERLEAF_CODEX_VERSION, '0.146.0');
+    assert.equal(JSON.parse(env.CODEX_OVERLEAF_CODEX_RUNTIME_JSON).selectedBy, 'explicit-path');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
