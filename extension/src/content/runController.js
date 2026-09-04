@@ -231,11 +231,46 @@
     return String(content || '').trim().length > 0;
   }
 
+  function isRetryReplacementEligible(run = {}, projection = {}) {
+    if (!run.id || !['failed', 'interrupted'].includes(run.status)) return false;
+    if (run.trackedChangeStatus || run.undoStatus) return false;
+    if (['undoOperations', 'undoTrackedChanges', 'undoExpectedFiles', 'undoBaseFiles', 'appliedOperations']
+      .some(field => Array.isArray(run[field]) && run[field].length)) return false;
+    if (projection.canAccept || projection.canUndo || projection.changedDocument === true) return false;
+    if (projection.failureTerminalState === 'needs_review' || projection.terminalState === 'needs_review') return false;
+    return projection.changedDocument === false || run.mode === 'ask' || hasZeroWriteReport(run.events);
+  }
+
+  function hasZeroWriteReport(events = []) {
+    return (Array.isArray(events) ? events : []).some(event => {
+      const rows = Array.isArray(event?.detailStructured?.meta) ? event.detailStructured.meta : [];
+      return rows.some(row => row?.key === 'writeResult'
+        && /(?:wrote|写入)\s*0\b[\s\S]*(?:skipped|跳过)\s*0\b/i.test(String(row.value || '')));
+    });
+  }
+
+  function resolveRetryReplacement({ candidate, activeSessionId, runs, projectRunSettlement } = {}) {
+    if (!candidate?.runId || candidate.sessionId !== activeSessionId) return '';
+    const source = (Array.isArray(runs) ? runs : []).find(run => run?.id === candidate.runId);
+    if (!source) return '';
+    const projection = typeof projectRunSettlement === 'function' ? projectRunSettlement(source) : {};
+    return isRetryReplacementEligible(source, projection) ? source.id : '';
+  }
+
+  function replaceRunForRetry(runs, sourceRunId, nextRun, maxRuns = 20) {
+    const retained = (Array.isArray(runs) ? runs : [])
+      .filter(run => !sourceRunId || run?.id !== sourceRunId);
+    return [...retained, nextRun].slice(-Math.max(1, maxRuns));
+  }
+
   return {
     buildCodexRunParams,
     canUseFocusedPartialSnapshot,
     shouldRestrictWritebackToFocus,
     buildSessionHistoryResult,
+    isRetryReplacementEligible,
+    replaceRunForRetry,
+    resolveRetryReplacement,
     truncateSessionHistoryText,
     normalizeComposerAttachments,
     normalizeSkillInvocation

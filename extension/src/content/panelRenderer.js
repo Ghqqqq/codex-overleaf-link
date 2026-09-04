@@ -4,11 +4,14 @@
   const ROOT_CLASS = 'codex-overleaf-panel-mounted';
   const RESIZE_CLASS = 'codex-overleaf-panel-resizing';
   const COMPACT_CLASS = 'codex-overleaf-panel-compact';
+  const LAUNCHER_VISIBILITY_STORAGE_KEY = 'codex-overleaf:launcher-visible';
 
   function codexIcon(name) {
     const icons = {
       refresh: '<path d="M4.2 5.3A5 5 0 1 1 3.6 10"/><path d="M4.2 2.2v3.1H1.1"/>',
       plus: '<path d="M8 3.2v9.6"/><path d="M3.2 8h9.6"/>',
+      panel: '<rect x="2.3" y="2.3" width="11.4" height="11.4" rx="2"/><path d="M9.2 2.5v11"/><path d="M5.1 6.1h1.5M5.1 8h1.5M5.1 9.9h1.5"/>',
+      collapse: '<path d="m6.1 3.3 4.7 4.7-4.7 4.7"/>',
       settings: '<path d="M3.4 5.2h5.9"/><path d="M11.7 5.2h.9"/><path d="M10.1 3.6v3.2"/><path d="M3.4 10.8h1"/><path d="M6.8 10.8h5.8"/><path d="M5.9 9.2v3.2"/>'
     };
     const safeName = Object.prototype.hasOwnProperty.call(icons, name) ? name : 'settings';
@@ -19,9 +22,11 @@
     const doc = options.document || document;
     const container = options.container || doc.documentElement;
     const panelEl = doc.createElement('aside');
+    const launcherEl = doc.createElement('button');
     const callbacks = options.callbacks || {};
     const instance = {
       panelEl,
+      launcherEl,
       callbacks,
       defaultWidth: options.defaultWidth || 380,
       minWidth: options.minWidth || 340,
@@ -30,8 +35,17 @@
       lastDesktopWidth: options.initialWidth || options.defaultWidth || 380,
       listeners: [],
       document: doc,
-      window: options.window || window
+      window: options.window || window,
+      chromeApi: options.chromeApi || (typeof chrome !== 'undefined' ? chrome : null),
+      storageChangeListener: null
     };
+
+    launcherEl.id = 'codex-overleaf-launcher';
+    launcherEl.type = 'button';
+    launcherEl.title = options.launcherLabel || 'Show or hide Codex panel';
+    launcherEl.setAttribute('aria-label', launcherEl.title);
+    launcherEl.setAttribute('aria-expanded', 'false');
+    launcherEl.innerHTML = codexIcon('panel');
 
     panelEl.id = options.panelId || 'codex-overleaf-panel';
     panelEl.dataset.view = 'session';
@@ -44,6 +58,7 @@
           <div data-diagnostics-slot></div>
           <button type="button" data-new-session title="New Session" aria-label="New Session">${codexIcon('plus')}</button>
           <button type="button" data-custom-instructions-settings title="Project Settings" aria-label="Project Settings" aria-expanded="false">${codexIcon('settings')}</button>
+          <button type="button" data-close-panel title="Close Codex panel" aria-label="Close Codex panel">${codexIcon('collapse')}</button>
         </div>
       </div>
       <div data-settings-slot></div>
@@ -59,6 +74,7 @@
     `;
 
     container.append(panelEl);
+    container.append(launcherEl);
     doc.documentElement.classList.add(ROOT_CLASS);
 
     instance.headerEl = panelEl.querySelector('[data-panel-header]');
@@ -73,6 +89,8 @@
     bind(instance, panelEl.querySelector('[data-refresh]'), 'click', () => callbacks.onRefresh?.());
     bind(instance, panelEl.querySelector('[data-new-session]'), 'click', () => callbacks.onNewSession?.());
     bind(instance, panelEl.querySelector('[data-custom-instructions-settings]'), 'click', () => callbacks.onSettingsClick?.());
+    bind(instance, panelEl.querySelector('[data-close-panel]'), 'click', () => callbacks.onClosePanel?.());
+    bind(instance, launcherEl, 'click', () => callbacks.onLauncherToggle?.());
     bind(instance, panelEl.querySelector('[data-panel-resize-handle]'), 'pointerdown', event => startResize(instance, event));
     bind(instance, panelEl.querySelector('[data-panel-resize-handle]'), 'dblclick', event => {
       event?.preventDefault?.();
@@ -87,9 +105,11 @@
     });
 
     setWidth(instance, options.initialWidth || instance.defaultWidth, { notify: false });
+    initializeLauncherVisibility(instance);
 
     return {
       panelEl,
+      launcherEl,
       headerEl: instance.headerEl,
       bodyEl: instance.bodyEl,
       diagnosticsSlot: instance.diagnosticsSlot,
@@ -198,9 +218,62 @@
   function setVisible(panelEl, visible) {
     panelEl?.classList?.toggle('is-open', Boolean(visible));
     document.documentElement.classList.toggle(ROOT_CLASS, Boolean(visible));
+    const launcherEl = panelEl?.ownerDocument?.getElementById?.('codex-overleaf-launcher');
+    launcherEl?.classList?.toggle('is-panel-open', Boolean(visible));
+    launcherEl?.setAttribute?.('aria-expanded', visible ? 'true' : 'false');
+    if (launcherEl) {
+      launcherEl.hidden = Boolean(visible) || launcherEl.dataset.enabled === 'false';
+      launcherEl.setAttribute('aria-hidden', launcherEl.hidden ? 'true' : 'false');
+    }
     if (!visible) {
       document.documentElement.classList.remove(RESIZE_CLASS, COMPACT_CLASS);
     }
+  }
+
+  function initializeLauncherVisibility(instance) {
+    const storage = instance.chromeApi?.storage;
+    if (!storage?.local?.get) {
+      setLauncherVisible(instance, true, { persist: false });
+      return;
+    }
+    Promise.resolve(storage.local.get({ [LAUNCHER_VISIBILITY_STORAGE_KEY]: true }))
+      .then(values => applyLauncherVisibility(instance, values?.[LAUNCHER_VISIBILITY_STORAGE_KEY]))
+      .catch(() => applyLauncherVisibility(instance, true));
+    if (storage.onChanged?.addListener) {
+      instance.storageChangeListener = (changes, areaName) => {
+        if (areaName === 'local' && changes?.[LAUNCHER_VISIBILITY_STORAGE_KEY]) {
+          applyLauncherVisibility(instance, changes[LAUNCHER_VISIBILITY_STORAGE_KEY].newValue);
+        }
+      };
+      storage.onChanged.addListener(instance.storageChangeListener);
+    }
+  }
+
+  function applyLauncherVisibility(instance, value) {
+    const visible = value !== false;
+    setLauncherVisible(instance, visible, { persist: false });
+    instance.callbacks.onLauncherVisibilityChange?.(visible);
+  }
+
+  function setLauncherVisible(target, visible, options = {}) {
+    const instance = target?._instance || target;
+    const launcherEl = instance?.launcherEl;
+    if (!launcherEl) return false;
+    const nextVisible = Boolean(visible);
+    launcherEl.dataset.enabled = nextVisible ? 'true' : 'false';
+    launcherEl.hidden = !nextVisible || instance.panelEl?.classList?.contains('is-open') === true;
+    launcherEl.setAttribute('aria-hidden', launcherEl.hidden ? 'true' : 'false');
+    if (options.persist === true) {
+      Promise.resolve(instance.chromeApi?.storage?.local?.set?.({
+        [LAUNCHER_VISIBILITY_STORAGE_KEY]: nextVisible
+      })).catch(() => {});
+    }
+    return nextVisible;
+  }
+
+  function isLauncherVisible(target) {
+    const instance = target?._instance || target;
+    return Boolean(instance?.launcherEl && instance.launcherEl.dataset.enabled !== 'false');
   }
 
   function setBadge(headerEl, badge = {}) {
@@ -340,6 +413,10 @@
       target.removeEventListener?.(type, listener, options);
     }
     instance.panelEl?.remove?.();
+    instance.launcherEl?.remove?.();
+    if (instance.storageChangeListener) {
+      instance.chromeApi?.storage?.onChanged?.removeListener?.(instance.storageChangeListener);
+    }
     instance.document.documentElement.classList.remove(ROOT_CLASS, RESIZE_CLASS, COMPACT_CLASS);
   }
 
@@ -347,6 +424,8 @@
     create,
     createConfirmController,
     setVisible,
+    setLauncherVisible,
+    isLauncherVisible,
     setBadge,
     setWidth
   };

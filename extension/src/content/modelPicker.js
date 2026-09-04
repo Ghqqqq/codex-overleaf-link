@@ -319,7 +319,7 @@
     if (!efforts.length) {
       efforts = presentation === 'none' ? ['none'] : ['low', 'medium', 'high', 'xhigh'];
     }
-    const current = reasoningSelect.value || getState()?.reasoningEffort || '';
+    const current = getState()?.reasoningEffort || reasoningSelect.value || '';
     const fallback = efforts.includes(model?.defaultReasoningEffort)
       ? model.defaultReasoningEffort
       : efforts.includes('high') ? 'high' : efforts[0];

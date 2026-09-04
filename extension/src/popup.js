@@ -18,7 +18,7 @@
   let currentInstallCommand = DEFAULT_INSTALL_COMMAND;
 
   installCommand.textContent = currentInstallCommand;
-  button.textContent = 'Open panel in Overleaf';
+  button.textContent = 'Show Codex button in Overleaf';
   setVersionStatus({
     status: 'native_missing',
     classification: 'incompatible',
@@ -32,7 +32,7 @@
       return;
     }
 
-    await chrome.tabs.sendMessage(tab.id, { type: 'codex-overleaf/toggle-panel' });
+    await chrome.tabs.sendMessage(tab.id, { type: 'codex-overleaf/toggle-launcher' });
     window.close();
   });
 
@@ -56,20 +56,20 @@
     const tab = await getActiveOverleafProjectTab();
     activeOverleafTab = tab;
     if (!tab?.id) {
-      button.textContent = 'Open panel in Overleaf';
+      button.textContent = 'Show Codex button in Overleaf';
       return;
     }
 
     try {
       const response = await chrome.tabs.sendMessage(tab.id, { type: 'codex-overleaf/get-panel-state' });
-      const open = response?.open === true;
-      button.textContent = open ? 'Close panel in Overleaf' : 'Open panel in Overleaf';
-      status.textContent = open
-        ? 'Panel is open in this Overleaf tab.'
-        : 'Panel is closed in this Overleaf tab.';
+      const visible = response?.launcherVisible !== false;
+      button.textContent = visible ? 'Hide Codex edge button' : 'Show Codex edge button';
+      status.textContent = visible
+        ? 'The edge button appears whenever the Codex panel is closed.'
+        : 'The Codex edge button is hidden in Overleaf.';
     } catch (_error) {
-      button.textContent = 'Open panel in Overleaf';
-      status.textContent = 'Refresh the Overleaf tab, then open the panel.';
+      button.textContent = 'Show Codex button in Overleaf';
+      status.textContent = 'Refresh the Overleaf tab, then show the Codex button.';
     }
   }
 

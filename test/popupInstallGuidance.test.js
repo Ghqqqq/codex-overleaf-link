@@ -83,7 +83,7 @@ test('popup copies the currently displayed update command', async () => {
   assert.equal(harness.elements.copyInstallCommand.textContent, 'Copy install command');
 });
 
-test('popup reflects the active Overleaf panel state and toggles it', async () => {
+test('popup reflects the enabled Overleaf edge button and toggles it', async () => {
   const tabMessages = [];
   const harness = await loadPopupHarness({
     nativeResponse: compatibleNativeResponse(),
@@ -94,28 +94,28 @@ test('popup reflects the active Overleaf panel state and toggles it', async () =
     onTabMessage(_tabId, message) {
       tabMessages.push(message);
       if (message.type === 'codex-overleaf/get-panel-state') {
-        return { ok: true, open: true };
+        return { ok: true, open: true, launcherVisible: true };
       }
-      if (message.type === 'codex-overleaf/toggle-panel') {
-        return { ok: true, open: false };
+      if (message.type === 'codex-overleaf/toggle-launcher') {
+        return { ok: true, open: false, launcherVisible: false };
       }
       return { ok: false };
     }
   });
 
-  assert.equal(harness.elements.button.textContent, 'Close panel in Overleaf');
-  assert.match(harness.elements.status.textContent, /Panel is open/i);
+  assert.equal(harness.elements.button.textContent, 'Hide Codex edge button');
+  assert.match(harness.elements.status.textContent, /edge button appears/i);
 
   await harness.elements.button.click();
 
   assert.deepEqual(tabMessages.map(message => message.type), [
     'codex-overleaf/get-panel-state',
-    'codex-overleaf/toggle-panel'
+    'codex-overleaf/toggle-launcher'
   ]);
   assert.equal(harness.closed, true);
 });
 
-test('popup shows an open action when the active Overleaf panel is closed', async () => {
+test('popup shows an enable action when the Overleaf edge button is hidden', async () => {
   const harness = await loadPopupHarness({
     nativeResponse: compatibleNativeResponse(),
     activeTab: {
@@ -124,14 +124,14 @@ test('popup shows an open action when the active Overleaf panel is closed', asyn
     },
     onTabMessage(_tabId, message) {
       if (message.type === 'codex-overleaf/get-panel-state') {
-        return { ok: true, open: false };
+        return { ok: true, open: false, launcherVisible: false };
       }
-      return { ok: true, open: true };
+      return { ok: true, open: false, launcherVisible: true };
     }
   });
 
-  assert.equal(harness.elements.button.textContent, 'Open panel in Overleaf');
-  assert.match(harness.elements.status.textContent, /Panel is closed/i);
+  assert.equal(harness.elements.button.textContent, 'Show Codex edge button');
+  assert.match(harness.elements.status.textContent, /edge button is hidden/i);
 });
 
 function compatibleNativeResponse() {

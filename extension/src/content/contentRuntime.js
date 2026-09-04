@@ -383,7 +383,8 @@
     getState: () => state,
     setState: next => { state = next; },
     getCurrentRunView: () => currentRunView,
-    getSettingsPanelInstance: () => settingsPanelInstance
+    getSettingsPanelInstance: () => settingsPanelInstance,
+    prepareRetryReplacement: run => prepareRetryReplacement(run)
   });
   const {
     showUndoFileSelection,
@@ -840,6 +841,7 @@
   let state = null;
   let storageKey = LEGACY_STORAGE_KEY;
   let currentRunView = null;
+  let pendingRetryReplacement = null;
   let runQueueScheduler = null;
   let runInputCoordinator = null;
   const activeTurnControl = ActiveTurnControl.create({ chrome });
@@ -933,6 +935,13 @@
       return;
     }
     if (message?.type === 'codex-overleaf/get-panel-state') {
+      sendResponse?.(getPanelStateResponse());
+      return;
+    }
+    if (message?.type === 'codex-overleaf/toggle-launcher') {
+      const visible = !PanelRenderer.isLauncherVisible(panelRendererInstance);
+      PanelRenderer.setLauncherVisible(panelRendererInstance, visible, { persist: true });
+      if (!visible) closePanel();
       sendResponse?.(getPanelStateResponse());
       return;
     }
@@ -1186,7 +1195,12 @@
         maxWidth: PANEL_MAX_WIDTH,
         pageMinWidth: PAGE_MIN_WIDTH,
         initialWidth: state?.panelWidth || PANEL_DEFAULT_WIDTH,
+        chromeApi: chrome,
+        launcherLabel: tx('Show or hide Codex panel', '显示或隐藏 Codex 边栏'),
         callbacks: {
+          onLauncherToggle: () => ensurePanelOpen(),
+          onClosePanel: () => closePanel(),
+          onLauncherVisibilityChange: visible => { if (!visible) closePanel(); },
           onRefresh: () => refreshProbe({ userInitiated: true }),
           onNewSession: () => startNewSession(),
           onChangeHistory: () => openChangeHistory(),
@@ -1364,7 +1378,8 @@
   function getPanelStateResponse() {
     return {
       ok: true,
-      open: isPanelOpen()
+      open: isPanelOpen(),
+      launcherVisible: PanelRenderer.isLauncherVisible(panelRendererInstance)
     };
   }
 
@@ -1789,6 +1804,12 @@
     // Freeze submitted run identity before the panel can change during the run.
     const submittedMode = executionSnapshot.mode;
     const submittedRequireReviewing = executionSnapshot.requireReviewing === true;
+    const replaceRunId = queuedInput ? '' : runController.resolveRetryReplacement({
+      candidate: pendingRetryReplacement,
+      activeSessionId: state.activeSessionId,
+      runs: state.runs,
+      projectRunSettlement: run => WritebackSettlement.projectRunSettlement(run)
+    });
 
     runCancellationRequested = false;
     runCancellationController = new AbortController();
@@ -1802,8 +1823,10 @@
       executionSnapshot,
       attachments: submittedAttachments,
       skillInvocation: submittedSkillInvocation,
-      queueItemId: queuedInput?.id || ''
+      queueItemId: queuedInput?.id || '',
+      replaceRunId
     });
+    if (!queuedInput) pendingRetryReplacement = null;
     const runSessionId = currentRunView.sessionId;
     let runAuditDraft = null;
     try {
@@ -6127,6 +6150,17 @@
     renderPendingInputs();
   }
 
+  function prepareRetryReplacement(run) {
+    const sessionId = state?.activeSessionId || '';
+    const source = findRunRecord(run?.id, sessionId);
+    const eligible = source && runController.isRetryReplacementEligible(
+      source,
+      WritebackSettlement.projectRunSettlement(source)
+    );
+    pendingRetryReplacement = eligible ? { sessionId, runId: source.id } : null;
+    return Boolean(eligible);
+  }
+
   function startRunView({
     task,
     mode,
@@ -6134,6 +6168,7 @@
     reasoningEffort,
     speedTier,
     queueItemId = '',
+    replaceRunId = '',
     executionSnapshot = null
   }) {
     let attachments = [];
@@ -6185,13 +6220,14 @@
       }
       : {};
     state = updateActiveSession(state, {
-      runs: [...(state.runs || []), record].slice(-20),
+      runs: runController.replaceRunForRetry(state.runs, replaceRunId, record),
       ...titlePatch
     });
-    saveStateSoon();
+    saveStateSoon(replaceRunId ? 0 : 120);
 
     const log = panel.querySelector('[data-log]');
     removeEmptyRunsMessage(log);
+    if (replaceRunId) log.querySelector(`[data-run-id="${cssEscape(replaceRunId)}"]`)?.remove();
     const root = renderRunCard(record);
     log.append(root);
     scrollLogToBottom({ force: true });

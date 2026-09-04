@@ -338,6 +338,73 @@ test('focused full-project runs prioritize focus without restricting complete sn
   );
 });
 
+test('retry replacement accepts only failed no-write runs without lifecycle recovery', () => {
+  const safeAsk = { id: 'run-failed', status: 'failed', mode: 'ask' };
+  assert.equal(RunController.isRetryReplacementEligible(safeAsk, {
+    changedDocument: null,
+    canAccept: false,
+    canUndo: false
+  }), true);
+
+  assert.equal(RunController.isRetryReplacementEligible({
+    ...safeAsk,
+    undoOperations: [{ type: 'edit', path: 'main.tex' }]
+  }, { changedDocument: false, canAccept: false, canUndo: true }), false);
+
+  assert.equal(RunController.isRetryReplacementEligible({
+    ...safeAsk,
+    mode: 'auto'
+  }, { changedDocument: true, canAccept: false, canUndo: false }), false);
+});
+
+test('retry replacement recognizes explicit zero-write reports for Auto failures', () => {
+  const run = {
+    id: 'run-auto-failed',
+    status: 'failed',
+    mode: 'auto',
+    events: [{
+      detailStructured: {
+        meta: [{ key: 'writeResult', value: 'wrote 0 items, skipped 0 items' }]
+      }
+    }]
+  };
+  assert.equal(RunController.isRetryReplacementEligible(run, {
+    changedDocument: null,
+    canAccept: false,
+    canUndo: false
+  }), true);
+});
+
+test('retry replacement resolves only in the originating session and replaces on run creation', () => {
+  const failed = { id: 'run-old', status: 'failed', mode: 'ask' };
+  const keep = { id: 'run-keep', status: 'completed', mode: 'ask' };
+  const candidate = { sessionId: 'session-a', runId: failed.id };
+  const project = () => ({ changedDocument: false, canAccept: false, canUndo: false });
+
+  assert.equal(RunController.resolveRetryReplacement({
+    candidate,
+    activeSessionId: 'session-b',
+    runs: [failed, keep],
+    projectRunSettlement: project
+  }), '');
+  assert.equal(RunController.resolveRetryReplacement({
+    candidate,
+    activeSessionId: 'session-a',
+    runs: [failed, keep],
+    projectRunSettlement: project
+  }), failed.id);
+
+  const next = { id: 'run-new', status: 'running', mode: 'ask' };
+  assert.deepEqual(
+    RunController.replaceRunForRetry([failed, keep], failed.id, next),
+    [keep, next]
+  );
+  assert.deepEqual(
+    RunController.replaceRunForRetry([failed, keep], '', next),
+    [failed, keep, next]
+  );
+});
+
 test('run controller truncates session history summaries while preserving changed files', () => {
   const result = RunController.buildSessionHistoryResult({
     locale: 'zh',

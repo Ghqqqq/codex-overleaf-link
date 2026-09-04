@@ -650,6 +650,78 @@
   overflow: hidden;
 }
 
+#codex-overleaf-launcher {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  z-index: 2147483646;
+  display: grid;
+  width: 26px;
+  height: 36px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #3a3a3a;
+  border-right: 0;
+  border-radius: 7px 0 0 7px;
+  background: #181818;
+  box-shadow: -1px 1px 5px rgba(0, 0, 0, 0.18);
+  color: #8a8a8a;
+  cursor: pointer;
+  opacity: 0.82;
+  transform: translateY(-50%);
+  transition: width 120ms ease, background 120ms ease, color 120ms ease, opacity 120ms ease;
+  appearance: none;
+}
+
+#codex-overleaf-launcher[hidden] { display: none !important; }
+
+#codex-overleaf-launcher:hover {
+  width: 29px;
+  background: #232323;
+  color: #b7b7b7;
+  opacity: 1;
+}
+
+#codex-overleaf-launcher:active {
+  background: #2a2d2e;
+}
+
+#codex-overleaf-launcher:focus-visible {
+  outline: 2px solid #6aa4d8;
+  outline-offset: 2px;
+}
+
+#codex-overleaf-launcher .codex-icon,
+#codex-overleaf-launcher .codex-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+#codex-overleaf-launcher .codex-icon svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.45;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+#codex-overleaf-panel[data-theme="light"] ~ #codex-overleaf-launcher {
+  border-color: #d7dbe0;
+  background: #f3f4f6;
+  box-shadow: -1px 1px 5px rgba(31, 35, 40, 0.12);
+  color: #6a7280;
+}
+
+#codex-overleaf-panel[data-theme="light"] ~ #codex-overleaf-launcher:hover {
+  background: #eef0f3;
+  color: #3d4651;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #codex-overleaf-launcher { transition: none; }
+}
+
 :root.codex-overleaf-panel-compact body {
   width: auto !important;
   max-width: none !important;

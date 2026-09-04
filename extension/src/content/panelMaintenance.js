@@ -29,6 +29,7 @@
       setState,
       getCurrentRunView,
       getSettingsPanelInstance,
+      prepareRetryReplacement,
       StorageDb
     } = deps;
 
@@ -218,6 +219,7 @@
       showPluginToast(tx('Nothing to refill: the original task text is unavailable.', '无法回填：原任务文本不可用。'));
       return;
     }
+    prepareRetryReplacement?.(run || null);
     input.value = task;
     getState().task = task;
     autosizeTaskTextarea();

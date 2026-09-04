@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.3.4 - 2026-09-04
+
+### Added
+
+- Added a compact theme-aware Overleaf edge control for reopening Codex, with a dedicated close action in the panel header and Popup control over whether the edge entry is shown.
+
+### Fixed
+
+- Made `Edit & resend` replace its eligible zero-write failed run only after the edited task is actually resubmitted, preventing duplicate failed and retried turns while preserving abandoned drafts and write-safety evidence.
+- Restored the saved reasoning effort when the model picker is rebuilt, so reopening or refreshing the extension no longer falls back to the first displayed effort option.
+
 ## v2.3.3 - 2026-08-18
 
 ### Changed
