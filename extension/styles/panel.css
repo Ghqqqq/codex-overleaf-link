@@ -170,14 +170,14 @@
 }
 
 .codex-provider-dialog-root {
-  --provider-bg: var(--provider-panel-bg, #151716);
+  --provider-bg: #151716;
   --provider-surface: #1c1f1d;
   --provider-surface-raised: #222622;
   --provider-line: rgba(255, 255, 255, 0.12);
   --provider-muted: #a0a59f;
   --provider-accent: #79d58a;
   --provider-danger: #ef8176;
-  --provider-text: var(--provider-panel-color, #eef0ec);
+  --provider-text: #eef0ec;
   --provider-field-label: #dfe3dd;
   --provider-control-bg: rgba(255, 255, 255, 0.035);
   --provider-hover: rgba(255, 255, 255, 0.07);
