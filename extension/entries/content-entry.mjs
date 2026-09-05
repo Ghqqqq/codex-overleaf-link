@@ -16,6 +16,8 @@ import '../src/shared/otText.js';
 import '../src/shared/i18n.js';
 import '../src/shared/models.js';
 import '../src/shared/providerProfiles.js';
+import '../src/shared/globalPreferences.js';
+import '../src/content/globalPreferencesController.js';
 import '../src/shared/runExecutionSnapshotCodec.js';
 import '../src/shared/runExecutionSnapshot.js';
 import '../src/shared/scopedPersistenceQueuePolicy.js';

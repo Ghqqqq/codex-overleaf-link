@@ -21,7 +21,7 @@ export function formatInstallManagedHuman(result) {
     '1. Open chrome://extensions and enable Developer mode.',
     '2. Remove the previous Codex Overleaf Link entry if Chrome shows a duplicate.',
     '3. Choose Load unpacked and select: ' + result.loadUnpackedPath,
-    'Future stable extension and native-host updates will install automatically when Overleaf is saved and idle.',
+    'Future signed stable updates are checked automatically. Choose Update now to authorize a version; installation waits until Overleaf is saved and idle.',
     ''
   ].join('\n');
 }

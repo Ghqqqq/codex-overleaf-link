@@ -758,6 +758,10 @@ function loadBackgroundHarness(options = {}) {
           );
           continue;
         }
+        if (scriptPath === 'shared/globalPreferences.js') {
+          sandbox.CodexOverleafGlobalPreferences = require('../extension/src/shared/globalPreferences');
+          continue;
+        }
         throw new Error(`Unexpected importScripts path: ${scriptPath}`);
       }
     },

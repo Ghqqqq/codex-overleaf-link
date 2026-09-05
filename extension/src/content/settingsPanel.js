@@ -251,10 +251,12 @@
     for (const selector of ['[data-governance-readonly-patterns]', '[data-governance-writable-patterns]', '[data-sensitive-check-enabled]', '[data-sensitive-confirm-allowed]', '[data-preload-project-context]', '[data-load-codex-local-skills]', '[data-load-codex-overleaf-skills]', '[data-theme-select]', '[data-language-select]']) {
       const element = container.querySelector(selector);
       element?.addEventListener?.('change', event => {
-        instance.callbacks.onInputChange?.(event);
-        flashSaved(instance, event);
+        Promise.resolve(instance.callbacks.onInputChange?.(event))
+          .then(() => flashSaved(instance, event)).catch(() => {});
       });
-      element?.addEventListener?.('input', event => instance.callbacks.onInputChange?.(event));
+      element?.addEventListener?.('input', event => {
+        Promise.resolve(instance.callbacks.onInputChange?.(event)).catch(() => {});
+      });
     }
     // Guardrails: live, non-blocking analysis of the protection globs.
     for (const selector of ['[data-governance-readonly-patterns]', '[data-governance-writable-patterns]']) {

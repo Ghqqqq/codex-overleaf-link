@@ -3,7 +3,7 @@
   <h1>Codex Overleaf Link</h1>
   <p><strong>Empower Overleaf with Codex.</strong></p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.3.4-blue" alt="version">
+    <img src="https://img.shields.io/badge/version-2.3.5-blue" alt="version">
     <img src="https://img.shields.io/badge/platform-macOS%20%2F%20Windows%20%2F%20Linux-lightgrey" alt="platform">
     <img src="https://img.shields.io/badge/chrome-MV3-green" alt="chrome manifest v3">
     <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="node version">
@@ -70,14 +70,14 @@ One command installs the managed native host **and** managed extension runtime. 
 macOS / Linux:
 
 ```bash
-CODEX_OVERLEAF_REF=v2.3.4 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.3.4/install.sh)"
+CODEX_OVERLEAF_REF=v2.3.5 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.3.5/install.sh)"
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.3.4/install.ps1 -OutFile install.ps1
-$env:CODEX_OVERLEAF_REF='v2.3.4'
+iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.3.5/install.ps1 -OutFile install.ps1
+$env:CODEX_OVERLEAF_REF='v2.3.5'
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
@@ -88,7 +88,7 @@ Then open `chrome://extensions`, enable **Developer mode**, click **Load unpacke
 `npm exec` installs the same managed native host and extension runtime without keeping a source checkout. Use it if you prefer a pinned npm package.
 
 ```bash
-npm exec --yes codex-overleaf-link@2.3.4 -- install-managed
+npm exec --yes codex-overleaf-link@2.3.5 -- install-managed
 ```
 
 Then, in `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the managed extension path printed by the command. The Release extension zip remains available for explicitly unmanaged/manual installations.
@@ -98,6 +98,8 @@ Then, in `chrome://extensions`, enable **Developer mode**, click **Load unpacked
 Open a project on `overleaf.com` — the Codex panel appears on the right. Use its diagnostics to confirm the native host is connected, then start in **Ask** mode. When you want edits, select **Auto** and choose whether **Track** should be enabled. Auto writes eligible changes directly; Track records supported text edits in Overleaf Reviewing for inspection and acceptance afterward. See [Task Modes And Review](#task-modes-and-review).
 
 Close the panel from its header and reopen it with the Codex edge control on the Overleaf page. The extension popup controls whether that edge entry is shown. The panel supports dark, light, and system appearance, with English and Chinese interface text.
+
+Appearance, language, and global skill preferences synchronize across Overleaf tabs in the same Chrome profile and are restored when you reopen the dashboard or a project. The Preload project context setting is also preserved across refreshes.
 
 The bundled extension key gives the official build a stable id, so normal installs do not need `--extension-id`. If Chrome assigns a custom build a different id, rerun the installer for that installation type with `--extension-id <chrome-extension-id>` so the native manifest `allowed_origins` entry matches. See [Extension ID](#extension-id).
 
@@ -149,6 +151,8 @@ To switch between saved providers, select one in the dialog and choose **Use for
 
 Provider profiles are shared locally across projects, while the active choice applies to **all sessions in the current project**. Switching keeps existing run history and starts fresh provider threads for future turns; model, reasoning, and speed choices may change. Editing a shared profile can affect other projects using it. Submitted and queued runs retain their captured provider configuration; resubmit if a profile change makes that captured revision unavailable.
 
+The project dashboard lets you manage shared provider profiles. Open a project before choosing which provider it should use.
+
 ### Supported API formats
 
 | API protocol | Use it for |
@@ -164,7 +168,7 @@ Advanced settings also expose authentication headers, streaming/buffered respons
 
 Type `@` and choose a file, or select it in the **＋** tray. Choosing a file adds it to persistent focus context; up to five files can be selected, and the tray lets you remove or clear them. With a complete project snapshot, Codex may also read and edit related files. Focus is a hard writeback boundary only for restricted partial-snapshot and OT warm-start runs; use project governance rules for a persistent write restriction.
 
-Include `@compile-log` to request the current project's compile log, errors, and warnings. For a paragraph or section, select its file and name the section or quote the target text in your request. `@current-section` is not currently resolved into an extracted section, even though some interface hints mention it.
+Include `@compile-log` to request the current project's compile log, errors, and warnings. For a paragraph or section, select its file and name the section or quote the target text in your request.
 
 Paste or drop PDFs, images, or other files into the composer as turn-scoped context. The composer accepts **8 attachments**, up to **12 MiB each** and **32 MiB total raw size** per turn. These files are staged locally for Codex and excluded from Overleaf writeback. Unsent attachment restoration after a page reload is limited to a small subset, so check the attachment strip before submitting.
 
@@ -197,9 +201,9 @@ npm installs, updates, and uninstalls the coordinated managed extension/native p
 
 | Action | Command |
 |--------|---------|
-| Install / recover / migrate | `npm exec --yes codex-overleaf-link@2.3.4 -- install-managed` |
-| Diagnose | `npm exec --yes codex-overleaf-link@2.3.4 -- doctor` |
-| Uninstall | `npm exec --yes codex-overleaf-link@2.3.4 -- uninstall-managed` |
+| Install / recover / migrate | `npm exec --yes codex-overleaf-link@2.3.5 -- install-managed` |
+| Diagnose | `npm exec --yes codex-overleaf-link@2.3.5 -- doctor` |
+| Uninstall | `npm exec --yes codex-overleaf-link@2.3.5 -- uninstall-managed` |
 
 Use `--extension-id <chrome-extension-id>` only for a custom/dev unpacked extension id that differs from the official bundled id.
 
@@ -210,7 +214,7 @@ Use `--extension-id <chrome-extension-id>` only for a custom/dev unpacked extens
 Remove the managed extension/native installation (append `--browser chromium` on Linux Chromium):
 
 ```bash
-npm exec --yes codex-overleaf-link@2.3.4 -- uninstall-managed
+npm exec --yes codex-overleaf-link@2.3.5 -- uninstall-managed
 ```
 
 The same command works in Windows PowerShell. It also applies to current `install.sh` / `install.ps1` installations, which install the managed pair.
@@ -218,7 +222,7 @@ The same command works in Windows PowerShell. It also applies to current `instal
 For an unmanaged checkout or native-only installation, use `npm run uninstall:native` from the checkout, or:
 
 ```bash
-npm exec --yes codex-overleaf-link@2.3.4 -- uninstall-native
+npm exec --yes codex-overleaf-link@2.3.5 -- uninstall-native
 ```
 
 If you are removing an older native-only source installation and still have its source checkout, its bundled uninstaller can also be invoked directly:
@@ -244,7 +248,7 @@ Remove the extension entry from `chrome://extensions` as well. To erase saved Co
 For a managed installation, rerun the [managed installer](#install), reload the extension in `chrome://extensions`, then refresh the Overleaf tab. This recovers the coordinated extension/native pair after an incomplete installation or incompatible runtime update.
 
 ```bash
-npm exec --yes codex-overleaf-link@2.3.4 -- install-managed
+npm exec --yes codex-overleaf-link@2.3.5 -- install-managed
 ```
 
 For an unmanaged checkout, rebuild the extension and reinstall its native host from the same checkout. Use PowerShell installation commands on Windows.
@@ -365,13 +369,13 @@ The shipped extension targets `https://overleaf.com/project` and `https://www.ov
 Linux Chromium install or update:
 
 ```bash
-CODEX_OVERLEAF_REF=v2.3.4 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.3.4/install.sh)" -- --browser chromium
+CODEX_OVERLEAF_REF=v2.3.5 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.3.5/install.sh)" -- --browser chromium
 ```
 
 Linux Chromium uninstall:
 
 ```bash
-npm exec --yes codex-overleaf-link@2.3.4 -- uninstall-managed --browser chromium
+npm exec --yes codex-overleaf-link@2.3.5 -- uninstall-managed --browser chromium
 ```
 
 ## Extension ID
@@ -385,27 +389,27 @@ illdpneeeopfffmiepaejglgmhpmdhdc
 The installer uses this id by default. For a managed installation with a custom id, rerun the managed installer with the id shown in `chrome://extensions`:
 
 ```bash
-npm exec --yes codex-overleaf-link@2.3.4 -- install-managed --extension-id <your-chrome-extension-id>
+npm exec --yes codex-overleaf-link@2.3.5 -- install-managed --extension-id <your-chrome-extension-id>
 ```
 
 For an unmanaged extension, use the native-only installer:
 
 ```bash
-npm exec --yes codex-overleaf-link@2.3.4 -- install-native --extension-id <your-chrome-extension-id>
+npm exec --yes codex-overleaf-link@2.3.5 -- install-native --extension-id <your-chrome-extension-id>
 ```
 
 Both npm commands work in PowerShell. Source installers also accept the `CODEX_OVERLEAF_EXTENSION_ID` environment variable. The Native Messaging manifest's `allowed_origins` must match the loaded extension id.
 
 ## GitHub Release Artifacts
 
-The v2.3.4 GitHub Release contains:
+The v2.3.5 GitHub Release contains:
 
-- `codex-overleaf-link-extension-v2.3.4.zip`: loadable Chrome extension package for manual unpacked installation.
-- `codex-overleaf-native-host-v2.3.4.tar.gz`: native host runtime files used by the installer and release verification.
-- `codex-overleaf-update-v2.3.4.tar.gz`: coordinated extension/native bundle used by the managed updater.
-- `codex-overleaf-link-2.3.4.tgz`: npm native host CLI package for pinned install, doctor, and uninstall flows.
-- `install.sh`: release-pinned macOS / Linux installer that defaults to `v2.3.4` when run directly from the release artifact.
-- `install.ps1`: release-pinned Windows PowerShell installer that defaults to `v2.3.4` when run directly from the release artifact.
+- `codex-overleaf-link-extension-v2.3.5.zip`: loadable Chrome extension package for manual unpacked installation.
+- `codex-overleaf-native-host-v2.3.5.tar.gz`: native host runtime files used by the installer and release verification.
+- `codex-overleaf-update-v2.3.5.tar.gz`: coordinated extension/native bundle used by the managed updater.
+- `codex-overleaf-link-2.3.5.tgz`: npm native host CLI package for pinned install, doctor, and uninstall flows.
+- `install.sh`: release-pinned macOS / Linux installer that defaults to `v2.3.5` when run directly from the release artifact.
+- `install.ps1`: release-pinned Windows PowerShell installer that defaults to `v2.3.5` when run directly from the release artifact.
 - `uninstall-native-host.mjs`: native host uninstaller that removes the Chrome Native Messaging manifest, bridge executable, and runtime copy.
 - `nativeHostPlatform.js`, `manifest.js`, `runtimeInstaller.js`: helper files required by the loose uninstaller asset.
 - `SHA256SUMS`, `release-manifest.json`, and `release-manifest.sig`: checksums, release metadata, and its Ed25519 signature.
@@ -420,7 +424,7 @@ Codex Overleaf history and browser extension settings use different stores. The 
 | Area | Location | Contents |
 |------|----------|----------|
 | Browser IndexedDB | Database `codex-overleaf` under the Overleaf page origin | Sessions, turns, events, artifacts, and audit logs. |
-| Browser extension storage | `chrome.storage.local` | Preferences, project settings, governance rules, selected skill ids, and panel state. |
+| Browser extension storage | `chrome.storage.local` | Global UI preferences in `codexOverleafGlobalPrefsV1`, plus project settings, governance rules, selected skill ids, and panel state. |
 | Managed extension | `~/.codex-overleaf/managed/extension` on macOS/Linux; `%LOCALAPPDATA%\CodexOverleaf\managed\extension` on Windows | Stable directory loaded into Chrome, including bootstrap and replaceable runtime files. |
 | Managed native host | `~/.codex-overleaf/managed/native` on macOS/Linux; `%LOCALAPPDATA%\CodexOverleaf\managed\native` on Windows | Versioned runtimes, active/previous version pointers, bootstrap launcher, and update staging. |
 | Source installer checkout | `~/.codex-overleaf/source` on macOS/Linux; `%LOCALAPPDATA%\CodexOverleaf\source` on Windows | Source retained by `install.sh` / `install.ps1`; npm managed installs do not require this checkout. |
@@ -480,8 +484,8 @@ Use this matrix for release-candidate signoff and compatibility reports. Record 
 | Browser/channel/version | Google Chrome channel and version. | Google Chrome channel and version. | Google Chrome channel and version. | Chromium channel/package and version. |
 | Install mode | Managed pair recommended; unmanaged Release zip or checkout also available. | Same as macOS Chrome. | Same as macOS Chrome. | Managed or unmanaged; register with `--browser chromium`. |
 | Extension id | Bundled id `illdpneeeopfffmiepaejglgmhpmdhdc`, or actual custom id passed with `--extension-id`. | Bundled id `illdpneeeopfffmiepaejglgmhpmdhdc`, or actual custom id passed with `--extension-id`. | Bundled id `illdpneeeopfffmiepaejglgmhpmdhdc`, or actual custom id passed with `--extension-id`. | Bundled id `illdpneeeopfffmiepaejglgmhpmdhdc`, or actual custom id passed with `--extension-id`. |
-| Installer/update command | `npm exec --yes codex-overleaf-link@2.3.4 -- install-managed` | `npm exec --yes codex-overleaf-link@2.3.4 -- install-managed` | `npm exec --yes codex-overleaf-link@2.3.4 -- install-managed` | `npm exec --yes codex-overleaf-link@2.3.4 -- install-managed --browser chromium` |
-| Uninstall command | `npm exec --yes codex-overleaf-link@2.3.4 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.3.4 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.3.4 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.3.4 -- uninstall-managed --browser chromium` |
+| Installer/update command | `npm exec --yes codex-overleaf-link@2.3.5 -- install-managed` | `npm exec --yes codex-overleaf-link@2.3.5 -- install-managed` | `npm exec --yes codex-overleaf-link@2.3.5 -- install-managed` | `npm exec --yes codex-overleaf-link@2.3.5 -- install-managed --browser chromium` |
+| Uninstall command | `npm exec --yes codex-overleaf-link@2.3.5 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.3.5 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.3.5 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.3.5 -- uninstall-managed --browser chromium` |
 | Manifest/registry path | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.codex.overleaf.json` | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.codex.overleaf` -> `%LOCALAPPDATA%\CodexOverleaf\native-host-runtime\com.codex.overleaf.json` | `~/.config/google-chrome/NativeMessagingHosts/com.codex.overleaf.json` | `~/.config/chromium/NativeMessagingHosts/com.codex.overleaf.json` |
 | Managed runtime paths | `~/.codex-overleaf/managed/extension` and `~/.codex-overleaf/managed/native`. | `%LOCALAPPDATA%\CodexOverleaf\managed\extension` and `%LOCALAPPDATA%\CodexOverleaf\managed\native`. | Same as macOS Chrome. | Same as macOS Chrome. |
 | Node/Git/Codex/TeX | Record exact versions; see [Requirements](#requirements) for installation and provider prerequisites. | Same as macOS Chrome. | Same as macOS Chrome. | Same as macOS Chrome. |

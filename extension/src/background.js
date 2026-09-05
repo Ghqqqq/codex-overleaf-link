@@ -15,6 +15,11 @@ if (!globalThis.CodexOverleafNativeRequestIdentity) {
     : 'shared/nativeRequestIdentity.js';
   importScripts(runtimeBase ? chrome.runtime.getURL(identityPath) : identityPath);
 }
+if (!globalThis.CodexOverleafGlobalPreferences) {
+  const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
+  importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/shared/globalPreferences.js`) : 'shared/globalPreferences.js');
+}
+globalThis.CodexOverleafGlobalPreferences?.installBackground(chrome);
 
 (function initBackground() {
   'use strict';

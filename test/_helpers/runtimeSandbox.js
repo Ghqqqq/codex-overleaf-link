@@ -65,6 +65,7 @@ const RUNTIME_STUBS = {
   renderRecentProjectsVariant: 'function renderRecentProjectsVariant() { return Promise.resolve(); }',
   isProjectEditorRoute: 'function isProjectEditorRoute() { return true; }',
   // persistence
+  getGlobalPreferences: 'function getGlobalPreferences() { return { handleInput: () => null, overlay: value => value, initialize: async () => null, refreshView() {}, update: async () => {} }; }',
   saveState: 'async function saveState() {}',
   saveStateSoon: 'function saveStateSoon() {}',
   notifyAggressiveCompactionOnce: 'function notifyAggressiveCompactionOnce() {}',

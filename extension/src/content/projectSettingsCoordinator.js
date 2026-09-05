@@ -293,6 +293,7 @@
       });
       saveStateSoon();
       renderLocalSkillList();
+      deps.updateGlobalPreferences?.({ codexOverleafSkillEnabled: { [skillId]: Boolean(enabled) } })?.catch(() => {});
     }
 
     function readSkillLoadingSettingsFromSettings() {

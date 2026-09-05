@@ -1130,6 +1130,7 @@ test('skills entry-row summary tracks the enabled-skill state through the real s
     function setMasterEnabled(value) { state = { ...state, loadCodexOverleafSkills: value }; }
     function saveStateSoon() {}
     // Real localSkillsPanel controller, fed the synthetic state.
+    const deps = { updateGlobalPreferences: async () => {} };
     const localSkillsPanel = LocalSkillsPanel.createLocalSkillsPanelController({
       document: panel.ownerDocument,
       getPanel: () => panel,

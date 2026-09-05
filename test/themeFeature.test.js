@@ -49,7 +49,8 @@ test('contentRuntime applies the theme on render and persists the global prefere
   assert.match(settingsCoordinator, /function applyPanelTheme\(/);
   assert.match(runtime, /applyPanelTheme\(getThemePreference\(\)\)/, 'theme must apply in applyStateToPanel');
   assert.match(settingsCoordinator, /CodexOverleafTheme\.applyTheme/);
-  assert.match(runtime, /state\.theme = themePref/, 'settings change must persist theme onto state');
+  assert.match(runtime, /getGlobalPreferences\(\)\.handleInput\(event\)/, 'explicit settings input must use global field patches');
+  assert.doesNotMatch(runtime, /state\.theme = themePref/, 'ordinary session saves must not re-read and overwrite global preferences');
   assert.match(runtime, /theme:\s*\['dark', 'light', 'auto'\]\.includes\(prefs\.theme\)/, 'scoped hydration must restore the saved theme');
   assert.match(runtime, /theme:\s*\['dark', 'light', 'auto'\]\.includes\(fallback\.theme\)/, 'fallback hydration must restore the saved theme');
 });

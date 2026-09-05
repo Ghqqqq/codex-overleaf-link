@@ -191,6 +191,14 @@
   position: fixed;
   inset: 0;
   z-index: 2147483600;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  width: 100vw;
+  max-width: none;
+  height: 100vh;
+  max-height: none;
+  background: transparent;
   color: var(--provider-text);
   font-family: "Aptos", "SF Pro Text", sans-serif;
 }
@@ -217,6 +225,7 @@
 }
 
 .codex-provider-dialog-root[hidden] { display: none !important; }
+.codex-provider-dialog-root::backdrop { background: transparent; }
 
 .codex-provider-dialog-backdrop {
   position: absolute;
@@ -1801,9 +1810,15 @@
   box-sizing: border-box;
   width: var(--codex-overleaf-panel-width);
   height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  color: inherit;
   padding: 14px;
   background: rgba(12, 12, 12, 0.68);
 }
+#codex-overleaf-panel .codex-plugin-confirm::backdrop { background: transparent; }
 
 #codex-overleaf-panel .codex-plugin-confirm-card {
   width: 100%;

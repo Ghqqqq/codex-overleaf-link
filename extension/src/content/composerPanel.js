@@ -110,7 +110,7 @@
             </span>
           </div>
           <div class="codex-context-selection" data-context-selection></div>
-          <div class="codex-context-status" data-context-status>Type @ to add context: @file, @compile-log, @current-section.</div>
+          <div class="codex-context-status" data-context-status>Type @ to choose files or add @compile-log. Name the section you want in your request.</div>
           <div class="codex-context-files" data-context-file-list></div>
         </div>
       </form>

@@ -327,7 +327,8 @@
 
       return new Promise(resolve => {
         let settled = false;
-        const overlay = doc.createElement('div');
+        const returnFocus = doc.activeElement;
+        const overlay = doc.createElement('dialog');
         overlay.className = 'codex-plugin-confirm';
         overlay.setAttribute('data-plugin-confirm', 'true');
         overlay.setAttribute('role', 'dialog');
@@ -371,13 +372,16 @@
         card.append(head, body, actions);
         overlay.append(card);
         panel.append(overlay);
+        overlay.showModal?.();
 
         const cleanup = value => {
           if (settled) return;
           settled = true;
           activeResolve = null;
           doc.removeEventListener('keydown', onKeydown, true);
+          overlay.close?.();
           overlay.remove();
+          returnFocus?.focus?.();
           resolve(value);
         };
         activeResolve = cleanup;
@@ -398,6 +402,7 @@
         overlay.addEventListener('click', event => {
           if (event.target === overlay) cleanup(false);
         });
+        overlay.addEventListener('cancel', event => { event.preventDefault(); cleanup(false); });
         cancel.addEventListener('click', () => cleanup(false));
         confirm.addEventListener('click', () => cleanup(true));
         doc.addEventListener('keydown', onKeydown, true);

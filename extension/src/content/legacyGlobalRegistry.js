@@ -27,6 +27,8 @@
     'DiffReviewPanel',
     'FailureReasons',
     'GovernanceRules',
+    'GlobalPreferences',
+    'GlobalPreferencesController',
     'I18n',
     'LineReferences',
     'LocalSkillsPanel',

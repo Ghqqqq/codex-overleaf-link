@@ -47,12 +47,13 @@
     if (instance.root) {
       return instance.root;
     }
-    const root = instance.document.createElement('div');
+    const root = instance.document.createElement('dialog');
     root.className = 'codex-provider-dialog-root';
+    root.setAttribute('aria-labelledby', 'codex-provider-dialog-title');
     root.hidden = true;
     root.innerHTML = `
       <div class="codex-provider-dialog-backdrop" data-provider-backdrop></div>
-      <section class="codex-provider-dialog" role="dialog" aria-modal="true" aria-labelledby="codex-provider-dialog-title">
+      <section class="codex-provider-dialog">
         <header class="codex-provider-dialog-head">
           <div class="codex-provider-dialog-heading">
             <div class="codex-provider-dialog-titleline">
@@ -79,6 +80,7 @@
     root.addEventListener('input', event => handleInput(instance, event));
     root.addEventListener('change', event => handleInput(instance, event));
     root.addEventListener('keydown', event => handleKeydown(instance, event));
+    root.addEventListener('cancel', event => { event.preventDefault(); requestClose(instance); });
     root.addEventListener('mousedown', event => event.stopPropagation());
     root.addEventListener('click', event => event.stopPropagation());
     return root;
@@ -89,9 +91,12 @@
     instance.root.hidden = false;
     syncTheme(instance);
     setCatalog(instance, catalog || instance.catalog);
+    if (!instance.root.open) instance.root.showModal?.();
     queueMicrotask(() => {
-      instance.root.querySelector('[data-provider-row][aria-current="true"]')?.focus?.()
-        || instance.root.querySelector('input, button, select, textarea')?.focus?.();
+      if (!instance.root || instance.root.hidden) return;
+      const target = instance.root.querySelector('[data-provider-row][aria-current="true"]')
+        || instance.root.querySelector('input, button, select, textarea');
+      target?.focus?.();
     });
   }
 
@@ -106,6 +111,7 @@
       instance.callbacks.onCancelTest?.();
       instance.busy = '';
     }
+    instance.root.close?.();
     instance.root.hidden = true;
     instance.busy = '';
     instance.returnFocus?.focus?.();
@@ -159,6 +165,9 @@
       "Configure experimental third-party integrations used by this project's future Codex runs. Compatibility varies by provider and gateway.",
       '配置当前项目后续 Codex 任务使用的实验性第三方集成；兼容性取决于具体模型服务与网关。'
     );
+    if (instance.callbacks.hasCurrentProject?.() === false) instance.root.querySelector('[data-provider-dialog-subtitle]').textContent = tx(
+      'Manage shared model API profiles. Open a project to choose which provider its future turns use.',
+      '管理共享模型 API 配置。进入项目后，再选择该项目后续任务使用的服务。');
     renderProviderList(instance);
     renderDetail(instance);
     renderFooter(instance);
@@ -408,8 +417,8 @@
       <label class="codex-provider-disclosure">
           <input type="checkbox" data-provider-disclosure ${disclosureSatisfied ? 'checked' : ''}>
           <span data-provider-disclosure-text>${escapeHtml(tx(
-            `Future Codex runs in every Overleaf project tab may send selected project content to ${draft.baseUrl || 'this endpoint'}.`,
-            `所有 Overleaf 项目标签页的后续 Codex 任务都可能把所选项目内容发送到 ${draft.baseUrl || '此端点'}。`
+            `Projects using this shared provider may send task context to ${draft.baseUrl || 'this endpoint'}. Each project chooses its own provider.`,
+            `使用此共享服务配置的项目可能把任务上下文发送到 ${draft.baseUrl || '此端点'}。各项目独立选择使用的服务。`
           ))}</span>
       </label>
       <div class="codex-provider-test-row">
@@ -456,7 +465,7 @@
           'Uses the authentication, model catalog, and provider configuration managed by the local Codex CLI.',
           '使用本地 Codex CLI 管理的身份验证、模型目录和服务配置。'
         ))}</p>
-        ${active
+        ${instance.callbacks.hasCurrentProject?.() === false ? '' : active
           ? `<span class="codex-provider-active-badge">${escapeHtml(tx('Current project', '当前项目'))}</span>`
           : `<button type="button" class="codex-provider-primary-button" data-provider-action="activate-builtin">${escapeHtml(tx('Use for this project', '用于当前项目'))}</button>`}
       </div>
@@ -464,6 +473,7 @@
   }
 
   function getCurrentProjectProviderId(instance) {
+    if (instance.callbacks.hasCurrentProject?.() === false) return '';
     const providerId = instance.callbacks.getCurrentProjectProviderId?.();
     return typeof providerId === 'string' && providerId.trim()
       ? providerId.trim()
@@ -487,6 +497,7 @@
       dirty: instance.dirty,
       destinationChanged,
       canSave: canSaveCurrentDraft(instance),
+      hasProject: instance.callbacks.hasCurrentProject?.() !== false,
       canActivate: canActivateCurrentProvider(instance)
     });
     const saveDisabled = actionState.saveEnabled ? '' : ' disabled aria-disabled="true"';
@@ -508,8 +519,8 @@
     const dirty = options.dirty === true;
     return {
       showSave: isNew || dirty,
-      showSaveAndUse: (isNew || dirty) && (!active || options.destinationChanged === true),
-      showUse: !isNew && !active && !dirty,
+      showSaveAndUse: options.hasProject !== false && (isNew || dirty) && (!active || options.destinationChanged === true),
+      showUse: options.hasProject !== false && !isNew && !active && !dirty,
       saveEnabled: options.canSave === true,
       useEnabled: options.canActivate === true
     };
@@ -662,7 +673,7 @@
       return;
     }
     const focusable = Array.from(instance.root.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])'))
-      .filter(element => !element.closest('[hidden]'));
+      .filter(element => !element.closest('[hidden]') && (!element.getClientRects || element.getClientRects().length));
     if (!focusable.length) {
       return;
     }
@@ -941,8 +952,8 @@
     if (!text) return;
     const baseUrl = getCurrentBaseUrl(instance) || instance.tx('this endpoint', '此端点');
     text.textContent = instance.tx(
-      `Future Codex runs in every Overleaf project tab may send selected project content to ${baseUrl}.`,
-      `所有 Overleaf 项目标签页的后续 Codex 任务都可能把所选项目内容发送到 ${baseUrl}。`
+      `Projects using this shared provider may send task context to ${baseUrl}. Each project chooses its own provider.`,
+      `使用此共享服务配置的项目可能把任务上下文发送到 ${baseUrl}。各项目独立选择使用的服务。`
     );
   }
 
@@ -1011,6 +1022,7 @@
   }
 
   function destroy(instance) {
+    instance.root?.close?.();
     instance.root?.remove?.();
     instance.root = null;
   }

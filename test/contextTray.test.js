@@ -164,7 +164,8 @@ test('add context button opens a visible Overleaf project file picker', () => {
   assert.match(i18n, /removeContextFile:\s*'从 @context 移除 \{path\}'/);
   assert.match(i18n, /addContext:\s*'添加 @ 上下文'/);
   assert.match(panelSource, /@compile-log/);
-  assert.match(panelSource, /@current-section/);
+  assert.doesNotMatch(panelSource, /@current-section/);
+  assert.doesNotMatch(i18n, /@current-section/);
   assert.match(contentScript, /focusFiles: getActiveFocusFiles\(\)/);
   assert.equal(contentScript.includes('Add context uses the active Overleaf project snapshot automatically.'), false);
   assert.match(css, /\.codex-context-tray/);

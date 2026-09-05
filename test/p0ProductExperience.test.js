@@ -1755,7 +1755,7 @@ test('running tasks are only marked interrupted when restoring persisted state a
     'utf8'
   );
 
-  assert.match(contentScript, /normalizePanelState\(await loadStoredState\(\),\s*\{\s*restoreRunningRuns:\s*true\s*\}\)/);
+  assert.match(contentScript, /normalizePanelState\(getGlobalPreferences\(\)\.overlay\(await loadStoredState\(\)\),\s*\{\s*restoreRunningRuns:\s*true\s*\}\)/);
   assert.match(sessionState, /restoreRunningRuns/);
   assert.doesNotMatch(sessionState, /Run interrupted by page reload/);
   assert.doesNotMatch(sessionState, /Interrupted by page reload/);

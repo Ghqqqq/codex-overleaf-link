@@ -14,6 +14,7 @@
       getSettingsPanelInstance: options.getSettingsPanelInstance || (() => null),
       getSelectedModel: options.getSelectedModel || (() => ''),
       getSelectedProviderId: options.getSelectedProviderId || (() => 'builtin'),
+      hasCurrentProject: options.hasCurrentProject || (() => true),
       setSelectedProviderId: options.setSelectedProviderId || (() => {}),
       confirmProviderSwitch: options.confirmProviderSwitch || (() => true),
       clearSelectedModel: options.clearSelectedModel || (() => {}),
@@ -43,6 +44,7 @@
       tx: instance.tx,
       ProviderProfiles: Profiles,
       callbacks: {
+        hasCurrentProject: instance.hasCurrentProject,
         getCurrentProjectProviderId: () => instance.getSelectedProviderId() || 'builtin',
         onTest: context => testProvider(instance, context),
         onCancelTest: () => cancelProviderTest(instance),
@@ -208,6 +210,7 @@
   }
 
   async function prepareProviderActivation(instance, providerId) {
+    requireCurrentProject(instance);
     const previousProviderId = instance.getSelectedProviderId() || 'builtin';
     const provider = instance.Profiles.getProviderById(instance.catalog, providerId);
     if (providerId !== previousProviderId) {
@@ -301,6 +304,7 @@
   async function saveProvider(instance, context, action = {}) {
     instance.dialog.setBusy('saving', instance.tx('Saving provider…', '正在保存模型服务…'));
     try {
+      if (action.activate === true) requireCurrentProject(instance);
       const result = await request(instance, 'codex.providers.upsert', {
         profileId: context.profileId,
         expectedRevision: context.expectedRevision,
@@ -495,6 +499,12 @@
   }
 
   function updateSettingsSummary(instance, override = {}) {
+    if (!instance.hasCurrentProject()) {
+      instance.getSettingsPanelInstance()?.setProviderSummary?.({ summary: instance.tx(
+        'Shared model API profiles · open a project to select a provider',
+        '共享模型 API 配置 · 进入项目后选择使用的服务'), tone: 'info' });
+      return;
+    }
     const selectedProviderId = instance.getSelectedProviderId() || 'builtin';
     const catalogProvider = instance.Profiles.getProviderById(
       instance.catalog,
@@ -592,6 +602,11 @@
         reasoningEfforts: model.reasoningEfforts || []
       }))
     });
+  }
+
+  function requireCurrentProject(instance) {
+    if (!instance.hasCurrentProject()) throw createClientError(
+      'provider_project_required', instance.tx('Open an Overleaf project before selecting its provider.', '请先进入 Overleaf 项目，再选择该项目使用的模型服务。'));
   }
 
   function emptyCatalogChange() {

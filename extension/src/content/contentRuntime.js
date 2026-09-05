@@ -217,6 +217,7 @@
     renderAuditHistoryPanel: () => renderAuditHistoryPanel(),
     renderRecentProjectsVariant: (...args) => renderRecentProjectsVariant(...args),
     saveStateSoon: () => saveStateSoon(),
+    updateGlobalPreferences: patch => getGlobalPreferences().update(patch),
     setState: next => { state = next; },
     tr,
     tx,
@@ -664,6 +665,7 @@
   const providerSettingsCoordinator = Modules.ProviderSettingsCoordinator.create({
     ProviderProfiles: Modules.ProviderProfiles,
     ProviderSettingsDialog: Modules.ProviderSettingsDialog,
+    hasCurrentProject: () => Boolean(getCurrentProjectId()),
     tx,
     sendBackgroundNative,
     document,
@@ -840,6 +842,7 @@
   let composerPanelInstance = null;
   let state = null;
   let storageKey = LEGACY_STORAGE_KEY;
+  let globalPreferencesController = null;
   let currentRunView = null;
   let pendingRetryReplacement = null;
   let runQueueScheduler = null;
@@ -975,9 +978,10 @@
   });
 
   async function init() {
+    await getGlobalPreferences().initialize();
     await refreshAccountScopeId();
     storageKey = getProjectStorageKey(LEGACY_STORAGE_KEY, window.location.href);
-    state = normalizePanelState(await loadStoredState(), { restoreRunningRuns: true });
+    state = normalizePanelState(getGlobalPreferences().overlay(await loadStoredState()), { restoreRunningRuns: true });
     initializeRunQueueScheduler();
     recoverInterruptedRunJournals()
       .then(() => applyStateToPanel())
@@ -999,6 +1003,7 @@
       recentProjects.mountDashboardShell();
     }
     applyStateToPanel();
+    getGlobalPreferences().refreshView();
     // Welcome-panel + write-guard: seed the lifecycle
     // module-locals from the current URL, install the SPA route hook so
     // future Overleaf navigations swap variants, and warm the account-scope
@@ -1263,7 +1268,7 @@
         button: panel.querySelector('[data-custom-instructions-settings]'),
         callbacks: {
           onBack: () => closeCustomInstructionsSettings(),
-          onInputChange: () => persistPanelInputs(),
+          onInputChange: event => persistPanelInputs(event),
           onSkillsOpen: () => openSkillsView(),
           onSkillsBack: () => closeSkillsView(),
           onProvidersOpen: () => providerSettingsCoordinator.open(),
@@ -4332,6 +4337,19 @@
     return scopedPersistenceCoordinator;
   }
 
+  function getGlobalPreferences() {
+    if (!globalPreferencesController) globalPreferencesController = Modules.GlobalPreferencesController.create({
+      chromeApi: chrome, getState: () => state, setState: next => { state = next; }, getPanel: () => panel,
+      applyTheme: applyPanelTheme, applyLocale: () => { applyLocaleToPanel(); refreshDashboardSoon(); },
+      onPreloadChange: enabled => contextTrayController.scheduleContextPrefetch({ enabled }),
+      onSkillsChange: () => { renderLocalSkillList(); updateSkillsEntrySummary(); },
+      onError: error => showPluginToast(tx(
+        `Global settings could not be saved or loaded: ${error.message}. Please retry.`,
+        `全局设置未能保存或读取：${error.message}。请重试。`), { status: 'failed', sticky: true })
+    });
+    return globalPreferencesController;
+  }
+
   async function reloadProjectRunHistory(newProjectId) {
     // Rebind the storage key to the new project and reload the panel state
     // from chrome.storage.local so the per-project session list reflects
@@ -4339,7 +4357,7 @@
     try {
       storageKey = getProjectStorageKey(LEGACY_STORAGE_KEY, window.location.href);
       const reloaded = await loadStoredState();
-      state = normalizePanelState(reloaded, { restoreRunningRuns: true });
+      state = normalizePanelState(getGlobalPreferences().overlay(reloaded), { restoreRunningRuns: true });
       applyStateToPanel();
     } catch (_error) {
       // Reload failures fall back to the in-memory state; the next saveState
@@ -5077,8 +5095,8 @@
     return fileItems.length
       ? fileItems.join(', ')
       : tx(
-        '@whole-project (default); add @file, @compile-log, or @current-section',
-        '@whole-project（默认）；可添加 @file、@compile-log、@current-section'
+        '@whole-project (default); choose files or add @compile-log',
+        '@whole-project（默认）；可选择文件或添加 @compile-log'
       );
   }
 
@@ -5911,6 +5929,8 @@
   }
 
   async function persistPanelInputs(event) {
+    const globalWrite = getGlobalPreferences().handleInput(event);
+    if (globalWrite) return globalWrite;
     // Typing in the task box is the hottest write path: a full saveState per
     // keystroke serializes every session/run/event and rewrites IndexedDB, so
     // panels get slower as history grows. Drafts take the debounced saver;
@@ -6009,29 +6029,8 @@
         setCustomInstructionsForProject(projectId, customInstructionsInput.value);
       }
       setGovernanceRulesForCurrentProject(readGovernanceRulesFromSettings());
-      const newSettings = readSkillLoadingSettingsFromSettings();
-      const prevOverleafSkills = getSkillLoadingSettings().loadCodexOverleafSkills;
-      setSkillLoadingSettings(newSettings);
-      // Theme is a global preference; read it from the settings select (which
-      // lives inside the panel, like the other settings inputs), persist it on
-      // state, and apply immediately. applyPanelTheme normalizes the value.
-      const themePref = panel?.querySelector('[data-theme-select]')?.value || 'dark';
-      if (state) {
-        state.theme = themePref;
-      }
-      applyPanelTheme(themePref);
-      // Language is a global UI preference (moved here from the diagnostics
-      // menu); re-translate the panel when it changes.
-      const languagePref = panel?.querySelector('[data-language-select]')?.value;
-      if (languagePref && state && languagePref !== getLocale()) {
-        state.locale = i18n?.normalizeLocale?.(languagePref) || languagePref;
-        applyLocaleToPanel();
-      }
-      // Re-render skill list when master toggle changes so per-skill toggles update their disabled state.
-      if (prevOverleafSkills !== getSkillLoadingSettings().loadCodexOverleafSkills) {
-        renderLocalSkillList();
-      }
-      updateSkillsEntrySummary();
+      // Global controls are handled as field patches by getGlobalPreferences;
+      // unrelated session autosaves must not read stale settings controls.
     }
   }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.3.5 - 2026-09-06
+
+### Fixed
+
+- Persist appearance, language, and global skill settings independently of project sessions, restoring them on the project dashboard and synchronizing open Overleaf tabs without stale session saves overwriting newer preferences.
+- Preserve the disabled Preload project context setting across refreshes and projects, including migration of existing preferences and cancellation of pending automatic preloads.
+- Display provider settings and their confirmation dialogs in the browser's modal top layer so the Codex side panel cannot obscure their controls; keep theme changes and keyboard focus consistent while dialogs are open.
+- Limit provider activation to an open project, while keeping shared provider configuration available from the dashboard.
+- Remove unsupported current-section context hints and align provider disclosure and installer update guidance with the current project-selection and per-version update-authorization flows.
+
 ## v2.3.4 - 2026-09-04
 
 ### Added

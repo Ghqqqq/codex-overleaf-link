@@ -51,6 +51,9 @@
     const resolved = resolveTheme(preference, mediaQueryList);
     if (panelRoot && typeof panelRoot.setAttribute === 'function') {
       panelRoot.setAttribute('data-theme', resolved);
+      for (const target of panelRoot.ownerDocument?.querySelectorAll?.('.codex-provider-dialog-root, #codex-overleaf-launcher') || []) {
+        target.setAttribute('data-theme', resolved);
+      }
     }
     return resolved;
   }
