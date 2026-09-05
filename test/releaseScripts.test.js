@@ -481,6 +481,39 @@ releaseTest('managed update boundary permits only the bootstrap manifest release
   }), /must match their package release versions/);
 });
 
+releaseTest('managed update boundary allows the fixed installer update-consent message correction', async () => {
+  const { isManagedInstallerCopyOnlyChange } = await importScriptModule('scripts/verify-update-boundary.mjs');
+  const currentSource = readText(path.join(repoRoot, 'scripts/install-managed.mjs'));
+  const previousSource = currentSource.replace(
+    'Future signed stable updates are checked automatically. Choose Update now to authorize a version; installation waits until Overleaf is saved and idle.',
+    'Future stable extension and native-host updates will install automatically when Overleaf is saved and idle.'
+  );
+
+  assert.notEqual(previousSource, currentSource);
+  assert.equal(isManagedInstallerCopyOnlyChange(previousSource, currentSource), true);
+  assert.equal(isManagedInstallerCopyOnlyChange(currentSource, previousSource), false);
+});
+
+releaseTest('managed update boundary still rejects installer code changes alongside copy corrections', async () => {
+  const { isManagedInstallerCopyOnlyChange } = await importScriptModule('scripts/verify-update-boundary.mjs');
+  const currentSource = readText(path.join(repoRoot, 'scripts/install-managed.mjs'));
+  const previousSource = currentSource.replace(
+    'Future signed stable updates are checked automatically. Choose Update now to authorize a version; installation waits until Overleaf is saved and idle.',
+    'Future stable extension and native-host updates will install automatically when Overleaf is saved and idle.'
+  );
+  const modifiedSources = [
+    currentSource.replace('../native-host/src/managedInstall.js', '../native-host/src/other.js'),
+    currentSource.replace('installManagedDistribution({ ...options,', 'installManagedDistribution({ force: true, ...options,'),
+    currentSource.replace("arg === '--extension-id'", "arg === '--different-id'"),
+    currentSource.replace('Choose Update now to authorize a version;', 'All updates are already authorized;'),
+    currentSource + '\nconsole.log("extra executable code");\n'
+  ];
+  for (const modifiedSource of modifiedSources) {
+    assert.notEqual(modifiedSource, currentSource);
+    assert.equal(isManagedInstallerCopyOnlyChange(previousSource, modifiedSource), false);
+  }
+});
+
 releaseTest('README documents the npm tarball in GitHub Release artifacts', () => {
   const readme = readText(path.join(repoRoot, 'README.md'));
   const changelog = readText(path.join(repoRoot, 'CHANGELOG.md'));

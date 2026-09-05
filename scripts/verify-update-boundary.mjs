@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BOOTSTRAP_MANIFEST_PATH = 'extension/bootstrap/manifest.template.json';
+const MANAGED_INSTALLER_PATH = 'scripts/install-managed.mjs';
 
 if (process.env.CODEX_OVERLEAF_TEST_IMPORT !== '1') {
   verifyUpdateBoundary();
@@ -22,7 +23,7 @@ function verifyUpdateBoundary() {
     'native-host/src/managedLauncherRuntime.js',
     'native-host/src/nativeHostPlatform.js',
     'native-host/src/manifest.js',
-    'scripts/install-managed.mjs',
+    MANAGED_INSTALLER_PATH,
     'scripts/install-native-host.mjs'
   ];
 
@@ -38,7 +39,14 @@ function verifyUpdateBoundary() {
     '--',
     ...protectedPaths
   ]).split('\n').map(value => value.trim()).filter(Boolean);
-  const incompatibleChanges = changed.filter(relativePath => relativePath !== BOOTSTRAP_MANIFEST_PATH);
+  const incompatibleChanges = changed.filter(relativePath => {
+    if (relativePath === BOOTSTRAP_MANIFEST_PATH) return false;
+    if (relativePath !== MANAGED_INSTALLER_PATH) return true;
+    return !isManagedInstallerCopyOnlyChange(
+      git(['show', `${baseRef}:${relativePath}`]),
+      git(['show', `HEAD:${relativePath}`])
+    );
+  });
   const previousPackage = JSON.parse(git(['show', `${baseRef}:package.json`]));
   const previousBootstrapProtocol = readBootstrapProtocol(`${baseRef}:native-host/src/updateTrust.js`);
   const currentBootstrapProtocol = readBootstrapProtocol(path.join(rootDir, 'native-host/src/updateTrust.js'));
@@ -113,6 +121,15 @@ function parseReleaseVersion(value) {
     minor: Number(match[2]),
     patch: Number(match[3])
   };
+}
+
+export function isManagedInstallerCopyOnlyChange(previousSource, currentSource) {
+  // Permit this fixed human-readable message correction only. All other bytes,
+  // including imports, argument parsing and install logic, must stay identical.
+  const previousLine = "    'Future stable extension and native-host updates will install automatically when Overleaf is saved and idle.',";
+  const currentLine = "    'Future signed stable updates are checked automatically. Choose Update now to authorize a version; installation waits until Overleaf is saved and idle.',";
+  return previousSource.includes(previousLine) &&
+    previousSource.replace(previousLine, currentLine) === currentSource;
 }
 
 export function assertBootstrapManifestVersionTransition({
