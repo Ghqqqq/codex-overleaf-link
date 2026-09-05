@@ -25,7 +25,9 @@ function noopEl() {
     style: { setProperty() {} }, dataset: {}, remove() {}, replaceChildren() {}, replaceWith() {},
     cloneNode() { return noopEl(); }, contains() { return false; }, focus() {}, select() {},
     insertBefore() {}, closest() { return null; }, add() {},
-    options: [], selectedIndex: 0, checked: false,
+    // Startup can render a toast when a stubbed background response cannot
+    // load global preferences. Real elements always expose this collection.
+    children: [], options: [], selectedIndex: 0, checked: false,
     innerHTML: '', textContent: '', value: '', hidden: false, disabled: false, title: ''
   };
 }
