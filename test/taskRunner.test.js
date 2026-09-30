@@ -65,7 +65,14 @@ function loadTaskRunnerWithFakeRunner(fakeRunner, options = {}) {
 
   let taskRunner;
   try {
-    if (options.refreshEnvironment) require.cache[environmentPath].exports = { ...originalEnvironment, refreshCodexRuntimeEnv: options.refreshEnvironment };
+    // Pair the fake session runner with a deterministic CLI environment. Tests
+    // for a missing CLI can still inject their explicit refreshEnvironment.
+    require.cache[environmentPath].exports = {
+      ...originalEnvironment,
+      refreshCodexRuntimeEnv: options.refreshEnvironment || (env => ({ ...env,
+        CODEX_OVERLEAF_ENV_READY: '1', CODEX_OVERLEAF_CODEX_PATH: process.execPath,
+        CODEX_OVERLEAF_CODEX_RUNTIME_JSON: '' }))
+    };
     taskRunner = require(taskRunnerPath);
   } finally {
     require.cache[runnerPath].exports = originalRunner;
