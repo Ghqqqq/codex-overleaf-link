@@ -75,6 +75,7 @@
       mirror: summarizeMirror(input.mirror),
       auditLogs: summarizeAuditLogList(input.auditLogs),
       run: summarizeRun(input.run),
+      ...(Array.isArray(input.recentRuns) ? { recentRuns: input.recentRuns.slice(0, 8).map(summarizeRun) } : {}),
       governance: summarizeGovernance(input.governance),
       projectIdHash: hashString(stringField(input.projectId))
     };
@@ -272,9 +273,22 @@
   }
 
   function summarizeRun(run = {}) {
+    run = run && typeof run === 'object' && !Array.isArray(run) ? run : {};
+    const captures = Array.isArray(run.trackedChangeCaptures) ? run.trackedChangeCaptures : [];
     return removeEmptySummaryFields({
       id: redactSecretLikeText(stringField(run.id)),
       status: redactSecretLikeText(stringField(run.status)),
+      startedAt: redactSecretLikeText(stringField(run.startedAt)),
+      finishedAt: redactSecretLikeText(stringField(run.finishedAt)),
+      requireReviewing: typeof run.executionSnapshot?.requireReviewing === 'boolean'
+        ? run.executionSnapshot.requireReviewing : undefined,
+      trackedChangeStatus: diagnosticToken(run.trackedChangeStatus),
+      undoStatus: diagnosticToken(run.undoStatus),
+      appliedOperationCount: Array.isArray(run.appliedOperations) ? run.appliedOperations.length : undefined,
+      undoTrackedChangeCount: Array.isArray(run.undoTrackedChanges) ? run.undoTrackedChanges.length : undefined,
+      captureCount: Array.isArray(run.trackedChangeCaptures) ? captures.length : undefined,
+      capturesTruncated: captures.length > 20 ? true : undefined,
+      trackedChangeCaptures: captures.slice(0, 20).map(summarizeTrackedCapture),
       errorCode: redactSecretLikeText(stringField(run.errorCode)),
       errorCategory: categorizeError(run.errorCode || run.message || run.error),
       events: (Array.isArray(run.events) ? run.events : []).map(event => removeEmptyFields({
@@ -284,6 +298,63 @@
         errorCategory: categorizeError(event.errorCode || event.message || event.error),
         kind: redactSecretLikeText(stringField(event.kind))
       }))
+    });
+  }
+
+  // Export only proof metadata, never document text, prompts, labels or raw IDs.
+  function diagnosticToken(value) {
+    const text = redactSecretLikeText(stringField(value));
+    return /^[a-z][a-z0-9_]{0,79}$/.test(text) ? text : undefined;
+  }
+
+  function diagnosticNumbers(value, keys) {
+    const source = value && typeof value === 'object' ? value : {};
+    const result = {};
+    for (const key of keys) {
+      if (Number.isSafeInteger(source[key]) && source[key] >= 0) result[key] = source[key];
+    }
+    return result;
+  }
+
+  function diagnosticFingerprint(value) {
+    return typeof value === 'string' && /^\d{1,16}:[a-f0-9]{1,8}:[a-f0-9]{1,8}$/.test(value)
+      ? value : undefined;
+  }
+
+  function summarizeTrackedCapture(value) {
+    const capture = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const before = Array.isArray(capture.before) ? capture.before : [];
+    const refs = Array.isArray(capture.refs) ? capture.refs : [];
+    const ranges = Array.isArray(capture.ranges) ? capture.ranges : [];
+    const diagnostics = capture.diagnostics || {};
+    const refSummary = ref => removeEmptySummaryFields({
+      idHash: stringField(ref?.id) ? hashString(ref.id) : undefined,
+      kind: diagnosticToken(ref?.kind),
+      ...diagnosticNumbers(ref, ['from', 'to', 'textLength']),
+      textHash: diagnosticFingerprint(ref?.textHash)
+    });
+    return removeEmptySummaryFields({
+      pathHash: stringField(capture.path) ? hashString(capture.path) : undefined,
+      nativeDocIdHash: stringField(capture.nativeDocId) ? hashString(capture.nativeDocId) : undefined,
+      state: diagnosticToken(capture.state), reason: diagnosticToken(capture.reason),
+      source: diagnosticToken(capture.source),
+      ...diagnosticNumbers(capture, ['startedAt', 'expiresAt']),
+      expectedFingerprint: diagnosticFingerprint(capture.expected),
+      beforeCount: before.length, refCount: refs.length, rangeCount: ranges.length,
+      truncated: before.length > 1200 || refs.length > 1200 || ranges.length > 1000 ? true : undefined,
+      before: before.slice(0, 1200).map(refSummary),
+      refs: refs.slice(0, 1200).map(refSummary),
+      ranges: ranges.slice(0, 1000).map(range => removeEmptySummaryFields({
+        ...diagnosticNumbers(range, ['from', 'to', 'start', 'end', 'removedLength']),
+        removedHash: diagnosticFingerprint(range?.removedHash)
+      })),
+      diagnostics: removeEmptySummaryFields({
+        ...diagnosticNumbers(diagnostics, ['beforeCount', 'afterCount', 'capturedCount',
+          'filteredCount', 'polls', 'elapsedMs', 'waitMs']),
+        reason: diagnosticToken(diagnostics.reason),
+        source: diagnosticToken(diagnostics.source),
+        sourceReason: diagnosticToken(diagnostics.sourceReason)
+      })
     });
   }
 

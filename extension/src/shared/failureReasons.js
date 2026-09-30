@@ -158,6 +158,26 @@
       fallbackUserMessage: 'Create/delete/rename/move did not appear in the file tree as expected.',
       fallbackNextAction: 'Inspect the file tree and retry if needed.'
     },
+    source_zip_unavailable: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: true,
+      fallbackUserMessage: 'The project could not be checked before uploading this file.',
+      fallbackNextAction: 'Retry sync; only missing files will be uploaded.'
+    },
+    file_upload_unconfirmed: {
+      stage: 'verify', severity: 'warning', defaultRetryable: true,
+      fallbackUserMessage: 'The file was submitted, but its saved content is not yet confirmed.',
+      fallbackNextAction: 'Check the file before retrying; matching content will not be uploaded twice.'
+    },
+    subagent_unfinished_output: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'A subagent stopped before finishing this file; the main agent must review and adopt it.',
+      fallbackNextAction: 'Have the main agent complete and adopt the pending file.'
+    },
+    subagent_unauthorized_edit: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'A file changed outside the subagent ownership boundary and was not synced.',
+      fallbackNextAction: 'Review the ownership violation; it cannot be cleared through output adoption.'
+    },
     partial_write_needs_review: {
       stage: 'verify', severity: 'warning', defaultRetryable: false,
       fallbackUserMessage: 'Some operations wrote, some were skipped.',

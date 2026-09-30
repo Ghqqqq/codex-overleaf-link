@@ -16,6 +16,7 @@ const require = createRequire(import.meta.url);
 const { buildManagedExtensionTree } = require('../native-host/src/managedInstall.js');
 const { buildRuntimeFileManifest } = require('../native-host/src/runtimeInstaller.js');
 const { createUpdateBundleArchive } = require('../native-host/src/updateArchive.js');
+const { BOOTSTRAP_PROTOCOL } = require('../native-host/src/updateTrust.js');
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RELEASE_OUTPUT_MARKER = '.codex-overleaf-release-output';
@@ -129,7 +130,7 @@ export function buildRelease(options = {}) {
   });
   writeTopLevelNativeHelperAssets({ rootDir, outputDir, trackedFiles });
 
-  const releaseNotes = getReleaseNotesForBuild({ rootDir, version });
+  const releaseNotes = getReleaseNotesForBuild({ rootDir, version, releaseRef });
   fs.writeFileSync(path.join(outputDir, 'release-notes.md'), releaseNotes, 'utf8');
 
   const payloadArtifactNames = [
@@ -148,7 +149,7 @@ export function buildRelease(options = {}) {
     channel: releaseChannel,
     version,
     tag: releaseRef,
-    bootstrapProtocol: 2,
+    bootstrapProtocol: BOOTSTRAP_PROTOCOL,
     gitCommit: getGitCommit(rootDir),
     createdAt: new Date().toISOString(),
     updateBundle: describeArtifact(updateBundlePath, updateBundleName),
@@ -616,7 +617,7 @@ function copyFile(source, target) {
   fs.chmodSync(target, fs.statSync(source).mode & 0o777);
 }
 
-function getReleaseNotesForBuild({ rootDir, version }) {
+function getReleaseNotesForBuild({ rootDir, version, releaseRef }) {
   const changelog = fs.readFileSync(path.join(rootDir, 'CHANGELOG.md'), 'utf8');
   let notes;
   try {
@@ -627,6 +628,19 @@ function getReleaseNotesForBuild({ rootDir, version }) {
     } else {
       throw error;
     }
+  }
+  if (releaseRef !== `v${version}`) {
+    const base = `https://github.com/Ghqqqq/codex-overleaf-link/releases/download/${releaseRef}`;
+    return `${notes.trimEnd()}\n\n### Install this RC\n\n` +
+      'This preview is distributed through GitHub only; no npm version is published.\n\n' +
+      'macOS / Linux:\n\n```bash\n' +
+      `curl -fL ${base}/install.sh -o /tmp/codex-overleaf-install.sh\n` +
+      'bash /tmp/codex-overleaf-install.sh\n```\n\n' +
+      'Windows PowerShell:\n\n```powershell\n' +
+      `iwr ${base}/install.ps1 -OutFile install.ps1\n` +
+      'powershell -ExecutionPolicy Bypass -File install.ps1\n```\n\n' +
+      'Reload the existing extension in chrome://extensions, then refresh Overleaf. ' +
+      'For a first installation, use Load unpacked with the folder printed by the installer.\n';
   }
   return appendNpmReleaseGuidance(notes, version);
 }

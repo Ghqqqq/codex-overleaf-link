@@ -4,6 +4,27 @@ const path = require('node:path');
 const test = require('node:test');
 const { extractFunction } = require('./_helpers/extractFunction');
 
+const vm = require('node:vm');
+const I18n = require('../extension/src/shared/i18n');
+const probeRuntimeSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/contentRuntime.js'), 'utf8');
+
+function probeProjection() {
+  const notices = [];
+  const context = { state: { mode: 'auto' }, currentRunView: null,
+    tr: key => I18n.t('en', key), tx: english => english,
+    getActiveFocusFiles: () => [], isExperimentalOtEnabled: () => false,
+    getCurrentOtStatus: () => 'ready', formatOtStatusLabel: value => value,
+    panel: { querySelector: () => ({}) }, updateProbeNotice: value => notices.push(value)
+  };
+  vm.createContext(context);
+  for (const name of ['getProbeRunReadiness', 'formatModeLabel', 'appendOtStatusToProbeStatus',
+    'formatProbeStatusBar', 'formatProbeUserNotice', 'isProbeReadyForCurrentMode', 'updateExistingProbeNotice']) {
+    vm.runInContext(extractFunction(probeRuntimeSource, name), context);
+  }
+  return { context, notices };
+}
+
+
 test('normal state refresh writes user-facing status instead of raw probe diagnostics', () => {
   const contentScript = fs.readFileSync(
     path.join(__dirname, '../extension/src/content/contentRuntime.js'),
@@ -97,56 +118,39 @@ test('probe status copy surfaces page capability downgrade without raw diagnosti
 });
 
 test('write modes are not mislabeled as analysis-only when editor writability probe is stale', () => {
-  const contentScript = fs.readFileSync(
-    path.join(__dirname, '../extension/src/content/contentRuntime.js'),
-    'utf8'
-  );
-
-  assert.doesNotMatch(contentScript, /只能分析 · 当前编辑器不可写/);
-  assert.match(contentScript, /formatModeLabel\(state\?\.mode\)/);
-  assert.match(contentScript, /tr\('validatingEditor'\)/);
+  const { context: h } = probeProjection();
+  const probe = { editor: { ok: true }, reviewing: { ok: true }, capabilities: { editor: { write: false } } };
+  const status = h.formatProbeStatusBar(probe);
+  assert.ok(status.includes(I18n.t('en', 'modeAuto')));
+  assert.ok(status.includes(I18n.t('en', 'validatingEditor')));
+  assert.doesNotMatch(status, /analysis.only/i);
 });
 
 test('ask mode probe copy does not mention write verification or Reviewing requirements', () => {
-  const contentScript = fs.readFileSync(
-    path.join(__dirname, '../extension/src/content/contentRuntime.js'),
-    'utf8'
-  );
-  const statusBody = contentScript.match(/function formatProbeStatusBar\(probe\) \{[\s\S]*?\n  \}/)?.[0] || '';
-  const noticeBody = contentScript.match(/function formatProbeUserNotice\(probe\) \{[\s\S]*?\n  \}/)?.[0] || '';
-
-  assert.match(statusBody, /state\?\.mode === 'ask'/);
-  assert.match(statusBody, /\$\{formatModeLabel\('ask'\)\} · \$\{readiness\.contextLabel\}/);
-  assert.match(noticeBody, /state\?\.mode === 'ask'/);
-  assert.match(noticeBody, /不会写入 Overleaf/);
+  const { context: h } = probeProjection();
+  const probe = { editor: { ok: false }, reviewing: { ok: false } };
+  const status = h.formatProbeStatusBar(probe, 'ask');
+  const notice = h.formatProbeUserNotice(probe, 'ask');
+  assert.ok(status.startsWith(I18n.t('en', 'modeAsk')));
+  assert.equal(notice.ready, true);
+  assert.match(notice.message, /will not write to Overleaf/);
+  assert.doesNotMatch(status + notice.message, /Reviewing|verify.*writ/i);
 });
 
 test('probe status line shows OT state only when the experimental mirror is enabled', () => {
-  const contentScript = fs.readFileSync(
-    path.join(__dirname, '../extension/src/content/contentRuntime.js'),
-    'utf8'
-  );
-  const statusBody = contentScript.match(/function formatProbeStatusBar\(probe\) \{[\s\S]*?\n  \}/)?.[0] || '';
-
-  assert.match(contentScript, /function appendOtStatusToProbeStatus\(/);
-  assert.match(statusBody, /appendOtStatusToProbeStatus\(/);
-  assert.match(contentScript, /isExperimentalOtEnabled\(\)/);
-  // v1.4.9: the OT status lives in otWarmMirror.js; the probe suffix reads it
-  // through the exported getter.
-  assert.match(contentScript, /formatOtStatusLabel\(getCurrentOtStatus\(\)\)/);
-  assert.match(contentScript, /OT \$\{formatOtStatusLabel\(getCurrentOtStatus\(\)\)\}/);
+  const { context: h } = probeProjection();
+  const probe = { editor: { ok: false } };
+  assert.doesNotMatch(h.formatProbeStatusBar(probe, 'ask'), /OT ready/);
+  h.isExperimentalOtEnabled = () => true;
+  assert.match(h.formatProbeStatusBar(probe, 'ask'), /OT ready$/);
 });
 
 test('probe footer readiness follows current mode instead of requiring Reviewing for ask mode', () => {
-  const contentScript = fs.readFileSync(
-    path.join(__dirname, '../extension/src/content/contentRuntime.js'),
-    'utf8'
-  );
-  const refreshProbeBody = contentScript.match(/async function refreshProbe\(options = \{\}\) \{[\s\S]*?\n  \}/)?.[0] || '';
-
-  assert.match(contentScript, /function isProbeReadyForCurrentMode\(probe\)/);
-  assert.match(refreshProbeBody, /isProbeReadyForCurrentMode\(probe\)/);
-  assert.doesNotMatch(refreshProbeBody, /getProbeRunReadiness\(probe\)\.reviewingOk \? 'true' : 'false'/);
+  const { context: h } = probeProjection();
+  const probe = { editor: { ok: false }, reviewing: { ok: false } };
+  assert.equal(h.isProbeReadyForCurrentMode(probe, 'ask'), true);
+  assert.equal(h.isProbeReadyForCurrentMode(probe, 'auto'), false);
+  assert.equal(h.isProbeReadyForCurrentMode({ ...probe, reviewing: { ok: true } }, 'auto'), true);
 });
 
 test('mode switching refreshes the probe footer immediately', () => {
@@ -172,14 +176,15 @@ test('probe notice is replaced instead of leaving stale readiness messages in th
 });
 
 test('quiet probe refresh updates an existing notice so the main task area cannot contradict the footer', () => {
-  const contentScript = fs.readFileSync(
-    path.join(__dirname, '../extension/src/content/contentRuntime.js'),
-    'utf8'
-  );
-  const refreshProbeBody = contentScript.match(/async function refreshProbe\(options = \{\}\) \{[\s\S]*?\n  \}/)?.[0] || '';
-
-  assert.match(refreshProbeBody, /updateExistingProbeNotice\(probe\)/);
-  assert.match(contentScript, /function updateExistingProbeNotice\(probe\)/);
+  const { context: h, notices } = probeProjection();
+  const probe = { editor: { ok: false }, reviewing: { ok: false } };
+  h.updateExistingProbeNotice(probe, 'auto');
+  assert.ok(notices.at(-1));
+  h.updateExistingProbeNotice(probe, 'ask');
+  assert.equal(notices.at(-1), '');
+  h.currentRunView = { id: 'active' };
+  h.updateExistingProbeNotice(probe, 'auto');
+  assert.equal(notices.length, 2);
 });
 
 test('normal task flow logs a user-facing project read summary', () => {

@@ -66,7 +66,18 @@ test('architecture budget tracks v1.0 final split targets for the largest files'
       ['native-host/src/codexSessionRunner.js', 1500],
       ['native-host/src/subagentBroker.js', 640],
       ['native-host/src/taskRunner.js', 1000],
-      ['native-host/src/taskRunnerRuntime.js', 1350]
+      ['native-host/src/taskRunnerRuntime.js', 1350],
+      ['extension/src/page/textCoordinates.js', 120],
+      ['extension/src/page/trackedChangeOwnership.js', 260],
+      ['extension/src/page/trackedChangeReplay.js', 190],
+      ['extension/src/content/diagnosticsExport.js', 260],
+      ['extension/src/shared/storageValuePruning.js', 60],
+      ['native-host/src/turnAttachments.js', 140],
+      ['native-host/src/subagentWorkspacePath.js', 60],
+      ['extension/src/content/writebackPlan.js', 260],
+      ['native-host/src/subagentWorkspace.js', 140],
+      ['extension/src/content/runResultActions.js', 250],
+      ['extension/src/shared/compileAdapter.js', 240]
     ]
   );
 });

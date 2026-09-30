@@ -26,8 +26,8 @@ function createProviderLaunch({ profile, secret = '', modelId, wireApi, reasonin
     wireApi,
     upstreamResponseMode: resolvedResponseMode === 'buffered' ? 'buffered' : 'streaming',
     requestTimeoutMs: profile.requestTimeoutMs,
-    reasoningAdapter: profile.reasoningAdapter || 'auto',
-    reasoningCapability: profile.reasoningCapability || 'auto',
+    reasoningAdapter: model.reasoningAdapter || profile.reasoningAdapter || 'auto',
+    reasoningCapability: model.reasoningCapability || profile.reasoningCapability || 'auto',
     reasoningEffort,
     reasoningEfforts: model.reasoningEfforts?.length
       ? model.reasoningEfforts.slice()
@@ -50,7 +50,7 @@ function createProviderLaunch({ profile, secret = '', modelId, wireApi, reasonin
     anthropicThinkingMode: profile.anthropicThinkingMode || 'budget',
     anthropicPromptCaching: profile.anthropicPromptCaching === true,
     impersonateClaudeCode: profile.impersonateClaudeCode === true,
-    maxOutputTokens: profile.maxOutputTokens || 65536,
+    maxOutputTokens: model.maxOutputTokens || profile.maxOutputTokens || 65536,
     apiKey: secret
   });
 }

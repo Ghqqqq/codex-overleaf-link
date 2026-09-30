@@ -82,7 +82,7 @@ tries=0
 while [ "$(ls .codex-overleaf-subagents/results/*.json 2>/dev/null | wc -l)" -lt <jobCount> ]; do
   sleep 10
   tries=$((tries + 1))
-  if [ "$tries" -ge 60 ]; then break; fi   # ~10 min cap: never poll forever
+  if [ "$tries" -ge 120 ]; then break; fi  # bounded wait; also respect broker.json
   ls .codex-overleaf-subagents/results/ 2>/dev/null
 done
 ```
@@ -144,10 +144,38 @@ ownership violations and **excluded from the Overleaf writeback**.
 
 - For each `completed` job: read its summary, spot-check the owned files, and
   smooth terminology/transitions ACROSS slice boundaries yourself.
-- For each `failed` / `timeout` / `rejected` job: do that slice inline
-  yourself now (check `reason`).
+- For each `failed` / `timeout` / `cancelled` job: wait for all workers to stop,
+  then review and complete that slice inline. An unfinished worker's files
+  remain quarantined even after edits; explicitly adopt their final bytes as
+  described below. Renaming a file is not a substitute for reviewing it.
+- For a `rejected` job that never ran, do the slice inline after the wave.
 - Mention any violations in your close-out so the user knows those edits were
   withheld from writeback.
+
+### Adopt reviewed output
+
+After every worker has stopped, read `broker.json` again. `activeWorkers`
+must be zero and `adoptionToken` must be non-empty. The token is issued only
+after workers exit and changes when another worker wave starts.
+
+Read and finish the files, perform the checks allowed by the task, and compute
+SHA-256 hashes of the FINAL bytes. Atomically write a uniquely named JSON file
+to `.codex-overleaf-subagents/adoptions/<id>.json`:
+
+```json
+{
+  "token": "<current adoptionToken>",
+  "reviewed": true,
+  "files": [
+    { "jobId": "ch3", "path": "sections/ch3.tex", "sha256": "<64 lowercase hex digits>" }
+  ]
+}
+```
+
+Read `adoption-results/<id>.json` and require `ok: true` before claiming the
+file is ready to sync. Ownership violations cannot be adopted. A later edit
+invalidates the adoption hash; review the final content and submit a new
+request. Never claim all files synced merely because local compilation passed.
 
 ## 8. Close out
 

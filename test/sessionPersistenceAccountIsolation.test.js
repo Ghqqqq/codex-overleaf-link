@@ -52,6 +52,7 @@ test('session persistence cannot mutate records owned by another account', async
     },
     async putRecords(_store, records) {
       writes.push(...records);
+      return records;
     },
     async deleteRecord(_store, id) {
       deletes.push(id);
@@ -75,5 +76,7 @@ test('session persistence cannot mutate records owned by another account', async
   });
 
   assert.equal(writes.some(record => record.accountScopeId === 'account-b'), false);
+  assert.equal(writes.filter(record => record.accountScopeId === 'account-a').length, 1);
+  assert.equal(writes[0].id, 'session-a');
   assert.deepEqual(deletes, []);
 });

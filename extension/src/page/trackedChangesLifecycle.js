@@ -1,10 +1,10 @@
 (function initCodexOverleafTrackedChangesLifecycle(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./trackedChangeReplay'));
   } else {
-    root.CodexOverleafTrackedChangesLifecycle = factory();
+    root.CodexOverleafTrackedChangesLifecycle = factory(root.CodexOverleafTrackedChangeReplay);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function trackedChangesLifecycleFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function trackedChangesLifecycleFactory(Replay) {
   'use strict';
 
   // Tracked-changes lifecycle — carved out of writebackRouter.js in v1.8.0
@@ -49,6 +49,9 @@
       verifyActiveEditorText,
       collectElements,
     } = deps;
+    const { buildAcceptReplayOperations, rebaseCheckpointPair } = Replay.create({
+      normalizeSafeProjectPath, applyTextPatches
+    });
 
   function nativeReviewBlocked(path, code, applied = [], requestStarted = false) {
     const reason = requestStarted
@@ -104,9 +107,116 @@
         return nativeReviewBlocked(path, 'native_review_file_unavailable');
       const scope = await waitForNativeReview(path, refs, untracked);
       if (!scope.ok) return nativeReviewBlocked(path, scope.reason || 'native_review_unavailable');
+      if (scope.merged) {
+        const before = (params.expectedFiles || []).filter(file => file.path === path);
+        const post = (params.postFiles || []).filter(file => file.path === path);
+        if (scope.merged.runProjectId !== params.runProjectId || before.length !== 1 || post.length !== 1
+          || before[0].content !== scope.merged.preContent || post[0].content !== scope.merged.postContent)
+          return nativeReviewBlocked(path, 'native_merged_review_checkpoint_mismatch');
+      }
       files.push({ path, nativeDocId: scope.nativeDocId, scope });
     }
     return { ok: true, files, refs, deadline };
+  }
+
+  function mergedReviewContextMatches(params, file, content) {
+    const projectId = typeof deps.getProjectId === 'function' ? deps.getProjectId()
+      : /\/project\/([^/?#]+)/.exec(window?.location?.pathname || '')?.[1];
+    return Boolean(params.runProjectId && projectId === params.runProjectId
+      && !checkWritebackRunProjectId(params) && getActiveFilePath() === file.path
+      && readActiveEditorText() === content);
+  }
+
+  async function reviewMergedInsertion(params, file, action) {
+    const path = file.path, accepting = action === 'accept';
+    let scope = prepareTrackedChangeReview(path, file.scope.targets);
+    if (!scope.ok || !scope.merged || scope.nativeDocId !== file.nativeDocId
+      || !mergedReviewContextMatches(params, file, scope.merged.postContent))
+      return nativeReviewBlocked(path, 'native_merged_review_scope_changed');
+    const before = (params.expectedFiles || []).filter(item => item.path === path);
+    const post = (params.postFiles || []).filter(item => item.path === path);
+    if (before.length !== 1 || post.length !== 1
+      || before[0].content !== scope.merged.preContent || post[0].content !== scope.merged.postContent)
+      return nativeReviewBlocked(path, 'native_merged_review_checkpoint_mismatch');
+    const view = deps.getCodeMirrorEditorView?.();
+    if (typeof view?.dispatch !== 'function' || view.state?.doc?.toString() !== post[0].content)
+      return nativeReviewBlocked(path, 'native_merged_review_editor_unavailable');
+
+    const editing = await forceEditingForAcceptReplay();
+    if (!editing.ok) return nativeReviewBlocked(path, 'native_merged_review_editing_unavailable');
+    let attempted = false;
+    try {
+      const stable = await waitForStableEditingForAcceptReplay({ waitMs: 1400, intervalMs: 160 });
+      scope = prepareTrackedChangeReview(path, file.scope.targets);
+      if (!stable.ok || !scope.ok || !scope.merged || scope.nativeDocId !== file.nativeDocId
+        || !mergedReviewContextMatches(params, file, post[0].content)
+        || deps.getCodeMirrorEditorView?.() !== view || view.state.doc.toString() !== post[0].content)
+        return nativeReviewBlocked(path, 'native_merged_review_scope_changed');
+
+      // A same-text replacement is deliberate: plain Editing removes tracking
+      // only from these exact inserted slices, without a transient text rollback.
+      // Never send a merged parent's ID to the whole-change Accept endpoint.
+      const changes = scope.merged.ranges.map(range => ({
+        from: range.start, to: range.end,
+        insert: accepting ? post[0].content.slice(range.start, range.end) : ''
+      }));
+      const expectedText = accepting ? post[0].content : before[0].content;
+      const expectedKeys = accepting ? scope.merged.preservedKeys : scope.merged.beforeKeys;
+      attempted = true;
+      view.dispatch({ changes });
+      compileBridge.markSourceEdited();
+
+      const until = Math.min(file.deadline || Date.now() + 8000, Date.now() + 8000);
+      let matchingSince = null;
+      while (Date.now() <= until) {
+        if (!mergedReviewContextMatches(params, file, expectedText))
+          return nativeReviewBlocked(path, 'native_merged_review_content_or_context_changed', [], true);
+        const after = prepareTrackedChangeCapture(path);
+        const matches = after.ready && after.source === 'native' && after.nativeDocId === file.nativeDocId
+          && JSON.stringify(after.refs.map(ref => ref.key).sort()) === JSON.stringify(expectedKeys);
+        if (matches) {
+          if (matchingSince === null) matchingSince = Date.now();
+          if (Date.now() - matchingSince >= 500) {
+            return { ok: true, verified: true, applied: scope.targets.map(trackedChange => ({
+              trackedChange, result: { ok: true, verified: true, verifiedContent: expectedText,
+                method: accepting ? 'overleaf-accept-untracked-replay' : 'overleaf-merged-insertion-undo',
+                preservedTrackedChanges: true }
+            })), skipped: [] };
+          }
+        } else matchingSince = null;
+        await delay(150);
+      }
+      return nativeReviewBlocked(path, 'native_merged_review_not_verified', [], true);
+    } catch (_error) {
+      return nativeReviewBlocked(path, 'native_merged_review_interrupted', [], attempted);
+    } finally {
+      // Match the existing no-trace Accept policy: do not re-enable tracking
+      // while an untracked operation can still be awaiting its server flush.
+      if (!attempted && editing.activated) await setReviewingEnabled(true, { waitMs: 1800 });
+    }
+  }
+
+  async function rejectPlanWithMergedInsertions(params, plan) {
+    const mixed = plan.files.find(file => !file.scope.merged && file.scope.unrelated.length);
+    if (mixed) return nativeReviewBlocked(mixed.path, 'native_reject_mixed_changes');
+    const applied = [];
+    for (const file of plan.files) {
+      if (Date.now() >= plan.deadline || checkWritebackRunProjectId(params))
+        return nativeReviewBlocked(file.path, 'native_review_context_changed', applied, applied.length > 0);
+      if (getActiveFilePath() !== file.path && !(await openFileByPath(file.path)).ok)
+        return nativeReviewBlocked(file.path, 'native_review_file_unavailable', applied, applied.length > 0);
+      const scoped = { ...params,
+        trackedChanges: plan.refs.filter(ref => ref.path === file.path),
+        expectedFiles: (params.expectedFiles || []).filter(item => item.path === file.path),
+        postFiles: (params.postFiles || []).filter(item => item.path === file.path)
+      };
+      const result = file.scope.merged
+        ? await reviewMergedInsertion(scoped, { ...file, deadline: plan.deadline }, 'reject')
+        : await rejectTrackedChanges(scoped);
+      applied.push(...(result.applied || []));
+      if (!result.ok) return { ...result, applied };
+    }
+    return { ok: true, applied, skipped: [] };
   }
 
   async function acceptNativeReview(params, plan) {
@@ -126,6 +236,12 @@
         return nativeReviewBlocked(path, 'native_review_context_changed', applied, applied.length > 0);
       if (getActiveFilePath() !== path && !(await openFileByPath(path)).ok)
         return nativeReviewBlocked(path, 'native_review_file_unavailable', applied, applied.length > 0);
+      if (file.scope.merged) {
+        const result = await reviewMergedInsertion(params, { ...file, deadline: plan.deadline }, 'accept');
+        applied.push(...(result.applied || []));
+        if (!result.ok) return { ...result, applied };
+        continue;
+      }
       await waitForNativeReview(path, plan.refs);
       const scope = prepareTrackedChangeReview(path, plan.refs), text = readActiveEditorText();
       if (!scope.ok || !scope.acceptByIdSupported || scope.nativeDocId !== file.nativeDocId
@@ -195,8 +311,24 @@
 
     const nativeReview = await prepareNativeReview(params, true);
     if (nativeReview && !nativeReview.ok) return nativeReview;
+    if (nativeReview?.files.some(file => file.scope.merged))
+      return rejectPlanWithMergedInsertions(params, nativeReview);
     const mixedFile = nativeReview?.files.find(file => file.scope.unrelated.length);
     if (mixedFile) return nativeReviewBlocked(mixedFile.path, 'native_reject_mixed_changes');
+    if (params.untrackedUndo === true && !trackedChanges.length) {
+      if (!nativeReview) return nativeReviewBlocked('', 'native_review_unavailable');
+      // An ordinary write has no owned editor-history entry. Restore its
+      // checkpoint directly; global Undo may belong to an earlier user edit.
+      const restored = await restoreExpectedFilesWithNoTraceUndo(expectedFiles, postFiles, {
+        runProjectId: params.runProjectId
+      });
+      if (restored.applied.length) compileBridge.markSourceEdited();
+      return { ...restored, ok: restored.attempted && restored.ok,
+        skipped: restored.attempted ? restored.skipped : [{ trackedChange: null, result: {
+          ok: false, code: restored.code || 'snapshot_undo_unavailable',
+          reason: restored.reason || 'The saved checkpoint is unavailable for this undo.'
+        } }] };
+    }
     const editorUndo = await rejectTrackedChangesViaEditorUndo(expectedFiles, postFiles, applied);
     if (editorUndo.ok) {
       if (applied.length > 0) {
@@ -933,125 +1065,9 @@
     return { ok: true, activated: true };
   }
 
-  // Builds the minimal replay operations for Accept All. The replay must write
-  // only the changed fragments, never a whole-file replaceAll.
-  //
-  // Preferred source: the run's own original forward writeback operations
-  // (carrying their `patches`). After the editor-undo the document is back at
-  // the pre-write content, so those patches' `expected` slices match and
-  // re-apply cleanly.
-  //
-  // Fallback: when a path has no usable original patch operation, compute a
-  // minimal pre->post diff (trim the common prefix/suffix to a single targeted
-  // {from,to,insert} patch).
-  function buildAcceptReplayOperations(paths, expectedByPath, postByPath, appliedOperations) {
-    const patchesByPath = collectAppliedEditPatchesByPath(appliedOperations);
-    const operations = [];
-    for (const path of paths) {
-      const preContent = expectedByPath.get(path);
-      const postContent = postByPath.get(path);
-      if (typeof preContent !== 'string' || typeof postContent !== 'string') {
-        return {
-          ok: false,
-          code: 'accept_missing_run_content',
-          reason: `${path} 缺少写入前/写入后内容；Codex 没有重放本轮改动。`
-        };
-      }
 
-      // Preferred: re-apply the run's original forward patches verbatim.
-      const originalPatches = patchesByPath.get(path);
-      if (originalPatches && originalPatches.length && patchesApplyCleanly(preContent, originalPatches)) {
-        operations.push({
-          type: 'edit',
-          path,
-          patches: originalPatches,
-          reason: 'Accept tracked edit (replay untracked)'
-        });
-        continue;
-      }
 
-      // Fallback: minimal pre->post diff trimmed to a single targeted patch.
-      const diffPatch = buildMinimalDiffPatch(preContent, postContent);
-      if (!diffPatch) {
-        // pre === post: nothing to replay for this file.
-        continue;
-      }
-      operations.push({
-        type: 'edit',
-        path,
-        patches: [diffPatch],
-        reason: 'Accept tracked edit (replay untracked)'
-      });
-    }
-    return { ok: true, operations };
-  }
 
-  // Collects the per-path `patches` arrays from the run's applied edit
-  // operations. Only edit operations that actually carried `patches` are
-  // usable; whole-file replaceAll / verifiedContent operations are skipped so
-  // the replay never falls back to a whole-file write.
-  function collectAppliedEditPatchesByPath(appliedOperations) {
-    const patchesByPath = new Map();
-    for (const rawOperation of Array.isArray(appliedOperations) ? appliedOperations : []) {
-      if (!rawOperation || rawOperation.type !== 'edit') {
-        continue;
-      }
-      const path = typeof rawOperation.path === 'string'
-        ? normalizeSafeProjectPath(rawOperation.path)
-        : '';
-      if (!path || !Array.isArray(rawOperation.patches) || !rawOperation.patches.length) {
-        continue;
-      }
-      const normalized = rawOperation.patches.map(patch => ({
-        from: Number(patch?.from),
-        to: Number(patch?.to),
-        expected: String(patch?.expected ?? ''),
-        insert: String(patch?.insert ?? '')
-      }));
-      const existing = patchesByPath.get(path) || [];
-      patchesByPath.set(path, existing.concat(normalized));
-    }
-    return patchesByPath;
-  }
-
-  // Confirms a patch set re-applies cleanly against the given (pre-write) text:
-  // every patch range is valid and its `expected` slice matches.
-  function patchesApplyCleanly(text, patches) {
-    const applied = applyTextPatches(text, patches);
-    return applied.ok === true;
-  }
-
-  // Computes a single targeted {from,to,insert} patch describing the pre->post
-  // change by trimming the common prefix and suffix. Returns null when the two
-  // strings are identical.
-  function buildMinimalDiffPatch(preContent, postContent) {
-    if (preContent === postContent) {
-      return null;
-    }
-    const preLen = preContent.length;
-    const postLen = postContent.length;
-    let prefix = 0;
-    const maxPrefix = Math.min(preLen, postLen);
-    while (prefix < maxPrefix && preContent[prefix] === postContent[prefix]) {
-      prefix += 1;
-    }
-    let suffix = 0;
-    const maxSuffix = Math.min(preLen, postLen) - prefix;
-    while (
-      suffix < maxSuffix
-      && preContent[preLen - 1 - suffix] === postContent[postLen - 1 - suffix]
-    ) {
-      suffix += 1;
-    }
-    const from = prefix;
-    const to = preLen - suffix;
-    return {
-      from,
-      to,
-      expected: preContent.slice(from, to),
-      insert: postContent.slice(from, postLen - suffix)
-    };
-  }
 
   async function rejectTrackedChangesViaEditorUndo(expectedFiles, postFiles, applied) {
     const expectedByPath = new Map((expectedFiles || [])
@@ -1249,36 +1265,6 @@
     };
   }
 
-  function rebaseCheckpointPair(actualContent, expectedContent, postContent) {
-    const actual = String(actualContent ?? '');
-    const expected = String(expectedContent ?? '');
-    const post = String(postContent ?? '');
-    if (actual === post) {
-      return {
-        ok: true,
-        expectedContent: expected,
-        postContent: post,
-        prefixLength: 0,
-        suffixLength: 0
-      };
-    }
-    if (!post) {
-      return { ok: false };
-    }
-    const matchIndex = actual.indexOf(post);
-    if (matchIndex < 0 || actual.indexOf(post, matchIndex + 1) >= 0) {
-      return { ok: false };
-    }
-    const prefix = actual.slice(0, matchIndex);
-    const suffix = actual.slice(matchIndex + post.length);
-    return {
-      ok: true,
-      expectedContent: prefix + expected + suffix,
-      postContent: actual,
-      prefixLength: prefix.length,
-      suffixLength: suffix.length
-    };
-  }
 
   async function waitForActiveEditorExpectedText(filePath, expectedContent, timeoutMs) {
     const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);

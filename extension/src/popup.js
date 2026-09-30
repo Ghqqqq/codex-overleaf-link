@@ -1,75 +1,173 @@
 (function initPopup() {
   'use strict';
 
+  const popupScriptUrl = document.currentScript?.src || chrome.runtime.getURL('src/popup.js');
+  ensureMinimalPopupShell();
   const CodexOverleafCompatibility = window.CodexOverleafCompatibility;
   const DEFAULT_INSTALL_COMMAND = CodexOverleafCompatibility?.buildInstallCommand?.(
     undefined,
     undefined,
     getCurrentExtensionId()
   ) || 'curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/main/install.sh | bash -s -- --extension-id <chrome-extension-id>';
-  const button = document.getElementById('open-panel');
+  const launcherToggle = document.getElementById('launcher-toggle');
   const status = document.getElementById('status');
+  const connectionToggle = document.getElementById('connection-toggle');
+  const connectionDetails = document.getElementById('connection-details');
+  const connectionLabel = document.getElementById('connection-label');
   const compatStatusIcon = document.getElementById('compat-status-icon');
-  const versionPair = document.getElementById('version-pair');
+  const extensionVersionLabel = document.getElementById('extension-version');
+  const nativeVersionLabel = document.getElementById('native-version');
   const nativeInstall = document.getElementById('native-install');
+  const nativeStatusMessage = document.getElementById('native-status-message');
   const installCommand = document.getElementById('install-command');
   const copyInstallCommand = document.getElementById('copy-install-command');
+  const copyFeedback = document.getElementById('copy-feedback');
   let activeOverleafTab = null;
   let currentInstallCommand = DEFAULT_INSTALL_COMMAND;
+  let lastCompatibility = null;
+  let launcherVisible = false;
+  let launcherReady = false;
 
   installCommand.textContent = currentInstallCommand;
-  button.textContent = 'Show Codex button in Overleaf';
-  setVersionStatus({
-    status: 'native_missing',
-    classification: 'incompatible',
-    extensionVersion: getExtensionCompatibilityMetadata().version
+  setVersionStatus({ status: 'checking', extensionVersion: getExtensionCompatibilityMetadata().version });
+
+  connectionToggle.addEventListener('click', () => {
+    connectionDetails.hidden = !connectionDetails.hidden;
+    connectionToggle.setAttribute('aria-expanded', String(!connectionDetails.hidden));
   });
 
-  button.addEventListener('click', async () => {
-    const tab = activeOverleafTab || await getActiveOverleafProjectTab();
-    if (!tab?.id) {
-      status.textContent = 'Open an Overleaf project tab first.';
-      return;
+  launcherToggle.addEventListener('change', async () => {
+    const desired = launcherToggle.checked;
+    launcherToggle.disabled = true;
+    setLauncherStatus('');
+    try {
+      const tab = await getActiveOverleafProjectTab();
+      if (!tab?.id) throw new Error(utx('Open an Overleaf project tab first.', '请先打开 Overleaf 项目页。'));
+      activeOverleafTab = tab;
+      const before = await chrome.tabs.sendMessage(tab.id, { type: 'codex-overleaf/get-panel-state' });
+      if (typeof before?.launcherVisible !== 'boolean') {
+        throw new Error(utx('Refresh the Overleaf tab, then reopen this popup.', '请刷新 Overleaf 页面，再打开此弹窗。'));
+      }
+      // Keep the existing visibility contract. Do not open or close the panel.
+      if (before.launcherVisible !== desired) {
+        const response = await chrome.tabs.sendMessage(tab.id, { type: 'codex-overleaf/toggle-launcher' });
+        if (response?.ok === false) throw new Error(response.error?.message || response.error
+          || utx('The side button could not be changed.', '侧边入口设置未能修改。'));
+      }
+      const after = await chrome.tabs.sendMessage(tab.id, { type: 'codex-overleaf/get-panel-state' });
+      if (typeof after?.launcherVisible !== 'boolean' || after.launcherVisible !== desired) {
+        throw new Error(utx('The side button state could not be confirmed. Reopen this popup to retry.',
+          '未能确认侧边入口状态，请重新打开此弹窗后重试。'));
+      }
+      launcherVisible = after.launcherVisible;
+      launcherReady = true;
+    } catch (error) {
+      launcherReady = false;
+      setLauncherStatus(error?.message || utx('Refresh the Overleaf tab and try again.', '请刷新 Overleaf 页面后重试。'), true);
+    } finally {
+      launcherToggle.checked = launcherVisible;
+      launcherToggle.disabled = !launcherReady;
     }
-
-    await chrome.tabs.sendMessage(tab.id, { type: 'codex-overleaf/toggle-launcher' });
-    window.close();
   });
 
   copyInstallCommand.addEventListener('click', async () => {
-    await navigator.clipboard.writeText(currentInstallCommand);
-    copyInstallCommand.textContent = 'Copied';
-    setTimeout(() => {
-      copyInstallCommand.textContent = 'Copy install command';
-    }, 1400);
+    copyInstallCommand.disabled = true;
+    copyFeedback.hidden = true;
+    try {
+      await navigator.clipboard.writeText(currentInstallCommand);
+      copyInstallCommand.textContent = utx('Copied', '已复制');
+      setTimeout(() => { copyInstallCommand.textContent = utx('Copy install command', '复制安装命令'); }, 1400);
+    } catch (_error) {
+      copyFeedback.textContent = utx('Copy failed. Select the command above to copy it.', '复制失败，可选中上方命令复制。');
+      copyFeedback.hidden = false;
+    } finally {
+      copyInstallCommand.disabled = false;
+    }
   });
 
   initPopupState();
   scheduleConsentUpdateUi();
 
+  // Older managed installations keep their bootstrap HTML across runtime
+  // updates. Upgrade only this popup's shell, leaving runtime behavior shared.
+  function ensureMinimalPopupShell() {
+    document.documentElement.classList.add('popup-minimal-root');
+    document.body.classList.add('popup-minimal');
+    if (!document.getElementById('launcher-toggle')) {
+      const shell = document.createElement('div');
+      shell.innerHTML = "<main id=\"popup-shell\">\n  <header class=\"popup-header\">\n    <img id=\"brand-icon\" class=\"popup-icon\" src=\"assets/icons/icon128.png\" width=\"32\" height=\"32\" alt=\"\">\n    <div class=\"popup-brand\">\n      <h1>Codex Overleaf Link</h1>\n      <button id=\"connection-toggle\" class=\"connection-toggle\" type=\"button\" aria-expanded=\"false\" aria-controls=\"connection-details\">\n        <span id=\"compat-status-icon\" class=\"status-icon pending\" aria-hidden=\"true\"></span>\n        <span id=\"connection-label\">Checking connection...</span>\n        <span class=\"connection-chevron\" aria-hidden=\"true\"></span>\n      </button>\n    </div>\n  </header>\n  <section id=\"connection-details\" class=\"connection-details\" aria-label=\"Version details\" hidden>\n    <dl id=\"version-pair\">\n      <div><dt id=\"extension-version-label\">Extension</dt><dd id=\"extension-version\">Unknown</dd></div>\n      <div><dt>Native Host</dt><dd id=\"native-version\">Checking...</dd></div>\n    </dl>\n  </section>\n  <label class=\"launcher-setting\" for=\"launcher-toggle\">\n    <span class=\"launcher-copy\">\n      <strong id=\"launcher-label\">Show Codex side button</strong>\n      <small id=\"launcher-description\">When the panel is closed</small>\n    </span>\n    <input id=\"launcher-toggle\" class=\"launcher-toggle\" type=\"checkbox\" aria-describedby=\"launcher-description\" disabled>\n  </label>\n  <p id=\"status\" class=\"popup-note\" role=\"status\" aria-live=\"polite\" hidden></p>\n  <section id=\"native-install\" class=\"install\" aria-labelledby=\"native-install-title\" hidden>\n    <strong id=\"native-install-title\">Native host attention required</strong>\n    <p id=\"native-status-message\"></p>\n    <code id=\"install-command\"></code>\n    <button id=\"copy-install-command\" class=\"copy-command\" type=\"button\">Copy install command</button>\n    <p id=\"copy-feedback\" class=\"copy-feedback\" role=\"status\" hidden></p>\n  </section>\n</main>";
+      for (const element of Array.from(document.body.children)) {
+        if (element.tagName !== 'SCRIPT') element.remove();
+      }
+      document.body.prepend(shell.firstElementChild);
+    }
+    document.getElementById('brand-icon').src = chrome.runtime.getURL('assets/icons/icon128.png');
+    let stylesheet = document.getElementById('popup-styles');
+    if (!stylesheet) {
+      stylesheet = document.createElement('link');
+      stylesheet.id = 'popup-styles';
+      stylesheet.rel = 'stylesheet';
+      document.head.append(stylesheet);
+    }
+    stylesheet.href = new URL('../styles/popup.css', popupScriptUrl).href;
+  }
+
   async function initPopupState() {
-    await checkNativeHost();
-    await refreshPanelButtonState();
+    try {
+      const stored = await chrome.storage.local.get(['codexOverleafGlobalPrefsV1', 'codexOverleafPrefs']);
+      applyPopupPreferences(stored.codexOverleafGlobalPrefsV1?.values || stored.codexOverleafPrefs || {});
+    } catch (_error) { applyPopupPreferences({}); }
+    chrome.storage.onChanged?.addListener((changes, area) => {
+      if (area === 'local' && changes.codexOverleafGlobalPrefsV1?.newValue?.values) {
+        applyPopupPreferences(changes.codexOverleafGlobalPrefsV1.newValue.values);
+      }
+    });
+    await Promise.all([checkNativeHost(), refreshPanelButtonState()]);
+  }
+
+  function applyPopupPreferences(preferences) {
+    document.documentElement.lang = preferences.locale === 'zh' ? 'zh-CN' : 'en';
+    document.documentElement.dataset.popupTheme = ['light', 'dark', 'auto'].includes(preferences.theme)
+      ? preferences.theme : 'dark';
+    document.getElementById('launcher-label').textContent = utx('Show Codex side button', '显示 Codex 侧边入口');
+    document.getElementById('launcher-description').textContent = utx('When the panel is closed', '面板关闭时显示');
+    document.getElementById('extension-version-label').textContent = utx('Extension', '扩展');
+    document.getElementById('native-install-title').textContent = utx('Local connection needs attention', '本地连接需要处理');
+    connectionDetails.setAttribute('aria-label', utx('Version details', '版本信息'));
+    connectionToggle.title = utx('Show or hide version details', '展开或收起版本信息');
+    copyInstallCommand.textContent = utx('Copy install command', '复制安装命令');
+    if (lastCompatibility) {
+      setVersionStatus(lastCompatibility);
+      if (!nativeInstall.hidden) nativeStatusMessage.textContent = getNativeStatusMessage(
+        lastCompatibility.status, getCompatibilityClassification(lastCompatibility));
+    }
+  }
+
+  function setLauncherStatus(message, failed = false) {
+    status.textContent = message;
+    status.hidden = !message;
+    status.setAttribute('role', failed ? 'alert' : 'status');
   }
 
   async function refreshPanelButtonState() {
-    const tab = await getActiveOverleafProjectTab();
-    activeOverleafTab = tab;
-    if (!tab?.id) {
-      button.textContent = 'Show Codex button in Overleaf';
-      return;
-    }
-
+    launcherReady = false;
+    launcherToggle.disabled = true;
     try {
+      const tab = await getActiveOverleafProjectTab();
+      activeOverleafTab = tab;
+      if (!tab?.id) {
+        setLauncherStatus(utx('Open an Overleaf project to change this preference.', '打开 Overleaf 项目页后可设置侧边入口。'));
+        return;
+      }
       const response = await chrome.tabs.sendMessage(tab.id, { type: 'codex-overleaf/get-panel-state' });
-      const visible = response?.launcherVisible !== false;
-      button.textContent = visible ? 'Hide Codex edge button' : 'Show Codex edge button';
-      status.textContent = visible
-        ? 'The edge button appears whenever the Codex panel is closed.'
-        : 'The Codex edge button is hidden in Overleaf.';
+      if (typeof response?.launcherVisible !== 'boolean') throw new Error('Panel state unavailable');
+      launcherVisible = response.launcherVisible;
+      launcherReady = true;
+      launcherToggle.checked = launcherVisible;
+      launcherToggle.disabled = false;
+      setLauncherStatus('');
     } catch (_error) {
-      button.textContent = 'Show Codex button in Overleaf';
-      status.textContent = 'Refresh the Overleaf tab, then show the Codex button.';
+      setLauncherStatus(utx('Refresh the Overleaf tab, then reopen this popup.', '请刷新 Overleaf 页面，再打开此弹窗。'));
     }
   }
 
@@ -79,7 +177,7 @@
   }
 
   function isOverleafProjectUrl(url) {
-    return /^https:\/\/(www\.)?overleaf\.com\/project\//.test(String(url || ''));
+    return /^https:\/\/(?:(?:www|cn)\.)?overleaf\.com\/project\//.test(String(url || ''));
   }
 
   async function checkNativeHost() {
@@ -96,16 +194,13 @@
       setVersionStatus(compatibility);
       if (getCompatibilityClassification(compatibility) === 'compatible') {
         nativeInstall.hidden = true;
-        status.textContent = 'Native host connected. Open an Overleaf project tab to use Codex.';
         return;
       }
       showNativeInstallGuide(compatibility);
     } catch (_error) {
       const compatibility = {
-        status: 'native_missing',
-        classification: 'incompatible',
-        installCommand: DEFAULT_INSTALL_COMMAND,
-        updateCommand: DEFAULT_INSTALL_COMMAND,
+        status: 'native_missing', classification: 'incompatible',
+        installCommand: DEFAULT_INSTALL_COMMAND, updateCommand: DEFAULT_INSTALL_COMMAND,
         extensionVersion: getExtensionCompatibilityMetadata().version
       };
       setVersionStatus(compatibility);
@@ -117,7 +212,7 @@
     nativeInstall.hidden = false;
     currentInstallCommand = getCompatibilityUpdateCommand(compatibility);
     installCommand.textContent = currentInstallCommand;
-    status.textContent = getNativeStatusMessage(compatibility.status, getCompatibilityClassification(compatibility));
+    nativeStatusMessage.textContent = getNativeStatusMessage(compatibility.status, getCompatibilityClassification(compatibility));
   }
 
   function evaluateNativeCompatibility(response) {
@@ -146,17 +241,25 @@
   }
 
   function setVersionStatus(compatibility = {}) {
-    const classification = getCompatibilityClassification(compatibility);
+    lastCompatibility = compatibility;
+    const pending = compatibility.status === 'checking';
+    const classification = pending ? 'pending' : getCompatibilityClassification(compatibility);
     const extensionVersion = compatibility.extensionVersion || getExtensionCompatibilityMetadata().version;
     const nativeVersion = compatibility.currentNativeVersion || compatibility.nativeVersion || compatibility.native?.version;
-    versionPair.textContent = `Extension ${formatVersion(extensionVersion)} / Native ${formatVersion(nativeVersion)}`;
-    compatStatusIcon.textContent = getStatusIconText(classification);
-    compatStatusIcon.className = `status-icon ${classification}`;
-    compatStatusIcon.title = getCompatibilityStatusTitle(classification);
-    if (compatStatusIcon.dataset) {
-      compatStatusIcon.dataset.status = classification;
-    }
-    compatStatusIcon.setAttribute?.('aria-label', compatStatusIcon.title);
+    extensionVersionLabel.textContent = formatVersion(extensionVersion);
+    nativeVersionLabel.textContent = pending ? utx('Checking...', '正在检查...') : formatVersion(nativeVersion);
+    let label = utx('Update required', '需要更新');
+    if (pending) label = utx('Checking connection...', '正在检查连接...');
+    else if (classification === 'compatible') label = utx('Connected', '已连接');
+    else if (classification === 'update-available') label = utx('Update available', '有可用更新');
+    else if (compatibility.status === 'native_missing') label = utx('Not connected', '未连接');
+    else if (compatibility.status === 'native_unhealthy') label = utx('Needs attention', '需要处理');
+    connectionLabel.textContent = label;
+    connectionToggle.setAttribute('aria-label', label + '. ' + utx('Version details', '版本信息'));
+    compatStatusIcon.textContent = '';
+    compatStatusIcon.className = 'status-icon ' + classification;
+    compatStatusIcon.title = label;
+    compatStatusIcon.dataset.status = classification;
   }
 
   function getExtensionCompatibilityMetadata() {
@@ -221,28 +324,33 @@
   function formatVersion(version) {
     const value = String(version || '').trim();
     if (!value) {
-      return 'unknown';
+      return utx('Unknown', '未知');
     }
     return value.startsWith('v') ? value : `v${value}`;
   }
 
   function getNativeStatusMessage(statusValue, classification) {
     if (classification === 'update-available') {
-      return 'Native host update available. Run the update command, then reload the extension.';
+      return utx('An update is available for the local bridge. Run the command below, then reload the extension.',
+        '本地桥接程序有可用更新。运行下方命令后重新加载扩展。');
     }
     switch (statusValue) {
       case 'native_too_old':
-        return 'Native host update required. Run the install command, then reload the extension.';
+        return utx('Update the local bridge with the command below, then reload the extension.',
+          '运行下方命令更新本地桥接程序，然后重新加载扩展。');
       case 'protocol_unsupported':
-        return 'Native host protocol mismatch. Update the native host and extension together.';
+        return utx('The extension and local bridge use different protocols. Update both components together.',
+          '扩展与本地桥接程序的协议不匹配，请一并更新。');
       case 'extension_too_old':
-        return 'Extension update required. Update the Chrome extension before running Codex.';
+        return utx('Update the Chrome extension before running Codex.', '运行 Codex 前需要更新 Chrome 扩展。');
       case 'native_unhealthy':
-        return 'Native host connected, but local Codex is not ready. Check the panel diagnostics.';
+        return utx('The local bridge is connected, but Codex needs attention. Check diagnostics in the side panel.',
+          '本地桥接已连接，Codex 状态需要处理。请查看侧边栏中的诊断。');
       case 'native_missing':
-        return 'Install the local native host before running Codex.';
+        return utx('Run this command in Terminal, then reload the extension.', '在终端运行下方命令，然后重新加载扩展。');
       default:
-        return 'Native host is not compatible. Update the native host, then reload the extension.';
+        return utx('Update the local bridge with the command below, then reload the extension.',
+          '运行下方命令更新本地桥接程序，然后重新加载扩展。');
     }
   }
 

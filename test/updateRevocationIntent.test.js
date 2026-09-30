@@ -1,10 +1,9 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
 
 const Revocation = require('../extension/src/shared/updateRevocationIntent');
 const UpdateConsent = require('../extension/src/shared/updateConsent');
+const { createCoordinatorHarness, UPDATE_KEY, CONSENT_KEY } = require('./helpers/updateCoordinatorHarness');
 
 test('revocation intent survives consent normalization and completes both stores together', () => {
   const state = {
@@ -52,46 +51,75 @@ test('new authorization identity is durably recorded as a revocation intent', ()
   assert.equal(pending.revokingAt, 200);
 });
 
-test('update coordinator records revocation intent before the native side effect', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../extension/src/backgroundUpdateCoordinator.js'),
-    'utf8'
-  );
-  const postpone = source.match(
-    /async function postponeUpdate\(\) \{[\s\S]*?\n  \}(?=\n\n  async function)/
-  )?.[0] || '';
+function seedAuthorizedUpdate(h) {
+  h.seed({ state: 'staged', currentVersion: '2.4.1', latestVersion: '2.4.2',
+    operationId: 'operation-1', transactionId: 'transaction-1', stagedAt: Date.now() },
+  { authorizedVersion: '2.4.2', authorizationId: 'authorization-1', authorizedAt: Date.now() });
+}
 
-  assert.ok(postpone.indexOf('setConsentState') < postpone.indexOf("'update.revoke'"));
-  assert.match(postpone, /setUpdateAndConsentState/);
-  assert.match(source, /reconcilePendingRevocation/);
+test('update coordinator persists cancellation intent before native cancel and revoke', async () => {
+  const h = await createCoordinatorHarness();
+  seedAuthorizedUpdate(h);
+  const result = await h.send('codex-overleaf/consent-update-later');
+  assert.equal(result.ok, true);
+  const native = h.events.filter(event => event.type === 'native' && ['update.cancel', 'update.revoke'].includes(event.method));
+  assert.deepEqual(native.map(event => event.method), ['update.cancel', 'update.revoke']);
+  for (const event of native) {
+    assert.equal(event.state[UPDATE_KEY].cancelRequested, true);
+    assert.equal(event.state[CONSENT_KEY].revokingAuthorizationId, 'authorization-1');
+    assert.equal(event.state[CONSENT_KEY].authorizationId, 'authorization-1');
+  }
+  assert.equal(h.data[UPDATE_KEY].state, 'update_available');
+  assert.equal(h.data[UPDATE_KEY].cancelRequested, false);
+  assert.equal(h.data[CONSENT_KEY].authorizationId, '');
+  assert.equal(Revocation.hasPending(h.data[CONSENT_KEY]), false);
 });
 
-test('install failure persists revocation intent and clears authorization only after confirmed revoke', () => {
-  const source = fs.readFileSync(
-    path.resolve(__dirname, '../extension/src/backgroundUpdateCoordinator.js'),
-    'utf8'
-  );
-  const install = source.match(
-    /async function installUpdate\(\) \{[\s\S]*?\n  \}(?=\n\n  async function)/
-  )?.[0] || '';
-  const catchBody = install.slice(install.indexOf('} catch (error) {'));
+test('a failed intent save prevents native cancellation and preserves authorization', async () => {
+  const h = await createCoordinatorHarness();
+  seedAuthorizedUpdate(h);
+  h.failWrites();
+  const result = await h.send('codex-overleaf/consent-update-later');
+  assert.equal(result.ok, false);
+  assert.equal(h.events.some(event => event.type === 'native' && ['update.cancel', 'update.revoke'].includes(event.method)), false);
+  assert.equal(h.data[CONSENT_KEY].authorizationId, 'authorization-1');
+});
 
-  assert.ok(
-    install.indexOf('setConsentState(authorizationIntent)') <
-      install.indexOf("requestNative('update.authorize'"),
-    'the new authorization id must be durable before the native side effect'
-  );
-  assert.match(install, /setConsentState\(revocation\.clear\(\{/);
-  assert.match(catchBody, /revocation\.prepareAuthorization/);
-  assert.doesNotMatch(catchBody, /bestEffortRevoke/);
-  assert.ok(
-    catchBody.indexOf('setConsentState(pendingConsent)') <
-      catchBody.indexOf("requestNative('update.revoke'"),
-    'revocation intent must be durable before the native revoke'
-  );
-  assert.ok(
-    catchBody.indexOf("requestNative('update.revoke'") <
-      catchBody.indexOf("authorizationId: ''"),
-    'authorization can be cleared only after native revoke succeeds'
-  );
+test('unconfirmed revocation retains its durable intent and can recover', async () => {
+  let failRevoke = true;
+  const h = await createCoordinatorHarness({ onNative(request) {
+    if (request.method === 'update.revoke' && failRevoke) return { ok: false, error: { code: 'fixture_revoke_failed', message: 'offline' } };
+  } });
+  seedAuthorizedUpdate(h);
+  const failed = await h.send('codex-overleaf/consent-update-later');
+  assert.equal(failed.ok, false);
+  assert.equal(h.data[UPDATE_KEY].cancelRequested, true);
+  assert.equal(Revocation.hasPending(h.data[CONSENT_KEY]), true);
+  failRevoke = false;
+  const recovered = await h.send('codex-overleaf/consent-update-recover');
+  assert.equal(recovered.ok, true);
+  assert.equal(h.data[UPDATE_KEY].cancelRequested, false);
+  assert.equal(Revocation.hasPending(h.data[CONSENT_KEY]), false);
+});
+
+test('failed install authorization is durably revocable and clears only after native acknowledgement', async () => {
+  for (const failRevoke of [false, true]) {
+    const h = await createCoordinatorHarness({ onNative(request) {
+      if (request.method === 'update.authorize') return { ok: false, error: { code: 'fixture_authorize_failed', message: 'authorization failure' } };
+      if (request.method === 'update.revoke' && failRevoke) return { ok: false, error: { code: 'fixture_revoke_failed', message: 'offline' } };
+    } });
+    h.seed({ state: 'update_available', currentVersion: '2.4.1', latestVersion: '2.4.2', lastCheckedAt: Date.now() });
+    const result = await h.send('codex-overleaf/consent-update-install');
+    assert.equal(result.ok, false);
+    const authorize = h.events.find(event => event.type === 'native' && event.method === 'update.authorize');
+    const revoke = h.events.find(event => event.type === 'native' && event.method === 'update.revoke');
+    assert.ok(authorize);
+    assert.ok(revoke);
+    const authorizationId = authorize.params.authorizationId;
+    assert.equal(authorize.state[CONSENT_KEY].revokingAuthorizationId, authorizationId);
+    assert.equal(revoke.state[CONSENT_KEY].revokingAuthorizationId, authorizationId);
+    assert.equal(revoke.state[CONSENT_KEY].authorizationId, authorizationId);
+    assert.equal(Revocation.hasPending(h.data[CONSENT_KEY]), failRevoke);
+    assert.equal(h.data[CONSENT_KEY].authorizationId, failRevoke ? authorizationId : '');
+  }
 });

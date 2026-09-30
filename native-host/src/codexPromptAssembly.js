@@ -1,6 +1,7 @@
 'use strict';
 
 const { truncateText } = require('./debugLog');
+const { formatOverleafWorkspaceRules } = require('./overleafWorkspaceRules');
 
 const PROJECT_CUSTOM_INSTRUCTIONS_MAX_CHARS = 12000;
 const NATIVE_MESSAGE_PROMPT_MAX_CHARS = 1024 * 1024;
@@ -32,6 +33,7 @@ function buildCodexTurnPrompt(options = {}) {
     `- Project: ${context.projectKey || context.projectId || 'unknown'}`,
     '- The local workspace was synced from Overleaf immediately before this turn.',
     '- If the recent session history conflicts with the files in the workspace, trust the files.',
+    ...(isSkillInstallerInvocation(context.skillInvocation) ? [] : ['', formatOverleafWorkspaceRules()]),
     '',
     'Project location citation rules:',
     formatProjectLocationCitationRules(),

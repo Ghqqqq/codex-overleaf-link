@@ -361,54 +361,56 @@
   }
 
   function renderAttachmentPreviewList(attachments = [], container, options = {}) {
-    if (!container) {
-      return;
-    }
+    if (!container) return;
     container.replaceChildren();
     const items = Array.isArray(attachments) ? attachments : [];
     container.hidden = items.length === 0;
     for (const attachment of items) {
       const isImage = attachment.kind === 'image' && attachment.previewDataUrl;
-      const card = document.createElement(isImage ? 'button' : 'div');
+      const label = attachment.name || (options.tx ? options.tx('Attachment', '附件') : 'Attachment');
+      const card = document.createElement('div');
       card.className = 'codex-attachment-preview-card';
       card.dataset.kind = isImage ? 'image' : 'file';
+      card.title = label + ' · ' + formatFileSize(attachment.size);
       if (isImage) {
-        card.type = 'button';
-        card.title = options.tx
-          ? options.tx(`Open ${attachment.name}`, `打开 ${attachment.name}`)
-          : `Open ${attachment.name}`;
-        card.addEventListener('click', () => showAttachmentPreviewDialog(attachment, options));
+        const preview = document.createElement('button');
+        preview.type = 'button';
+        preview.className = 'codex-attachment-preview-open';
+        preview.setAttribute('aria-label', options.tx ? options.tx('Preview ' + label, '预览 ' + label) : 'Preview ' + label);
+        preview.addEventListener('click', () => showAttachmentPreviewDialog(attachment, options));
         const image = document.createElement('img');
         image.src = attachment.previewDataUrl;
-        image.alt = attachment.name || (options.tx ? options.tx('Attached image', '已附加图片') : 'Attached image');
-        card.append(image);
+        image.alt = label;
+        preview.append(image);
+        card.append(preview);
       } else {
         const icon = document.createElement('span');
         icon.className = 'codex-attachment-file-icon';
         icon.textContent = getAttachmentIconLabel(attachment);
+        icon.setAttribute('aria-hidden', 'true');
         card.append(icon);
       }
-
       const meta = document.createElement('span');
       meta.className = 'codex-attachment-preview-meta';
       const name = document.createElement('span');
       name.className = 'codex-attachment-preview-name';
-      name.textContent = attachment.name || (options.tx ? options.tx('Attachment', '附件') : 'Attachment');
-      const size = document.createElement('span');
-      size.className = 'codex-attachment-preview-size';
-      size.textContent = formatFileSize(attachment.size);
-      meta.append(name, size);
+      name.textContent = label;
+      meta.append(name);
+      if (!isImage) {
+        const size = document.createElement('span');
+        size.className = 'codex-attachment-preview-size';
+        size.textContent = formatFileSize(attachment.size);
+        meta.append(size);
+      }
       card.append(meta);
-
       if (options.removable) {
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'codex-attachment-preview-remove';
         remove.textContent = '×';
-        remove.title = options.tx ? options.tx('Remove attachment', '移除附件') : 'Remove attachment';
-        remove.setAttribute('aria-label', options.tx
-          ? options.tx(`Remove ${attachment.name}`, `移除 ${attachment.name}`)
-          : `Remove ${attachment.name}`);
+        const removeLabel = options.tx ? options.tx('Remove ' + label, '移除 ' + label) : 'Remove ' + label;
+        remove.title = removeLabel;
+        remove.setAttribute('aria-label', removeLabel);
         remove.addEventListener('click', event => {
           event.preventDefault();
           event.stopPropagation();

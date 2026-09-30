@@ -1,5 +1,12 @@
 'use strict';
 
+const { REFERENCE_LIMITS } = require('../../extension/src/shared/writingStyle');
+const WRITING_STYLE_ATTACHMENT_QUOTAS = Object.freeze({
+  maxAttachmentCount: REFERENCE_LIMITS.maxSources,
+  maxAttachmentBytes: REFERENCE_LIMITS.maxPdfBytes,
+  maxAttachmentTotalBytes: REFERENCE_LIMITS.maxAttachmentTotalBytes
+});
+
 const NATIVE_REQUEST_QUOTAS = Object.freeze({
   maxProjectFiles: 1000,
   maxProjectTextBytes: 32 * 1024 * 1024,
@@ -21,7 +28,7 @@ function validateNativeRequestQuotas(request = {}) {
         validateOperationListQuota(params.fileOverlays, 'fileOverlays'),
         validateFilePayloadQuota(params.fileOverlays, 'fileOverlays'),
         validateCompileLogQuota(params),
-        validateAttachmentQuota(params.attachments),
+        validateAttachmentQuota(params.attachments, params.writingStyleBuild ? WRITING_STYLE_ATTACHMENT_QUOTAS : NATIVE_REQUEST_QUOTAS),
         validateSkillContentQuota(params.skillContent)
       ]);
     case 'mirror.sync':
@@ -211,27 +218,27 @@ function validateCompileLogQuota(params = {}) {
     : null;
 }
 
-function validateAttachmentQuota(attachments) {
+function validateAttachmentQuota(attachments, quotas = NATIVE_REQUEST_QUOTAS) {
   const items = Array.isArray(attachments) ? attachments : [];
-  if (items.length > NATIVE_REQUEST_QUOTAS.maxAttachmentCount) {
-    return quotaViolation('attachments', NATIVE_REQUEST_QUOTAS.maxAttachmentCount, items.length, 'too many attachments');
+  if (items.length > quotas.maxAttachmentCount) {
+    return quotaViolation('attachments', quotas.maxAttachmentCount, items.length, 'too many attachments');
   }
 
   let totalBytes = 0;
   for (const item of items) {
     const bytes = getDeclaredOrEstimatedBinaryBytes(item);
-    if (bytes > NATIVE_REQUEST_QUOTAS.maxAttachmentBytes) {
+    if (bytes > quotas.maxAttachmentBytes) {
       return quotaViolation(
         'attachments.contentBase64',
-        NATIVE_REQUEST_QUOTAS.maxAttachmentBytes,
+        quotas.maxAttachmentBytes,
         bytes,
         'attachment payload is too large'
       );
     }
     totalBytes += bytes;
   }
-  return totalBytes > NATIVE_REQUEST_QUOTAS.maxAttachmentTotalBytes
-    ? quotaViolation('attachments', NATIVE_REQUEST_QUOTAS.maxAttachmentTotalBytes, totalBytes, 'attachment payload is too large')
+  return totalBytes > quotas.maxAttachmentTotalBytes
+    ? quotaViolation('attachments', quotas.maxAttachmentTotalBytes, totalBytes, 'attachment payload is too large')
     : null;
 }
 

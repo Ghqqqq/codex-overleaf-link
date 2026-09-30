@@ -112,16 +112,17 @@ test('diagnostics menu exports a content-redacted audit bundle', () => {
   );
 
   assert.match(panelSource, /data-diagnostics-export/);
-  assert.match(contentScript, /function exportDiagnosticsBundle/);
-  assert.match(contentScript, /AuditRecords\.buildDiagnosticBundle/);
-  assert.match(contentScript, /getRecentAuditLogsForCurrentProject/);
-  assert.match(contentScript, /getNativeDiagnosticsSummaryForBundle/);
-  assert.match(contentScript, /platform:\s*nativeDiagnostics\.platform/);
-  assert.match(contentScript, /nativeEnvironment:\s*nativeDiagnostics\.nativeEnvironment/);
-  assert.match(contentScript, /URL\.createObjectURL/);
-  assert.match(contentScript, /download = `codex-overleaf-diagnostics-/);
-  assert.match(contentScript, /excludeContent:\s*true/);
-  assert.doesNotMatch(contentScript.match(/function exportDiagnosticsBundle[\s\S]*?\n  function /)?.[0] || '', /content:\s*project/);
+  assert.match(contentScript, /diagnosticsExporter\.exportDiagnosticsBundle/);
+  const exportSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/diagnosticsExport.js'), 'utf8');
+  assert.match(exportSource, /AuditRecords\.buildDiagnosticBundle/);
+  assert.match(exportSource, /getRecentAuditLogsForCurrentProject/);
+  assert.match(exportSource, /getNativeDiagnosticsSummaryForBundle/);
+  assert.match(exportSource, /platform:\s*nativeDiagnostics\.platform/);
+  assert.match(exportSource, /nativeEnvironment:\s*nativeDiagnostics\.nativeEnvironment/);
+  assert.match(exportSource, /URL\.createObjectURL/);
+  assert.match(exportSource, /download = `codex-overleaf-diagnostics-/);
+  assert.match(exportSource, /excludeContent:\s*true/);
+  assert.doesNotMatch(exportSource.match(/function exportDiagnosticsBundle[\s\S]*?\n  function /)?.[0] || '', /content:\s*project/);
   assert.match(i18n, /diagnosticsExportTitle/);
   assert.match(i18n, /diagnosticsExportSubtitle/);
 });
@@ -261,7 +262,7 @@ test('diagnostic summaries use natural language while raw details stay collapsed
   assert.match(diagnosticsPanel, /<summary data-i18n="technicalDetails">Technical Details<\/summary>/);
 });
 
-test('diagnostic result floats in the viewport with visible side margins', () => {
+test('diagnostic result stays bounded by the sidebar and viewport', () => {
   const css = fs.readFileSync(
     path.join(__dirname, '../extension/styles/panel.css'),
     'utf8'
@@ -271,8 +272,8 @@ test('diagnostic result floats in the viewport with visible side margins', () =>
   assert.match(resultBlock, /position:\s*fixed/);
   assert.match(resultBlock, /top:\s*44px/);
   assert.match(resultBlock, /right:\s*12px/);
-  assert.match(resultBlock, /width:\s*min\(560px,\s*calc\(100vw - 24px\)\)/);
-  assert.doesNotMatch(resultBlock, /--codex-overleaf-panel-width/);
+  assert.match(resultBlock, /width:\s*min\(400px,\s*calc\(var\(--codex-overleaf-panel-width\) - 24px\),\s*calc\(100vw - 24px\)\)/);
+  assert.match(resultBlock, /overflow:\s*hidden/);
   assert.doesNotMatch(resultBlock, /position:\s*absolute/);
 });
 

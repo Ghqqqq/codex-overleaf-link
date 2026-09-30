@@ -59,3 +59,12 @@ test('page bridge injection catalog preserves page-world dependency order', () =
     ['src/shared/otText.js', 'src/page/overleafRealtimeObserver.js']
   );
 });
+
+test('writeback receipt journal is injected before the page bridge and is web accessible', () => {
+  const scripts = PageBridgeClient.PAGE_WORLD_SCRIPTS.map(entry => entry[0]);
+  const journal = 'src/page/writebackReceiptJournal.js';
+  assert.ok(scripts.includes(journal));
+  assert.ok(scripts.indexOf(journal) < scripts.indexOf('src/pageBridge.js'));
+  const manifest = require('../extension/manifest.json');
+  assert.ok(manifest.web_accessible_resources.some(group => group.resources.includes(journal)));
+});

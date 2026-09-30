@@ -98,6 +98,11 @@
         if (!journal?.terminal && !journal?.ownerLost) {
           continue;
         }
+        // Native completion can precede the owner's writeback and durable
+        // session save. A passive shared-history reader must not settle it.
+        if (options.requireOwnerLost === true && journal.ownerLost !== true) {
+          continue;
+        }
         const session = options.findSession?.(journal.sessionId);
         if (!session) {
           continue;
@@ -111,6 +116,9 @@
         }
         if (!record) {
           continue;
+        }
+        if (record.status === 'running') {
+          options.normalizeInterruptedRun?.(record);
         }
         const reloadReports = (record.events || []).filter(event => event?.failure?.source === 'panel_reload');
         record.events = (record.events || []).filter(event => event?.failure?.source !== 'panel_reload');

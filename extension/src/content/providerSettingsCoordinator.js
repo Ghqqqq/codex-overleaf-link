@@ -52,7 +52,8 @@
         onActivate: context => activateProvider(instance, context),
         onClearSecret: context => clearProviderSecret(instance, context),
         onDelete: context => deleteProvider(instance, context),
-        onActivateBuiltin: () => activateBuiltin(instance)
+        onActivateBuiltin: () => activateBuiltin(instance),
+        onReload: () => open(instance, { refresh: true })
       }
     });
     setupCrossTabRefresh(instance, options.window || window);
@@ -73,15 +74,25 @@
     };
   }
 
-  async function open(instance) {
-    instance.dialog.open(instance.catalog);
+  async function open(instance, options = {}) {
+    const settings = instance.getSettingsPanelInstance();
+    const host = settings?.openProviderPage?.() || null;
+    const preserveDraft = Boolean(host && instance.dialog.isOpen());
+    if (host) settings.setProviderCloseGuard?.(async () => {
+      if (!instance.dialog.isOpen()) return true;
+      // A native confirmation must be opened from a visible provider section,
+      // even when the user has since navigated to another settings category.
+      if (instance.dialog.hasUnsavedChanges()) settings.openProviderPage();
+      return instance.dialog.close();
+    });
+    instance.dialog.open(instance.catalog, { container: host, preserveDraft });
+    if (preserveDraft && !options.refresh) return;
     instance.dialog.setBusy('loading', instance.tx('Loading providers…', '正在加载模型服务…'));
     try {
-      await refresh(instance, { updateDialog: true });
+      await refresh(instance, { updateDialog: true, source: preserveDraft ? 'cross-tab' : 'open' });
       instance.dialog.setBusy('', '');
     } catch (_error) {
-      // refresh() already projected the actionable failure into the dialog.
-      // Keep the modal open so the user can close it or retry from Settings.
+      // Keep the embedded editor available, with its original error projection.
     }
   }
 

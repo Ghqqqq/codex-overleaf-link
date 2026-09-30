@@ -27,7 +27,7 @@
 
   const PHASE_TIMEOUTS = Object.freeze({
     checking: 60 * 1000,
-    downloading: 2 * 60 * 1000,
+    downloading: 6 * 60 * 1000,
     applying: 90 * 1000,
     awaiting_health: 2 * 60 * 1000,
     rolling_back: 60 * 1000
@@ -77,7 +77,7 @@
     up_to_date: Object.freeze(['checking', 'idle']),
     checking: Object.freeze(['idle', 'up_to_date', 'update_available', 'failed']),
     update_available: Object.freeze(['checking', 'downloading', 'deferred', 'failed']),
-    downloading: Object.freeze(['staged', 'failed']),
+    downloading: Object.freeze(['staged', 'failed', 'update_available', 'idle']),
     staged: Object.freeze(['waiting_for_idle', 'applying', 'update_available', 'deferred', 'failed']),
     waiting_for_idle: Object.freeze(['applying', 'update_available', 'deferred', 'failed']),
     applying: Object.freeze(['staged', 'awaiting_health', 'rolling_back', 'failed']),

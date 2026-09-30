@@ -34,6 +34,7 @@ function harness() {
     projectRunSettlement,
     trackedChangeInFlight: new Map(),
     tr: key => key,
+    tx: english => english,
     undoRun: id => calls.push(id)
   });
   return {
@@ -64,6 +65,21 @@ for (const type of ['binary-create', 'overwrite-binary']) {
     assert.equal(JSON.stringify(run), before, 'rendering must not change recovery or settlement data');
   });
 }
+
+
+test('forward text creation without a checkpoint does not expose a no-op Undo', () => {
+  const run = { id: 'old-create', appliedOperations: [{ type: 'create', path: 'new.tex', content: 'body' }] };
+  const { undo } = harness().render(run);
+  assert.equal(undo.hidden, true);
+  assert.equal(undo.listeners.click, undefined);
+});
+for (const kind of ['text', 'binary']) test('guarded created ' + kind + ' keeps real Undo available', () => {
+  const run = { ...assetRun('binary-create'), undoOperations: [{ type: 'delete', path: 'new-file',
+    undoCreatedFile: { v: 1, kind, ...(kind === 'binary' ? { sha256: 'a'.repeat(64) } : {}) } }] };
+  const h = harness(); const { undo } = h.render(run);
+  assert.equal(undo.hidden, false); assert.equal(undo.disabled, false);
+  undo.listeners.click({ stopPropagation() {} }); assert.deepEqual(h.calls, [run.id]);
+});
 
 test('rehydrated asset-only recovery payload does not inherit a stale top-level Undo capability', () => {
   const run = JSON.parse(JSON.stringify({ id: 'restored', status: 'completed',
@@ -131,3 +147,26 @@ test('legacy Undone history and fork snapshots keep their existing presentation'
   assert.equal(fork.undo.hidden, true);
   assert.equal(fork.accept.hidden, true);
 });
+
+for (const [state, reason] of [['pending', 'capture_view_not_active'], ['needs_review', 'capture_expired']]) {
+  test('unconfirmed Track shows disabled Accept with its reason while retaining Undo: ' + state, () => {
+    const run = { id: 'capture-run', status: 'completed', executionSnapshot: { requireReviewing: true },
+      appliedOperations: [{ type: 'edit', path: 'sub/test.tex' }],
+      undoExpectedFiles: [{ path: 'sub/test.tex', content: 'before' }], undoTrackedChanges: [],
+      trackedChangeCaptures: [{ path: 'sub/test.tex', state, reason,
+        diagnostics: { sourceReason: 'native_ledger_not_ready' } }] };
+    const h = harness(), before = JSON.stringify(run);
+    const { accept, undo } = h.render(run);
+    assert.equal(accept.hidden, false);
+    assert.equal(accept.disabled, true);
+    assert.equal(accept.textContent, 'runAcceptTracked');
+    assert.match(accept.title, new RegExp(reason));
+    assert.match(accept.title, /sub\/test\.tex.*native_ledger_not_ready/);
+    assert.equal(accept.listeners.click, undefined, 'no unsafe accept dispatch may be attached');
+    assert.equal(undo.hidden, false);
+    assert.equal(undo.disabled, false);
+    assert.equal(JSON.stringify(run), before, 'view feedback must not fabricate ownership');
+    assert.equal(h.render({ ...run, undoStatus: 'applied' }).accept.hidden, true);
+    assert.equal(h.render({ ...run, forkSnapshot: true }).accept.hidden, true);
+  });
+}

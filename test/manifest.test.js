@@ -72,17 +72,20 @@ test('loads reference sanitizers immediately after project files', () => {
   assert.equal(lineReferencesIndex < contentRuntimeIndex, true);
 });
 
-test('loads storage run-action helpers immediately before storageDb', () => {
+test('loads storage helpers in canonical contiguous order before storageDb', () => {
   const js = contentBundleSourceOrder;
   const runActionsIndex = js.indexOf('src/shared/storageRunActions.js');
   const sessionClaimsIndex = js.indexOf('src/shared/storageSessionClaims.js');
+  const pruningIndex = js.indexOf('src/shared/storageValuePruning.js');
   const storageDbIndex = js.indexOf('src/shared/storageDb.js');
 
   assert.notEqual(runActionsIndex, -1);
   assert.notEqual(sessionClaimsIndex, -1);
   assert.notEqual(storageDbIndex, -1);
+  assert.notEqual(pruningIndex, -1);
   assert.equal(sessionClaimsIndex, runActionsIndex + 1);
-  assert.equal(storageDbIndex, sessionClaimsIndex + 1);
+  assert.equal(pruningIndex, sessionClaimsIndex + 1);
+  assert.equal(storageDbIndex, pruningIndex + 1);
 });
 
 test('pins the Native Messaging host name', () => {

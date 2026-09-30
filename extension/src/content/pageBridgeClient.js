@@ -9,7 +9,7 @@
     ['src/shared/reviewing.js', 'codex-overleaf-reviewing-script'],
     ['src/shared/projectFiles.js', 'codex-overleaf-project-files-script'],
     ['src/shared/compatibility.js', 'codex-overleaf-compatibility-page-script'],
-    ['src/shared/pageRpcContract.js', 'codex-overleaf-page-rpc-contract-script'],
+    ['src/shared/pageRpcContract.js', 'codex-overleaf-page-rpc-contract-script', true],
     ['src/shared/staleGuard.js', 'codex-overleaf-stale-guard-script'],
     ['src/shared/compileAdapter.js', 'codex-overleaf-compile-adapter-script'],
     ['src/shared/sensitiveScan.js', 'codex-overleaf-sensitive-scan-script'],
@@ -24,10 +24,15 @@
     ['src/page/textFileCreator.js', 'codex-overleaf-text-file-creator-script', true],
     ['src/page/binaryAssetUploader.js', 'codex-overleaf-binary-asset-uploader-script', true],
     ['src/page/snapshotRouter.js', 'codex-overleaf-snapshot-router-script'],
+    ['src/page/referenceProjects.js', 'codex-overleaf-reference-projects-script', true],
     ['src/page/writeGuard.js', 'codex-overleaf-write-guard-script', true],
+    ['src/page/trackedChangeOwnership.js', 'codex-overleaf-tracked-change-ownership-script', true],
     ['src/page/trackedChangeCapture.js', 'codex-overleaf-tracked-change-capture-script', true],
+    ['src/page/trackedChangeReplay.js', 'codex-overleaf-tracked-change-replay-script', true],
     ['src/page/trackedChangesLifecycle.js', 'codex-overleaf-tracked-changes-lifecycle-script', true],
     ['src/page/writebackRouter.js', 'codex-overleaf-writeback-router-script', true],
+    ['src/page/writebackReceiptJournal.js', 'codex-overleaf-writeback-receipt-script', true],
+    ['src/page/textCoordinates.js', 'codex-overleaf-text-coordinates-script', true],
     ['src/pageBridge.js', 'codex-overleaf-page-bridge-script', true]
   ]);
   const OPTIONAL_OT_SCRIPTS = Object.freeze([
@@ -96,7 +101,8 @@
           rejectOnce(error);
         }
         timeout = windowRef.setTimeout(() => {
-          resolveOnce({ ok: false, error: 'Page bridge timed out' });
+          resolveOnce({ ok: false, error: 'Page bridge timed out',
+            ...(method === 'applyOperations' ? { code: 'page_bridge_timeout', rpcMethod: method, requestId: id } : {}) });
         }, timeoutMs);
         function onMessage(event) {
           if (event.source !== windowRef

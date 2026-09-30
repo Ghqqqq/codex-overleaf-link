@@ -22,6 +22,7 @@
       : () => '';
     let invalidatedAt = 0;
     let preferredZipEndpoint = '';
+    const writebackReads = new Set();
 
     function getProjectId() {
       return treeOperations.getProjectId?.() || null;
@@ -212,7 +213,7 @@
   }
 
   async function buildProjectSnapshot(params = {}) {
-    if (params.zipOnly) {
+    if (params.zipOnly || params.serverOnly === true) {
       return buildZipOnlyProjectSnapshot(params);
     }
 
@@ -437,11 +438,11 @@
 
   async function buildZipOnlyProjectSnapshot(params = {}) {
     const activePath = getPassiveActiveFilePath();
-    const activeText = activePath ? readActiveEditorText() : '';
+    const activeText = params.serverOnly === true ? '' : activePath ? readActiveEditorText() : '';
 
     const zipSnapshot = await fetchProjectZipSnapshot(params);
     if (zipSnapshot.ok && zipSnapshot.files.length) {
-      const activeOverlay = buildActiveEditorOverlay(activePath, activeText, {
+      const activeOverlay = params.serverOnly === true ? [] : buildActiveEditorOverlay(activePath, activeText, {
         allowedPaths: zipSnapshot.files.map(file => file.path)
       });
       const files = filterRequestedSnapshotFiles(
@@ -477,10 +478,11 @@
       id: getProjectId(),
       url: window.location.href,
       activePath,
-      files: buildActiveEditorOverlay(activePath, activeText),
+      files: params.serverOnly === true ? [] : buildActiveEditorOverlay(activePath, activeText),
       capabilities: {
         fullProjectSnapshot: false,
-        method: activePath && window.CodexOverleafProjectFiles.isUsableProjectFileContent(activeText)
+        method: params.serverOnly === true ? 'overleaf-zip-unavailable'
+          : activePath && window.CodexOverleafProjectFiles.isUsableProjectFileContent(activeText)
           ? 'active-editor-zip-only-fallback'
           : 'zip-only-fallback-empty',
         skipped: [{
@@ -491,7 +493,9 @@
           docRecordCount: 0,
           docRecords: []
         },
-        note: 'Only the current editor was read because the Overleaf source ZIP was unavailable; no file tree navigation was attempted.'
+        note: params.serverOnly === true
+          ? 'The server snapshot was unavailable; editor content was not used as save evidence.'
+          : 'Only the current editor was read because the Overleaf source ZIP was unavailable; no file tree navigation was attempted.'
       }
     };
   }
@@ -631,8 +635,13 @@
     }
   }
 
-  async function fetchProjectZipSnapshot(params = {}) {
-    const projectId = getProjectId();
+  async function fetchProjectZipSnapshot(params = {}, reference = null) {
+    // Cross-project reads use a separate internal argument. Normal snapshot
+    // RPC parameters cannot change the active project's snapshot identity.
+    const projectId = reference ? String(reference.projectId || '') : getProjectId();
+    if (reference && !/^[a-f0-9]{24}$/i.test(projectId)) {
+      return { ok: false, reason: 'Reference project identity is invalid' };
+    }
     if (!projectId) {
       return {
         ok: false,
@@ -644,7 +653,9 @@
     const endpoints = [
       `${window.location.origin}/project/${encodeURIComponent(projectId)}/download/zip`,
       `${window.location.origin}/download/project/${encodeURIComponent(projectId)}`
-    ];
+    ].map(endpoint => params.serverOnly === true
+      ? endpoint + '?codex_save_check=' + encodeURIComponent(String(params.saveCheckId || Date.now()).slice(0, 80))
+      : endpoint);
     const orderedEndpoints = preferredZipEndpoint && endpoints.includes(preferredZipEndpoint)
       ? [preferredZipEndpoint, ...endpoints.filter(endpoint => endpoint !== preferredZipEndpoint)]
       : endpoints;
@@ -661,7 +672,9 @@
       }
       const attemptStartedAt = Date.now();
       try {
-        const { response, contentType, buffer, timing } = await fetchZipEndpoint(endpoint, remainingMs);
+        const { response, contentType, buffer, timing } = await fetchZipEndpoint(endpoint, remainingMs,
+          reference?.signal || params.signal, !reference && (params.writebackVerification === true || params.serverOnly === true));
+        if (reference?.signal?.aborted) throw new Error('Reference reading was cancelled');
         if (!response.ok) {
           attempts.push({
             endpoint,
@@ -716,10 +729,12 @@
       } catch (error) {
         attempts.push({
           endpoint,
-          error: error.message,
+            error: error.message,
+            ...(error.timing || {}),
           elapsedMs: Date.now() - attemptStartedAt
         });
         errors.push(`${endpoint} failed: ${error.message}`);
+        if (reference?.signal?.aborted) break;
         if (error?.code === 'zip_timeout') {
           errors.push(`Overleaf ZIP download exhausted its ${timeoutMs}ms total timeout budget`);
           break;
@@ -738,8 +753,15 @@
     };
   }
 
-  function fetchZipEndpoint(endpoint, timeoutMs) {
+  function fetchZipEndpoint(endpoint, timeoutMs, parentSignal, writeback = false) {
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    if (writeback && controller) writebackReads.add(controller);
+    const started = Date.now(), observedTiming = {};
+    const abort = () => controller?.abort();
+    if (controller && parentSignal) {
+      if (parentSignal.aborted) controller.abort();
+      else parentSignal.addEventListener('abort', abort, { once: true });
+    }
     const request = (async () => {
       const startedAt = Date.now();
       const response = await fetch(endpoint, {
@@ -750,6 +772,8 @@
         ...(controller ? { signal: controller.signal } : {})
       });
       const headersAt = Date.now();
+      observedTiming.timeToHeadersMs = headersAt - started;
+      observedTiming.status = response.status;
       const contentType = response.headers.get('content-type') || '';
       const buffer = response.ok ? await response.arrayBuffer() : null;
       return {
@@ -765,7 +789,13 @@
 
     return withTimeout(request, timeoutMs, () => {
       controller?.abort();
-    }, `Overleaf ZIP download timed out after ${timeoutMs}ms`);
+    }, `Overleaf ZIP download timed out after ${timeoutMs}ms`).catch(error => {
+      error.timing = { ...observedTiming, downloadMs: Date.now() - started };
+      throw error;
+    }).finally(() => {
+      if (controller) writebackReads.delete(controller);
+      parentSignal?.removeEventListener?.('abort', abort);
+    });
   }
 
   function withTimeout(promise, timeoutMs, onTimeout, message) {
@@ -999,6 +1029,7 @@
       getInvalidatedAt,
       getRequestedSnapshotPaths,
       invalidateCache,
+      cancelWritebackReads() { for (const controller of writebackReads) controller.abort(); },
       readFileTree
     };
   }

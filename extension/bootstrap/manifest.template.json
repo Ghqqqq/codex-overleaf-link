@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Codex Overleaf Link",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Connect the active Overleaf project to a local Codex bridge.",
   "icons": {
     "16": "assets/icons/icon16.png",
@@ -20,7 +20,9 @@
     "https://www.overleaf.com/project",
     "https://overleaf.com/project",
     "https://www.overleaf.com/project/*",
-    "https://overleaf.com/project/*"
+    "https://overleaf.com/project/*",
+    "https://cn.overleaf.com/project",
+    "https://cn.overleaf.com/project/*"
   ],
   "background": {
     "service_worker": "bootstrap/background.js"
@@ -37,7 +39,8 @@
       ],
       "matches": [
         "https://www.overleaf.com/*",
-        "https://overleaf.com/*"
+        "https://overleaf.com/*",
+        "https://cn.overleaf.com/*"
       ]
     }
   ],

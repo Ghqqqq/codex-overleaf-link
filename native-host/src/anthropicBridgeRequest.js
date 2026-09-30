@@ -175,7 +175,8 @@ function convertToolChoice(value, context, launch) {
 }
 
 function applyAnthropicThinking(body, requestBody, launch, maxTokens) {
-  const effort = text(requestBody?.reasoning?.effort || launch.reasoningEffort).toLowerCase();
+  // The captured panel choice wins over a model-generated request default.
+  const effort = text(launch.reasoningEffort || requestBody?.reasoning?.effort).toLowerCase();
   if (!effort || ['none', 'off', 'disabled'].includes(effort) || launch.anthropicThinkingMode === 'none') {
     return false;
   }

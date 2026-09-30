@@ -6,10 +6,9 @@ const vm = require('node:vm');
 const projectFiles = require('../extension/src/shared/projectFiles');
 
 const source = fs.readFileSync(path.join(__dirname, '../extension/src/pageBridge.js'), 'utf8');
-const start = source.indexOf('  async function jumpToPosition(');
-const end = source.indexOf('  function resolveJumpToPositionRange(', start);
-assert.ok(start >= 0 && end > start);
-const jumpSource = source.slice(start, end);
+// The function's own boundary is independent of whichever helper follows it.
+const jumpSource = source.match(/^  async function jumpToPosition\([\s\S]*?\n  \}/m)?.[0];
+assert.ok(jumpSource, 'the jumpToPosition RPC implementation must be available');
 
 function createHarness({ exists = true, visible = false, openable = true } = {}) {
   const target = 'example/test.tex';

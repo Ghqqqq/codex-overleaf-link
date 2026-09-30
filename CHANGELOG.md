@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.5.0 - 2026-09-30
+
+### Added
+
+- Introduce experimental Write in my style: select Overleaf projects and PDF references, generate a reusable writing-style skill, and regenerate it when references change. Style guidance targets voice, phrasing, and organization while keeping facts and citations grounded in the current task.
+- Add an integrated provider configuration experience with OpenAI-compatible and Anthropic-compatible connections, provider shortcuts, model capabilities, and reasoning controls.
+- Show concurrent subagent activity and inspect child conversations without blocking the main agent. Preserve activity and terminal state through history restoration.
+- Support cn.overleaf.com, with account-scoped session sharing across supported Overleaf hosts.
+- Add editor-selection actions for context attachment and selection-scoped editing, compact attachment previews, and a settings workbench.
+
+### Fixed
+
+- Recover interrupted multi-file writeback using per-file receipts and server evidence, without replaying completed uploads or overwriting later edits.
+- Make newly created text files and images reversible. Mixed Undo persists verified progress, protects files edited after creation, and retries only remaining files after refresh.
+- Restore cancelled-message editing to the composer and keep cancellation, run completion, and recovered history states consistent.
+- Preserve subagent event identity and child transcripts, and keep the Overleaf mirror's no-Git workspace rules aligned for parent and child agents.
+- Make update downloads cancellable and bound network retries without discarding version-specific consent or safe-point checks.
+- Reduce non-actionable process notices, refresh Undo summaries and mode hints, and improve diagnostics, settings, popup sizing, and localization.
+
+### Compatibility and installation
+
+- Move the managed Bootstrap protocol from 2 to 3 for the expanded Overleaf host permissions and new popup shell. The Native Messaging protocol remains 2.
+- Existing managed installations must run this release's managed installer once, reload the Chrome extension, and refresh Overleaf. The protocol-2 updater rejects this migration instead of replacing its fixed bootstrap or adding permissions automatically.
+- RC builds are GitHub prereleases only and are excluded from automatic stable updates. Use the version-pinned installers attached to the RC; the numeric npm commands apply after a stable npm publication.
+- Preserve the extension identity, project data, account-scoped history, provider settings, and signing trust anchor. No npm runtime dependency is added; PDF parsing resources and their licenses ship inside the package.
+
+### Known issues in this RC
+
+- After a partial Undo succeeds on retry, the run header may retain the earlier conflict summary. The final Undone state and remaining-file recovery are correct; the stale summary is a presentation issue.
+
 ## v2.4.1 - 2026-09-22
 
 ### Changed

@@ -4,8 +4,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { logDebug } = require('./debugLog');
 const {
   buildCodexRuntimeIdentity,
+  discoverCodexCandidates,
   getCodexRuntimeIdentityFromEnv,
   serializeCodexRuntimeIdentity
 } = require('./codexRuntimeIdentity');
@@ -51,6 +53,69 @@ function buildNativeRuntimeEnv(baseEnv = process.env, options = {}) {
   env.CODEX_OVERLEAF_CODEX_VERSION = codexRuntime.selected?.version || '';
   env.CODEX_OVERLEAF_CODEX_SOURCE = codexRuntime.selected?.source || '';
 
+  return env;
+}
+
+const codexRuntimeRefreshCache = new Map();
+
+function refreshCodexRuntimeEnv(baseEnv = process.env, options = {}) {
+  const runtimeOptions = { ...options, platform: getNativeRuntimePlatform({ ...options, env: baseEnv }) };
+  const previous = getCodexRuntimeIdentityFromEnv(baseEnv);
+  const selectedPath = previous.selected?.path || String(baseEnv.CODEX_OVERLEAF_CODEX_PATH || '');
+  const pinned = previous.selectedBy === 'explicit-path'
+    || (previous.selectedBy === 'legacy-path' && Boolean(selectedPath));
+  const pathValue = mergePathSegments([
+    ...getPathValues(baseEnv, runtimeOptions),
+    ...getDefaultPathSegments(baseEnv, runtimeOptions)
+  ], runtimeOptions);
+  const candidates = discoverCodexCandidates(pathValue, { ...runtimeOptions, env: baseEnv });
+  const paths = [...new Set([selectedPath, ...candidates].filter(Boolean))];
+  const signatures = paths.map(candidate => {
+    try {
+      const resolved = fs.realpathSync(candidate);
+      const stat = fs.statSync(resolved);
+      return [candidate, resolved, stat.size, stat.mtimeMs, stat.ctimeMs];
+    } catch (_) { return [candidate, 'missing']; }
+  });
+  const key = JSON.stringify([runtimeOptions.platform, pinned ? selectedPath : '', pathValue, signatures]);
+  const cached = codexRuntimeRefreshCache.get(key);
+  let identity = cached?.identity;
+  if (options.force || !cached || Date.now() - cached.createdAt > 30000) {
+    identity = buildCodexRuntimeIdentity({
+      selectedPath,
+      selectionPolicy: pinned ? 'explicit-path' : 'newest-version',
+      pathValue,
+      delimiter: runtimeOptions.delimiter,
+      env: { ...baseEnv, PATH: pathValue },
+      platform: runtimeOptions.platform
+    });
+    codexRuntimeRefreshCache.set(key, { identity, createdAt: Date.now() });
+    while (codexRuntimeRefreshCache.size > 4) {
+      codexRuntimeRefreshCache.delete(codexRuntimeRefreshCache.keys().next().value);
+    }
+    if (identity.selected?.path !== previous.selected?.path
+      || identity.selected?.version !== previous.selected?.version) {
+      logDebug('codex.runtime.refreshed', {
+        previousVersion: previous.selected?.version || '',
+        selectedVersion: identity.selected?.version || '',
+        selectedPath: identity.selected?.displayPath || '',
+        selectedBy: identity.selectedBy,
+        reason: options.force ? 'model_version_rejection' : 'before_request'
+      });
+    }
+  }
+  // Keep each in-flight run on its own environment snapshot.
+  const env = {
+    ...baseEnv,
+    CODEX_OVERLEAF_ENV_READY: '1',
+    CODEX_OVERLEAF_PLATFORM: runtimeOptions.platform,
+    CODEX_OVERLEAF_CODEX_PATH: identity.selected?.path || '',
+    CODEX_OVERLEAF_CODEX_RUNTIME_JSON: serializeCodexRuntimeIdentity(identity),
+    CODEX_OVERLEAF_CODEX_VERSION: identity.selected?.version || '',
+    CODEX_OVERLEAF_CODEX_SOURCE: identity.selected?.source || ''
+  };
+  normalizePathKeys(env, pathValue, runtimeOptions);
+  env.PATH = pathValue;
   return env;
 }
 
@@ -169,6 +234,10 @@ function getDefaultPathSegments(env = process.env, options = {}) {
 
   return [
     ...commonSegments.slice(0, 4),
+    platformPath.join(home, 'Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS'),
+    platformPath.join(home, 'Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS'),
+    '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS',
+    '/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS',
     platformPath.join(home, 'Applications/ChatGPT.app/Contents/Resources'),
     platformPath.join(home, 'Applications/Codex.app/Contents/Resources'),
     '/Applications/ChatGPT.app/Contents/Resources',
@@ -344,6 +413,7 @@ module.exports = {
   mergePathSegments,
   parseMarkedShellEnv,
   readLoginShellEnv,
+  refreshCodexRuntimeEnv,
   resolveExecutable,
   summarizeNativeEnvironment
 };

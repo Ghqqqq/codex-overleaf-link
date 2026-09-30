@@ -274,159 +274,63 @@ test('session settlement compaction protects active facts and preserves source v
   });
 });
 
-test('tracked lifecycle reducer matches the retained success-first policy matrix', () => {
+test('tracked lifecycle requires complete consistent evidence for every targeted change', () => {
+  const good = { trackedChange: { path: 'main.tex' }, result: { ok: true } };
+  const unresolved = {
+  result: { ok: false, failure: { code: 'accept_not_verified', stage: 'accept', severity: 'warning',
+    userMessage: 'Review the unresolved change.', retryable: true,
+    nextAction: 'Review the tracked changes before continuing.', terminalState: 'needs_review' } }
+};
   const cases = [
-    [{ ok: true, applied: [], skipped: [] }, 'accepted'],
-    [{ ok: false, applied: [{ result: { ok: true } }], skipped: [] }, 'accepted'],
-    [{
-      ok: false,
-      applied: [{ result: { ok: true } }],
-      skipped: [{
-        result: {
-          ok: false,
-          failure: {
-            code: 'accept_not_verified',
-            stage: 'accept',
-            severity: 'warning',
-            userMessage: 'review',
-            retryable: true,
-            nextAction: 'Review the tracked changes before continuing.',
-            terminalState: 'needs_review'
-          }
-        }
-      }]
-    }, 'accepted'],
-    [{
-      ok: false,
-      applied: {
-        applied: [{ result: { ok: true } }],
-        skipped: [{
-          result: {
-            ok: false,
-            failure: {
-              code: 'accept_not_verified',
-              stage: 'accept',
-              severity: 'warning',
-              userMessage: 'review',
-              retryable: true,
-              nextAction: 'Review the tracked changes before continuing.',
-              terminalState: 'needs_review'
-            }
-          }
-        }]
-      }
-    }, 'accepted'],
-    [{
-      ok: false,
-      applied: {
-        applied: [],
-        skipped: [{
-          result: {
-            ok: false,
-            failure: {
-              code: 'accept_not_verified',
-              stage: 'accept',
-              severity: 'warning',
-              userMessage: 'review',
-              retryable: true,
-              nextAction: 'Review the tracked changes before continuing.',
-              terminalState: 'needs_review'
-            }
-          }
-        }]
-      }
-    }, 'needs_review'],
-    [{
-      ok: false,
-      applied: [],
-      skipped: [{
-        result: {
-          ok: false,
-          failure: {
-            code: 'accept_not_verified',
-            stage: 'accept',
-            severity: 'warning',
-            userMessage: 'review',
-            retryable: true,
-            nextAction: 'Review the tracked changes before continuing.',
-            terminalState: 'needs_review'
-          }
-        }
-      }]
-    }, 'needs_review']
+    [{ ok: true, applied: [], skipped: [] }, true],
+    [{ ok: true, applied: [good], skipped: [] }, true],
+    [{ ok: false, applied: [good], skipped: [] }, false],
+    [{ ok: false, applied: [good], skipped: [unresolved] }, false],
+    [{ ok: false, applied: { applied: [good], skipped: [unresolved] } }, false],
+    [{ ok: true, applied: [good], skipped: [unresolved] }, false],
+    [{ ok: true, applied: { applied: [good], skipped: [unresolved] } }, false],
+    [{ ok: false, applied: { applied: [], skipped: [unresolved] } }, false],
+    [{ ok: false, applied: [], skipped: [unresolved] }, false]
   ];
-  for (const [result, expected] of cases) {
-    assert.equal(
-      Settlement.settleTrackedChangeLifecycle({ kind: 'accept', result }).decision,
-      expected
-    );
+  for (const kind of ['accept', 'reject']) for (const [result, complete] of cases) {
+    const transition = Settlement.settleTrackedChangeLifecycle({ kind, result });
+    assert.equal(transition.decision, complete ? (kind === 'accept' ? 'accepted' : 'rejected') : 'needs_review');
+    assert.equal(transition.facts.evidence.settled, complete ? 'complete' : 'needs-review');
+    assert.equal(transition.recovery.undoTrackedChanges.kind, complete ? 'clear' : 'preserve');
   }
 });
 
-test('tracked lifecycle retains the mature terminal policy for empty and generic evidence', () => {
-  assert.equal(
-    Settlement.settleTrackedChangeLifecycle({ kind: 'accept', result: {} }).decision,
-    'accepted'
-  );
-  assert.equal(
-    Settlement.settleTrackedChangeLifecycle({ kind: 'reject', result: {} }).decision,
-    'rejected'
-  );
-  assert.equal(
-    Settlement.settleTrackedChangeLifecycle({
-      kind: 'accept',
-      result: {
-        ok: false,
-        applied: [],
-        skipped: [{
-          result: {
-            ok: false,
-            failure: {
-              code: 'navigation_timeout',
-              stage: 'navigation',
-              severity: 'warning',
-              userMessage: 'Navigation took too long.',
-              retryable: true,
-              nextAction: 'Retry.',
-              terminalState: 'degraded'
-            }
-          }
-        }]
-      }
-    }).decision,
-    'accepted'
-  );
+test('missing and generic failed review evidence never imply completed acceptance or undo', () => {
+  const generic = { ok: false, applied: [], skipped: [{ result: { ok: false, failure: {
+    code: 'navigation_timeout', stage: 'navigation', severity: 'warning', userMessage: 'Navigation took too long.',
+    retryable: true, nextAction: 'Retry.', terminalState: 'degraded'
+  } } }] };
+  for (const kind of ['accept', 'reject']) for (const result of [undefined, null, {}, generic]) {
+    const transition = Settlement.settleTrackedChangeLifecycle({ kind, result });
+    assert.equal(transition.decision, 'needs_review');
+    assert.equal(transition.recovery.undoTrackedChanges.kind, 'preserve');
+    assert.equal(transition.recovery.undoExpectedFiles.kind, 'preserve');
+  }
 });
 
-test('tracked lifecycle keeps nested failures as evidence without overturning a successful action', () => {
-  const settlement = Settlement.settleTrackedChangeLifecycle({
-    kind: 'accept',
-    result: {
-      ok: false,
-      applied: {
-        applied: [{ trackedChange: { path: 'main.tex' }, result: { ok: true } }],
-        skipped: [{
-          trackedChange: { path: 'refs.bib' },
-          result: {
-            ok: false,
-            failure: {
-              code: 'accept_not_verified',
-              stage: 'accept',
-              severity: 'warning',
-              userMessage: 'Review refs.bib.',
-              retryable: true,
-              nextAction: 'Review the tracked changes before continuing.',
-              terminalState: 'needs_review'
-            }
-          }
-        }]
-      }
-    }
-  });
-
-  assert.equal(settlement.decision, 'accepted');
-  assert.equal(settlement.facts.failures.length, 1);
-  assert.equal(settlement.facts.failures[0].code, 'accept_not_verified');
+test('nested partial review keeps unresolved sibling evidence and recovery data', () => {
+  const run = { trackedChangeStatus: 'pending',
+    undoTrackedChanges: [{ key: 'main', path: 'main.tex' }, { key: 'refs', path: 'refs.bib' }],
+    undoExpectedFiles: [{ path: 'main.tex', content: 'main before' }, { path: 'refs.bib', content: 'refs before' }] };
+  const transition = Settlement.settleTrackedChangeLifecycle({ kind: 'accept', run, result: {
+    ok: false, applied: { applied: [{ trackedChange: { path: 'main.tex' }, result: { ok: true } }],
+      skipped: [{ trackedChange: { path: 'refs.bib' }, ...{
+  result: { ok: false, failure: { code: 'accept_not_verified', stage: 'accept', severity: 'warning',
+    userMessage: 'Review the unresolved change.', retryable: true,
+    nextAction: 'Review the tracked changes before continuing.', terminalState: 'needs_review' } }
+} }] }
+  } });
+  assert.equal(transition.decision, 'needs_review');
+  assert.equal(transition.facts.failures.length, 1);
+  assert.equal(transition.facts.failures[0].code, 'accept_not_verified');
+  const next = Settlement.applySettlementTransition(run, transition);
+  assert.deepEqual(next.undoTrackedChanges, run.undoTrackedChanges);
+  assert.deepEqual(next.undoExpectedFiles, run.undoExpectedFiles);
 });
 
 test('tracked reject stays actionable when a multi-file undo restores only one file', () => {

@@ -2,9 +2,32 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 function read(relativePath) {
   return fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
+}
+
+const settingsModuleSources = [
+  'extension/src/content/moduleRegistryKernel.js',
+  'extension/src/content/settingsWorkbench.js',
+  'extension/src/content/settingsPanel.js'
+].map(relativePath => ({
+  filename: path.join(__dirname, '..', relativePath),
+  source: read(relativePath)
+}));
+
+function loadSettingsPanel(document) {
+  const sandbox = { document, setTimeout, clearTimeout };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  const context = vm.createContext(sandbox);
+  for (const { source, filename } of settingsModuleSources) {
+    vm.runInContext(source, context, { filename });
+  }
+  const SettingsPanel = sandbox.CodexOverleafModuleRegistry.resolve('SettingsPanel');
+  assert.equal(SettingsPanel, sandbox.CodexOverleafSettingsPanel);
+  return SettingsPanel;
 }
 
 test('contentScript delegates panel construction to focused content modules', () => {
@@ -23,11 +46,10 @@ test('contentScript delegates panel construction to focused content modules', ()
   assert.doesNotMatch(contentScript, /panel\.innerHTML\s*=\s*`/);
 });
 
-test('new content modules expose the v1 panel API globals', () => {
+test('content modules expose their public panel APIs', () => {
   const modules = {
     panelRenderer: read('extension/src/content/panelRenderer.js'),
     sessionPanel: read('extension/src/content/sessionPanel.js'),
-    settingsPanel: read('extension/src/content/settingsPanel.js'),
     diagnosticsPanel: read('extension/src/content/diagnosticsPanel.js'),
     composerPanel: read('extension/src/content/composerPanel.js')
   };
@@ -42,10 +64,10 @@ test('new content modules expose the v1 panel API globals', () => {
   assert.match(modules.sessionPanel, /update,/);
   assert.match(modules.sessionPanel, /getDisplayTitle/);
 
-  assert.match(modules.settingsPanel, /window\.CodexOverleafSettingsPanel\s*=\s*\{/);
-  assert.match(modules.settingsPanel, /create,/);
-  assert.match(modules.settingsPanel, /loadState,/);
-  assert.match(modules.settingsPanel, /readState,/);
+  const SettingsPanel = loadSettingsPanel(buildFakeDocument().doc);
+  for (const method of ['create', 'loadState', 'readState']) {
+    assert.equal(typeof SettingsPanel[method], 'function', `SettingsPanel must expose ${method}`);
+  }
 
   assert.match(modules.diagnosticsPanel, /window\.CodexOverleafDiagnosticsPanel\s*=\s*\{/);
   assert.match(modules.diagnosticsPanel, /create,/);
@@ -113,6 +135,13 @@ function buildFakeDocument() {
       remove() { if (this._parent) this._parent._children = this._parent._children.filter(c => c !== this); },
       querySelector(sel) { return queryOne(this, sel); },
       querySelectorAll(sel) { return queryAll(this, sel); },
+      closest(sel) {
+        for (let node = this; node; node = node._parent) {
+          if (matchesSel(node, sel)) return node;
+        }
+        return null;
+      },
+      get ownerDocument() { return doc; },
       setAttribute(name, value) { this[`_attr_${name}`] = value; },
       getAttribute(name) { return this[`_attr_${name}`] ?? null; },
       focus() {},
@@ -308,13 +337,7 @@ test('settingsPanel renders [data-settings-back] and no [data-custom-instruction
   const container = doc.createElement('div');
   doc.documentElement._children.push(container);
 
-  // The IIFE assigns to the `window` parameter directly.
-  const fakeWindow2 = {};
-  const src = read('extension/src/content/settingsPanel.js');
-  // eslint-disable-next-line no-new-func
-  new Function('window', 'document', src)(fakeWindow2, doc);
-
-  const SettingsPanel = fakeWindow2.CodexOverleafSettingsPanel;
+  const SettingsPanel = loadSettingsPanel(doc);
   SettingsPanel.create({ container });
 
   const backBtn = container.querySelector('[data-settings-back]');
@@ -329,12 +352,7 @@ test('clicking [data-settings-back] fires the onBack callback', () => {
   const container = doc.createElement('div');
   doc.documentElement._children.push(container);
 
-  const fakeWindow3 = {};
-  const src = read('extension/src/content/settingsPanel.js');
-  // eslint-disable-next-line no-new-func
-  new Function('window', 'document', src)(fakeWindow3, doc);
-
-  const SettingsPanel = fakeWindow3.CodexOverleafSettingsPanel;
+  const SettingsPanel = loadSettingsPanel(doc);
   let called = false;
   SettingsPanel.create({
     container,
@@ -354,12 +372,7 @@ test('a change event on [data-custom-instructions-input] fires the onInputChange
   const container = doc.createElement('div');
   doc.documentElement._children.push(container);
 
-  const fakeWindow4 = {};
-  const src = read('extension/src/content/settingsPanel.js');
-  // eslint-disable-next-line no-new-func
-  new Function('window', 'document', src)(fakeWindow4, doc);
-
-  const SettingsPanel = fakeWindow4.CodexOverleafSettingsPanel;
+  const SettingsPanel = loadSettingsPanel(doc);
   let callCount = 0;
   SettingsPanel.create({
     container,
@@ -377,12 +390,7 @@ test('settingsPanel renders NO [data-custom-instructions-save] button', () => {
   const container = doc.createElement('div');
   doc.documentElement._children.push(container);
 
-  const fakeWindow5 = {};
-  const src = read('extension/src/content/settingsPanel.js');
-  // eslint-disable-next-line no-new-func
-  new Function('window', 'document', src)(fakeWindow5, doc);
-
-  const SettingsPanel = fakeWindow5.CodexOverleafSettingsPanel;
+  const SettingsPanel = loadSettingsPanel(doc);
   SettingsPanel.create({ container });
 
   const saveBtn = container.querySelector('[data-custom-instructions-save]');
@@ -875,11 +883,7 @@ function buildSettingsPanel() {
   const { doc } = buildFakeDocument();
   const container = doc.createElement('div');
   doc.documentElement._children.push(container);
-  const fakeWin = {};
-  const src = read('extension/src/content/settingsPanel.js');
-  // eslint-disable-next-line no-new-func
-  new Function('window', 'document', src)(fakeWin, doc);
-  const SettingsPanel = fakeWin.CodexOverleafSettingsPanel;
+  const SettingsPanel = loadSettingsPanel(doc);
   SettingsPanel.create({ container });
   return { container };
 }
@@ -989,12 +993,7 @@ test('clicking [data-skills-back] fires the onSkillsBack callback', () => {
   const container = doc.createElement('div');
   doc.documentElement._children.push(container);
 
-  const fakeWin = {};
-  const src = read('extension/src/content/settingsPanel.js');
-  // eslint-disable-next-line no-new-func
-  new Function('window', 'document', src)(fakeWin, doc);
-
-  const SettingsPanel = fakeWin.CodexOverleafSettingsPanel;
+  const SettingsPanel = loadSettingsPanel(doc);
   let called = false;
   SettingsPanel.create({
     container,
@@ -1012,12 +1011,7 @@ test('clicking [data-skills-entry] fires the onSkillsOpen callback', () => {
   const container = doc.createElement('div');
   doc.documentElement._children.push(container);
 
-  const fakeWin = {};
-  const src = read('extension/src/content/settingsPanel.js');
-  // eslint-disable-next-line no-new-func
-  new Function('window', 'document', src)(fakeWin, doc);
-
-  const SettingsPanel = fakeWin.CodexOverleafSettingsPanel;
+  const SettingsPanel = loadSettingsPanel(doc);
   let called = false;
   SettingsPanel.create({
     container,
@@ -1035,12 +1029,7 @@ test('settingsPanel.setSkillsSummary updates the [data-skills-entry-summary] tex
   const container = doc.createElement('div');
   doc.documentElement._children.push(container);
 
-  const fakeWin = {};
-  const src = read('extension/src/content/settingsPanel.js');
-  // eslint-disable-next-line no-new-func
-  new Function('window', 'document', src)(fakeWin, doc);
-
-  const SettingsPanel = fakeWin.CodexOverleafSettingsPanel;
+  const SettingsPanel = loadSettingsPanel(doc);
   const instance = SettingsPanel.create({ container });
 
   instance.setSkillsSummary('3 enabled');
@@ -1059,9 +1048,8 @@ test('settingsPanel.setSkillsSummary updates the [data-skills-entry-summary] tex
 });
 
 test('settingsPanel exposes setSkillsSummary in its module API', () => {
-  const settingsPanelSrc = read('extension/src/content/settingsPanel.js');
-  assert.match(settingsPanelSrc, /window\.CodexOverleafSettingsPanel\s*=\s*\{/);
-  assert.match(settingsPanelSrc, /setSkillsSummary/);
+  const SettingsPanel = loadSettingsPanel(buildFakeDocument().doc);
+  assert.equal(typeof SettingsPanel.setSkillsSummary, 'function');
 });
 
 // Returns the start..end (brace-balanced) source of a named function declaration
@@ -1096,10 +1084,7 @@ test('skills entry-row summary tracks the enabled-skill state through the real s
   doc.documentElement._children.push(container);
 
   // Real settingsPanel: builds the skills entry row + [data-local-skill-list].
-  const fakeWin = {};
-  // eslint-disable-next-line no-new-func
-  new Function('window', 'document', read('extension/src/content/settingsPanel.js'))(fakeWin, doc);
-  const SettingsPanel = fakeWin.CodexOverleafSettingsPanel;
+  const SettingsPanel = loadSettingsPanel(doc);
   const settingsPanelInstance = SettingsPanel.create({ container });
 
   // Real i18n so the summary text is produced by the production string table.

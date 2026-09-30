@@ -11,6 +11,7 @@
       callbacks: options.callbacks || {},
       i18n: options.i18n || {},
       dismissInstalled: false,
+      resultDismissed: false,
       cleanup: []
     };
 
@@ -47,19 +48,21 @@
             <small data-i18n="diagnosticsExportSubtitle">Redacted audit and environment bundle</small>
           </button>
         </div>
-        <section class="codex-diagnostics-result" data-diagnostics-result hidden>
+        <section class="codex-diagnostics-result" data-diagnostics-result role="region" aria-label="Diagnostics" hidden>
           <div class="codex-diagnostics-result-head">
             <div>
               <div class="codex-diagnostics-result-title" data-diagnostics-result-title></div>
               <div class="codex-diagnostics-result-subtitle" data-diagnostics-result-subtitle></div>
             </div>
-            <button type="button" data-diagnostics-result-close title="Close" aria-label="Close diagnostics result">×</button>
+            <button type="button" data-diagnostics-result-close title="Close" aria-label="Close diagnostics result"><span class="codex-icon" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m4 4 8 8M12 4l-8 8"/></svg></span></button>
           </div>
-          <div class="codex-diagnostics-result-body" data-diagnostics-result-body></div>
-          <details class="codex-diagnostics-technical" data-diagnostics-result-details>
-            <summary data-i18n="technicalDetails">Technical Details</summary>
-            <pre data-diagnostics-result-technical></pre>
-          </details>
+          <div class="codex-diagnostics-result-scroll">
+            <div class="codex-diagnostics-result-body" data-diagnostics-result-body></div>
+            <details class="codex-diagnostics-technical" data-diagnostics-result-details>
+              <summary data-i18n="technicalDetails">Technical Details</summary>
+              <pre data-diagnostics-result-technical></pre>
+            </details>
+          </div>
         </section>
       </div>
     `;
@@ -85,7 +88,10 @@
     root.querySelector('[data-diagnostics-snapshot]')?.addEventListener('click', () => instance.callbacks.onSnapshot?.());
     root.querySelector('[data-diagnostics-ot]')?.addEventListener('click', () => instance.callbacks.onOtDiagnostics?.());
     root.querySelector('[data-diagnostics-export]')?.addEventListener('click', () => instance.callbacks.onExport?.());
-    root.querySelector('[data-diagnostics-result-close]')?.addEventListener('click', () => closeResult(instance));
+    root.querySelector('[data-diagnostics-result-close]')?.addEventListener('click', () => {
+      closeResult(instance);
+      root.querySelector('[data-diagnostics-menu]')?.focus();
+    });
   }
 
   function toggleMenu(target, forceOpen) {
@@ -95,8 +101,14 @@
     if (!popover || !button) {
       return;
     }
+    const result = instance.container.querySelector('[data-diagnostics-result]');
+    if (forceOpen === undefined && result && !result.hidden) {
+      closeResult(instance);
+      return;
+    }
     const open = typeof forceOpen === 'boolean' ? forceOpen : popover.hidden;
     if (open) {
+      closeResult(instance);
       instance.callbacks.onBeforeOpen?.();
     }
     popover.hidden = !open;
@@ -123,6 +135,7 @@
 
   function closeResult(target) {
     const instance = target?._instance || target;
+    if (instance) instance.resultDismissed = true;
     const result = instance?.container?.querySelector('[data-diagnostics-result]');
     if (result) {
       hideFloating(result);
@@ -131,6 +144,7 @@
 
   function showLoading(target, title, subtitle) {
     const instance = target?._instance || target;
+    if (instance) instance.resultDismissed = false;
     showResult(instance, {
       title,
       subtitle: subtitle || t(instance, 'diagnosticsLoading'),
@@ -141,13 +155,16 @@
 
   function showResult(target, result = {}) {
     const instance = target?._instance || target;
+    if (instance?.resultDismissed) return;
     const root = instance?.container?.querySelector('[data-diagnostics-result]');
     if (!root) {
       return;
     }
 
+    const wasHidden = root.hidden;
     root.hidden = false;
     root.dataset.status = result.status || 'info';
+    root.setAttribute('aria-label', result.title || t(instance, 'diagnosticsResult'));
     root.querySelector('[data-diagnostics-result-title]').textContent = result.title || t(instance, 'diagnosticsResult');
     root.querySelector('[data-diagnostics-result-subtitle]').textContent = result.subtitle || '';
 
@@ -188,7 +205,8 @@
     details.hidden = !technicalText;
     technical.textContent = technicalText;
     closeMenu(instance);
-    openFloating(instance, root, 560);
+    openFloating(instance, root, 400);
+    if (wasHidden) root.querySelector('[data-diagnostics-result-close]')?.focus({ preventScroll: true });
   }
 
   // Keep DOM ownership (theme, locale and callbacks), but render above clipping
@@ -237,12 +255,20 @@
     if (!(width > 0 && height > 0)) return;
     const margin = 12;
     const gap = 8;
-    const leftEdge = (viewport?.offsetLeft || 0) + margin;
-    const topEdge = (viewport?.offsetTop || 0) + margin;
-    const rightEdge = leftEdge + Math.max(0, width - margin * 2);
-    const bottomEdge = topEdge + Math.max(0, height - margin * 2);
-    element.style.width = `${Math.min(preferredWidth, Math.max(0, width - margin * 2))}px`;
-    element.style.maxHeight = `${Math.min(640, Math.max(0, height - margin * 2))}px`;
+    const viewportLeft = viewport?.offsetLeft || 0;
+    const viewportTop = viewport?.offsetTop || 0;
+    const panel = instance.container.closest?.('#codex-overleaf-panel')?.getBoundingClientRect?.();
+    const leftEdge = Math.max(viewportLeft, panel?.left ?? viewportLeft) + margin;
+    const topEdge = Math.max(viewportTop, panel?.top ?? viewportTop) + margin;
+    const rightEdge = Math.min(viewportLeft + width, panel?.right ?? viewportLeft + width) - margin;
+    const bottomEdge = Math.min(viewportTop + height, panel?.bottom ?? viewportTop + height) - margin;
+    if (rightEdge <= leftEdge || bottomEdge <= topEdge) {
+      closeMenu(instance);
+      closeResult(instance);
+      return;
+    }
+    element.style.width = `${Math.min(preferredWidth, rightEdge - leftEdge)}px`;
+    element.style.maxHeight = `${Math.min(480, bottomEdge - topEdge)}px`;
     const anchor = button.getBoundingClientRect();
     const bounds = element.getBoundingClientRect();
     const below = Math.max(0, bottomEdge - anchor.bottom - gap);
@@ -307,9 +333,11 @@
     list.className = 'codex-diagnostics-checks';
     for (const check of checks) {
       if (!check) continue;
-      const row = document.createElement('div');
+      const row = document.createElement('details');
       row.className = 'codex-diagnostics-check';
       row.dataset.status = healthBucket(check.status);
+      row.open = row.dataset.status === 'warn' || row.dataset.status === 'fail';
+      const heading = document.createElement('summary');
 
       const glyph = document.createElement('span');
       glyph.className = 'codex-diagnostics-check-glyph';
@@ -320,7 +348,7 @@
       const title = document.createElement('div');
       title.className = 'codex-diagnostics-check-title';
       title.textContent = check.title || '';
-      textWrap.append(title);
+      heading.append(glyph, title);
       if (check.summary) {
         const summary = document.createElement('div');
         summary.className = 'codex-diagnostics-check-summary';
@@ -334,7 +362,7 @@
         textWrap.append(next);
       }
 
-      row.append(glyph, textWrap);
+      row.append(heading, textWrap);
       list.append(row);
     }
     container.append(list);
@@ -358,6 +386,7 @@
         return;
       }
       closeMenu(instance);
+      closeResult(instance);
     }, true);
     listen(doc, 'keydown', event => {
       if (event.key !== 'Escape') return;
@@ -374,7 +403,7 @@
     const reposition = () => {
       frame = null;
       positionFloating(instance, instance.container.querySelector('[data-diagnostics-popover]'), 300);
-      positionFloating(instance, instance.container.querySelector('[data-diagnostics-result]'), 560);
+      positionFloating(instance, instance.container.querySelector('[data-diagnostics-result]'), 400);
     };
     const schedule = () => {
       if (frame !== null) return;

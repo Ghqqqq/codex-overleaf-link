@@ -15,9 +15,11 @@ const settingsSource = fs.readFileSync(path.join(root, 'extension/src/content/se
 const extensionManifest = require('../extension/manifest.json');
 const runtimeManifest = require('../extension/runtime-manifest.json');
 const { getContentBundleSourceOrder } = require('./_helpers/contentBundleEntry');
+const { extractFunction } = require('./_helpers/extractFunction');
+const { createCoordinatorHarness, UPDATE_KEY, CONSENT_KEY } = require('./helpers/updateCoordinatorHarness');
 
 test('toolbar Popup stays focused on connection status and removes duplicate update controls', () => {
-  const schedule = popupSource.match(/function scheduleConsentUpdateUi\(\) \{[\s\S]*?\n  \}(?=\n\n  function ensureUpdateSection)/)[0];
+  const schedule = extractFunction(popupSource, 'scheduleConsentUpdateUi');
   assert.match(schedule, /querySelector\('\.updates'\)\?\.remove\(\)/);
   assert.doesNotMatch(schedule, /sendConsentAction|renderUpdateSection/);
   assert.doesNotMatch(bootstrapPopupMarkup, /class="updates"/);
@@ -25,32 +27,95 @@ test('toolbar Popup stays focused on connection status and removes duplicate upd
   assert.doesNotMatch(bootstrapPopupMarkup, /<script src="popup\.js"><\/script>/);
   assert.match(bootstrapPopupCss, /html\s*\{[\s\S]*background:/);
   assert.doesNotMatch(bootstrapPopupCss, /@keyframes popup-enter\s*\{[^@]*translateY/);
-  assert.match(bootstrapPopupMarkup, /data-popup-context/);
+  for (const id of ['connection-toggle', 'connection-details', 'extension-version', 'native-version', 'native-install']) {
+    assert.match(bootstrapPopupMarkup, new RegExp(`id="${id}"`));
+  }
+  assert.match(bootstrapPopupMarkup, /aria-controls="connection-details"/);
+  assert.match(bootstrapPopupMarkup, /id="launcher-toggle"[^>]*type="checkbox"/);
+  assert.match(bootstrapPopupMarkup, /<script src="\.\.\/runtime\/src\/popup\.js"><\/script>/);
   assert.doesNotMatch(popupSource, /navigator\.language/);
 });
 
-test('automatic runtime checks are check-only and installation delegates to the guarded bootstrap executor', () => {
-  const automaticCheck = coordinatorSource.match(/async function checkOnly[\s\S]*?\n  }\n\n  async function installUpdate/)[0];
-  const installUpdate = coordinatorSource.match(/async function installUpdate[\s\S]*?\n  }\n\n  async function postponeUpdate/)[0];
+test('automatic checks are check-only and the replaceable coordinator owns guarded installation', () => {
+  const automaticCheck = extractFunction(coordinatorSource, 'checkOnly');
+  const installUpdate = extractFunction(coordinatorSource, 'installUpdate');
+  const stageUpdate = extractFunction(coordinatorSource, 'stageAuthorizedUpdate');
+  const activateUpdate = extractFunction(coordinatorSource, 'tryActivateStagedUpdateCore');
   assert.match(automaticCheck, /'update\.check'/);
   assert.doesNotMatch(automaticCheck, /'update\.(authorize|stage|apply)'/);
-  assert.match(coordinatorSource, /'update\.authorize'/);
+  assert.match(installUpdate, /'update\.authorize'/);
   assert.match(coordinatorSource, /recoverInterruptedCheck/);
   assert.match(coordinatorSource, /update_check_timeout/);
   assert.match(coordinatorSource, /consent-update-dismiss/);
-  assert.match(installUpdate, /CodexOverleafManagedUpdateExecutor/);
-  assert.match(installUpdate, /installAuthorizedUpdate/);
+  assert.match(installUpdate, /await stageAuthorizedUpdate\(operation\)/);
+  assert.ok(installUpdate.indexOf("'update.authorize'") < installUpdate.indexOf('await stageAuthorizedUpdate(operation)'));
+  assert.match(stageUpdate, /'update\.stage'/);
+  assert.match(stageUpdate, /tryActivateStagedUpdate\(operation\)/);
+  assert.match(activateUpdate, /collectBlockers/);
+  assert.match(activateUpdate, /'update\.apply'/);
+  assert.ok(activateUpdate.indexOf('collectBlockers') < activateUpdate.indexOf("'update.apply'"));
+  assert.doesNotMatch(installUpdate, /CodexOverleafManagedUpdateExecutor|installAuthorizedUpdate/);
   assert.doesNotMatch(installUpdate, /chrome\.runtime\.sendMessage/);
+  // Keep the immutable Bootstrap's compatibility executor available to older runtimes.
   assert.match(bootstrapSource, /CodexOverleafManagedUpdateExecutor\s*=\s*Object\.freeze/);
   assert.match(bootstrapSource, /installAuthorizedUpdate:\s*\(\)\s*=>\s*checkAndStage\(\{ manual: true \}\)/);
   assert.match(coordinatorSource, /Number\.MAX_SAFE_INTEGER/);
   assert.match(coordinatorSource, /update_revoke_too_late[\s\S]*return getView\(\)/);
 });
 
+test('a coordinator check discovers updates without authorizing, staging or applying them', async () => {
+  const harness = await createCoordinatorHarness();
+  const response = await harness.send('codex-overleaf/consent-update-check');
+  const methods = harness.events.filter(event => event.type === 'native').map(event => event.method);
+
+  assert.equal(response.ok, true);
+  assert.equal(harness.data[UPDATE_KEY].state, 'update_available');
+  assert.equal(methods.filter(method => method === 'update.check').length, 1);
+  assert.deepEqual(methods.filter(method => ['update.authorize', 'update.stage', 'update.apply'].includes(method)), []);
+  assert.equal(harness.reloads(), 0);
+});
+
+test('coordinator installation authorizes, stages and checks idle before applying a matching transaction', async () => {
+  const targetVersion = '2.4.2';
+  const transactionId = 'popup-update-transaction';
+  const harness = await createCoordinatorHarness({
+    onNative(request) {
+      if (request.method === 'update.stage') {
+        return { ok: true, result: { targetVersion, transactionId } };
+      }
+      if (request.method === 'update.apply') {
+        return { ok: true, result: { state: 'awaiting_health', targetVersion, transactionId } };
+      }
+      return undefined;
+    }
+  });
+  harness.seed({
+    state: 'update_available',
+    currentVersion: harness.data[UPDATE_KEY].currentVersion,
+    latestVersion: targetVersion,
+    lastCheckedAt: Date.now()
+  });
+
+  const response = await harness.send('codex-overleaf/consent-update-install');
+  const requests = harness.events.filter(event => event.type === 'native' && event.method !== 'update.status');
+
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.deepEqual(requests.map(request => request.method), [
+    'update.authorize', 'update.stage', 'update.canApply', 'update.apply'
+  ]);
+  const [authorization, staged, , applied] = requests;
+  assert.equal(authorization.params.targetVersion, targetVersion);
+  assert.ok(authorization.params.authorizationId);
+  assert.equal(staged.params.operationId, authorization.params.operationId);
+  assert.equal(applied.params.operationId, authorization.params.operationId);
+  assert.equal(applied.params.transactionId, transactionId);
+  assert.equal(harness.data[CONSENT_KEY].authorizationId, authorization.params.authorizationId);
+  assert.equal(harness.data[UPDATE_KEY].state, 'awaiting_health');
+  assert.equal(harness.reloads(), 1);
+});
+
 test('managed update actions trust exact Overleaf and toolbar senders without a separate update window', () => {
-  const senderPolicySource = coordinatorSource.match(
-    /function isAllowedSender\(sender\) \{[\s\S]*?\n  \}(?=\n\n  function currentVersion)/
-  )[0];
+  const senderPolicySource = extractFunction(coordinatorSource, 'isAllowedSender');
   const runtimeId = 'codex-overleaf-test-extension';
   const extensionRoot = `chrome-extension://${runtimeId}/`;
   const isAllowedSender = vm.runInNewContext(`(${senderPolicySource})`, {

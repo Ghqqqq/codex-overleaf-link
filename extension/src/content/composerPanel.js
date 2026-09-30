@@ -18,6 +18,7 @@
       <div class="codex-pending-inputs" data-pending-inputs hidden></div>
       <form class="codex-composer" data-composer-form>
         <div class="codex-attachment-strip codex-attachment-preview-list" data-attachment-strip hidden></div>
+        <div class="codex-composer-selection" data-composer-selection hidden></div>
         <div class="codex-composer-skill-context" data-composer-skill-context hidden>
           <span class="codex-composer-skill-icon" aria-hidden="true">◇</span>
           <span data-composer-skill-label></span>
@@ -35,17 +36,31 @@
             <option value="ask">Ask</option>
             <option value="auto">Auto</option>
           </select>
+          <div class="codex-write-preferences">
+            <label class="codex-review-toggle" title="When enabled, Codex checks or switches Overleaf Reviewing/Track Changes before writing. Deletes still require confirmation.">
+              <input type="checkbox" data-require-reviewing>
+              <svg class="codex-composer-option-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="m9 11 8-8 4 4-8 8M9 11l4 4-3 3H6v-4l3-3ZM3 21h7"></path>
+              </svg>
+              <span class="codex-review-label" data-i18n="requireReviewing">Track</span>
+              <svg class="codex-composer-option-check" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="m3.5 8 3 3 6-6"></path>
+              </svg>
+            </label>
+            <label class="codex-recompile-toggle" title="Automatically recompile in Overleaf after Codex writes and record the result. Toggling this setting does not compile immediately. Ask mode does not trigger compilation.">
+              <input type="checkbox" data-auto-recompile>
+              <svg class="codex-composer-option-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6m-11 7 2 2 4-4"></path>
+              </svg>
+              <span class="codex-recompile-label" data-i18n="autoCompile">Auto compile</span>
+              <svg class="codex-composer-option-check" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="m3.5 8 3 3 6-6"></path>
+              </svg>
+            </label>
+          </div>
         </div>
         <div class="codex-composer-toolbar">
           <button type="button" data-add-context title="Add @ context" aria-label="Add @ context" aria-expanded="false">＋</button>
-          <label class="codex-review-toggle" title="When enabled, Codex checks or switches Overleaf Reviewing/Track Changes before writing. Deletes still require confirmation.">
-            <input type="checkbox" data-require-reviewing>
-            <span class="codex-review-label" data-i18n="requireReviewing">Track</span>
-          </label>
-          <label class="codex-recompile-toggle" title="After Codex writes, click Overleaf Recompile and record the compile result for this task. Ask mode will not trigger it.">
-            <input type="checkbox" data-auto-recompile>
-            <span class="codex-recompile-label" data-i18n="autoCompile">Compile</span>
-          </label>
           <div class="codex-model-config" data-model-config>
             <button type="button" class="codex-model-config-button" data-model-config-toggle aria-haspopup="menu" aria-expanded="false">
               <span class="codex-model-speed-indicator" data-speed-indicator hidden aria-hidden="true">

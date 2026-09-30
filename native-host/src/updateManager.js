@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const {
+  BOOTSTRAP_PROTOCOL,
   compareSemver,
   isNewerStableVersion,
   parseSemver,
@@ -12,6 +13,7 @@ const {
 } = require('./updateTrust');
 const { extractVerifiedUpdateBundle } = require('./updateArchive');
 const { requestRelease } = require('./releaseTransport');
+const updateNetwork = require('./updateNetworkControl');
 const RUNNING_VERSION = require('../../package.json').version;
 
 const GITHUB_LATEST_URL = 'https://github.com/Ghqqqq/codex-overleaf-link/releases/latest';
@@ -38,7 +40,8 @@ const UPDATE_METHODS = new Set([
   'update.activate',
   'update.confirm',
   'update.rollback',
-  'update.revoke'
+  'update.revoke',
+  'update.cancel'
 ]);
 const LAYOUT_GATED_METHODS = new Set([
   'update.check',
@@ -64,7 +67,7 @@ async function handleUpdateRequest(request, options = {}) {
     return errorResponse(request?.id, 'unknown_update_method', 'Unknown managed update method.');
   }
   try {
-    const context = getManagedContext(options);
+    const context = { ...getManagedContext(options), operationId: request.params?.operationId || '' };
     if (!context.managed) {
       throw updateError('update_not_managed', 'Run install-managed once to enable coordinated automatic updates.');
     }
@@ -73,13 +76,15 @@ async function handleUpdateRequest(request, options = {}) {
     }
     switch (request.method) {
       case 'update.status':
-        return okResponse(request.id, await withUpdateMutex(context, () => recoverAndReadStatus(context)));
+        return okResponse(request.id, readStatusWithoutWaiting(context));
       case 'update.check':
-        return okResponse(request.id, await withUpdateMutex(context, () => checkForUpdate(context, request.params || {}, options)));
+        return okResponse(request.id, await runNetworkUpdate(context, request, options,
+          networkOptions => checkForUpdate(context, request.params || {}, networkOptions)));
       case 'update.authorize':
         return okResponse(request.id, await withUpdateMutex(context, () => authorizeUpdate(context, request.params || {})));
       case 'update.stage':
-        return okResponse(request.id, await withUpdateMutex(context, () => stageCandidate(context, options)));
+        return okResponse(request.id, await runNetworkUpdate(context, request, options,
+          networkOptions => stageCandidate(context, networkOptions)));
       case 'update.canApply':
         return okResponse(request.id, getApplyGate(options));
       case 'update.apply':
@@ -90,8 +95,18 @@ async function handleUpdateRequest(request, options = {}) {
         return okResponse(request.id, await withUpdateMutex(context, () => confirmUpdate(context, request.params || {})));
       case 'update.rollback':
         return okResponse(request.id, await withUpdateMutex(context, () => rollbackUpdate(context, request.params || {})));
-      case 'update.revoke':
-        return okResponse(request.id, await withUpdateMutex(context, () => revokeUpdate(context, request.params || {})));
+      case 'update.cancel':
+        return okResponse(request.id, await cancelNetworkUpdate(context, request.params || {}));
+      case 'update.revoke': {
+        const authorization = readAuthorization(context);
+        const params = request.params || {};
+        if (authorization?.id === params.authorizationId && authorization.targetVersion === params.targetVersion) {
+          const operationId = params.operationId || updateNetwork.readLock(context)?.operationId;
+          if (operationId) await cancelNetworkUpdate(context, { ...params, operationId });
+        }
+        return okResponse(request.id, await withUpdateMutex({ ...context, operationId: '' },
+          () => revokeUpdate(context, params)));
+      }
       default:
         throw updateError('unknown_update_method', 'Unknown managed update method.');
     }
@@ -100,8 +115,31 @@ async function handleUpdateRequest(request, options = {}) {
   }
 }
 
+async function runNetworkUpdate(context, request, options, action) {
+  const operationId = context.operationId || (isUuid(request.id) ? request.id : crypto.randomUUID());
+  const owned = { ...context, operationId };
+  return updateNetwork.run(owned, operationId, signal => withUpdateMutex(owned, () => {
+    signal.throwIfAborted();
+    return action({ ...options, network: { ...options.network, signal } });
+  }), options.network?.signal);
+}
+
+async function cancelNetworkUpdate(context, params) {
+  const journal = readJournal(context);
+  if (journal && ['activation_pending', 'applying', 'awaiting_health'].includes(journal.state)) {
+    throw updateError('update_revoke_too_late', 'The update is already being installed.');
+  }
+  return updateNetwork.cancel(context, params.operationId);
+}
+
 function withUpdateMutex(context, action) {
-  const guardedAction = () => withUpdateFileLock(context, action);
+  const guardedAction = () => {
+    updateNetwork.assertActive(context, context.operationId);
+    return withUpdateFileLock(context, () => {
+      updateNetwork.assertActive(context, context.operationId);
+      return action();
+    });
+  };
   const result = updateMutationTail.then(guardedAction, guardedAction);
   updateMutationTail = result.catch(() => {});
   return result;
@@ -127,6 +165,7 @@ async function acquireUpdateFileLock(context) {
         fs.writeFileSync(descriptor, JSON.stringify({
           token,
           pid: process.pid,
+          operationId: context.operationId || '',
           createdAt: Date.now(),
           expiresAt: Date.now() + MUTATION_LOCK_STALE_MS
         }) + '\n');
@@ -411,7 +450,13 @@ async function stageCandidate(context, options = {}) {
   try {
     const archivePath = path.join(stageRoot, manifest.updateBundle.name);
     const bundleBytes = await fetchReleaseAsset(options.fetch, candidate.bundleUrl, manifest.updateBundle.size + 1,
-      { ...options.network, totalTimeoutMs: 90000, timeoutMs: 30000, stage: 'update_bundle' });
+      { ...options.network, totalTimeoutMs: 300000, timeoutMs: 30000,
+        idleTimeoutMs: 30000, stage: 'update_bundle' });
+    options.network?.signal?.throwIfAborted();
+    const currentAuthorization = requireAuthorization(context, manifest.version, ['authorized', 'bound']);
+    if (currentAuthorization.id !== authorization.id) {
+      throw updateError('update_consent_mismatch', 'The update authorization changed while downloading.');
+    }
     if (bundleBytes.length !== manifest.updateBundle.size) {
       throw updateError('update_bundle_size_mismatch', 'Downloaded update bundle size does not match the signed manifest.');
     }
@@ -640,6 +685,12 @@ function confirmUpdate(context, params = {}) {
 
 function rollbackUpdate(context, params = {}) {
   const journal = readJournal(context);
+  if (params.transactionId && journal?.id !== params.transactionId) {
+    throw updateError('update_transaction_mismatch', 'Rollback transaction identity changed.');
+  }
+  if (params.expectedState && journal?.state !== params.expectedState) {
+    throw updateError('update_transaction_state_changed', 'The update state changed before rollback.');
+  }
   if (!journal || !['applying', 'awaiting_health', 'committed'].includes(journal.state)) {
     throw updateError('update_rollback_unavailable', 'No applied update is available for rollback.');
   }
@@ -783,15 +834,45 @@ function recoverAndReadStatus(context) {
       readVersionPointer(context.nativeRoot, 'previous-version')
     ]));
   }
+  return currentStatus(context, journal);
+}
+
+function currentStatus(context, journal = readJournal(context)) {
   return {
     managed: true,
     activeVersion: readVersionPointer(context.nativeRoot, 'active-version'),
     runtimeVersion: context.env?.CODEX_OVERLEAF_ACTIVE_VERSION || RUNNING_VERSION,
-    installedAligned: Boolean(alignedVersion),
+    installedAligned: Boolean(readAlignedManagedVersion(context)),
     previousVersion: readVersionPointer(context.nativeRoot, 'previous-version'),
     transaction: journal ? publicTransaction(journal) : null,
     authorization: publicAuthorization(readAuthorization(context))
   };
+}
+
+function readStatusWithoutWaiting(context) {
+  const lockPath = path.join(context.updatesRoot, MUTATION_LOCK_FILE);
+  const token = crypto.randomUUID();
+  let descriptor;
+  try {
+    descriptor = fs.openSync(lockPath, 'wx', 0o600);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const owner = readJsonSafe(lockPath, null);
+    if (Number.isInteger(owner?.pid) && !isProcessAlive(owner.pid) && removeStaleUpdateFileLock(lockPath)) {
+      return readStatusWithoutWaiting(context);
+    }
+    // A live mutation owns recovery; report an atomic-file snapshot without
+    // queueing behind its network transfer or changing its journal.
+    return currentStatus(context);
+  }
+  try {
+    fs.writeFileSync(descriptor, JSON.stringify({ token, pid: process.pid,
+      createdAt: Date.now(), expiresAt: Date.now() + MUTATION_LOCK_STALE_MS }));
+    return recoverAndReadStatus(context);
+  } finally {
+    fs.closeSync(descriptor);
+    releaseUpdateFileLock({ lockPath, token });
+  }
 }
 
 function readAlignedManagedVersion(context) {
@@ -886,7 +967,7 @@ function assertManagedLayout(context) {
 }
 
 function isManagedMarker(marker, kind) {
-  return marker?.managedBy === 'codex-overleaf-link' && marker?.kind === kind && marker?.bootstrapProtocol === 2;
+  return marker?.managedBy === 'codex-overleaf-link' && marker?.kind === kind && marker?.bootstrapProtocol === BOOTSTRAP_PROTOCOL;
 }
 
 function verifyStagedPair(payloadRoot, targetVersion) {

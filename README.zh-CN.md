@@ -1,5 +1,5 @@
 > [!NOTE]
-> 开发分支可能包含尚未发布的改动。下方固定版本命令适用于对应版本发布之后；已发布的安装器可从[最新稳定版](https://github.com/Ghqqqq/codex-overleaf-link/releases/latest)获取。
+> 预览版 **v2.5.0-rc.1** 仅通过 [GitHub Releases](https://github.com/Ghqqqq/codex-overleaf-link/releases/tag/v2.5.0-rc.1) 分发，不发布 npm。安装本 RC 请使用下方方案 B 的固定版本源码安装器。数字版本的 npm 命令适用于正式版发布之后。已有安装需要重新执行一次托管安装、重新加载扩展并刷新 Overleaf，以迁移到 Bootstrap 协议 3。
 
 <div align="center">
   <img src="extension/assets/icons/codex-overleaf-icon.png" width="96" alt="Codex Overleaf Link">
@@ -7,7 +7,7 @@
   <p><a href="README.md" lang="en">English</a> | <strong>简体中文</strong></p>
   <p><strong>让 Codex 融入 Overleaf。</strong></p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.4.1-blue" alt="版本">
+    <img src="https://img.shields.io/badge/version-2.5.0-blue" alt="版本">
     <img src="https://img.shields.io/badge/platform-macOS%20%2F%20Windows%20%2F%20Linux-lightgrey" alt="支持平台">
     <img src="https://img.shields.io/badge/chrome-MV3-green" alt="Chrome Manifest V3">
     <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Node.js 版本要求">
@@ -90,14 +90,14 @@ Chrome 可能要求手动执行 **Load unpacked（加载已解压的扩展程序
 macOS / Linux：
 
 ```bash
-CODEX_OVERLEAF_REF=v2.4.1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.4.1/install.sh)"
+CODEX_OVERLEAF_REF=v2.5.0-rc.1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.5.0-rc.1/install.sh)"
 ```
 
 Windows PowerShell：
 
 ```powershell
-iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.4.1/install.ps1 -OutFile install.ps1
-$env:CODEX_OVERLEAF_REF='v2.4.1'
+iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.5.0-rc.1/install.ps1 -OutFile install.ps1
+$env:CODEX_OVERLEAF_REF='v2.5.0-rc.1'
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
@@ -108,7 +108,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 `npm exec` 会安装相同的托管 Native Host 和扩展运行时，无需保留源码检出目录。适合希望固定 npm 包版本的安装方式。
 
 ```bash
-npm exec --yes codex-overleaf-link@2.4.1 -- install-managed
+npm exec --yes codex-overleaf-link@2.5.0 -- install-managed
 ```
 
 随后在 `chrome://extensions` 中启用开发者模式，点击加载已解压的扩展程序，并选择命令打印的托管扩展目录。Release 中的扩展 ZIP 也仍可用于明确采用非托管方式的手动安装。
@@ -220,7 +220,7 @@ PDF、图片等文件可以粘贴或拖入输入区，作为当前轮次的上�
 
 ### 托管更新基线
 
-v2.2.0 引入了 Bootstrap 协议 2。已有 v2.1.x 托管安装需要先运行一次固定版本的 `install-managed`，再重新加载扩展和 Overleaf。后续协议 2 版本可通过产品内更新器更新兼容的运行时、样式、第三方渲染库和 Native Host。Bootstrap 协议与下文的 Native Messaging 兼容性握手是不同层次的协议。
+v2.5.0 引入 Bootstrap 协议 3，承载 `cn.overleaf.com` 权限与新版弹出界面。已有协议 1/2 托管安装需使用本版本安装器重新安装一次，再重新加载扩展并刷新 Overleaf。旧更新器会拒绝不兼容的启动层更新，不会自动增加权限。后续兼容的协议 3 正式版可使用产品内更新器；RC 不进入自动稳定版更新渠道。Native Messaging 握手仍为协议 2，与此安装边界分别管理。
 
 ## npm 托管 CLI
 
@@ -228,9 +228,9 @@ npm 命令负责配套扩展与 Native Host 的托管安装、更新和卸载；
 
 | 操作 | 命令 |
 |------|------|
-| 安装 / 恢复 / 迁移 | `npm exec --yes codex-overleaf-link@2.4.1 -- install-managed` |
-| 诊断 | `npm exec --yes codex-overleaf-link@2.4.1 -- doctor` |
-| 卸载 | `npm exec --yes codex-overleaf-link@2.4.1 -- uninstall-managed` |
+| 安装 / 恢复 / 迁移 | `npm exec --yes codex-overleaf-link@2.5.0 -- install-managed` |
+| 诊断 | `npm exec --yes codex-overleaf-link@2.5.0 -- doctor` |
+| 卸载 | `npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed` |
 
 仅当自定义或开发版扩展 ID 与官方内置 ID 不同时，才需要使用 `--extension-id <chrome-extension-id>`。
 
@@ -241,7 +241,7 @@ npm 命令负责配套扩展与 Native Host 的托管安装、更新和卸载；
 移除托管扩展 / Native Host 安装；Linux Chromium 需要追加 `--browser chromium`：
 
 ```bash
-npm exec --yes codex-overleaf-link@2.4.1 -- uninstall-managed
+npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed
 ```
 
 同一命令也适用于 Windows PowerShell，以及当前 `install.sh` / `install.ps1` 创建的托管安装。
@@ -249,7 +249,7 @@ npm exec --yes codex-overleaf-link@2.4.1 -- uninstall-managed
 非托管源码安装或仅安装 Native Host 的情况，可在源码目录中运行 `npm run uninstall:native`，或执行：
 
 ```bash
-npm exec --yes codex-overleaf-link@2.4.1 -- uninstall-native
+npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-native
 ```
 
 如果需要移除较旧的 Native Host 源码安装，且仍保留源码目录，也可直接调用其中的卸载脚本：
@@ -275,7 +275,7 @@ node "$env:LOCALAPPDATA\CodexOverleaf\source\scripts\uninstall-native-host.mjs"
 托管安装可重新运行[托管安装器](#安装)，在 `chrome://extensions` 中重新加载扩展，再刷新 Overleaf 标签页。这会恢复安装不完整或运行时更新不兼容时的配套扩展 / Native Host。
 
 ```bash
-npm exec --yes codex-overleaf-link@2.4.1 -- install-managed
+npm exec --yes codex-overleaf-link@2.5.0 -- install-managed
 ```
 
 非托管源码安装应从同一个检出目录重新构建扩展并安装 Native Host。Windows 使用对应的 PowerShell 安装命令。
@@ -398,13 +398,13 @@ npm run smoke:extension -- --url 'https://www.overleaf.com/project/<project-id>'
 Linux Chromium 安装或更新：
 
 ```bash
-CODEX_OVERLEAF_REF=v2.4.1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.4.1/install.sh)" -- --browser chromium
+CODEX_OVERLEAF_REF=v2.5.0-rc.1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.5.0-rc.1/install.sh)" -- --browser chromium
 ```
 
 Linux Chromium 卸载：
 
 ```bash
-npm exec --yes codex-overleaf-link@2.4.1 -- uninstall-managed --browser chromium
+npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed --browser chromium
 ```
 
 ## 扩展 ID
@@ -418,27 +418,27 @@ illdpneeeopfffmiepaejglgmhpmdhdc
 安装器默认使用该 ID。托管安装使用自定义 ID 时，应以 `chrome://extensions` 中显示的值重新运行安装器：
 
 ```bash
-npm exec --yes codex-overleaf-link@2.4.1 -- install-managed --extension-id "<your-chrome-extension-id>"
+npm exec --yes codex-overleaf-link@2.5.0 -- install-managed --extension-id "<your-chrome-extension-id>"
 ```
 
 非托管扩展使用 Native-only 安装器：
 
 ```bash
-npm exec --yes codex-overleaf-link@2.4.1 -- install-native --extension-id "<your-chrome-extension-id>"
+npm exec --yes codex-overleaf-link@2.5.0 -- install-native --extension-id "<your-chrome-extension-id>"
 ```
 
 这两条 npm 命令也适用于 PowerShell。源码安装器还接受 `CODEX_OVERLEAF_EXTENSION_ID` 环境变量。Native Messaging 清单的 `allowed_origins` 必须与实际加载的扩展 ID 一致。
 
 ## GitHub Release 制品
 
-v2.4.1 的 GitHub Release 包含：
+v2.5.0 的 GitHub Release 包含：
 
-- `codex-overleaf-link-extension-v2.4.1.zip`：用于手动加载已解压扩展的 Chrome 扩展包。
-- `codex-overleaf-native-host-v2.4.1.tar.gz`：供安装器和发布验证使用的 Native Host 运行时文件。
-- `codex-overleaf-update-v2.4.1.tar.gz`：托管更新器使用的扩展 / Native Host 配套更新包。
-- `codex-overleaf-link-2.4.1.tgz`：提供固定版本安装、doctor 诊断和卸载流程的 npm CLI 包。
-- `install.sh`：固定发布版本的 macOS / Linux 安装脚本，从 Release 制品直接运行时默认使用 `v2.4.1`。
-- `install.ps1`：固定发布版本的 Windows PowerShell 安装脚本，从 Release 制品直接运行时默认使用 `v2.4.1`。
+- `codex-overleaf-link-extension-v2.5.0.zip`：用于手动加载已解压扩展的 Chrome 扩展包。
+- `codex-overleaf-native-host-v2.5.0.tar.gz`：供安装器和发布验证使用的 Native Host 运行时文件。
+- `codex-overleaf-update-v2.5.0.tar.gz`：托管更新器使用的扩展 / Native Host 配套更新包。
+- `codex-overleaf-link-2.5.0.tgz`：提供固定版本安装、doctor 诊断和卸载流程的 npm CLI 包。
+- `install.sh`：固定发布版本的 macOS / Linux 安装脚本，从 Release 制品直接运行时默认使用 `v2.5.0`。
+- `install.ps1`：固定发布版本的 Windows PowerShell 安装脚本，从 Release 制品直接运行时默认使用 `v2.5.0`。
 - `uninstall-native-host.mjs`：删除 Chrome Native Messaging 清单、桥接启动程序和运行时副本的卸载脚本。
 - `nativeHostPlatform.js`、`manifest.js`、`runtimeInstaller.js`：独立卸载脚本所需的配套文件。
 - `SHA256SUMS`、`release-manifest.json`、`release-manifest.sig`：校验和、发布元数据及其 Ed25519 签名。
@@ -515,8 +515,8 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\CodexOverleaf", "$env:USERPROFILE
 | 浏览器 / 通道 / 版本 | 记录 Google Chrome 通道和版本。 | 记录 Google Chrome 通道和版本。 | 记录 Google Chrome 通道和版本。 | 记录 Chromium 通道 / 软件包和版本。 |
 | 安装方式 | 推荐托管安装；也支持非托管 Release ZIP 或源码安装。 | 同 macOS Chrome。 | 同 macOS Chrome。 | 托管或非托管安装均需使用 `--browser chromium` 注册。 |
 | 扩展 ID | 内置 ID 为 `illdpneeeopfffmiepaejglgmhpmdhdc`；自定义 ID 使用 `--extension-id` 传入。 | 同 macOS Chrome。 | 同 macOS Chrome。 | 同 macOS Chrome。 |
-| 安装 / 更新命令 | `npm exec --yes codex-overleaf-link@2.4.1 -- install-managed` | `npm exec --yes codex-overleaf-link@2.4.1 -- install-managed` | `npm exec --yes codex-overleaf-link@2.4.1 -- install-managed` | `npm exec --yes codex-overleaf-link@2.4.1 -- install-managed --browser chromium` |
-| 卸载命令 | `npm exec --yes codex-overleaf-link@2.4.1 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.4.1 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.4.1 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.4.1 -- uninstall-managed --browser chromium` |
+| 安装 / 更新命令 | `npm exec --yes codex-overleaf-link@2.5.0 -- install-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- install-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- install-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- install-managed --browser chromium` |
+| 卸载命令 | `npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed --browser chromium` |
 | 清单 / 注册表路径 | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.codex.overleaf.json` | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.codex.overleaf` 指向 `%LOCALAPPDATA%\CodexOverleaf\native-host-runtime\com.codex.overleaf.json` | `~/.config/google-chrome/NativeMessagingHosts/com.codex.overleaf.json` | `~/.config/chromium/NativeMessagingHosts/com.codex.overleaf.json` |
 | 托管运行时路径 | `~/.codex-overleaf/managed/extension` 和 `~/.codex-overleaf/managed/native`。 | `%LOCALAPPDATA%\CodexOverleaf\managed\extension` 和 `%LOCALAPPDATA%\CodexOverleaf\managed\native`。 | 同 macOS Chrome。 | 同 macOS Chrome。 |
 | Node / Git / Codex / TeX | 记录准确版本，安装和服务前提见[环境要求](#环境要求)。 | 同 macOS Chrome。 | 同 macOS Chrome。 | 同 macOS Chrome。 |

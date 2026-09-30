@@ -107,17 +107,77 @@
       if (!copied) throw new Error('clipboard_copy_failed');
     }
 
-    return Object.freeze({ configureResultActions, projectUndoAvailability });
+    return Object.freeze({ configureResultActions, projectUndoAvailability, splitFlatCompletionReport, projectCompletionMeta });
+  }
+
+
+  const FLAT_REPORT_STATUS_SECTIONS = [
+    { key: 'saveState', prefixes: ['Save:', '保存：'], en: 'Save', zh: '保存' },
+    { key: 'unchangedReason', prefixes: ['Why nothing changed:', '未修改原因：'], en: 'Why nothing changed', zh: '未修改原因' },
+    { key: 'writeResult', prefixes: ['Write result:', '写入结果：'], en: 'Write result', zh: '写入结果' },
+    { key: 'undo', prefixes: ['Undo:', '可撤销：'], en: 'Undo', zh: '可撤销' },
+    { key: 'nextStep', prefixes: ['Next:', '下一步：'], en: 'Next', zh: '下一步' }
+  ];
+
+  function splitFlatCompletionReport(text, tx = value => value) {
+    const raw = typeof text === 'string' ? text : '';
+    if (!raw.trim()) return { body: raw, meta: [] };
+    const bodySections = [], meta = [];
+    for (const section of raw.split(/\n{2,}/)) {
+      const trimmed = section.trim();
+      if (!trimmed) continue;
+      const entry = trimmed.includes('\n') ? null
+        : FLAT_REPORT_STATUS_SECTIONS.find(item => item.prefixes.some(prefix => trimmed.startsWith(prefix)));
+      if (entry) {
+        const prefix = entry.prefixes.find(value => trimmed.startsWith(value));
+        const value = trimmed.slice(prefix.length).trim();
+        if (value) {
+          meta.push({ key: entry.key, label: tx(entry.en, entry.zh), value });
+          continue;
+        }
+      }
+      bodySections.push(trimmed);
+    }
+    return { body: bodySections.join('\n\n'), meta };
+  }
+
+  function projectCompletionMeta(meta, run, options) {
+    const { tx, trackedChangeInFlight, isTrackedChangeLifecycleRun, projectRunSettlement } = options;
+    if (!Array.isArray(meta) || !run) return meta;
+    const inFlight = trackedChangeInFlight?.get(run.id);
+    const tracked = isTrackedChangeLifecycleRun(run);
+    let undo;
+    if (run.undoStatus === 'running' || inFlight === 'reject') {
+      undo = tx('Undoing changes...', '正在撤销修改…');
+    } else if (run.undoStatus === 'applied' || (tracked && run.trackedChangeStatus === 'rejected')) {
+      undo = tx('This run\'s changes have been undone.', '本轮修改已撤销。');
+    } else if (tracked && run.trackedChangeStatus === 'accepted') {
+      undo = tx('Changes accepted; undo is no longer available.', '修改已接受，无法再撤销。');
+    } else if (tracked && run.trackedChangeStatus === 'needs_review'
+      && run.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1)) {
+      undo = tx('Undo is incomplete; retry the remaining files.', '撤销未完成，可重试剩余文件。');
+    } else if (run.undoStatus === 'partial') {
+      undo = projectRunSettlement(run).canUndo
+        ? tx('Some changes were undone; remaining changes can still be undone.', '已撤销部分修改，剩余修改仍可撤销。')
+        : tx('Some changes were undone.', '已撤销部分修改。');
+    }
+    if (!undo && !run.saveCheck && !run.saveConfirmedAt) return meta;
+    return meta.map(row => row?.key === 'undo' && undo
+      ? { ...row, label: tx('Undo', '撤销'), value: undo }
+      : row?.key === 'saveState' && (run.saveCheck || run.saveConfirmedAt)
+        ? { ...row, label: tx('Save', '保存'), value: run.saveCheck
+          ? tx('Pending confirmation', '待确认') : tx('Saved', '已确认保存') }
+        : row);
   }
 
   function projectUndoAvailability(run, projectRunSettlement) {
     const payload = run.recoveryPayload && typeof run.recoveryPayload === 'object'
       ? run.recoveryPayload : run;
     if (!Array.isArray(payload.appliedOperations)) return projectRunSettlement(run);
-    // Forward binary writes do not provide a rollback. Filter them only for
+    // Forward creation/asset writes alone do not provide a rollback. Filter them only for
     // display; preserve the canonical settlement and every real recovery field.
     const appliedOperations = payload.appliedOperations.filter(operation =>
-      operation?.type !== 'binary-create' && operation?.type !== 'overwrite-binary');
+      operation?.type !== 'create' && operation?.type !== 'binary-create' && operation?.type !== 'overwrite-binary');
     if (appliedOperations.length === payload.appliedOperations.length) return projectRunSettlement(run);
     return projectRunSettlement({
       ...run,

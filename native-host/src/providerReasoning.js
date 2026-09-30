@@ -12,7 +12,7 @@ const REASONING_ADAPTERS = new Set([
   'reasoning_split'
 ]);
 const REASONING_CAPABILITIES = new Set(['auto', 'none', 'toggle', 'effort']);
-const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const DEEPSEEK_MAX_REASONING_OUTPUT_TOKENS = 65536;
 
 function normalizeReasoningAdapter(value) {
@@ -67,6 +67,10 @@ function getSupportedReasoningEfforts(profile = {}, model = {}) {
 }
 
 function getReasoningControl(profile = {}, model = {}) {
+  profile = { ...profile,
+    reasoningAdapter: model.reasoningAdapter || profile.reasoningAdapter,
+    reasoningCapability: model.reasoningCapability || profile.reasoningCapability
+  };
   const explicit = Array.isArray(model.reasoningEfforts)
     ? model.reasoningEfforts.map(normalizeEffort).filter(Boolean)
     : [];
@@ -85,7 +89,7 @@ function getReasoningControl(profile = {}, model = {}) {
   }
   if (adapter === 'deepseek') {
     return {
-      efforts: ['none', 'high', 'xhigh'],
+      efforts: ['none', 'high', 'max'],
       defaultEffort: 'high',
       presentation: 'deepseek'
     };
@@ -134,11 +138,11 @@ function applyReasoningControl(chatBody, responsesRequest = {}, launch = {}) {
   if (adapter === 'deepseek') {
     chatBody.thinking = { type: enabled ? 'enabled' : 'disabled' };
     if (enabled) {
-      chatBody.reasoning_effort = requested === 'xhigh' ? 'max' : 'high';
+      chatBody.reasoning_effort = ['xhigh', 'max'].includes(requested) ? 'max' : 'high';
     }
   } else if (adapter === 'reasoning_effort') {
     if (enabled) {
-      chatBody.reasoning_effort = clampEffort(requested, false);
+      chatBody.reasoning_effort = clampEffort(requested, true);
     }
   } else if (adapter === 'openrouter') {
     chatBody.reasoning = { effort: clampEffort(requested, true) };
@@ -164,7 +168,7 @@ function resolveReasoningMaxOutputTokens(value, responsesRequest = {}, launch = 
   const normalized = Math.max(1, Math.floor(number));
   const effort = resolveRequestedReasoningEffort(responsesRequest, launch);
   const adapter = resolveReasoningAdapter(launch, modelId || launch.modelId);
-  return adapter === 'deepseek' && effort === 'xhigh'
+  return adapter === 'deepseek' && ['xhigh', 'max'].includes(effort)
     ? Math.max(normalized, DEEPSEEK_MAX_REASONING_OUTPUT_TOKENS)
     : normalized;
 }

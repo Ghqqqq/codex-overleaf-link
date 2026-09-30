@@ -86,8 +86,7 @@
       title: tr('diagnosticsHealthTitle'),
       subtitle: tr(overallSubtitleKey),
       status: worst === 'ok' ? 'completed' : worst === 'fail' ? 'failed' : 'warning',
-      checks,
-      technical: checks.map(check => `${check.title}: ${check.status}`).join('\n')
+      checks
     });
     setDiagnosticsHealth(worst);
   }

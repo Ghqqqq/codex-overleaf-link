@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Codex Overleaf Link",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "description": "Connect the active Overleaf project to a local Codex bridge.",
   "icons": {
     "16": "assets/icons/icon16.png",
@@ -19,7 +19,9 @@
     "https://www.overleaf.com/project",
     "https://overleaf.com/project",
     "https://www.overleaf.com/project/*",
-    "https://overleaf.com/project/*"
+    "https://overleaf.com/project/*",
+    "https://cn.overleaf.com/project",
+    "https://cn.overleaf.com/project/*"
   ],
   "background": {
     "service_worker": "src/background.js"
@@ -30,7 +32,9 @@
         "https://www.overleaf.com/project",
         "https://overleaf.com/project",
         "https://www.overleaf.com/project/*",
-        "https://overleaf.com/project/*"
+        "https://overleaf.com/project/*",
+        "https://cn.overleaf.com/project",
+        "https://cn.overleaf.com/project/*"
       ],
       "js": [
         "src/content/generated/content.bundle.js"
@@ -69,15 +73,21 @@
         "src/page/textFileCreator.js",
         "src/page/binaryAssetUploader.js",
         "src/page/snapshotRouter.js",
+        "src/page/referenceProjects.js",
         "src/page/writeGuard.js",
+        "src/page/trackedChangeOwnership.js",
         "src/page/trackedChangeCapture.js",
+        "src/page/trackedChangeReplay.js",
         "src/page/trackedChangesLifecycle.js",
         "src/page/writebackRouter.js",
+        "src/page/writebackReceiptJournal.js",
+        "src/page/textCoordinates.js",
         "src/pageBridge.js"
       ],
       "matches": [
         "https://www.overleaf.com/*",
-        "https://overleaf.com/*"
+        "https://overleaf.com/*",
+        "https://cn.overleaf.com/*"
       ]
     }
   ],

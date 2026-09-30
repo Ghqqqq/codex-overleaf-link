@@ -9,6 +9,105 @@
 
   const BUILTIN_PROVIDER_ID = 'builtin';
 
+  const PROVIDER_CONNECTIONS = {
+    kimi: {
+      anthropic: { baseUrl: 'https://api.moonshot.cn/anthropic', wireApiPreference: 'anthropic', authMode: 'bearer', reasoningAdapter: 'anthropic' },
+      chat: { baseUrl: 'https://api.moonshot.cn/v1', wireApiPreference: 'chat', authMode: 'bearer', reasoningAdapter: 'auto' }
+    },
+    glm: {
+      anthropic: { baseUrl: 'https://open.bigmodel.cn/api/anthropic', wireApiPreference: 'anthropic', authMode: 'bearer', reasoningAdapter: 'anthropic' },
+      chat: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', wireApiPreference: 'chat', authMode: 'bearer', reasoningAdapter: 'auto' }
+    },
+    deepseek: {
+      anthropic: { baseUrl: 'https://api.deepseek.com/anthropic', wireApiPreference: 'anthropic', authMode: 'x-api-key', reasoningAdapter: 'anthropic' },
+      chat: { baseUrl: 'https://api.deepseek.com', wireApiPreference: 'chat', authMode: 'bearer', reasoningAdapter: 'deepseek' }
+    }
+  };
+
+  // Shortcuts select a protocol-specific connection, never an active provider.
+  const PROVIDER_PRESETS = [
+    { id: 'custom', name: 'Custom connection', short: '+', baseUrl: '', wireApiPreference: 'auto' },
+    { id: 'openai-compatible', name: 'OpenAI-compatible API', short: 'API', baseUrl: '', wireApiPreference: 'auto' },
+    { id: 'anthropic-compatible', name: 'Anthropic-compatible API', short: 'API', baseUrl: '', wireApiPreference: 'anthropic', authMode: 'x-api-key', reasoningAdapter: 'anthropic' },
+    { id: 'kimi', name: 'Kimi', short: 'K', ...PROVIDER_CONNECTIONS.kimi.anthropic },
+    { id: 'glm', name: 'GLM', short: 'G', ...PROVIDER_CONNECTIONS.glm.anthropic },
+    { id: 'deepseek', name: 'DeepSeek', short: 'D', ...PROVIDER_CONNECTIONS.deepseek.anthropic }
+  ];
+  const MODEL_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+  function getPresetConnectionInfo(baseUrl) {
+    const normalized = normalizeText(baseUrl).replace(/\/+$/, '');
+    for (const [id, variants] of Object.entries(PROVIDER_CONNECTIONS)) {
+      for (const connection of Object.values(variants)) {
+        if (normalized === connection.baseUrl) return { id, connection: { ...connection } };
+      }
+    }
+    return null;
+  }
+
+  function getPresetConnection(id, protocol) {
+    const variants = Object.prototype.hasOwnProperty.call(PROVIDER_CONNECTIONS, id)
+      ? PROVIDER_CONNECTIONS[id] : null;
+    const connection = variants && Object.prototype.hasOwnProperty.call(variants, protocol)
+      ? variants[protocol] : null;
+    return connection ? { ...connection } : null;
+  }
+
+  function getProviderPresets() {
+    return PROVIDER_PRESETS.map(preset => ({ ...preset }));
+  }
+
+  function buildPresetDraft(id) {
+    const preset = PROVIDER_PRESETS.find(item => item.id === id) || PROVIDER_PRESETS[0];
+    const { id: _id, short: _short, ...connection } = preset;
+    return { ...buildEmptyDraft(), ...connection,
+      name: preset.id === 'custom' ? 'Custom provider' : preset.name };
+  }
+
+  function updateDraftModel(draft, originalId, patch) {
+    const models = Array.isArray(draft.models) ? draft.models : [];
+    const existing = models.find(model => model.id === originalId);
+    const fail = (message, field) => { throw Object.assign(new Error(message), { field }); };
+    const id = normalizeText(patch.id);
+    if (!id || id.length > 200 || /[\0\r\n"&|<>^%!\x60]/.test(id))
+      fail('Enter a valid model ID (up to 200 characters).', 'id');
+    if (models.some(model => model.id === id && model.id !== originalId))
+      fail('This model ID is already configured.', 'id');
+    if (!existing && models.length >= 32) fail('A provider can contain up to 32 models.', 'id');
+    const contextWindow = Number(patch.contextWindow);
+    if (!Number.isSafeInteger(contextWindow) || contextWindow < 8192 || contextWindow > 4000000)
+      fail('Context window must be an integer between 8192 and 4000000.', 'contextWindow');
+    const maxOutputTokens = patch.maxOutputTokens === '' || patch.maxOutputTokens == null
+      ? null : Number(patch.maxOutputTokens);
+    if (maxOutputTokens !== null && (!Number.isSafeInteger(maxOutputTokens)
+      || maxOutputTokens < 256 || maxOutputTokens > 65536 || maxOutputTokens >= contextWindow))
+      fail('Output limit must be between 256 and 65536 and smaller than the context window.', 'maxOutputTokens');
+    const model = { ...existing, id, label: normalizeText(patch.label).slice(0, 200) || id,
+      contextWindow, maxOutputTokens,
+      inputModalities: normalizeInputModalities(patch.inputModalities),
+      supportsParallelToolCalls: patch.supportsParallelToolCalls === true,
+      upstreamResponseMode: normalizeUpstreamResponseMode(patch.upstreamResponseMode, true),
+      reasoningEfforts: MODEL_EFFORTS.filter(effort => patch.reasoningEfforts?.includes(effort)),
+      reasoningAdapter: patch.reasoningAdapter ? normalizeReasoningAdapter(patch.reasoningAdapter) : '',
+      reasoningCapability: patch.reasoningCapability ? normalizeReasoningCapability(patch.reasoningCapability)
+        : patch.reasoningEfforts?.length ? 'effort' : '',
+      baseInstructions: normalizeText(patch.baseInstructions).slice(0, 8000)
+    };
+    model.resolvedUpstreamResponseMode = model.upstreamResponseMode === existing?.upstreamResponseMode
+      ? existing.resolvedUpstreamResponseMode || '' : '';
+    return { ...draft,
+      models: existing ? models.map(item => item.id === originalId ? model : item) : [...models, model],
+      defaultModelId: !draft.defaultModelId || draft.defaultModelId === originalId ? id : draft.defaultModelId
+    };
+  }
+
+  function removeDraftModel(draft, id) {
+    const models = (draft.models || []).filter(model => model.id !== id);
+    return { ...draft, models, defaultModelId: draft.defaultModelId === id
+      ? models[0]?.id || '' : draft.defaultModelId };
+  }
+
+
   function normalizeCatalog(value = {}) {
     const providers = Array.isArray(value.providers)
       ? value.providers.map(normalizeProvider).filter(Boolean)
@@ -110,6 +209,9 @@
         upstreamResponseMode: normalizeUpstreamResponseMode(value?.upstreamResponseMode, true),
         resolvedUpstreamResponseMode: normalizeUpstreamResponseMode(value?.resolvedUpstreamResponseMode, false),
         contextWindow: normalizeInteger(value?.contextWindow) || 262144,
+        maxOutputTokens: value?.maxOutputTokens == null ? null : Math.min(65536, Math.max(256, normalizeInteger(value.maxOutputTokens))),
+        reasoningAdapter: value?.reasoningAdapter ? normalizeReasoningAdapter(value.reasoningAdapter) : '',
+        reasoningCapability: value?.reasoningCapability ? normalizeReasoningCapability(value.reasoningCapability) : '',
         supportsParallelToolCalls: value?.supportsParallelToolCalls === true,
         inputModalities: normalizeInputModalities(value?.inputModalities),
         baseInstructions: normalizeText(value?.baseInstructions)
@@ -286,6 +388,13 @@
 
   return {
     BUILTIN_PROVIDER_ID,
+    MODEL_EFFORTS,
+    getProviderPresets,
+    getPresetConnectionInfo,
+    getPresetConnection,
+    buildPresetDraft,
+    updateDraftModel,
+    removeDraftModel,
     buildBuiltinProvider,
     buildEmptyDraft,
     buildRunSelection,

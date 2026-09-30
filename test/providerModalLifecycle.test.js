@@ -13,7 +13,6 @@ function production(text, name, deps) {
 }
 
 test('provider root is a native modal dialog and cancellation goes through unsaved-change protection', () => {
-  const listeners = {};
   let root;
   let closeRequests = 0;
   const ensureRoot = production(source, 'ensureRoot', {
@@ -21,44 +20,87 @@ test('provider root is a native modal dialog and cancellation goes through unsav
   });
   const instance = { document: {
     createElement(tag) {
-      return { tag, attrs: {}, setAttribute(key, value) { this.attrs[key] = value; },
-        addEventListener(type, listener) { listeners[type] = listener; } };
+      const listeners = new Map();
+      return { tag, attrs: {}, dataset: {}, children: [],
+        setAttribute(key, value) { this.attrs[key] = value; },
+        appendChild(child) { this.children.push(child); child.parentElement = this; return child; },
+        addEventListener(type, listener) { if (!listeners.has(type)) listeners.set(type, []); listeners.get(type).push(listener); },
+        emit(type, event) { for (const listener of listeners.get(type) || []) listener(event); }
+      };
     },
-    documentElement: { appendChild(value) { root = value; } }
+    documentElement: { appendChild(value) { root = value; value.parentElement = this; } }
   } };
   ensureRoot(instance);
   assert.equal(root.tag, 'dialog');
   assert.equal(root.hidden, true);
   assert.equal(root.attrs['aria-labelledby'], 'codex-provider-dialog-title');
+  assert.equal(root.children.length, 2);
+  assert.ok(root.children.some(child => Object.hasOwn(child.attrs, 'data-provider-model-editor')));
+  assert.ok(root.children.some(child => Object.hasOwn(child.attrs, 'data-provider-confirmation')));
   let prevented = false;
-  listeners.cancel({ preventDefault() { prevented = true; } });
+  root.emit('cancel', { preventDefault() { prevented = true; } });
   assert.equal(prevented, true);
   assert.equal(closeRequests, 1);
 });
 
-test('provider open enters the top layer, preserves selected focus and restores it on close', () => {
-  const events = [];
-  const microtasks = [];
-  let discard = false;
-  const selected = { focus: () => events.push('selected') };
-  const root = { hidden: true, open: false,
+test('provider open enters the top layer, protects dirty drafts asynchronously and restores focus', async () => {
+  const events = [], microtasks = [];
+  const document = { activeElement: null, documentElement: { appendChild(node) { node.parentElement = this; } } };
+  const origin = { focus() { events.push('returnFocus'); document.activeElement = this; } };
+  const selected = { focus() { events.push('selected'); document.activeElement = this; } };
+  document.activeElement = origin;
+  const answer = value => ({ dataset: { providerConfirmAnswer: value },
+    focus() { document.activeElement = this; },
+    closest(selector) { return selector === '[data-provider-confirm-answer]' ? this : null; }
+  });
+  const cancel = answer('cancel'), confirm = answer('confirm');
+  const confirmation = { open: false, innerHTML: '',
+    showModal() { this.open = true; }, close() { this.open = false; },
+    setAttribute() {}, removeAttribute() {}, replaceChildren() { this.innerHTML = ''; },
+    querySelector(selector) { return selector === '[data-provider-confirm-answer="cancel"]' ? cancel : confirm; }
+  };
+  const secret = { value: 'transient-secret' }, status = { dataset: {}, textContent: '' };
+  const root = { hidden: true, open: false, dataset: {}, attrs: {},
     showModal() { this.open = true; events.push('showModal'); },
     close() { this.open = false; events.push('close'); },
-    querySelector: () => selected };
-  const instance = { root, dirty: false, busy: '', callbacks: {}, tx: value => value,
-    document: { activeElement: { focus: () => events.push('returnFocus') }, defaultView: { confirm: () => discard } } };
+    setAttribute(key, value) { this.attrs[key] = value; },
+    closest(selector) { return selector === '[hidden]' && this.hidden ? this : null; },
+    querySelector(selector) {
+      if (selector === '[data-provider-confirmation]') return confirmation;
+      if (selector === '[data-provider-field="apiKey"]') return secret;
+      if (selector === '[data-provider-status]') return status;
+      return selected;
+    }
+  };
+  document.documentElement.appendChild(root);
+  const instance = { root, document, dirty: false, busy: '', callbacks: {}, tx: value => value,
+    selectedId: 'custom', catalog: { providers: [{ id: 'custom', revision: 1 }] } };
   const open = production(source, 'open', { syncTheme() {}, setCatalog() {}, queueMicrotask: fn => microtasks.push(fn) });
-  const close = production(source, 'requestClose', {});
+  const methods = Function([
+    'getSelectedProvider', 'escapeHtml', 'setStatus', 'finishProviderConfirmation',
+    'confirmProviderAction', 'closeModelEditor', 'requestClose', 'handleClick'
+  ].map(name => extractFunction(source, name)).join('\n') + '\nreturn { requestClose, handleClick };')();
   open(instance, {});
   microtasks.shift()();
   assert.deepEqual(events, ['showModal', 'selected']);
+  assert.equal(root.attrs.role, 'dialog');
+  assert.equal(root.dataset.embedded, 'false');
   instance.dirty = true;
-  assert.equal(close(instance), false);
+  const rejectedClose = methods.requestClose(instance);
+  assert.equal(confirmation.open, true);
   assert.equal(root.open, true);
-  discard = true;
-  assert.equal(close(instance), true);
+  await methods.handleClick(instance, { target: cancel, preventDefault() {} });
+  assert.equal(await rejectedClose, false);
+  assert.equal(root.open, true);
+  assert.equal(document.activeElement, selected);
+  const acceptedClose = methods.requestClose(instance);
+  assert.equal(confirmation.open, true);
+  await methods.handleClick(instance, { target: confirm, preventDefault() {} });
+  assert.equal(await acceptedClose, true);
   assert.equal(root.hidden, true);
-  assert.deepEqual(events, ['showModal', 'selected', 'close', 'returnFocus']);
+  assert.equal(document.activeElement, origin);
+  assert.equal(secret.value, '');
+  assert.deepEqual(events, ['showModal', 'selected', 'selected', 'selected', 'close', 'returnFocus']);
 });
 
 test('theme changes reach open provider dialogs and the edge launcher', () => {

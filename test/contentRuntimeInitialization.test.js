@@ -11,11 +11,12 @@ const runtimeSource = fs.readFileSync(
 test('initial account scope resolves before scoped state hydration begins', () => {
   const initStart = runtimeSource.indexOf('async function init()');
   const scopeRefresh = runtimeSource.indexOf('await refreshAccountScopeId()', initStart);
-  const hydration = runtimeSource.indexOf('state = normalizePanelState(getGlobalPreferences().overlay(await loadStoredState()', initStart);
+  const hydration = runtimeSource.indexOf('state = normalizeLoadedPanelState(await loadStoredState())', initStart);
   const appearance = runtimeSource.indexOf('await getGlobalPreferences().initialize()', initStart);
 
   assert.ok(initStart >= 0, 'content runtime init must exist');
   assert.ok(scopeRefresh > initStart, 'init must await the account scope');
+  assert.ok(appearance < scopeRefresh, 'global preferences must initialize before account resolution');
   assert.ok(hydration > scopeRefresh, 'state hydration must use the resolved account scope');
   assert.ok(appearance > initStart && appearance < hydration, 'global preferences must hydrate before the first project/dashboard view');
   assert.ok(runtimeSource.indexOf('let globalPreferencesController = null;') < runtimeSource.indexOf('init().catch'), 'preference controller state must be initialized before async startup enters it');

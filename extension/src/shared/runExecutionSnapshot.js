@@ -39,6 +39,9 @@
     let inferred = false;
     for (const field of Codec.TUPLE_FIELDS) {
       if (Codec.hasOwn(raw, field)) captured[field] = Codec.cloneValue(raw[field]);
+      // Old queued tasks never opted into a later selection or style profile.
+      // These references cannot be inferred from the current composer.
+      else if (field === 'writingStyle' || field === 'selectionContext') captured[field] = null;
       else {
         captured[field] = Codec.cloneValue(fallback[field]);
         inferred = true;
@@ -109,7 +112,9 @@
       speedTier: snapshot.speedTier,
       autoRecompile: snapshot.autoRecompile,
       requireReviewing: snapshot.requireReviewing,
-      focusFiles: [...snapshot.focusFiles]
+      focusFiles: [...snapshot.focusFiles],
+      selectionContext: snapshot.selectionContext ? { ...snapshot.selectionContext } : null,
+      writingStyle: snapshot.writingStyle ? { ...snapshot.writingStyle } : null
     };
   }
 
@@ -135,7 +140,8 @@
       reasoningEffort: snapshot.reasoningEffort,
       speedTier: snapshot.speedTier,
       mode: snapshot.mode,
-      focusFiles: [...snapshot.focusFiles]
+      focusFiles: [...snapshot.focusFiles],
+      selectionContext: snapshot.selectionContext ? { ...snapshot.selectionContext } : null
     };
   }
 

@@ -32,42 +32,22 @@ function verifyUpdateBoundary() {
     throw new Error('No previous stable tag is available. Fetch full tag history or set CODEX_OVERLEAF_UPDATE_BASE_REF.');
   }
 
-  const changed = git([
-    'diff',
-    '--name-only',
-    `${baseRef}..HEAD`,
-    '--',
-    ...protectedPaths
-  ]).split('\n').map(value => value.trim()).filter(Boolean);
+  const changed = collectProtectedChanges(baseRef, protectedPaths);
   const incompatibleChanges = changed.filter(relativePath => {
     if (relativePath === BOOTSTRAP_MANIFEST_PATH) return false;
     if (relativePath !== MANAGED_INSTALLER_PATH) return true;
     return !isManagedInstallerCopyOnlyChange(
       git(['show', `${baseRef}:${relativePath}`]),
-      git(['show', `HEAD:${relativePath}`])
+      fs.readFileSync(path.join(rootDir, relativePath), 'utf8')
     );
   });
   const previousPackage = JSON.parse(git(['show', `${baseRef}:package.json`]));
   const previousBootstrapProtocol = readBootstrapProtocol(`${baseRef}:native-host/src/updateTrust.js`);
   const currentBootstrapProtocol = readBootstrapProtocol(path.join(rootDir, 'native-host/src/updateTrust.js'));
-  const protocolMigration = currentBootstrapProtocol === previousBootstrapProtocol + 1;
-  if (currentBootstrapProtocol < previousBootstrapProtocol ||
-      currentBootstrapProtocol > previousBootstrapProtocol + 1) {
-    throw new Error(
-      `Bootstrap protocol must remain stable or increase by exactly one: ${previousBootstrapProtocol} -> ${currentBootstrapProtocol}.`
-    );
-  }
-  if (protocolMigration) {
-    const previousVersion = parseReleaseVersion(previousPackage.version);
-    const currentVersion = parseReleaseVersion(pkg.version);
-    const advancesReleaseLine = currentVersion.major > previousVersion.major ||
-      (currentVersion.major === previousVersion.major && currentVersion.minor > previousVersion.minor);
-    if (!advancesReleaseLine || currentVersion.patch !== 0) {
-      throw new Error(
-        `Bootstrap protocol migrations require a new major/minor baseline with patch zero: ${previousPackage.version} -> ${pkg.version}.`
-      );
-    }
-  }
+  const protocolMigration = assertBootstrapProtocolTransition({
+    previousPackageVersion: previousPackage.version, currentPackageVersion: pkg.version,
+    previousBootstrapProtocol, currentBootstrapProtocol
+  });
   if (incompatibleChanges.length && !protocolMigration) {
     throw new Error([
       `Managed update boundary changed since ${baseRef}:`,
@@ -81,7 +61,8 @@ function verifyUpdateBoundary() {
       previousManifest: JSON.parse(git(['show', `${baseRef}:${BOOTSTRAP_MANIFEST_PATH}`])),
       currentManifest: JSON.parse(fs.readFileSync(path.join(rootDir, BOOTSTRAP_MANIFEST_PATH), 'utf8')),
       previousPackageVersion: previousPackage.version,
-      currentPackageVersion: pkg.version
+      currentPackageVersion: pkg.version,
+      previousBootstrapProtocol, currentBootstrapProtocol
     });
   }
 
@@ -97,6 +78,33 @@ function verifyUpdateBoundary() {
   console.log(protocolMigration
     ? `Managed update boundary declares protocol migration ${previousBootstrapProtocol} -> ${currentBootstrapProtocol}: ${baseRef} -> ${currentTag}.`
     : `Managed update boundary is compatible: ${baseRef} -> ${currentTag}.`);
+}
+
+// Validate the checkout that packaging will consume, including staged, unstaged,
+// and new protected files. A committed-history-only diff can miss the candidate.
+export function collectProtectedChanges(baseRef, protectedPaths, readGit = git) {
+  const tracked = readGit(['diff', '--name-only', baseRef, '--', ...protectedPaths]);
+  const untracked = readGit(['ls-files', '--others', '--exclude-standard', '--', ...protectedPaths]);
+  return [...new Set((tracked + '\n' + untracked).split('\n').map(value => value.trim()).filter(Boolean))].sort();
+}
+
+export function assertBootstrapProtocolTransition({
+  previousPackageVersion, currentPackageVersion, previousBootstrapProtocol, currentBootstrapProtocol
+}) {
+  if (!Number.isInteger(previousBootstrapProtocol) || previousBootstrapProtocol < 1
+    || !Number.isInteger(currentBootstrapProtocol) || currentBootstrapProtocol < previousBootstrapProtocol
+    || currentBootstrapProtocol > previousBootstrapProtocol + 1) {
+    throw new Error('Bootstrap protocol must remain stable or increase by exactly one.');
+  }
+  const migration = currentBootstrapProtocol === previousBootstrapProtocol + 1;
+  if (migration) {
+    const before = parseReleaseVersion(previousPackageVersion), after = parseReleaseVersion(currentPackageVersion);
+    const advances = after.major > before.major || (after.major === before.major && after.minor > before.minor);
+    if (!advances || after.patch !== 0) {
+      throw new Error('Bootstrap protocol migrations require a new major/minor baseline with patch zero.');
+    }
+  }
+  return migration;
 }
 
 function readBootstrapProtocol(source) {
@@ -136,7 +144,9 @@ export function assertBootstrapManifestVersionTransition({
   previousManifest,
   currentManifest,
   previousPackageVersion,
-  currentPackageVersion
+  currentPackageVersion,
+  previousBootstrapProtocol,
+  currentBootstrapProtocol
 }) {
   if (previousManifest?.version !== previousPackageVersion || currentManifest?.version !== currentPackageVersion) {
     throw new Error('Bootstrap manifest versions must match their package release versions.');
@@ -144,7 +154,10 @@ export function assertBootstrapManifestVersionTransition({
 
   const previousShape = { ...previousManifest, version: '<release-version>' };
   const currentShape = { ...currentManifest, version: '<release-version>' };
-  if (stableJson(previousShape) !== stableJson(currentShape)) {
+  const migration = previousBootstrapProtocol !== undefined || currentBootstrapProtocol !== undefined
+    ? assertBootstrapProtocolTransition({ previousPackageVersion, currentPackageVersion,
+      previousBootstrapProtocol, currentBootstrapProtocol }) : false;
+  if (stableJson(previousShape) !== stableJson(currentShape) && !migration) {
     throw new Error('Bootstrap manifest changed beyond its release version. Use an explicit managed reinstall/protocol migration.');
   }
 }

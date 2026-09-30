@@ -28,7 +28,10 @@ test('parallel-subagents ships as a registered official skill with the full prot
   assert.match(skill, /do \*\*not\*\* edit project files yourself/);
   // broker side: the work/ scratch zone is ownable, the control plane is not
   const broker = repo('native-host/src/subagentBroker.js');
-  assert.match(broker, /segments\[1\] === 'work' && segments\.length >= 3/);
+  assert.match(broker, /require\('\.\/subagentWorkspacePath'\)/);
+  const { safeWorkspaceRelativePath } = require('../native-host/src/subagentWorkspacePath');
+  assert.equal(safeWorkspaceRelativePath('.codex-overleaf-subagents/work/slice.tex'), '.codex-overleaf-subagents/work/slice.tex');
+  for (const value of ['.codex-overleaf-subagents/jobs/a.json', '.codex-overleaf-subagents/results/a.json', '.codex-overleaf-subagents/logs/a.log', '.codex-overleaf-subagents/broker.json', '.codex-overleaf-subagents/work/../jobs/a.json', '/tmp/outside.tex']) assert.equal(safeWorkspaceRelativePath(value), null);
   // Note: overlap-serialization (not file_conflict rejection) is locked
   // behaviorally by subagentBroker.test.js ('same-file jobs are serialized' /
   // 'an overlapping job waits while disjoint jobs still run'), so no brittle
@@ -54,11 +57,17 @@ test('runner gates the broker on the enabled skill id and wires lifecycle hooks'
 
 test('workers inherit the parent run shape minus the fan-out skill and the timeline', () => {
   const runner = repo('native-host/src/codexSessionRunner.js');
-  const workerBlock = runner.match(/runWorkerTask: \(\{ jobId, prompt, signal: workerSignal \}\) => runner\(\{[\s\S]*?\}\)\r?\n\s*\}\)/)?.[0] || '';
+  const workerBlock = runner.match(/runWorkerTask: \(\{ jobId, prompt, signal: workerSignal, onEvent \}\) => runner\(\{[\s\S]*?\}\)\r?\n\s*\}\)/)?.[0] || '';
   assert.match(workerBlock, /task: prompt/);
   assert.match(workerBlock, /threadId: ''/);
   assert.match(workerBlock, /disableCodexOverleafSkillIds: \[PARALLEL_SUBAGENTS_SKILL_ID\]/);
-  assert.match(workerBlock, /emit: \(\) => \{\}/);
+  assert.match(workerBlock, /emit: onEvent/);
+  assert.match(workerBlock, /model: params\.model/);
+  assert.match(workerBlock, /reasoningEffort: params\.reasoningEffort/);
+  const broker = repo('native-host/src/subagentBroker.js');
+  assert.match(broker, /onEvent: event => \{[\s\S]*?if \(closed \|\| entry\.status !== 'running'\) return/);
+  assert.match(broker, /compactEvent\(event\)/);
+  assert.match(broker, /emit\('codex\.subagent\.event'[\s\S]*?source: 'broker', jobId: job\.id/);
   assert.match(workerBlock, /signal: workerSignal/);
   // the strip helper disables by skill-directory name through the per-child
   // skills/config/write rail
@@ -71,7 +80,7 @@ test('workers inherit the parent run shape minus the fan-out skill and the timel
 test('ownership violations are demoted from syncChanges to unsupportedChanges (S8)', () => {
   const runner = repo('native-host/src/codexSessionRunner.js');
   assert.match(runner, /getViolationPaths\(\)/);
-  assert.match(runner, /reason: 'subagent_unauthorized_edit'/);
+  assert.match(runner, /reason: subagentBroker\.getBlockedReason\(change\.path\)/);
   const block = runner.match(/const subagentViolationPaths[\s\S]*?\r?\n  \}/)?.[0] || '';
   assert.match(block, /rawSyncChanges = rawSyncChanges\.filter\(change => !subagentViolationPaths\.has\(change\.path\)\)/);
   assert.match(block, /unsupportedChanges\.push\(/);

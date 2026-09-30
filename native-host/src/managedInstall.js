@@ -19,7 +19,7 @@ const {
   getNativeHostRegistrationTarget
 } = require('./nativeHostPlatform');
 const { buildRuntimeFileManifest } = require('./runtimeInstaller');
-const { parseSemver, updateError } = require('./updateTrust');
+const { BOOTSTRAP_PROTOCOL, parseSemver, updateError } = require('./updateTrust');
 
 const MANAGED_BY = 'codex-overleaf-link';
 const EXTENSION_MARKER = '.codex-overleaf-managed-extension.json';
@@ -154,7 +154,7 @@ function buildManagedExtensionTree(options = {}) {
   fs.writeFileSync(path.join(targetRoot, EXTENSION_MARKER), JSON.stringify({
     managedBy: MANAGED_BY,
     kind: 'extension',
-    bootstrapProtocol: 2,
+    bootstrapProtocol: BOOTSTRAP_PROTOCOL,
     version,
     releaseRef,
     releaseChannel,
@@ -199,7 +199,7 @@ function installManagedNativeVersion({ packageRoot, nativeRoot, version, release
   fs.writeFileSync(path.join(nativeRoot, NATIVE_MARKER), JSON.stringify({
     managedBy: MANAGED_BY,
     kind: 'native',
-    bootstrapProtocol: 2,
+    bootstrapProtocol: BOOTSTRAP_PROTOCOL,
     version,
     installedAt: new Date().toISOString()
   }, null, 2) + '\n', 'utf8');
@@ -388,7 +388,8 @@ function readManagedMarker(root, markerName) {
 function isManagedMarker(marker, kind) {
   return marker?.managedBy === MANAGED_BY &&
     marker?.kind === kind &&
-    (marker?.bootstrapProtocol === 1 || marker?.bootstrapProtocol === 2);
+    Number.isInteger(marker?.bootstrapProtocol) &&
+    marker.bootstrapProtocol >= 1 && marker.bootstrapProtocol <= BOOTSTRAP_PROTOCOL;
 }
 
 function readVersionPointer(nativeRoot, name) {

@@ -1,4 +1,10 @@
-(function initCodexOverleafSettingsPanel() {
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory(require('./settingsWorkbench'));
+  } else {
+    root.CodexOverleafModuleRegistry.define('SettingsPanel', ['SettingsWorkbench'], factory);
+  }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function settingsPanelFactory(SettingsWorkbench) {
   'use strict';
 
   function codexIcon(name) {
@@ -45,6 +51,12 @@
         <div class="codex-project-settings-status" data-project-settings-status></div>
         <div class="codex-project-settings-scope">
           <div class="codex-project-settings-scope-title codex-set-eyebrow" data-i18n="settingsScopeProjectTitle">This project</div>
+          <details class="codex-set-group" data-set-group="writing-style" open>
+            <summary class="codex-set-group-head">
+              <span class="codex-set-group-title">${codexSetIcon('pen')}<span data-writing-style-heading>Writing style</span></span>
+            </summary>
+            <div class="codex-set-card" data-writing-style-settings></div>
+          </details>
           <details class="codex-set-group" data-set-group="personalization" open>
             <summary class="codex-set-group-head">
               <span class="codex-set-group-title">${codexSetIcon('pen')}<span data-i18n="personalizationConfig">Personalization</span></span>
@@ -113,12 +125,30 @@
         <div class="codex-project-settings-scope codex-project-settings-scope--global">
           <details class="codex-set-group" data-set-group="history" data-history-card>
             <summary class="codex-set-group-head">
-              <span class="codex-set-group-title">${codexSetIcon('history')}<span data-i18n="historyTitle">Change history</span></span>
+              <span class="codex-set-group-title">${codexSetIcon('history')}<span data-i18n="historyTitle">File changes</span><span class="codex-history-count" data-history-count aria-live="polite"></span></span>
             </summary>
             <div class="codex-set-card">
-              <p class="codex-set-row-help" data-i18n="historyHelp">What Codex wrote to this project, per run. Filter by file name or task text.</p>
-              <input type="text" class="codex-set-select codex-history-filter" data-history-filter>
+              <p class="codex-set-row-help" data-i18n="historyHelp">Review recent file changes and open the matching conversation.</p>
+              <div class="codex-history-toolbar">
+                <label class="codex-history-search">
+                  <span class="codex-history-search-mark" aria-hidden="true"></span>
+                  <input type="search" class="codex-set-select codex-history-filter" data-history-filter autocomplete="off">
+                </label>
+                <select class="codex-set-select codex-history-status-filter" data-history-status data-i18n-aria-label="historyStatusLabel">
+                  <option value="all" data-i18n="historyStatusAll">All statuses</option>
+                  <option value="pending" data-i18n="historyStatusPending">Pending review</option>
+                  <option value="accepted" data-i18n="historyStatusAccepted">Accepted</option>
+                  <option value="undone" data-i18n="historyStatusUndone">Undone</option>
+                  <option value="attention" data-i18n="historyStatusAttention">Needs attention</option>
+                  <option value="written" data-i18n="historyStatusWritten">Written</option>
+                </select>
+              </div>
               <div class="codex-history-list" data-history-list></div>
+              <button type="button" class="codex-history-jump codex-history-more" data-history-more hidden></button>
+              <label class="codex-history-include" hidden>
+                <input type="checkbox" data-history-include-empty>
+                <span data-history-include-label></span>
+              </label>
             </div>
           </details>
           <div class="codex-project-settings-scope-title codex-set-eyebrow" data-i18n="settingsScopeGlobalTitle">All projects</div>
@@ -153,7 +183,7 @@
             </summary>
             <div class="codex-set-card codex-provider-settings-entry">
               <div class="codex-provider-settings-entry-copy">
-                <p class="codex-set-row-help" data-i18n="providerSettingsHelp">Configure experimental third-party model APIs. Compatibility varies by provider and gateway.</p>
+                <p class="codex-set-row-help" data-i18n="providerSettingsHelp">Manage model API connections.</p>
                 <p class="codex-provider-settings-summary" data-provider-settings-summary data-tone="loading">${t(instance, 'providerSettingsLoading')}</p>
               </div>
               <button type="button" class="codex-set-btn" data-provider-settings-open data-i18n="providerSettingsConfigure">Configure</button>
@@ -186,12 +216,18 @@
           </details>
           <details class="codex-set-group" data-set-group="storage" data-storage-card>
             <summary class="codex-set-group-head">
-              <span class="codex-set-group-title">${codexSetIcon('database')}<span data-i18n="storageTitle">History &amp; storage</span></span>
+              <span class="codex-set-group-title">${codexSetIcon('database')}<span data-i18n="storageTitle">Local data</span></span>
             </summary>
             <div class="codex-set-card">
-              <p class="codex-set-row-help" data-storage-usage data-i18n="storageUsageLoading">Calculating usage…</p>
-              <button type="button" class="codex-set-btn codex-set-btn--danger" data-clear-all-history data-i18n="storageClearAll">Clear all history…</button>
-              <p class="codex-set-row-help" data-i18n="storageClearAllHelp">Removes every stored session, run and audit record for all projects. Project settings and rules are kept.</p>
+              <div class="codex-storage-data-row">
+                <div class="codex-storage-data-copy">
+                  <div class="codex-storage-data-label" data-i18n="storageSavedData">Saved conversations &amp; records</div>
+                  <p class="codex-set-row-help" data-storage-usage data-i18n="storageUsageLoading">Loading saved history…</p>
+                </div>
+                <button type="button" class="codex-set-btn codex-set-btn--danger" data-clear-all-history data-i18n="storageClearAll">Clear local history…</button>
+              </div>
+              <p class="codex-set-row-help codex-storage-clear-help" data-i18n="storageClearAllHelp">Clearing removes local history and undo information. Overleaf project files stay unchanged.</p>
+              <p class="codex-storage-estimate" data-storage-estimate aria-live="polite"></p>
             </div>
           </details>
           <details class="codex-set-group" data-set-group="skills" open>
@@ -247,6 +283,8 @@
       if (event.target.open) instance.callbacks.onStorageOpen?.();
     });
     container.querySelector('[data-history-filter]')?.addEventListener('input', () => instance.callbacks.onHistoryFilter?.());
+    container.querySelector('[data-history-status]')?.addEventListener('change', () => instance.callbacks.onHistoryFilter?.());
+    container.querySelector('[data-history-include-empty]')?.addEventListener('change', () => instance.callbacks.onHistoryFilter?.());
     // OT mirror: a single visible switch; legacy storage/DOM keys are retained. The click is
     // intercepted (the runtime's handler preventDefaults, runs the enable
     // confirmation, then sets checked + drives the change flow itself) so the
@@ -265,8 +303,9 @@
         Promise.resolve(instance.callbacks.onInputChange?.(event))
           .then(() => {
             flashSaved(instance, event);
-            if (selector === '[data-language-select]' && container.querySelector('[data-storage-card]')?.open) {
-              instance.callbacks.onStorageOpen?.();
+            if (selector === '[data-language-select]') {
+              if (container.querySelector('[data-storage-card]')?.open) instance.callbacks.onStorageOpen?.();
+              instance.callbacks.onHistoryFilter?.();
             }
           }).catch(() => {});
       });
@@ -280,12 +319,18 @@
       element?.addEventListener?.('input', () => updateGovernanceNotes(instance));
       element?.addEventListener?.('change', () => updateGovernanceNotes(instance));
     }
-    setupGroupPersistence(instance);
+    instance.workbench = SettingsWorkbench.mount(instance, { icon: codexIcon });
 
     return {
       get container() { return instance.container; },
       show: () => show(instance),
       hide: () => hide(instance),
+      openProviderPage: () => {
+        const host = instance.workbench?.revealProviders();
+        if (host) show(instance);
+        return host || null;
+      },
+      setProviderCloseGuard: guard => instance.workbench?.setProviderCloseGuard(guard),
       loadState: state => loadState(instance, state),
       readState: () => readState(instance),
       setStatus: (text, status) => setStatus(instance, text, status),
@@ -310,10 +355,12 @@
       button.dataset.active = 'true';
       button.setAttribute('aria-expanded', 'true');
     }
-    root.querySelector('[data-custom-instructions-input]')?.focus?.();
+    if (instance.workbench) instance.workbench.show();
+    else root.querySelector('[data-custom-instructions-input]')?.focus?.();
   }
 
   function refreshSettingsScope(instance, root) {
+    if (instance.workbench) { instance.workbench.refresh(); return; }
     const accountScope = instance.container?.closest?.('[data-settings-scope]')?.dataset?.settingsScope === 'account';
     const prefix = accountScope ? 'recentProjects_settings' : 'projectSettings';
     for (const [selector, suffix] of [['[data-settings-title]', 'Title'], ['[data-settings-subtitle]', 'Subtitle']]) {
@@ -337,6 +384,7 @@
       button.setAttribute('aria-expanded', 'false');
     }
     clearStatus(instance);
+    instance.workbench?.hide();
   }
 
   function isVisible(target) {
@@ -386,6 +434,7 @@
       setValue(scope, '[data-theme-select]', state.theme || 'dark');
       setValue(scope, '[data-language-select]', state.language || 'en');
     }
+    instance.workbench?.refresh();
   }
 
   function readState(target) {
@@ -413,7 +462,7 @@
 
   function setStatus(target, text, status = 'info') {
     const instance = target?._instance || target;
-    const element = getRoot(instance)?.querySelector('[data-project-settings-status]');
+    const element = instance?.container?.querySelector('[data-project-settings-status]');
     if (!element) {
       return;
     }
@@ -423,7 +472,7 @@
 
   function clearStatus(target) {
     const instance = target?._instance || target;
-    const element = getRoot(instance)?.querySelector('[data-project-settings-status]');
+    const element = instance?.container?.querySelector('[data-project-settings-status]');
     if (!element) {
       return;
     }
@@ -530,31 +579,6 @@
     element.dataset.tone = typeof value === 'object' && value.tone ? value.tone : 'ok';
   }
 
-  // Collapse memory: card open/closed state persists per browser profile.
-  const GROUP_STORE_KEY = 'codexOverleafSettingsGroups';
-
-  function setupGroupPersistence(instance) {
-    let stored = {};
-    try {
-      stored = JSON.parse(globalThis.localStorage?.getItem(GROUP_STORE_KEY) || '{}') || {};
-    } catch (_error) {
-      stored = {};
-    }
-    for (const details of instance.container.querySelectorAll('details[data-set-group]')) {
-      const key = details.dataset.setGroup;
-      if (key in stored) {
-        details.open = stored[key] !== false;
-      }
-      details.addEventListener('toggle', () => {
-        try {
-          const current = JSON.parse(globalThis.localStorage?.getItem(GROUP_STORE_KEY) || '{}') || {};
-          current[key] = details.open;
-          globalThis.localStorage?.setItem(GROUP_STORE_KEY, JSON.stringify(current));
-        } catch (_error) { /* private mode — collapse state just doesn't persist */ }
-      });
-    }
-  }
-
   function getRoot(instance) {
     return instance?.container?.querySelector('[data-project-settings-panel]') || null;
   }
@@ -582,6 +606,7 @@
   }
 
   function destroy(instance) {
+    instance.workbench?.destroy();
     if (instance._savedFlashTimer) {
       clearTimeout(instance._savedFlashTimer);
       instance._savedFlashTimer = null;
@@ -589,7 +614,7 @@
     instance.container.textContent = '';
   }
 
-  window.CodexOverleafSettingsPanel = {
+  return {
     create,
     loadState,
     readState,
@@ -601,4 +626,4 @@
     setSkillsSummary,
     setProviderSummary
   };
-})();
+});

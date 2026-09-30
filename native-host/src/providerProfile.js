@@ -7,7 +7,7 @@ const {
 } = require('./providerReasoning');
 
 const ALLOWED_WIRE_APIS = new Set(['auto', 'responses', 'chat', 'anthropic']);
-const ALLOWED_REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const ALLOWED_REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const ALLOWED_UPSTREAM_RESPONSE_MODES = new Set(['auto', 'streaming', 'buffered']);
 const ALLOWED_AUTH_MODES = new Set(['bearer', 'x-api-key', 'api-key', 'custom', 'none']);
 const ALLOWED_INPUT_MODALITIES = new Set(['text', 'image']);
@@ -93,12 +93,24 @@ function normalizeModels(values) {
       upstreamResponseMode: normalizeUpstreamResponseMode(value?.upstreamResponseMode, true),
       resolvedUpstreamResponseMode: normalizeUpstreamResponseMode(value?.resolvedUpstreamResponseMode, false),
       contextWindow: normalizeContextWindow(value?.contextWindow),
+      maxOutputTokens: normalizeModelOutputTokens(value?.maxOutputTokens),
+      reasoningAdapter: value?.reasoningAdapter ? normalizeReasoningAdapter(value.reasoningAdapter) : '',
+      reasoningCapability: value?.reasoningCapability ? normalizeReasoningCapability(value.reasoningCapability) : '',
       supportsParallelToolCalls: value?.supportsParallelToolCalls === true,
       inputModalities: normalizeInputModalities(value?.inputModalities),
       baseInstructions: normalizeOptionalText(value?.baseInstructions, 8000)
     });
   }
   return result;
+}
+
+function normalizeModelOutputTokens(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 256 || number > 65536) {
+    throw providerError('provider_configuration_invalid', 'Model output limit must be an integer between 256 and 65536.');
+  }
+  return number;
 }
 
 function normalizeBaseUrl(value) {

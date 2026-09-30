@@ -372,6 +372,7 @@
         status: 'running',
         streamKey: getCodexStreamKey(method, params),
         streamRole: method === 'item/agentMessage/delta' ? 'assistant' : 'reasoning',
+        streamPhase: params.phase || '',
         appendText: true
       };
     }
@@ -412,12 +413,13 @@
       };
     }
     if (method === 'warning' || method === 'guardianWarning' || method === 'configWarning') {
-      const title = cleanVisibleText(params.message || params.warning || '');
+      const title = cleanVisibleText(params.message || params.warning || params.summary || '');
+      if (!title) return technicalOnly(event, locale);
       return {
         kind: 'activity',
         visible: true,
-        title: title || textFor(locale, 'Codex 返回了一条运行提示。', 'Codex returned a runtime notice.'),
-        status: 'running',
+        title,
+        status: event.status === 'failed' ? 'failed' : method === 'guardianWarning' ? 'warning' : 'info',
         technicalDetail: normalizeRawEvent(event)
       };
     }
@@ -459,6 +461,7 @@
           status,
           streamKey: getItemStreamKey('agent', item),
           streamRole: 'assistant',
+          streamPhase: item.phase || '',
           replaceText: true
         };
       }
@@ -500,6 +503,10 @@
         status,
         detail: {
           command: item.command,
+          itemId: item.id,
+          threadId: event.detail?.params?.threadId,
+          turnId: event.detail?.params?.turnId,
+          commandActions: item.commandActions,
           output: item.aggregatedOutput,
           exitCode: item.exitCode
         }
@@ -863,6 +870,11 @@
         : textFor(locale, '本轮没有可撤销的写入', 'this run has no reversible writes');
     }
 
+    if (input.saveVerification && input.saveVerification.state !== 'not_checked') {
+      report.saveState = input.saveVerification.state === 'verified_saved'
+        ? textFor(locale, '已确认保存', 'Saved')
+        : textFor(locale, '待确认，可检查保存状态', 'Pending confirmation; check save status');
+    }
     const failed = input.status === 'failed' || input.status === 'blocked';
     return {
       title: textFor(locale, '本轮完成报告', 'Task report'),
@@ -946,6 +958,7 @@
       });
     }
 
+    if (report.saveState) meta.push({ key: 'saveState', label: textFor(locale, '保存', 'Save'), value: report.saveState });
     return { conclusion, body: bodySections.join('\n\n'), meta };
   }
 
@@ -976,6 +989,7 @@
     if (nextStep) {
       sections.push(textFor(locale, `下一步：${nextStep}`, `Next: ${nextStep}`));
     }
+    if (report.saveState) sections.push(textFor(locale, `保存：${report.saveState}`, `Save: ${report.saveState}`));
     return sections.join('\n\n');
   }
 
@@ -1045,7 +1059,7 @@
     if (input.mode === 'ask' || input.status === '只问不改') {
       return textFor(locale, '这轮是只问不改。', 'This run was Ask mode.');
     }
-    if (input.status === 'rejected') {
+    if (input.status === 'cancelled' || input.status === 'rejected') {
       return textFor(locale, '你取消了这轮修改。', 'You cancelled this change.');
     }
     return '';

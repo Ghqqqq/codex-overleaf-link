@@ -112,7 +112,7 @@
       try {
         const url = new URL(sender?.tab?.url || '');
         allowed = sender.id === chromeApi.runtime.id && url.protocol === 'https:'
-          && ['overleaf.com', 'www.overleaf.com'].includes(url.hostname)
+          && ['overleaf.com', 'www.overleaf.com', 'cn.overleaf.com'].includes(url.hostname)
           && /^\/project(?:\/|$)/.test(url.pathname);
       } catch (_error) { /* reject unrelated contexts */ }
       if (!allowed) {

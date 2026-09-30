@@ -4,6 +4,8 @@
 })(typeof window !== 'undefined' ? window : globalThis, function () {
   'use strict';
 
+  const MAX_CONFIRMATION_OBSERVATIONS = 8;
+
   function create(deps = {}) {
     const { window, document, treeOperations, uploadHelpers, snapshotRouter } = deps;
     const { getProjectId, findFileTreeNode, projectPathExists, collectProjectTextPaths,
@@ -14,6 +16,118 @@
     };
     const normalizeDomText = value => String(value || '').replace(/\s+/g, ' ').trim();
     const delay = ms => new Promise(resolve => window.setTimeout(resolve, ms));
+    const now = typeof deps.now === 'function' ? deps.now : Date.now;
+    const verificationReads = new Set();
+    const verificationBudget = () => ({ remainingMs: 90000 });
+    async function pauseVerification(budget, durationMs) {
+      const started = now();
+      await delay(Math.max(0, Math.min(durationMs, budget.remainingMs)));
+      budget.remainingMs = Math.max(0, budget.remainingMs - Math.max(0, now() - started));
+    }
+    function assertVerificationOwner(projectId, isCurrent) {
+      if (!projectId || getProjectId() !== projectId) {
+        throw Object.assign(new Error('The project changed during writeback.'), { code: 'aborted_project_changed' });
+      }
+      if (isCurrent?.() === false) {
+        throw Object.assign(new Error('Writeback was cancelled.'), { code: 'codex_cancelled' });
+      }
+    }
+    async function readServerSnapshot({ projectId, isCurrent, budget = verificationBudget() }) {
+      const started = now(), deadline = started + Math.max(0, budget.remainingMs);
+      let last;
+      try {
+        for (let attempt = 0; attempt < 3 && now() < deadline; attempt++) {
+          assertVerificationOwner(projectId, isCurrent);
+          const Controller = window.AbortController || globalThis.AbortController;
+          const controller = typeof Controller === 'function' ? new Controller() : null;
+          if (controller) verificationReads.add(controller);
+          let result;
+          try {
+            result = await snapshotRouter.fetchProjectZipSnapshot({ force: true, maxAgeMs: 0,
+              serverOnly: true, writebackVerification: true, includeBinaryFiles: false, includeContent: true,
+              signal: controller?.signal, saveCheckId: String(now()) + '-' + attempt,
+              zipTimeoutMs: Math.min(30000, Math.max(1, deadline - now())) });
+          } catch (error) {
+            if (['codex_cancelled', 'aborted_project_changed'].includes(error?.code)) throw error;
+            result = { ok: false, reason: error?.message || String(error) };
+          } finally { if (controller) verificationReads.delete(controller); }
+          assertVerificationOwner(projectId, isCurrent);
+          if (result?.ok === true && Array.isArray(result.files)) return result;
+          last = Object.assign(new Error('The server project snapshot could not be read.'), {
+            code: 'source_zip_unavailable', diagnostics: result?.diagnostics || null,
+            technicalMessage: result?.reason || 'No complete server snapshot was returned.'
+          });
+          const attempts = result?.diagnostics?.attempts || [];
+          if (attempts.length && attempts.every(item => [401, 403].includes(item.status))) break;
+          if (attempt < 2 && now() < deadline) await delay(Math.min(1000 * (2 ** attempt), deadline - now()));
+        }
+        throw last || Object.assign(new Error('The project verification budget was exhausted.'), { code: 'source_zip_unavailable' });
+      } finally { budget.remainingMs = Math.max(0, budget.remainingMs - Math.max(0, now() - started)); }
+    }
+    function verificationFailure(error, changedDocument, phase) {
+      const interrupted = ['codex_cancelled', 'aborted_project_changed'].includes(error?.code);
+      const code = interrupted ? error.code : changedDocument ? 'file_upload_unconfirmed' : 'source_zip_unavailable';
+      const reason = interrupted ? error.message : changedDocument
+        ? 'The file was submitted, but its saved content could not be confirmed.'
+        : 'The project could not be checked before uploading this file.';
+      return { ok: false, code, reason, changedDocument, diagnostics: {
+        verificationPhase: phase, ...(error?.diagnostics || {}), reason: error?.technicalMessage || error?.message || ''
+      }, failure: { code, stage: changedDocument ? 'verify' : 'preflight', severity: changedDocument ? 'warning' : 'blocked',
+        retryable: !interrupted, terminalState: interrupted ? 'cancelled' : changedDocument ? 'needs_review' : 'blocked',
+        changedDocument, userMessage: reason, nextAction: interrupted ? '' : 'Retry sync to check the file and upload only if it is missing.',
+        technicalMessage: error?.technicalMessage || error?.message || '' } };
+    }
+    async function makeSaveReceipt(projectId, path, content) {
+      const cryptoApi = window.crypto || globalThis.crypto;
+      if (!cryptoApi?.subtle || typeof TextEncoder !== 'function') return undefined;
+      const digest = await cryptoApi.subtle.digest('SHA-256', new TextEncoder().encode(content));
+      return { v: 1, source: 'overleaf-zip', projectId, path,
+        sha256: Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join(''),
+        verifiedAt: new Date().toISOString() };
+    }
+    async function beginCreateBatch(operations, options = {}) {
+      const projectId = getProjectId(), budget = verificationBudget();
+      const batch = { projectId, budget, targets: new Set(operations.map(op => op.path)),
+        before: new Map(), pending: new Map(), blocked: new Set(), isCurrent: options.isCurrent, error: null };
+      try {
+        const snapshot = await readServerSnapshot({ projectId, budget, isCurrent: options.isCurrent });
+        batch.before = new Map(snapshot.files.map(file => [file.path, file]));
+      } catch (error) { batch.error = error; }
+      return batch;
+    }
+    async function finishCreateBatch(batch, entries, appliedEntries = []) {
+      let observed = new Map(), lastError = batch.error;
+      try {
+        for (let attempt = 0; entries.length && attempt < 3 && batch.budget.remainingMs > 0; attempt++) {
+          const snapshot = await readServerSnapshot(batch);
+          observed = new Map(snapshot.files.map(file => [file.path, file]));
+          if (entries.every(entry => observed.get(entry.operation.path)?.content === entry.operation.content)) break;
+          if (attempt < 2) await pauseVerification(batch.budget, 500 * (2 ** attempt));
+        }
+        assertVerificationOwner(batch.projectId, batch.isCurrent);
+      } catch (error) { lastError = error; }
+      const results = [];
+      for (const entry of entries) {
+        const operation = entry.operation;
+        if (!lastError && observed.get(operation.path)?.content === operation.content) {
+          results.push({ operation, result: { ok: true, verified: true, changedDocument: true,
+            method: 'overleaf.native-text-upload', verification: 'overleaf-zip',
+            saveReceipt: await makeSaveReceipt(batch.projectId, operation.path, operation.content) } });
+        } else {
+          results.push({ operation, result: verificationFailure(lastError || new Error(
+            observed.has(operation.path) ? 'Server content differs from the submitted file.' : 'The file is not yet present in the server snapshot.'
+          ), true, 'post-upload') });
+        }
+      }
+      // The final fresh snapshot can also prove unrelated edits in this batch.
+      if (!lastError) for (const entry of appliedEntries) {
+        const content = entry.result?.verifiedContent ?? (entry.operation?.type === 'create' ? entry.operation.content : undefined);
+        if (typeof content === 'string' && observed.get(entry.operation.path)?.content === content) {
+          entry.result.saveReceipt = await makeSaveReceipt(batch.projectId, entry.operation.path, content);
+        }
+      }
+      return results;
+    }
     const controlName = node => {
       const labelledBy = (node.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)
         .map(id => document.getElementById?.(id)?.textContent || '').join(' ');
@@ -51,9 +165,8 @@
       const target = normalizeSafeProjectPath(entryPath);
       const projectId = getProjectId();
       const assertCurrent = () => {
-        if (!target || !projectId || getProjectId() !== projectId || options.isCurrent?.() === false) {
-          throw new Error('Project changed or folder creation was cancelled.');
-        }
+        if (!target) throw Object.assign(new Error('A valid folder path is required.'), { code: 'invalid_project_path' });
+        assertVerificationOwner(projectId, options.isCurrent);
       };
       const visible = node => Boolean(node && !node.disabled && node.getClientRects?.().length);
       const dialogs = () => Array.from(document.querySelectorAll('[role="dialog"]')).filter(visible);
@@ -139,15 +252,14 @@
         return { ok: false, code: 'invalid_project_path', reason: 'A valid text-file path and project are required.' };
       }
       let mutationAttempted = false;
-      const assertCurrent = () => {
-        if (getProjectId() !== projectId || options.isCurrent?.() === false) {
-          throw new Error('Project changed or the write was cancelled.');
-        }
-      };
+      let verificationPhase = 'preflight', zipReadCount = 0, lastZipFailure = null;
+      const readBudget = options.batch?.budget || verificationBudget();
+      let uploadDialog = null;
+      const assertCurrent = () => assertVerificationOwner(projectId, options.isCurrent);
       const visible = node => Boolean(node && !node.disabled && node.getClientRects?.().length);
       const dialogs = () => Array.from(document.querySelectorAll('[role="dialog"]')).filter(visible);
-      const waitFor = async read => {
-        const until = Date.now() + 5000;
+      const waitFor = async (read, timeoutMs = 5000) => {
+        const until = Date.now() + timeoutMs;
         do {
           assertCurrent();
           invalidateDomProjectPathCache();
@@ -174,13 +286,12 @@
         await waitFor(() => findFolder(folderPath)?.getAttribute('aria-expanded') === 'true');
       };
       const readServerFiles = async () => {
-        assertCurrent();
-        snapshotRouter.invalidateCache?.();
-        const result = await snapshotRouter.fetchProjectZipSnapshot({ force: true, maxAgeMs: 0,
-          includeBinaryFiles: false, includeContent: true, zipTimeoutMs: 15000 });
-        assertCurrent();
-        if (result?.ok !== true || !Array.isArray(result.files)) throw new Error('Server source ZIP is unavailable; text creation cannot be verified safely.');
-        return result.files;
+        zipReadCount += 1;
+        try {
+          const result = await readServerSnapshot({ projectId, budget: readBudget,
+            isCurrent: () => { assertCurrent(); return true; } });
+          return result.files;
+        } catch (error) { lastZipFailure = { reason: error.message, diagnostics: error.diagnostics }; throw error; }
       };
       const uploadText = async () => {
         const parentPath = target.split('/').slice(0, -1).join('/');
@@ -197,6 +308,7 @@
         const tree = document.querySelector('#ide-rail-tabs-tabpane-file-tree, #ide-redesign-file-tree, .ide-redesign-file-tree, .file-tree');
         chooseButton(tree, /^(?:Upload|上传)$/i).click();
         const dialog = await waitFor(() => dialogs().length === 1 && dialogs()[0]);
+        uploadDialog = dialog;
         const input = await waitFor(() => uploadHelpers.chooseOverleafFileInput(dialog.querySelectorAll('input[type="file"]')));
         if (projectPathExists(target)) throw new Error('The target appeared before upload; no replacement was attempted.');
         const file = new window.File([operation.content], target.split('/').pop(), { type: 'text/plain' });
@@ -205,9 +317,22 @@
         assertCurrent();
         uploadHelpers.assignFilesToInput(input, data.files, window);
         mutationAttempted = true;
+        options.batch?.pending.set(target, operation);
         input.dispatchEvent(new window.Event('change', { bubbles: true }));
         // Never click Replace/Overwrite. A concurrent name conflict must stop.
-        const deadline = Date.now() + 15000;
+        verificationPhase = 'post-upload';
+        const deadline = now() + readBudget.remainingMs;
+        let observations = 0;
+        if (options.batch) {
+          await waitFor(() => {
+            if (dialogs().some(d => /replace|overwrite|替换|覆盖/i.test(d.innerText || ''))) {
+              options.batch.blocked.add(target);
+              throw new Error('Overleaf reported an upload conflict; replacement was not authorized.');
+            }
+            return projectPathExists(target);
+          }, 30000);
+          return;
+        }
         do {
           assertCurrent();
           const conflict = dialogs().some(d => /replace|overwrite|替换|覆盖/i.test(d.innerText || ''));
@@ -222,15 +347,24 @@
             await waitFor(() => !dialogs().length);
             return;
           }
-          await delay(250);
-        } while (Date.now() < deadline);
+          const remaining = deadline - now();
+          if (remaining <= 0) break;
+          await pauseVerification(readBudget, Math.min(250 * (2 ** Math.min(observations++, 3)), remaining));
+        } while (now() < deadline && observations < MAX_CONFIRMATION_OBSERVATIONS);
         throw new Error('The new file content was not confirmed in the server source ZIP. No editor content was modified.');
       };
       try {
         assertCurrent();
+        if (options.batch?.error) throw options.batch.error;
+        const existing = options.batch?.before.get(target);
+        if (existing && options.allowExistingMatches === true && existing.content === operation.content) {
+          return { ok: true, verified: true, changedDocument: false, idempotent: true,
+            method: 'overleaf.existing-text-match', verification: 'overleaf-zip',
+            saveReceipt: await makeSaveReceipt(projectId, target, operation.content) };
+        }
         if (projectPathExists(target)) return { ok: false, code: 'target_file_already_exists', reason: 'The target file already exists.' };
         if (!uploadHelpers?.assignFilesToInput || !snapshotRouter?.fetchProjectZipSnapshot) throw new Error('Verified text upload support is unavailable.');
-        if ((await readServerFiles()).some(file => file.path === target)) {
+        if (options.batch ? options.batch.before.has(target) : (await readServerFiles()).some(file => file.path === target)) {
           return { ok: false, code: 'target_file_already_exists', reason: 'The server already contains the target file.' };
         }
         const parts = target.split('/');
@@ -243,15 +377,21 @@
           await ensureFolderExpanded(folderPath);
         }
         await uploadText();
+        if (options.batch) return { ok: false, pendingVerification: true, changedDocument: true };
         return { ok: true, method: 'overleaf.native-text-upload', changedDocument: true,
-          verified: true, verification: 'overleaf-zip' };
+          verified: true, verification: 'overleaf-zip',
+          saveReceipt: await makeSaveReceipt(projectId, target, operation.content) };
       } catch (error) {
         return {
-          ok: false,
-          code: mutationAttempted ? 'file_tree_operation_unverified' : 'file_tree_controls_unavailable',
-          reason: error.message,
-          changedDocument: mutationAttempted
+          ...verificationFailure(error, mutationAttempted, verificationPhase),
+          diagnostics: { verificationPhase, zipReadCount, lastZipFailure }
         };
+      } finally {
+        if (uploadDialog && getProjectId() === projectId && dialogs().includes(uploadDialog)) {
+          const close = Array.from(uploadDialog.querySelectorAll('button')).find(node => visible(node)
+            && /^(?:Close dialog|Close|Done|Cancel|关闭|完成|取消)$/i.test(controlName(node)));
+          close?.click();
+        }
       }
     }
     // Binary uploads use the same folder hierarchy as verified text uploads.
@@ -260,11 +400,7 @@
       const target = normalizeSafeProjectPath(folderPath);
       const projectId = getProjectId();
       if (!target || !projectId) throw new Error('A valid upload parent and project are required.');
-      const assertCurrent = () => {
-        if (getProjectId() !== projectId || options.isCurrent?.() === false) {
-          throw new Error('Project changed or the upload was cancelled.');
-        }
-      };
+      const assertCurrent = () => assertVerificationOwner(projectId, options.isCurrent);
       const expand = async path => {
         assertCurrent();
         const node = findFolder(path);
@@ -359,6 +495,20 @@
       const target = normalizeSafeProjectPath(operation.path);
       const projectId = getProjectId();
       const expected = options.expectedContent;
+      const binary = operation.undoCreatedFile?.v === 1 && operation.undoCreatedFile.kind === 'binary'
+        && options.undoCreatedFile === true && /^[a-f0-9]{64}$/i.test(options.expectedSha256 || '');
+      const matchesExpected = async file => {
+        if (!binary) return file && file.content === expected;
+        if (typeof file?.contentBase64 !== 'string') return false;
+        const cryptoApi = window.crypto || globalThis.crypto;
+        if (!cryptoApi?.subtle) return false;
+        const decode = window.atob || globalThis.atob;
+        if (typeof decode !== 'function') return false;
+        const bytes = Uint8Array.from(decode(file.contentBase64.replace(/\s/g, '')), value => value.charCodeAt(0));
+        const hash = await cryptoApi.subtle.digest('SHA-256', bytes);
+        return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('')
+          === options.expectedSha256.toLowerCase();
+      };
       const canDelete = options.canDelete || (() => typeof deps.readActiveEditorText === 'function'
         && treeOperations.getActiveFilePath?.() === target && deps.readActiveEditorText() === expected);
       let mutationAttempted = false;
@@ -366,11 +516,7 @@
       let ownedDialog = null;
       const visible = node => Boolean(node && !node.disabled && node.getClientRects?.().length);
       const dialogs = () => Array.from(document.querySelectorAll('[role="dialog"]')).filter(visible);
-      const assertCurrent = () => {
-        if (!projectId || getProjectId() !== projectId || options.isCurrent?.() === false) {
-          throw new Error('Project changed or the deletion was cancelled.');
-        }
-      };
+      const assertCurrent = () => assertVerificationOwner(projectId, options.isCurrent);
       const waitFor = async (read, timeoutMs = 5000) => {
         const deadline = Date.now() + timeoutMs;
         do {
@@ -386,9 +532,10 @@
         assertCurrent();
         snapshotRouter.invalidateCache?.();
         const result = await snapshotRouter.fetchProjectZipSnapshot({ force: true, maxAgeMs: 0,
-          includeBinaryFiles: false, includeContent: true, zipTimeoutMs: 15000 });
+          includeBinaryFiles: binary, includeContent: true, zipTimeoutMs: 15000 });
         assertCurrent();
-        if (result?.ok !== true || !Array.isArray(result.files)) {
+        if (result?.ok !== true || !Array.isArray(result.files)
+          || (result.skipped || []).some(file => file?.path === target)) {
           throw new Error('Server source ZIP is unavailable; deletion cannot be verified safely.');
         }
         return result.files;
@@ -406,18 +553,25 @@
       // Current Overleaf keeps the stable document ID on the draggable
       // entity inside the row. The menu only mounts on hover/selection.
       const rowIdentity = row => row?.querySelector('[data-file-type="doc"][data-file-id]')?.getAttribute('data-file-id')
+        || row?.querySelector('[data-file-type="file"][data-file-id]')?.getAttribute('data-file-id')
         || row?.getAttribute('data-entity-id') || row?.getAttribute('data-doc-id')
         || row?.getAttribute('data-file-id') || row?.querySelector('[id^="menu-button-"]')?.id || '';
       try {
-        if (!target || !projectId || typeof expected !== 'string' || typeof canDelete !== 'function'
-          || !window.CodexOverleafProjectFiles?.isTextProjectPath(target)) {
-          throw new Error('A checked text-file pre-image is required for deletion.');
+        if (!target || !projectId || typeof canDelete !== 'function'
+          || (!binary && (typeof expected !== 'string' || !window.CodexOverleafProjectFiles?.isTextProjectPath(target)))) {
+          throw new Error('A checked file pre-image is required for deletion.');
         }
         assertCurrent();
         if (dialogs().length) throw new Error('An existing Overleaf dialog must be closed before deleting files.');
         if (!snapshotRouter?.fetchProjectZipSnapshot) throw new Error('Verified deletion support is unavailable.');
         const original = (await readServerFiles()).find(file => file.path === target);
-        if (!original || original.content !== expected || canDelete() !== true) {
+        if (!original && options.undoCreatedFile === true && !resolveRow()) {
+          return { ok: true, method: 'overleaf.native-created-file-delete', changedDocument: false,
+            idempotent: true, verified: true, verification: 'overleaf-zip' };
+        }
+        const originalMatches = await matchesExpected(original);
+        assertCurrent();
+        if (!originalMatches || canDelete() !== true) {
           throw new Error('The file no longer matches the checked pre-image; deletion was stopped.');
         }
         const parentPath = target.split('/').slice(0, -1).join('/');
@@ -425,7 +579,7 @@
         const row = resolveRow();
         const identity = rowIdentity(row);
         if (!row || !identity || row.querySelector('[data-file-type="folder"]')) {
-          throw new Error('An exact Overleaf text-file row could not be identified.');
+          throw new Error('An exact Overleaf file row could not be identified.');
         }
         stage = 'file selection';
         (row.querySelector('.file-tree-entity-details, .file-tree-entity-button') || row).click();
@@ -459,8 +613,9 @@
         };
         if (!verifyDialog()) throw new Error('The deletion dialog does not name exactly the authorized file.');
         const latest = (await readServerFiles()).find(file => file.path === target);
+        const latestMatches = await matchesExpected(latest);
         assertCurrent();
-        if (!latest || latest.content !== expected || canDelete() !== true
+        if (!latestMatches || canDelete() !== true
           || rowIdentity(resolveRow()) !== identity || !verifyDialog()) {
           throw new Error('The target changed before confirmation; deletion was stopped.');
         }
@@ -469,7 +624,7 @@
         mutationAttempted = true;
         confirm.click();
         await waitFor(async () => !(await readServerFiles()).some(file => file.path === target), 15000);
-        return { ok: true, method: 'overleaf.native-text-delete', changedDocument: true,
+        return { ok: true, method: binary ? 'overleaf.native-created-file-delete' : 'overleaf.native-text-delete', changedDocument: true,
           verified: true, verification: 'overleaf-zip' };
       } catch (error) {
         return { ok: false, code: mutationAttempted ? 'file_tree_operation_unverified' : 'file_tree_controls_unavailable',
@@ -487,7 +642,9 @@
     async function createFile(operation, options = {}) {
       return createTextFileWithDom(operation, options);
     }
-    return { createFile, deleteFile, prepareEditor, ensureWriteMode, prepareUploadParent, findFolderNode: findFolder };
+    return { createFile, deleteFile, prepareEditor, ensureWriteMode, prepareUploadParent, findFolderNode: findFolder,
+      beginCreateBatch, finishCreateBatch,
+      cancelVerifications() { for (const controller of verificationReads) controller.abort(); } };
   }
   return { create };
 });

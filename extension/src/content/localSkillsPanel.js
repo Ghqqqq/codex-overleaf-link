@@ -104,11 +104,26 @@
       }
     }
 
+    function createSkillMark(id) {
+      const mark = document.createElement('span');
+      mark.className = 'codex-local-skill-icon';
+      mark.setAttribute('aria-hidden', 'true');
+      // Static, locally owned glyphs only; skill metadata never supplies SVG.
+      const glyph = id === 'annotated-rewrite'
+        ? '<path d="M3.2 12.8 4 9.7l6.6-6.6a1.4 1.4 0 0 1 2 2L6 11.7z"/><path d="m9.6 4.1 2.3 2.3"/>'
+        : id === 'parallel-subagents'
+          ? '<circle cx="4" cy="3.5" r="1.75"/><circle cx="12" cy="3.5" r="1.75"/><circle cx="8" cy="12.5" r="1.75"/><path d="M4 5.25v1.5A1.75 1.75 0 0 0 5.75 8.5h4.5A1.75 1.75 0 0 0 12 6.75v-1.5M8 8.5v2.25"/>'
+          : '<rect x="3" y="2.5" width="10" height="11" rx="2"/><path d="M6 6h4M6 9h4"/>';
+      mark.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" focusable="false">' + glyph + '</svg>';
+      return mark;
+    }
+
     function renderCodexOverleafSkillRow(list, skill, masterEnabled) {
       const id = String(skill?.id || '').trim();
       if (!id) {
         return;
       }
+      const compact = Boolean(list.closest?.('.codex-settings-workbench'));
       const row = document.createElement('div');
       row.className = 'codex-local-skill-row';
       row.dataset.scope = 'codex-overleaf';
@@ -125,15 +140,34 @@
       const trimmedTitle = typeof skill.title === 'string' ? skill.title.trim() : '';
       text.textContent = trimmedTitle || id;
       text.title = id;
-      row.append(text);
+      text.className = 'codex-local-skill-name';
+      const copy = document.createElement('div');
+      copy.className = 'codex-local-skill-copy';
+      copy.append(text);
+      const descriptions = {
+        'annotated-rewrite': tx('Guided editing for document revisions.', '用于文稿修订的编辑流程。'),
+        'parallel-subagents': tx('Split independent subtasks across multiple agents.', '将相互独立的子任务分配给多个 agent。')
+      };
+      const description = descriptions[id]
+        || (typeof skill.description === 'string' ? skill.description.replace(/\s+/g, ' ').trim() : '');
+      if (description) {
+        const help = document.createElement('span');
+        help.className = 'codex-local-skill-description';
+        help.textContent = description;
+        help.title = description;
+        copy.append(help);
+      }
+      if (compact) row.append(createSkillMark(id));
+      row.append(copy);
+      const controls = compact ? document.createElement('div') : row;
+      if (compact) controls.className = 'codex-local-skill-controls';
 
-      // Per-skill enable switch — appended last so it sits on the right of the
-      // row, after the Remove control. It remains a real checkbox input.
+      // Keep the same native input and callbacks; only its visual grouping changes.
       const toggle = document.createElement('input');
       toggle.type = 'checkbox';
       toggle.className = 'codex-switch';
       toggle.checked = isCodexOverleafSkillEnabled(id);
-      toggle.setAttribute('aria-label', tr('codexOverleafSkillEnableToggle'));
+      toggle.setAttribute('aria-label', (trimmedTitle || id) + ': ' + tr('codexOverleafSkillEnableToggle'));
       if (!masterEnabled) {
         toggle.disabled = true;
       }
@@ -212,15 +246,16 @@
         });
 
         actions.append(removeBtn);
-        row.append(actions);
+        controls.append(actions);
 
         // Store references so resetConfirmingRow can find and reset this row.
         row._exitConfirming = exitConfirming;
         row._skillId = id;
       }
 
-      // Per-skill enable switch is always the last child (rightmost).
-      row.append(toggle);
+      // The switch remains rightmost, including during removal confirmation.
+      controls.append(toggle);
+      if (compact) row.append(controls);
 
       list.append(row);
     }

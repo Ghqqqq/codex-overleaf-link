@@ -1,14 +1,14 @@
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./scopedPersistenceQueuePolicy'));
+    module.exports = factory(require('./scopedPersistenceQueuePolicy'), require('./sharedSessionBridge'));
   } else {
     root.CodexOverleafModuleRegistry.define(
       'ScopedPersistenceBrowserAdapter',
-      ['ScopedPersistenceQueuePolicy'],
+      ['ScopedPersistenceQueuePolicy', 'SharedSessionBridge'],
       factory
     );
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (QueuePolicy) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (QueuePolicy, SharedSessions) {
   'use strict';
 
   var META_PREFIX = 'codex-overleaf-scoped-persistence-v1:';
@@ -42,6 +42,7 @@
       : (typeof navigator !== 'undefined' ? navigator.locks : null);
     return {
       async read(scope) {
+        if (SharedSessions.enabled()) return normalizeMeta(await SharedSessions.readMeta(scope));
         var key = scopeKey(scope);
         if (!chromeApi || !chromeApi.storage || !chromeApi.storage.local) {
           return normalizeMeta(fallbackMeta.get(key));
@@ -50,6 +51,7 @@
         return normalizeMeta(stored && stored[key]);
       },
       async write(scope, meta) {
+        if (SharedSessions.enabled()) return SharedSessions.writeMeta(scope, normalizeMeta(meta));
         var key = scopeKey(scope);
         var normalized = normalizeMeta(meta);
         if (!chromeApi || !chromeApi.storage || !chromeApi.storage.local) {
@@ -60,6 +62,7 @@
         return normalized;
       },
       withLock(scope, work) {
+        if (SharedSessions.enabled()) return SharedSessions.withLock('state', scope, work);
         var key = scopeKey(scope);
         if (locksApi && typeof locksApi.request === 'function') {
           return locksApi.request(key, { mode: 'exclusive' }, work);

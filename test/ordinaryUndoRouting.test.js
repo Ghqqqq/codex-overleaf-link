@@ -62,7 +62,7 @@ function createHarness(spec = {}) {
     clickNode(node) {
       assert.equal(node, undoControl);
       state.clicks.push(state.activePath);
-      current().text = current().before;
+      current().text = spec.undoHistoryText ?? current().before;
       current().changes = [];
     },
     readActiveEditorText: () => current().text,
@@ -179,15 +179,15 @@ function assertUnchanged(harness) {
   for (const doc of harness.docs.values()) assert.equal(doc.text, doc.post);
 }
 
-test('ordinary Undo uses the frozen Track-off intent and preserves native editor Undo', async () => {
+test('ordinary Undo uses the frozen Track-off intent and restores its checkpoint without editor Undo', async () => {
   const h = createHarness({ currentTrack: true });
   await h.undo();
   assert.equal(h.state.requests[0].untrackedUndo, true);
   assert.equal(h.state.status, 'applied', JSON.stringify(h.state.result));
   assert.equal(h.state.result.applied.length, 1);
   assert.equal(h.docs.get('main.tex').text, h.run.undoExpectedFiles[0].content);
-  assert.deepEqual(h.state.clicks, ['main.tex']);
-  assert.equal(h.state.writes.length, 0);
+  assert.deepEqual(h.state.clicks, []);
+  assert.equal(h.state.writes.length, 1);
   assert.deepEqual(h.state.mirrorRequests.map(request => ({ method: request.method, projectId: request.params.projectId })),
     [{ method: 'mirror.invalidate', projectId: 'example-project' }]);
   assert.equal(h.state.contextReset, true);
@@ -212,7 +212,7 @@ test('ordinary Undo accepts an empty-string pre-image as a complete checkpoint',
   assert.equal(h.docs.get('main.tex').text, '');
 });
 
-test('ordinary Undo after reload retains the existing no-trace snapshot fallback', async () => {
+test('ordinary Undo after reload restores its no-trace checkpoint', async () => {
   const h = createHarness({ noUndoControl: true });
   const restored = persistAndRestoreRun(h.run);
   assert.deepEqual(restored.executionSnapshot, h.run.executionSnapshot);
@@ -221,6 +221,38 @@ test('ordinary Undo after reload retains the existing no-trace snapshot fallback
   assert.equal(h.state.clicks.length, 0);
   assert.equal(h.state.writes.length, 1);
   assert.equal(h.docs.get('main.tex').text, h.run.undoExpectedFiles[0].content);
+});
+
+test('ordinary Undo never resurrects an older user edit from the global history', async () => {
+  const h = createHarness({ undoHistoryText: 'Before.\n% undo-test\n% older user edit\n' });
+  await h.undo();
+  assert.equal(h.state.status, 'applied', JSON.stringify(h.state.result));
+  assert.equal(h.docs.get('main.tex').text, 'Before.\n');
+  assert.equal(h.state.clicks.length, 0);
+  assert.equal(h.state.writes.length, 1);
+});
+
+test('ordinary Undo preserves a later non-overlapping user edit', async () => {
+  const h = createHarness();
+  const doc = h.docs.get('main.tex');
+  doc.text += '% later user edit\n';
+  await h.undo();
+  assert.equal(h.state.status, 'applied', JSON.stringify(h.state.result));
+  assert.equal(doc.text, doc.before + '% later user edit\n');
+  assert.equal(h.state.clicks.length, 0);
+});
+
+test('a conflicting checkpoint cannot fall back to unrelated editor history', async () => {
+  const h = createHarness();
+  const doc = h.docs.get('main.tex');
+  doc.text = 'Rewritten by the user.\n';
+  await h.undo();
+  assert.equal(h.state.status, 'partial');
+  assert.equal(h.state.result.skipped[0].result.code, 'snapshot_undo_current_mismatch');
+  assert.equal(doc.text, 'Rewritten by the user.\n');
+  assert.equal(h.state.clicks.length, 0);
+  assert.equal(h.state.writes.length, 0);
+  assert.equal(h.state.mirrorRequests.length, 0);
 });
 
 for (const [name, snapshot] of [

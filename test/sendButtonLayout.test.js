@@ -223,8 +223,9 @@ test('panel persistence uses scoped IndexedDB storage without an unsafe legacy s
   assert.match(scopedPersistencePanelState, /SessionPersistence\.writeSessions/);
   assert.match(
     sessionPersistence,
-    /StorageDb\.putRecords\('sessions', \[\.\.\.cleanedExisting, \.\.\.writable\]\)/
+    /StorageDb\.putRecords\('sessions',\s*\[\.\.\.cleanedExisting,\s*\.\.\.writable\],\s*\{\s*reviewRunIds:\s*options\.reviewRunIds\s*\}\)/
   );
+  assert.match(sessionPersistence, /return written\.filter\(record => writable\.some\(candidate => candidate\.id === record\.id\)\)/);
   assert.match(scopedPersistencePanelState, /StorageDb\.extractLightweightPrefs\(compactState, projectId\)/);
   assert.match(contentScript, /runs:\s*Array\.isArray\(session\.runs\)/);
   assert.match(contentScript, /history:\s*Array\.isArray\(session\.history\)/);

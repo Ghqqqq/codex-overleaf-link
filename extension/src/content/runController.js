@@ -232,7 +232,9 @@
   }
 
   function isRetryReplacementEligible(run = {}, projection = {}) {
-    if (!run.id || !['failed', 'interrupted'].includes(run.status)) return false;
+    if (run.retryWriteback || run.saveCheck) return false;
+    if (!run.id || run.forkSnapshot === true
+      || !['failed', 'interrupted', 'cancelled', 'rejected'].includes(run.status)) return false;
     if (run.trackedChangeStatus || run.undoStatus) return false;
     if (['undoOperations', 'undoTrackedChanges', 'undoExpectedFiles', 'undoBaseFiles', 'appliedOperations']
       .some(field => Array.isArray(run[field]) && run[field].length)) return false;

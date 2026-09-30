@@ -338,7 +338,7 @@ function writeFakeCodexExit(tempDir, code) {
   return commandPath;
 }
 
-function writeFakeCodexTransientReconnect(tempDir) {
+function writeFakeCodexTransientReconnect(tempDir, notifications = null) {
   const scriptPath = path.join(tempDir, 'fake-codex-reconnect.js');
   fs.writeFileSync(scriptPath, [
     "const readline = require('node:readline');",
@@ -360,9 +360,11 @@ function writeFakeCodexTransientReconnect(tempDir) {
     "  if (message.id && message.method === 'turn/start') {",
     "    send({ id: message.id, result: { turn: { id: 'turn-1' } } });",
     "    send({ method: 'turn/started', params: { turn: { id: 'turn-1' } } });",
-    "    send({ method: 'error', params: { error: { message: 'Reconnecting... 2/5' } } });",
-    "    send({ method: 'item/agentMessage/delta', params: { itemId: 'msg-1', delta: 'Recovered answer' } });",
-    "    send({ method: 'turn/completed', params: { turn: { id: 'turn-1' } } });",
+    ...(notifications || [
+      { method: 'error', params: { error: { message: 'Reconnecting... 2/5' } } },
+      { method: 'item/agentMessage/delta', params: { itemId: 'msg-1', delta: 'Recovered answer' } },
+      { method: 'turn/completed', params: { turn: { id: 'turn-1' } } }
+    ]).map(notification => `    send(${JSON.stringify(notification)});`),
     "  }",
     "});",
     "process.on('SIGTERM', () => process.exit(0));",
@@ -1237,6 +1239,107 @@ test('builds a final assistant report from multiple Codex message items', () => 
     buildFinalAssistantMessage(messages, ['msg-1', 'msg-2']),
     '我先检查 main.tex 和 references.bib。\n\n结论：没有发现缺失 citation key，也没有修改文件。'
   );
+});
+
+
+test('final answer selection excludes commentary and an abandoned math fragment', () => {
+  const final = '**Queue bound**\n\n$$\nQ_{t+1}=[Q_t+c_t]_+\n$$\n\nFinal explanation.';
+  const messages = new Map([
+    ['progress', { text: 'Checking the figure.', phase: 'commentary', completed: true }],
+    ['partial', { text: 'Old explanation\n\n$$\nQ_{t+1}=[', completed: false }],
+    ['answer', { text: final, phase: 'final_answer', completed: true }]
+  ]);
+  assert.equal(buildFinalAssistantMessage(messages, [...messages.keys()], { turnCompleted: true }), final);
+});
+
+test('legacy delta-only completion selects one last nonempty message', () => {
+  const messages = new Map([
+    ['old', { text: '$$\nUnfinished old formula', completed: false }],
+    ['new', { text: 'Recovered answer', completed: false }],
+    ['empty', { text: ' ', completed: false }]
+  ]);
+  assert.equal(buildFinalAssistantMessage(messages, [...messages.keys()]), '');
+  assert.equal(buildFinalAssistantMessage(messages, [...messages.keys()], { turnCompleted: false }), '');
+  assert.equal(buildFinalAssistantMessage(messages, [...messages.keys()], { turnCompleted: true }), 'Recovered answer');
+});
+
+test('legacy fallback never promotes an explicitly phased unfinished answer', () => {
+  for (const phase of ['commentary', 'final_answer']) {
+    const messages = new Map([['partial', { text: 'Unfinished', phase, completed: false }]]);
+    assert.equal(buildFinalAssistantMessage(messages, ['partial'], { turnCompleted: true }), '');
+  }
+});
+
+test('completed unphased answers take priority over later unfinished items', () => {
+  const messages = new Map([
+    ['progress', { text: 'Earlier complete message', completed: true }],
+    ['answer', { text: 'Final legacy answer', completed: true }],
+    ['late', { text: '$$\nLate incomplete fragment', completed: false }]
+  ]);
+  assert.equal(buildFinalAssistantMessage(messages, [...messages.keys()], { turnCompleted: true }), 'Final legacy answer');
+});
+
+test('authoritative final snapshot takes priority and an empty final is not replaced by commentary', () => {
+  const messages = new Map([
+    ['canonical', { text: 'Canonical answer', phase: 'final_answer', completed: true, authoritative: true }],
+    ['other', { text: 'Other completed answer', phase: 'final_answer', completed: true }]
+  ]);
+  assert.equal(buildFinalAssistantMessage(messages, [...messages.keys()]), 'Canonical answer');
+  messages.set('canonical', { text: '', phase: 'final_answer', completed: true, authoritative: true });
+  assert.equal(buildFinalAssistantMessage(messages, [...messages.keys()], { turnCompleted: true }), '');
+});
+
+test('commentary-only completion cannot become a final answer', () => {
+  const messages = new Map([['progress', { text: 'Still checking.', phase: 'commentary', completed: true }]]);
+  assert.equal(buildFinalAssistantMessage(messages, ['progress'], { turnCompleted: true }), '');
+});
+
+test('app-server keeps progress in events but returns only the complete final answer', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-final-selection-'));
+  const events = [];
+  const final = '**Queue bound**\n\n$$\nQ_{t+1}=[Q_t+c_t]_+\n$$\n\nFinal explanation.';
+  const notifications = [
+    { method: 'item/completed', params: { item: { id: 'progress', type: 'agentMessage', phase: 'commentary', text: 'Checking the figure.' } } },
+    { method: 'item/agentMessage/delta', params: { itemId: 'abandoned', delta: 'Old explanation\n\n$$\nQ_{t+1}=[' } },
+    { method: 'item/started', params: { item: { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: '' } } },
+    { method: 'item/agentMessage/delta', params: { itemId: 'answer', delta: 'Partial final' } },
+    { method: 'item/completed', params: { item: { id: 'answer', type: 'agentMessage', text: final } } },
+    { method: 'item/agentMessage/delta', params: { itemId: 'answer', delta: ' Late duplicate' } },
+    { method: 'item/started', params: { item: { id: 'answer', type: 'agentMessage', text: 'Stale snapshot' } } },
+    { method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } }
+  ];
+  try {
+    const result = await runCodexAppServerSession({
+      task: 'test', env: { CODEX_OVERLEAF_ENV_READY: '1',
+        CODEX_OVERLEAF_CODEX_PATH: writeFakeCodexTransientReconnect(tempDir, notifications),
+        PATH: process.env.PATH }, emit: event => events.push(event)
+    });
+    assert.equal(result.assistantMessage, final);
+    assert.ok(events.some(event => event.detail?.params?.item?.id === 'progress'));
+    assert.ok(events.some(event => event.detail?.params?.itemId === 'abandoned'));
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('app-server accepts a final answer present only in the terminal turn snapshot', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-final-snapshot-'));
+  const notifications = [
+    { method: 'item/agentMessage/delta', params: { itemId: 'abandoned', delta: '$$\nIncomplete' } },
+    { method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed', items: [
+      { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: 'Canonical terminal answer' }
+    ] } } }
+  ];
+  try {
+    const result = await runCodexAppServerSession({
+      task: 'test', env: { CODEX_OVERLEAF_ENV_READY: '1',
+        CODEX_OVERLEAF_CODEX_PATH: writeFakeCodexTransientReconnect(tempDir, notifications),
+        PATH: process.env.PATH }, emit: () => {}
+    });
+    assert.equal(result.assistantMessage, 'Canonical terminal answer');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('thread start params avoid experimental app-server capabilities', () => {

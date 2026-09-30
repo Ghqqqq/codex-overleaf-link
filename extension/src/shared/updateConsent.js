@@ -66,6 +66,9 @@
       blocker: blockers[0] || '',
       blockers,
       transactionId: safeId(value.transactionId),
+      operationId: safeId(value.operationId),
+      cancelRequested: value.cancelRequested === true,
+      recoveryPending: value.recoveryPending === true,
       initiatedBy: ['automatic', 'manual'].includes(value.initiatedBy) ? value.initiatedBy : '',
       lastCheckedAt: finiteNumber(value.lastCheckedAt),
       stagedAt: finiteNumber(value.stagedAt),
@@ -126,14 +129,17 @@
       available,
       snoozed,
       execution,
-      showPanel: (available && !snoozed) || execution || state.state === 'rolled_back' ||
-        visibleFailure,
+      showPanel: state.cancelRequested || state.recoveryPending
+        || (state.state === 'checking' && state.initiatedBy === 'manual')
+        || (available && !snoozed) || execution || state.state === 'rolled_back' || visibleFailure,
       badge: getBadge(state, { available, snoozed }),
       actions: {
-        check: ['idle', 'committed', 'rolled_back', 'failed'].includes(state.state),
-        install: available,
-        later: available || ['staged', 'waiting_for_idle'].includes(state.state),
-        retry: ['failed', 'rolled_back'].includes(state.state)
+        check: !state.cancelRequested && !state.recoveryPending && ['idle', 'committed', 'rolled_back', 'failed'].includes(state.state),
+        install: available && !state.cancelRequested && !state.recoveryPending,
+        later: !state.recoveryPending && (available || ['staged', 'waiting_for_idle'].includes(state.state)),
+        cancel: !state.recoveryPending && (state.cancelRequested || ['checking', 'downloading', 'staged', 'waiting_for_idle'].includes(state.state)),
+        recover: state.recoveryPending,
+        retry: !state.cancelRequested && !state.recoveryPending && ['failed', 'rolled_back'].includes(state.state)
       }
     };
   }

@@ -3,11 +3,13 @@ const test = require('node:test');
 const Creator = require('../extension/src/page/textFileCreator');
 
 function fixture(options = {}) {
-  const files = new Map([['main.tex', 'Existing document']]);
+  const files = new Map([['main.tex', 'Existing document'], ...Object.entries(options.initialFiles || {})]);
   const folders = new Set(options.folders || []);
   const expanded = new Set();
   let selectedFolder = '';
   const clicks = [];
+  const zipRequests = [];
+  let clock = 0;
   let parent = '';
   let dialog = null;
   let active = 'main.tex';
@@ -112,11 +114,12 @@ function fixture(options = {}) {
     async waitForActiveEditorText(target) { return { ok: active === target, text: files.get(target) }; }
   };
   const creator = Creator.create({
+    now: () => clock,
     window: {
       HTMLInputElement: Input, Event: class { constructor(type) { this.type = type; } },
       File: class { constructor(parts, name) { this.body = parts.join(''); this.name = name; } },
       DataTransfer: class { constructor() { this.files = []; this.items = { add: file => this.files.push(file) }; } },
-      setTimeout(callback) { queueMicrotask(callback); },
+      setTimeout(callback, ms = 0) { clock += ms; queueMicrotask(callback); },
       CodexOverleafProjectFiles: { isTextProjectPath: target => target.endsWith('.tex') }
     },
     document: {
@@ -126,20 +129,31 @@ function fixture(options = {}) {
     treeOperations,
     uploadHelpers: { chooseOverleafFileInput: inputs => inputs[0] || null,
       assignFilesToInput(input, selected) { input.files = selected; } },
-    snapshotRouter: { invalidateCache() {}, async fetchProjectZipSnapshot() {
-      return { ok: !options.zipUnavailable && !(options.zipFailsAfterUpload && files.size > 1),
+    snapshotRouter: { invalidateCache() {}, async fetchProjectZipSnapshot(params) {
+      zipRequests.push(params);
+      clock += Math.min(options.zipReadDurationMs || 0, params.zipTimeoutMs);
+      const result = { ok: !options.zipUnavailable && !(options.zipFailsAfterUpload && files.size > 1),
         files: [...Array.from(files, ([path, content]) => ({ path, content })),
           ...(options.serverExisting ? [{ path: options.serverExisting, content: 'collaborator content' }] : [])] };
+      return options.zipResponse ? options.zipResponse(result, {
+        read: zipRequests.length, params,
+        cancel: () => { current = false; },
+        navigate: () => { projectId = 'another-project'; }
+      }) : result;
     } },
     readActiveEditorText() { throw new Error('Creation must not read a live editor buffer'); },
     replaceActiveEditorText() { throw new Error('Creation must not write a live editor buffer'); }
   });
-  return { files, folders, clicks, selectedFolder: () => selectedFolder,
+  return { files, folders, clicks, zipRequests, elapsedMs: () => clock, selectedFolder: () => selectedFolder,
     prepare: (target, prepareOptions = {}) => creator.prepareUploadParent(target, {
       ...prepareOptions, isCurrent: () => current
-    }), create: (target, content) => creator.createFile(
-    { path: target, content }, { isCurrent: () => current }
-  ) };
+    }),
+    setCurrent(value) { current = value; },
+    begin: operations => creator.beginCreateBatch(operations, { isCurrent: () => current }),
+    finish: (batch, entries, applied = []) => creator.finishCreateBatch(batch, entries, applied),
+    create: (target, content, createOptions = {}) => creator.createFile(
+      { type: 'create', path: target, content }, { ...createOptions, isCurrent: () => current }
+    ) };
 }
 
 test('modern text creation uses the native dialog and preserves existing documents', async () => {
@@ -285,4 +299,179 @@ test('asset parent creation refuses a file collision and unsafe paths', async ()
   await assert.rejects(f.prepare('../outside', { createMissing: true }), /valid/);
   assert.deepEqual(f.clicks, []);
   assert.equal(f.files.get('assets'), 'unrelated file');
+});
+
+test('text upload recovers a transient server ZIP failure without uploading twice', async () => {
+  const f = fixture({ zipResponse: (result, { read }) => read === 2
+    ? { ok: false, reason: 'HTTP 503', diagnostics: { attempts: [{ status: 503 }] } } : result });
+  const result = await f.create('probe.tex', 'Exact content\n');
+  assert.equal(result.ok, true);
+  assert.equal(result.verification, 'overleaf-zip');
+  assert.deepEqual(f.clicks, ['probe.tex']);
+  assert.equal(f.zipRequests.length, 3);
+});
+
+test('text upload recovers a thrown ZIP read error without retrying the mutation', async () => {
+  const f = fixture({ zipResponse: (result, { read }) => {
+    if (read === 2) throw new Error('Connection reset');
+    return result;
+  } });
+  assert.equal((await f.create('probe.tex', 'Exact content')).ok, true);
+  assert.deepEqual(f.clicks, ['probe.tex']);
+  assert.equal(f.zipRequests.length, 3);
+});
+
+test('preflight retries a transient ZIP read before creating the file once', async () => {
+  const f = fixture({ zipResponse: (result, { read }) => read === 1
+    ? { ok: false, reason: 'HTTP 503' } : result });
+  assert.equal((await f.create('probe.tex', 'Exact content')).ok, true);
+  assert.deepEqual(f.clicks, ['probe.tex']);
+  assert.equal(f.zipRequests.length, 3);
+});
+
+test('post-upload confirmation waits for exact server content after missing and stale snapshots', async () => {
+  const f = fixture({ zipResponse: (result, { read }) => read === 2
+    ? { ...result, files: result.files.filter(file => file.path !== 'probe.tex') }
+    : read === 3 ? { ...result, files: result.files.map(file => file.path === 'probe.tex'
+      ? { ...file, content: 'Old server content' } : file) } : result });
+  const result = await f.create('probe.tex', 'Exact content');
+  assert.equal(result.ok, true);
+  assert.equal(result.verified, true);
+  assert.deepEqual(f.clicks, ['probe.tex']);
+  assert.equal(f.zipRequests.length, 4);
+});
+
+test('persistent ZIP failure keeps the original diagnostic and bounded read retries', async () => {
+  const diagnostics = { attempts: [{ status: 503, elapsedMs: 15 }] };
+  const f = fixture({ zipResponse: (result, { read }) => read > 1
+    ? { ok: false, reason: 'HTTP 503 upstream unavailable', diagnostics } : result });
+  const result = await f.create('probe.tex', 'Exact content');
+  assert.equal(result.ok, false);
+  assert.equal(result.changedDocument, true);
+  assert.equal(result.code, 'file_upload_unconfirmed');
+  assert.match(result.failure.technicalMessage, /HTTP 503 upstream unavailable/);
+  assert.doesNotMatch(result.reason, /HTTP 503/);
+  assert.deepEqual(result.diagnostics.lastZipFailure.diagnostics, diagnostics);
+  assert.equal(result.diagnostics.verificationPhase, 'post-upload');
+  assert.equal(f.zipRequests.length, 4);
+  assert.ok(f.elapsedMs() <= 3200, 'fast failures consume only their bounded retry backoff');
+  assert.deepEqual(f.clicks, ['probe.tex']);
+});
+
+test('slow ZIP retries share one verification budget across preflight and upload confirmation', async () => {
+  const f = fixture({ zipReadDurationMs: 30000,
+    zipResponse: (result, { read }) => read > 1 ? { ok: false, reason: 'ZIP timeout' } : result });
+  const result = await f.create('probe.tex', 'Exact content');
+  assert.equal(result.ok, false);
+  assert.ok(f.elapsedMs() <= 90200, 'verification stays within 90 seconds plus the parent-selection delay');
+  assert.equal(f.zipRequests.length, 3);
+  assert.ok(f.zipRequests.at(-1).zipTimeoutMs < 30000, 'the final read receives only the remaining shared budget');
+  assert.deepEqual(f.clicks, ['probe.tex']);
+});
+
+test('an existing uploaded file with different server content never confirms success', async () => {
+  const f = fixture({ zipResponse: (result, { read }) => read > 1
+    ? { ...result, files: result.files.map(file => file.path === 'probe.tex'
+      ? { ...file, content: 'Different server content' } : file) } : result });
+  const result = await f.create('probe.tex', 'Exact content');
+  assert.equal(result.ok, false);
+  assert.equal(result.changedDocument, true);
+  assert.equal(result.code, 'file_upload_unconfirmed');
+  assert.match(result.failure.technicalMessage, /content was not confirmed/);
+  assert.ok(f.zipRequests.length < 30);
+  assert.deepEqual(f.clicks, ['probe.tex']);
+});
+
+for (const action of ['cancel', 'navigate']) {
+  test(`ZIP confirmation stops immediately after ${action}`, async () => {
+    const f = fixture({ zipResponse: (result, context) => {
+      if (context.read === 2) {
+        context[action]();
+        return { ok: false, reason: 'Temporary ZIP failure' };
+      }
+      return result;
+    } });
+    const result = await f.create('probe.tex', 'Exact content');
+    assert.equal(result.ok, false);
+    assert.equal(result.changedDocument, true);
+    assert.equal(result.code, action === 'cancel' ? 'codex_cancelled' : 'aborted_project_changed');
+    assert.equal(result.failure.terminalState, 'cancelled');
+    assert.equal(result.failure.retryable, false);
+    assert.equal(result.saveReceipt, undefined);
+    assert.equal(f.zipRequests.length, 2);
+    assert.deepEqual(f.clicks, ['probe.tex']);
+  });
+}
+
+test('denied server access is not retried as a transient upload failure', async () => {
+  const f = fixture({ zipResponse: (result, { read }) => read === 2
+    ? { ok: false, reason: 'HTTP 403', diagnostics: { attempts: [{ status: 403 }] } } : result });
+  const result = await f.create('probe.tex', 'Exact content');
+  assert.equal(result.ok, false);
+  assert.match(result.failure.technicalMessage, /HTTP 403/);
+  assert.equal(result.code, 'file_upload_unconfirmed');
+  assert.equal(f.zipRequests.length, 2);
+  assert.deepEqual(f.clicks, ['probe.tex']);
+});
+
+test('a multi-file create batch shares preflight and final server verification', async () => {
+  const f = fixture();
+  const operations = ['first.tex', 'second.tex', 'third.tex'].map(path => ({ type: 'create', path, content: path }));
+  const batch = await f.begin(operations);
+  const entries = [];
+  for (const operation of operations) {
+    const result = await f.create(operation.path, operation.content, { batch });
+    assert.equal(result.pendingVerification, true);
+    entries.push({ operation, result });
+  }
+  assert.equal(f.zipRequests.length, 1, 'no per-file full-project downloads');
+  const results = await f.finish(batch, entries);
+  assert.equal(f.zipRequests.length, 2);
+  assert.equal(results.length, operations.length);
+  assert.ok(results.every(entry => entry.result.ok && entry.result.verification === 'overleaf-zip'));
+  assert.ok(results.every(entry => /^[a-f0-9]{64}$/.test(entry.result.saveReceipt.sha256)));
+  assert.deepEqual(f.clicks, operations.map(op => op.path));
+  assert.equal(f.files.get('main.tex'), 'Existing document');
+});
+
+test('retrying an already matching create is idempotent and preserves unrelated content', async () => {
+  const f = fixture({ initialFiles: { 'saved.tex': 'expected' } });
+  const operation = { type: 'create', path: 'saved.tex', content: 'expected' };
+  const batch = await f.begin([operation]);
+  const result = await f.create(operation.path, operation.content, { batch, allowExistingMatches: true });
+  assert.equal(result.ok, true);
+  assert.equal(result.idempotent, true);
+  assert.equal(result.changedDocument, false);
+  assert.deepEqual(f.clicks, []);
+  assert.equal(f.files.get('main.tex'), 'Existing document');
+});
+
+test('retrying a create never replaces different server content', async () => {
+  const f = fixture({ initialFiles: { 'saved.tex': 'collaborator edit' } });
+  const operation = { type: 'create', path: 'saved.tex', content: 'expected' };
+  const batch = await f.begin([operation]);
+  const result = await f.create(operation.path, operation.content, { batch, allowExistingMatches: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'target_file_already_exists');
+  assert.equal(f.files.get('saved.tex'), 'collaborator edit');
+  assert.deepEqual(f.clicks, []);
+});
+
+test('cancelling a batch stops the tail and cannot turn pending writes into saved receipts', async () => {
+  const f = fixture();
+  const first = { type: 'create', path: 'first.tex', content: 'first' };
+  const second = { type: 'create', path: 'second.tex', content: 'second' };
+  const batch = await f.begin([first, second]);
+  const result = await f.create(first.path, first.content, { batch });
+  f.setCurrent(false);
+  const skipped = await f.create(second.path, second.content, { batch });
+  const confirmed = await f.finish(batch, [{ operation: first, result }]);
+  assert.equal(skipped.code, 'codex_cancelled');
+  assert.equal(skipped.changedDocument, false);
+  assert.equal(confirmed[0].result.code, 'codex_cancelled');
+  assert.equal(confirmed[0].result.changedDocument, true);
+  assert.equal(confirmed[0].result.failure.retryable, false);
+  assert.equal(confirmed[0].result.saveReceipt, undefined);
+  assert.equal(f.zipRequests.length, 1);
+  assert.deepEqual(f.clicks, ['first.tex']);
 });

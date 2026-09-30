@@ -11,6 +11,8 @@
   let currentView = null;
   let mountedPanel = null;
   let actionInFlight = false;
+  let cancellationInFlight = false;
+  let actionSequence = 0;
   let listenerInstalled = false;
   let getLocale = () => '';
   let settingsRoot = null;
@@ -68,41 +70,56 @@
 
   async function handleClick(event) {
     const action = event.target?.closest?.('[data-update-notice-action]')?.dataset?.updateNoticeAction;
-    if (!action || actionInFlight) return;
+    if (!action) return;
     if (action === 'copy-manual') {
       try {
         await navigator.clipboard.writeText(manualUpdateCommand(currentView?.state));
         manualCommandCopied = true;
         render();
-        setTimeout(() => {
-          manualCommandCopied = false;
-          render();
-        }, 1800);
-      } catch (_error) {
-        manualCommandCopied = false;
-      }
+        setTimeout(() => { manualCommandCopied = false; render(); }, 1800);
+      } catch (_) { manualCommandCopied = false; }
       return;
     }
+    return runUpdateAction(action);
+  }
+
+  async function runUpdateAction(action) {
+    const cancelling = action === 'cancel' || action === 'later';
+    if (cancellationInFlight || ((actionInFlight || settingsActionInFlight) && !cancelling)) return;
+    const sequence = ++actionSequence;
     actionInFlight = true;
+    settingsActionInFlight = true;
+    cancellationInFlight = cancelling;
     render();
     try {
-      currentView = await request({
+      const view = await request({
+        check: 'codex-overleaf/consent-update-check',
         install: 'codex-overleaf/consent-update-install',
         retry: 'codex-overleaf/consent-update-check',
         later: 'codex-overleaf/consent-update-later',
+        cancel: 'codex-overleaf/consent-update-cancel',
+        recover: 'codex-overleaf/consent-update-recover',
         dismiss: 'codex-overleaf/consent-update-dismiss',
         reload: 'codex-overleaf/consent-update-reload'
       }[action]);
+      if (sequence === actionSequence) currentView = view;
     } catch (error) {
-      currentView = await reconcileAfterActionError(error, {
-        action,
-        fallbackMessage: tx('Update failed.', '更新失败。')
-      });
+      if (sequence === actionSequence) {
+        const view = await reconcileAfterActionError(error, {
+          action, fallbackMessage: tx('Update action failed.', '更新操作失败。')
+        });
+        if (sequence === actionSequence) currentView = view;
+      }
     } finally {
-      actionInFlight = false;
-      render();
+      if (sequence === actionSequence) {
+        actionInFlight = false;
+        settingsActionInFlight = false;
+        cancellationInFlight = false;
+        render();
+      }
     }
   }
+
 
   async function request(type) {
     if (!type) throw new Error('Unknown update action.');
@@ -164,8 +181,9 @@
     restartWatchdog = setTimeout(async () => {
       try {
         const view = await request('codex-overleaf/consent-update-get-state');
-        if (view?.state && !ACTIVE_UPDATE_STATES.has(view.state.state)) {
+        if (view?.state) {
           currentView = view;
+          if (ACTIVE_UPDATE_STATES.has(view.state.state)) scheduleRestartWatchdog();
         } else {
           currentView = buildFailedView('update_recovery_timeout', tx(
             'The update did not finish restarting. Retry or use the manual recovery command.',
@@ -206,36 +224,17 @@
     renderSettings();
   }
 
-  async function handleSettingsAction() {
-    if (settingsActionInFlight) return;
-    settingsActionInFlight = true;
-    renderSettings();
-    const stateName = currentView?.state?.state || 'idle';
-    let requestedAction = 'check';
-    try {
-      if (['reload_required', 'reload_tabs_required'].includes(stateName)) {
-        requestedAction = 'reload';
-        currentView = await request('codex-overleaf/consent-update-reload');
-      } else if (stateName === 'update_available') {
-        requestedAction = 'install';
-        currentView = await request('codex-overleaf/consent-update-install');
-      } else if (['failed', 'rolled_back'].includes(stateName)) {
-        currentView = await request('codex-overleaf/consent-update-check');
-      } else if (!ACTIVE_UPDATE_STATES.has(stateName)) {
-        currentView = await request('codex-overleaf/consent-update-check');
-      } else {
-        return;
-      }
-    } catch (error) {
-      currentView = await reconcileAfterActionError(error, {
-        action: requestedAction,
-        fallbackMessage: tx('Update check failed.', '更新检查失败。')
-      });
-    } finally {
-      settingsActionInFlight = false;
-      render();
+  function handleSettingsAction() {
+    const state = currentView?.state || {};
+    if (state.recoveryPending) return runUpdateAction('recover');
+    if (state.cancelRequested || ['checking', 'downloading', 'staged', 'waiting_for_idle'].includes(state.state)) {
+      return runUpdateAction('cancel');
     }
+    if (['reload_required', 'reload_tabs_required'].includes(state.state)) return runUpdateAction('reload');
+    if (state.state === 'update_available') return runUpdateAction('install');
+    if (!ACTIVE_UPDATE_STATES.has(state.state)) return runUpdateAction('check');
   }
+
 
   function render() {
     if (!currentView) return;
@@ -270,7 +269,7 @@
     detail.textContent = copy.detail;
     body.append(eyebrow, title, detail);
 
-    if (state.state === 'failed') {
+    if (state.state === 'failed' && !state.cancelRequested && !state.recoveryPending) {
       const recovery = document.createElement('span');
       recovery.className = 'codex-update-notice-recovery';
       recovery.textContent = tx('Manual recovery:', '手动恢复：');
@@ -302,7 +301,9 @@
       button.dataset.updateNoticeAction = action.id;
       button.className = action.primary ? 'is-primary' : '';
       button.textContent = action.label;
-      button.disabled = actionInFlight;
+      button.disabled = action.id === 'cancel'
+        ? cancellationInFlight || (state.cancelRequested && !state.code)
+        : actionInFlight || settingsActionInFlight;
       actions.append(button);
     }
     notice.replaceChildren(body, actions);
@@ -358,11 +359,29 @@
     status.textContent = statusText;
     status.hidden = !statusText;
     button.textContent = buttonText;
-    button.disabled = settingsActionInFlight || stateName === 'checking' || ACTIVE_UPDATE_STATES.has(stateName);
+    const cancellable = state.cancelRequested || ['checking', 'downloading', 'staged', 'waiting_for_idle'].includes(stateName);
+    if (state.recoveryPending) {
+      button.textContent = tx('Check recovery', '检查恢复状态');
+      button.disabled = actionInFlight || settingsActionInFlight;
+    } else if (cancellable) {
+      button.textContent = state.cancelRequested && !state.code
+        ? tx('Cancelling…', '正在取消…')
+        : state.cancelRequested ? tx('Retry cancellation', '重试取消') : tx('Cancel update', '取消更新');
+      button.disabled = cancellationInFlight || (state.cancelRequested && !state.code);
+    } else {
+      button.disabled = actionInFlight || settingsActionInFlight || ACTIVE_UPDATE_STATES.has(stateName);
+    }
   }
 
   function visibleActions(state) {
-    if (actionInFlight) return [];
+    const value = currentView?.state || {};
+    if (value.recoveryPending) return [{ id: 'recover', label: tx('Check recovery', '检查恢复状态'), primary: true }];
+    if (value.cancelRequested || ['checking', 'downloading'].includes(state)) {
+      return [{ id: 'cancel', label: value.cancelRequested
+        ? value.code ? tx('Retry cancellation', '重试取消') : tx('Cancelling…', '正在取消…')
+        : tx('Cancel update', '取消更新'), primary: false }];
+    }
+    if (actionInFlight && !['staged', 'waiting_for_idle'].includes(state)) return [];
     if (['reload_required', 'reload_tabs_required'].includes(state)) {
       return [{ id: 'reload', label: state === 'reload_required'
         ? tx('Reload extension', '重新加载扩展') : tx('Refresh Overleaf tabs', '刷新 Overleaf 标签页'), primary: true }];
@@ -374,7 +393,7 @@
       ];
     }
     if (['staged', 'waiting_for_idle'].includes(state)) {
-      return [{ id: 'later', label: tx('Later', '稍后'), primary: false }];
+      return [{ id: 'cancel', label: tx('Cancel update', '取消更新'), primary: false }];
     }
     if (['failed', 'rolled_back'].includes(state)) {
       return [
@@ -390,8 +409,18 @@
 
   function getCopy(state) {
     const target = state.latestVersion ? 'v' + state.latestVersion : '';
+    if (state.cancelRequested) return {
+      eyebrow: tx('Cancelling update', '正在取消更新'), title: target,
+      detail: state.message || tx('Stopping this update and clearing its authorization.', '正在停止本次更新并清理更新授权。')
+    };
+    if (state.recoveryPending) return {
+      eyebrow: tx('Checking update recovery', '正在确认更新恢复状态'), title: target,
+      detail: state.message || tx('Waiting for the installed version to be confirmed.', '正在确认实际安装的版本。')
+    };
     const blocker = blockersCopy(state.blockers?.length ? state.blockers : [state.blocker]);
     return {
+      checking: { eyebrow: tx('Checking for updates', '正在检查更新'), title: target,
+        detail: tx('Reading the latest signed release.', '正在读取最新签名版本。') },
       reload_required: {
         eyebrow: tx('Installed, awaiting reload', '已安装，等待加载'), title: target,
         detail: state.message || tx('The new files are installed. Reload the extension when Overleaf is saved and idle.', '新版文件已安装，请在 Overleaf 保存并空闲后重新加载扩展。')

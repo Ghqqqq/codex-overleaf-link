@@ -5,21 +5,27 @@
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this), function () {
   'use strict';
 
-  var REVISION = '2026-09-14-native-text-upload-v28';
+  var REVISION = '2026-09-27-writing-style-references-v33';
   var METHODS = freezeCatalog({
     initializeCapability: entry('bridge.initialize', 'control', 'none', 'default', false, 'none'),
     probe: entry('bridge.probe', 'read', 'none', 'default', false, 'safe'),
     cancelActiveWrite: entry('write.cancel', 'control', 'none', 'default', false, 'idempotent'),
     getProjectSnapshot: entry('snapshot.read', 'read', 'none', 'snapshot', true, 'safe'),
     getProjectFileList: entry('snapshot.list', 'read', 'none', 'file_list', true, 'safe'),
+    listReferenceProjects: entry('reference.list', 'read', 'none', 'file_list', false, 'safe'),
+    getReferenceProjectSnapshot: entry('reference.read', 'read', 'none', 'snapshot', false, 'safe'),
+    cancelReferenceRead: entry('reference.cancel', 'control', 'none', 'default', false, 'idempotent'),
     invalidateProjectSnapshot: entry('snapshot.invalidate', 'cache', 'none', 'default', false, 'idempotent'),
     createCheckpoint: entry('checkpoint.create', 'page_state', 'none', 'default', false, 'no_retry'),
     ensureReviewing: entry('reviewing.enable', 'page_state', 'optional', 'default', true, 'idempotent'),
     ensureEditing: entry('reviewing.disable', 'page_state', 'optional', 'default', true, 'idempotent'),
     applyOperations: entry('document.write', 'document', 'required', 'writeback', true, 'no_retry'),
+    getWritebackReceipt: entry('writeback.receipt', 'read', 'required', 'default', true, 'safe'),
+    getSelectionContext: entry('editor.selection', 'read', 'required', 'default', true, 'safe'),
     binaryUploadBegin: entry('asset.stage', 'cache', 'required', 'default', false, 'no_retry'),
     binaryUploadAppend: entry('asset.stage', 'cache', 'none', 'writeback', true, 'no_retry'),
     binaryUploadCommit: entry('asset.write', 'document', 'required', 'writeback', true, 'no_retry'),
+    binaryUploadStatus: entry('asset.receipt', 'read', 'required', 'default', true, 'safe'),
     binaryUploadAbort: entry('asset.stage', 'cache', 'none', 'default', false, 'idempotent'),
     jumpToPosition: entry('editor.navigate', 'navigation', 'required', 'default', false, 'idempotent'),
     reconcileTrackedChangeCapture: entry('tracked_changes.read', 'read', 'required', 'default', false, 'safe'),

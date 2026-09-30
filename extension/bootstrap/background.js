@@ -8,11 +8,13 @@ const CHECK_ALARM = 'codex-overleaf-stable-update-check';
 const IDLE_ALARM = 'codex-overleaf-staged-update-idle';
 const OVERLEAF_EDITOR_MATCHES = [
   'https://www.overleaf.com/project/*',
-  'https://overleaf.com/project/*'
+  'https://overleaf.com/project/*',
+  'https://cn.overleaf.com/project/*'
 ];
 const OVERLEAF_MATCHES = [
   'https://www.overleaf.com/project',
   'https://overleaf.com/project',
+  'https://cn.overleaf.com/project',
   ...OVERLEAF_EDITOR_MATCHES
 ];
 const APPLYING_STATES = new Set(['applying', 'awaiting_health', 'rolling_back']);
@@ -307,7 +309,7 @@ function isEditorProjectTab(tab) {
   try {
     const url = new URL(tab?.url || '');
     return url.protocol === 'https:' &&
-      (url.hostname === 'www.overleaf.com' || url.hostname === 'overleaf.com') &&
+      (['overleaf.com', 'www.overleaf.com', 'cn.overleaf.com'].includes(url.hostname)) &&
       /^\/project\/[^/]+(?:\/|$)/.test(url.pathname);
   } catch (_error) {
     return false;

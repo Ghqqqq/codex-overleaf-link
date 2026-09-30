@@ -5,6 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const packageJson = require('../package.json');
+const { BOOTSTRAP_PROTOCOL } = require('../native-host/src/updateTrust');
 const {
   EXTENSION_MARKER,
   assertManagedRuntimeManifestFiles,
@@ -48,7 +49,7 @@ test('builds a loadable managed extension with stable Bootstrap and replaceable 
     assert.equal(fs.existsSync(path.join(root, 'bootstrap/update.css')), true);
     assert.equal(fs.existsSync(path.join(root, 'bootstrap/update.js')), true);
     const marker = JSON.parse(fs.readFileSync(path.join(root, EXTENSION_MARKER), 'utf8'));
-    assert.equal(marker.bootstrapProtocol, 2);
+    assert.equal(marker.bootstrapProtocol, BOOTSTRAP_PROTOCOL);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

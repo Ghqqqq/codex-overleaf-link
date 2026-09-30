@@ -285,6 +285,7 @@ module.exports = {
   RUNTIME_ENV_KEY,
   buildCodexRuntimeEvent,
   buildCodexRuntimeIdentity,
+  compareCodexVersions,
   discoverCodexCandidates,
   getCodexRuntimeIdentityFromEnv,
   readCodexVersion,

@@ -19,6 +19,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { SUBAGENT_QUEUE_DIR } = require('./mirrorWorkspace');
+const { safeWorkspaceRelativePath } = require('./subagentWorkspacePath');
+const { compactEvent, publicText } = require('./subagentTelemetry');
+const { createSubagentWorkspace } = require('./subagentWorkspace');
 
 const PROTOCOL_VERSION = 1;
 const JOB_ID_PATTERN = /^[a-z0-9-]{1,32}$/;
@@ -28,8 +31,8 @@ const SUMMARY_LIMIT_CHARS = 2048;
 const DEFAULT_LIMITS = Object.freeze({
   maxWorkers: 3,
   maxJobsPerRun: 8,
-  perWorkerTimeoutMs: 300000,
-  brokerBudgetMs: 900000,
+  perWorkerTimeoutMs: 600000,
+  brokerBudgetMs: 1800000,
   pollIntervalMs: 500,
   drainGraceMs: 30000
 });
@@ -46,12 +49,25 @@ function createSubagentBroker(options = {}) {
   const emit = typeof options.emit === 'function' ? options.emit : () => {};
   const onMirrorDirty = typeof options.onMirrorDirty === 'function' ? options.onMirrorDirty : () => {};
   const parentSignal = options.signal || null;
-  const limits = { ...DEFAULT_LIMITS, ...(options.limits || {}) };
+  const env = options.env || process.env;
+  const boundedMs = (value, fallback, max) => Number.isFinite(Number(value)) && Number(value) > 0
+    ? Math.min(max, Math.max(60000, Number(value))) : fallback;
+  const limits = { ...DEFAULT_LIMITS,
+    perWorkerTimeoutMs: boundedMs(env.CODEX_OVERLEAF_SUBAGENT_TIMEOUT_MS, DEFAULT_LIMITS.perWorkerTimeoutMs, 900000),
+    brokerBudgetMs: boundedMs(env.CODEX_OVERLEAF_SUBAGENT_BUDGET_MS, DEFAULT_LIMITS.brokerBudgetMs, 3600000),
+    ...(options.limits || {}) };
 
   const queueRoot = path.join(workspacePath, SUBAGENT_QUEUE_DIR);
   const jobsDir = path.join(queueRoot, 'jobs');
   const resultsDir = path.join(queueRoot, 'results');
   const logsDir = path.join(queueRoot, 'logs');
+  const { atomicWrite, appendLog, adoptionHash, hashWorkspace, hashPaths, buildWorkerPrompt } =
+    createSubagentWorkspace({ workspacePath, logsDir });
+  const adoptionsDir = path.join(queueRoot, 'adoptions');
+  const adoptionResultsDir = path.join(queueRoot, 'adoption-results');
+  const quarantined = new Map();
+  const seenAdoptions = new Set();
+  let adoptionToken = '';
 
   const jobs = new Map(); // id -> { job, status, startedAt, ownedBefore }
   const seenFiles = new Set();
@@ -76,6 +92,8 @@ function createSubagentBroker(options = {}) {
     fs.mkdirSync(jobsDir, { recursive: true });
     fs.mkdirSync(resultsDir, { recursive: true });
     fs.mkdirSync(logsDir, { recursive: true });
+    fs.mkdirSync(adoptionsDir, { recursive: true });
+    fs.mkdirSync(adoptionResultsDir, { recursive: true });
     fs.mkdirSync(path.join(queueRoot, 'work'), { recursive: true });
     startedAt = Date.now();
     accepting = true;
@@ -94,16 +112,14 @@ function createSubagentBroker(options = {}) {
       maxJobsPerRun: limits.maxJobsPerRun,
       perWorkerTimeoutMs: limits.perWorkerTimeoutMs,
       brokerBudgetMs: limits.brokerBudgetMs,
+      activeWorkers: running.size,
+      adoptionToken,
+      adoptionDirectory: 'adoptions',
       acceptedUntil: new Date(startedAt + limits.brokerBudgetMs - limits.perWorkerTimeoutMs).toISOString()
     };
     atomicWrite(path.join(queueRoot, 'broker.json'), JSON.stringify(payload, null, 2));
   }
 
-  function atomicWrite(target, text) {
-    const tmp = path.join(path.dirname(target), `.tmp-${crypto.randomUUID()}`);
-    fs.writeFileSync(tmp, text);
-    fs.renameSync(tmp, target);
-  }
 
   function pollOnce() {
     if (closed || cancelled) {
@@ -112,6 +128,7 @@ function createSubagentBroker(options = {}) {
     try {
       intakeJobs();
       fillSlots();
+      processAdoptions();
     } catch (_error) {
       // The queue is adversarial model output; the broker never throws on it.
     }
@@ -154,7 +171,9 @@ function createSubagentBroker(options = {}) {
     acceptedCount += 1;
     jobs.set(job.id, { job, status: 'queued' });
     queued.push(job.id);
-    emit('codex.subagent.queued', job.title || job.id, { jobId: job.id, files: job.files }, 'running');
+    emit('codex.subagent.queued', publicText(job.title || job.id, 160), {
+      jobId: job.id, files: job.files, task: publicText(job.task, 4096)
+    }, 'running');
   }
 
   function idFromFileName(name) {
@@ -212,30 +231,6 @@ function createSubagentBroker(options = {}) {
     return null;
   }
 
-  function safeWorkspaceRelativePath(value) {
-    if (typeof value !== 'string' || !value.trim()) {
-      return null;
-    }
-    const normalized = value.trim().replace(/\\/g, '/').replace(/^\.\//, '');
-    if (!normalized || path.isAbsolute(normalized)) {
-      return null;
-    }
-    const segments = normalized.split('/');
-    if (segments.some(segment => segment === '..' || segment === '')) {
-      return null;
-    }
-    if (segments[0] === SUBAGENT_QUEUE_DIR) {
-      // The queue control plane (jobs/results/logs/broker.json) is never
-      // ownable — but the work/ scratch zone IS: single-file fan-out slices
-      // live there (v1.6.1 scatter-gather), excluded from writeback by the
-      // mirror-scan rule yet fully owned/hashed like any other job file.
-      if (segments[1] === 'work' && segments.length >= 3) {
-        return segments.join('/');
-      }
-      return null;
-    }
-    return segments.join('/');
-  }
 
   function writeRejection(input) {
     const result = {
@@ -283,6 +278,9 @@ function createSubagentBroker(options = {}) {
         try {
           writeResult({ id: jobId, status: 'failed', reason: error?.message || 'subagent failed to start' });
         } catch (_writeError) { /* result dir may be gone */ }
+        emit('codex.subagent.failed', publicText(entry?.job?.title || jobId, 160), {
+          jobId, status: 'failed', reason: publicText(error?.message || 'subagent failed to start', 1200)
+        }, 'warning');
       }
     }
   }
@@ -313,8 +311,9 @@ function createSubagentBroker(options = {}) {
       controller.abort(new Error('subagent timeout'));
     }, limits.perWorkerTimeoutMs);
 
-    emit('codex.subagent.started', job.title || job.id, {
+    emit('codex.subagent.started', publicText(job.title || job.id, 160), {
       jobId: job.id,
+      task: publicText(job.task, 4096),
       files: job.files,
       activeWorkers: running.size + 1,
       maxWorkers: limits.maxWorkers
@@ -323,7 +322,21 @@ function createSubagentBroker(options = {}) {
     const promise = runWorkerTask({
       jobId: job.id,
       prompt: buildWorkerPrompt(job),
-      signal: controller.signal
+      signal: controller.signal,
+      onEvent: event => {
+        if (closed || entry.status !== 'running') return;
+        try {
+          const bounded = compactEvent(event);
+          if (!bounded) return;
+          const params = bounded.detail?.params || {};
+          entry.threadId = bounded.detail?.threadId || params.threadId || params.thread?.id || entry.threadId || '';
+          entry.sequence = (entry.sequence || 0) + 1;
+          emit('codex.subagent.event', publicText(job.title || job.id, 160), {
+            source: 'broker', jobId: job.id, threadId: entry.threadId,
+            sequence: entry.sequence, event: bounded
+          }, 'running');
+        } catch (_error) { /* Observability must not fail or stop the worker. */ }
+      }
     }).then(workerResult => {
       finishWorker(entry, {
         status: 'completed',
@@ -362,12 +375,13 @@ function createSubagentBroker(options = {}) {
       // demotion reads getViolationPaths() and drops these from writeback
       // (spec S8 safety extension, v1.6.2).
       for (const file of changedFiles) {
-        violationPaths.add(file);
+        quarantined.set(file, { jobId: job.id, status: resultFields.status, adoptedHash: '' });
       }
     }
     const result = {
       id: job.id,
       ...resultFields,
+      threadId: workerResult?.threadId || entry.threadId || '',
       changedFiles,
       durationMs: Date.now() - entry.startedAt
     };
@@ -377,24 +391,23 @@ function createSubagentBroker(options = {}) {
       atomicWrite(path.join(resultsDir, `${job.id}.last-message.md`), String(workerResult.assistantMessage));
     }
     const eventType = resultFields.status === 'completed' ? 'codex.subagent.completed' : 'codex.subagent.failed';
-    emit(eventType, job.title || job.id, {
+    emit(eventType, publicText(job.title || job.id, 160), {
       jobId: job.id,
+      threadId: result.threadId,
       status: resultFields.status,
-      reason: resultFields.reason,
+      reason: publicText(resultFields.reason, 1200),
+      summary: publicText(workerResult?.assistantMessage || resultFields.summary, 24000),
       changedFiles,
       durationMs: result.durationMs
     }, resultFields.status === 'completed' ? 'completed' : 'warning');
   }
 
-  function appendLog(jobId, text) {
-    try {
-      fs.appendFileSync(path.join(logsDir, `${jobId}.log`), `${new Date().toISOString()} ${text}\n`);
-    } catch (_error) { /* logs are best-effort */ }
-  }
 
   // ---- wave tracking (spec S5): owned attribution is per worker; unowned
   // changes can only be attributed to the wave's set of suspects.
   function beginWave() {
+    adoptionToken = '';
+    writeBrokerFile('ready');
     waveIndex += 1;
     waveSnapshot = {
       hashes: hashWorkspace(),
@@ -434,68 +447,49 @@ function createSubagentBroker(options = {}) {
       emit('codex.subagent.violation', file, violation, 'warning');
     }
     waveSnapshot = null;
+    if (!closed && !cancelled && accepting && running.size === 0) {
+      // Workers have exited before this capability is published. A worker
+      // cannot pre-authorize its own incomplete output while still running.
+      adoptionToken = crypto.randomBytes(24).toString('hex');
+      writeBrokerFile('ready');
+    }
   }
 
-  function hashWorkspace() {
-    const hashes = new Map();
-    walk(workspacePath, '');
-    return hashes;
 
-    function walk(dir, prefix) {
-      let entries;
+  function processAdoptions() {
+    if (closed || cancelled || running.size || !adoptionToken || !fs.existsSync(adoptionsDir)) return;
+    for (const name of fs.readdirSync(adoptionsDir).filter(name => /^[a-z0-9-]{1,32}\.json$/.test(name)).slice(0, 64)) {
+      if (seenAdoptions.has(name)) continue;
+      seenAdoptions.add(name);
+      let result = { ok: false, reason: 'invalid_adoption' };
       try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch (_error) {
-        return;
-      }
-      for (const entry of entries) {
-        // The whole queue zone (incl. the work/ slice scratch) stays out of
-        // wave hashing: scratch can never reach Overleaf, same-wave slices
-        // are all in the owned union anyway, and a lead staggering slice
-        // creation mid-wave must not read as a violation (v1.6.1).
-        if (entry.name === '.DS_Store' || entry.name === SUBAGENT_QUEUE_DIR || entry.name === '.codex-overleaf-attachments') {
-          continue;
+        const requestPath = path.join(adoptionsDir, name), stat = fs.lstatSync(requestPath);
+        if (!stat.isFile() || stat.size > MAX_JOB_FILE_BYTES) throw new Error('invalid_adoption_file');
+        const request = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
+        if (request.token !== adoptionToken || request.reviewed !== true || !Array.isArray(request.files)
+          || !request.files.length || request.files.length > 100) throw new Error('adoption_not_authorized');
+        const approved = [];
+        for (const item of request.files) {
+          const safe = safeWorkspaceRelativePath(item?.path), held = quarantined.get(safe);
+          const entry = held && jobs.get(held.jobId);
+          if (!safe || !held || held.jobId !== item.jobId || !entry?.job?.files.includes(safe)
+            || violationPaths.has(safe) || !/^[a-f0-9]{64}$/i.test(item.sha256 || '')
+            || adoptionHash(safe) !== item.sha256.toLowerCase()) throw new Error('adoption_content_or_owner_mismatch');
+          approved.push({ path: safe, sha256: item.sha256.toLowerCase(), held });
         }
-        const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-        const absolute = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          walk(absolute, relative);
-        } else if (entry.isFile()) {
-          hashes.set(relative, hashFile(absolute));
-        }
-      }
+        for (const item of approved) item.held.adoptedHash = item.sha256;
+        result = { ok: true, files: approved.map(item => ({ path: item.path, sha256: item.sha256 })) };
+      } catch (error) { result = { ok: false, reason: String(error?.message || error).slice(0, 200) }; }
+      atomicWrite(path.join(adoptionResultsDir, name), JSON.stringify(result, null, 2));
     }
   }
 
-  function hashPaths(files) {
-    const hashes = new Map();
-    for (const file of files) {
-      hashes.set(file, hashFile(path.join(workspacePath, file)));
+  function blockedPaths() {
+    const blocked = new Set(violationPaths);
+    for (const [file, held] of quarantined) {
+      if (!held.adoptedHash || adoptionHash(file) !== held.adoptedHash) blocked.add(file);
     }
-    return hashes;
-  }
-
-  function hashFile(absolute) {
-    try {
-      return crypto.createHash('sha1').update(fs.readFileSync(absolute)).digest('hex');
-    } catch (_error) {
-      return 'missing';
-    }
-  }
-
-  function buildWorkerPrompt(job) {
-    const readOnly = job.readOnlyContext.length
-      ? `- You may read these for context but must not modify them: ${job.readOnlyContext.join(', ')}.\n`
-      : '';
-    return [
-      'You are a subagent working on one slice of a larger task.',
-      'HARD CONSTRAINTS:',
-      `- You may modify ONLY these files: ${job.files.join(', ')}.`,
-      readOnly + '- Do not modify, create, or delete any other file. Inside .codex-overleaf-subagents/ you may touch ONLY the slice files listed above (if any).',
-      '- Work fully autonomously; nobody can answer questions.',
-      '',
-      job.task
-    ].join('\n');
+    return blocked;
   }
 
   function onParentAbort() {
@@ -508,6 +502,9 @@ function createSubagentBroker(options = {}) {
       const entry = jobs.get(jobId);
       entry.status = 'cancelled';
       writeResult({ id: jobId, status: 'cancelled', reason: 'run cancelled' });
+      emit('codex.subagent.failed', publicText(entry.job.title || jobId, 160), {
+        jobId, status: 'cancelled', reason: 'run cancelled'
+      }, 'warning');
     }
     if (anyWorkerStarted) {
       // Partial worker edits must be deterministically discarded: cancellation
@@ -519,6 +516,7 @@ function createSubagentBroker(options = {}) {
   }
 
   async function stop({ drain = true } = {}) {
+    processAdoptions();
     accepting = false;
     // Queued-but-unstarted jobs would otherwise vanish with no result file,
     // hanging a lead still polling for its job count. Settle them first
@@ -529,6 +527,9 @@ function createSubagentBroker(options = {}) {
         entry.status = 'cancelled';
       }
       writeResult({ id: jobId, status: 'cancelled', reason: 'The run ended before this subagent started.' });
+      emit('codex.subagent.failed', publicText(entry?.job?.title || jobId, 160), {
+        jobId, status: 'cancelled', reason: 'The run ended before this subagent started.'
+      }, 'warning');
     }
     if (drain && running.size) {
       let graceTimer = null;
@@ -599,7 +600,8 @@ function createSubagentBroker(options = {}) {
     pollOnce,
     hasActiveWorkers: () => running.size > 0,
     hasAcceptedJobs: () => jobs.size > 0,
-    getViolationPaths: () => new Set(violationPaths),
+    getViolationPaths: blockedPaths,
+    getBlockedReason: file => violationPaths.has(file) ? 'subagent_unauthorized_edit' : 'subagent_unfinished_output',
     getAuditSummary: () => ({
       jobs: [...jobs.values()].map(entry => ({
         id: entry.job?.id,
@@ -609,7 +611,9 @@ function createSubagentBroker(options = {}) {
         reason: entry.result?.reason,
         durationMs: entry.result?.durationMs
       })),
-      violations: violations.slice()
+      violations: violations.slice(),
+      quarantined: [...quarantined].map(([file, item]) => ({ path: file, jobId: item.jobId, status: item.status,
+        adopted: Boolean(item.adoptedHash && adoptionHash(file) === item.adoptedHash) }))
     })
   };
 }

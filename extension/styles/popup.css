@@ -1,0 +1,110 @@
+:root {
+  color-scheme: dark;
+  --popup-bg: light-dark(#ffffff, #1b201d);
+  --popup-text: light-dark(#28312b, #e5eae6);
+  --popup-muted: light-dark(#717b74, #a3aea6);
+  --popup-border: light-dark(#e8ece9, #333c36);
+  --popup-surface: light-dark(#f6f8f6, #242c27);
+  --popup-green: light-dark(#35734a, #9ccdab);
+  --popup-on-green: light-dark(#ffffff, #182b1f);
+  --popup-danger: light-dark(#aa443d, #df928c);
+  --popup-warn: light-dark(#99702a, #d6b671);
+}
+:root[data-popup-theme="light"] { color-scheme: light; }
+:root[data-popup-theme="auto"] { color-scheme: light dark; }
+/* Give Chrome an intrinsic popup width; viewport-relative caps can shrink it
+   back to the initial narrow viewport during popup sizing. */
+html.popup-minimal-root {
+  box-sizing: border-box;
+  width: 340px;
+  min-width: 340px;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--popup-bg);
+}
+.popup-minimal * { box-sizing: border-box; }
+body.popup-minimal {
+  width: 340px;
+  min-width: 340px;
+  max-width: none;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  color: var(--popup-text);
+  background: var(--popup-bg);
+  font: 13px/1.5 "Avenir Next", "Segoe UI", sans-serif;
+  animation: none;
+}
+.popup-minimal #popup-shell { display: block; width: 100%; min-width: 0; }
+.popup-minimal .popup-header { display: flex; align-items: center; gap: 12px; padding: 17px 18px 16px; }
+.popup-minimal .popup-icon { display: block; width: 32px; height: 32px; object-fit: contain; flex: 0 0 auto; }
+.popup-minimal .popup-brand { flex: 1; min-width: 0; }
+.popup-minimal .popup-brand h1 { margin: 0; font-size: 14px; font-weight: 500; letter-spacing: -.02em; line-height: 1.45; white-space: nowrap; overflow-wrap: normal; }
+.popup-minimal .connection-toggle {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: auto;
+  min-height: 24px;
+  margin: 1px 0 -2px -4px;
+  padding: 2px 4px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  box-shadow: none;
+  background: transparent;
+  color: var(--popup-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.45;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.popup-minimal .connection-toggle:hover { border-color: var(--popup-border); background: var(--popup-surface); color: var(--popup-text); transform: none; }
+.popup-minimal .connection-chevron { width: 5px; height: 5px; flex: 0 0 auto; margin: -2px 2px 0; border: solid currentColor; border-width: 0 1px 1px 0; transform: rotate(45deg); }
+.popup-minimal .connection-toggle[aria-expanded="true"] .connection-chevron { margin-top: 2px; transform: rotate(225deg); }
+.popup-minimal .status-icon { display: block; width: 5px; height: 5px; min-width: 5px; min-height: 5px; flex: 0 0 auto; border-radius: 50%; background: var(--popup-muted); font-size: 0; box-shadow: none; }
+.popup-minimal .status-icon.compatible { background: var(--popup-green); }
+.popup-minimal .status-icon.update-available { background: var(--popup-warn); }
+.popup-minimal .status-icon.incompatible { background: var(--popup-danger); }
+.popup-minimal .connection-details { padding: 12px 18px; border-top: 1px solid var(--popup-border); background: var(--popup-surface); }
+.popup-minimal #version-pair { display: grid; gap: 8px; margin: 0; font-size: 11px; line-height: 1.45; }
+.popup-minimal #version-pair > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.popup-minimal #version-pair dt { color: var(--popup-muted); }
+.popup-minimal #version-pair dd { margin: 0; color: var(--popup-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.popup-minimal .launcher-setting { display: grid; grid-template-columns: minmax(0, 1fr) 31px; align-items: center; gap: 16px; padding: 15px 18px 17px; border-top: 1px solid var(--popup-border); cursor: pointer; }
+.popup-minimal .launcher-copy { min-width: 0; }
+.popup-minimal .launcher-copy strong { display: block; font-size: 12px; font-weight: 500; line-height: 1.5; }
+.popup-minimal .launcher-copy small { display: block; margin-top: 3px; color: var(--popup-muted); font-size: 11px; line-height: 1.5; }
+.popup-minimal .launcher-toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 31px;
+  height: 19px;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  border: 1px solid var(--popup-border);
+  border-radius: 20px;
+  background: var(--popup-surface);
+  cursor: pointer;
+}
+.popup-minimal .launcher-toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: var(--popup-muted); transition: transform 130ms ease; }
+.popup-minimal .launcher-toggle:checked { border-color: var(--popup-green); background: var(--popup-green); }
+.popup-minimal .launcher-toggle:checked::after { background: var(--popup-on-green); transform: translateX(12px); }
+.popup-minimal .launcher-toggle:disabled { cursor: default; opacity: .5; }
+.popup-minimal .popup-note { margin: 0; padding: 11px 18px; border-top: 1px solid var(--popup-border); color: var(--popup-muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.popup-minimal .popup-note[role="alert"] { color: var(--popup-danger); }
+.popup-minimal .install { margin: 0; padding: 14px 18px 16px; border: 0; border-top: 1px solid var(--popup-border); border-radius: 0; background: var(--popup-surface); }
+.popup-minimal .install > strong { font-size: 12px; font-weight: 500; }
+.popup-minimal .install p { margin: 6px 0 0; color: var(--popup-muted); font-size: 11px; line-height: 1.6; }
+.popup-minimal .install code { display: block; margin: 10px 0; padding: 9px; max-height: 120px; overflow: auto; border: 1px solid var(--popup-border); border-radius: 6px; color: var(--popup-text); background: var(--popup-bg); white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.popup-minimal .copy-command { appearance: none; width: auto; min-height: 29px; margin: 0; padding: 5px 8px; border: 1px solid var(--popup-border); border-radius: 6px; background: var(--popup-bg); color: var(--popup-text); font: inherit; font-size: 11px; font-weight: 500; cursor: pointer; }
+.popup-minimal .copy-command:hover { background: var(--popup-surface); border-color: var(--popup-muted); transform: none; }
+.popup-minimal .copy-command:disabled { opacity: .55; cursor: default; }
+.popup-minimal button:focus-visible, .popup-minimal input:focus-visible { outline: 2px solid var(--popup-green); outline-offset: 3px; }
+.popup-minimal [hidden] { display: none !important; }
+@media (prefers-reduced-motion: reduce) { .popup-minimal .launcher-toggle::after { transition: none; } }

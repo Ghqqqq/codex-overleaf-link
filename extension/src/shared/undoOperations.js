@@ -130,6 +130,91 @@
     };
   }
 
+  // File creation has its own inverse even when text edits use Reviewing.
+  // Store post-images, never infer an empty pre-image for a missing file.
+  function buildCreatedFileUndoCheckpoint(project, appliedOperations, previous = {}) {
+    const originalPaths = new Set((project?.files || []).map(file => file?.path));
+    const priorFiles = filesListToMap(previous.undoBaseFiles);
+    const created = new Map();
+    for (const operation of previous.undoOperations || []) {
+      const proof = operation?.undoCreatedFile;
+      if (operation?.type !== 'delete' || proof?.v !== 1) continue;
+      if (proof.kind === 'text' && priorFiles.has(operation.path)) {
+        created.set(operation.path, { kind: 'text', content: priorFiles.get(operation.path) });
+      } else if (proof.kind === 'binary' && /^[a-f0-9]{64}$/i.test(proof.sha256 || '')) {
+        created.set(operation.path, { kind: 'binary', sha256: proof.sha256.toLowerCase() });
+      }
+    }
+    for (const operation of appliedOperations || []) {
+      if (!operation?.path) continue;
+      const path = operation.path;
+      if (operation.type === 'create' || operation.type === 'binary-create') {
+        if (originalPaths.has(path) && !created.has(path)) continue;
+        if (operation.type === 'create' && typeof operation.content === 'string') {
+          created.set(path, { kind: 'text', content: typeof operation.verifiedContent === 'string'
+            ? operation.verifiedContent : operation.content });
+        } else {
+          const hash = operation.sha256 || operation.assetRef?.sha256;
+          if (operation.previousExists !== true && /^[a-f0-9]{64}$/i.test(hash || '')) {
+            created.set(path, { kind: 'binary', sha256: hash.toLowerCase() });
+          }
+        }
+      } else if (operation.type === 'edit' && created.get(path)?.kind === 'text') {
+        const files = new Map([[path, created.get(path).content]]);
+        applyOperationToFiles(files, operation);
+        created.set(path, { kind: 'text', content: files.get(path) });
+      } else if (['delete', 'rename', 'move', 'overwrite-binary'].includes(operation.type)) {
+        // Existing rename/overwrite recovery retains ownership of these cases.
+        created.delete(path);
+        if (operation.to) created.delete(operation.to);
+      }
+    }
+    const undoBaseFiles = [], undoOperations = [];
+    for (const [path, proof] of Array.from(created).reverse()) {
+      const undoCreatedFile = proof.kind === 'binary'
+        ? { v: 1, kind: 'binary', sha256: proof.sha256 } : { v: 1, kind: 'text' };
+      undoOperations.push({ ...normalizeUndoOperation({ type: 'delete', path, reason: 'Undo create' }), undoCreatedFile });
+      if (proof.kind === 'text') undoBaseFiles.push({ path, content: proof.content });
+    }
+    return { undoOperations, undoBaseFiles };
+  }
+
+  // Consume only independently verified rollback receipts. Forward writes
+  // remain audit evidence; recovery arrays describe only unfinished work.
+  function advanceUndoCheckpoint(run = {}, result = {}, verifyText = () => false) {
+    const operations = Array.isArray(run?.undoOperations) ? run.undoOperations : [];
+    if (!operations.some(operation => operation?.undoCreatedFile?.v === 1)) return run;
+    const applied = Array.isArray(result.applied) ? result.applied : [];
+    const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+    const failed = path => skipped.some(entry => {
+      const target = entry?.operation?.path || entry?.trackedChange?.path || entry?.result?.failure?.file;
+      return !target || target === path;
+    });
+    if (result.failure || result.error) return run;
+    const textPaths = new Set((run.undoExpectedFiles || [])
+      .filter(file => file?.path && typeof file.content === 'string' && !failed(file.path)
+        && typeof verifyText === 'function' && verifyText(file) === true)
+      .map(file => file.path));
+    const deletedPaths = new Set(operations.filter(operation => operation?.type === 'delete'
+      && operation.undoCreatedFile?.v === 1 && !failed(operation.path)
+      && applied.some(entry => entry?.operation?.type === 'delete' && entry.operation.path === operation.path
+        && JSON.stringify(entry.operation.undoCreatedFile) === JSON.stringify(operation.undoCreatedFile)
+        && entry.result?.ok === true && entry.result.verified === true
+        && entry.result.verification === 'overleaf-zip')).map(operation => operation.path));
+    if (!textPaths.size && !deletedPaths.size) return run;
+    const pending = operations.filter(operation => !(operation?.type === 'edit' && textPaths.has(operation.path))
+      && !(operation?.type === 'delete' && operation.undoCreatedFile?.v === 1 && deletedPaths.has(operation.path)));
+    const needed = new Set(pending.flatMap(operation => [operation?.path, operation?.to]).filter(Boolean));
+    return { ...run,
+      undoOperations: pending,
+      undoBaseFiles: (run.undoBaseFiles || []).filter(file => needed.has(file?.path)
+        || (!textPaths.has(file?.path) && !deletedPaths.has(file?.path))),
+      undoExpectedFiles: (run.undoExpectedFiles || []).filter(file => !textPaths.has(file?.path)),
+      undoTrackedChanges: (run.undoTrackedChanges || []).filter(ref => !textPaths.has(ref?.path)),
+      trackedChangeCaptures: (run.trackedChangeCaptures || []).filter(capture => !textPaths.has(capture?.path))
+    };
+  }
+
   function buildSnapshotRestoreUndo(run = {}) {
     const undoOperations = Array.isArray(run.undoOperations) ? run.undoOperations : [];
     const originalByPath = buildOriginalFilesForSnapshotUndo(run, undoOperations);
@@ -370,6 +455,8 @@
 
   return {
     buildUndoCheckpoint,
+    buildCreatedFileUndoCheckpoint,
+    advanceUndoCheckpoint,
     buildExpectedFilesAfterOperations,
     buildUndoOperations,
     buildSnapshotRestoreUndo

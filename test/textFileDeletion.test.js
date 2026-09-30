@@ -1,11 +1,13 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const Creator = require('../extension/src/page/textFileCreator');
+const { createHash, webcrypto } = require('node:crypto');
 
 function fixture(options = {}) {
-  const target = options.nested ? 'qa/sub/undo.tex' : 'undo.tex';
+  const target = options.binary ? (options.nested ? 'qa/sub/undo.png' : 'undo.png')
+    : options.nested ? 'qa/sub/undo.tex' : 'undo.tex';
   const files = new Map([['main.tex', 'original'], ['qa/sub/seed.tex', 'seed'],
-    ['qa/sub/green.png', 'binary'], [target, '% new\n']]);
+    ['qa/sub/green.png', 'binary'], [target, options.binary ? Buffer.from('created image').toString('base64') : '% new\n']]);
   let project = 'example', active = target, selected = null, menu = null, dialog = null, deleted = false, reads = 0;
   let selectedFolderPath = '';
   const visible = props => ({ disabled: false, getClientRects: () => [{}], getAttribute: () => '', ...props });
@@ -30,7 +32,8 @@ function fixture(options = {}) {
   const row = visible({
     getAttribute: name => ({ role: 'treeitem', 'aria-label': target.split('/').pop() }[name] || ''),
     closest: () => row,
-    querySelector: selector => selector === '[data-file-type="doc"][data-file-id]' ? entity
+    querySelector: selector => selector === (options.binary ? '[data-file-type="file"][data-file-id]'
+      : '[data-file-type="doc"][data-file-id]') ? entity
       : selector.includes('.file-tree-entity-details') ? leaf : null,
     dispatchEvent() { throw new Error('The treeitem does not own the native context menu'); }
   });
@@ -59,7 +62,7 @@ function fixture(options = {}) {
     }
   };
   const creator = Creator.create({
-    window: { setTimeout: callback => setImmediate(callback),
+    window: { crypto: webcrypto, setTimeout: callback => setImmediate(callback),
       MouseEvent: class { constructor(type) { this.type = type; } },
       CodexOverleafProjectFiles: { isTextProjectPath: path => path.endsWith('.tex') } },
     document,
@@ -68,13 +71,20 @@ function fixture(options = {}) {
       invalidateDomProjectPathCache() {}, collectProjectTextPaths: () => [] },
     readActiveEditorText: () => files.get(active),
     snapshotRouter: { invalidateCache() {}, async fetchProjectZipSnapshot() {
-      if (++reads === 2 && options.concurrentEdit) files.set(target, 'collaborator edit');
+      if (++reads === 2 && options.concurrentEdit) files.set(target, options.binary
+        ? Buffer.from('collaborator image').toString('base64') : 'collaborator edit');
       if (deleted && options.missingReceipt) return { ok: false };
-      return { ok: true, files: Array.from(files, ([path, content]) => ({ path, content })) };
+      return { ok: true, files: Array.from(files, ([path, content]) => options.binary && path === target
+        ? { path, contentBase64: content } : { path, content }) };
     } }
   });
-  return { files, target, remove: () => creator.deleteFile({ type: 'delete', path: target },
-    { expectedContent: options.stale ? 'older content' : '% new\n', isCurrent: () => project === 'example' }) };
+  return { files, target, remove: () => creator.deleteFile({ type: 'delete', path: target,
+    ...(options.binary ? { undoCreatedFile: { v: 1, kind: 'binary' } } : {}) },
+    { expectedContent: options.binary ? undefined : options.stale ? 'older content' : '% new\n',
+      expectedSha256: options.binary ? (options.stale ? '0'.repeat(64) : createHash('sha256').update('created image').digest('hex')) : undefined,
+      undoCreatedFile: options.binary || options.guarded,
+      ...(options.binary ? { canDelete: () => project === 'example' } : {}),
+      isCurrent: () => project === 'example' }) };
 }
 
 for (const nested of [false, true]) test('verified native deletion targets the label and preserves siblings: ' + nested, async () => {
@@ -175,4 +185,38 @@ test('positive geometry does not make a CSS-hidden editor ready', async () => {
   });
   assert.equal((await creator.prepareEditor({ runProjectId: 'example' })).ok, true);
   assert.equal(opened, 1);
+});
+
+for (const nested of [false, true]) test('guarded binary deletion verifies hash and preserves neighboring files: ' + nested, async () => {
+  const f = fixture({ binary: true, nested });
+  const result = await f.remove();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.verification, 'overleaf-zip');
+  assert.equal(f.files.has(f.target), false);
+  assert.equal(f.files.get('main.tex'), 'original');
+  assert.equal(f.files.get('qa/sub/green.png'), 'binary');
+  const repeated = await f.remove();
+  assert.equal(repeated.ok, true);
+  assert.equal(repeated.idempotent, true);
+  assert.equal(repeated.changedDocument, false);
+});
+for (const option of ['wrongDialog', 'missingId', 'stale', 'concurrentEdit']) {
+  test('guarded binary deletion leaves the file intact for ' + option, async () => {
+    const f = fixture({ binary: true, [option]: true }); const result = await f.remove();
+    assert.equal(result.ok, false);
+    assert.equal(result.changedDocument, false);
+    assert.equal(f.files.has(f.target), true);
+  });
+}
+for (const option of ['missingReceipt', 'cancelAfterDelete']) {
+  test('binary deletion cannot report success after ' + option, async () => {
+    const f = fixture({ binary: true, [option]: true }); const result = await f.remove();
+    assert.equal(result.ok, false);
+    assert.equal(result.changedDocument, true);
+    assert.equal(result.verified, undefined);
+  });
+}
+test('guarded text deletion tolerates an already-deleted sibling on retry', async () => {
+  const f = fixture({ guarded: true }); assert.equal((await f.remove()).ok, true);
+  const repeated = await f.remove(); assert.equal(repeated.ok, true); assert.equal(repeated.idempotent, true);
 });

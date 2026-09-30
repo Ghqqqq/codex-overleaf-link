@@ -1,17 +1,13 @@
 (function initCodexOverleafRunTimelineView() {
   'use strict';
 
-  // Run-timeline view — the timeline render pipeline carved out of
-  // contentRuntime.js (v1.4.6 structural-debt phase 2): the scroll engine +
-  // jump-to-latest button, the live-elapsed tick and collapsed-header summary,
-  // run-card / stream-event / activity rendering, the completion report, and
-  // the run-card Undo/Accept controls. Code moved verbatim (original
-  // indentation kept); runtime collaborators are factory-injected and mutable
-  // runtime state (panel, panel state, the live run view) is read through lazy
-  // getters. The view-local scroll/timer state below moved here with the code
-  // that owns it.
+  // Owns scroll, cards, reports and mature run actions. The optional activity
+  // presenter projects stored events without taking ownership of settlement.
   function create(deps = {}) {
     const {
+      RunActivitySummary,
+      RunActivityModel,
+      SubagentActivityView,
       RunGuidanceView,
       RunResultActions,
       RunScrollLayout,
@@ -41,6 +37,8 @@
       getState,
       getCurrentRunView,
       refillComposerForRetry,
+      canEditRun,
+      retryWriteback,
       showNativeSetupGuidance,
       openProjectFileForFailure,
       openStorageSettings,
@@ -59,9 +57,7 @@
   let scrollLogPendingForce = false;
   let jumpToLatestButton = null;
   let unreadSinceDetach = 0;
-  // Live-elapsed tick for the sticky run-process header. Without it the header
-  // reads a static "Processing…" and the user can't tell a working run from a
-  // hung one — the single highest-value streaming signal per competitor UX.
+  // Elapsed time belongs to the run; tool rows retain their own lifecycle.
   let runElapsedTimer = null;
   const scrollLayout = RunScrollLayout?.create({
     getScroller: getLogScrollContainer,
@@ -69,6 +65,9 @@
     onLayoutChange: scroller => logAutoFollow ? scrollLogToBottom() : updateJumpToLatestButton(scroller)
   });
   const failureNotice = RunFailureNotice?.create({ tr, projectRunSettlement, sanitizeText: sanitizeAssistantVisibleText });
+  const activitySummary = RunActivitySummary?.create({ RunActivityModel, SubagentActivityView, tx, findRunRecord, getPanel, cssEscape,
+    formatEventTime, formatElapsed, renderMarkdownBlockText, renderRunEvent, formatEventDetail,
+    isGuidance: event => Boolean(RunGuidanceView.getGuidanceText(event)), sanitizeAssistantVisibleText });
 
   // Re-arm auto-follow (called by the runtime when a new run starts, so the
   // log snaps back to following the live stream).
@@ -187,6 +186,7 @@
   }
 
   function scrollLogToBottom(options = {}) {
+    if (activitySummary?.isSubagentViewOpen?.()) return;
     const scroller = getLogScrollContainer();
     if (!scroller) {
       return;
@@ -237,6 +237,7 @@
     scroller.scrollTop = scroller.scrollHeight;
   }
   function collapseRunProcess(view, statusText) {
+    if (activitySummary) { activitySummary.settle(view, statusText); return; }
     const runProcess = view?.runProcess || view?.root?.querySelector('[data-run-process]');
     if (runProcess) {
       runProcess.open = false;
@@ -245,23 +246,15 @@
     if (statusEl) {
       // Append the step count to the collapsed header ("Processed 18s · 6 steps")
       // so the user sees how much work the run did without expanding it.
-      const stepCount = countRunActivitySteps(view);
+      const record = view?.recordId ? findRunRecord(view.recordId, view.sessionId) : null;
+      const stepCount = (record?.events || []).filter(event => (event.kind || 'activity') === 'activity').length;
       statusEl.textContent = stepCount > 0
         ? `${statusText} · ${tx(`${stepCount} steps`, `${stepCount} 步`)}`
         : statusText;
     }
   }
 
-  function countRunActivitySteps(view) {
-    const record = view?.recordId ? findRunRecord(view.recordId, view.sessionId) : null;
-    if (!Array.isArray(record?.events)) {
-      return 0;
-    }
-    return record.events.filter(event => (event.kind || 'activity') === 'activity').length;
-  }
-
-  // The sticky run-process header shows a live "Processing… {elapsed}" while a
-  // run is in flight so the user can distinguish a working run from a hung one.
+  // Keep elapsed labels live without creating new activity records.
   function startRunElapsedTick() {
     stopRunElapsedTick();
     if (typeof window.setInterval !== 'function') {
@@ -272,6 +265,7 @@
         stopRunElapsedTick();
         return;
       }
+      activitySummary?.update(getCurrentRunView());
       const statusEl = getCurrentRunView().status
         || getCurrentRunView().root?.querySelector('[data-run-status]');
       if (statusEl) {
@@ -303,6 +297,7 @@
     return tr('processed', { elapsed });
   }
   function renderRunHistory(options = {}) {
+    activitySummary?.closeSubagentView?.();
     const log = getPanel()?.querySelector('[data-log]');
     if (!log) {
       return;
@@ -361,6 +356,8 @@
         <div class="run-turn-meta">
           <button type="button" data-run-accept hidden title="Accept this run's tracked changes in Overleaf">Accept changes</button>
           <button type="button" data-run-undo hidden title="Undo this run's writes to Overleaf">Undo</button>
+          <button type="button" class="run-copy-action run-edit-action" data-run-edit hidden></button>
+          <button type="button" class="run-copy-action run-sync-action" data-run-sync-retry hidden></button>
         </div>
         <details class="run-process" data-run-process>
           <summary data-run-process-summary>
@@ -398,7 +395,7 @@
       truncated.textContent = tr('eventsTruncatedNote');
       events.append(truncated);
     }
-    const guidanceTarget = run.status === 'running' ? events : guidance;
+    const guidanceTarget = guidance;
     const renderedGuidanceIds = new Set();
     const completedLegacyGuidance = new Set((run.events || [])
       .filter(event => event.kind === 'guidance' && !event.guidanceId && event.status === 'completed')
@@ -407,7 +404,7 @@
       if (event.kind === 'report') {
         report.hidden = false;
         report.replaceChildren(renderCompletionReport(event, run));
-      } else if (event.kind === 'technical') {
+      } else if (activitySummary || event.kind === 'technical') {
         continue;
       } else if (RunGuidanceView.getGuidanceText(event)) {
         if (event.guidanceId && renderedGuidanceIds.has(event.guidanceId)) {
@@ -423,17 +420,21 @@
       } else if (event.kind === 'stream') {
         upsertStreamEvent({ events }, event);
       } else {
-        events.append(renderRunEvent(event));
+        appendActivityDetail({ events }, renderRunEvent(event), event);
       }
     }
 
     RunResultActions.configureResultActions(root, run);
     configureAcceptButton(root, run);
     configureUndoButton(root, run);
+    configureEditButton(root, run);
+    configureWritebackButton(root, run);
+    activitySummary?.mount(root, run);
     return root;
   }
 
   function getRunStatusText(run = {}) {
+    if (run.retryingWriteback) return tx('Checking file sync', '正在检查文件同步');
     if (run.statusText) {
       return run.statusText;
     }
@@ -461,6 +462,7 @@
     if (!view?.events) {
       return;
     }
+    if (activitySummary?.update(view, event)) return;
     const streamKey = event.streamKey || event.streamRole || 'codex-stream';
     const selector = `[data-stream-key="${cssEscape(streamKey)}"]`;
     const existing = view.events.querySelector(selector);
@@ -477,7 +479,12 @@
       }
       return;
     }
-    view.events.append(renderStreamEvent({ ...event, streamKey }));
+    appendActivityDetail(view, renderStreamEvent({ ...event, streamKey }), event);
+  }
+
+  function appendActivityDetail(view, row, event) {
+    if (activitySummary) activitySummary.appendDetail(view, row, event);
+    else view.events.append(row);
   }
 
   function renderStreamEvent(input) {
@@ -543,54 +550,8 @@
     return row;
   }
 
-  function hasNonEmptyDetail(value) {
-    if (value === undefined || value === null || value === '') {
-      return false;
-    }
-    if (Array.isArray(value)) {
-      return value.length > 0;
-    }
-    if (typeof value === 'object') {
-      return Object.keys(value).length > 0;
-    }
-    return true;
-  }
 
-  function renderTechnicalEvent(event) {
-    const block = document.createElement('section');
-    block.className = 'run-technical-event';
-    block.dataset.status = event.status || 'info';
 
-    const title = document.createElement('div');
-    title.className = 'run-technical-event-title';
-    title.textContent = event.title || tr('technicalDetails');
-
-    const body = document.createElement('pre');
-    body.textContent = formatEventDetail(buildTechnicalEventDetail(event));
-    block.append(title, body);
-    return block;
-  }
-
-  function buildTechnicalEventDetail(event) {
-    if (event?.kind === 'technical') {
-      return event.detail || {};
-    }
-
-    const detail = {
-      [tx('Step', '步骤')]: event?.title || '',
-      [tx('Status', '状态')]: event?.status || ''
-    };
-    if (event?.timestamp) {
-      detail[tx('Time', '时间')] = formatEventTime(event.timestamp);
-    }
-    if (hasNonEmptyDetail(event?.detail)) {
-      detail[tx('Content', '内容')] = event.detail;
-    }
-    if (hasNonEmptyDetail(event?.technicalDetail)) {
-      detail[tx('Raw event', '原始事件')] = event.technicalDetail;
-    }
-    return detail;
-  }
 
   function buildActivityTooltip(event) {
     return [
@@ -599,58 +560,22 @@
     ].filter(Boolean).join('\n');
   }
 
-  // The trailing status sections emitted by formatHumanReport (agentTranscript):
-  // run metadata, not part of Codex's answer. Each entry matches the bilingual
-  // "Label: value" line so the flat-text fallback can split them out of the
-  // body and demote them into the same muted meta block the structured render
-  // uses. Order mirrors the structured meta order.
-  const FLAT_REPORT_STATUS_SECTIONS = [
-    { key: 'unchangedReason', prefixes: ['Why nothing changed:', '未修改原因：'], en: 'Why nothing changed', zh: '未修改原因' },
-    { key: 'writeResult', prefixes: ['Write result:', '写入结果：'], en: 'Write result', zh: '写入结果' },
-    { key: 'undo', prefixes: ['Undo:', '可撤销：'], en: 'Undo', zh: '可撤销' },
-    { key: 'nextStep', prefixes: ['Next:', '下一步：'], en: 'Next', zh: '下一步' }
-  ];
-
-  // Splits a flat completion-report string (formatHumanReport output) into the
-  // answer body and the demoted meta rows. Only single-line sections whose head
-  // matches a known status label are demoted, so a multi-paragraph conclusion
-  // that happens to contain "Next: …" prose stays in the body.
-  function splitFlatCompletionReport(text) {
-    const raw = typeof text === 'string' ? text : '';
-    if (!raw.trim()) {
-      return { body: raw, meta: [] };
-    }
-    const bodySections = [];
-    const meta = [];
-    for (const section of raw.split(/\n{2,}/)) {
-      const trimmed = section.trim();
-      if (!trimmed) continue;
-      const entry = trimmed.includes('\n')
-        ? null
-        : FLAT_REPORT_STATUS_SECTIONS.find(item => item.prefixes.some(prefix => trimmed.startsWith(prefix)));
-      if (entry) {
-        const prefix = entry.prefixes.find(p => trimmed.startsWith(p));
-        const value = trimmed.slice(prefix.length).trim();
-        if (value) {
-          meta.push({ key: entry.key, label: tx(entry.en, entry.zh), value });
-          continue;
-        }
-      }
-      bodySections.push(trimmed);
-    }
-    return { body: bodySections.join('\n\n'), meta };
-  }
+  // The result presenter owns parsing and current lifecycle metadata.
+  const splitFlatCompletionReport = text => RunResultActions.splitFlatCompletionReport(text, tx);
+  const projectCompletionMeta = (meta, run) => RunResultActions.projectCompletionMeta(meta, run, {
+    tx, trackedChangeInFlight, isTrackedChangeLifecycleRun, projectRunSettlement
+  });
 
   // Renders the demoted run-metadata block (Why nothing changed / Write result /
   // Undo / Next) beneath the answer. Shared by the structured and flat-fallback
   // render paths so both demote identically.
-  function appendCompletionMetaBlock(report, meta) {
+  function appendCompletionMetaBlock(report, meta, run) {
     if (!Array.isArray(meta) || !meta.length) {
       return;
     }
     const metaBlock = document.createElement('dl');
     metaBlock.className = 'run-final-answer__meta';
-    for (const row of meta) {
+    for (const row of projectCompletionMeta(meta, run)) {
       if (!row || !row.label || !row.value) continue;
       const dt = document.createElement('dt');
       dt.className = 'run-final-answer__meta-label';
@@ -736,7 +661,7 @@
       }
 
       failureNotice?.append(report, event, run);
-      appendCompletionMetaBlock(report, structured.meta);
+      appendCompletionMetaBlock(report, structured.meta, run);
       appendCompileFix(report);
       appendRejectedRedo(report);
       appendRecoveryActionForFailure(report, event, run);
@@ -758,7 +683,7 @@
     appendCompileFix(report);
     appendRejectedRedo(report);
     failureNotice?.append(report, event, run);
-    appendCompletionMetaBlock(report, split.meta);
+    appendCompletionMetaBlock(report, split.meta, run);
     appendRecoveryActionForFailure(report, event, run);
     return report;
   }
@@ -815,20 +740,24 @@
     return button;
   }
 
+  function appendEditAndResend(report, run, actionKey) {
+    const retry = buildRecoveryButton(actionKey,
+      tx('Edit & resend', '编辑后重发'),
+      tx('Put this run\u2019s task back into the composer so you can adjust and resend it.', '把本轮任务填回输入框，修改后可直接重发。'));
+    retry.addEventListener('click', clickEvent => {
+      clickEvent.stopPropagation();
+      refillComposerForRetry(run || null);
+    });
+    report.append(retry);
+  }
+
   function appendRecoveryActionForFailure(report, event, run) {
     const recovery = failureNotice?.prepareRecovery(report, { openFile: openProjectFileForFailure });
+    const failureCode = event?.failure?.code || '';
     if (recovery?.handled) return;
     report = recovery?.target || report;
-    const failureCode = event?.failure?.code || '';
     if (RETRYABLE_FAILURE_CODES.has(failureCode) && typeof refillComposerForRetry === 'function') {
-      const retry = buildRecoveryButton(failureCode,
-        tx('Edit & resend', '编辑后重发'),
-        tx('Put this run\u2019s task back into the composer so you can adjust and resend it.', '把本轮任务填回输入框，修改后可直接重发。'));
-      retry.addEventListener('click', clickEvent => {
-        clickEvent.stopPropagation();
-        refillComposerForRetry(run || null);
-      });
-      report.append(retry);
+      appendEditAndResend(report, run, failureCode);
       return;
     }
     if (NATIVE_SETUP_FAILURE_CODES.has(failureCode) && typeof showNativeSetupGuidance === 'function') {
@@ -915,6 +844,47 @@
       return true;
     }
     return Array.isArray(run.undoTrackedChanges) && run.undoTrackedChanges.length > 0;
+  }
+
+  function configureEditButton(root, run, options = {}) {
+    const existing = root.querySelector('[data-run-edit]');
+    if (!existing) return;
+    const button = existing.cloneNode(true);
+    existing.replaceWith(button);
+    const available = ['cancelled', 'rejected'].includes(run?.status)
+      && Boolean(String(run?.task || '').trim())
+      && typeof canEditRun === 'function' && canEditRun(run)
+      && typeof refillComposerForRetry === 'function';
+    button.hidden = !available;
+    if (!available) return;
+    button.disabled = typeof options.running === 'boolean'
+      ? options.running : Boolean(getCurrentRunView?.());
+    button.title = tx('Edit & resend', '编辑后重发');
+    button.setAttribute('aria-label', button.title);
+    button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.8 3.2 4 4M3.5 16.5l4.2-.9 9-9a1.7 1.7 0 0 0 0-2.4l-.9-.9a1.7 1.7 0 0 0-2.4 0l-9 9z"/></svg>';
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      if (getCurrentRunView?.()) return;
+      refillComposerForRetry(run);
+    });
+  }
+
+  function configureWritebackButton(root, run, options = {}) {
+    const existing = root.querySelector('[data-run-sync-retry]');
+    if (!existing) return;
+    const button = existing.cloneNode(true);
+    existing.replaceWith(button);
+    const count = run?.retryWriteback?.operations?.length || 0;
+    const available = !run?.forkSnapshot && (count || run?.saveCheck?.files?.length)
+      && run.undoStatus !== 'applied' && run.trackedChangeStatus !== 'rejected' && typeof retryWriteback === 'function';
+    button.hidden = !available;
+    if (!available) return;
+    button.disabled = typeof options.running === 'boolean' ? options.running : Boolean(getCurrentRunView?.());
+    button.title = count ? tx('Retry sync (' + count + ' files)', '重试同步（' + count + ' 个文件）')
+      : tx('Check save status', '检查保存状态');
+    button.setAttribute('aria-label', button.title);
+    button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.5 7A7 7 0 0 0 4 5L2 7m0-4v4h4M3.5 13A7 7 0 0 0 16 15l2-2m0 4v-4h-4"/></svg>';
+    button.addEventListener('click', event => { event.stopPropagation(); if (!getCurrentRunView?.()) void retryWriteback(run.id); });
   }
 
   function configureUndoButton(root, run) {
@@ -1028,7 +998,11 @@
     }
 
     if (!isTrackedChangeLifecycleRun(run)) {
-      button.hidden = true;
+      const captures = run.undoStatus !== 'applied' && Array.isArray(run.trackedChangeCaptures) ? run.trackedChangeCaptures.filter(c => c && c.state !== 'observed') : [];
+      button.hidden = !captures.length; button.disabled = true;
+      button.textContent = tr('runAcceptTracked');
+      button.title = captures.length ? tx('Tracked-change ownership is unconfirmed. Check the reasons below.', '本轮留痕归属尚未确认，请先核对下方原因。')
+        + '\n' + captures.map(c => c.path + ': ' + (c.reason || c.state) + (c.diagnostics?.sourceReason ? ' / ' + c.diagnostics.sourceReason : '')).join('\n') : tr('runAcceptTrackedTitle');
       return;
     }
 
@@ -1132,6 +1106,8 @@
   }
 
     return {
+      refreshActivitySummary: activitySummary?.update,
+      appendActivityDetail,
       resetAutoFollow,
       bindLogAutoFollow,
       bumpUnreadIfDetached,
@@ -1147,6 +1123,8 @@
       upsertStreamEvent,
       renderCompletionReport,
       isTrackedChangeLifecycleRun,
+      configureEditButton,
+      configureWritebackButton,
       configureUndoButton,
       configureAcceptButton
     };

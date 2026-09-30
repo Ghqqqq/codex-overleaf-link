@@ -13,6 +13,18 @@
     const treeOperations = deps.treeOperations;
     const snapshotRouter = deps.snapshotRouter;
     const transfers = new Map();
+    // Keep bounded receipts after payload release; status reads never re-upload.
+    const receipts = new Map();
+    function pruneReceipts() {
+      for (const [id, transfer] of receipts) {
+        if (transfer.finishedAt && Date.now() - transfer.finishedAt > 600000) receipts.delete(id);
+      }
+      while (receipts.size >= 32) {
+        const entry = Array.from(receipts).find(([, value]) => value.finishedAt);
+        if (!entry) break;
+        receipts.delete(entry[0]);
+      }
+    }
 
     function begin(params = {}) {
       let transferId;
@@ -29,6 +41,13 @@
       }
       if (!/^[a-f0-9]{64}$/i.test(String(params.sha256 || ''))) {
         return failure('binary_asset_hash_invalid', 'Asset SHA-256 is missing or invalid.');
+      }
+      pruneReceipts();
+      if (transfers.has(transferId) || receipts.has(transferId)) {
+        return failure('binary_upload_transfer_conflict', 'Asset transfer ID is already in use.');
+      }
+      if (transfers.size >= 32 || receipts.size >= 32) {
+        return failure('binary_upload_busy', 'Too many asset transfers are pending.');
       }
       transfers.set(transferId, {
         id: transferId,
@@ -62,7 +81,50 @@
       return { ok: true, transferId: transfer.id, received: transfer.received };
     }
 
-    async function commit(params = {}) {
+    function commit(params = {}) {
+      const id = String(params.transferId || '');
+      const existing = receipts.get(id);
+      if (existing) {
+        if (existing.projectId !== treeOperations.getProjectId()) {
+          return Promise.resolve(failure('binary_upload_scope_changed', 'Asset project changed.'));
+        }
+        return existing.promise;
+      }
+      const transfer = transfers.get(id);
+      if (!transfer) return Promise.resolve(failure('binary_upload_transfer_missing', 'Asset upload transfer was not found.'));
+      receipts.set(id, transfer);
+      transfer.promise = commitOnce(params).catch(error => ({
+        ...failure(error.code || 'binary_upload_failed', error.message),
+        changedDocument: transfer.mutationAttempted === true
+      })).then(result => {
+        transfer.result = result;
+        transfer.finishedAt = Date.now();
+        transfer.chunks = [];
+        return result;
+      });
+      return transfer.promise;
+    }
+
+    async function status(params = {}) {
+      pruneReceipts();
+      const transfer = receipts.get(String(params.transferId || ''));
+      if (!transfer || !params.runProjectId || transfer.projectId !== params.runProjectId
+        || treeOperations.getProjectId() !== transfer.projectId) {
+        return failure('binary_upload_receipt_missing', 'Asset upload receipt is unavailable for this project.');
+      }
+      if (transfer.result?.ok !== true && transfer.mutationAttempted === true) {
+        const evidence = await waitForPath(transfer, {}, 2500).catch(() => null);
+        if (evidence?.hashVerified === true) {
+          transfer.result = { ok: true, written: true, path: transfer.path,
+            changedDocument: true, method: 'remote-hash-reconciliation' };
+        }
+      }
+      return { ok: true, transferId: transfer.id, runProjectId: transfer.projectId,
+        state: transfer.finishedAt || transfer.result?.ok === true ? 'completed' : 'running',
+        result: transfer.result || null, changedDocument: transfer.mutationAttempted === true };
+    }
+
+    async function commitOnce(params = {}) {
       const transferId = String(params.transferId || '');
       const transfer = transfers.get(transferId);
       if (!transfer) return failure('binary_upload_transfer_missing', 'Asset upload transfer was not found.');
@@ -92,7 +154,7 @@
             const observed = evidence?.observed;
             const hashVerified = evidence?.hashVerified === true;
             assertTransferProject(transfer);
-            const overwriteVerified = !transfer.overwrite || hashVerified || result?.confirmedByTransport === true;
+            const overwriteVerified = hashVerified || result?.confirmedByTransport === true;
             if (result?.ok && observed && overwriteVerified) {
               return { ok: true, written: true, path: transfer.path, method: result.method, changedDocument: true };
             }
@@ -100,6 +162,16 @@
             if (result?.reason) errors.push(result.reason);
           } catch (error) {
             errors.push(error.message);
+          }
+          // Once submission may have happened, changing transports can duplicate
+          // or overwrite a successful upload. Reconcile the same attempt instead.
+          if (transfer.mutationAttempted === true) {
+            const evidence = await waitForPath(transfer, {}, 12000).catch(() => null);
+            if (evidence?.hashVerified === true) {
+              return { ok: true, written: true, path: transfer.path,
+                method: 'remote-hash-reconciliation', changedDocument: true };
+            }
+            break;
           }
         }
         return { ...failure('binary_upload_unavailable', errors.filter(Boolean).join('; ') || 'No supported Overleaf asset upload path succeeded.'),
@@ -110,11 +182,13 @@
     }
 
     function abort(params = {}) {
-      return { ok: true, aborted: transfers.delete(String(params.transferId || '')) };
+      const id = String(params.transferId || '');
+      if (receipts.has(id)) return { ok: true, aborted: false, committed: true };
+      return { ok: true, aborted: transfers.delete(id) };
     }
 
     function assertTransferProject(transfer) {
-      if (transfers.get(transfer.id) !== transfer) throw new Error('Asset upload was cancelled or replaced.');
+      if (transfers.get(transfer.id) !== transfer && receipts.get(transfer.id) !== transfer) throw new Error('Asset upload was cancelled or replaced.');
       if (!transfer.projectId || treeOperations.getProjectId() !== transfer.projectId) {
         throw new Error('Project changed during asset upload.');
       }
@@ -134,6 +208,7 @@
       const headers = csrf ? { 'X-CSRF-Token': csrf } : {};
       const query = folderId ? `?folder_id=${encodeURIComponent(folderId)}` : '';
       assertTransferProject(transfer);
+      transfer.mutationAttempted = true;
       const response = await windowRef.fetch(`/project/${encodeURIComponent(projectId)}/upload${query}`, {
         method: 'POST', body: form, credentials: 'same-origin', headers
       });
@@ -192,9 +267,10 @@
       for (const name of ['uploadFile', 'uploadAsset', 'createBinaryFile', 'createFile', 'addFile']) {
         if (typeof manager[name] !== 'function') continue;
         try {
+          transfer.mutationAttempted = true;
           await manager[name](transfer.path, file);
           return { ok: true, method: `fileTreeManager.${name}`, confirmedByTransport: true };
-        } catch (_error) { /* try the next adapter */ }
+        } catch (error) { return { ok: false, reason: error.message }; }
       }
       return { ok: false, reason: 'Legacy file-tree manager has no compatible asset method.' };
     }
@@ -313,7 +389,7 @@
           assertTransferProject(transfer);
           // An existing path is not replacement evidence. Re-read identity and
           // bytes while the native uploader and file-tree events settle.
-          if (!transfer.overwrite || hashVerified || result.confirmedByTransport === true) {
+          if (hashVerified || result.confirmedByTransport === true) {
             return { observed, hashVerified };
           }
         }
@@ -333,7 +409,7 @@
       return digest === transfer.sha256;
     }
     function delay(ms) { return new Promise(resolve => windowRef.setTimeout(resolve, ms)); }
-    return { abort, append, begin, commit };
+    return { abort, append, begin, commit, status };
   }
 
   function normalizePath(value) {

@@ -49,13 +49,14 @@
     function appendToView(event, view) {
       const text = deps.RunGuidanceView?.getGuidanceText(event);
       if (!text) return false;
-      const guidance = view.guidance || view.root?.querySelector('[data-run-guidance]');
-      const target = view.terminalStatus ? guidance : view.events;
+      const root = view.root || view.events?.closest('[data-run-id]');
+      const guidance = view.guidance || root?.querySelector('[data-run-guidance]');
+      const target = guidance || view.events;
       if (!target) return false;
       view.guidance = guidance;
       const rendered = deps.renderRunEvent(event);
       const existing = event.guidanceId
-        ? view.root?.querySelector(`[data-guidance-id="${deps.cssEscape(event.guidanceId)}"]`)
+        ? root?.querySelector(`[data-guidance-id="${deps.cssEscape(event.guidanceId)}"]`)
         : null;
       if (existing) existing.replaceWith(rendered);
       else target.append(rendered);

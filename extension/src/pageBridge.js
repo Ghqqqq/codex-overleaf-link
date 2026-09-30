@@ -15,6 +15,7 @@
   window.__codexOverleafPageBridgeInstalledVersion = PAGE_BRIDGE_INSTALL_VERSION;
   window.__codexOverleafPageBridgeInstalledRevision = PAGE_BRIDGE_INSTALL_REVISION;
 
+  const textCoordinates = requirePageModule('CodexOverleafTextCoordinates').create();
   const PAGE_BRIDGE_CAPABILITY_METHOD = 'initializeCapability';
   const pageBridgeCapabilityGuard = window.CodexOverleafPageBridgeCapability.create();
   let treeOperations = null;
@@ -67,6 +68,7 @@
     treeOperations,
     window
   });
+  const referenceProjects = requirePageModule('CodexOverleafReferenceProjects').create({ window, snapshotRouter });
   const textFileCreator = requirePageModule('CodexOverleafTextFileCreator').create({
     window, document, treeOperations, snapshotRouter,
     collectElements, ensureEditing, ensureReviewing, readActiveEditorText, readWriteCancellationSequence,
@@ -97,6 +99,8 @@
       params, result, getProjectId, delay, readSnapshot: options => snapshotRouter.fetchProjectZipSnapshot(options)
     }),
     createTextFile: textFileCreator.createFile,
+    beginTextCreateBatch: textFileCreator.beginCreateBatch,
+    finishTextCreateBatch: textFileCreator.finishCreateBatch,
     deleteTextFile: textFileCreator.deleteFile,
     activeEditorIdentityChanged,
     clickNode,
@@ -160,6 +164,10 @@
     }
   }
 
+  const writebackReceipts = requirePageModule('CodexOverleafWritebackReceiptJournal').create({
+    getProjectId: expectedRunProjectId => writeGuard.getEditorProjectIdPageSide(expectedRunProjectId),
+    prepareEditor: params => textFileCreator.prepareEditor(params), applyOperations
+  });
   const pageBridgeMessageHandler = async event => {
     if (event.source !== window
       || event.origin !== window.location.origin
@@ -175,7 +183,8 @@
       } else if (!pageBridgeCapabilityGuard.hasValidPageBridgeCapability(capability)) {
         result = window.CodexOverleafPageBridgeCapability.buildUnauthorizedBridgeResult();
       } else {
-        result = await dispatch(method, params || {});
+        result = await dispatch(method, method === 'applyOperations'
+          ? { ...(params || {}), writebackRequestId: id } : params || {});
       }
     } catch (error) {
       result = pageRpcContract.normalizeFailure(method, error);
@@ -214,10 +223,15 @@
     probe,
     cancelActiveWrite() {
       const sequence = bumpWriteCancellationSequence();
+      textFileCreator.cancelVerifications();
+      snapshotRouter.cancelWritebackReads();
       return { ok: true, cancelled: true, sequence };
     },
     getProjectSnapshot: params => projectSnapshotBridge.getProjectSnapshot(withSnapshotCacheIdentity(params)),
     getProjectFileList: params => projectSnapshotBridge.getProjectFileList(params),
+    listReferenceProjects: () => referenceProjects.listProjects(),
+    getReferenceProjectSnapshot: params => referenceProjects.readProject(params),
+    cancelReferenceRead: params => referenceProjects.cancelRead(params),
     invalidateProjectSnapshot(params) {
       projectSnapshotBridge.invalidateProjectSnapshot(params);
       return { ok: true };
@@ -225,23 +239,13 @@
     createCheckpoint: params => createCheckpoint(params.label),
     ensureReviewing: params => textFileCreator.ensureWriteMode(true, params),
     ensureEditing: params => textFileCreator.ensureWriteMode(false, params),
-    applyOperations: async params => {
-      if (params.reviewingPolicy === 'no-trace-undo') {
-        const prepared = await textFileCreator.prepareEditor(params);
-        if (prepared.ok !== true) return { applied: [], changedDocument: false,
-          skipped: (params.operations || []).map(operation => ({ operation, result: prepared })) };
-      }
-      return applyOperations(params.operations || [], {
-        baseFiles: params.baseFiles || null,
-        reviewingPolicy: params.reviewingPolicy || '',
-        requireReviewing: params.requireReviewing === true,
-        requireEditing: params.requireEditing === true,
-        runProjectId: typeof params.runProjectId === 'string' ? params.runProjectId : ''
-      });
-    },
+    applyOperations: writebackReceipts.apply,
+    getWritebackReceipt: writebackReceipts.get,
+    getSelectionContext,
     binaryUploadBegin: params => binaryAssetUploader.begin(params),
     binaryUploadAppend: params => binaryAssetUploader.append(params),
     binaryUploadCommit: params => binaryAssetUploader.commit(params),
+    binaryUploadStatus: params => binaryAssetUploader.status(params),
     binaryUploadAbort: params => binaryAssetUploader.abort(params),
     jumpToPosition,
     reconcileTrackedChangeCapture: params => writebackRouter.reconcileTrackedChangeCapture(params),
@@ -672,97 +676,48 @@
     };
   }
 
+  async function getSelectionContext(params = {}) {
+    const projectId = getProjectId();
+    const view = getCodeMirrorEditorView();
+    const editorState = view?.state;
+    const selection = editorState?.selection?.main;
+    const path = getActiveFilePath();
+    if (!projectId || params.runProjectId !== projectId || !path || !selection
+      || !editorState.doc || editorState.selection.ranges?.length !== 1 || selection.empty) {
+      return { ok: false, code: 'selection_unavailable' };
+    }
+    const from = selection.from, to = selection.to;
+    if (to - from > 20000) return { ok: false, code: 'selection_too_large' };
+    const source = editorState.doc.toString();
+    const text = source.slice(from, to);
+    const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+    if (getProjectId() !== projectId || getActiveFilePath() !== path || getCodeMirrorEditorView() !== view
+      || view.state.doc !== editorState.doc || view.state.selection.main.from !== from || view.state.selection.main.to !== to) {
+      return { ok: false, code: 'selection_changed' };
+    }
+    const captured = { projectId, path, from, to, text,
+      lineStart: editorState.doc.lineAt(from).number,
+      lineEnd: editorState.doc.lineAt(Math.max(from, to - 1)).number,
+      documentHash: Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join(''),
+      capturedAt: new Date().toISOString() };
+    let anchor = null;
+    try {
+      const bounds = view.dom.getBoundingClientRect();
+      const head = view.coordsAtPos(selection.head);
+      const start = view.coordsAtPos(from);
+      const visible = value => value && value.bottom >= Math.max(0, bounds.top)
+        && value.top <= Math.min(window.innerHeight, bounds.bottom);
+      const point = visible(start) ? start : visible(head) ? head : null;
+      if (point) anchor = { left: point.left, right: point.right, top: point.top, bottom: point.bottom };
+    } catch (_) { /* Off-screen selections remain valid context without a floating anchor. */ }
+    return { ok: true, ...captured, selection: captured, anchor };
+  }
+
+
+
+
   function resolveJumpToPositionRange(params, text, filePath) {
-    if (params.line === undefined && params.column === undefined) {
-      return {
-        ok: true,
-        from: params.from,
-        to: params.to
-      };
-    }
-
-    const lines = collectTextLineRanges(String(text || ''));
-    const lineCount = lines.length;
-    const lineNumber = Number(params.line);
-    const lineMetadata = { lineCount };
-    if (params.line !== undefined) {
-      lineMetadata.line = Number.isInteger(lineNumber) ? lineNumber : params.line;
-    }
-    if (!Number.isInteger(lineNumber) || lineNumber < 1) {
-      return jumpPositionOutOfRange('line_out_of_range', filePath, lineMetadata);
-    }
-
-    const line = lines[lineNumber - 1];
-    if (!line) {
-      return jumpPositionOutOfRange('line_out_of_range', filePath, {
-        line: lineNumber,
-        lineCount
-      });
-    }
-
-    const lineLength = line.end - line.start;
-    if (params.selectLine === true) {
-      return {
-        ok: true,
-        from: line.start,
-        to: line.end
-      };
-    }
-
-    if (params.column !== undefined) {
-      const columnNumber = Number(params.column);
-      const maxColumn = lineLength + 1;
-      if (!Number.isInteger(columnNumber) || columnNumber < 1 || columnNumber > maxColumn) {
-        return jumpPositionOutOfRange('column_out_of_range', filePath, {
-          line: lineNumber,
-          column: Number.isInteger(columnNumber) ? columnNumber : params.column,
-          lineLength
-        });
-      }
-      const offset = line.start + columnNumber - 1;
-      return {
-        ok: true,
-        from: offset,
-        to: offset
-      };
-    }
-
-    return {
-      ok: true,
-      from: line.start,
-      to: line.start
-    };
-  }
-
-  function jumpPositionOutOfRange(code, filePath, metadata = {}) {
-    return {
-      ok: false,
-      code,
-      reason: 'Requested jumpToPosition location is out of range',
-      path: filePath,
-      ...metadata
-    };
-  }
-
-  function collectTextLineRanges(text) {
-    const lines = [];
-    let start = 0;
-
-    for (let index = 0; index < text.length; index += 1) {
-      if (text[index] === '\r') {
-        lines.push({ start, end: index });
-        if (text[index + 1] === '\n') {
-          index += 1;
-        }
-        start = index + 1;
-      } else if (text[index] === '\n') {
-        lines.push({ start, end: index });
-        start = index + 1;
-      }
-    }
-
-    lines.push({ start, end: text.length });
-    return lines;
+    return textCoordinates.resolveJumpToPositionRange(params, text, filePath);
   }
 
   async function waitForActiveEditorAfterNavigation(filePath, previousEditorIdentity, timeoutMs) {

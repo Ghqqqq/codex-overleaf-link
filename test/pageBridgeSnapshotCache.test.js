@@ -18,6 +18,7 @@ const binaryAssetUploaderSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/page/binaryAssetUploader.js'),
   'utf8'
 );
+const writebackReceiptJournalSource = fs.readFileSync(path.join(__dirname, '../extension/src/page/writebackReceiptJournal.js'), 'utf8');
 const pageRpcContractSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/shared/pageRpcContract.js'),
   'utf8'
@@ -764,15 +765,15 @@ test('full run snapshots prefer live active editor text over stale active doc re
   assert.equal(result.files.find(file => file.path === 'main.tex')?.source, 'active-editor');
 });
 
-test('file-tree operations are skipped when Overleaf does not reflect the requested path change', async () => {
+test('file-tree renames are skipped when Overleaf does not reflect the requested path change', async () => {
   const bridge = createSnapshotHarness({
     files: {
       'main.tex': 'Main'
     },
     internalState: {
       fileTreeManager: {
-        async createDoc() {
-          // Simulate a stale or changed Overleaf internal API that returns but does not create anything.
+        async renameEntity() {
+          // Simulate a stale or changed Overleaf internal API that returns but does not rename anything.
         }
       }
     }
@@ -780,7 +781,7 @@ test('file-tree operations are skipped when Overleaf does not reflect the reques
 
   const result = await bridge.call('applyOperations', {
     operations: [
-      { type: 'create', path: 'new.tex', content: 'New' }
+      { type: 'rename', path: 'main.tex', to: 'renamed.tex' }
     ],
     baseFiles: [
       { path: 'main.tex', content: 'Main' }
@@ -789,7 +790,7 @@ test('file-tree operations are skipped when Overleaf does not reflect the reques
 
   assert.equal(result.ok, false);
   assert.equal(result.applied.length, 0);
-  assert.equal(result.skipped[0].operation.path, 'new.tex');
+  assert.equal(result.skipped[0].operation.path, 'main.tex');
   assert.equal(result.skipped[0].result.code, 'file_tree_verification_failed');
 });
 
@@ -1231,6 +1232,7 @@ function createSnapshotHarness({
     ? treePaths.flatMap(parts => makeNestedTreeNodes(parts))
     : null;
   const pendingResults = new Map();
+  let requestSequence = 0;
   const editorTextarea = {
     tagName: 'TEXTAREA',
     get value() {
@@ -1400,6 +1402,11 @@ function createSnapshotHarness({
   vm.runInContext(binaryAssetUploaderSource, context, { filename: 'binaryAssetUploader.js' });
   vm.runInContext(textFileCreatorSource, context, { filename: 'textFileCreator.js' });
   vm.runInContext(writeGuardSource, context, { filename: 'writeGuard.js' });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/trackedChangeOwnership.js'), 'utf8'), context, { filename: 'trackedChangeOwnership.js' });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/trackedChangeReplay.js'), 'utf8'), context, { filename: 'trackedChangeReplay.js' });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/textCoordinates.js'), 'utf8'), context, { filename: 'textCoordinates.js' });
+  if (typeof window.fetch !== 'function') window.fetch = async () => { throw new Error('Unexpected reference-project fetch in page fixture'); };
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/referenceProjects.js'), 'utf8'), context, { filename: 'referenceProjects.js' });
   vm.runInContext(trackedChangeCaptureSource, context, { filename: 'trackedChangeCapture.js' });
   vm.runInContext(trackedChangesLifecycleSource, context, { filename: 'trackedChangesLifecycle.js' });
   vm.runInContext(writebackRouterSource, context, { filename: 'writebackRouter.js' });
@@ -1407,6 +1414,10 @@ function createSnapshotHarness({
     vm.runInContext(pageBridgeCapabilitySource, context, { filename: 'pageBridgeCapability.js' });
   }
   vm.runInContext(pageRpcContractSource, context, { filename: 'pageRpcContract.js' });
+  vm.runInContext(writebackReceiptJournalSource, context, { filename: 'writebackReceiptJournal.js' });
+  // Existing fixtures keep their original clock budget; the real-router fake-clock suite covers the 35s production default.
+  const createRouterForFixture = window.CodexOverleafWritebackRouter.create;
+  window.CodexOverleafWritebackRouter.create = deps => createRouterForFixture({ ...deps, trackCaptureWaitMs: 5000 });
   vm.runInContext(pageBridgeSource, context, { filename: 'pageBridge.js' });
 
   return {
@@ -1472,7 +1483,7 @@ function createSnapshotHarness({
 
   async function sendPageBridgeRequest(method, params, options = {}) {
     assert.equal(typeof listener, 'function');
-    const id = `test-${pendingResults.size + 1}-${Date.now()}`;
+    const id = `test-${++requestSequence}`;
     const resultPromise = new Promise(resolve => {
       pendingResults.set(id, resolve);
     });

@@ -163,7 +163,48 @@
     return result;
   }
 
+  function buildPostWriteCompileSummary({ result = null, logResult = null, error = null } = {}) {
+    const logAvailable = logResult?.ok === true;
+    const errors = logAvailable && Array.isArray(logResult.errors)
+      ? logResult.errors.slice(0, 5).map(formatCompileDiagnosticForSummary)
+      : [];
+    const warnings = logAvailable && Array.isArray(logResult.warnings)
+      ? logResult.warnings.slice(0, 5).map(formatCompileDiagnosticForSummary)
+      : [];
+    if (error) {
+      return {
+        status: 'failed',
+        reason: error?.message || 'Post-write compile failed.',
+        errors,
+        warnings,
+        logAvailable
+      };
+    }
+    if (!result?.ok) {
+      return {
+        status: 'failed',
+        reason: result?.reason || 'Post-write compile did not succeed.',
+        errors,
+        warnings,
+        logAvailable
+      };
+    }
+    return {
+      status: result.compile?.status || 'triggered',
+      reason: result.reason || '',
+      errors,
+      warnings,
+      logAvailable
+    };
+  }
+
+  function formatCompileDiagnosticForSummary(value) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    return text.length > 180 ? `${text.slice(0, 179)}...` : text;
+  }
+
   return {
+    buildPostWriteCompileSummary,
     COMPILABLE_EXTENSIONS,
     MAX_LOG_BYTES,
     extractErrorBlocks,

@@ -4,14 +4,18 @@
       require('./i18n'),
       require('./settlementFacts'),
       require('./runInputQueue'),
+      require('./selectionContext'),
       require('./lineReferences'),
       require('./pathRedaction'),
-      require('./sessionTitle')
+      require('./sessionTitle'),
+      require('./runActivityModel'),
+      require('./subagentActivityModel'),
+      require('./writebackIntent')
     );
   } else {
     root.CodexOverleafModuleRegistry.define(
       'SessionState',
-      ['I18n', 'SettlementFacts', 'RunInputQueue', 'LineReferences', 'PathRedaction', 'SessionTitle'],
+      ['I18n', 'SettlementFacts', 'RunInputQueue', 'SelectionContext', 'LineReferences', 'PathRedaction', 'SessionTitle', 'RunActivityModel', 'SubagentActivityModel', 'WritebackIntent'],
       factory
     );
   }
@@ -19,9 +23,13 @@
   i18n,
   SettlementFacts,
   RunInputQueue,
+  SelectionContext,
   LineReferences,
   PathRedaction,
-  SessionTitle
+  SessionTitle,
+  RunActivityModel,
+  SubagentActivityModel,
+  WritebackIntent
 ) {
   'use strict';
 
@@ -232,6 +240,7 @@
         : fallbackState.speedTier,
       requireReviewing: session.requireReviewing !== false,
       focusFiles: normalizeFocusFiles(session.focusFiles),
+      selectionContext: SelectionContext.normalize(session.selectionContext),
       projectReferenceFiles: normalizeProjectReferenceFiles(session.projectReferenceFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
       forkedFromSessionId: typeof session.forkedFromSessionId === 'string' ? session.forkedFromSessionId : '',
@@ -319,6 +328,7 @@
     state.runs = Array.isArray(active.runs) ? active.runs : [];
     state.task = typeof active.task === 'string' ? active.task : '';
     state.focusFiles = normalizeFocusFiles(active.focusFiles);
+    state.selectionContext = SelectionContext.normalize(active.selectionContext);
     state.mode = normalizeMode(active.mode);
     state.requireReviewing = active.requireReviewing !== false;
 
@@ -354,6 +364,7 @@
         : DEFAULT_PANEL_STATE.speedTier,
       requireReviewing: overrides.requireReviewing !== false,
       focusFiles: normalizeFocusFiles(overrides.focusFiles),
+      selectionContext: SelectionContext.normalize(overrides.selectionContext),
       projectReferenceFiles: normalizeProjectReferenceFiles(overrides.projectReferenceFiles),
       codexThreadId: typeof overrides.codexThreadId === 'string' ? overrides.codexThreadId : '',
       forkedFromSessionId: typeof overrides.forkedFromSessionId === 'string' ? overrides.forkedFromSessionId : '',
@@ -592,7 +603,35 @@
       .slice(-20);
   }
 
+  function recordedRunFailure(run) {
+    const event = [...(Array.isArray(run?.events) ? run.events : [])].reverse()
+      .find(item => item && item.kind !== 'technical' && item.subagent !== true);
+    if (!event || event.status !== 'failed' || (event.kind && event.kind !== 'activity')
+      || event.streamRole || event.streamKey || event.guidanceId) return null;
+    if (!['Codex returned a result, but local post-processing of this run failed.',
+      'Codex 已经返回了结果，但本地处理这一轮时出错了。'].includes(event.title)) return null;
+    const meta = RunActivityModel.capture(event);
+    // Capture encodes even an unscoped local event as [threadId, turnId].
+    const scoped = meta?.scope && meta.scope !== JSON.stringify(['', '']);
+    if (meta?.kind !== 'notice' || meta.state !== 'failed' || meta.id || scoped || meta.noticeSource) return null;
+    const ended = Date.parse(event.timestamp), started = Date.parse(run.startedAt);
+    if (!Number.isFinite(ended) || (Number.isFinite(started) && ended < started)) return null;
+    return event;
+  }
+
+  function recoverRecordedRunFailure(run, locale = i18n.DEFAULT_LOCALE) {
+    if (run?.status !== 'running') return run;
+    const event = recordedRunFailure(run);
+    if (!event) return run;
+    // This acknowledgement is emitted only by the parent's terminal catch.
+    // It survives a render failure that prevented the old owner from settling.
+    return { ...run, status: 'failed',
+      statusText: i18n.t(locale, 'processedFailed', { elapsed: '' }).trim(),
+      finishedAt: Number.isFinite(Date.parse(run.finishedAt)) ? run.finishedAt : event.timestamp };
+  }
+
   function normalizeRun(run, options = {}) {
+    run = recoverRecordedRunFailure(run, options.locale);
     const shouldStopRestoredRun = options.restoreRunningRuns === true && run.status === 'running';
     const locale = options.locale || i18n.DEFAULT_LOCALE;
     const events = normalizeRunEvents(run.events);
@@ -622,12 +661,13 @@
       model: typeof run.model === 'string' ? run.model : '',
       reasoningEffort: typeof run.reasoningEffort === 'string' ? run.reasoningEffort : '',
       speedTier: typeof run.speedTier === 'string' ? run.speedTier : '',
-      status: shouldStopRestoredRun ? 'interrupted' : normalizeRunStatus(run.status),
+      status: shouldStopRestoredRun ? 'interrupted' : normalizeRunStatus(run.status, run),
       statusText: shouldStopRestoredRun ? i18n.t(locale, 'restoredRunStoppedStatus') : sanitizeAssistantVisibleText(run.statusText),
       runProjectId: normalizeProjectPrefKey(run.runProjectId),
       startedAt: typeof run.startedAt === 'string' ? run.startedAt : '',
       finishedAt: shouldStopRestoredRun ? new Date().toISOString() : typeof run.finishedAt === 'string' ? run.finishedAt : '',
       events: events.slice(-MAX_RUN_EVENTS),
+      ...(run.subagents?.length ? { subagents: SubagentActivityModel.normalize(run.subagents, sanitizeAssistantVisibleText) } : {}),
       attachments: normalizeRunAttachments(run.attachments, STORAGE_DEFAULT_LIMITS),
       appliedOperations: Array.isArray(run.appliedOperations) ? run.appliedOperations : [],
       undoOperations: Array.isArray(run.undoOperations) ? run.undoOperations : [],
@@ -660,6 +700,7 @@
       normalized.trackedChangeCaptures = sanitizeAssistantVisibleValue(run.trackedChangeCaptures);
     }
     applyTrackedChangeStatus(normalized, run.trackedChangeStatus);
+    Object.assign(normalized, pickWritebackRecovery(run));
 
     return normalized;
   }
@@ -722,13 +763,20 @@
     'running',
     'completed',
     'failed',
+    'cancelled',
     'interrupted',
     'background_completed',
     'needs_review_after_navigation',
     'abandoned_after_navigation'
   ]);
 
-  function normalizeRunStatus(status) {
+  function normalizeRunStatus(status, run = {}) {
+    if (status === 'running' && recordedRunFailure(run)) return 'failed';
+    if (status === 'rejected') return 'cancelled';
+    // Older normalizers rewrote cancelled runs to pending or completed.
+    // Recover only with a terminal timestamp and an explicit plugin event.
+    if (['pending', 'completed'].includes(status) && Number.isFinite(Date.parse(run.finishedAt))
+      && Array.isArray(run.events) && run.events.some(RunActivityModel.isRoutineCancellationEvent)) return 'cancelled';
     if (VALID_RUN_STATUS.has(status)) return status;
     // Legacy persisted runs without an explicit status fall back to `completed`
     // (the historical default for the recovery branch); unknown values land on
@@ -753,6 +801,9 @@
           timestamp: typeof event.timestamp === 'string' ? event.timestamp : '',
           kind: typeof event.kind === 'string' ? event.kind : 'activity',
           technicalDetail: sanitizeAssistantVisibleValue(event.technicalDetail),
+          activity: RunActivityModel.capture(event, sanitizeAssistantVisibleText),
+          streamPhase: RunActivityModel.normalizePhase(event.streamPhase),
+          subagent: event.subagent === true ? true : undefined,
           guidanceId: sanitizeAssistantVisibleText(event.guidanceId),
           streamKey: sanitizeAssistantVisibleText(event.streamKey),
           streamRole: sanitizeAssistantVisibleText(event.streamRole)
@@ -1123,6 +1174,7 @@
       speedTier: normalizeSpeedTier(session.speedTier || fallbackState.speedTier),
       requireReviewing: session.requireReviewing !== false,
       focusFiles: normalizeFocusFiles(session.focusFiles),
+      selectionContext: SelectionContext.normalize(session.selectionContext),
       projectReferenceFiles: normalizeProjectReferenceFiles(session.projectReferenceFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
       forkedFromSessionId: normalizeTextField(session.forkedFromSessionId, 160),
@@ -1196,6 +1248,7 @@
   }
 
   function compactRunForStorage(run, limits, keepUndoPayload, settlementFacts = null) {
+    run = recoverRecordedRunFailure(run);
     const undoPayload = compactUndoPayload(run, limits, keepUndoPayload);
     const compact = {
       id: run.id,
@@ -1204,12 +1257,13 @@
       model: normalizeTextField(run.model, 80),
       reasoningEffort: typeof run.reasoningEffort === 'string' ? run.reasoningEffort : '',
       speedTier: typeof run.speedTier === 'string' ? run.speedTier : '',
-      status: normalizeRunStatus(run.status),
+      status: normalizeRunStatus(run.status, run),
       statusText: summarizeTextForStorage(run.statusText, 'status text'),
       runProjectId: normalizeProjectPrefKey(run.runProjectId),
       startedAt: typeof run.startedAt === 'string' ? run.startedAt : '',
       finishedAt: typeof run.finishedAt === 'string' ? run.finishedAt : '',
       events: compactRunEvents(run.events, limits),
+      ...(run.subagents?.length ? { subagents: SubagentActivityModel.normalize(run.subagents, sanitizeAssistantVisibleText) } : {}),
       attachments: compactRunAttachmentsForStorage(run.attachments, limits),
       appliedOperations: [],
       undoOperations: undoPayload.undoOperations,
@@ -1236,6 +1290,7 @@
     if (run.interruptedDraft) {
       compact.interruptedDraft = sanitizeAssistantVisibleValue(run.interruptedDraft);
     }
+    Object.assign(compact, pickWritebackRecovery(run));
     if (VALID_TRACKED_CHANGE_STATUS.has(run.trackedChangeStatus)) {
       compact.trackedChangeStatus = run.trackedChangeStatus;
     }
@@ -1256,6 +1311,8 @@
           streamKey: typeof event.streamKey === 'string' ? event.streamKey : '',
           streamRole: typeof event.streamRole === 'string' ? event.streamRole : ''
         };
+        compact.activity = RunActivityModel.capture(event, sanitizeAssistantVisibleText);
+        compact.streamPhase = RunActivityModel.normalizePhase(event.streamPhase);
         if (event.subagent === true) {
           compact.subagent = true;
         }
@@ -1616,7 +1673,21 @@
     return new Blob([serialized]).size;
   }
 
+  function pickWritebackRecovery(run = {}) {
+    if (run.forkSnapshot === true) return {};
+    const result = {};
+    const retry = WritebackIntent.normalize(run.retryWriteback);
+    if (retry && retry.runId === run.id && retry.projectId === normalizeProjectPrefKey(run.runProjectId)
+      && retry.operations.every(op => op.type === 'create' && typeof op.content === 'string')
+      && !containsSecretLikeText(retry)) result.retryWriteback = retry;
+    const check = WritebackIntent.normalizeSaveCheck(run.saveCheck);
+    if (check && check.runId === run.id && check.projectId === normalizeProjectPrefKey(run.runProjectId)) result.saveCheck = check;
+    if (typeof run.saveConfirmedAt === 'string' && Number.isFinite(Date.parse(run.saveConfirmedAt))) result.saveConfirmedAt = run.saveConfirmedAt;
+    return result;
+  }
+
   return {
+    pickWritebackRecovery,
     DEFAULT_PANEL_STATE,
     createSession,
     deleteSession,
@@ -1630,7 +1701,10 @@
     setActiveSession,
     updateActiveSession,
     normalizeRuns,
+    normalizeRunStatus,
+    recoverRecordedRunFailure,
     normalizeProjectReferenceFiles,
+    normalizeSelectionContext: SelectionContext.normalize,
     prepareStateForStorage,
     estimateJsonBytes,
     computeSafeTaskSummary

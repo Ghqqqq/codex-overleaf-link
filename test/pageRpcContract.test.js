@@ -6,9 +6,10 @@ const Contract = require('../extension/src/shared/pageRpcContract.js');
 test('page RPC catalog owns every public page bridge method', () => {
   assert.deepEqual(Contract.listMethods(), [
     'initializeCapability', 'probe', 'cancelActiveWrite', 'getProjectSnapshot',
-    'getProjectFileList', 'invalidateProjectSnapshot', 'createCheckpoint',
-    'ensureReviewing', 'ensureEditing', 'applyOperations',
-    'binaryUploadBegin', 'binaryUploadAppend', 'binaryUploadCommit', 'binaryUploadAbort',
+    'getProjectFileList', 'listReferenceProjects', 'getReferenceProjectSnapshot', 'cancelReferenceRead',
+    'invalidateProjectSnapshot', 'createCheckpoint',
+    'ensureReviewing', 'ensureEditing', 'applyOperations', 'getWritebackReceipt', 'getSelectionContext',
+    'binaryUploadBegin', 'binaryUploadAppend', 'binaryUploadCommit', 'binaryUploadStatus', 'binaryUploadAbort',
     'jumpToPosition', 'reconcileTrackedChangeCapture',
     'rejectTrackedChanges', 'acceptTrackedChanges', 'triggerCompile',
     'getCompileLog', 'getCompileState', 'waitForSaveState', 'startOtObserver',
@@ -84,4 +85,36 @@ test('capability report and failure normalization are derived from the catalog',
     rpcMethod: 'applyOperations',
     failureClass: 'write'
   });
+});
+
+test('writeback receipt lookup is a project-scoped read and never retries a mutation', () => {
+  const method = Contract.getMethod('getWritebackReceipt');
+  assert.equal(method.mutation, 'read');
+  assert.equal(method.projectIdentity, 'required');
+  assert.equal(method.retryClass, 'safe');
+  assert.equal(Contract.getMethod('applyOperations').retryClass, 'no_retry');
+});
+
+test('writing-style reference reads and their cancellation cannot mutate a document', () => {
+  for (const name of ['listReferenceProjects', 'getReferenceProjectSnapshot']) {
+    const entry = Contract.getMethod(name);
+    assert.equal(entry.mutation, 'read');
+    assert.equal(entry.retryClass, 'safe');
+    assert.equal(entry.projectIdentity, 'none');
+    assert.equal(entry.cancellation, 'none');
+  }
+  const cancel = Contract.getMethod('cancelReferenceRead');
+  assert.equal(cancel.capability, 'reference.cancel');
+  assert.equal(cancel.mutation, 'control');
+  assert.equal(cancel.retryClass, 'idempotent');
+});
+test('selection and binary receipt reads stay bound to the explicit project', () => {
+  for (const name of ['getSelectionContext', 'binaryUploadStatus']) {
+    const entry = Contract.getMethod(name);
+    assert.equal(entry.mutation, 'read');
+    assert.equal(entry.projectIdentity, 'required');
+    assert.equal(entry.retryClass, 'safe');
+    assert.equal(Contract.resolveDispatchPolicy(name).automaticAttempts, 1);
+  }
+  assert.equal(Contract.getMethod('binaryUploadCommit').retryClass, 'no_retry');
 });

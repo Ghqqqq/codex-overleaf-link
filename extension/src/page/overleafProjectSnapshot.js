@@ -120,6 +120,7 @@
         deps.getProjectId?.() || pageWindow.location.pathname || pageWindow.location.href,
         params.preferLightweight ? 'lightweight' : 'full',
         params.zipOnly ? 'zip-only' : 'zip-or-page',
+        params.serverOnly === true ? 'server-only' : 'editor-overlay',
         params.allowZipFallback === false ? 'no-zip-fallback' : 'zip-fallback',
         params.allowEditorNavigation === false ? 'no-editor-navigation' : params.allowEditorNavigation === true ? 'editor-navigation' : 'default-editor-navigation',
         params.requireFullProject ? 'require-full-project' : 'allow-partial-project',

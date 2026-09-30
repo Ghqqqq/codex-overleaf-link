@@ -249,7 +249,7 @@ test('redactSmokeResult drops non-boolean native capability values before writin
 
 test('content script exposes a non-mutating smoke helper without project content', () => {
   const contentScript = fs.readFileSync(
-    path.join(__dirname, '../extension/src/content/contentRuntime.js'),
+    path.join(__dirname, '../extension/src/content/diagnosticsExport.js'),
     'utf8'
   );
 
@@ -263,7 +263,7 @@ test('content script exposes a non-mutating smoke helper without project content
 
 test('content smoke helper byte summary uses text content without returning content', () => {
   const contentScript = fs.readFileSync(
-    path.join(__dirname, '../extension/src/content/contentRuntime.js'),
+    path.join(__dirname, '../extension/src/content/diagnosticsExport.js'),
     'utf8'
   );
   const source = `

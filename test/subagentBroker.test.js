@@ -248,6 +248,7 @@ test('unowned changes during a wave become wave-level violations with suspects',
   await waitFor(() => broker.getViolationPaths().has('main.tex'));
   const violation = broker.getAuditSummary().violations[0];
   assert.equal(violation.path, 'main.tex');
+  assert.equal(broker.getBlockedReason('main.tex'), 'subagent_unauthorized_edit');
   assert.deepEqual(violation.suspects, ['ch1', 'parent'], 'wave-level attribution: suspects, not a named actor');
   assert.ok(events.some(e => e.type === 'codex.subagent.violation'));
   await broker.stop();
@@ -419,6 +420,7 @@ test("a timed-out worker's partial edits are withheld from writeback", async () 
   await waitFor(() => readResult(dir, 'ch1')?.status === 'timeout');
   assert.deepEqual(readResult(dir, 'ch1').changedFiles, ['sections/ch1.tex']);
   assert.equal(broker.getViolationPaths().has('sections/ch1.tex'), true, 'partial edit withheld like a violation');
+  assert.equal(broker.getBlockedReason('sections/ch1.tex'), 'subagent_unfinished_output');
   await broker.stop({ drain: false });
 });
 
@@ -456,4 +458,43 @@ test('audit summary captures jobs, statuses, and violations without task text', 
   assert.equal(summary.jobs[0].id, 'ch1');
   assert.equal(summary.jobs[0].status, 'completed');
   assert.equal(JSON.stringify(summary).includes('SECRET TASK TEXT'), false);
+});
+
+test('reviewed unfinished output can be adopted only with current bytes and is blocked again after a later edit', async () => {
+  const dir = makeWorkspace();
+  const crypto = require('node:crypto');
+  const relative = 'sections/ch1.tex';
+  const absolute = path.join(dir, relative);
+  const broker = createSubagentBroker({ workspacePath: dir, limits: TINY,
+    runWorkerTask: async () => {
+      fs.writeFileSync(absolute, 'partial output');
+      throw new Error('worker did not finish');
+    }
+  });
+  broker.start();
+  try {
+    writeJob(dir, { id: 'partial', task: 'work', files: [relative], readOnlyContext: [] });
+    await waitFor(() => readResult(dir, 'partial')?.status === 'failed'
+      && JSON.parse(fs.readFileSync(path.join(queue(dir), 'broker.json'), 'utf8')).adoptionToken);
+    assert.equal(broker.getViolationPaths().has(relative), true);
+    assert.equal(broker.getBlockedReason(relative), 'subagent_unfinished_output');
+    const token = JSON.parse(fs.readFileSync(path.join(queue(dir), 'broker.json'), 'utf8')).adoptionToken;
+    const sha256 = crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex');
+    const submit = (id, hash) => {
+      fs.writeFileSync(path.join(queue(dir), 'adoptions', id + '.json'), JSON.stringify({
+        token, reviewed: true, files: [{ path: relative, jobId: 'partial', sha256: hash }]
+      }));
+      broker.pollOnce();
+      return JSON.parse(fs.readFileSync(path.join(queue(dir), 'adoption-results', id + '.json'), 'utf8'));
+    };
+    assert.equal(submit('wrong-hash', '0'.repeat(64)).ok, false);
+    assert.equal(broker.getViolationPaths().has(relative), true);
+    assert.equal(submit('reviewed', sha256).ok, true);
+    assert.equal(broker.getViolationPaths().has(relative), false);
+    fs.writeFileSync(absolute, 'changed after review');
+    assert.equal(broker.getViolationPaths().has(relative), true);
+  } finally {
+    await broker.stop({ drain: false });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

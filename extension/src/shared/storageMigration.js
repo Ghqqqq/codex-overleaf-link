@@ -50,6 +50,9 @@
   }
 
   function withProjectPreferenceLock(projectId, work) {
+    if (StorageDb.sharedSessionsEnabled?.()) {
+      return StorageDb.withSharedLock('preferences', { projectId: projectId }, work);
+    }
     var lockName = 'codex-overleaf-project-prefs:' + compactScopePart(projectId);
     var lockManager = typeof navigator !== 'undefined' && navigator && navigator.locks;
     if (lockManager && typeof lockManager.request === 'function') {

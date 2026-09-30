@@ -90,6 +90,9 @@ async function stopCodexAppServer(child, {
   if (!await waitForStop(forceTimeoutMs)) {
     const error = new Error('Codex process exit could not be confirmed. Do not retry this project until the old process has stopped.');
     error.code = 'codex_process_stop_unconfirmed';
+    error.processId = pid;
+    error.processGroup = grouped;
+    error.isStopped = stopped;
     error.cause = reason;
     throw error;
   }

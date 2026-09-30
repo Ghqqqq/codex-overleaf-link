@@ -50,16 +50,20 @@ function localeHarness() {
   let locale = 'en';
   const provider = providerHarness(() => locale);
   const status = { dataset: {}, textContent: '' };
-  const task = { placeholder: '' };
+  const task = { placeholder: '', value: '' };
+  const runButton = { dataset: {}, disabled: false, title: '',
+    setAttribute(name, value) { this[name] = value; } };
   const skill = { textContent: '' };
   let storageRefreshes = 0;
+  let styleRefreshes = 0;
   const context = {
     panel: { querySelectorAll: () => [], querySelector: selector => ({
-      '[data-probe-status]': status, '[data-task]': task
+      '[data-probe-status]': status, '[data-task]': task, '[data-run]': runButton
     })[selector] || null },
-    state: { mode: 'ask' }, currentRunView: null, probeStatusSnapshot: null,
+    state: { mode: 'ask' }, currentRunView: null, probeStatusSnapshot: null, runCancellationRequested: false,
     settingsPanelInstance: { refreshNotes: noop, container: { querySelector: () => ({ open: true }) } },
     providerSettingsCoordinator: provider.api,
+    writingStyleSettings: { sync() { styleRefreshes += 1; } },
     tr: (key, params) => I18n.t(locale, key, params),
     getCurrentProjectId: () => 'example', getActiveFocusFiles: () => [],
     isExperimentalOtEnabled: () => false,
@@ -67,18 +71,18 @@ function localeHarness() {
     updateSkillsEntrySummary: () => { skill.textContent = I18n.t(locale, 'codexOverleafSkillsSummaryCount', { count: 2 }); },
     refreshStorageUsageSummary: () => { storageRefreshes += 1; }
   };
-  for (const name of ['setElementTitleAndAria', 'setDiagnosticsHealth', 'syncModeControls', 'updateOtStatusDisplay',
+  for (const name of ['setElementTitleAndAria', 'setDiagnosticsHealth', 'updateOtStatusDisplay',
     'updateExperimentalOtMenuStatus', 'renderModelConfigChoices', 'updateModelDisplay', 'renderSessionList',
     'renderContextSelection', 'updateExistingProbeNotice', 'appendProbeUserStatus', 'setRefreshProbeLoading']) context[name] = noop;
   vm.createContext(context);
-  for (const name of ['applyLocaleToPanel', 'refreshProbe', 'formatProbeStatusBar', 'appendOtStatusToProbeStatus',
+  for (const name of ['syncModeControls', 'syncProbeStatus', 'applyLocaleToPanel', 'syncComposerSendAvailability', 'refreshProbe', 'formatProbeStatusBar', 'appendOtStatusToProbeStatus',
     'getProbeRunReadiness', 'formatModeLabel', 'isProbeReadyForCurrentMode']) {
     const match = sources.runtime.match(new RegExp(`  (?:async )?function ${name}\\([^]*?\\n  \\}`));
     assert.ok(match, `${name} must remain available at its runtime seam`);
     vm.runInContext(match[0], context);
   }
-  return { context, status, task, skill, provider,
-    change(value) { locale = value; context.applyLocaleToPanel(); }, storageRefreshes: () => storageRefreshes };
+  return { context, status, task, skill, provider, runButton,
+    change(value) { locale = value; context.applyLocaleToPanel(); }, storageRefreshes: () => storageRefreshes, styleRefreshes: () => styleRefreshes };
 }
 
 test('locale switches re-project the cached composer, provider, skills and storage without rerunning probe', async () => {
@@ -94,6 +98,7 @@ test('locale switches re-project the cached composer, provider, skills and stora
   }
   assert.equal(h.provider.requests(), 0);
   assert.equal(h.storageRefreshes(), 4);
+  assert.equal(h.styleRefreshes(), 4);
 });
 
 test('locale projection preserves failed/loading status and never reuses another project probe', async () => {
@@ -110,6 +115,32 @@ test('locale projection preserves failed/loading status and never reuses another
   h.status.textContent = 'another project status';
   h.change('zh');
   assert.equal(h.status.textContent, 'another project status');
+});
+
+test('locale refresh keeps send and stop labels aligned after a queued draft is cleared', () => {
+  const h = localeHarness();
+  h.context.currentRunView = { recordId: 'active-run' };
+  h.task.value = 'queued follow-up';
+  h.change('en');
+  assert.equal(h.runButton.dataset.action, 'send');
+  assert.equal(h.runButton['aria-label'], I18n.t('en', 'queueNextInput'));
+  h.task.value = '';
+  for (const locale of ['en', 'zh']) {
+    h.change(locale);
+    assert.equal(h.runButton.dataset.action, 'cancel');
+    assert.equal(h.runButton.title, I18n.t(locale, 'cancelRun'));
+    assert.equal(h.runButton['aria-label'], h.runButton.title);
+    assert.equal(h.runButton.disabled, false);
+  }
+  h.context.runCancellationRequested = true;
+  h.change('en');
+  assert.equal(h.runButton.disabled, true);
+  h.context.currentRunView = null;
+  h.context.runCancellationRequested = false;
+  h.change('en');
+  assert.equal(h.runButton.dataset.action, 'send');
+  assert.equal(h.runButton.title, I18n.t('en', 'send'));
+  assert.equal(h.runButton.disabled, true);
 });
 
 test('custom provider locale projection retains its selection and does not fetch or activate', () => {

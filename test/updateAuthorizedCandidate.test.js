@@ -15,7 +15,7 @@ function fixture(t) {
   fs.writeFileSync(path.join(root, 'active-version'), '2.3.5');
   const keys = crypto.generateKeyPairSync('ed25519');
   const manifest = Buffer.from(JSON.stringify({ schemaVersion: 2, repository: 'Ghqqqq/codex-overleaf-link',
-    channel: 'stable', version: '2.3.6', tag: 'v2.3.6', bootstrapProtocol: 2,
+    channel: 'stable', version: '2.3.6', tag: 'v2.3.6', bootstrapProtocol: trust.BOOTSTRAP_PROTOCOL,
     gitCommit: 'a'.repeat(40), createdAt: new Date().toISOString(), artifacts: [],
     updateBundle: { name: 'codex-overleaf-update-v2.3.6.tar.gz', size: 1, sha256: 'a'.repeat(64) } }));
   const signature = Buffer.from(JSON.stringify({ algorithm: 'Ed25519', keyId: 'test',

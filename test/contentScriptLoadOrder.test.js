@@ -41,13 +41,12 @@ function createSandbox(options = {}) {
     set(values, cb) { if (typeof cb === 'function') { cb(); return undefined; } return Promise.resolve(); },
     remove(keys, cb) { if (typeof cb === 'function') { cb(); return undefined; } return Promise.resolve(); }
   };
-  const documentStub = {
+  const documentStub = Object.assign(new EventTarget(), {
     createElement: () => noopEl(),
     documentElement: noopEl(),
     getElementById: () => null,
-    addEventListener() {}, removeEventListener() {},
     querySelector() { return null; }, querySelectorAll() { return []; }
-  };
+  });
   const sandbox = {
     console: { log() {}, warn() {}, error() {}, info() {}, debug() {} },
     // Timers never fire and sendMessage never settles: the contract under test
@@ -55,7 +54,7 @@ function createSandbox(options = {}) {
     // must neither hold the event loop open nor surface stub-shaped
     // rejections that would fail the test file.
     setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
-    URL, Blob: class {}, TextEncoder, TextDecoder, crypto: globalThis.crypto,
+    URL, Event, CustomEvent, EventTarget, AbortController, AbortSignal, Blob: class {}, TextEncoder, TextDecoder, crypto: globalThis.crypto,
     document: documentStub,
     chrome: {
       runtime: {
@@ -143,4 +142,26 @@ test('project route mounts the panel while account identity is still hydrating',
   const state = sandbox.__codexOverleafContentRuntimeState;
   assert.ok(state, 'content runtime state should be recorded');
   assert.equal(state.ok, true, `project-route init must not fail closed before panel mount: ${JSON.stringify(state)}`);
+});
+
+// Preview guard: document events must reach actual listeners.
+test('sandbox document dispatches cancellable events and removes listeners', () => {
+  const sandbox = createSandbox();
+  let calls = 0;
+  const listener = event => {
+    calls += 1;
+    assert.equal(event.target, sandbox.document);
+    event.preventDefault();
+  };
+  sandbox.document.addEventListener('fixture-document-event', listener);
+  assert.equal(sandbox.document.dispatchEvent(new sandbox.Event('fixture-document-event', { cancelable: true })), false);
+  assert.equal(calls, 1);
+  sandbox.document.removeEventListener('fixture-document-event', listener);
+  assert.equal(sandbox.document.dispatchEvent(new sandbox.Event('fixture-document-event', { cancelable: true })), true);
+  assert.equal(calls, 1);
+  const controller = new sandbox.AbortController();
+  sandbox.document.addEventListener('fixture-document-event', listener, { signal: controller.signal });
+  controller.abort();
+  assert.equal(sandbox.document.dispatchEvent(new sandbox.Event('fixture-document-event', { cancelable: true })), true);
+  assert.equal(calls, 1);
 });

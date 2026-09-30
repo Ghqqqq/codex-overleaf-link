@@ -447,20 +447,8 @@
       document: window.document,
       treeOperations
     });
-    // Cross-world cancel baseline. The user clicks cancel during writeback →
-    // content-side calls pageBridge.cancelActiveWrite → the sequence number
-    // bumps. Two layers of responsiveness:
-    //   1. Between-ops check — short-circuits the next iteration so the
-    //      remaining ops never start.
-    //   2. Race the in-flight op against a cancellation poller (50ms
-    //      interval) so a click DURING a slow op (e.g. inside a 5s
-    //      waitForActiveFile poll) is observed within ~50ms instead of
-    //      having to wait out the op's internal timeout. The op promise
-    //      keeps running in the page world after the race resolves — its
-    //      eventual result is ignored. This is "user-perceived instant
-    //      cancel": the spinner stops, the run settles to cancelled, and
-    //      any DOM mutation already in flight on the op cannot be undone
-    //      from here anyway.
+    // Preserve the actual result of an in-flight operation so its readback and
+    // undo evidence survive cancellation. The checkpoints stop undispatched work.
     const cancelBaselineSequence = readWriteCancellationSequence();
     const cancelledSkipResult = {
       ok: false,
@@ -477,52 +465,12 @@
         changedDocument: false
       }
     };
-    const cancelledInFlightResult = {
-      ...cancelledSkipResult,
-      reason: 'The Codex run was cancelled while an Overleaf write operation was already in flight. The editor may have changed; review the current file before starting a new run.',
-      failure: {
-        ...cancelledSkipResult.failure,
-        severity: 'warning',
-        userMessage: 'The Codex run was cancelled during an in-flight write. The editor may already contain part of that write.',
-        nextAction: 'Review the current Overleaf file before starting a new run.',
-        changedDocument: true
-      }
-    };
-    // 50ms-poller racer using recursive setTimeout. setInterval is NOT
-    // exposed in the test VM context that hosts pageBridge (only setTimeout /
-    // clearTimeout are wired), so this implementation must avoid it. Each
-    // tick re-schedules itself only while the racer has not resolved;
-    // dispose() flips a flag so any tick that fires after dispose is a no-op.
-    // Resolves the first time the cancellation sequence bumps past baseline.
-    function createCancellationRacer() {
-      let resolved = false;
-      let resolveFn;
-      const promise = new Promise(resolve => { resolveFn = resolve; });
-      let timer = null;
-      function tick() {
-        if (resolved) return;
-        if (readWriteCancellationSequence() !== cancelBaselineSequence) {
-          resolved = true;
-          resolveFn();
-          return;
-        }
-        timer = window.setTimeout(tick, 50);
-      }
-      timer = window.setTimeout(tick, 50);
-      return {
-        promise,
-        dispose() {
-          resolved = true;
-          if (timer) window.clearTimeout(timer);
-        }
-      };
-    }
-    const CANCELLED_RACE_SENTINEL = Symbol('writebackRouter.cancelled');
-    async function raceOpAgainstCancellation(opPromise) {
-      // Once an editor operation starts, preserve its actual result and undo
-      // metadata. The loop's pre-operation cancellation check stops the tail.
-      return await opPromise;
-    }
+    const createCandidates = operations.map(normalizeOperationPaths).filter(operation => operation.type === 'create'
+      && operations.filter(other => [other.path, other.to].includes(operation.path)).length === 1);
+    const createBatch = createCandidates.length && typeof deps.beginTextCreateBatch === 'function'
+      ? await deps.beginTextCreateBatch(createCandidates, { isCurrent: () =>
+        treeOperations.getProjectId?.() === runProjectId && readWriteCancellationSequence() === cancelBaselineSequence }) : null;
+    const deferredCreates = [];
 
     for (const rawOperation of operations) {
       // Cross-world cancel check. Cheap (synchronous read of a counter),
@@ -562,18 +510,20 @@
         skipped.push({ operation, result: pathSafety });
         continue;
       }
-      let raceResult;
+      let result;
       if (operation.type === 'edit') {
-        raceResult = await raceOpAgainstCancellation(applyEditOperation(operation, {
+        result = await applyEditOperation(operation, {
           baseFileLookup, runProjectId,
           recheckWriteProject: writeGuardSurface ? () => writeGuardSurface.runWriteGuard({ runProjectId }) : null,
           trackReviewingChanges: options.trackReviewingChanges === true,
           noTraceUndo: options.noTraceUndo === true
-        }));
+        });
       } else if (['binary-create', 'overwrite-binary'].includes(operation.type)) {
-        raceResult = await raceOpAgainstCancellation(applyBinaryAssetOperation(operation, { baseFileLookup, baseBinaryFileLookup }));
+        result = await applyBinaryAssetOperation(operation, { baseFileLookup, baseBinaryFileLookup });
       } else if (['create', 'rename', 'move', 'delete'].includes(operation.type)) {
-        raceResult = await raceOpAgainstCancellation(applyFileTreeOperation(operation, { baseFileLookup }));
+        result = await applyFileTreeOperation(operation, { baseFileLookup, runProjectId,
+          createBatch: createBatch?.targets.has(operation.path) ? createBatch : null,
+          retryCreates: options.retryCreates === true });
       } else {
         skipped.push({
           operation,
@@ -584,27 +534,28 @@
         });
         continue;
       }
-      // Cancellation race winner: skip current op + the rest of the queue.
-      // The op promise above keeps running in background; its eventual
-      // result is discarded. The user perceives instant cancel because we
-      // settle the loop here instead of waiting for the op to finish.
-      if (raceResult === CANCELLED_RACE_SENTINEL) {
-        skipped.push({ operation, result: cancelledInFlightResult });
-        const remainingAfterCancel = operations.slice(operations.indexOf(rawOperation) + 1);
-        for (const tailOperation of remainingAfterCancel) {
-          skipped.push({ operation: normalizeOperationPaths(tailOperation), result: cancelledSkipResult });
-        }
-        break;
+      if (operation.type === 'create' && createBatch?.pending.has(operation.path)
+        && !createBatch.blocked.has(operation.path)) {
+        deferredCreates.push({ operation, result });
+        continue;
       }
-      const result = raceResult;
       if (result.trackedChangeCapture) trackedChangeCaptures.push(result.trackedChangeCapture);
       if (operation.type === 'edit' && result.ok && Array.isArray(result.trackedChanges)) {
         trackedChanges.push(...result.trackedChanges);
       }
       (result.ok ? applied : skipped).push({ operation, result });
+      options.onOperationResult?.({ operation, result });
     }
 
-    if (applied.length > 0) {
+    if (deferredCreates.length) {
+      const confirmed = await deps.finishTextCreateBatch(createBatch, deferredCreates, applied);
+      for (const entry of confirmed) {
+        (entry.result.ok ? applied : skipped).push(entry);
+        if (entry.result.ok) recordFileTreeOperationSuccess(entry.operation, baseFileLookup);
+        options.onOperationResult?.(entry);
+      }
+    }
+    if (applied.some(entry => entry.result?.changedDocument !== false)) {
       compileBridge.markSourceEdited();
     }
 
@@ -808,12 +759,12 @@
       // Overleaf renders review markers asynchronously after the editor text
       // has already changed. A single 120 ms snapshot intermittently missed
       // those markers, leaving a Reviewing write with Undo but no Accept.
-      // Poll both paths: normal Reviewing writes get a shorter capture window,
-      // while Accept replay keeps the longer safety window used to prove that
-      // it did not create fresh tracked changes.
+      // Complete normal Track attribution while this file is still active.
+      // Slow batches are covered by request receipts; Accept replay retains
+      // its independent safety window proving that no new tracking was added.
       const trackedDiff = trackReviewingChanges
         ? await captureTrackedWrite({ trackedBefore, captureBaseline, operation, beforeContent: current,
-          postContent: nextContent, runProjectId: options.runProjectId })
+          postContent: nextContent, runProjectId: options.runProjectId, waitMs: deps.trackCaptureWaitMs ?? 35000 })
         : await waitForTrackedChangeDiff(trackedBefore, operationPaths, {
           waitMs: 3600, intervalMs: 180, stopOnFirst: true
         });
@@ -1376,8 +1327,20 @@
   }
 
   async function applyFileTreeOperation(operation, options = {}) {
+    if (operation.type === 'delete' && operation.undoCreatedFile) {
+      return applyCreatedFileUndo(operation, options);
+    }
     const initialProjectId = treeOperations.getProjectId?.();
     const initialCancellationSequence = readWriteCancellationSequence();
+    if (operation.type === 'create' && options.createBatch && typeof deps.createTextFile === 'function') {
+      if (options.baseFileLookup?.has(operation.path) && options.retryCreates !== true) {
+        return checkFileTreeOperationFreshness(operation, options.baseFileLookup);
+      }
+      return deps.createTextFile(operation, { batch: options.createBatch,
+        allowExistingMatches: options.retryCreates === true,
+        isCurrent: () => treeOperations.getProjectId?.() === initialProjectId
+          && readWriteCancellationSequence() === initialCancellationSequence });
+    }
     const freshness = await checkFileTreeOperationFreshness(operation, options.baseFileLookup);
     if (!freshness.ok) {
       return freshness;
@@ -1436,13 +1399,49 @@
         return { ...fileTreeVerificationFailed(operation, 'Server receipt is missing or stale.'), changedDocument: true };
       }
       recordFileTreeOperationSuccess(operation, options.baseFileLookup);
-      return { ok: true, method: created.method, verified: true };
+      return { ...created, ok: true, method: created.method, verified: true };
     }
     return {
       ok: false,
       code: 'file_tree_controls_unavailable',
       reason: 'No supported Overleaf file-tree method was detected'
     };
+  }
+
+  async function applyCreatedFileUndo(operation, options = {}) {
+    const projectId = treeOperations.getProjectId?.();
+    const cancellation = readWriteCancellationSequence();
+    const proof = operation.undoCreatedFile;
+    const expected = options.baseFileLookup?.get(operation.path);
+    const text = proof?.v === 1 && proof.kind === 'text' && typeof expected === 'string';
+    const binary = proof?.v === 1 && proof.kind === 'binary' && /^[a-f0-9]{64}$/i.test(proof.sha256 || '');
+    const isCurrent = () => Boolean(projectId) && projectId === options.runProjectId
+      && treeOperations.getProjectId?.() === projectId && readWriteCancellationSequence() === cancellation;
+    if (!isCurrent() || (!text && !binary) || typeof deps.deleteTextFile !== 'function') {
+      return { ok: false, code: 'undo_operation_failed', changedDocument: false,
+        reason: 'Verified created-file deletion is unavailable for this run.' };
+    }
+    if (text && projectPathExists(operation.path)) {
+      const current = await readCurrentTextFileForFreshness(operation.path);
+      if (!current.ok || current.text !== expected || !isCurrent()) {
+        return { ok: false, code: 'undo_operation_failed', changedDocument: false,
+          reason: 'The created file changed after this run and was left untouched.' };
+      }
+    }
+    const result = await deps.deleteTextFile(operation, {
+      isCurrent, undoCreatedFile: true,
+      expectedContent: text ? expected : undefined,
+      expectedSha256: binary ? proof.sha256.toLowerCase() : undefined,
+      canDelete: () => isCurrent() && (binary || (treeOperations.getActiveFilePath?.() === operation.path
+        && readActiveEditorText() === expected))
+    });
+    if (!result.ok) return result;
+    if (!isCurrent() || result.verified !== true || result.verification !== 'overleaf-zip') {
+      return { ok: false, code: 'undo_operation_failed', changedDocument: result.changedDocument !== false,
+        reason: 'The created file has no current server deletion receipt.' };
+    }
+    recordFileTreeOperationSuccess(operation, options.baseFileLookup);
+    return result;
   }
 
   async function verifyFileTreeOperation(operation) {

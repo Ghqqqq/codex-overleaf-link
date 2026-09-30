@@ -103,30 +103,22 @@ test('projection requires actual recovery payloads and terminal lifecycle states
   }
 });
 
-test('a stale top-level failure cannot override successful tracked-change evidence', () => {
+test('aggregate failure cannot be discarded solely because one tracked change succeeded', () => {
   for (const kind of ['accept', 'reject']) {
-    const run = {
-      trackedChangeStatus: 'pending',
-      undoTrackedChanges: [{ id: 'change-1', path: 'main.tex' }],
-      undoExpectedFiles: [{ path: 'main.tex', content: 'before' }]
-    };
-    const settlement = Settlement.settleTrackedChangeLifecycle({
-      kind,
-      run,
-      result: {
-        ok: false,
-        applied: [{
-          trackedChange: { id: 'change-1', path: 'main.tex' },
-          result: { ok: true, changedDocument: true }
-        }],
-        skipped: []
-      }
-    });
-    const next = Settlement.applySettlementTransition(run, settlement);
-
-    const expectedStatus = kind === 'accept' ? 'accepted' : 'rejected';
-    assert.equal(settlement.decision, expectedStatus);
-    assert.equal(next.trackedChangeStatus, expectedStatus);
+    const run = { trackedChangeStatus: 'pending', undoTrackedChanges: [{ id: 'change-1', path: 'main.tex' }],
+      undoExpectedFiles: [{ path: 'main.tex', content: 'before' }] };
+    const result = { ok: false, applied: [{ trackedChange: { id: 'change-1', path: 'main.tex' },
+      result: { ok: true, changedDocument: true } }], skipped: [] };
+    const incomplete = Settlement.settleTrackedChangeLifecycle({ kind, run, result });
+    const unresolved = Settlement.applySettlementTransition(run, incomplete);
+    assert.equal(incomplete.decision, 'needs_review');
+    assert.deepEqual(unresolved.undoTrackedChanges, run.undoTrackedChanges);
+    assert.deepEqual(unresolved.undoExpectedFiles, run.undoExpectedFiles);
+    const confirmed = Settlement.settleTrackedChangeLifecycle({ kind, run, result: { ...result, ok: true } });
+    const complete = Settlement.applySettlementTransition(run, confirmed);
+    assert.equal(complete.trackedChangeStatus, kind === 'accept' ? 'accepted' : 'rejected');
+    assert.deepEqual(complete.undoTrackedChanges, []);
+    assert.deepEqual(complete.undoExpectedFiles, []);
   }
 });
 

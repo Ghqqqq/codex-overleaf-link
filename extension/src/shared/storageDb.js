@@ -1,18 +1,23 @@
 (function initStorageDb(root, factory) {
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(require('./storageRunActions'), require('./runInputQueue'),
-      require('./settlementFacts'), require('./storageSessionClaims'), require('./sessionState'));
+      require('./settlementFacts'), require('./storageSessionClaims'), require('./sessionState'), require('./runActivityModel'), require('./sharedSessionBridge'), require('./subagentActivityModel'), require('./storageValuePruning'));
   } else {
     root.CodexOverleafModuleRegistry.define('StorageDb', [
       'StorageRunActions',
       'RunInputQueue',
       'SettlementFacts',
       'StorageSessionClaims',
-      'SessionState'
+      'SessionState',
+      'RunActivityModel',
+      'SharedSessionBridge',
+      'SubagentActivityModel',
+      'StorageValuePruning'
     ], factory);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue, SettlementFacts, StorageSessionClaims, SessionState) {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue, SettlementFacts, StorageSessionClaims, SessionState, RunActivityModel, SharedSessionBridge, SubagentActivityModel, StorageValuePruning) {
   'use strict';
+  const { removeEmptySummaryFields, removeEmptyFields } = StorageValuePruning;
   if (!StorageRunActions?.compactRunsForStorage || !StorageRunActions?.compactRunActionPayload || !StorageRunActions?.compactProviderSnapshot || !StorageRunActions?.compactRunExecutionSnapshot || !StorageRunActions?.compactStructuredEventValue || !StorageRunActions?.hashString || !RunInputQueue?.compactForStorage || !SettlementFacts?.compactSettlementFacts || !StorageSessionClaims?.createSessionClaimer) {
     throw new Error('Codex Overleaf storage run-action helpers are unavailable.');
   }
@@ -280,6 +285,7 @@
       codexThreadId: typeof input.codexThreadId === 'string' ? input.codexThreadId : '',
       status: typeof input.status === 'string' && input.status ? input.status : 'active',
       focusFiles: normalizePathList(input.focusFiles),
+      selectionContext: SessionState.normalizeSelectionContext(input.selectionContext),
       projectReferenceFiles: SessionState.normalizeProjectReferenceFiles(input.projectReferenceFiles),
       pendingInputs: RunInputQueue.compactForStorage(input.pendingInputs, {
         normalizeField: normalizeTextField,
@@ -655,8 +661,10 @@
     return StorageRunActions.compactRunsForStorage(runs, options, SESSION_STORAGE_LIMITS.maxRunsPerSession, compactRunForStorage);
   }
   function compactRunForStorage(run, keepActionPayload) {
+    run = SessionState.recoverRecordedRunFailure(run);
     var actionPayload = StorageRunActions.compactRunActionPayload(run, keepActionPayload);
     var compact = {
+      ...SessionState.pickWritebackRecovery(run),
       id: run.id,
       task: normalizeDisplayTextForStorage(run.task || 'untitled task', SESSION_STORAGE_LIMITS.taskChars),
       mode: typeof run.mode === 'string' ? redactSecretLikeText(run.mode) : '', ...StorageRunActions.compactProviderSnapshot(run),
@@ -664,12 +672,13 @@
       model: normalizeTextField(run.model, 80),
       reasoningEffort: typeof run.reasoningEffort === 'string' ? redactSecretLikeText(run.reasoningEffort) : '',
       speedTier: typeof run.speedTier === 'string' ? redactSecretLikeText(run.speedTier) : '',
-      status: normalizeRunStatus(run.status),
+      status: SessionState.normalizeRunStatus(run.status, run),
       statusText: normalizeDisplayTextForStorage(run.statusText, SESSION_STORAGE_LIMITS.statusTextChars),
       runProjectId: normalizeProjectPrefKey(run.runProjectId),
       startedAt: typeof run.startedAt === 'string' ? redactSecretLikeText(run.startedAt) : '',
       finishedAt: typeof run.finishedAt === 'string' ? redactSecretLikeText(run.finishedAt) : '',
       events: compactRunEventsForStorage(run.events),
+      ...(run.subagents?.length ? { subagents: SubagentActivityModel.normalize(run.subagents, sanitizeAssistantVisibleText) } : {}),
       attachments: compactRunAttachmentsForStorage(run.attachments),
       appliedOperations: actionPayload.appliedOperations,
       undoOperations: actionPayload.undoOperations,
@@ -719,6 +728,13 @@
           streamKey: typeof event.streamKey === 'string' ? redactSecretLikeText(event.streamKey) : '',
           streamRole: typeof event.streamRole === 'string' ? redactSecretLikeText(event.streamRole) : ''
         };
+        // Persist the bounded display projection, never the raw tool payload.
+        // Hydration uses the same model; dropping this metadata demotes tools
+        // to hidden diagnostics after an otherwise successful history reload.
+        var activity = RunActivityModel.capture(event, sanitizeAssistantVisibleText);
+        if (activity) compact.activity = activity;
+        var streamPhase = RunActivityModel.normalizePhase(event.streamPhase);
+        if (streamPhase) compact.streamPhase = streamPhase;
         if (event.subagent === true) {
           compact.subagent = true;
         }
@@ -914,25 +930,6 @@
       .trim(), maxChars || SESSION_STORAGE_LIMITS.pathChars);
   }
 
-  function normalizeRunStatus(status) {
-    // Welcome-panel + write-guard: the run-status
-    // enum gained three post-navigation values. The storage normalizer must
-    // accept them so a settled run round-trips intact through `buildSessionRecord`.
-    // Unknown legacy values fall through to `completed` (the historical default).
-    return [
-      'pending',
-      'running',
-      'completed',
-      'failed',
-      'background_completed',
-      'needs_review_after_navigation',
-      'abandoned_after_navigation',
-      // v1.8.1: reload-orphaned runs settle to 'interrupted' (v1.7.6); the
-      // storage round-trip must not rewrite them to a false 'completed'.
-      'interrupted'
-    ].indexOf(status) !== -1 ? status : 'completed';
-  }
-
   function normalizeEventStatus(status) {
     return VALID_EVENT_STATUSES[status] ? status : 'info';
   }
@@ -1106,37 +1103,7 @@
     return 'error';
   }
 
-  function removeEmptySummaryFields(value) {
-    var result = {};
-    var keys = Object.keys(value || {});
-    for (var i = 0; i < keys.length; i++) {
-      var key = keys[i];
-      var item = value[key];
-      if (item === undefined || item === '' || item === null) {
-        continue;
-      }
-      if (Array.isArray(item) && item.length === 0) {
-        continue;
-      }
-      if (item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).length === 0) {
-        continue;
-      }
-      result[key] = item;
-    }
-    return result;
-  }
 
-  function removeEmptyFields(value) {
-    var result = {};
-    var keys = Object.keys(value);
-    for (var i = 0; i < keys.length; i++) {
-      var key = keys[i];
-      if (value[key] !== undefined && value[key] !== '') {
-        result[key] = value[key];
-      }
-    }
-    return result;
-  }
 
   // Welcome-panel + write-guard: the Recent-projects
   // dashboard variant calls `listRecentProjectsAcrossAccount` to get the
@@ -1328,7 +1295,7 @@
   }
   var hashString = StorageRunActions.hashString;
 
-  return {
+  return SharedSessionBridge.decorate({
     TARGET_SCHEMA_VERSION: TARGET_SCHEMA_VERSION,
     DB_NAME: DB_NAME,
     STORES: STORES,
@@ -1355,5 +1322,5 @@
     filterRecentProjectsAcrossAccount: filterRecentProjectsAcrossAccount,
     derivePrimaryStatusBadge: derivePrimaryStatusBadge,
     getAllSessions: getAllSessions
-  };
+  });
 });

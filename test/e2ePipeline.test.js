@@ -19,6 +19,7 @@ const binaryAssetUploaderSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/page/binaryAssetUploader.js'),
   'utf8'
 );
+const writebackReceiptJournalSource = fs.readFileSync(path.join(__dirname, '../extension/src/page/writebackReceiptJournal.js'), 'utf8');
 const pageRpcContractSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/shared/pageRpcContract.js'),
   'utf8'
@@ -125,6 +126,7 @@ function createMinimalPageBridgeHarness({ activePath, files }) {
   let selectedPath = activePath;
   let listener = null;
   let pendingResult = null;
+  let requestSequence = 0;
   const bridgeCapability = 'test-page-bridge-capability';
   let capabilityInitialized = false;
 
@@ -202,11 +204,20 @@ function createMinimalPageBridgeHarness({ activePath, files }) {
   vm.runInContext(textFileCreatorSource, context, { filename: 'textFileCreator.js' });
   vm.runInContext(overleafProjectSnapshotSource, context, { filename: 'overleafProjectSnapshot.js' });
   vm.runInContext(writeGuardSource, context, { filename: 'writeGuard.js' });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/trackedChangeOwnership.js'), 'utf8'), context, { filename: 'trackedChangeOwnership.js' });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/trackedChangeReplay.js'), 'utf8'), context, { filename: 'trackedChangeReplay.js' });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/textCoordinates.js'), 'utf8'), context, { filename: 'textCoordinates.js' });
+  if (typeof window.fetch !== 'function') window.fetch = async () => { throw new Error('Unexpected reference-project fetch in page fixture'); };
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/referenceProjects.js'), 'utf8'), context, { filename: 'referenceProjects.js' });
   vm.runInContext(trackedChangeCaptureSource, context, { filename: 'trackedChangeCapture.js' });
   vm.runInContext(trackedChangesLifecycleSource, context, { filename: 'trackedChangesLifecycle.js' });
   vm.runInContext(writebackRouterSource, context, { filename: 'writebackRouter.js' });
   vm.runInContext(pageBridgeCapabilitySource, context, { filename: 'pageBridgeCapability.js' });
   vm.runInContext(pageRpcContractSource, context, { filename: 'pageRpcContract.js' });
+  vm.runInContext(writebackReceiptJournalSource, context, { filename: 'writebackReceiptJournal.js' });
+  // Existing fixtures keep their original clock budget; the real-router fake-clock suite covers the 35s production default.
+  const createRouterForFixture = window.CodexOverleafWritebackRouter.create;
+  window.CodexOverleafWritebackRouter.create = deps => createRouterForFixture({ ...deps, trackCaptureWaitMs: 5000 });
   vm.runInContext(pageBridgeSource, context, { filename: 'pageBridge.js' });
 
   return {
@@ -249,7 +260,7 @@ function createMinimalPageBridgeHarness({ activePath, files }) {
     });
     const data = {
       source: 'codex-overleaf/content',
-      id: `test-call-${method}`,
+      id: `test-call-${method}-${++requestSequence}`,
       method,
       params
     };

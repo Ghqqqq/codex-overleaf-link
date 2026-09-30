@@ -85,7 +85,12 @@
       record !== rawExistingSessions[index] && !writable.some(item => item.id === record.id)
     );
     if (cleanedExisting.length || writable.length) {
-      await StorageDb.putRecords('sessions', [...cleanedExisting, ...writable]);
+      const written = await StorageDb.putRecords('sessions', [...cleanedExisting, ...writable], {
+        reviewRunIds: options.reviewRunIds
+      });
+      // Check the actual durable result, including a decision already saved
+      // from another origin, instead of acknowledging only the proposed view.
+      return written.filter(record => writable.some(candidate => candidate.id === record.id));
     }
     return writable;
   }

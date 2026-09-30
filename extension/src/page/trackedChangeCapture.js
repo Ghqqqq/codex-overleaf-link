@@ -1,8 +1,9 @@
 (function (root, factory) {
-  const api = factory();
+  const api = factory(typeof module === 'object' && module.exports
+    ? require('./trackedChangeOwnership') : root.CodexOverleafTrackedChangeOwnership);
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) root.CodexOverleafTrackedChangeCapture = api;
-})(typeof window !== 'undefined' ? window : globalThis, function () {
+})(typeof window !== 'undefined' ? window : globalThis, function (Ownership) {
   'use strict';
 
   function create(deps = {}) {
@@ -125,11 +126,22 @@
         reason: snapshot.ready ? (snapshot.refs.length ? 'native_untracked_undo_pending_changes' : '')
           : snapshot.reason || 'native_review_unavailable' };
     }
+    const mergedPrefix = 'native-merge:';
+    const nativeKey = tuple => 'native:' + JSON.stringify(tuple);
+    const ledgerKeys = refs => refs.map(ref => ref.key).sort();
+    const { mergedInsertionScope, prepareMergedInsertionReview, nativeOwned, rangesFor, shiftedBaseline, scopeCovered } = Ownership.create({
+      fingerprint, readActiveEditorText, mergedPrefix, nativeKey, ledgerKeys
+    });
+
+
+
     function prepareTrackedChangeReview(path, refs = []) {
       const snapshot = readNativeSnapshot(path);
       const blocked = reason => ({ ...snapshot, ok: false, reason });
       if (!snapshot.ready) return blocked(snapshot.reason || 'native_review_unavailable');
       const targets = refs.filter(ref => ref.path === path), ids = new Set(targets.map(ref => ref.id));
+      if (targets.some(ref => ref.key?.startsWith(mergedPrefix)))
+        return prepareMergedInsertionReview(path, targets, snapshot);
       let expected;
       try {
         expected = targets.map(ref => {
@@ -150,19 +162,6 @@
       return { ...snapshot, ok: true, targets, ids: [...ids],
         unrelated: snapshot.refs.filter(ref => !ids.has(ref.id)) };
     }
-    function nativeOwned(ref, capture) {
-      if (ref.source !== 'native' || !Number.isSafeInteger(ref.from) || !Number.isSafeInteger(ref.to)) return false;
-      if (ref.kind === 'delete') return capture.ranges.some(range => ref.from >= range.start && ref.from <= range.end
-        && ref.textLength === range.removedLength && ref.textHash === range.removedHash && range.removedLength > 0);
-      let covered = ref.from;
-      for (const range of capture.ranges) {
-        if (range.end < covered) continue;
-        if (range.start > covered) break;
-        covered = Math.max(covered, range.end);
-        if (covered >= ref.to) return ref.to > ref.from;
-      }
-      return false;
-    }
     const identity = ref => (ref.path || '') + '\0' + ref.key;
     function diff(before, after) {
       const seen = new Set(before.map(identity));
@@ -172,34 +171,6 @@
         seen.add(key);
         return true;
       });
-    }
-    function rangesFor(operation, beforeContent, postContent) {
-      const patches = Array.isArray(operation.patches) && operation.patches.length
-        ? operation.patches
-        : [{ from: 0, to: beforeContent.length, insert: postContent }];
-      let delta = 0;
-      return patches.map(patch => {
-        const range = { from: patch.from, to: patch.to,
-          start: patch.from + delta, end: patch.from + delta + String(patch.insert ?? '').length,
-          removedLength: patch.to - patch.from, removedHash: fingerprint(beforeContent.slice(patch.from, patch.to)) };
-        delta += String(patch.insert ?? '').length - (patch.to - patch.from);
-        return range;
-      });
-    }
-    function shiftedBaseline(before, ranges) {
-      let overlap = false;
-      const refs = before.map(ref => {
-        const match = /^pos:(\d+):/.exec(ref.key);
-        if (!match) return ref;
-        const pos = Number(match[1]);
-        let delta = 0;
-        for (const range of ranges) {
-          if (pos >= range.from && pos < range.to) overlap = true;
-          if (pos >= range.to) delta += (range.end - range.start) - (range.to - range.from);
-        }
-        return { ...ref, key: ref.key.replace(/^pos:\d+:/, 'pos:' + (pos + delta) + ':') };
-      });
-      return { refs, overlap };
     }
     function allowedRef(ref, capture) {
       if (ref.path !== capture.path) return false;
@@ -211,16 +182,6 @@
       // Text-only viewport signatures are retained for legacy lookup, but are
       // insufficient to assign a new task ownership after a delayed capture.
       return Boolean(ref.id);
-    }
-    function scopeCovered(refs, capture) {
-      if (capture.source === 'native') return capture.ranges.every(range => refs.some(ref =>
-        ref.from <= range.end && ref.to >= range.start));
-      const positioned = refs.filter(ref => /^pos:\d+:/.test(ref.key));
-      if (refs.some(ref => ref.id)) return true;
-      return capture.ranges.every(range => positioned.some(ref => {
-        const pos = Number(/^pos:(\d+):/.exec(ref.key)[1]);
-        return pos >= range.start && pos <= range.end;
-      }));
     }
     async function waitForTrackedChangeDiff(before, paths, options = {}) {
       const waitMs = Math.max(0, Number(options.waitMs ?? 5000));
@@ -244,9 +205,15 @@
           if (options.capture && !allowedRef(ref, options.capture)) { filtered++; continue; }
           found.set(identity(ref), ref);
         }
+        const merged = native && lastSnapshotReady
+          ? mergedInsertionScope(options.capture, after, readActiveEditorText()) : null;
+        if (merged) { found.clear(); found.set(identity(merged.ref), merged.ref); }
         const nextSignature = after.map(ref => native ? ref.key : identity(ref)).sort().join('\n');
         if (nextSignature !== signature) { signature = nextSignature; lastChange = now(); }
         if (options.stopOnFirst && found.size) { reason = 'observed'; break; }
+        if (options.capture && now() - start >= 5000 && lastSnapshotReady && found.size
+          && now() - lastChange >= stableMs && scopeCovered(Array.from(found.values()), options.capture)
+          && afterCount < limit) { reason = 'observed'; break; }
         if (now() >= deadline) break;
         await delay(Math.min(intervalMs, deadline - now()));
       }
@@ -263,7 +230,7 @@
           source: options.capture?.source || 'dom', sourceReason }
       };
     }
-    async function captureTrackedWrite({ trackedBefore, captureBaseline, operation, beforeContent, postContent, runProjectId }) {
+    async function captureTrackedWrite({ trackedBefore, captureBaseline, operation, beforeContent, postContent, runProjectId, waitMs = 5000 }) {
       if (beforeContent === postContent) return { trackedChanges: [], capture: null };
       const ranges = rangesFor(operation, beforeContent, postContent);
       const baseline = shiftedBaseline(trackedBefore, ranges);
@@ -284,7 +251,7 @@
         capture.reason = baseline.overlap ? 'preexisting_change_overlap' : 'capture_baseline_limit';
         return { trackedChanges: [], capture };
       }
-      return observe(capture, postContent, 5000);
+      return observe(capture, postContent, Math.min(35000, Math.max(5000, Number(waitMs) || 5000)));
     }
     function validCapture(capture) {
       return capture?.version === 1 && typeof capture.path === 'string'
@@ -333,7 +300,26 @@
       if (params.capture?.runProjectId !== params.runProjectId) {
         return { ok: false, code: 'capture_project_mismatch', trackedChanges: [] };
       }
-      return observe(params.capture, params.expectedContent, 1200);
+      const capture = params.capture;
+      // An expired polling window does not erase a provable, unchanged scope.
+      // Recovery is read-only and must reconstruct the complete old/new ledger.
+      if (validCapture(capture) && capture.source === 'native'
+        && (now() >= capture.expiresAt || capture.state === 'needs_review')) {
+        const active = getActiveFilePath() === capture.path
+          && readActiveEditorText() === params.expectedContent
+          && (!deps.getProjectId || deps.getProjectId() === params.runProjectId);
+        const snapshot = active ? readNativeSnapshot(capture.path, capture.nativeDocId) : null;
+        const merged = snapshot?.ready && snapshot.acceptByIdSupported
+          ? mergedInsertionScope(capture, snapshot.refs, params.expectedContent) : null;
+        if (merged) return { ok: true, trackedChanges: [merged.ref], capture: {
+          ...capture, refs: [merged.ref], state: 'observed', reason: 'observed',
+          diagnostics: { ...capture.diagnostics, capturedCount: 1,
+            sourceReason: 'native_merged_insertion_recovered' }
+        } };
+        return { ok: false, trackedChanges: [], capture: { ...capture,
+          state: 'needs_review', reason: 'capture_merged_scope_unavailable' } };
+      }
+      return observe(capture, params.expectedContent, 1200);
     }
     return { collectTrackedChangeNodes, trackedChangeRefFromNode, collectTrackedChangeRefsForPaths,
       waitForTrackedChangeDiff, prepareTrackedChangeCapture, prepareTrackedChangeReview, prepareUntrackedUndo, getTrackedChangeCaptureStatus, captureTrackedWrite, reconcileTrackedChangeCapture };

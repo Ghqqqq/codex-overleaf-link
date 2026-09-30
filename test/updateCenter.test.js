@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { createCoordinatorHarness, UPDATE_KEY } = require('./helpers/updateCoordinatorHarness');
 
 const repoRoot = path.resolve(__dirname, '..');
 const read = relativePath => fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
@@ -40,25 +41,59 @@ test('Overleaf update actions stay in the current tab and never create an update
   assert.doesNotMatch(coordinator, /chrome\.windows\.create/);
 });
 
-test('failed managed updates stop progress and expose an actionable recovery command', () => {
+test('the failure notice retains the public manual-install recovery action', () => {
   const notice = read('extension/src/content/updateNotice.js');
-  const bootstrap = read('extension/bootstrap/background.js');
-  const background = read('extension/src/background.js');
-  const coordinator = read('extension/src/backgroundUpdateCoordinator.js');
-
   assert.match(notice, /codex-overleaf-link@\$\{version\} -- install-managed/);
   assert.match(notice, /update_recovery_timeout/);
   assert.match(notice, /id: 'copy-manual'/);
-  assert.match(bootstrap, /initializeBootstrap\(\)\.catch\(async error => \{\s*await setUpdateState\(\{ state: 'failed'/);
-  assert.match(bootstrap, /method: 'update\.status'/);
-  assert.match(bootstrap, /transaction\?\.state === 'awaiting_health'[\s\S]*confirmPendingUpdate\(transaction\)/);
-  assert.match(bootstrap, /async function rollbackBrokenRuntime\(error\)[\s\S]*state: 'failed'/);
-  assert.match(coordinator, /transaction\?\.state === 'awaiting_health'[\s\S]*method: 'update\.rollback'|requestNative\('update\.rollback'/);
-  assert.match(coordinator, /code: 'update_health_timeout'/);
-  assert.match(coordinator, /state: 'failed'/);
-  assert.match(background, /managedUpdateExecutionLocked/);
-  assert.match(background, /background_execution_pending/);
-  assert.match(coordinator, /CodexOverleafManagedUpdateExecutor[\s\S]*installAuthorizedUpdate/);
+});
+
+test('health recovery verifies rollback and settles into a terminal state', async () => {
+  let rolledBack = false;
+  const transaction = { id: 'transaction-1', sourceVersion: '2.4.1', targetVersion: '2.4.2' };
+  const h = await createCoordinatorHarness({ onNative(request) {
+    if (request.method === 'update.rollback') {
+      assert.equal(request.params.transactionId, transaction.id);
+      assert.equal(request.params.expectedState, 'awaiting_health');
+      rolledBack = true;
+      return { ok: true, result: { state: 'rolled_back', version: transaction.sourceVersion } };
+    }
+    if (request.method === 'update.status') return { ok: true, result: {
+      managed: true, installedAligned: rolledBack,
+      activeVersion: rolledBack ? transaction.sourceVersion : transaction.targetVersion,
+      runtimeVersion: transaction.sourceVersion,
+      transaction: { ...transaction, state: rolledBack ? 'rolled_back' : 'awaiting_health', reasonCode: 'update_health_timeout' }
+    } };
+  } });
+  h.seed({ state: 'awaiting_health', currentVersion: '2.4.1', latestVersion: '2.4.2',
+    transactionId: transaction.id, deadlineAt: 1, recoveryPending: true });
+  const result = await h.send('codex-overleaf/consent-update-recover');
+  assert.equal(result.ok, true);
+  assert.equal(rolledBack, true);
+  assert.equal(h.data[UPDATE_KEY].state, 'rolled_back');
+  assert.equal(h.data[UPDATE_KEY].currentVersion, '2.4.1');
+  assert.equal(h.data[UPDATE_KEY].recoveryPending, false);
+  assert.equal(h.data[UPDATE_KEY].cancelRequested, false);
+  const rollbackIndex = h.events.findIndex(event => event.type === 'native' && event.method === 'update.rollback');
+  assert.ok(h.events.slice(rollbackIndex + 1).some(event => event.type === 'native' && event.method === 'update.status'));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(h.reloads(), 1);
+});
+
+test('unconfirmed rollback stays recoverable instead of reporting restored success', async () => {
+  const h = await createCoordinatorHarness({ onNative(request) {
+    if (request.method === 'update.status') return { ok: true, result: { managed: true, installedAligned: false,
+      activeVersion: '2.4.2', runtimeVersion: '2.4.1', transaction: {
+        id: 'transaction-1', sourceVersion: '2.4.1', targetVersion: '2.4.2', state: 'awaiting_health'
+      } } };
+    if (request.method === 'update.rollback') return { ok: false, error: { code: 'fixture_rollback_failed', message: 'still recovering' } };
+  } });
+  h.seed({ state: 'awaiting_health', currentVersion: '2.4.1', latestVersion: '2.4.2',
+    transactionId: 'transaction-1', deadlineAt: 1, recoveryPending: true });
+  await h.send('codex-overleaf/consent-update-recover');
+  assert.equal(h.data[UPDATE_KEY].state, 'failed');
+  assert.equal(h.data[UPDATE_KEY].recoveryPending, true);
+  assert.equal(h.reloads(), 0);
 });
 
 test('consent updater checks once at browser or extension startup without changing periodic checks', () => {

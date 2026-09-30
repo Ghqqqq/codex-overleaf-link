@@ -33,128 +33,47 @@
       StorageDb
     } = deps;
 
-  // --- Change history (v1.7.5): the audit log finally gets a read path. ---
-  // Loaded lazily when the Settings card is expanded; newest 50 project runs.
-  let auditHistoryRecords = [];
-
-  async function renderAuditHistoryPanel() {
-    const container = getSettingsPanelInstance()?.container;
-    const list = container?.querySelector('[data-history-list]');
-    if (!list) {
-      return;
-    }
-    const filterInput = container.querySelector('[data-history-filter]');
-    if (filterInput && !filterInput.placeholder) {
-      filterInput.placeholder = tx('Filter by file or task\u2026', '按文件名或任务过滤…');
-    }
-    list.textContent = tx('Loading\u2026', '正在加载…');
-    let records = [];
-    try {
-      records = StorageDb?.getAllByIndex
-        ? await StorageDb.getAllByIndex('auditLogs', 'projectId', getCurrentProjectId())
-        : [];
-    } catch (error) {
-      list.textContent = tx(`Could not load change history: ${error.message}`, `无法加载变更历史：${error.message}`);
-      return;
-    }
-    auditHistoryRecords = (records || [])
-      .sort((a, b) => String(b?.createdAt || '').localeCompare(String(a?.createdAt || '')))
-      .slice(0, 50);
-    applyAuditHistoryFilter();
-  }
-
-  function applyAuditHistoryFilter() {
-    const container = getSettingsPanelInstance()?.container;
-    const list = container?.querySelector('[data-history-list]');
-    if (!list) {
-      return;
-    }
-    const query = String(container.querySelector('[data-history-filter]')?.value || '').trim().toLowerCase();
-    const filePaths = record => []
-      .concat(record?.appliedFiles || [], record?.changedFiles || [])
-      .map(file => (file && typeof file === 'object') ? file.path : file)
-      .filter(Boolean);
-    const rows = auditHistoryRecords.filter(record => {
-      if (!query) {
-        return true;
-      }
-      return [record?.promptSummary || '', ...filePaths(record)].join(' ').toLowerCase().includes(query);
-    });
-    list.replaceChildren();
-    if (!rows.length) {
-      const empty = document.createElement('div');
-      empty.className = 'codex-history-empty';
-      empty.textContent = query
-        ? tx('No recorded changes match this filter.', '没有匹配该过滤条件的变更记录。')
-        : tx('No recorded changes for this project yet.', '本项目还没有已记录的变更。');
-      list.append(empty);
-      return;
-    }
-    for (const record of rows) {
-      const row = document.createElement('div');
-      row.className = 'codex-history-row';
-      row.dataset.resultStatus = record.resultStatus || '';
-      const when = document.createElement('div');
-      when.className = 'codex-history-when';
-      when.textContent = record.createdAt ? new Date(record.createdAt).toLocaleString() : '';
-      const task = document.createElement('div');
-      task.className = 'codex-history-task';
-      task.textContent = record.promptSummary || '';
-      task.title = record.promptSummary || '';
-      const files = document.createElement('div');
-      files.className = 'codex-history-files';
-      const applied = (record.appliedFiles || [])
-        .map(file => (file && typeof file === 'object') ? file.path : file)
-        .filter(Boolean);
-      files.textContent = applied.length
-        ? applied.join(' \u00b7 ')
-        : tx('No files were written.', '未写入文件。');
-      row.append(when, task, files);
-      // v1.8.0: rows jump to the run they describe (turnId === run.id).
-      if (record.sessionId && record.turnId && typeof onHistoryRowJump === 'function') {
-        row.classList.add('codex-history-row--linked');
-        row.setAttribute('role', 'button');
-        row.tabIndex = 0;
-        const jump = () => onHistoryRowJump(record);
-        row.addEventListener('click', jump);
-        row.addEventListener('keydown', keyEvent => {
-          if (keyEvent.key === 'Enter' || keyEvent.key === ' ') {
-            keyEvent.preventDefault();
-            jump();
-          }
-        });
-      }
-      list.append(row);
-    }
-  }
+  // Read-only projection over scoped audit/session records. Prompt redaction
+  // remains owned by the audit writer; this view never persists task text.
+  const historyView = deps.ChangeHistoryView.create({
+    tx, StorageDb, getState, getCurrentProjectId, getSettingsPanelInstance,
+    getAccountScopeId: deps.getAccountScopeId,
+    sanitizeText: deps.sanitizeText,
+    onHistoryRowJump
+  });
+  function renderAuditHistoryPanel() { return historyView.load(); }
+  function applyAuditHistoryFilter() { historyView.filter(); }
 
   // --- History & storage (v1.7.5): usage summary + clear-all in Settings ---
   let storageUsageRequestId = 0;
   function refreshStorageUsageSummary() {
-    const node = getSettingsPanelInstance()?.container?.querySelector('[data-storage-usage]');
-    if (!node) {
-      return;
-    }
+    const host = getSettingsPanelInstance()?.container;
+    const node = host?.querySelector('[data-storage-usage]');
+    if (!node) return;
+    const estimateNode = host.querySelector('[data-storage-estimate]') || node;
     const requestId = ++storageUsageRequestId;
     const projectId = getCurrentProjectId?.();
+    const accountScopeId = deps.getAccountScopeId?.();
     const settingsScope = getPanel?.()?.dataset?.settingsScope;
-    const isCurrent = () => requestId === storageUsageRequestId && projectId === getCurrentProjectId?.()
+    const isCurrent = () => requestId === storageUsageRequestId
+      && projectId === getCurrentProjectId?.()
+      && accountScopeId === deps.getAccountScopeId?.()
       && settingsScope === getPanel?.()?.dataset?.settingsScope
       && getSettingsPanelInstance()?.container?.querySelector('[data-storage-usage]') === node;
     const current = getState();
-    const sessionCount = Array.isArray(current?.sessions) ? current.sessions.length : 0;
-    const runCount = Array.isArray(current?.runs) ? current.runs.length : 0;
+    const sessions = Array.isArray(current?.sessions) ? current.sessions : [];
+    const runIds = new Set(sessions.flatMap(session => session.id === current.activeSessionId
+      ? current.runs || [] : session.runs || []).map(run => run?.id).filter(Boolean));
     const counts = settingsScope === 'account'
-      ? tx('All projects in this browser', '当前浏览器中的所有项目')
-      : tx(
-        `${sessionCount} loaded session(s) in this project · ${runCount} run(s) in the active session`,
-        `当前项目已加载 ${sessionCount} 个会话 · 当前会话 ${runCount} 轮运行`
-      );
-    // Dynamic text belongs to this renderer, not the loading-label translator.
+      ? tx('Saved history across projects in this browser', '当前浏览器中跨项目保存的历史')
+      : tx(sessions.length + ' loaded conversations · ' + runIds.size + ' runs in this project',
+        '本项目已加载 ' + sessions.length + ' 个对话 · ' + runIds.size + ' 轮运行');
     node.removeAttribute?.('data-i18n');
     node.textContent = counts;
-    const unavailable = () => {
-      if (isCurrent()) node.textContent = tx(`${counts} · Site storage estimate unavailable`, `${counts} · 本站点容量暂无法估算`);
+    estimateNode.removeAttribute?.('data-i18n');
+    if (estimateNode !== node) estimateNode.textContent = tx('Estimating site storage…', '正在估算站点占用…');
+    const showEstimate = value => {
+      if (isCurrent()) estimateNode.textContent = estimateNode === node ? counts + ' · ' + value : value;
     };
     let timer;
     const estimate = Promise.resolve().then(() => navigator.storage?.estimate?.());
@@ -162,11 +81,16 @@
     return Promise.race([estimate, deadline]).then(info => {
       if (!isCurrent()) return;
       const usage = info?.usage;
-      if (!Number.isFinite(usage) || usage < 0) { unavailable(); return; }
+      if (!Number.isFinite(usage) || usage < 0) {
+        showEstimate(tx('Site storage estimate unavailable; saved history is still accessible.', '暂无法估算站点容量，仍可查看已保存的历史。'));
+        return;
+      }
       const mb = usage / (1024 * 1024);
-      const size = usage === 0 ? '0 KB' : mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(usage / 1024))} KB`;
-      node.textContent = tx(`${counts} · Site total ~${size}`, `${counts} · 本站点总占用约 ${size}`);
-    }).catch(unavailable).finally(() => clearTimeout(timer));
+      const size = usage === 0 ? '0 KB' : mb >= 1 ? mb.toFixed(1) + ' MB' : Math.max(1, Math.round(usage / 1024)) + ' KB';
+      showEstimate(tx('Site total ~' + size + ' (includes Overleaf data; not extension-only usage).',
+        '本站点总占用约 ' + size + '，包含 Overleaf 数据，并非插件单独占用。'));
+    }).catch(() => showEstimate(tx('Site storage estimate unavailable.', '暂无法估算站点容量。')))
+      .finally(() => clearTimeout(timer));
   }
 
   async function clearAllHistoryWithConfirm() {
@@ -175,12 +99,12 @@
       return;
     }
     const confirmed = await showPluginConfirm({
-      title: tx('Clear all history?', '清空全部历史？'),
+      title: tx('Clear local history?', '清理本地历史？'),
       message: tx(
-        'This permanently deletes every stored session, run and audit record for ALL projects — including the dashboard project list and cached project names. Project settings and rules are kept. This cannot be undone.',
-        '将永久删除所有项目的全部会话、运行与审计记录——包括仪表盘的项目列表与缓存的项目名。项目设置与规则会保留。此操作不可撤销。'
+        'This permanently removes saved conversations, run and change records, undo information, and recent-project entries for ALL projects in this browser. Overleaf project files will not be deleted or reverted. Project settings and rules are kept. Removed history cannot be recovered.',
+        '将永久清理当前浏览器中所有项目的对话、运行与修改记录、撤销信息及最近项目条目。Overleaf 项目文件不会被删除或还原，项目设置与规则会保留。清理后的历史无法恢复。'
       ),
-      confirmLabel: tx('Delete everything', '全部删除'),
+      confirmLabel: tx('Clear local history', '清理本地历史'),
       destructive: true
     });
     if (!confirmed) {
@@ -188,6 +112,7 @@
     }
     try {
       await StorageDb?.clearAllStores?.();
+      historyView.invalidate();
       // v1.8.1: the dashboard's project-name cache lives in
       // chrome.storage.local, outside the IndexedDB stores — clear it too so
       // no (potentially sensitive) project titles outlive the wipe.
@@ -204,7 +129,8 @@
     await saveState();
     applyStateToPanel();
     refreshStorageUsageSummary();
-    showPluginToast(tx('All history cleared.', '已清空全部历史。'));
+    void renderAuditHistoryPanel();
+    showPluginToast(tx('Local history cleared. Overleaf files are unchanged.', '本地历史已清理，Overleaf 文件保持不变。'));
     getPanel()?.querySelector('[data-task]')?.focus();
   }
 
@@ -234,13 +160,14 @@
       showPluginToast(tx('Nothing to refill: the original task text is unavailable.', '无法回填：原任务文本不可用。'));
       return;
     }
-    prepareRetryReplacement?.(run || null);
+    prepareRetryReplacement?.(run || null, task);
     input.value = task;
     getState().task = task;
     autosizeTaskTextarea();
     syncComposerSendAvailability();
-    saveStateSoon();
-    input.focus();
+    saveStateSoon(0);
+    input.focus({ preventScroll: true });
+    input.scrollIntoView?.({ block: 'nearest' });
     try {
       input.setSelectionRange(task.length, task.length);
     } catch (error) {

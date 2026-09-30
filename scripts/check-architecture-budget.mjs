@@ -292,7 +292,18 @@ export const ARCHITECTURE_FILE_BUDGETS = Object.freeze([
   {
     path: 'native-host/src/taskRunnerRuntime.js',
     maxLines: 1350
-  }
+  },
+  { path: 'extension/src/page/textCoordinates.js', maxLines: 120 },
+  { path: 'extension/src/page/trackedChangeOwnership.js', maxLines: 260 },
+  { path: 'extension/src/page/trackedChangeReplay.js', maxLines: 190 },
+  { path: 'extension/src/content/diagnosticsExport.js', maxLines: 260 },
+  { path: 'extension/src/shared/storageValuePruning.js', maxLines: 60 },
+  { path: 'native-host/src/turnAttachments.js', maxLines: 140 },
+  { path: 'native-host/src/subagentWorkspacePath.js', maxLines: 60 },
+  { path: 'extension/src/content/writebackPlan.js', maxLines: 260 },
+  { path: 'native-host/src/subagentWorkspace.js', maxLines: 140 },
+  { path: 'extension/src/content/runResultActions.js', maxLines: 250 },
+  { path: 'extension/src/shared/compileAdapter.js', maxLines: 240 }
 ]);
 
 export function collectArchitectureBudgetResults(options = {}) {

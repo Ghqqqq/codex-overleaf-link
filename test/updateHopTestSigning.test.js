@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { BOOTSTRAP_PROTOCOL } = require('../native-host/src/updateTrust');
 
 test('ephemeral update signatures are accepted only by the temporary trust anchor', async () => {
   const {
@@ -15,7 +16,7 @@ test('ephemeral update signatures are accepted only by the temporary trust ancho
     channel: 'stable',
     version: '2.3.0',
     tag: 'v2.3.0',
-    bootstrapProtocol: 2,
+    bootstrapProtocol: BOOTSTRAP_PROTOCOL,
     gitCommit: 'a'.repeat(40),
     createdAt: '2026-07-27T00:00:00.000Z',
     updateBundle: {

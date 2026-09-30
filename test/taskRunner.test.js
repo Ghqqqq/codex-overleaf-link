@@ -48,11 +48,13 @@ function fixtureAgentEnv(fixtureName, extra = {}) {
   };
 }
 
-function loadTaskRunnerWithFakeRunner(fakeRunner) {
+function loadTaskRunnerWithFakeRunner(fakeRunner, options = {}) {
   const runnerPath = require.resolve('../native-host/src/codexSessionRunner');
   const taskRunnerPath = require.resolve('../native-host/src/taskRunner');
   const taskRunnerRuntimePath = require.resolve('../native-host/src/taskRunnerRuntime');
   const originalRunner = require(runnerPath);
+  const environmentPath = require.resolve('../native-host/src/nativeEnvironment');
+  const originalEnvironment = require(environmentPath);
 
   delete require.cache[taskRunnerPath];
   delete require.cache[taskRunnerRuntimePath];
@@ -61,10 +63,16 @@ function loadTaskRunnerWithFakeRunner(fakeRunner) {
     runCodexSession: fakeRunner
   };
 
-  const taskRunner = require(taskRunnerPath);
-  require.cache[runnerPath].exports = originalRunner;
-  delete require.cache[taskRunnerPath];
-  delete require.cache[taskRunnerRuntimePath];
+  let taskRunner;
+  try {
+    if (options.refreshEnvironment) require.cache[environmentPath].exports = { ...originalEnvironment, refreshCodexRuntimeEnv: options.refreshEnvironment };
+    taskRunner = require(taskRunnerPath);
+  } finally {
+    require.cache[runnerPath].exports = originalRunner;
+    require.cache[environmentPath].exports = originalEnvironment;
+    delete require.cache[taskRunnerPath];
+    delete require.cache[taskRunnerRuntimePath];
+  }
   return {
     ...taskRunner,
     handleRequest(request, env = {}, emit) {
@@ -142,7 +150,8 @@ function parseVersion(version) {
 }
 
 test('bridge.ping returns bridge metadata', async () => {
-  const response = await handleRequest({ id: '1', method: 'bridge.ping', params: {} }, {
+  const { handleRequest: handlePreparedRequest } = loadTaskRunnerWithFakeRunner(() => { assert.fail('bridge.ping must not execute an agent'); }, { refreshEnvironment: env => env });
+  const response = await handlePreparedRequest({ id: '1', method: 'bridge.ping', params: {} }, {
     CODEX_OVERLEAF_CODEX_PATH: '/opt/homebrew/bin/codex',
     CODEX_OVERLEAF_CODEX_VERSION: '0.144.6',
     CODEX_OVERLEAF_LATEXMK_PATH: '/Library/TeX/texbin/latexmk'
@@ -928,7 +937,7 @@ test('codex.run returns a clear error before spawning when Codex is missing', as
   const { handleRequest: handleWithFakeRunner } = loadTaskRunnerWithFakeRunner(async () => {
     calls++;
     return { status: 'completed', syncChanges: [] };
-  });
+  }, { refreshEnvironment: env => env });
 
   const response = await handleWithFakeRunner({
     id: 'codex-missing',

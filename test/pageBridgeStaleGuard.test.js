@@ -9,6 +9,7 @@ const projectFiles = require('../extension/src/shared/projectFiles');
 const overleafEditor = require('../extension/src/page/overleafEditor');
 const reviewing = require('../extension/src/shared/reviewing');
 const staleGuard = require('../extension/src/shared/staleGuard');
+const writebackReceiptJournalSource = fs.readFileSync(path.join(__dirname, '../extension/src/page/writebackReceiptJournal.js'), 'utf8');
 const pageRpcContractSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/shared/pageRpcContract.js'),
   'utf8'
@@ -358,7 +359,7 @@ test('page bridge blocks creates that collide with files added after the task sn
   assert.equal(result.ok, false);
   assert.equal(result.applied.length, 0);
   assert.equal(result.skipped.length, 1);
-  assert.equal(result.skipped[0].result.code, 'path_created_since_snapshot');
+  assert.equal(result.skipped[0].result.code, 'target_file_already_exists');
   assert.equal(bridge.getFile('new.tex'), 'user-created content');
 });
 
@@ -2920,6 +2921,7 @@ function createPageBridgeHarness({
   let editorPath = initialEditorPath;
   let listener = null;
   let pendingResult = null;
+  let requestSequence = 0;
   let lastDispatchChanges = null;
   let lastSelection = null;
   let lastScrollIntoView = null;
@@ -3140,6 +3142,11 @@ function createPageBridgeHarness({
       return result;
     } };
   } };
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/trackedChangeOwnership.js'), 'utf8'), context, { filename: 'trackedChangeOwnership.js' });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/trackedChangeReplay.js'), 'utf8'), context, { filename: 'trackedChangeReplay.js' });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/textCoordinates.js'), 'utf8'), context, { filename: 'textCoordinates.js' });
+  if (typeof window.fetch !== 'function') window.fetch = async () => { throw new Error('Unexpected reference-project fetch in page fixture'); };
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/referenceProjects.js'), 'utf8'), context, { filename: 'referenceProjects.js' });
   vm.runInContext(trackedChangeCaptureSource, context, { filename: 'trackedChangeCapture.js' });
   vm.runInContext(trackedChangesLifecycleSource, context, { filename: 'trackedChangesLifecycle.js' });
   vm.runInContext(writebackRouterSource, context, { filename: 'writebackRouter.js' });
@@ -3152,6 +3159,10 @@ function createPageBridgeHarness({
     vm.runInContext(pageBridgeCapabilitySource, context, { filename: 'pageBridgeCapability.js' });
   }
   vm.runInContext(pageRpcContractSource, context, { filename: 'pageRpcContract.js' });
+  vm.runInContext(writebackReceiptJournalSource, context, { filename: 'writebackReceiptJournal.js' });
+  // Existing fixtures keep their original clock budget; the real-router fake-clock suite covers the 35s production default.
+  const createRouterForFixture = window.CodexOverleafWritebackRouter.create;
+  window.CodexOverleafWritebackRouter.create = deps => createRouterForFixture({ ...deps, trackCaptureWaitMs: 5000 });
   vm.runInContext(pageBridgeSource, context, { filename: 'pageBridge.js' });
 
   // Hydration simulation: defer the `_ide.project` assignment so the first
@@ -3288,7 +3299,7 @@ function createPageBridgeHarness({
     });
     const data = {
       source: 'codex-overleaf/content',
-      id: `test-call-${method}`,
+      id: `test-call-${method}-${++requestSequence}`,
       method,
       params
     };
@@ -3823,10 +3834,9 @@ test('cancelActiveWrite emits a sequence number that bumps each call', async () 
 });
 
 test('writebackRouter applyOperationsCore captures the cancel sequence baseline and re-checks it between ops', () => {
-  // Source-grep regression for the cross-world cancel. The full integration
-  // (setTimeout-driven cancelActiveWrite during a real apply loop) is timing-
-  // sensitive and brittle in the VM harness; the structural invariants below
-  // are sufficient to catch removal/regression of the cancel path.
+  // This structural check complements the deterministic dispatch tests in
+  // writebackCancellationFlow.test.js. Both the captured sequence and the
+  // observed in-flight/tail results must survive refactoring.
   const writebackRouterSrc = fs.readFileSync(path.join(__dirname, '..', 'extension', 'src', 'page', 'writebackRouter.js'), 'utf8');
   // Router must accept the cancel-sequence reader as a dep.
   assert.match(writebackRouterSrc, /readWriteCancellationSequence/,
@@ -3879,19 +3889,9 @@ test('content-side cancelActiveRun fires both codex.cancel (native) and cancelAc
 // harness, but the structural invariants must not silently regress.
 // ---------------------------------------------------------------------------
 
-test('cancel-during-in-flight-write reports changedDocument:true (B2)', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'extension', 'src', 'page', 'writebackRouter.js'), 'utf8');
-  // The op that was mid-write when cancel landed must be reported with
-  // changedDocument:true + warning severity (the editor may already hold part
-  // of the write), distinct from the not-yet-started tail ops.
-  assert.match(src, /cancelledInFlightResult\s*=\s*\{[\s\S]*?changedDocument:\s*true/,
-    'in-flight cancel result must set changedDocument:true');
-  assert.match(src, /cancelledInFlightResult[\s\S]*?severity:\s*'warning'/,
-    'in-flight cancel must be a warning, not silent info');
-  // The race-winner branch must push the in-flight result for the current op.
-  assert.match(src, /CANCELLED_RACE_SENTINEL[\s\S]*?result:\s*cancelledInFlightResult/,
-    'the op interrupted mid-write must use cancelledInFlightResult');
-});
+// B2 is exercised through actual deferred operations in
+// writebackCancellationFlow.test.js, including a failed operation that already
+// changed the document. An obsolete race-result variable is not evidence.
 
 test('file-tree op stops after a method was invoked rather than stacking a second partial change (B3)', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'extension', 'src', 'page', 'writebackRouter.js'), 'utf8');

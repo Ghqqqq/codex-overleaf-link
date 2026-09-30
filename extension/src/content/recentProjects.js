@@ -359,7 +359,15 @@
     if (!isValidProjectId(projectId)) {
       return;
     }
-    window.location.assign('https://www.overleaf.com/project/' + encodeURIComponent(projectId));
+    var origin = 'https://www.overleaf.com';
+    try {
+      var current = new URL(window.location.href);
+      if (current.protocol === 'https:' && !current.port
+        && ['overleaf.com', 'www.overleaf.com', 'cn.overleaf.com'].includes(current.hostname)) {
+        origin = current.origin;
+      }
+    } catch (_error) { /* Non-page callers retain the canonical fallback. */ }
+    window.location.assign(origin + '/project/' + encodeURIComponent(projectId));
   }
 
   function renderActionsMenu(buttons) {

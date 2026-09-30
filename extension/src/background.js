@@ -20,6 +20,29 @@ if (!globalThis.CodexOverleafGlobalPreferences) {
   importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/shared/globalPreferences.js`) : 'shared/globalPreferences.js');
 }
 globalThis.CodexOverleafGlobalPreferences?.installBackground(chrome);
+if (!globalThis.CodexOverleafStorageRunActions) {
+  const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
+  // The service worker has its own loading graph; the content bundle's
+  // registry and shared-module imports do not exist in this context.
+  const storageDependencies = [
+    ['CodexOverleafModuleRegistry', 'content/moduleRegistryKernel.js'],
+    ['CodexOverleafUndoOperations', 'shared/undoOperations.js'],
+    ['CodexOverleafSelectionContext', 'shared/selectionContext.js'],
+    ['CodexOverleafWritebackIntent', 'shared/writebackIntent.js'],
+    ['CodexOverleafWritingStyle', 'shared/writingStyle.js'],
+    ['CodexOverleafStorageRunActions', 'shared/storageRunActions.js']
+  ];
+  for (const [globalName, scriptPath] of storageDependencies) {
+    if (!globalThis[globalName]) {
+      importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/${scriptPath}`) : scriptPath);
+    }
+  }
+}
+if (!globalThis.CodexOverleafSharedSessionsBackground) {
+  const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
+  importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/backgroundSharedSessions.js`) : 'backgroundSharedSessions.js');
+}
+globalThis.CodexOverleafSharedSessionsBackground.installBackground(chrome);
 if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
   const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
   importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/shared/updateRuntimeIdentity.js`) : 'shared/updateRuntimeIdentity.js');
@@ -35,8 +58,10 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
   const MANAGED_OVERLEAF_MATCHES = [
     'https://www.overleaf.com/project',
     'https://overleaf.com/project',
+    'https://cn.overleaf.com/project',
     'https://www.overleaf.com/project/*',
-    'https://overleaf.com/project/*'
+    'https://overleaf.com/project/*',
+    'https://cn.overleaf.com/project/*'
   ];
   const COMPATIBILITY_REQUIRED_METHODS = new Set([
     'codex.run',
@@ -382,7 +407,7 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
     try {
       const url = new URL(tab?.url || '');
       return url.protocol === 'https:' &&
-        (url.hostname === 'www.overleaf.com' || url.hostname === 'overleaf.com') &&
+        (['overleaf.com', 'www.overleaf.com', 'cn.overleaf.com'].includes(url.hostname)) &&
         /^\/project\/[^/]+(?:\/|$)/.test(url.pathname);
     } catch (_error) {
       return false;
@@ -853,7 +878,7 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
     try {
       const url = new URL(senderUrl);
       return url.protocol === 'https:' && (
-        url.hostname === 'www.overleaf.com' || url.hostname === 'overleaf.com'
+        ['overleaf.com', 'www.overleaf.com', 'cn.overleaf.com'].includes(url.hostname)
       );
     } catch (_error) {
       return false;

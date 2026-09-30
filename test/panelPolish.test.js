@@ -6,14 +6,30 @@ const { extractFunction } = require('./_helpers/extractFunction');
 
 const repo = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
 
-test('model picker rests as a quiet pill with a model/reasoning separator', () => {
+test('model picker remains quiet, readable and keyboard-visible without a decorative divider', () => {
   const css = repo('extension/styles/panel.css');
-  // \r?\n: Windows checkouts may materialize CRLF line endings.
-  const rest = css.match(/#codex-overleaf-panel \.codex-model-config-button \{[\s\S]*?\r?\n\}/g) || [];
-  assert.ok(rest.some(block => /background-color: var\(--tl-surface-2\)/.test(block)
-    && /border: 1px solid transparent/.test(block)), 'resting pill: surface bg + reserved border');
-  assert.match(css, /\.codex-model-config-button\[data-active="true"\],\r?\n#codex-overleaf-panel \.codex-model-config-button:hover \{[^}]*border-color: var\(--tl-border\)/);
-  assert.match(css, /\[data-reasoning-display\] \{[^}]*border-left: 1px solid var\(--tl-border\)/);
+  const selector = '#codex-overleaf-panel .codex-model-config-button';
+  const rules = target => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(([, selectors]) => selectors.split(',').some(value => value.trim() === target))
+    .map(([, , body]) => body).join('\n');
+  const rest = rules(selector);
+  assert.match(rest, /background-color:\s*transparent/);
+  assert.match(rest, /border:\s*1px solid transparent/);
+  assert.match(rest, /gap:\s*[1-9]\d*px/);
+  for (const state of ['[data-active="true"]', '[aria-expanded="true"]', ':hover', ':focus-visible']) {
+    assert.match(rules(selector + state), /border-color:\s*var\(--tl-border\)/);
+    assert.match(rules(selector + state), /background-color:\s*var\(--tl-hover\)/);
+  }
+  assert.match(rules(selector + ':focus-visible'), /outline:\s*2px solid var\(--tl-accent\)/);
+  const model = rules(selector + ' [data-model-display]');
+  const reasoning = rules(selector + ' [data-reasoning-display]');
+  assert.match(model, /color:\s*var\(--tl-fg-1\)/);
+  assert.match(reasoning, /color:\s*var\(--tl-fg-3\)/);
+  assert.match(reasoning, /border-left:\s*0/);
+  for (const label of [model, reasoning]) {
+    assert.match(label, /text-overflow:\s*ellipsis/);
+    assert.match(label, /white-space:\s*nowrap/);
+  }
 });
 
 test('the empty timeline shows a second hint line for @ and / affordances', () => {

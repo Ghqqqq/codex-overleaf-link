@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { createUpdateBundleArchive } = require('../native-host/src/updateArchive');
+const { BOOTSTRAP_PROTOCOL } = require('../native-host/src/updateTrust');
 
 const {
   GITHUB_LATEST_URL,
@@ -41,7 +42,7 @@ function createAppliedUpdateFixture() {
   fs.writeFileSync(path.join(extensionRoot, '.codex-overleaf-managed-extension.json'), JSON.stringify({
     managedBy: 'codex-overleaf-link',
     kind: 'extension',
-    bootstrapProtocol: 2,
+    bootstrapProtocol: BOOTSTRAP_PROTOCOL,
     version: '1.9.0'
   }, null, 2) + '\n');
   fs.mkdirSync(path.join(nativeRoot, 'versions', '1.8.9'), { recursive: true });
@@ -51,7 +52,7 @@ function createAppliedUpdateFixture() {
   fs.writeFileSync(path.join(nativeRoot, '.codex-overleaf-managed-native.json'), JSON.stringify({
     managedBy: 'codex-overleaf-link',
     kind: 'native',
-    bootstrapProtocol: 2,
+    bootstrapProtocol: BOOTSTRAP_PROTOCOL,
     version: '1.9.0'
   }, null, 2) + '\n');
   fs.mkdirSync(path.join(payloadRoot, 'extension-runtime', 'src', 'shared'), { recursive: true });

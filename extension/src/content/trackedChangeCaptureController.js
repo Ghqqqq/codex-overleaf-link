@@ -10,8 +10,10 @@
     const cancelTimer = deps.clearTimeout || clearTimeout;
     let timer = null, busy = false, disposed = false;
     const runs = () => deps.getRuns() || [];
+    const mergedRecovery = capture => capture?.source === 'native'
+      && capture.state === 'needs_review' && ['capture_timeout', 'capture_expired'].includes(capture.reason);
     const pending = run => Array.isArray(run.trackedChangeCaptures)
-      && run.trackedChangeCaptures.some(capture => capture.state === 'pending');
+      && run.trackedChangeCaptures.some(capture => capture.state === 'pending' || mergedRecovery(capture));
     const terminal = run => ['accepted', 'rejected'].includes(run.trackedChangeStatus)
       || run.undoStatus === 'applied' || run.forkSnapshot === true;
     function buildPostFiles(run) {
@@ -78,9 +80,10 @@
           const postFiles = buildPostFiles(run);
           for (let i = 0; i < captures.length; i++) {
             const capture = captures[i];
-            if (capture.state !== 'pending') continue;
+            const recoverMerged = mergedRecovery(capture);
+            if (capture.state !== 'pending' && !recoverMerged) continue;
             const expected = postFiles.find(file => file.path === capture.path);
-            if (newer || !expected || now() >= capture.expiresAt || run.status === 'cancelled') {
+            if (newer || !expected || (!recoverMerged && now() >= capture.expiresAt) || run.status === 'cancelled') {
               capture.state = 'needs_review';
               capture.reason = newer ? 'capture_superseded' : !expected ? 'capture_baseline_missing'
                 : run.status === 'cancelled' ? 'capture_cancelled' : 'capture_expired';
@@ -129,6 +132,7 @@
           if (changed) {
             run.trackedChangeCaptures = captures;
             await deps.persist();
+            deps.refresh?.(run);
             if (!pending(run)) deps.notify?.(run, 'needs_review', {
               reasons: captures.filter(capture => capture.state !== 'observed').map(capture => capture.reason)
             });

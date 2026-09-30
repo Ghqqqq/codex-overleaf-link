@@ -32,12 +32,13 @@
           };
         }
         if (current.state === 'verified_saved') {
-          return { ok: true, state: 'verified_saved' };
+          return { ok: true, state: 'verified_saved', signal: 'saved' };
         }
         if (current.state === 'unavailable') {
           return {
             ok: false,
             state: 'unavailable',
+            signal: current.signal || 'unavailable',
             reason: current.reason || 'Overleaf save state is unavailable.'
           };
         }
@@ -70,11 +71,16 @@
       return {
         ok: false,
         state: 'unknown_timeout',
+        signal: lastState.signal || 'unavailable',
+        observedState: lastState.state,
         reason: buildSaveStateTimeoutReason(lastState)
       };
     }
 
     function getOverleafSaveState() {
+      if (pageWindow.navigator?.onLine === false) {
+        return { state: 'unknown', signal: 'offline', reason: 'Overleaf is offline; saving cannot be confirmed.' };
+      }
       if (!document || typeof document.querySelectorAll !== 'function') {
         return {
           state: 'unavailable',
@@ -86,7 +92,9 @@
         '[class*="saving-status" i]',
         '[class*="save-status" i]',
         '[data-testid*="save" i]',
-        '[aria-label*="save" i]'
+        '[aria-label*="save" i]',
+        '[title*="saved" i]',
+        '[role="status"]'
       ];
       let sawSaveCandidate = false;
       let sawVerifiedSaved = false;
@@ -125,12 +133,14 @@
       if (sawNegativeState) {
         return {
           state: 'unknown',
+          signal: 'unsaved',
           reason: 'Overleaf save indicator reports changes are not saved.'
         };
       }
       if (sawSavingState) {
         return {
           state: 'saving',
+          signal: 'saving',
           reason: 'Overleaf is still saving or syncing changes.'
         };
       }
@@ -139,6 +149,7 @@
       }
       return {
         state: 'unknown',
+        signal: sawSaveCandidate ? 'unrecognized' : 'missing',
         reason: sawSaveCandidate
           ? 'Overleaf save indicator was present, but did not verify that all changes are saved.'
           : 'Overleaf save indicator was not found.'
@@ -149,6 +160,7 @@
       if (!node) {
         return true;
       }
+      if (node.closest?.('#codex-overleaf-panel')) return true;
       if (node.hidden === true || node.inert === true) {
         return true;
       }

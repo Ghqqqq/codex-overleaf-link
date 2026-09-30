@@ -79,9 +79,10 @@ function buildModelEntry(model, launch, index) {
 }
 
 function normalizeEfforts(...values) {
-  const allowed = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
-  const normalized = values
-    .flatMap(value => Array.isArray(value) ? value : [])
+  const allowed = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+  // Explicit model capabilities must not inherit the selected model's levels.
+  const configured = values.find(value => Array.isArray(value) && value.length) || [];
+  const normalized = configured
     .map(value => String(value || '').trim().toLowerCase())
     .filter(value => allowed.has(value));
   return Array.from(new Set(normalized.length ? normalized : ['none']));

@@ -29,6 +29,7 @@ function harness() {
         const index = rows.findIndex(row => row.id === record.id);
         if (index < 0) rows.push(structuredClone(record)); else rows[index] = structuredClone(record);
       }
+      return records.map(record => structuredClone(rows.find(saved => saved.id === record.id)));
     }, deleteRecord: async (_store, id) => { rows = rows.filter(row => row.id !== id); } };
   const migration = { loadPrefs: async () => ({}), savePrefs: async () => {},
     loadSessionTombstones: async () => ({}), getDeletedSessionIds: () => [] };
@@ -194,3 +195,18 @@ test('server read failures are bounded and never become Undone', async () => {
   assert.equal(result.ok, false);
   assert.equal(result.saveVerification.state, 'unknown_timeout');
 });
+
+for (const durableStatus of [null, 'rejected']) {
+  test('review persistence verifies the durable response instead of the proposed accepted state: ' + durableStatus, async () => {
+    const h = harness();
+    const state = { sessions: [structuredClone(h.original)], runs: [pendingRun()], activeSessionId: 'session-a' };
+    h.storage.putRecords = async () => durableStatus
+      ? [{ ...h.original, runs: [terminal(pendingRun(), durableStatus)] }] : [];
+    await assert.rejects(Panel.applyReviewTransition({ getState: () => state, runId: 'review-run',
+      transition: terminal(state.runs[0], 'accepted'), persist: options => h.persist(state, options) }),
+      error => error.code === 'review_state_not_persisted');
+    assert.equal(state.runs[0].trackedChangeStatus, 'needs_review');
+    assert.equal(state.sessions[0].runs[0].trackedChangeStatus, 'needs_review');
+    assert.equal(state.runs[0].undoTrackedChanges.length, 1);
+  });
+}

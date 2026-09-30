@@ -6,13 +6,23 @@ const vm = require('node:vm');
 
 const compatibility = require('../extension/src/shared/compatibility');
 const backgroundPath = path.join(__dirname, '../extension/src/background.js');
-const managedUpdateProjectionSource = fs.readFileSync(
-  path.join(__dirname, '../extension/src/shared/managedUpdateProjection.js'),
-  'utf8'
-);
+const backgroundSourceRoot = path.dirname(backgroundPath);
+const backgroundScriptSources = new Map();
 
-function readBackground() {
-  return fs.readFileSync(backgroundPath, 'utf8');
+function readBackgroundScript(scriptPath) {
+  if (typeof scriptPath !== 'string' || !/^[A-Za-z0-9_./-]+\.js$/.test(scriptPath)
+    || path.isAbsolute(scriptPath)) {
+    throw new Error(`Unexpected importScripts path: ${scriptPath}`);
+  }
+  const filename = path.resolve(backgroundSourceRoot, scriptPath);
+  const relative = path.relative(backgroundSourceRoot, filename);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`Unexpected importScripts path: ${scriptPath}`);
+  }
+  if (!backgroundScriptSources.has(filename)) {
+    backgroundScriptSources.set(filename, fs.readFileSync(filename, 'utf8'));
+  }
+  return { filename, source: backgroundScriptSources.get(filename) };
 }
 
 function escapeRegExp(value) {
@@ -699,9 +709,53 @@ test('background retries pending safe request when cancel postMessage throws on 
   assert.equal(retriedStatus.result.status, 'ready');
 });
 
+test('background loads real shared-service dependencies in one worker VM', () => {
+  const harness = loadBackgroundHarness();
+  const registry = harness.sandbox.CodexOverleafModuleRegistry;
+  const actions = registry.resolve('StorageRunActions');
+
+  assert.equal(actions, harness.sandbox.CodexOverleafStorageRunActions);
+  assert.equal(typeof actions.mergeSessionReviewState, 'function');
+  assert.equal(typeof registry.resolve('WritebackIntent').expectedFiles, 'function');
+  assert.equal(registry.resolve('SelectionContext').normalize(null), null);
+  assert.equal(typeof harness.sandbox.CodexOverleafSharedSessionsBackground.createService, 'function');
+  assert.ok(harness.connectionListeners.length > 0);
+  assert.deepEqual(harness.databaseAccesses, []);
+  assert.throws(() => harness.sandbox.importScripts('../outside.js'), /Unexpected importScripts path/);
+  assert.throws(() => harness.sandbox.importScripts('https://example.invalid/worker.js'), /Unexpected importScripts path/);
+});
+
+test('background retains shared-session admission alongside native message routing', async () => {
+  const harness = loadBackgroundHarness();
+  const sender = {
+    id: 'another-extension',
+    tab: { id: 101, url: 'https://www.overleaf.com/project/abc123' }
+  };
+  const sharedResponse = await settleWithin(harness.sendMessage({
+    type: 'codex-overleaf/shared-sessions-v1',
+    method: 'list',
+    scope: { accountScopeId: 'account-a', projectId: 'abc123' }
+  }, sender));
+
+  assert.equal(sharedResponse.ok, false);
+  assert.equal(sharedResponse.error.code, 'forbidden_sender');
+  assert.equal(harness.ports.length, 0);
+  assert.deepEqual(harness.databaseAccesses, []);
+
+  const nativeResponse = harness.sendNative({
+    id: 'ping-with-shared-listener', method: 'bridge.ping', params: {}
+  }, { ...sender, id: 'extension-id' });
+  assert.equal(harness.ports.length, 1);
+  harness.ports[0].emitMessage({ id: 'ping-with-shared-listener', ok: true, result: { connected: true } });
+  assert.equal((await settleWithin(nativeResponse)).result.connected, true);
+  assert.deepEqual(harness.databaseAccesses, []);
+});
+
 function loadBackgroundHarness(options = {}) {
   const ports = [];
-  let onMessageListener = null;
+  const messageListeners = [];
+  const connectionListeners = [];
+  const databaseAccesses = [];
   let uuidCounter = 0;
 
   const chrome = {
@@ -713,7 +767,12 @@ function loadBackgroundHarness(options = {}) {
       },
       onMessage: {
         addListener(listener) {
-          onMessageListener = listener;
+          messageListeners.push(listener);
+        }
+      },
+      onConnect: {
+        addListener(listener) {
+          connectionListeners.push(listener);
         }
       },
       connectNative() {
@@ -744,48 +803,51 @@ function loadBackgroundHarness(options = {}) {
     },
     importScripts(...scriptPaths) {
       for (const scriptPath of scriptPaths) {
-        if (scriptPath === 'shared/compatibility.js') {
-          sandbox.CodexOverleafCompatibility = compatibility;
-          continue;
-        }
-        if (scriptPath === 'shared/managedUpdateProjection.js') {
-          vm.runInNewContext(managedUpdateProjectionSource, sandbox);
-          continue;
-        }
-        if (scriptPath === 'shared/nativeRequestIdentity.js') {
-          sandbox.CodexOverleafNativeRequestIdentity = require(
-            '../extension/src/shared/nativeRequestIdentity'
-          );
-          continue;
-        }
-        if (scriptPath === 'shared/globalPreferences.js') {
-          sandbox.CodexOverleafGlobalPreferences = require('../extension/src/shared/globalPreferences');
-          continue;
-        }
-        if (scriptPath === 'shared/updateRuntimeIdentity.js') {
-          sandbox.CodexOverleafUpdateRuntimeIdentity = require('../extension/src/shared/updateRuntimeIdentity');
-          continue;
-        }
-        throw new Error(`Unexpected importScripts path: ${scriptPath}`);
+        runScript(scriptPath);
       }
     },
-    URL
+    indexedDB: { open: () => unexpectedDatabaseAccess('indexedDB.open') },
+    IDBKeyRange: {
+      only: () => unexpectedDatabaseAccess('IDBKeyRange.only'),
+      bound: () => unexpectedDatabaseAccess('IDBKeyRange.bound')
+    },
+    URL,
+    setTimeout,
+    clearTimeout
   };
   sandbox.globalThis = sandbox;
+  const context = vm.createContext(sandbox);
 
-  vm.runInNewContext(readBackground(), sandbox);
+  function runScript(scriptPath) {
+    const { filename, source } = readBackgroundScript(scriptPath);
+    vm.runInContext(source, context, { filename });
+  }
 
-  assert.equal(typeof onMessageListener, 'function');
+  function unexpectedDatabaseAccess(method) {
+    databaseAccesses.push(method);
+    throw new Error(`Native message fixture must not access storage: ${method}`);
+  }
+
+  function sendMessage(message, sender) {
+    return new Promise(resolve => {
+      for (const listener of messageListeners) {
+        listener(message, sender, resolve);
+      }
+    });
+  }
+
+  runScript('background.js');
+  assert.ok(messageListeners.length > 0);
+  assert.ok(messageListeners.every(listener => typeof listener === 'function'));
 
   return {
     ports,
+    sandbox,
+    connectionListeners,
+    databaseAccesses,
+    sendMessage,
     sendNative(payload, sender) {
-      return new Promise(resolve => {
-        onMessageListener({
-          type: 'codex-overleaf/native-request',
-          payload
-        }, sender, resolve);
-      });
+      return sendMessage({ type: 'codex-overleaf/native-request', payload }, sender);
     }
   };
 }

@@ -99,6 +99,7 @@
   const {
     buildExpectedFilesAfterOperations,
     buildSnapshotRestoreUndo,
+    buildCreatedFileUndoCheckpoint,
     buildUndoCheckpoint
   } = Modules.UndoOperations;
   const { buildHumanCompletionReport, mapAgentEventToActivity, stripEmptyHtmlCommentPlaceholders,
@@ -215,7 +216,7 @@
     refreshStorageUsageSummary: () => refreshStorageUsageSummary(),
     renderAuditHistoryPanel: () => renderAuditHistoryPanel(),
     renderRecentProjectsVariant: (...args) => renderRecentProjectsVariant(...args),
-    saveStateSoon: () => saveStateSoon(),
+    saveStateSoon: delay => saveStateSoon(delay),
     updateGlobalPreferences: patch => getGlobalPreferences().update(patch),
     setState: next => { state = next; },
     tr,
@@ -365,6 +366,9 @@
   // whose deps reference the recovery handlers.
   const panelMaintenance = Modules.PanelMaintenance.create({
     StorageDb: Modules.StorageDb,
+    ChangeHistoryView: Modules.ChangeHistoryView,
+    getAccountScopeId: () => cachedAccountScopeId || '',
+    sanitizeText: sanitizeAssistantVisibleText,
     tx,
     showPluginToast: (...args) => showPluginToast(...args),
     showPluginConfirm: (...args) => showPluginConfirm(...args),
@@ -384,7 +388,7 @@
     setState: next => { state = next; },
     getCurrentRunView: () => currentRunView,
     getSettingsPanelInstance: () => settingsPanelInstance,
-    prepareRetryReplacement: run => prepareRetryReplacement(run)
+    prepareRetryReplacement: (run, task) => prepareRetryReplacement(run, task)
   });
   const {
     showUndoFileSelection,
@@ -415,6 +419,9 @@
     forkRunFromNode: sessionForkController.forkRunFromNode
   });
   const runTimelineView = Modules.RunTimelineView.create({
+    RunActivitySummary: Modules.RunActivitySummary,
+    RunActivityModel: Modules.RunActivityModel,
+    SubagentActivityView: Modules.SubagentActivityView,
     RunGuidanceView: Modules.RunGuidanceView,
     RunResultActions: runResultActions,
     RunScrollLayout: Modules.RunScrollLayout,
@@ -443,6 +450,8 @@
     getState: () => state,
     getCurrentRunView: () => currentRunView,
     refillComposerForRetry,
+    canEditRun: run => runController.isRetryReplacementEligible(run, WritebackSettlement.projectRunSettlement(run)),
+    retryWriteback: retryRunWriteback,
     showNativeSetupGuidance: () => showNativeUpdateGuidanceModal({}),
     openProjectFileForFailure,
     openStorageSettings,
@@ -465,6 +474,8 @@
     upsertStreamEvent,
     renderCompletionReport,
     isTrackedChangeLifecycleRun,
+    configureEditButton,
+    configureWritebackButton,
     configureUndoButton,
     configureAcceptButton
   } = runTimelineView;
@@ -536,7 +547,80 @@
   // lives in writebackOrchestrator.js. Every dep below is either a hoisted
   // function declaration, an already-initialized const above, or a lazy
   // accessor thunk — safe in the top-of-init() wiring zone.
+  const selectionContextView = Modules.SelectionContextView.create({
+    getPanel: () => panel,
+    getState: () => state,
+    getProjectId: getCurrentProjectId,
+    openComposer: () => ensurePanelOpen(),
+    setSelection: (value, options = {}) => {
+      if (options.edit && panel?.querySelector('[data-task]')) readPanelInputs();
+      state = updateActiveSession(state, {
+        selectionContext: value,
+        ...(options.edit ? { mode: 'auto' } : {})
+      });
+      if (options.edit && panel) {
+        const modeInput = panel.querySelector('[data-mode]');
+        if (modeInput) modeInput.value = 'auto';
+        syncModeControls();
+      }
+      saveStateSoon();
+    },
+    callPageBridge, tx, toast: showPluginToast
+  });
+  selectionContextView.start();
+  const writingStyleSettings = Modules.WritingStyleSettings.create({
+    tx,
+    getScope: () => {
+      const projectId = getCurrentProjectId();
+      return cachedAccountScopeId && projectId ? { accountScopeId: cachedAccountScopeId, projectId } : null;
+    },
+    request: sendBackgroundNative,
+    getReferenceSnapshot: async (projectId, requestId) => {
+      const result = await callPageBridge('getReferenceProjectSnapshot', { projectId, requestId });
+      if (!result?.ok) throw Object.assign(new Error(result?.error || result?.reason || tx(
+        'The reference project could not be read.', '参考项目未能读取。')), { code: result?.code });
+      return result;
+    },
+    cancelReferenceRead: async requestId => {
+      const result = await callPageBridge('cancelReferenceRead', { requestId });
+      if (!result?.ok) throw new Error(result?.error || tx('The reference read could not be cancelled.', '参考资料读取未能取消。'));
+      return result;
+    },
+    isRunning: () => Boolean(currentRunView),
+    listProjects: async () => {
+      const result = await callPageBridge('listReferenceProjects', {});
+      if (!result?.ok) throw new Error(result?.error || tx(
+        'The Overleaf project directory could not be loaded.', 'Overleaf 项目目录未能加载。'));
+      return result.projects;
+    },
+    getModelSettings: async () => {
+      await providerSettingsCoordinator.ensureLoaded();
+      if (panel?.querySelector('[data-task]')) readPanelInputs();
+      return {
+        model: state.model,
+        reasoningEffort: state.reasoningEffort,
+        speedTier: state.speedTier,
+        providerSelection: providerSettingsCoordinator.getRunSelection(state.providerId || 'builtin'),
+        locale: getLocale()
+      };
+    },
+    startBuild: async params => {
+      const gate = await nativeCompatibilityController.ensureForMethod('codex.run');
+      if (!gate.ok) throw new Error(gate.response?.error?.message || 'Native host update required.');
+      const id = crypto.randomUUID();
+      const promise = nativeChannel.sendBackgroundNative(nativeCompatibilityController.attachEvidence({
+        id, method: 'codex.run', params
+      }, gate.compatibility));
+      return { id, promise };
+    }
+  });
   const assetTransferBroker = Modules.AssetTransferBroker.create({ callPageBridge, sendBackgroundNative });
+  const { partitionUnsafeProjectPathOperations, normalizeOperationProjectPaths, getInvalidOperationProjectPath,
+    evaluateGovernedOperations, buildGovernanceSkippedApplyResult, filterSyncChangesByOperations, mergeApplyResultSkipped,
+    confirmBinaryOperations, buildAuditSummaryFromApply, summarizeOperationForAudit } = Modules.WritebackPlan.create({
+    tx, tr, normalizeSafeProjectPath, GovernanceRules, getGovernanceRulesForCurrentProject,
+    showPluginConfirm, formatOperationFiles, getAppliedEntries, getSkippedEntries
+  });
   const writebackOrchestrator = Modules.WritebackOrchestrator.create({
     tr,
     tx,
@@ -577,6 +661,8 @@
     filterSyncChangesByOperations,
     writebackController,
     assetTransferBroker,
+    stageWritebackRecovery,
+    settleWritebackRecovery,
     writebackSettlement: WritebackSettlement,
     compileAdapter: Modules.CompileAdapter,
     RUN_SNAPSHOT_ZIP_TIMEOUT_MS,
@@ -922,6 +1008,15 @@
       rolled_back: tx('The update failed its health check, so the previous version was restored.', '更新未通过健康检查，已自动恢复上一版本。')
     }[state] || '')
   });
+  const diagnosticsExporter = Modules.DiagnosticsExport.create({
+    root, window, document, Blob, URL, TextEncoder, AuditRecords, StorageDb: Modules.StorageDb,
+    CodexOverleafCompatibility, getState: () => state, getCurrentRunView: () => currentRunView,
+    getCurrentProjectId, findRunRecord, getMirrorFreshness, getExtensionCompatibilityMetadata,
+    getModelDiscovery, getGovernanceRulesForCurrentProject, sendBackgroundNative,
+    fallbackNativeCompatibility, isNativeCompatibilityCompatible, getNativeCompatibilityClassification,
+    callPageBridge, showPluginToast, tr, RUN_SNAPSHOT_ZIP_TIMEOUT_MS
+  });
+
   root[RUNTIME_INSTALLED_FLAG] = true;
   root[RUNTIME_STATE_KEY] = { ok: true, alreadyInstalled: false };
 
@@ -948,7 +1043,6 @@
     if (message?.type === 'codex-overleaf/toggle-launcher') {
       const visible = !PanelRenderer.isLauncherVisible(panelRendererInstance);
       PanelRenderer.setLauncherVisible(panelRendererInstance, visible, { persist: true });
-      if (!visible) closePanel();
       sendResponse?.(getPanelStateResponse());
       return;
     }
@@ -969,7 +1063,7 @@
     }
   });
 
-  exposeSmokeHelper();
+  diagnosticsExporter.exposeSmokeHelper();
   init().catch(error => {
     root[RUNTIME_STATE_KEY] = {
       ok: false,
@@ -981,11 +1075,19 @@
     throw error;
   });
 
+  function normalizeLoadedPanelState(input) {
+    // Shared history may belong to a live run in another tab. Loading it is
+    // read-only; only an owner-lost journal may mark that run interrupted.
+    return normalizePanelState(getGlobalPreferences().overlay(input), {
+      restoreRunningRuns: Modules.StorageDb.sharedSessionsEnabled?.() !== true
+    });
+  }
+
   async function init() {
     await getGlobalPreferences().initialize();
     await refreshAccountScopeId();
     storageKey = getProjectStorageKey(LEGACY_STORAGE_KEY, window.location.href);
-    state = normalizePanelState(getGlobalPreferences().overlay(await loadStoredState()), { restoreRunningRuns: true });
+    state = normalizeLoadedPanelState(await loadStoredState());
     initializeRunQueueScheduler();
     recoverInterruptedRunJournals()
       .then(() => applyStateToPanel())
@@ -1067,129 +1169,10 @@
       : '';
   }
 
-  function exposeSmokeHelper() {
-    const helper = Object.freeze({
-      probeNative: smokeProbeNative,
-      probeProject: smokeProbeProject,
-      getProjectSnapshotMetrics: smokeProbeProject
-    });
-    try {
-      Object.defineProperty(globalThis, 'CodexOverleafSmoke', {
-        configurable: true,
-        enumerable: false,
-        value: helper
-      });
-    } catch (_error) {
-      globalThis.CodexOverleafSmoke = helper;
-    }
-  }
 
-  async function smokeProbeNative() {
-    try {
-      const params = CodexOverleafCompatibility?.buildBridgePingParams
-        ? CodexOverleafCompatibility.buildBridgePingParams(getExtensionCompatibilityMetadata())
-        : {};
-      const response = await sendBackgroundNative({ method: 'bridge.ping', params });
-      const compatibility = CodexOverleafCompatibility?.evaluateNativeCompatibility
-        ? CodexOverleafCompatibility.evaluateNativeCompatibility(response, getExtensionCompatibilityMetadata())
-        : fallbackNativeCompatibility(response);
-      return {
-        supported: true,
-        ok: response?.ok === true && isNativeCompatibilityCompatible(compatibility),
-        status: compatibility?.status || (response?.ok ? 'ok' : 'native_missing'),
-        classification: getNativeCompatibilityClassification(compatibility),
-        errorCode: response?.error?.code || compatibility?.status || '',
-        nativeCompatibility: summarizeSmokeNativeCompatibility(compatibility, response)
-      };
-    } catch (_error) {
-      return {
-        supported: true,
-        ok: false,
-        status: 'native_probe_failed',
-        errorCode: 'native_probe_failed'
-      };
-    }
-  }
 
-  async function smokeProbeProject(options = {}) {
-    try {
-      const project = await callPageBridge('getProjectSnapshot', {
-        force: Boolean(options.force),
-        preferLightweight: true,
-        allowZipFallback: true,
-        allowEditorNavigation: false,
-        requireFullProject: false,
-        includeBinaryFiles: true,
-        includeContent: false,
-        zipTimeoutMs: RUN_SNAPSHOT_ZIP_TIMEOUT_MS
-      });
-      const files = Array.isArray(project?.files) ? project.files : [];
-      const skipped = Array.isArray(project?.capabilities?.skipped) ? project.capabilities.skipped : [];
-      const bytes = summarizeSmokeProjectBytes(files);
-      const ok = project?.ok !== false && files.length > 0;
-      return {
-        supported: true,
-        ok,
-        status: ok ? 'ok' : 'project_snapshot_unavailable',
-        errorCode: ok ? '' : project?.code || 'project_snapshot_unavailable',
-        counts: {
-          files: files.length,
-          skipped: skipped.length
-        },
-        bytes,
-        method: project?.capabilities?.method || ''
-      };
-    } catch (_error) {
-      return {
-        supported: true,
-        ok: false,
-        status: 'project_probe_failed',
-        errorCode: 'project_probe_failed',
-        counts: {
-          files: 0,
-          skipped: 0
-        },
-        bytes: {
-          text: 0,
-          binary: 0
-        }
-      };
-    }
-  }
 
-  function summarizeSmokeNativeCompatibility(compatibility = {}, response = {}) {
-    const native = compatibility?.native || response?.result || {};
-    return {
-      status: compatibility?.status || (response?.ok ? 'ok' : 'native_missing'),
-      classification: getNativeCompatibilityClassification(compatibility),
-      nativeVersion: compatibility?.nativeVersion || native.version || '',
-      version: compatibility?.version || native.version || '',
-      minimumNativeVersion: compatibility?.minimumNativeVersion || compatibility?.minNativeVersion || '',
-      protocolVersion: compatibility?.protocolVersion || native.protocolVersion || '',
-      supportedProtocol: compatibility?.supportedProtocol || native.supportedProtocol || ''
-    };
-  }
 
-  function summarizeSmokeProjectBytes(files = []) {
-    return files.reduce((bytes, file) => {
-      let size = Number(file?.size || file?.byteLength || 0);
-      if ((!Number.isFinite(size) || size <= 0) && typeof file?.content === 'string') {
-        size = new TextEncoder().encode(file.content).byteLength;
-      }
-      if (!Number.isFinite(size) || size <= 0) {
-        return bytes;
-      }
-      if (file?.kind === 'binary') {
-        bytes.binary += size;
-      } else {
-        bytes.text += size;
-      }
-      return bytes;
-    }, {
-      text: 0,
-      binary: 0
-    });
-  }
 
   function listSeparator() {
     return getLocale() === 'zh' ? '、' : ', ';
@@ -1209,7 +1192,6 @@
         callbacks: {
           onLauncherToggle: () => ensurePanelOpen(),
           onClosePanel: () => closePanel(),
-          onLauncherVisibilityChange: visible => { if (!visible) closePanel(); },
           onRefresh: () => refreshProbe({ userInitiated: true }),
           onNewSession: () => startNewSession(),
           onChangeHistory: () => openChangeHistory(),
@@ -1285,6 +1267,7 @@
           onOtToggleClick: handleExperimentalOtToggleClick
         }
       });
+      writingStyleSettings.mount(panel);
       providerSettingsCoordinator.refreshSummary().catch(() => {});
 
       sessionPanelInstance = SessionPanel.create({
@@ -1476,7 +1459,7 @@
     setElementTitleAndAria('[data-context-refresh]', tr('refreshFileList'), tr('refreshFileList'));
     setElementTitleAndAria('[data-reasoning]', tr('reasoningLabel'), tr('reasoningLabel'));
     setElementTitleAndAria('[data-speed]', tr('speedLabel'), tr('speedLabel'));
-    setElementTitleAndAria('[data-run]', currentRunView ? tr('queueNextInput') : tr('send'), currentRunView ? tr('queueNextInput') : tr('send'));
+    syncComposerSendAvailability();
     setElementTitleAndAria('[data-stop-run]', tr('cancelRun'), tr('cancelRun'));
 
     const actions = panel.querySelector('.codex-vscode-head-actions');
@@ -1537,14 +1520,7 @@
     updateModelDisplay();
     renderSessionList();
     renderContextSelection();
-    const probeStatus = panel.querySelector('[data-probe-status]');
-    if (probeStatus?.dataset.refreshing === 'true') probeStatus.textContent = tr('refreshProbeLoading');
-    else if (probeStatus && probeStatusSnapshot?.projectId === getCurrentProjectId()) {
-      const { failed, probe, userInitiated } = probeStatusSnapshot;
-      const text = failed ? tr('refreshProbeFailed') : formatProbeStatusBar(probe);
-      probeStatus.textContent = userInitiated && !failed ? tr('refreshProbeDone', { status: text }) : text;
-      if (!failed) updateExistingProbeNotice(probe);
-    }
+    writingStyleSettings.sync();
     updateSkillsEntrySummary();
     providerSettingsCoordinator.renderSummary();
     if (settingsPanelInstance?.container?.querySelector('[data-storage-card]')?.open) refreshStorageUsageSummary();
@@ -1603,87 +1579,13 @@
   }
 
 
-  async function exportDiagnosticsBundle() {
-    if (!AuditRecords?.buildDiagnosticBundle) {
-      throw new Error('Audit diagnostics helper is unavailable');
-    }
-    const [auditLogs, mirror, nativeDiagnostics] = await Promise.all([
-      getRecentAuditLogsForCurrentProject(),
-      getMirrorFreshness().catch(error => ({ status: 'unavailable', errorCode: error.message })),
-      getNativeDiagnosticsSummaryForBundle()
-    ]);
-    const bundle = AuditRecords.buildDiagnosticBundle({
-      excludeContent: true,
-      compatibility: {
-        extension: getExtensionCompatibilityMetadata(),
-        modelDiscovery: getModelDiscovery()
-      },
-      platform: nativeDiagnostics.platform,
-      nativeEnvironment: nativeDiagnostics.nativeEnvironment,
-      mirror,
-      auditLogs,
-      run: currentRunView ? {
-        id: currentRunView.recordId || '',
-        status: 'running'
-      } : {},
-      governance: getGovernanceRulesForCurrentProject(),
-      projectId: getCurrentProjectId()
-    });
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `codex-overleaf-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showPluginToast(tr('diagnosticsExportDone'), { status: 'completed' });
-  }
 
-  async function getNativeDiagnosticsSummaryForBundle() {
-    try {
-      const params = CodexOverleafCompatibility?.buildBridgePingParams
-        ? CodexOverleafCompatibility.buildBridgePingParams(getExtensionCompatibilityMetadata())
-        : {};
-      const response = await sendBackgroundNative({ method: 'bridge.ping', params });
-      if (!response?.ok) {
-        const errorCode = response?.error?.code || 'native_unavailable';
-        return {
-          platform: { status: 'unavailable', errorCode },
-          nativeEnvironment: { status: 'unavailable', errorCode }
-        };
-      }
-      return {
-        platform: {
-          host: response.result?.host || '',
-          platform: response.result?.platform || '',
-          version: response.result?.version || '',
-          protocolVersion: response.result?.protocolVersion || ''
-        },
-        nativeEnvironment: response.result?.environment || {}
-      };
-    } catch (error) {
-      const errorCode = error?.message || 'native_unavailable';
-      return {
-        platform: { status: 'unavailable', errorCode },
-        nativeEnvironment: { status: 'unavailable', errorCode }
-      };
-    }
-  }
 
-  async function getRecentAuditLogsForCurrentProject(limit = 12) {
-    const StorageDb = Modules.StorageDb;
-    if (!StorageDb?.getAllByIndex) {
-      return [];
-    }
-    const records = await StorageDb.getAllByIndex('auditLogs', 'projectId', getCurrentProjectId());
-    return (records || [])
-      .slice()
-      .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
-      .slice(0, limit);
-  }
 
+
+  function exportDiagnosticsBundle() {
+    return diagnosticsExporter.exportDiagnosticsBundle();
+  }
 
   function isContextTrayClickTarget(target) {
     return contextTrayController.isContextTrayClickTarget(target);
@@ -1796,6 +1698,7 @@
       appendLog(tx('Enter a task first.', '请先输入任务。'));
       return;
     }
+    const submittedWritingStyleScope = { accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId() };
     const submittedPanelState = {
       mode: state.mode,
       providerId: state.providerId,
@@ -1804,13 +1707,21 @@
       speedTier: state.speedTier,
       autoRecompile: state.autoRecompile !== false,
       requireReviewing: state.requireReviewing === true,
-      focusFiles: getActiveFocusFiles()
+      focusFiles: getActiveFocusFiles(),
+      selectionContext: selectionContextView.capture()
     };
     const submittedCustomInstructions = getCustomInstructionsForCurrentProject();
     const submittedSkillLoadingSettings = getSkillLoadingSettings();
     const submittedAttachments = getComposerAttachmentsForRun();
     const submittedSkillInvocation = getComposerSkillInvocationForRun();
     await providerSettingsCoordinator.ensureLoaded();
+    if (!queuedInput) await writingStyleSettings.ensureLoaded(true);
+    if (submittedWritingStyleScope.accountScopeId !== cachedAccountScopeId
+      || submittedWritingStyleScope.projectId !== getCurrentProjectId()) {
+      throw new Error(tx('The active project changed before submission. Submit the task again.',
+        '提交前活动项目已改变，请重新提交任务。'));
+    }
+    submittedPanelState.writingStyle = queuedInput ? null : writingStyleSettings.capture();
     const executionSnapshot = queuedInput
       ? RunExecutionSnapshot.resolveForExecution(
         RunExecutionSnapshot.fromQueuePayload(queuedInput.payload),
@@ -2156,9 +2067,10 @@
               submittedMode
             }));
         } else {
-          appendRunEvent({ title: tx('Cancelled: user chose not to create a new thread.', '已取消：用户选择不新建线程。'), status: 'rejected' });
-          await finalizeAuditRecord(runAuditDraft, { resultStatus: 'rejected' });
-          await finishRunView(tx('Cancelled', '已取消'), 'rejected');
+          appendRunEvent({ title: tx('Cancelled: user chose not to create a new thread.', '已取消：用户选择不新建线程。'), status: 'info',
+            activity: { v: 1, kind: 'lifecycle', state: 'cancelled', target: 'cancelled' } });
+          await finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
+          await finishRunView(tx('Cancelled', '已取消'), 'cancelled');
           return;
         }
       }
@@ -2166,7 +2078,7 @@
       if (!response.ok) {
         if (runCancellationRequested || isRunCancellationError(response.error)) {
           appendRunCancelledReport();
-          await finishRunView(tx('Cancelled', '已中断'), 'rejected');
+          await finishRunView(tx('Cancelled', '已取消'), 'cancelled');
           void finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
           return;
         }
@@ -2420,7 +2332,7 @@
     } catch (error) {
       if (runCancellationRequested || isRunCancellationError(error)) {
         appendRunCancelledReport();
-        await finishRunView(tx('Cancelled', '已中断'), 'rejected');
+        await finishRunView(tx('Cancelled', '已取消'), 'cancelled');
         void finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
         return;
       }
@@ -2544,7 +2456,7 @@
       if (runCancellationRequested || isRunCancellationError(response.error)) {
         appendRunCancelledReport();
         await finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
-        await finishRunView(tx('Cancelled', '已中断'), 'rejected');
+        await finishRunView(tx('Cancelled', '已取消'), 'cancelled');
         return;
       }
       const translated = translateRawError(response.error.message, { mode: submittedMode, locale: getLocale() });
@@ -2771,6 +2683,7 @@
       }),
       clearTask: () => {
         panel.querySelector('[data-task]').value = '';
+        selectionContextView.clear();
         updateSessionById(state.activeSessionId, { task: '' });
         autosizeTaskTextarea();
         syncComposerSendAvailability();
@@ -2801,6 +2714,9 @@
     const requestedProviderId = submitted.providerId || state?.providerId || 'builtin';
     const selection = providerSettingsCoordinator.getRunSelection(requestedProviderId);
     const providerId = selection?.providerId || requestedProviderId;
+    const selectedContext = Object.prototype.hasOwnProperty.call(submitted, 'selectionContext')
+      ? submitted.selectionContext : selectionContextView.capture();
+    const selectedPaths = submitted.focusFiles ?? getActiveFocusFiles();
     return RunExecutionSnapshot.capture({
       mode: submitted.mode ?? state?.mode,
       providerId,
@@ -2810,7 +2726,11 @@
       speedTier: submitted.speedTier ?? state?.speedTier,
       autoRecompile: submitted.autoRecompile ?? state?.autoRecompile !== false,
       requireReviewing: submitted.requireReviewing ?? state?.requireReviewing === true,
-      focusFiles: submitted.focusFiles ?? getActiveFocusFiles()
+      focusFiles: selectedContext?.mode === 'edit' && selectedPaths.length
+        ? [...new Set([...selectedPaths, selectedContext.path])] : selectedPaths,
+      selectionContext: selectedContext,
+      writingStyle: Object.prototype.hasOwnProperty.call(submitted, 'writingStyle')
+        ? submitted.writingStyle : writingStyleSettings.capture()
     }, {
       source: 'submitted',
       requireProviderRevision: providerId !== 'builtin'
@@ -3078,7 +2998,10 @@
       ...params,
       clientRunId: currentRunView?.recordId || '',
       clientSessionId: currentRunView?.sessionId || '',
-      providerSelection: RunExecutionSnapshot.toProviderSelection(executionSnapshot)
+      providerSelection: RunExecutionSnapshot.toProviderSelection(executionSnapshot),
+      selectionContext: executionSnapshot.selectionContext || null,
+      accountScopeId: currentRunView?.runAccountScopeId || cachedAccountScopeId || '',
+      writingStyle: executionSnapshot.writingStyle || null
     };
   }
 
@@ -3118,6 +3041,11 @@
     const projectKey = getCurrentProjectId();
     const recovery = await activeTurnControl.recoverJournals({
       projectKey,
+      requireOwnerLost: Modules.StorageDb.sharedSessionsEnabled?.() === true,
+      normalizeInterruptedRun: record => Object.assign(record, Modules.SessionState.normalizeRuns([record], {
+        restoreRunningRuns: true,
+        locale: getLocale()
+      })[0]),
       findSession: findSessionById,
       getActiveSession: () => getActiveSession(state),
       createInterruptedRun: journal => ({
@@ -3364,11 +3292,12 @@
       .some(item => item?.status === 'queued');
     appendRunEvent({
       title: tx('Current Codex task was cancelled.', '已中断当前 Codex 任务。'),
-      status: 'failed'
+      status: 'info',
+      activity: { v: 1, kind: 'lifecycle', state: 'cancelled', target: 'cancelled' }
     });
     appendCompletionReport({
       conclusion: tx('This run was cancelled. It did not continue syncing or writing to Overleaf.', '这轮已中断，没有继续同步或写入 Overleaf。'),
-      status: 'rejected',
+      status: 'cancelled',
       operations: [],
       applyResults: [],
       nextStep: hasQueuedFollowUp
@@ -3407,6 +3336,7 @@
       : !hasInput;
     runButton.title = label;
     runButton.setAttribute('aria-label', label);
+    if (currentRunView?.writebackRetry && hasInput) runButton.disabled = true;
   }
 
   function handleTaskInputKeydown(event) {
@@ -3941,72 +3871,6 @@
     return writebackController.buildSyncApplyOperations(syncChanges, project);
   }
 
-  function partitionUnsafeProjectPathOperations(operations = []) {
-    const safe = [];
-    const skipped = [];
-    for (const operation of operations || []) {
-      const normalized = normalizeOperationProjectPaths(operation);
-      const invalid = getInvalidOperationProjectPath(normalized);
-      if (invalid) {
-        skipped.push({
-          operation: normalized,
-          result: {
-            ok: false,
-            code: 'invalid_project_path',
-            reason: tx(`Invalid ${invalid}. Codex did not write this file.`, `路径无效：${invalid}。Codex 没有写入这个文件。`)
-          }
-        });
-        continue;
-      }
-      safe.push(normalized);
-    }
-    return { safe, skipped };
-  }
-
-  function normalizeOperationProjectPaths(operation = {}) {
-    if (!operation || typeof operation !== 'object') {
-      return operation;
-    }
-    const normalized = { ...operation };
-    if (typeof operation.path === 'string') {
-      normalized.path = normalizeSafeProjectPath(operation.path);
-      if (!normalized.path) {
-        normalized.invalidProjectPath = true;
-      }
-    }
-    if (typeof operation.to === 'string') {
-      normalized.to = normalizeSafeProjectPath(operation.to);
-      if (!normalized.to) {
-        normalized.invalidProjectDestinationPath = true;
-      }
-    }
-    if (typeof operation.destinationPath === 'string') {
-      normalized.destinationPath = normalizeSafeProjectPath(operation.destinationPath);
-      if (!normalized.destinationPath) {
-        normalized.invalidProjectDestinationPath = true;
-      }
-    }
-    return normalized;
-  }
-
-  function getInvalidOperationProjectPath(operation = {}) {
-    if (operation.invalidProjectPath || (requiresOperationPath(operation) && !operation.path)) {
-      return 'operation path';
-    }
-    if (operation.invalidProjectDestinationPath || (requiresOperationDestinationPath(operation) && !(operation.to || operation.destinationPath))) {
-      return 'operation destination path';
-    }
-    return '';
-  }
-
-  function requiresOperationPath(operation = {}) {
-    return ['edit', 'create', 'delete', 'rename', 'move', 'binary-create', 'overwrite-binary'].includes(operation.type);
-  }
-
-  function requiresOperationDestinationPath(operation = {}) {
-    return operation.type === 'rename' || operation.type === 'move';
-  }
-
   function normalizeSafeProjectPath(value) {
     if (Modules.ProjectFiles?.normalizeSafeProjectPath) {
       return Modules.ProjectFiles.normalizeSafeProjectPath(value);
@@ -4018,154 +3882,6 @@
       .replace(/^\/+/, '');
   }
 
-  function evaluateGovernedOperations(operations = []) {
-    if (!GovernanceRules?.evaluateGovernedOperations) {
-      return { allowed: operations || [], blocked: [], rules: getGovernanceRulesForCurrentProject() };
-    }
-    return GovernanceRules.evaluateGovernedOperations(operations, getGovernanceRulesForCurrentProject());
-  }
-
-  function buildGovernanceSkippedApplyResult(blockedItems = []) {
-    return {
-      ok: blockedItems.length === 0,
-      applied: [],
-      skipped: (blockedItems || []).map(item => ({
-        operation: item.operation,
-        result: {
-          ok: false,
-          code: 'governance_blocked',
-          reason: formatGovernanceBlockedReason(item),
-          reasonKey: item.reason || 'governance_blocked'
-        }
-      }))
-    };
-  }
-
-  function formatGovernanceBlockedReason(item = {}) {
-    if (item.reason === 'readonly') {
-      return tx(
-        'Project governance marked this path read-only, so Codex did not write it.',
-        '项目治理规则将此路径标记为只读，因此 Codex 没有写入。'
-      );
-    }
-    if (item.reason === 'writable_allowlist') {
-      return tx(
-        'Project governance allows writes only to configured writable patterns, and this path is outside that allowlist.',
-        '项目治理规则只允许写入配置的可写路径，此路径不在允许范围内。'
-      );
-    }
-    return tx('Project governance blocked this write.', '项目治理规则阻止了此写入。');
-  }
-
-  function filterSyncChangesByOperations(syncChanges = [], operations = []) {
-    const allowedPaths = new Set((operations || []).map(operation => operation.path).filter(Boolean));
-    return (syncChanges || []).filter(change => allowedPaths.has(change?.path));
-  }
-
-  function mergeApplyResultSkipped(result = {}, skipped = []) {
-    if (!skipped.length) {
-      return result;
-    }
-    return {
-      ...(result || {}),
-      ok: false,
-      applied: Array.isArray(result?.applied) ? result.applied : [],
-      skipped: [
-        ...getSkippedEntries(result),
-        ...skipped
-      ]
-    };
-  }
-
-  async function confirmBinaryOperations(operations = []) {
-    const binaryOperations = (operations || []).filter(operation => operation.type === 'binary-create' || operation.type === 'overwrite-binary');
-    if (!binaryOperations.length) {
-      return { operations, skipped: [] };
-    }
-    const approved = await showPluginConfirm({
-      title: tr('binaryAssetConfirmTitle'),
-      message: tr('binaryAssetConfirmMessage', { files: formatOperationFiles(binaryOperations) }),
-      confirmLabel: tr('binaryAssetConfirm'),
-      cancelLabel: tr('binaryAssetCancel'),
-      destructive: true
-    });
-    if (approved) {
-      return { operations, skipped: [] };
-    }
-    return {
-      operations: operations.filter(operation => operation.type !== 'binary-create' && operation.type !== 'overwrite-binary'),
-      skipped: binaryOperations.map(operation => ({
-        operation,
-        result: {
-          ok: false,
-          code: 'binary_confirmation_rejected',
-          reason: tx('Binary asset writeback requires explicit confirmation and was skipped.', '二进制资源写回需要显式确认，已跳过。')
-        }
-      }))
-    };
-  }
-
-  function buildAuditDiffSummary(operations = []) {
-    const changedFiles = new Set();
-    let binaryFilesChanged = 0;
-    for (const operation of operations || []) {
-      if (operation?.path) {
-        changedFiles.add(operation.path);
-      }
-      if (operation?.type === 'binary-create' || operation?.type === 'overwrite-binary') {
-        binaryFilesChanged++;
-      }
-    }
-    return {
-      filesChanged: changedFiles.size,
-      additions: 0,
-      deletions: 0,
-      binaryFilesChanged
-    };
-  }
-
-  function buildAuditSummaryFromApply({ operations = [], applyResults = [], blockedFiles = [], resultStatus = 'completed', saveVerification = null } = {}) {
-    const appliedFiles = [];
-    const skippedFiles = [];
-    for (const result of applyResults || []) {
-      for (const item of getAppliedEntries(result)) {
-        appliedFiles.push(summarizeOperationForAudit(item.operation, item.result, 'applied'));
-      }
-      for (const item of getSkippedEntries(result)) {
-        skippedFiles.push(summarizeOperationForAudit(item.operation, item.result, 'skipped'));
-      }
-    }
-    return {
-      changedFiles: (operations || []).map(operation => summarizeOperationForAudit(operation, {}, 'changed')),
-      ['diffSummary']: buildAuditDiffSummary(operations),
-      blockedFiles,
-      appliedFiles,
-      skippedFiles,
-      resultStatus,
-      saveVerification
-    };
-  }
-
-  // Tolerates `operation` and `result` being null in addition to undefined.
-  // Default-parameter values fire only for `undefined`, but the v1.3.8
-  // write-guard (pageBridge.runWriteGuard / writebackRouter.checkWritebackRunProjectId)
-  // emits batch-level skips with `operation: null` — there is no specific
-  // op to attribute the block to. Without this normalization the audit pass
-  // crashed with "Cannot read properties of null (reading 'path')", the
-  // outer-catch swallowed the partial-sync conclusion, and the user saw the
-  // misleading "local Codex returned no usable result" fallback.
-  function summarizeOperationForAudit(operation, result, status = '') {
-    const op = operation || {};
-    const res = result || {};
-    return {
-      path: op.path || op.from || op.to || '',
-      destinationPath: op.destinationPath || op.to || '',
-      type: op.type || '',
-      reason: res.reasonKey || res.code || res.reason || op.reasonKey || op.reason || '',
-      status,
-      size: op.size
-    };
-  }
 
   function getSyncChangePatches(change = {}) {
     return writebackController.getSyncChangePatches(change);
@@ -4276,6 +3992,25 @@
   // saveState. Returning null puts the record in degraded mode and excludes
   // it from cross-project queries (spec §5.2 storage rules).
   window.codexOverleafDeriveAccountScopeId = () => cachedAccountScopeId;
+  var sharedSessionViewSync = Modules.SharedSessionViewSync.install({
+    Bridge: Modules.SharedSessionBridge,
+    StorageDb: Modules.StorageDb,
+    getScope: () => ({
+      accountScopeId: cachedAccountScopeId,
+      projectId: getCurrentProjectId(),
+      generation: spaRouteGeneration
+    }),
+    getState: () => state,
+    isBusy: () => Boolean(readLiveRunViewForSaveStateGuard() || document.querySelector('dialog[open]')),
+    apply: sessions => {
+      state = normalizePanelState({ ...state, sessions }, { restoreRunningRuns: false });
+      applyStateToPanel();
+    },
+    notice: error => appendStorageNoticeOnce('shared-history-refresh', tx(
+      `Could not refresh shared history: ${error.message}`,
+      `共享会话历史刷新失败：${error.message}`
+    ))
+  });
 
   // -----------------------------------------------------------------------
   // SPA route change lifecycle (spec §5.7).
@@ -4369,7 +4104,7 @@
     try {
       storageKey = getProjectStorageKey(LEGACY_STORAGE_KEY, window.location.href);
       const reloaded = await loadStoredState();
-      state = normalizePanelState(getGlobalPreferences().overlay(reloaded), { restoreRunningRuns: true });
+      state = normalizeLoadedPanelState(reloaded);
       applyStateToPanel();
     } catch (_error) {
       // Reload failures fall back to the in-memory state; the next saveState
@@ -5018,18 +4753,33 @@
     button.setAttribute('aria-busy', loading ? 'true' : 'false');
   }
 
-  function formatProbeStatusBar(probe) {
+  function syncProbeStatus(mode = state?.mode) {
+    const status = panel?.querySelector('[data-probe-status]');
+    if (!status) return;
+    if (status.dataset.refreshing === 'true') {
+      status.textContent = tr('refreshProbeLoading');
+      return;
+    }
+    if (probeStatusSnapshot?.projectId !== getCurrentProjectId()) return;
+    const { failed, probe, userInitiated } = probeStatusSnapshot;
+    const text = failed ? tr('refreshProbeFailed') : formatProbeStatusBar(probe, mode);
+    status.textContent = userInitiated && !failed ? tr('refreshProbeDone', { status: text }) : text;
+    status.dataset.ok = !failed && isProbeReadyForCurrentMode(probe, mode) ? 'true' : 'false';
+    if (!failed) updateExistingProbeNotice(probe, mode);
+  }
+
+  function formatProbeStatusBar(probe, mode = state?.mode) {
     const readiness = getProbeRunReadiness(probe);
     const reviewingOk = readiness.reviewingOk;
     const editorWritable = readiness.editorWritable;
 
-    if (state?.mode === 'ask') {
+    if (mode === 'ask') {
       return appendOtStatusToProbeStatus(`${formatModeLabel('ask')} · ${readiness.contextLabel}`);
     }
     if (reviewingOk) {
       const status = editorWritable
         ? `${tr('canRun')} · ${readiness.contextLabel}`
-        : `${formatModeLabel(state?.mode)} · ${tr('validatingEditor')}`;
+        : `${formatModeLabel(mode)} · ${tr('validatingEditor')}`;
       return appendOtStatusToProbeStatus(status);
     }
     if (readiness.contextReady) {
@@ -5059,9 +4809,9 @@
     status.textContent = appendOtStatusToProbeStatus(base);
   }
 
-  function isProbeReadyForCurrentMode(probe) {
+  function isProbeReadyForCurrentMode(probe, mode = state?.mode) {
     const readiness = getProbeRunReadiness(probe);
-    return state?.mode === 'ask' || readiness.reviewingOk;
+    return mode === 'ask' || readiness.reviewingOk;
   }
 
   function getProbeRunReadiness(probe) {
@@ -5126,22 +4876,22 @@
     appendLog(message);
   }
 
-  function updateExistingProbeNotice(probe) {
+  function updateExistingProbeNotice(probe, mode = state?.mode) {
     if (currentRunView || !panel?.querySelector('[data-probe-notice]')) {
       return;
     }
-    const { ready, message } = formatProbeUserNotice(probe);
+    const { ready, message } = formatProbeUserNotice(probe, mode);
     updateProbeNotice(ready ? '' : message);
   }
 
-  function formatProbeUserNotice(probe) {
+  function formatProbeUserNotice(probe, mode = state?.mode) {
     const readiness = getProbeRunReadiness(probe);
     const reviewingOk = readiness.reviewingOk;
     const editorOk = readiness.editorOk;
     const manualOverride = probe.reviewing?.status === 'manual-override';
     const editorWriteBlocked = probe.capabilities?.editor?.write === false;
 
-    if (state?.mode === 'ask') {
+    if (mode === 'ask') {
       return {
         ready: true,
         message: tx(
@@ -5155,8 +4905,8 @@
       return {
         ready: true,
         message: tx(
-          `Ready: ${formatModeLabel(state?.mode)} is selected. This page has not exposed a writable editor yet; Codex will reopen and verify the target file when writing. If writeback fails, reload Overleaf and retry.`,
-          `可以运行：已选择“${formatModeLabel(state?.mode)}”。当前页面暂时没有暴露可写编辑器，写入时会重新打开目标文件并验证；如果写回失败，再刷新 Overleaf 页面后重试。`
+          `Ready: ${formatModeLabel(mode)} is selected. This page has not exposed a writable editor yet; Codex will reopen and verify the target file when writing. If writeback fails, reload Overleaf and retry.`,
+          `可以运行：已选择“${formatModeLabel(mode)}”。当前页面暂时没有暴露可写编辑器，写入时会重新打开目标文件并验证；如果写回失败，再刷新 Overleaf 页面后重试。`
         )
       };
     }
@@ -5640,6 +5390,8 @@
   }
 
   async function saveState(options) {
+    const endSharedSave = typeof sharedSessionViewSync !== 'undefined'
+      ? sharedSessionViewSync?.beginSave() : null;
     try {
       const StorageDb = Modules.StorageDb;
       const Migration = Modules.StorageMigration;
@@ -5768,6 +5520,8 @@
       } else {
         throw error;
       }
+    } finally {
+      endSharedSave?.();
     }
   }
 
@@ -6004,6 +5758,7 @@
       button.dataset.active = active ? 'true' : 'false';
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
+    syncProbeStatus(currentMode);
   }
 
   function readPanelInputs() {
@@ -6077,11 +5832,14 @@
     }
     composerSkillInvocation = null;
     renderComposerSkillInvocation();
+    selectionContextView.clear();
     state = updateActiveSession(state, { task: '' });
     saveStateSoon();
   }
 
   function applyStateToPanel(options = {}) {
+    selectionContextView.render();
+    writingStyleSettings.sync();
     applyPanelTheme(getThemePreference());
     if ((state.providerId || 'builtin') === 'builtin' && !modelSelectHasOption(state.model)) {
       renderModelOptions(getModelCatalog().FALLBACK_MODELS, state.model);
@@ -6159,17 +5917,38 @@
     }
     panel.dataset.running = running ? 'true' : 'false';
     panel.dataset.cancelling = running && runCancellationRequested ? 'true' : 'false';
+    panel.querySelectorAll('[data-run-id]').forEach(root => {
+      const record = findRunRecord(root.dataset.runId);
+      if (record) configureEditButton(root, record, { running });
+      if (record) configureWritebackButton(root, record, { running });
+    });
     renderPendingInputs();
   }
 
-  function prepareRetryReplacement(run) {
+  function prepareRetryReplacement(run, task) {
     const sessionId = state?.activeSessionId || '';
     const source = findRunRecord(run?.id, sessionId);
-    const eligible = source && runController.isRetryReplacementEligible(
+    const eligible = source && !source.forkSnapshot
+      && (!source.runProjectId || source.runProjectId === getCurrentProjectId())
+      && runController.isRetryReplacementEligible(
       source,
       WritebackSettlement.projectRunSettlement(source)
     );
-    pendingRetryReplacement = eligible ? { sessionId, runId: source.id } : null;
+    const returnToDraft = eligible && !currentRunView
+      && ['cancelled', 'rejected'].includes(source.status);
+    const draft = { task: typeof task === 'string' ? task : String(run?.task || '') };
+    if (returnToDraft) {
+      const snapshot = source.executionSnapshot || {};
+      const mode = snapshot.mode || source.mode;
+      draft.runs = (state.runs || []).filter(item => item.id !== source.id);
+      draft.mode = ['ask', 'auto'].includes(mode) ? mode : state.mode;
+      draft.focusFiles = Array.isArray(snapshot.focusFiles) ? snapshot.focusFiles : state.focusFiles;
+      draft.selectionContext = snapshot.selectionContext || null;
+    }
+    // Persist the composer through its session owner, not only the top-level alias.
+    state = updateActiveSession(state, draft);
+    pendingRetryReplacement = eligible && !returnToDraft ? { sessionId, runId: source.id } : null;
+    if (returnToDraft) applyStateToPanel({ preserveScroll: true });
     return Boolean(eligible);
   }
 
@@ -6346,6 +6125,17 @@
       return;
     }
 
+    const owner = currentRunView && findRunRecord(currentRunView.recordId, currentRunView.sessionId);
+    if (owner && Modules.SubagentActivityModel.ingest(owner, event, {
+      locale: getLocale(), sanitize: sanitizeAssistantVisibleText, nativeEventSeq: journalSeq
+    })) {
+      owner.nativeEventSeq = Math.max(Number(owner.nativeEventSeq || 0), Number(journalSeq || 0));
+      scheduleRunStateSave('stream');
+      const visible = getCurrentRunViewForRender();
+      if (visible) runTimelineView.refreshActivitySummary?.(visible);
+      return;
+    }
+
     const activity = mapAgentEventToActivity(event, { locale: getLocale() });
     if (!activity?.visible || activity.kind === 'technical') {
       return;
@@ -6415,9 +6205,11 @@
       kind: input.kind || 'activity',
       subagent: input.subagent === true ? true : undefined,
       technicalDetail: sanitizeAssistantVisibleValue(input.technicalDetail),
+      activity: Modules.RunActivityModel.capture(input, sanitizeAssistantVisibleText),
       guidanceId: sanitizeAssistantVisibleText(input.guidanceId),
       streamKey: sanitizeAssistantVisibleText(input.streamKey),
       streamRole: sanitizeAssistantVisibleText(input.streamRole),
+      streamPhase: sanitizeAssistantVisibleText(input.streamPhase),
       appendText: typeof input.appendText === 'string' ? sanitizeAssistantVisibleText(input.appendText) : input.appendText,
       replaceText: input.replaceText,
       // Structured FailureReason (§7) attached to the event when the caller
@@ -6531,6 +6323,7 @@
   }
 
   function appendRunEventToView(view, event) {
+    const projected = event.kind !== 'stream' && runTimelineView.refreshActivitySummary?.(view, event);
     if (event.kind === 'report') {
       view.report.hidden = false;
       const record = view?.recordId ? findRunRecord(view.recordId, view.sessionId) : null;
@@ -6541,6 +6334,7 @@
     if (event.kind === 'technical') {
       return;
     }
+    if (projected) { bumpUnreadIfDetached(); return; }
     if (runGuidanceController.appendToView(event, view)) return;
     if (event.kind === 'stream') {
       // Stream deltas update an existing line in place — they must not inflate
@@ -6548,7 +6342,7 @@
       upsertStreamEvent(view, event);
       return;
     }
-    view.events.append(renderRunEvent(event));
+    runTimelineView.appendActivityDetail(view, renderRunEvent(event), event);
     bumpUnreadIfDetached();
   }
 
@@ -6559,6 +6353,7 @@
     if (existing) {
       const nextTitle = sanitizeAssistantVisibleText(event.title);
       const nextRole = sanitizeAssistantVisibleText(event.streamRole) || existing.streamRole;
+      if (event.streamPhase) existing.streamPhase = event.streamPhase;
       const combinedTitle = event.replaceText
         ? nextTitle
         : sanitizeAssistantVisibleText(appendStreamText(existing.title, nextTitle));
@@ -6812,7 +6607,8 @@
       await pendingMirror.catch(() => {});
     }
 
-    if ((Array.isArray(run.undoTrackedChanges) && run.undoTrackedChanges.length) || hasTrackedEditorUndo(run)) {
+    if ((Array.isArray(run.undoTrackedChanges) && run.undoTrackedChanges.length) || hasTrackedEditorUndo(run)
+      || (run.trackedChangeStatus === 'needs_review' && run.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1))) {
       await undoRunTrackedChanges(runId, run);
       return;
     }
@@ -6915,15 +6711,18 @@
   }
 
   async function undoRunTrackedChanges(runId, run) {
+    const createdUndoOperations = (run.undoOperations || []).filter(operation => operation?.undoCreatedFile?.v === 1);
     const trackedUndo = Array.isArray(run.undoTrackedChanges) && run.undoTrackedChanges.length > 0;
+    const hasTextUndo = trackedUndo || buildTrackedUndoPostFiles(run).length > 0;
     const approved = await showPluginConfirm({
-      title: trackedUndo ? tr('undoTrackedTitle') : tr('undoNativeTitle'),
+      title: !hasTextUndo ? tr('undoNoTraceTitle') : trackedUndo ? tr('undoTrackedTitle') : tr('undoNativeTitle'),
       message: [
         truncateRunTitle(run.task),
         '',
-        trackedUndo
+        ...(hasTextUndo ? [trackedUndo
           ? tr('undoTrackedMessage', { files: formatTrackedChangeFiles(run.undoTrackedChanges) })
-          : tr('undoNativeMessage', { files: formatTrackedUndoFiles(run) })
+          : tr('undoNativeMessage', { files: formatTrackedUndoFiles(run) })] : []),
+        ...(createdUndoOperations.length ? [tr('undoNoTraceMessage', { files: formatOperationFiles(createdUndoOperations) })] : [])
       ].join('\n'),
       confirmLabel: trackedUndo ? tr('undoTrackedConfirm') : tr('undoConfirm'),
       cancelLabel: tr('confirmDefaultCancel'),
@@ -6933,10 +6732,9 @@
       return;
     }
 
-    // Tracked-change-lifecycle runs (those holding tracked-change refs) reach a
-    // decisive terminal `rejected` once the reject returns. The UI-local
-    // in-flight lock disables the button; it is never persisted.
-    const lifecycleReject = trackedUndo && isTrackedChangeLifecycleRun(run);
+    // Keep the review lifecycle until every pending part has settled.
+    // Its local lock stays active while verified recovery progress is persisted.
+    const lifecycleReject = (trackedUndo || createdUndoOperations.length > 0) && isTrackedChangeLifecycleRun(run);
     if (lifecycleReject) {
       trackedChangeInFlight.set(runId, 'reject');
       refreshRunCardControls(runId);
@@ -6944,14 +6742,15 @@
       setRunUndoStatus(runId, 'running');
     }
     appendRunRecordEvent(runId, {
-      title: trackedUndo ? tr('undoTrackedStarted') : tr('undoNativeStarted'),
+      title: !hasTextUndo ? tr('undoNoTraceStarted') : trackedUndo ? tr('undoTrackedStarted') : tr('undoNativeStarted'),
       status: 'running',
-      detail: { [tr('detailWillUndo')]: trackedUndo ? formatTrackedChangeFiles(run.undoTrackedChanges) : formatTrackedUndoFiles(run) }
+      detail: { [tr('detailWillUndo')]: !hasTextUndo ? formatOperationFiles(createdUndoOperations)
+        : trackedUndo ? formatTrackedChangeFiles(run.undoTrackedChanges) : formatTrackedUndoFiles(run) }
     });
 
     try {
       const trackedUndoPostFilesAtDispatch = buildTrackedUndoPostFiles(run);
-      const result = await callPageBridge('rejectTrackedChanges', {
+      let result = hasTextUndo ? await callPageBridge('rejectTrackedChanges', {
         trackedChanges: run.undoTrackedChanges || [],
         expectedFiles: run.undoExpectedFiles || [],
         postFiles: trackedUndoPostFilesAtDispatch,
@@ -6963,22 +6762,55 @@
         // navigated away the page-side guard refuses with
         // `aborted_project_changed` and the document is left untouched.
         runProjectId: getRunProjectIdForWriteback(run)
-      });
+      }) : { ok: true, applied: [], skipped: [] };
+      if (createdUndoOperations.length && lifecycleReject && hasTextUndo) {
+        WritebackSettlement.attachUndoNotVerifiedFailure(run, result, { buildFailure: buildContentFailure, postFiles: trackedUndoPostFilesAtDispatch });
+        await applyTrackedChangeSettlement(runId, 'reject', { ...result, ok: false });
+      }
+      if (createdUndoOperations.length) {
+        let createdResult;
+        try {
+          if (result.ok === false || result.skipped?.length) {
+            throw new Error('Text changes remain unresolved; created files were kept for the next undo attempt.');
+          }
+          createdResult = await callPageBridge('applyOperations', {
+            operations: createdUndoOperations,
+            baseFiles: run.undoBaseFiles || [],
+            reviewingPolicy: 'no-trace-undo',
+            runProjectId: getRunProjectIdForWriteback(run)
+          });
+        } catch (error) {
+          createdResult = { ok: false, applied: [], skipped: createdUndoOperations.map(operation => ({
+            operation, result: { ok: false, code: 'undo_operation_failed', reason: error.message }
+          })) };
+        }
+        const applied = [...(result.applied || []), ...(createdResult.applied || [])];
+        const skipped = [...(result.skipped || []), ...(createdResult.skipped || [])];
+        for (const operation of createdUndoOperations) {
+          if (!(createdResult.applied || []).some(entry => entry.operation?.path === operation.path
+            && entry.result?.ok === true && entry.result?.verified === true)
+            && !(createdResult.skipped || []).some(entry => entry.operation?.path === operation.path)) {
+            skipped.push({ operation, result: { ok: false, code: 'undo_operation_failed',
+              reason: 'The created file has no verified deletion receipt.' } });
+          }
+        }
+        result = { ...result, ok: result.ok !== false && createdResult.ok !== false && !skipped.length, applied, skipped };
+      }
       writebackOrchestrator.invalidateMirrorAfterUndo(runId, getRunProjectIdForWriteback(run), result);
       appendRunRecordEvent(runId, {
-        title: trackedUndo
+        title: createdUndoOperations.length ? tr('undoResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }) : trackedUndo
           ? tr('undoTrackedResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 })
           : tr('undoNativeResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
         status: result.skipped?.length ? 'failed' : 'completed',
         detail: {
-          [trackedUndo ? tr('detailRejected') : tr('detailUndone')]: (result.applied || []).map(item => ({
-            [tr('detailFile')]: item.trackedChange?.path || tr('unknownFile'),
-            [tr('detailRecord')]: item.trackedChange?.label || item.trackedChange?.id || item.trackedChange?.key
+          [trackedUndo && !createdUndoOperations.length ? tr('detailRejected') : tr('detailUndone')]: (result.applied || []).map(item => ({
+            [tr('detailFile')]: item.trackedChange?.path || item.operation?.path || tr('unknownFile'),
+            [tr('detailRecord')]: item.trackedChange?.label || item.trackedChange?.id || item.trackedChange?.key || item.operation?.type
           })),
           [tr('detailSkipped')]: (result.skipped || []).map(item => ({
-            [tr('detailFile')]: item.trackedChange?.path || tr('unknownFile'),
-            [tr('detailRecord')]: item.trackedChange?.label || item.trackedChange?.id || item.trackedChange?.key || '',
-            [tr('detailReason')]: formatBridgeResultReason(item.result, item.trackedChange?.path)
+            [tr('detailFile')]: item.trackedChange?.path || item.operation?.path || tr('unknownFile'),
+            [tr('detailRecord')]: item.trackedChange?.label || item.trackedChange?.id || item.trackedChange?.key || item.operation?.type || '',
+            [tr('detailReason')]: formatBridgeResultReason(item.result, item.trackedChange?.path || item.operation?.path)
           }))
         }
       });
@@ -7114,7 +6946,9 @@
   }
 
   async function applyTrackedChangeSettlement(runId, kind, result) {
-    const run = findRunRecord(runId);
+    const record = findRunRecord(runId);
+    const createdUndo = record?.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1);
+    const run = kind === 'reject' && createdUndo ? advanceRunUndoProgress(record, result) : record;
     const settlement = WritebackSettlement.settleTrackedChangeLifecycle({
       kind,
       run,
@@ -7130,16 +6964,142 @@
     });
   }
 
+
+  function advanceRunUndoProgress(run, result) {
+    const postFiles = buildTrackedUndoPostFiles(run);
+    return Modules.UndoOperations.advanceUndoCheckpoint(run, result, file =>
+      WritebackSettlement.isUndoVerifiedContentMatching({ undoExpectedFiles: [file] }, result, { postFiles })
+    );
+  }
   function getRunUndoCount(run) {
     if (!run) {
       return 0;
     }
     const trackedEditorUndoCount = hasTrackedEditorUndo(run) ? 1 : 0;
     if (trackedEditorUndoCount) {
-      return trackedEditorUndoCount;
+      return trackedEditorUndoCount + (run.undoOperations || []).filter(operation => operation?.undoCreatedFile?.v === 1).length;
     }
     return (run.undoOperations?.length || 0)
       + (run.undoTrackedChanges?.length || 0);
+  }
+
+  function recoveryOwner(target) {
+    if (!target.runProjectId || target.runProjectId !== getCurrentProjectId() || !cachedAccountScopeId) {
+      throw new Error('Writeback recovery lost its project or account identity.');
+    }
+    return { projectId: target.runProjectId, accountScopeId: cachedAccountScopeId,
+      sessionId: target.sessionId, runId: target.recordId, createdAt: new Date().toISOString() };
+  }
+
+  async function stageWritebackRecovery(operations, target, requireReviewing) {
+    const record = findRunRecord(target.recordId, target.sessionId);
+    if (!record) throw new Error('The writeback run is no longer available.');
+    const creates = operations.filter(op => op.type === 'create' && typeof op.content === 'string');
+    if (!creates.length) return;
+    const candidate = Modules.WritebackIntent.normalize({ ...recoveryOwner(target), id: crypto.randomUUID(),
+      operations: creates, baseFiles: [], requireReviewing });
+    const safe = Modules.SessionState.pickWritebackRecovery({ ...record, retryWriteback: candidate });
+    if (safe.retryWriteback) record.retryWriteback = safe.retryWriteback;
+    else delete record.retryWriteback;
+    await flushQueuedSaveState();
+  }
+
+  async function settleWritebackRecovery(applied, project, verification, target) {
+    const record = findRunRecord(target.recordId, target.sessionId);
+    if (!record) return;
+    const owner = recoveryOwner(target);
+    if (record.retryWriteback) {
+      const skippedPaths = new Set((applied.skipped || []).map(entry => entry.operation?.path));
+      const operations = record.retryWriteback.operations.filter(op => skippedPaths.has(op.path));
+      if (operations.length) record.retryWriteback = Modules.WritebackIntent.normalize({ ...record.retryWriteback,
+        operations, requestId: applied.receiptUnconfirmed ? applied.requestId || '' : '' });
+      else delete record.retryWriteback;
+    }
+    const next = await writebackController.buildSaveCheck(applied, project, owner);
+    const files = new Map((record.saveCheck?.files || []).map(file => [file.path, file]));
+    for (const file of next?.files || []) {
+      if (verification.state === 'verified_saved') files.delete(file.path);
+      else files.set(file.path, file);
+    }
+    if (files.size) record.saveCheck = Modules.WritebackIntent.normalizeSaveCheck({ ...owner, files: [...files.values()] });
+    else {
+      delete record.saveCheck;
+      if (verification.state === 'verified_saved') record.saveConfirmedAt = new Date().toISOString();
+    }
+    await flushQueuedSaveState();
+  }
+
+  async function retryRunWriteback(runId) {
+    if (currentRunView || trackedChangeInFlight.size) return;
+    const session = getActiveSession(state);
+    const record = (session?.runs || []).find(run => run.id === runId);
+    const intent = Modules.WritebackIntent.normalize(record?.retryWriteback);
+    const check = Modules.WritebackIntent.normalizeSaveCheck(record?.saveCheck);
+    const owner = intent || check;
+    if (!record || record.forkSnapshot || !owner || owner.projectId !== getCurrentProjectId()
+      || owner.accountScopeId !== cachedAccountScopeId || owner.sessionId !== session.id
+      || owner.runId !== record.id || record.undoStatus === 'applied' || record.trackedChangeStatus === 'rejected') return;
+    const originalStatus = record.status;
+    runCancellationRequested = false;
+    runCancellationController = new AbortController();
+    record.status = 'running';
+    record.retryingWriteback = true;
+    renderRunHistory({ preserveScroll: true });
+    const root = panel.querySelector(`[data-run-id="${cssEscape(runId)}"]`);
+    currentRunView = { root, recordId: runId, sessionId: session.id, runProjectId: owner.projectId,
+      runAccountScopeId: owner.accountScopeId, executionSnapshot: record.executionSnapshot,
+      startedAt: Date.now(), writebackRetry: true, events: root?.querySelector('[data-run-events]'),
+      report: root?.querySelector('[data-run-report]'), status: root?.querySelector('[data-run-status]'),
+      runProcess: root?.querySelector('[data-run-process]'), processLabel: root?.querySelector('[data-run-process-summary]') };
+    setRunning(true);
+    const assertOwner = () => {
+      if (runCancellationRequested || currentRunView?.recordId !== runId) {
+        throw Object.assign(new Error('Save checking was cancelled.'), { code: 'codex_cancelled' });
+      }
+      if (owner.projectId !== getCurrentProjectId() || owner.accountScopeId !== cachedAccountScopeId) {
+        throw Object.assign(new Error('The project or account changed.'), { code: 'aborted_project_changed' });
+      }
+    };
+    try {
+      assertOwner();
+      if (intent?.requestId) {
+        const receipt = await callPageBridge('getWritebackReceipt', { requestId: intent.requestId, runProjectId: owner.projectId });
+        if (receipt?.state === 'running') throw new Error(tx('The previous upload is still finishing. Try again shortly.', '上一轮上传仍在收尾，请稍后再试。'));
+      }
+      if (intent?.operations.length) {
+        const result = await applySyncChangesToOverleaf(intent.operations.map(op => ({ ...op, type: 'create' })),
+          { id: owner.projectId, files: [] }, { mode: 'auto', requireReviewing: intent.requireReviewing,
+            retryCreates: true, assistantMessage: tx('Retried the remaining file transfers for this task.', '已重试本轮未完成的文件同步。') });
+        assertOwner();
+        if (result.settlement) record.settlement = result.settlement;
+        await finishRunView(result.hasSkippedOperations ? tx('Sync incomplete', '同步未完成') : tx('Synced', '已同步'),
+          result.hasSkippedOperations ? 'failed' : 'completed');
+      } else if (check) {
+        const result = await writebackController.confirmSaveCheck(check, { assertCurrent: assertOwner,
+          readSnapshot: params => callPageBridge('getProjectSnapshot', { ...params, runProjectId: owner.projectId }) });
+        assertOwner();
+        if (result.ok) {
+          delete record.saveCheck;
+          record.saveConfirmedAt = new Date().toISOString();
+          if (record.settlement) record.settlement.evidence = { ...record.settlement.evidence, saved: 'verified' };
+        }
+        record.status = originalStatus;
+        showPluginToast(result.ok ? tx('Saved content confirmed.', '已确认文件保存。')
+          : tx('Saved content is still unconfirmed. No file was uploaded again.', '保存状态仍待确认，本次没有重复上传文件。'));
+      }
+      await flushQueuedSaveState();
+    } catch (error) {
+      record.status = originalStatus;
+      showPluginToast(error.message || String(error));
+    } finally {
+      delete record.retryingWriteback;
+      if (currentRunView?.recordId === runId) currentRunView = null;
+      runCancellationRequested = false;
+      runCancellationController = null;
+      setRunning(false);
+      saveStateSoon();
+      renderRunHistory({ preserveScroll: true });
+    }
   }
 
   function appendUndoReviewingPolicyEvent(runId, reviewingPolicy) {
@@ -7225,7 +7185,7 @@
   }
 
   function recordUndoFromApply(project, applyResult) {
-    const appliedEntries = getAppliedEntries(applyResult);
+    const appliedEntries = getAppliedEntries(applyResult).filter(entry => entry.result?.idempotent !== true);
     if (!currentRunView?.recordId || !appliedEntries.length) {
       return;
     }
@@ -7244,14 +7204,15 @@
       ...appliedOperations
     ];
     record.appliedOperations = combinedAppliedOperations;
+    const createdCheckpoint = buildCreatedFileUndoCheckpoint(project, combinedAppliedOperations, record);
 
     if ((currentRunView?.executionSnapshot?.requireReviewing ?? state.requireReviewing) === true) {
       const combinedTrackedChanges = normalizeApplyTrackedChanges([
         ...(Array.isArray(record.undoTrackedChanges) ? record.undoTrackedChanges : []),
         ...trackedChanges
       ]);
-      record.undoOperations = [];
-      record.undoBaseFiles = [];
+      record.undoOperations = createdCheckpoint.undoOperations;
+      record.undoBaseFiles = createdCheckpoint.undoBaseFiles;
       record.undoTrackedChanges = combinedTrackedChanges;
       record.undoExpectedFiles = selectExpectedFilesForTrackedUndo(
         project,
@@ -7286,6 +7247,11 @@
             [tr('detailMethod')]: tr('undoCheckpointNativeMethod')
           }
         });
+      } else if (record.undoOperations.length) {
+        appendRunEvent({
+          title: tr('undoCheckpointPlain', { count: record.undoOperations.length }),
+          status: 'completed'
+        });
       } else {
         appendRunEvent({
           title: tr('undoCheckpointMissing'),
@@ -7300,6 +7266,15 @@
     }
 
     const checkpoint = buildUndoCheckpoint(project, combinedAppliedOperations);
+    const createdPaths = new Set(createdCheckpoint.undoOperations.map(operation => operation.path));
+    checkpoint.undoOperations = [
+      ...checkpoint.undoOperations.filter(operation => !createdPaths.has(operation.path)),
+      ...createdCheckpoint.undoOperations
+    ];
+    checkpoint.undoBaseFiles = [
+      ...checkpoint.undoBaseFiles.filter(file => !createdPaths.has(file.path)),
+      ...createdCheckpoint.undoBaseFiles
+    ];
     if (!checkpoint.undoOperations.length) {
       return;
     }
@@ -7374,6 +7349,7 @@
       timestamp: event.timestamp || new Date().toISOString(),
       kind: event.kind || 'activity',
       technicalDetail: event.technicalDetail,
+      activity: Modules.RunActivityModel.capture(event, sanitizeAssistantVisibleText),
       guidanceId: sanitizeAssistantVisibleText(event.guidanceId)
     };
     record.events = [...(record.events || []), normalized].slice(-MAX_RUN_EVENTS);
@@ -7403,10 +7379,12 @@
   function applyLegacyUndoSettlement(runId, undoStatus, result) {
     const run = findRunRecord(runId);
     if (!run) return;
+    const checkpoint = run.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1)
+      ? advanceRunUndoProgress(run, result) : run;
     Object.assign(run, WritebackSettlement.applySettlementTransition(
-      run,
+      checkpoint,
       WritebackSettlement.settleLegacyUndo({
-        run,
+        run: checkpoint,
         status: undoStatus,
         result
       })
@@ -7423,6 +7401,12 @@
     }
     configureAcceptButton(root, run);
     configureUndoButton(root, run);
+    const reportEvent = (run.events || []).filter(event => event.kind === 'report').pop();
+    const report = root.querySelector('[data-run-report]');
+    if (reportEvent && report) {
+      report.replaceChildren(renderCompletionReport(reportEvent, run));
+      report.hidden = false;
+    }
   }
 
   function findRunRecord(runId, sessionId = '') {
@@ -7543,6 +7527,11 @@
   // v1.8.0 C1: a change-history row jumps to the run it describes —
   // switch to its session if needed, then scroll + flash the run card.
   async function jumpToHistoryRun(record = {}) {
+    if (!cachedAccountScopeId || record.accountScopeId !== cachedAccountScopeId
+      || record.projectId !== getCurrentProjectId()) {
+      showPluginToast(tx('The project or account changed. Reopen file history and try again.', '项目或账号已变化，请重新打开文件修改记录。'));
+      return;
+    }
     closeCustomInstructionsSettings();
     if (record.sessionId && record.sessionId !== state.activeSessionId) {
       const target = (state.sessions || []).find(session => session.id === record.sessionId);
@@ -7621,7 +7610,7 @@
       if (primaryNext) return primaryNext;
       return tx('Expand the write result, review the skipped reasons, then retry after fixing them.', '请展开写入结果查看跳过原因，处理后可以重试。');
     }
-    if (input.status === 'rejected') {
+    if (input.status === 'cancelled' || input.status === 'rejected') {
       return tx('Adjust the task description and run again.', '可以调整任务描述后重新运行。');
     }
     if (input.status === 'blocked' || input.status === 'failed') {

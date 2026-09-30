@@ -3,8 +3,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const ChangeHistoryModel = require('../extension/src/shared/changeHistoryModel');
 
-const settingsSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/settingsPanel.js'), 'utf8');
+const settingsModuleSources = [
+  'moduleRegistryKernel.js', 'settingsWorkbench.js', 'settingsPanel.js', 'changeHistoryView.js'
+].map(file => {
+  const filename = path.join(__dirname, '../extension/src/content', file);
+  return { filename, source: fs.readFileSync(filename, 'utf8') };
+});
 const maintenanceSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/panelMaintenance.js'), 'utf8');
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
@@ -33,13 +39,19 @@ function fixture(estimate) {
   let maintenance;
   let current;
   const timers = new Map();
-  const context = vm.createContext({
-    window: {},
+  const sandbox = {
+    CodexOverleafChangeHistoryModel: ChangeHistoryModel,
     navigator: { storage: estimate ? { estimate() { estimateCalls++; return estimate(); } } : undefined },
     setTimeout(callback, delay) { const id = ++sequence; timers.set(id, { callback, delay }); return id; },
     clearTimeout(id) { timers.delete(id); }
-  });
-  vm.runInContext(settingsSource, context);
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  const context = vm.createContext(sandbox);
+  for (const { source, filename } of settingsModuleSources) {
+    vm.runInContext(source, context, { filename });
+  }
+  assert.equal(context.CodexOverleafModuleRegistry.resolve('SettingsPanel'), context.CodexOverleafSettingsPanel);
   vm.runInContext(maintenanceSource, context);
   function makePanel() {
     const usage = element({ 'data-i18n': 'storageUsageLoading' });
@@ -65,11 +77,12 @@ function fixture(estimate) {
   }
   current = makePanel();
   maintenance = context.window.CodexOverleafPanelMaintenance.create({
+    ChangeHistoryView: context.CodexOverleafModuleRegistry.resolve('ChangeHistoryView'),
     tx: (en, zh) => locale === 'zh' ? zh : en,
     getCurrentProjectId: () => projectId,
     getPanel: () => panel,
     getSettingsPanelInstance: () => current.settings,
-    getState: () => ({ sessions: [{ id: 'session-a' }, { id: 'session-b' }], runs: [{ id: 'run-a' }] })
+    getState: () => ({ activeSessionId: 'session-a', sessions: [{ id: 'session-a' }, { id: 'session-b' }], runs: [{ id: 'run-a' }] })
   });
   return {
     ...current, maintenance, timers, panel,
@@ -86,8 +99,8 @@ test('real SettingsPanel public handle exposes the container needed by storage s
   const f = fixture(() => ({ usage: 2048 }));
   assert.equal(f.settings.container, f.container);
   const request = f.maintenance.refreshStorageUsageSummary();
-  assert.match(f.usage.textContent, /2 loaded session/);
-  assert.match(f.usage.textContent, /1 run\(s\) in the active session/);
+  assert.match(f.usage.textContent, /^2 loaded conversations \u00b7 1 runs in this project(?: \u00b7 |$)/);
+  assert.match(f.usage.textContent, /1 runs in this project/);
   assert.equal(f.usage.getAttribute('data-i18n'), null);
   await request;
   assert.match(f.usage.textContent, /Site total ~2 KB/);
@@ -110,7 +123,7 @@ test('expanding the storage card triggers statistics without clearing history', 
 test('a never-resolving capacity request displays counts immediately and has a bounded fallback', async () => {
   const f = fixture(() => new Promise(() => {}));
   const request = f.maintenance.refreshStorageUsageSummary();
-  assert.match(f.usage.textContent, /2 loaded session/);
+  assert.match(f.usage.textContent, /^2 loaded conversations \u00b7 1 runs in this project(?: \u00b7 |$)/);
   assert.equal([...f.timers.values()][0].delay, 2000);
   f.expire();
   await request;
@@ -123,7 +136,7 @@ test('unsupported, rejected, throwing, and invalid estimates preserve usable cou
     () => Promise.reject(new Error('rejected')), () => ({ usage: null }), () => ({ usage: -1 })]) {
     const f = fixture(estimate);
     await f.maintenance.refreshStorageUsageSummary();
-    assert.match(f.usage.textContent, /2 loaded session/);
+    assert.match(f.usage.textContent, /^2 loaded conversations \u00b7 1 runs in this project(?: \u00b7 |$)/);
     assert.match(f.usage.textContent, /estimate unavailable/);
     assert.equal(f.timers.size, 0);
   }
@@ -163,7 +176,7 @@ test('an open storage card refreshes its dynamic summary after a language change
   f.language.value = 'zh';
   f.language.emit('change');
   await settle();
-  assert.match(f.usage.textContent, /\u5f53\u524d\u9879\u76ee/);
+  assert.match(f.usage.textContent, /\u672c\u9879\u76ee\u5df2\u52a0\u8f7d 2 \u4e2a\u5bf9\u8bdd \u00b7 1 \u8f6e\u8fd0\u884c/);
   assert.match(f.usage.textContent, /2 KB/);
   assert.equal(f.usage.getAttribute('data-i18n'), null);
 });
@@ -192,21 +205,21 @@ test('homepage storage reports site-wide usage without fabricated project or ses
   f.panel.dataset.settingsScope = 'account';
   f.setProject(null);
   await f.maintenance.refreshStorageUsageSummary();
-  assert.match(f.usage.textContent, /All projects in this browser/);
+  assert.match(f.usage.textContent, /^Saved history across projects in this browser/);
   assert.match(f.usage.textContent, /Site total ~2 KB/);
-  assert.doesNotMatch(f.usage.textContent, /loaded session|active session|this project/);
+  assert.doesNotMatch(f.usage.textContent, /loaded session|active session|this project|loaded conversations|runs in this project/);
   f.card.open = true;
   f.language.value = 'zh';
   f.language.emit('change');
   await settle();
-  assert.match(f.usage.textContent, /\u5f53\u524d\u6d4f\u89c8\u5668\u4e2d\u7684\u6240\u6709\u9879\u76ee/);
-  assert.doesNotMatch(f.usage.textContent, /\u5f53\u524d\u9879\u76ee|\u5f53\u524d\u4f1a\u8bdd/);
+  assert.match(f.usage.textContent, /\u5f53\u524d\u6d4f\u89c8\u5668\u4e2d\u8de8\u9879\u76ee\u4fdd\u5b58\u7684\u5386\u53f2/);
+  assert.doesNotMatch(f.usage.textContent, /\u5f53\u524d\u9879\u76ee|\u5f53\u524d\u4f1a\u8bdd|\u672c\u9879\u76ee|\d+\s*\u4e2a\u5bf9\u8bdd|\d+\s*\u8f6e\u8fd0\u884c/);
 });
 
 test('homepage storage keeps its global scope when capacity estimation is unavailable', async () => {
   const f = fixture();
   f.panel.dataset.settingsScope = 'account';
   await f.maintenance.refreshStorageUsageSummary();
-  assert.match(f.usage.textContent, /All projects in this browser.*estimate unavailable/);
-  assert.doesNotMatch(f.usage.textContent, /loaded session|active session/);
+  assert.match(f.usage.textContent, /^Saved history across projects in this browser.*estimate unavailable/);
+  assert.doesNotMatch(f.usage.textContent, /loaded session|active session|this project|loaded conversations|runs in this project/);
 });

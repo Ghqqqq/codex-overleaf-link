@@ -1,10 +1,10 @@
 (function initStorageRunActions(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./selectionContext'), require('./writebackIntent'), require('./writingStyle'));
   } else {
-    root.CodexOverleafStorageRunActions = factory();
+    root.CodexOverleafModuleRegistry.define('StorageRunActions', ['SelectionContext', 'WritebackIntent', 'WritingStyle'], factory);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function storageRunActionsFactory() {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function storageRunActionsFactory(SelectionContext, WritebackIntent, WritingStyle) {
   'use strict';
 
   var MAX_PERSISTED_ACTION_RUNS_PER_SESSION = 2;
@@ -126,6 +126,8 @@
       compact.focusFiles = snapshot.focusFiles.slice(0, 100)
         .filter(function (value) { return typeof value === 'string'; }).map(normalize);
     }
+    compact.selectionContext = SelectionContext.normalize(snapshot.selectionContext);
+    compact.writingStyle = WritingStyle.normalizeSnapshot(snapshot.writingStyle);
     return { executionSnapshot: compact };
   }
 

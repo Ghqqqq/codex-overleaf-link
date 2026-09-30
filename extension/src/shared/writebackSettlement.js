@@ -270,17 +270,13 @@
     }
     const successful = isSuccessfulTrackedChangeSettlement(input.result);
     const reviewCodes = kind === 'accept' ? ACCEPT_NEEDS_REVIEW_CODES : REJECT_NEEDS_REVIEW_CODES;
-    // Reject/Undo is an all-target recovery transaction. A successful entry
-    // only proves that one tracked target was restored; any failed/skipped
-    // sibling can still leave this run's content in another file. Keep that
-    // recovery actionable instead of collapsing a partial multi-file reject
-    // into the terminal `rejected` state. Accept retains its established
-    // best-effort terminal policy.
-    const incompleteReject = kind === 'reject'
-      && collectRunResultSkipped(input.result).length > 0;
-    const needsReview = incompleteReject || (!successful && failures.some(failure =>
+    // Both actions cover every targeted file. Partial success must retain
+    // the original recovery material for unresolved siblings.
+    const incomplete = collectRunResultSkipped(input.result).length > 0
+      || input.result?.ok === false;
+    const needsReview = incomplete || !successful || failures.some(failure =>
       failure.terminalState === 'needs_review' || reviewCodes.has(failure.code)
-    ));
+    );
     const status = needsReview ? 'needs_review' : kind === 'accept' ? 'accepted' : 'rejected';
     return {
       decision: status,

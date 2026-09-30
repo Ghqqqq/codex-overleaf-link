@@ -525,7 +525,7 @@ test('composer shows Ask and Auto as the only visible task modes', () => {
   assert.match(contentScript, /function selectMode\(/);
   assert.match(contentScript, /function syncModeControls\(/);
   assert.match(contentScript, /querySelectorAll\('\[data-mode-choice\]'\)/);
-  assert.match(css, /\.codex-mode-switch\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(css, /\.codex-mode-switch\s*\{[\s\S]*grid-template-columns:\s*repeat\(2,\s*minmax\(36px,\s*1fr\)\)/);
   assert.match(css, /\[data-mode-choice\]\[data-active="true"\]/);
 });
 
@@ -1083,7 +1083,7 @@ test('successful Overleaf writeback refreshes page snapshot cache and native mir
   const contentScript = getContentScriptSource();
   const applyBody = contentScript.match(/async function applySyncChangesToOverleaf[\s\S]*?\n  function buildSyncApplyOperations/)?.[0] || '';
 
-  assert.match(applyBody, /refreshProjectMirrorAfterWriteback\(project, applied, saveVerification\)/);
+  assert.match(applyBody, /refreshProjectMirrorAfterWriteback\(project, applied, saveVerification, \{ target: saveTarget, snapshot: confirmation\.snapshot \}\)/);
   assert.match(contentScript, /invalidateProjectSnapshot/);
   assert.match(contentScript, /method:\s*'mirror\.sync'/);
 });
@@ -1093,20 +1093,25 @@ test('post-write side effects wait for verified Overleaf save state', () => {
   const applyBody = writebackOrchestrator.match(/async function applySyncChangesToOverleaf[\s\S]*?\n  async function verifyPostWriteSaveState/)?.[0] || '';
   const verifyBody = writebackOrchestrator.match(/async function verifyPostWriteSaveState[\s\S]*?\n  function appendPostWriteSaveVerificationWarning/)?.[0] || '';
 
+  const confirmationSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/writebackController.js'), 'utf8');
   const applyIndex = applyBody.indexOf('await assetTransferBroker.applyOperations({');
-  const verifyIndex = applyBody.indexOf('verifyPostWriteSaveState()');
-  const refreshIndex = applyBody.indexOf('refreshProjectMirrorAfterWriteback(project, applied, saveVerification)');
+  const verifyIndex = applyBody.indexOf('verifyPostWriteSaveState(applied, project, saveTarget)');
+  const refreshIndex = applyBody.indexOf('refreshProjectMirrorAfterWriteback(project, applied, saveVerification, { target: saveTarget, snapshot: confirmation.snapshot })');
   const recompileIndex = applyBody.indexOf('autoRecompileAfterWriteback(appliedPaths, saveVerification');
 
   assert.ok(applyIndex >= 0, 'asset-aware applyOperations call is present');
   assert.ok(verifyIndex > applyIndex, 'save verification happens after applyOperations');
   assert.ok(refreshIndex > verifyIndex, 'mirror refresh happens after save verification');
   assert.ok(recompileIndex > verifyIndex, 'auto compile happens after save verification');
-  assert.match(verifyBody, /callPageBridge\('waitForSaveState', \{\s*deadlineMs:\s*5000,\s*requirePositiveSignal:\s*true\s*\}\)/);
-  assert.match(verifyBody, /state:\s*'verified_saved'/);
-  assert.match(verifyBody, /state:\s*'unknown_timeout'/);
-  assert.match(verifyBody, /state:\s*'unavailable'/);
-  assert.match(applyBody, /appendPostWriteSaveVerificationWarning\(saveVerification\)/);
+  assert.match(verifyBody, /writebackController\.confirmPostWriteSave/);
+  assert.match(verifyBody, /readSaveState: params => callPageBridge\('waitForSaveState', \{ \.\.\.params, runProjectId: target\.runProjectId \}\)/);
+  assert.match(confirmationSource, /requirePositiveSignal:\s*true/);
+  assert.match(confirmationSource, /const deadline = now\(\) \+ 90000/);
+  assert.match(confirmationSource, /if \(isInterruption\(error\)\) throw error/);
+  assert.match(confirmationSource, /state:\s*'verified_saved'/);
+  assert.match(confirmationSource, /state:\s*final\.state === 'unavailable' \? 'unavailable' : 'unknown_timeout'/);
+  assert.match(confirmationSource, /state:\s*'unavailable'/);
+  assert.match(applyBody, /appendPostWriteSaveVerificationWarning\(saveVerification, saveTarget\)/);
 });
 
 test('empty or malformed apply results do not trigger save verification', () => {
@@ -1132,8 +1137,8 @@ test('empty or malformed apply results do not trigger save verification', () => 
   // v1.6.2: the save-verify probe + its warning gate on the count of APPLIED
   // writes, so an all-skipped (zero-write) run never wastes ~5s probing nor
   // emits the misleading "could not verify saved" warning.
-  assert.match(applyBody, /const saveVerification = appliedPaths\.length\s*\n?\s*\?[\s\S]*?verifyPostWriteSaveState\(\)[\s\S]*?:/);
-  assert.match(applyBody, /if \(appliedPaths\.length\) \{[\s\S]*?appendPostWriteSaveVerificationWarning\(saveVerification\)/);
+  assert.match(applyBody, /const confirmation = appliedPaths\.length\s*\n?\s*\?[\s\S]*?verifyPostWriteSaveState\(applied, project, saveTarget\)[\s\S]*?:/);
+  assert.match(applyBody, /if \(appliedPaths\.length\) \{[\s\S]*?appendPostWriteSaveVerificationWarning\(saveVerification, saveTarget\)/);
 });
 
 test('malformed skipped apply result entries are not treated as partial writeback', () => {
@@ -1163,9 +1168,9 @@ test('post-write mirror refresh waits for verified save but auto compile still d
   const autoCompileBody = contentScript.match(/async function autoRecompileAfterWriteback[\s\S]*?\n  async function resolveCompileLogContext/)?.[0] || '';
   const saveWarningBody = contentScript.match(/function appendPostWriteSaveVerificationWarning[\s\S]*?\n  async function refreshProjectMirrorAfterWriteback/)?.[0] || '';
 
-  assert.match(refreshBody, /async function refreshProjectMirrorAfterWriteback\(project = \{\}, applied = \{\}, saveVerification = \{\}\)/);
+  assert.match(refreshBody, /async function refreshProjectMirrorAfterWriteback\(project = \{\}, applied = \{\}, saveVerification = \{\}, confirmation = \{\}\)/);
   assert.match(autoCompileBody, /async function autoRecompileAfterWriteback\(writtenPaths = \[\], saveVerification = \{\}, options = \{\}\)/);
-  assert.match(refreshBody, /saveVerification\?\.state !== 'verified_saved'[\s\S]*?return;/);
+  assert.match(refreshBody, /saveVerification\?\.state !== 'verified_saved'[\s\S]*?return invalidateWritebackMirror\(target\);/);
   assert.doesNotMatch(autoCompileBody, /saveVerification\?\.state !== 'verified_saved'[\s\S]*?return;/);
   assert.ok(
     refreshBody.indexOf("saveVerification?.state !== 'verified_saved'") < refreshBody.indexOf("callPageBridge('invalidateProjectSnapshot'"),
@@ -1201,8 +1206,8 @@ test('post-write mirror refresh refuses partial snapshots before touching native
   const refreshBody = contentScript.match(/async function refreshProjectMirrorAfterWriteback[\s\S]*?\n  function mergeVerifiedAppliedFiles/)?.[0] || '';
 
   assert.match(refreshBody, /capabilities\?\.fullProjectSnapshot/);
-  assert.match(refreshBody, /没有读到完整项目/);
-  assert.match(refreshBody, /return 'failed';\s*\}\s*\n\s*const syncedProject/);
+  assert.match(refreshBody, /freshProject\?\.capabilities\?\.fullProjectSnapshot === false/);
+  assert.match(refreshBody, /return invalidateWritebackMirror\(target\);\s*\}\s*\n\s*const syncedProject/);
 });
 
 test('idle background sync does not poll or touch the Overleaf editor', () => {
@@ -1405,7 +1410,9 @@ test('ask mode ignores unexpected local Codex writeback changes without failing 
   const applySyncBody = extractFromContentScript('applySyncChangesToOverleaf');
   const runTaskBody = extractFromContentScript('runTask');
   const guardEnd = applySyncBody.indexOf('let operations = buildSyncApplyOperations');
-  const guardBody = guardEnd > -1 ? applySyncBody.slice(0, guardEnd) : applySyncBody;
+  const guardStart = applySyncBody.indexOf("if (options.mode === 'ask'");
+  assert.ok(guardStart >= 0 && guardEnd > guardStart);
+  const guardBody = applySyncBody.slice(guardStart, guardEnd);
 
   // v1.6.3 carve: the orchestrator reads panel state through the getState()
   // accessor (mutable runtime binding), same semantics.
@@ -1651,7 +1658,7 @@ test('panel.css ships the jump-to-latest button, dark scrollbar, and motion prim
 
 test('streamed assistant text shrinks with the panel and wraps mixed-language content', () => {
   const css = fs.readFileSync(path.join(__dirname, '../extension/styles/panel.css'), 'utf8');
-  const activityListRule = css.match(/\.run-activity-list\s*\{[\s\S]*?\}/)?.[0] || '';
+  const activityListRule = css.match(/^#codex-overleaf-panel \.run-activity-list\s*\{[\s\S]*?\}/m)?.[0] || '';
   const streamRule = css.match(/\.run-stream\s*\{[\s\S]*?\}/)?.[0] || '';
   const streamTextRule = css.match(/\.run-stream-text\s*\{[\s\S]*?\}/)?.[0] || '';
   assert.match(activityListRule, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
@@ -1698,7 +1705,9 @@ test('Option B JS: live-elapsed tick + collapsed step count', () => {
   // The tick is started in startRunView and stopped in finishRunView.
   assert.match(contentScript, /startRunElapsedTick\(\);[\s\S]{0,80}renderSessionList\(\)/);
   // collapseRunProcess appends the step count.
-  assert.match(contentScript, /function countRunActivitySteps\(/);
+  const collapse = extractFromContentScript('collapseRunProcess');
+  assert.match(collapse, /const stepCount = \(record\?\.events \|\| \[\]\)\.filter\(event => \(event\.kind \|\| 'activity'\) === 'activity'\)\.length/);
+  assert.match(collapse, /activitySummary\.settle\(view, statusText\)/);
   assert.match(contentScript, /\$\{stepCount\} steps/);
 });
 
@@ -1776,7 +1785,20 @@ test('running tasks are only marked interrupted when restoring persisted state a
     'utf8'
   );
 
-  assert.match(contentScript, /normalizePanelState\(getGlobalPreferences\(\)\.overlay\(await loadStoredState\(\)\),\s*\{\s*restoreRunningRuns:\s*true\s*\}\)/);
+  const normalizeLoaded = extractFromContentScript('normalizeLoadedPanelState');
+  for (const shared of [false, true]) {
+    let captured;
+    const normalize = Function('Modules', 'normalizePanelState', 'getGlobalPreferences', normalizeLoaded + '; return normalizeLoadedPanelState;')(
+      { StorageDb: { sharedSessionsEnabled: () => shared } },
+      (input, options) => { captured = options; return input; },
+      () => ({ overlay: input => input })
+    );
+    const input = { sessions: [] };
+    assert.equal(normalize(input), input);
+    assert.equal(captured.restoreRunningRuns, !shared);
+  }
+  assert.match(contentScript, /normalizeLoadedPanelState\(await loadStoredState\(\)\)/);
+  assert.match(contentScript, /requireOwnerLost: Modules\.StorageDb\.sharedSessionsEnabled\?\.\(\) === true/);
   assert.match(sessionState, /restoreRunningRuns/);
   assert.doesNotMatch(sessionState, /Run interrupted by page reload/);
   assert.doesNotMatch(sessionState, /Interrupted by page reload/);
@@ -1888,8 +1910,10 @@ test('write paths enforce Overleaf Reviewing before applying changes when reques
   assert.match(pageBridge, /writeGuard\.runWriteGuard\(params\)/);
   assert.match(pageBridge, /function ensureReviewing\(/);
   assert.match(pageBridge, /function ensureEditing\(/);
-  assert.match(pageBridge, /requireReviewing:\s*params\.requireReviewing === true/);
-  assert.match(pageBridge, /requireEditing:\s*params\.requireEditing === true/);
+  const receiptJournal = fs.readFileSync(path.join(__dirname, '../extension/src/page/writebackReceiptJournal.js'), 'utf8');
+  assert.match(pageBridge, /applyOperations:\s*writebackReceipts\.apply/);
+  assert.match(receiptJournal, /requireReviewing:\s*params\.requireReviewing === true/);
+  assert.match(receiptJournal, /requireEditing:\s*params\.requireEditing === true/);
   const writebackRouter = fs.readFileSync(path.join(__dirname, '../extension/src/page/writebackRouter.js'), 'utf8');
   assert.match(writebackRouter, /buildReviewingRequiredBlockedResult/);
   assert.match(writebackRouter, /buildEditingRequiredBlockedResult/);
@@ -2718,6 +2742,7 @@ test('content script run-param wrapper uses explicit custom instructions before 
   const harness = Function(`
     let getterCalls = 0;
     let getterValue = 'fresh getter value';
+    const cachedAccountScopeId = 'account-test';
     const runController = {
       buildCodexRunParams(params) {
         return params;
@@ -2781,6 +2806,7 @@ test('content script run-param wrapper uses explicit custom instructions before 
     customInstructions: 'submitted frozen instructions'
   });
   assert.equal(explicit.customInstructions, 'submitted frozen instructions');
+  assert.equal(explicit.accountScopeId, 'account-test');
   assert.equal(harness.getGetterCalls(), 0);
 
   harness.setGetterValue('fallback getter instructions');
@@ -5266,15 +5292,7 @@ test('renderCompletionReport branches on detailStructured and emits a meta block
 // must still demote the trailing status sections so "Write result / Undo / Next"
 // read as run metadata, not as part of Codex's answer.
 test('splitFlatCompletionReport demotes status sections out of the flat answer body', () => {
-  const src = getContentScriptSource();
-  const constMatch = src.match(/const FLAT_REPORT_STATUS_SECTIONS = \[[\s\S]*?\];/);
-  assert.ok(constMatch, 'FLAT_REPORT_STATUS_SECTIONS const must exist');
-  const split = new Function(`
-    const tx = (en) => en;
-    ${constMatch[0]}
-    ${extractFunction(src, 'splitFlatCompletionReport')}
-    return splitFlatCompletionReport;
-  `)();
+  const split = require('../extension/src/content/runResultActions').create().splitFlatCompletionReport;
 
   // The exact shape the user reported: a Changes content section followed by
   // the Write result / Undo / Next status sections, joined by blank lines.
@@ -5304,14 +5322,7 @@ test('splitFlatCompletionReport demotes status sections out of the flat answer b
 // Guard against over-eager demotion: a multi-line conclusion paragraph that
 // merely contains a "Next: …" sentence must NOT be split into the meta block.
 test('splitFlatCompletionReport keeps multi-line prose containing a status word in the body', () => {
-  const src = getContentScriptSource();
-  const constMatch = src.match(/const FLAT_REPORT_STATUS_SECTIONS = \[[\s\S]*?\];/);
-  const split = new Function(`
-    const tx = (en) => en;
-    ${constMatch[0]}
-    ${extractFunction(src, 'splitFlatCompletionReport')}
-    return splitFlatCompletionReport;
-  `)();
+  const split = require('../extension/src/content/runResultActions').create().splitFlatCompletionReport;
 
   const flat = 'Conclusion: I rewrote the intro.\nNext: I considered trimming it further.';
   const result = split(flat);
@@ -5599,7 +5610,7 @@ test('verified text-only writebacks confirm the mirror in place with a full-resy
   // writeback only needs the baseline re-hashed (mirror.confirmWriteback) —
   // not a full project re-download. Anything unusual must fall back.
   const refresh = extractFromContentScript('refreshProjectMirrorAfterWriteback');
-  assert.match(refresh, /await tryConfirmMirrorWriteback\(applied\)/,
+  assert.match(refresh, /await tryConfirmMirrorWriteback\(applied,\s*target\.runProjectId\)/,
     'the incremental confirm path runs first');
   assert.match(refresh, /getProjectSnapshot/,
     'the full zip resync fallback stays in place');
@@ -5608,6 +5619,8 @@ test('verified text-only writebacks confirm the mirror in place with a full-resy
     'only whitelisted text operations qualify');
   assert.match(confirm, /return false/,
     'any non-qualifying entry falls back to the full resync');
+  assert.match(confirm, /projectId:\s*runProjectId/);
+  assert.match(refresh, /saveVerification\?\.state !== 'verified_saved'/);
   assert.match(confirm, /mirror\.confirmWriteback/,
     'dispatches the v1.8.0 confirm method');
   assert.match(confirm, /catch \(error\)/,
@@ -5623,7 +5636,7 @@ test('writeback records the undo checkpoint before any cancellable verify await;
   // written parts" button for changes that already landed.
   const fn = extractFromContentScript('applySyncChangesToOverleaf');
   const undoAt = fn.indexOf('recordUndoFromApply(project, applied)');
-  const verifyAt = fn.indexOf('await verifyPostWriteSaveState()');
+  const verifyAt = fn.indexOf('await verifyPostWriteSaveState(applied, project, saveTarget)');
   // v1.7.5: the mirror refresh no longer blocks the completion report — it
   // runs in the background and its promise is stored for barriers.
   const mirrorAt = fn.indexOf('pendingMirrorRefresh = refreshProjectMirrorAfterWriteback');
@@ -5644,6 +5657,7 @@ test('writeback records the undo checkpoint before any cancellable verify await;
     'runTask must barrier on the pending mirror refresh');
   // The ~5s save-verify must only run when real writes landed, not on an
   // all-skipped (zero-write) run.
-  assert.match(fn, /const saveVerification = appliedPaths\.length/,
+  assert.match(fn, /const saveVerification = confirmation\.verification/);
+  assert.match(fn, /const confirmation = appliedPaths\.length/,
     'save-verify must gate on applied write count, not on skipped-inclusive entries');
 });

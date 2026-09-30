@@ -253,7 +253,37 @@ test('editing a saved provider refreshes the footer on the first dirty transitio
 test('provider rows stay inside the sidebar and expose clipped names', () => {
   const dialogSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/providerSettingsDialog.js'), 'utf8');
   const panelCss = fs.readFileSync(path.join(__dirname, '../extension/styles/panel.css'), 'utf8');
-  assert.match(dialogSource, /codex-provider-row-main" title="\$\{escapeAttr\(provider\.name\)\}"/);
+  const { extractFunction } = require('./_helpers/extractFunction');
+  const render = Function('getCurrentProjectProviderId', 'renderProviderTemplateIcon',
+    extractFunction(dialogSource, 'escapeHtml') + '\n'
+    + extractFunction(dialogSource, 'escapeAttr') + '\n'
+    + extractFunction(dialogSource, 'renderProviderList') + '\nreturn renderProviderList;'
+  )(instance => instance.selectedId, () => '');
+  const tail = 'long-provider-name-'.repeat(16);
+  const hostile = 'Provider " onmouseover="alert(1) <img src=x onerror=alert(2)> & \' \x60 ' + tail;
+  const encodedTitle = 'Provider &quot; onmouseover=&quot;alert(1) &lt;img src=x onerror=alert(2)&gt; &amp; &#39; &#96; ' + tail;
+  const providers = [
+    { id: 'long-name', name: 'Provider ' + tail, kind: 'custom', models: [], baseUrl: 'https://example.invalid/v1' },
+    { id: 'escaped-name', name: hostile, kind: 'custom', models: [], baseUrl: 'https://example.invalid/v1' }
+  ];
+  const list = { innerHTML: '' };
+  render({
+    tx: en => en, providerFilter: '', selectedId: 'long-name', catalog: { providers },
+    root: { querySelector(selector) { assert.equal(selector, '[data-provider-list]'); return list; } }
+  });
+  const expectedTitles = ['Provider ' + tail, encodedTitle];
+  for (const [index, provider] of providers.entries()) {
+    const row = list.innerHTML.match(new RegExp('<button\\b[^>]*\\bdata-provider-row="' + provider.id + '"[^>]*>[\\s\\S]*?<\\/button>'))?.[0];
+    assert.ok(row, 'the real renderer must create the provider row');
+    const label = row.match(/<span\b([^>]*\bclass="[^"]*\bcodex-provider-row-main\b[^"]*"[^>]*)>([\s\S]*?)<\/span>/);
+    assert.ok(label, 'the visible provider label must exist');
+    const attributes = new Map([...label[1].matchAll(/([^\s=]+)\s*=\s*"([^"]*)"/g)].map(match => [match[1], match[2]]));
+    assert.equal(attributes.get('title'), expectedTitles[index], 'clipped names must retain the full safely escaped tooltip');
+    assert.equal(label[2], index === 0 ? expectedTitles[index] : encodedTitle.replace('&#96;', '\x60'),
+      'visible name text must preserve the full escaped name');
+    assert.equal([...attributes.keys()].some(name => /^on/i.test(name)), false, 'quotes in a name must not create event-handler attributes');
+    assert.doesNotMatch(row, /<(?:img|script)\b/i, 'name text must not inject elements');
+  }
   assert.match(panelCss, /\.codex-provider-row,[\s\S]*?box-sizing:\s*border-box;[\s\S]*?max-width:\s*100%;[\s\S]*?overflow:\s*hidden;/);
   assert.match(panelCss, /\.codex-provider-row-main\s*\{[^}]*width:\s*100%;[^}]*text-overflow:\s*ellipsis;/);
 });

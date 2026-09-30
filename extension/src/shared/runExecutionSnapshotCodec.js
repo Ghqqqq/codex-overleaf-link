@@ -1,18 +1,28 @@
 (function initCodexOverleafRunExecutionSnapshotCodec(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./selectionContext'), require('./writingStyle'));
   } else {
-    root.CodexOverleafRunExecutionSnapshotCodec = factory();
+    root.CodexOverleafModuleRegistry.define('RunExecutionSnapshotCodec', ['SelectionContext', 'WritingStyle'], factory);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function runExecutionSnapshotCodecFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function runExecutionSnapshotCodecFactory(SelectionContext, WritingStyle) {
   'use strict';
+
+  function normalizeSelectionContext(value) {
+    const selection = SelectionContext.normalize(value);
+    if (value != null && !selection) throw snapshotError('selected_context_unresolved', 'The captured selection is invalid. Attach it again.');
+    return selection;
+  }
+
+  function normalizeWritingStyle(value) {
+    return WritingStyle.normalizeSnapshot(value);
+  }
 
   const SCHEMA_VERSION = 1;
   const VALID_MODES = new Set(['ask', 'auto']);
   const VALID_SOURCES = new Set(['submitted', 'legacy-captured', 'legacy-inferred']);
   const TUPLE_FIELDS = Object.freeze([
     'mode', 'providerId', 'providerRevision', 'model', 'reasoningEffort',
-    'speedTier', 'autoRecompile', 'requireReviewing', 'focusFiles'
+    'speedTier', 'autoRecompile', 'requireReviewing', 'focusFiles', 'selectionContext', 'writingStyle'
   ]);
   const SECRET_FIELD_PATTERN = /(?:api.?key|authorization|password|secret|access.?token|refresh.?token)/i;
 
@@ -36,6 +46,8 @@
       autoRecompile: input.autoRecompile !== false,
       requireReviewing: input.requireReviewing !== false,
       focusFiles: normalizePaths(input.focusFiles),
+      selectionContext: normalizeSelectionContext(input.selectionContext),
+      writingStyle: normalizeWritingStyle(input.writingStyle),
       capturedAt: normalizeTimestamp(input.capturedAt),
       source: VALID_SOURCES.has(options.source || input.source)
         ? (options.source || input.source)

@@ -98,6 +98,41 @@ test('persisted snapshots are authoritative and never re-inferred', () => {
   assert.equal(restored.model, 'model-a');
 });
 
+test('old queued tasks do not inherit a selection or style enabled after submission', () => {
+  const selectionContext = {
+    projectId: 'project', path: 'later.tex', from: 0, to: 3, text: 'abc',
+    documentHash: 'a'.repeat(64), mode: 'edit'
+  };
+  const writingStyle = {
+    accountScopeId: 'account', projectId: 'project',
+    version: '11111111-1111-4111-8111-111111111111', bundleHash: 'b'.repeat(64)
+  };
+  const restored = Snapshot.captureRawQueueTuple({ payload: customInput() }, customInput({
+    selectionContext, writingStyle
+  }));
+
+  assert.equal(restored.source, 'legacy-captured');
+  assert.equal(restored.selectionContext, null);
+  assert.equal(restored.writingStyle, null);
+  assert.deepEqual(restored.focusFiles, ['main.tex', 'sections/intro.tex']);
+});
+
+test('an explicitly queued selection stays fixed when the current selection changes', () => {
+  const original = {
+    projectId: 'project', path: 'main.tex', from: 0, to: 3, text: 'abc',
+    documentHash: 'a'.repeat(64), mode: 'edit'
+  };
+  const later = { ...original, path: 'later.tex', text: 'xyz', documentHash: 'b'.repeat(64) };
+  const restored = Snapshot.captureRawQueueTuple({ payload: customInput({
+    selectionContext: original, writingStyle: null
+  }) }, customInput({ selectionContext: later }));
+
+  assert.equal(restored.source, 'legacy-captured');
+  assert.equal(restored.selectionContext.path, 'main.tex');
+  assert.equal(restored.selectionContext.text, 'abc');
+  assert.equal(Object.isFrozen(restored.selectionContext), true);
+});
+
 test('custom provider edit and deletion fail closed at dispatch', () => {
   const snapshot = Snapshot.create(customInput());
   assert.throws(

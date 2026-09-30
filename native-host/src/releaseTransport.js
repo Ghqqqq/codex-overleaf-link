@@ -22,7 +22,7 @@ function terminalError(code, message) {
   return Object.assign(updateError(code, message), { retryable: false });
 }
 
-async function readBoundedBody(response, limit, signal) {
+async function readBoundedBody(response, limit, signal, onProgress = () => {}) {
   const declared = Number(response.headers?.get?.('content-length') || 0);
   if (declared > limit) throw terminalError('update_download_limit', 'Update response exceeds its size limit.');
   const reader = response.body?.getReader?.();
@@ -39,6 +39,7 @@ async function readBoundedBody(response, limit, signal) {
       if (chunk.done) break;
       const bytes = Buffer.from(chunk.value);
       length += bytes.length;
+      if (bytes.length) onProgress();
       if (length > limit) throw terminalError('update_download_limit', 'Update response exceeds its size limit.');
       chunks.push(bytes);
     }
@@ -95,8 +96,14 @@ async function requestRelease(url, options = {}) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new DOMException('Update request timed out.', 'TimeoutError')),
-      Math.min(remaining, options.timeoutMs ?? 12000));
+    const timeout = () => controller.abort(new DOMException('Update request timed out.', 'TimeoutError'));
+    const totalTimer = setTimeout(timeout, remaining);
+    let phaseTimer = setTimeout(timeout, Math.min(remaining, options.timeoutMs ?? 12000));
+    const receivedBytes = () => {
+      clearTimeout(phaseTimer);
+      phaseTimer = setTimeout(timeout, Math.min(Math.max(1, deadline - Date.now()),
+        options.idleTimeoutMs ?? options.timeoutMs ?? 12000));
+    };
     const cancel = () => controller.abort(options.signal.reason);
     if (options.signal?.aborted) cancel();
     else options.signal?.addEventListener('abort', cancel, { once: true });
@@ -108,6 +115,7 @@ async function requestRelease(url, options = {}) {
         method: options.method || 'GET', headers: options.headers,
         redirect: 'follow', signal: controller.signal
       }), controller.signal);
+      receivedBytes();
       const finalUrl = new URL(response.url || url);
       if (options.allowedHosts && (finalUrl.protocol !== 'https:' || !options.allowedHosts.has(finalUrl.hostname))) {
         throw terminalError('update_asset_redirect_forbidden', 'Release request redirected to an untrusted host.');
@@ -117,7 +125,7 @@ async function requestRelease(url, options = {}) {
           'Update request failed with HTTP ' + response.status + '.'), { retryable: RETRYABLE_HTTP.has(response.status) });
       }
       const bytes = options.method === 'HEAD' || response.status === 304
-        ? null : await readBoundedBody(response, options.limit ?? 32 * 1024 * 1024, controller.signal);
+        ? null : await readBoundedBody(response, options.limit ?? 32 * 1024 * 1024, controller.signal, receivedBytes);
       return { ok: response.ok, status: response.status, url: finalUrl.href, headers: response.headers,
         bytes, attempts: attempt, elapsedMs: Date.now() - started };
     } catch (error) {
@@ -140,7 +148,8 @@ async function requestRelease(url, options = {}) {
       if (!classified.retryable || attempt === maxAttempts) throw failure;
       retryAfter = retryDelay(response, (options.delayMs ?? 500) * attempt);
     } finally {
-      clearTimeout(timer);
+      clearTimeout(totalTimer);
+      clearTimeout(phaseTimer);
       options.signal?.removeEventListener('abort', cancel);
       controller.abort();
       if (response?.body && !response.body.locked) void response.body.cancel().catch(() => {});

@@ -10,6 +10,7 @@ const {
   SUPPORTED_NATIVE_PROTOCOL
 } = require('../../extension/src/shared/compatibility');
 const { runCodexSession } = require('./codexSessionRunner');
+const WritingStyleRuntime = require('./writingStyleRuntime');
 const { resolveCodexModels } = require('./codexModels');
 const {
   handleProviderRequest,
@@ -23,7 +24,8 @@ const { forkCodexThread } = require('./codexThreadFork');
 const { readAssetChunk, releaseAsset } = require('./nativeAssetTransfer');
 const { logDebug, truncateText } = require('./debugLog');
 const { HOST_NAME } = require('./manifest');
-const { getNativeRuntimePlatform, summarizeNativeEnvironment } = require('./nativeEnvironment');
+const { getNativeRuntimePlatform, summarizeNativeEnvironment, refreshCodexRuntimeEnv } = require('./nativeEnvironment');
+const { formatModelUpgradeError } = require('./codexModelRecovery');
 const {
   NATIVE_REQUEST_QUOTAS,
   firstQuotaViolation,
@@ -33,6 +35,7 @@ const {
 } = require('./nativeTransportEnvelope');
 const { version: PACKAGE_VERSION } = require('../../package.json');
 
+const processStopBarrier = require('./processStopBarrier');
 const activeProjectLocks = new Map();
 const activeRunControllers = new Map();
 const activeRunEntries = new Map();
@@ -41,7 +44,7 @@ const activeRunEntries = new Map();
 // Overleaf tab was reloaded — the requestId lived in content-side JS state
 // and is gone, but the native-host-side controller is still running).
 const activeRunByProject = new Map();
-const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result']);
+const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result', 'codex_process_stop_unconfirmed', 'selected_context_unresolved']);
 
 async function handleRequest(request, env = process.env, emit = () => {}) {
   if (!request || typeof request !== 'object') {
@@ -51,6 +54,10 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
   const quotaError = getRequestQuotaViolation(request);
   if (quotaError) {
     return quotaErrorResponse(request.id, quotaError);
+  }
+
+  if (['bridge.ping', 'codex.run', 'codex.models', 'codex.thread.fork'].includes(request.method)) {
+    env = refreshCodexRuntimeEnv(env);
   }
 
   if (request.method === 'bridge.ping') {
@@ -64,6 +71,12 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
       version: PACKAGE_VERSION,
       environment: summarizeNativeEnvironment(env)
     });
+  }
+
+  if (['codex.run', 'mirror.sync', 'mirror.patchFiles', 'mirror.confirmWriteback'].includes(request.method)
+    && processStopBarrier.isBlocked(resolveProjectKey(request.params || {}), env.CODEX_OVERLEAF_MIRROR_ROOT)) {
+    return errorResponse(request.id, 'codex_process_stop_unconfirmed',
+      'The previous Codex process has not exited. This project remains isolated until exit is confirmed.');
   }
 
   if (request.method === 'mirror.sync') {
@@ -115,7 +128,7 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
   }
 
   if (request.method === 'codex.cancel') {
-    return handleCodexCancel(request);
+    return handleCodexCancel(request, env);
   }
 
   if (request.method === 'codex.history.clearPlugin') {
@@ -140,6 +153,18 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
 
   if (request.method === 'asset.release') {
     return okResponse(request.id, releaseAsset(request.params || {}));
+  }
+
+  if (request.method === 'writing-style.get' || request.method === 'writing-style.set') {
+    try {
+      const params = request.params || {};
+      const result = request.method === 'writing-style.get'
+        ? await WritingStyleRuntime.get(params, env, id => activeRunEntries.has(id))
+        : await WritingStyleRuntime.set(params, env);
+      return okResponse(request.id, result);
+    } catch (error) {
+      return errorResponse(request.id, error.code || 'writing_style_failed', error.message);
+    }
   }
 
   if (request.method === 'skills.list') {
@@ -180,6 +205,19 @@ function quotaErrorResponse(id, violation) {
 
 async function handleCodexRun(request, env, emit) {
   let params = request.params || {};
+  if (params.writingStyleBuild != null) {
+    if (typeof params.writingStyleBuild !== 'object' || Array.isArray(params.writingStyleBuild)) {
+      return errorResponse(request.id, 'writing_style_invalid_build', 'Writing style build settings must be an object.');
+    }
+    params = {
+      ...params,
+      mode: 'ask',
+      useExistingMirror: false,
+      fileOverlays: [],
+      writingStyle: null,
+      writingStyleBuild: { ...params.writingStyleBuild, requestId: String(request.id || '') }
+    };
+  }
   if (isCodexMissing(env)) {
     return errorResponse(
       request.id,
@@ -253,7 +291,7 @@ async function handleCodexRun(request, env, emit) {
       if (Array.isArray(params.fileOverlays) && params.fileOverlays.length) {
         await applyFileOverlays({ projectId: projectKey, overlays: params.fileOverlays, rootDir });
       }
-    } else if (!isSnapshotlessSkillInstallerRun(params) && !hasRunnableProjectSnapshotEvidence(params)) {
+    } else if (!params.writingStyleBuild && !isSnapshotlessSkillInstallerRun(params) && !hasRunnableProjectSnapshotEvidence(params)) {
       return errorResponse(
         request.id,
         'codex_run_requires_snapshot_evidence',
@@ -267,6 +305,7 @@ async function handleCodexRun(request, env, emit) {
       emit,
       rootDir: env.CODEX_OVERLEAF_MIRROR_ROOT,
       providerLaunch: providerResolution.providerLaunch,
+      onStopUnconfirmed: error => processStopBarrier.record(projectKey, env.CODEX_OVERLEAF_MIRROR_ROOT, error),
       onControlReady: control => {
         activeEntry.control = control;
       },
@@ -284,6 +323,13 @@ async function handleCodexRun(request, env, emit) {
         message: error.message
       });
       return errorResponse(request.id, 'codex_cancelled', 'Codex run was cancelled by the user');
+    }
+    const modelUpgradeError = formatModelUpgradeError(error, env, {
+      model: params.model, locale: params.locale
+    });
+    if (modelUpgradeError) {
+      logDebug('codex.run.model_version_rejected', modelUpgradeError.details);
+      return errorResponse(request.id, modelUpgradeError.code, modelUpgradeError.message, modelUpgradeError.details);
     }
     if (shouldPassthroughCodexRunError(error)) {
       logDebug('codex.run.passthrough_failed', {
@@ -372,7 +418,7 @@ function findActiveRunEntry(params = {}) {
 //      the user otherwise has no way to recover short of restarting Chrome.
 //      Only fires when `force: true` is explicitly set so accidental calls
 //      can't punch through a real live run.
-function handleCodexCancel(request) {
+function handleCodexCancel(request, env = process.env) {
   const params = request.params || {};
   const targetId = params.requestId || params.id;
   const projectKey = typeof params.projectKey === 'string' ? params.projectKey : '';
@@ -395,6 +441,10 @@ function handleCodexCancel(request) {
         projectKey,
         requestId: entry.id || ''
       });
+    }
+    if (processStopBarrier.isBlocked(projectKey, env.CODEX_OVERLEAF_MIRROR_ROOT)) {
+      return errorResponse(request.id, 'codex_process_stop_unconfirmed',
+        'Cancellation was requested, but process exit is not yet confirmed.');
     }
     if (force && activeProjectLocks.has(projectKey)) {
       activeProjectLocks.delete(projectKey);
