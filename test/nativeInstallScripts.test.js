@@ -1368,17 +1368,35 @@ test('native uninstall script continues when Windows registry key is already mis
 
 function readStableReleaseMetadata(readme) {
   const version = readme.match(/img\.shields\.io\/badge\/version-(\d+\.\d+\.\d+)-blue/)?.[1] || '';
-  assert.match(version, /^\d+\.\d+\.\d+$/, 'expected README stable-version badge');
+  assert.match(version, /^\d+\.\d+\.\d+$/, 'expected README numeric-version badge');
   const ref = `v${version}`;
+  const sourceRef = readme.match(/github\.com\/Ghqqqq\/codex-overleaf-link\/releases\/tag\/(v[\w.-]+)/)?.[1] || ref;
+  assert.match(sourceRef, new RegExp(`^${escapeRegExp(ref)}(?:-rc\\.[1-9][0-9]*)?$`),
+    'README installer release must match its numeric version and optional numbered RC');
   return {
     version,
     ref,
+    sourceRef,
     npmExecPrefix: `npm exec --yes codex-overleaf-link@${version} --`,
-    windowsInstallUrl: `https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/${ref}/install.ps1`,
-    windowsRefCommand: `$env:CODEX_OVERLEAF_REF='${ref}'`,
+    windowsInstallUrl: `https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/${sourceRef}/install.ps1`,
+    windowsRefCommand: `$env:CODEX_OVERLEAF_REF='${sourceRef}'`,
     windowsRunCommand: 'powershell -ExecutionPolicy Bypass -File install.ps1'
   };
 }
+
+test('README source release accepts a numbered RC without changing numeric artifact or npm versions', () => {
+  const badge = 'https://img.shields.io/badge/version-2.5.0-blue';
+  const prefix = `${badge} https://github.com/Ghqqqq/codex-overleaf-link/releases/tag/`;
+  const stable = readStableReleaseMetadata(badge);
+  assert.equal(stable.sourceRef, 'v2.5.0');
+  const rc = readStableReleaseMetadata(prefix + 'v2.5.0-rc.1');
+  assert.equal(rc.sourceRef, 'v2.5.0-rc.1');
+  assert.equal(rc.ref, 'v2.5.0');
+  assert.equal(rc.npmExecPrefix, stable.npmExecPrefix);
+  for (const invalid of ['v2.4.1-rc.1', 'v2.5.0-rc.0', 'v2.5.0-beta.1']) {
+    assert.throws(() => readStableReleaseMetadata(prefix + invalid), /installer release must match/);
+  }
+});
 
 test('repository ships a one-command macOS installer', () => {
   const installer = fs.readFileSync(path.join(__dirname, '../install.sh'), 'utf8');
@@ -1407,12 +1425,12 @@ test('repository ships a one-command macOS installer', () => {
   assert.match(installer, /pbcopy/);
   assert.match(installer, /open -a "Google Chrome" "chrome:\/\/extensions"/);
   assert.match(installer, /open -R/);
-  assert.match(readme, new RegExp(`CODEX_OVERLEAF_REF=${escapeRegExp(stable.ref)}\\s+bash -c "\\$\\(curl -fsSL https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(stable.ref)}/install\\.sh\\)"`));
+  assert.match(readme, new RegExp(`CODEX_OVERLEAF_REF=${escapeRegExp(stable.sourceRef)}\\s+bash -c "\\$\\(curl -fsSL https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(stable.sourceRef)}/install\\.sh\\)"`));
   assert.match(readme, new RegExp(`codex-overleaf-link-extension-${escapeRegExp(stable.ref)}\\.zip`));
   assert.doesNotMatch(readme, /select `~\/\.codex-overleaf\/source\/extension`/);
 });
 
-test('README documents stable cross-platform manual install, uninstall, release artifacts, and bundled extension id flow', () => {
+test('README documents release-pinned cross-platform installation and numeric artifacts with the bundled extension id', () => {
   const readme = fs.readFileSync(path.join(__dirname, '../README.md'), 'utf8');
   const stable = readStableReleaseMetadata(readme);
 
@@ -1422,8 +1440,10 @@ test('README documents stable cross-platform manual install, uninstall, release 
     [chineseReadme, /^### 方式 A：让 Codex 安装（推荐）$/m]
   ]) {
     assert.match(document, recommendedHeading);
-    assert.ok(document.includes(`CODEX_OVERLEAF_REF=${stable.ref} bash -c`));
-    assert.ok(document.includes(`https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/${stable.ref}/install.sh`));
+    assert.equal(readStableReleaseMetadata(document).sourceRef, stable.sourceRef);
+    assert.ok(document.includes(`CODEX_OVERLEAF_REF=${stable.sourceRef} bash -c`));
+    assert.ok(document.includes(`https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/${stable.sourceRef}/install.sh`));
+    if (stable.sourceRef !== stable.ref) assert.match(document, /no npm publication|不发布 npm/);
     assert.ok(document.includes(stable.windowsInstallUrl));
     assert.ok(document.includes(stable.windowsRefCommand));
     assert.ok(document.includes(`${stable.npmExecPrefix} install-managed`));
@@ -1431,9 +1451,9 @@ test('README documents stable cross-platform manual install, uninstall, release 
     assert.ok(agentPrompt.includes('https://github.com/Ghqqqq/codex-overleaf-link'));
   }
 
-  assert.match(readme, new RegExp(`CODEX_OVERLEAF_REF=${escapeRegExp(stable.ref)}\\s+bash -c "\\$\\(curl -fsSL https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(stable.ref)}/install\\.sh\\)"`));
+  assert.match(readme, new RegExp(`CODEX_OVERLEAF_REF=${escapeRegExp(stable.sourceRef)}\\s+bash -c "\\$\\(curl -fsSL https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(stable.sourceRef)}/install\\.sh\\)"`));
   assert.ok(readme.includes(`${stable.npmExecPrefix} install-managed`));
-  assert.match(readme, new RegExp(`iwr\\s+https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(stable.ref)}/install\\.ps1`, 'i'));
+  assert.match(readme, new RegExp(`iwr\\s+https://raw\\.githubusercontent\\.com/Ghqqqq/codex-overleaf-link/${escapeRegExp(stable.sourceRef)}/install\\.ps1`, 'i'));
   assert.match(readme, /powershell\s+-ExecutionPolicy\s+Bypass\s+-File\s+install\.ps1/i);
   assert.match(readme, /macOS\s+\/\s+Linux/i);
   assert.match(readme, /Windows/i);
