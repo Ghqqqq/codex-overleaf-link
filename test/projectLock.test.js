@@ -7,28 +7,13 @@ const test = require('node:test');
 const { getProjectMirror } = require('../native-host/src/mirrorWorkspace');
 
 function loadTaskRunnerWithFakeRunner(fakeRunner) {
-  const runnerPath = require.resolve('../native-host/src/codexSessionRunner');
-  const taskRunnerPath = require.resolve('../native-host/src/taskRunner');
-  const taskRunnerRuntimePath = require.resolve('../native-host/src/taskRunnerRuntime');
-  const originalRunner = require(runnerPath);
+  return loadTaskRunnerWithFakeModules({ fakeRunner });
+}
 
-  delete require.cache[taskRunnerPath];
-  delete require.cache[taskRunnerRuntimePath];
-  require.cache[runnerPath].exports = {
-    ...originalRunner,
-    runCodexSession: fakeRunner
-  };
-
-  const taskRunner = require(taskRunnerPath);
-  require.cache[runnerPath].exports = originalRunner;
-  return {
-    ...taskRunner,
-    restore() {
-      require.cache[runnerPath].exports = originalRunner;
-      delete require.cache[taskRunnerPath];
-      delete require.cache[taskRunnerRuntimePath];
-    }
-  };
+async function waitForRunner(started, response) {
+  await Promise.race([started, response.then(result => {
+    throw new Error(`Task returned before the fake runner started: ${JSON.stringify(result)}`);
+  })]);
 }
 
 function createBlockingRunner() {
@@ -136,10 +121,12 @@ function seedUnavailableActiveProvider(env) {
 
 function loadTaskRunnerWithFakeModules({ fakeRunner, fakeSync }) {
   const runnerPath = require.resolve('../native-host/src/codexSessionRunner');
+  const environmentPath = require.resolve('../native-host/src/nativeEnvironment');
   const mirrorPath = require.resolve('../native-host/src/mirrorWorkspace');
   const taskRunnerPath = require.resolve('../native-host/src/taskRunner');
   const taskRunnerRuntimePath = require.resolve('../native-host/src/taskRunnerRuntime');
   const originalRunner = require(runnerPath);
+  const originalEnvironment = require(environmentPath);
   const originalMirror = require(mirrorPath);
 
   delete require.cache[taskRunnerPath];
@@ -147,6 +134,13 @@ function loadTaskRunnerWithFakeModules({ fakeRunner, fakeSync }) {
   require.cache[runnerPath].exports = {
     ...originalRunner,
     runCodexSession: fakeRunner || originalRunner.runCodexSession
+  };
+  // Lock tests use an in-process runner, so CLI discovery must also be isolated.
+  // Native environment discovery and missing-CLI behavior have separate tests.
+  require.cache[environmentPath].exports = {
+    ...originalEnvironment,
+    refreshCodexRuntimeEnv: env => ({ ...env, CODEX_OVERLEAF_ENV_READY: '1',
+      CODEX_OVERLEAF_CODEX_PATH: process.execPath, CODEX_OVERLEAF_CODEX_RUNTIME_JSON: '' })
   };
   require.cache[mirrorPath].exports = {
     ...originalMirror,
@@ -157,6 +151,7 @@ function loadTaskRunnerWithFakeModules({ fakeRunner, fakeSync }) {
     ...require(taskRunnerPath),
     restore() {
       require.cache[runnerPath].exports = originalRunner;
+      require.cache[environmentPath].exports = originalEnvironment;
       require.cache[mirrorPath].exports = originalMirror;
       delete require.cache[taskRunnerPath];
       delete require.cache[taskRunnerRuntimePath];
@@ -235,7 +230,7 @@ test('mirror.sync is rejected while codex.run holds the project lock', async () 
       }
     }, env);
 
-    await runner.started;
+    await waitForRunner(runner.started, codexRunPromise);
 
     const syncResponse = await handleRequest({
       id: 'sync-1',
@@ -290,7 +285,7 @@ test('mirror.sync works for a different project while codex.run is active', asyn
       }
     }, env);
 
-    await runner.started;
+    await waitForRunner(runner.started, codexRunPromise);
 
     const syncResponse = await handleRequest({
       id: 'sync-3',
@@ -332,7 +327,7 @@ test('codex.run is rejected while another codex.run holds the same project lock'
       }
     }, env);
 
-    await runner.started;
+    await waitForRunner(runner.started, firstRun);
 
     const secondRun = await handleRequest({
       id: 'run-same-2',
@@ -378,7 +373,7 @@ test('codex.cancel aborts an active codex.run and releases the project lock', as
       }
     }, env);
 
-    await runner.started;
+    await waitForRunner(runner.started, codexRunPromise);
 
     const cancelResponse = await handleRequest({
       id: 'cancel-1',
@@ -439,7 +434,7 @@ test('codex.cancel by projectKey aborts a still-running run even without the ori
       }
     }, env);
 
-    await runner.started;
+    await waitForRunner(runner.started, codexRunPromise);
 
     // Cancel by projectKey ONLY (no requestId — simulating the post-refresh case).
     const cancelResponse = await handleRequest({
@@ -509,7 +504,7 @@ test('codex.cancel with force=true releases a zombie project lock when no contro
         project: { capabilities: { fullProjectSnapshot: true }, files: [{ path: 'main.tex', content: 'x' }] }
       }
     }, env);
-    await runner.started;
+    await waitForRunner(runner.started, runPromise);
     await handleRequest({
       id: 'cancel-zombie-real',
       method: 'codex.cancel',
