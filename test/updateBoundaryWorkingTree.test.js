@@ -54,3 +54,22 @@ test('bootstrap protocols cannot be skipped, downgraded or migrated in a patch r
     assert.throws(() => assertBootstrapProtocolTransition({ ...input, currentPackageVersion }), /new major\/minor baseline/);
   }
 });
+
+test('historical Bootstrap template version is stamped without hiding permission or candidate-version changes', async () => {
+  const { materializePreviousBootstrapManifest, assertBootstrapManifestVersionTransition } = await boundary();
+  const template = { manifest_version: 3, version: '2.4.0', permissions: ['storage'],
+    host_permissions: ['https://www.overleaf.com/project/*'] };
+  const previousManifest = materializePreviousBootstrapManifest(template, '2.4.1');
+  assert.deepEqual(previousManifest, { ...template, version: '2.4.1' });
+  assert.equal(template.version, '2.4.0');
+  const input = { previousManifest, currentManifest: { ...previousManifest, version: '2.5.0',
+    host_permissions: [...template.host_permissions, 'https://cn.overleaf.com/project/*'] },
+    previousPackageVersion: '2.4.1', currentPackageVersion: '2.5.0',
+    previousBootstrapProtocol: 2, currentBootstrapProtocol: 3 };
+  assert.doesNotThrow(() => assertBootstrapManifestVersionTransition(input));
+  assert.throws(() => assertBootstrapManifestVersionTransition({ ...input, currentBootstrapProtocol: 2 }), /changed beyond/);
+  assert.throws(() => assertBootstrapManifestVersionTransition({ ...input,
+    currentManifest: { ...input.currentManifest, version: '2.4.1' }
+  }), /must match their package release versions/);
+  assert.throws(() => materializePreviousBootstrapManifest(template, '2.4.1-rc.1'), /Invalid stable package version/);
+});

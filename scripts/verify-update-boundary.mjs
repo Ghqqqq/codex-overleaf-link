@@ -58,7 +58,9 @@ function verifyUpdateBoundary() {
 
   if (changed.includes(BOOTSTRAP_MANIFEST_PATH)) {
     assertBootstrapManifestVersionTransition({
-      previousManifest: JSON.parse(git(['show', `${baseRef}:${BOOTSTRAP_MANIFEST_PATH}`])),
+      previousManifest: materializePreviousBootstrapManifest(
+        JSON.parse(git(['show', `${baseRef}:${BOOTSTRAP_MANIFEST_PATH}`])), previousPackage.version
+      ),
       currentManifest: JSON.parse(fs.readFileSync(path.join(rootDir, BOOTSTRAP_MANIFEST_PATH), 'utf8')),
       previousPackageVersion: previousPackage.version,
       currentPackageVersion: pkg.version,
@@ -138,6 +140,14 @@ export function isManagedInstallerCopyOnlyChange(previousSource, currentSource) 
   const currentLine = "    'Future signed stable updates are checked automatically. Choose Update now to authorize a version; installation waits until Overleaf is saved and idle.',";
   return previousSource.includes(previousLine) &&
     previousSource.replace(previousLine, currentLine) === currentSource;
+}
+
+// Historical managed installers stamp the package version onto the template.
+// Compare that published manifest, retaining all non-version fields unchanged.
+// The current candidate still has to declare its release version explicitly.
+export function materializePreviousBootstrapManifest(template, packageVersion) {
+  parseReleaseVersion(packageVersion);
+  return { ...template, version: packageVersion };
 }
 
 export function assertBootstrapManifestVersionTransition({
