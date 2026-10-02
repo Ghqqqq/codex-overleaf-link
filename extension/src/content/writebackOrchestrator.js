@@ -691,6 +691,8 @@
     return writebackController.formatUnsupportedLocalChangeSummary(changes, getLocale());
   }
 
+  const serverProvenSave = verification => ['overleaf-zip', 'server-receipts'].includes(verification?.source);
+
   async function autoRecompileAfterWriteback(writtenPaths = [], saveVerification = {}, options = {}) {
     if (options.autoRecompile === false
       || (options.autoRecompile === undefined && getState().autoRecompile === false)) return null;
@@ -721,8 +723,9 @@
     try {
       const result = await callPageBridge('triggerCompile', {
         preferUiClick: true,
-        waitForSaveMs: saveVerification?.source === 'overleaf-zip' ? 0 : 5000,
-        requireVerifiedSave: saveVerification?.state === 'verified_saved' && saveVerification?.source !== 'overleaf-zip',
+        // Server-side proof (ZIP or save receipts) already settles the save; don't also demand the UI indicator.
+        waitForSaveMs: serverProvenSave(saveVerification) ? 0 : 5000,
+        requireVerifiedSave: saveVerification?.state === 'verified_saved' && !serverProvenSave(saveVerification),
         runProjectId: options.runProjectId || getCurrentRunView()?.runProjectId || getCurrentProjectId()
       });
       if (result?.ok) {
@@ -740,7 +743,7 @@
         const compile = result.compile;
         if (compile?.status === 'success') {
           appendRunEvent({ title: tx('Compile succeeded.', '编译成功。'), status: 'completed',
-            activity: activity('completed', [...(logResult?.errors || []), ...(logResult?.warnings || [])].slice(0, 5).map(formatCompileDiagnosticForSummary).join('\n')) });
+            activity: activity('completed', [...(logResult?.errors || []), ...(logResult?.warnings || [])].slice(0, 5).map(CompileAdapter.formatCompileDiagnosticForSummary).join('\n')) });
         } else if (compile?.status === 'triggered') {
           appendRunEvent({ title: tx('Overleaf compile was triggered. The page will continue showing progress.', '已触发 Overleaf 编译；页面会继续显示编译进度。'), status: 'completed', activity: activity('triggered') });
         } else {

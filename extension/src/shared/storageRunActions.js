@@ -8,7 +8,11 @@
   'use strict';
 
   var MAX_PERSISTED_ACTION_RUNS_PER_SESSION = 2;
-  var MAX_PERSISTED_ACTION_BYTES_PER_RUN = 320 * 1024;
+  // Undo/Accept need whole pre- and post-images of every written file, so one
+  // run that edits a 120 KB roadmap and creates a 100 KB chapter already needs
+  // ~560 KB. The old 320 KB cap silently dropped the whole payload and the
+  // buttons vanished after a reload. Two runs per session keep this bounded.
+  var MAX_PERSISTED_ACTION_BYTES_PER_RUN = 2 * 1024 * 1024;
 
   function compactRunsForStorage(runs, options, maxRuns, compactRun) {
     if (typeof compactRun !== 'function') {

@@ -334,6 +334,10 @@
         overlay.setAttribute('role', 'dialog');
         overlay.setAttribute('aria-modal', 'true');
         overlay.setAttribute('aria-label', title);
+        // The settings workbench is a centered top-layer dialog; center over it instead of the sidebar.
+        if (panel.querySelector?.('.codex-settings-workbench[open]')) {
+          overlay.dataset.context = 'workbench';
+        }
 
         const card = doc.createElement('section');
         card.className = 'codex-plugin-confirm-card';

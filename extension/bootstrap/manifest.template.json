@@ -24,6 +24,9 @@
     "https://cn.overleaf.com/project",
     "https://cn.overleaf.com/project/*"
   ],
+  "optional_host_permissions": [
+    "https://*.overleaf.com/*"
+  ],
   "background": {
     "service_worker": "bootstrap/background.js"
   },
@@ -38,9 +41,8 @@
         "runtime/src/pageBridge.js"
       ],
       "matches": [
-        "https://www.overleaf.com/*",
         "https://overleaf.com/*",
-        "https://cn.overleaf.com/*"
+        "https://*.overleaf.com/*"
       ]
     }
   ],

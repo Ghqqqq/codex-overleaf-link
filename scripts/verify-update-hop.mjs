@@ -102,9 +102,15 @@ try {
       throw new Error(`Bootstrap migrations must increase by one: ${baseBootstrapProtocol} -> ${targetManifest.bootstrapProtocol}.`);
     }
     const rejected = await invokeRaw('update.check', { currentVersion: baseVersion });
-    if (rejected?.ok || rejected?.error?.code !== 'update_bootstrap_upgrade_required') {
+    // Updaters up to v2.4.x fail with an error; v2.5.0 and later report the
+    // release as manual_install_required so the panel can tell the user.
+    const reportedManual = rejected?.ok && rejected.result?.reason === 'manual_install_required'
+      && rejected.result.latestVersion === currentVersion && rejected.result.available === false;
+    if (!reportedManual && (rejected?.ok || rejected?.error?.code !== 'update_bootstrap_upgrade_required')) {
       throw new Error('Previous updater did not fail closed for the declared Bootstrap protocol migration.');
     }
+    const staged = await invokeRaw('update.stage');
+    if (staged?.ok) throw new Error('Previous updater staged a release that needs a Bootstrap migration.');
     console.log(
       `Managed update baseline migration passed: ${baseTag} protocol ${baseBootstrapProtocol} rejects ` +
       `${currentTag} protocol ${targetManifest.bootstrapProtocol} and requires managed reinstall.`

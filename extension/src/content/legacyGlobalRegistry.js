@@ -58,6 +58,7 @@
     'RecentProjects',
     'ReviewHunks',
     'RunActivitySummary',
+    'RunPresence',
     'RunActivityModel',
     'RunController',
     'RunExecutionSnapshot',
@@ -97,7 +98,8 @@
     'WritebackPlan',
     'WritebackSettlement',
     'WritingStyle',
-    'WritingStyleSettings'
+    'WritingStyleSettings',
+    'WrittenChangesView'
   ]);
 
   const SUPPORT_MODULES = Object.freeze([

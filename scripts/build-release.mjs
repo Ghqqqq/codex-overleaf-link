@@ -155,6 +155,15 @@ export function buildRelease(options = {}) {
     updateBundle: describeArtifact(updateBundlePath, updateBundleName),
     artifacts: payloadArtifactNames.map((name) => describeArtifact(path.join(outputDir, name), name))
   };
+  // The signed note older updaters show when this release needs a reinstall.
+  // It only applies to the Bootstrap protocol it was written for.
+  const manualNotePath = path.join(rootDir, 'scripts/manual-install-note.json');
+  if (fs.existsSync(manualNotePath)) {
+    const note = readJson(manualNotePath);
+    if (note.bootstrapProtocol === BOOTSTRAP_PROTOCOL && note.reason) {
+      manifest.manualInstall = { reason: { en: String(note.reason.en || ''), zh: String(note.reason.zh || '') } };
+    }
+  }
   fs.writeFileSync(path.join(outputDir, 'release-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 
   const checksumNames = [

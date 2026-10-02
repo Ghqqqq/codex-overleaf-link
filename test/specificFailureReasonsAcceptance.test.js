@@ -339,15 +339,17 @@ test('§17.3.1 — "Source changed while Codex was working" → stale_source_cha
 });
 
 test('§17.3.1 — "Write happened but post-read verification failed" → write_observed_mismatch', async () => {
-  // dispatchApplies:false models a dispatch that "took" but produced no
-  // actual document mutation — readback differs from expected.
+  // The write call lands, but the document reads back as something other than
+  // the approved text. (A dispatch that leaves the pre-write text untouched is
+  // the separate, retryable write_operation_failed case.)
+  let text = 'alpha beta gamma';
   const router = writebackRouter.create({
     compileBridge: { markSourceEdited() {} },
     normalizeSafeProjectPath: projectFiles.normalizeSafeProjectPath,
-    readActiveEditorText: () => 'alpha beta gamma',
-    // The write call returns ok but does NOT mutate readActiveEditorText.
-    replaceActiveEditorPatches: () => ({ ok: true }),
+    readActiveEditorText: () => text,
+    replaceActiveEditorPatches: () => { text = 'alpha deltX gamma'; return { ok: true }; },
     replaceActiveEditorText: () => ({ ok: true }),
+    writeVerifyWaitMs: 0,
     delay: () => Promise.resolve(),
     treeOperations: {
       getActiveFilePath: () => 'main.tex',

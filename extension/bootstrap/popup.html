@@ -7,39 +7,11 @@
     <link id="popup-styles" rel="stylesheet" href="../runtime/styles/popup.css">
   </head>
   <body class="popup-minimal">
-    <main id="popup-shell">
-      <header class="popup-header">
-        <img id="brand-icon" class="popup-icon" src="../assets/icons/icon128.png" width="32" height="32" alt="">
-        <div class="popup-brand">
-          <h1>Codex Overleaf Link</h1>
-          <button id="connection-toggle" class="connection-toggle" type="button" aria-expanded="false" aria-controls="connection-details">
-            <span id="compat-status-icon" class="status-icon pending" aria-hidden="true"></span>
-            <span id="connection-label">Checking connection...</span>
-            <span class="connection-chevron" aria-hidden="true"></span>
-          </button>
-        </div>
-      </header>
-      <section id="connection-details" class="connection-details" aria-label="Version details" hidden>
-        <dl id="version-pair">
-          <div><dt id="extension-version-label">Extension</dt><dd id="extension-version">Unknown</dd></div>
-          <div><dt>Native Host</dt><dd id="native-version">Checking...</dd></div>
-        </dl>
-      </section>
-      <label class="launcher-setting" for="launcher-toggle">
-        <span class="launcher-copy">
-          <strong id="launcher-label">Show Codex side button</strong>
-          <small id="launcher-description">When the panel is closed</small>
-        </span>
-        <input id="launcher-toggle" class="launcher-toggle" type="checkbox" aria-describedby="launcher-description" disabled>
-      </label>
-      <p id="status" class="popup-note" role="status" aria-live="polite" hidden></p>
-      <section id="native-install" class="install" aria-labelledby="native-install-title" hidden>
-        <strong id="native-install-title">Native host attention required</strong>
-        <p id="native-status-message"></p>
-        <code id="install-command"></code>
-        <button id="copy-install-command" class="copy-command" type="button">Copy install command</button>
-        <p id="copy-feedback" class="copy-feedback" role="status" hidden></p>
-      </section>
+    <!-- The popup body is drawn by the replaceable runtime (runtime/src/popup.js),
+         so popup changes ship through normal updates. This shell only holds
+         the fallback shown if the runtime cannot load. -->
+    <main id="popup-shell" data-bootstrap-shell>
+      <p class="popup-note">Codex Overleaf Link could not load its runtime. Rerun the installer, then reload the extension.</p>
     </main>
     <script src="../runtime/src/shared/compatibility.js"></script>
     <script src="../runtime/src/popup.js"></script>

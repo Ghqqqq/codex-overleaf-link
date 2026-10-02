@@ -78,3 +78,43 @@ test('compile summary extraction keeps error evidence bounded and does not infer
   assert.ok(summary.errors.every(value => value.length <= 182));
   assert.equal(Compile.buildPostWriteCompileSummary({ result: { ok: true } }).status, 'triggered');
 });
+
+test('a successful post-write compile reports success instead of a formatter ReferenceError', async () => {
+  const { extractFunction } = require('./_helpers/extractFunction');
+  const source = fs.readFileSync(path.join(__dirname, '../extension/src/content/writebackOrchestrator.js'), 'utf8');
+  const events = [];
+  const context = {
+    compileAdapter: Compile, getState: () => ({ mode: 'auto', autoRecompile: true }), tx: en => en,
+    serverProvenSave: () => false, appendRunEvent: event => events.push(event), getCurrentRunView: () => null, getCurrentProjectId: () => 'p1',
+    callPageBridge: async method => method === 'triggerCompile'
+      ? { ok: true, compile: { status: 'success' } }
+      : { ok: true, errors: [], warnings: ['Overfull \\hbox  in   paragraph'] },
+    buildPostWriteCompileSummary: input => Compile.buildPostWriteCompileSummary(input)
+  };
+  const run = vm.runInNewContext('(' + extractFunction(source, 'autoRecompileAfterWriteback') + ')', context);
+  await run(['main.tex'], { state: 'verified_saved' }, { runProjectId: 'p1' });
+  assert.ok(events.some(event => event.title === 'Compile succeeded.'));
+  assert.ok(!events.some(event => /Post-write compile failed/.test(event.title)), JSON.stringify(events.map(e => e.title)));
+  assert.equal(events.at(-1).activity.output, 'Overfull \\hbox in paragraph');
+});
+
+test('a save already proven by server receipts does not also wait for the Overleaf save indicator', async () => {
+  const { extractFunction } = require('./_helpers/extractFunction');
+  const source = fs.readFileSync(path.join(__dirname, '../extension/src/content/writebackOrchestrator.js'), 'utf8');
+  const calls = [];
+  const context = {
+    compileAdapter: Compile, getState: () => ({ mode: 'auto', autoRecompile: true }), tx: en => en,
+    appendRunEvent() {}, getCurrentRunView: () => null, getCurrentProjectId: () => 'p1',
+    serverProvenSave: verification => ['overleaf-zip', 'server-receipts'].includes(verification?.source),
+    callPageBridge: async (method, params) => { calls.push({ method, params }); return { ok: true, compile: { status: 'success' } }; },
+    buildPostWriteCompileSummary: input => Compile.buildPostWriteCompileSummary(input)
+  };
+  const run = vm.runInNewContext('(' + extractFunction(source, 'autoRecompileAfterWriteback') + ')', context);
+  await run(['main.tex'], { state: 'verified_saved', source: 'server-receipts' }, { runProjectId: 'p1' });
+  const trigger = calls.find(call => call.method === 'triggerCompile').params;
+  assert.equal(trigger.requireVerifiedSave, false);
+  assert.equal(trigger.waitForSaveMs, 0);
+  calls.length = 0;
+  await run(['main.tex'], { state: 'verified_saved', source: 'save-indicator' }, { runProjectId: 'p1' });
+  assert.equal(calls.find(call => call.method === 'triggerCompile').params.requireVerifiedSave, true);
+});

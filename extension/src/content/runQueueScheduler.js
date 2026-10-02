@@ -322,7 +322,8 @@
           tr: options.tr,
           onGuide: itemId => guide(itemId).catch(error => options.toast?.(error.message, 'warning')),
           onRemove: remove,
-          onResume: resume
+          onResume: resume,
+          onToast: message => options.toast?.(message, 'warning')
         });
         if (view) {
           view.container = container;

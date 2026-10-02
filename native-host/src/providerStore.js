@@ -261,6 +261,10 @@ function recordProviderDiagnosticUnlocked(params = {}, env = process.env) {
     return { recorded: false };
   }
   const modelId = String(params.modelId || '').trim();
+  // Draft tests may cover models that are not saved yet; only saved models carry diagnostics.
+  if (!profile.models.some(model => model.id === modelId)) {
+    return { recorded: false };
+  }
   const secret = state.secrets.secrets[providerId] || '';
   const connectionFingerprint = computeConnectionFingerprint(profile, secret, modelId);
   if (connectionFingerprint !== String(params.connectionFingerprint || '') || !isResolvedWireApi(params.wireApi)) {

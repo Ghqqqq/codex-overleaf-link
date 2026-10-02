@@ -22,6 +22,7 @@ const EXTENSION_MARKER = '.codex-overleaf-managed-extension.json';
 const NATIVE_MARKER = '.codex-overleaf-managed-native.json';
 const JOURNAL_FILE = 'transaction.json';
 const CANDIDATE_FILE = 'candidate.json';
+const MANUAL_CANDIDATE_FILE = 'manual-candidate.json';
 const COOLDOWN_FILE = 'cooldowns.json';
 const AUTHORIZATION_FILE = 'authorization.json';
 const MUTATION_LOCK_FILE = 'mutation.lock';
@@ -257,6 +258,8 @@ async function checkForUpdate(context, params = {}, options = {}) {
         // Invalid cached candidates are treated as cache misses.
       }
     }
+    const manual = readManualCandidate(context, currentVersion);
+    if (manual) return { ...manual, etag: params.etag || manual.etag || '', cached: true };
     return { managed: true, available: false, reason: 'not_modified', currentVersion, etag: params.etag || '' };
   }
   if (!releaseResponse.ok) {
@@ -297,9 +300,26 @@ async function checkForUpdate(context, params = {}, options = {}) {
     buildReleaseAssetUrl(releaseTag, 'release-manifest.sig'),
     16 * 1024, { ...network, stage: 'release_signature' }
   );
-  const manifest = verifySignedReleaseManifest(manifestBytes, signatureBytes);
+  const manifest = verifySignedReleaseManifest(manifestBytes, signatureBytes, { allowBootstrapMismatch: true });
   if (manifest.version !== latestVersion || manifest.tag !== releaseTag) {
     throw updateError('update_release_manifest_mismatch', 'GitHub release tag does not match the signed update manifest.');
+  }
+  if (manifest.bootstrapProtocol !== BOOTSTRAP_PROTOCOL) {
+    // Never staged: only a reinstall can replace the Bootstrap shell. The user
+    // gets the target version and the signed reason instead of a bare error.
+    const manual = {
+      managed: true,
+      available: false,
+      reason: 'manual_install_required',
+      currentVersion,
+      latestVersion,
+      installedBootstrapProtocol: BOOTSTRAP_PROTOCOL,
+      requiredBootstrapProtocol: manifest.bootstrapProtocol,
+      manualInstall: manifest.manualInstall?.reason ? { reason: manifest.manualInstall.reason } : {},
+      etag: releaseResponse.headers.get('etag') || ''
+    };
+    atomicWriteJson(path.join(context.updatesRoot, MANUAL_CANDIDATE_FILE), { ...manual, checkedAt: new Date().toISOString() });
+    return manual;
   }
   const candidate = {
     checkedAt: new Date().toISOString(),
@@ -312,6 +332,15 @@ async function checkForUpdate(context, params = {}, options = {}) {
   };
   atomicWriteJson(path.join(context.updatesRoot, CANDIDATE_FILE), candidate);
   return { managed: true, available: true, currentVersion, latestVersion, etag: candidate.etag };
+}
+
+function readManualCandidate(context, currentVersion) {
+  const manual = readJsonSafe(path.join(context.updatesRoot, MANUAL_CANDIDATE_FILE), null);
+  if (manual?.reason !== 'manual_install_required' || !parseSemver(manual.latestVersion)
+    || !isNewerStableVersion(manual.latestVersion, currentVersion)
+    || manual.requiredBootstrapProtocol === BOOTSTRAP_PROTOCOL) return null;
+  const { checkedAt: _checkedAt, ...result } = manual;
+  return { ...result, currentVersion };
 }
 
 function readAuthorizedCandidate(context, currentVersion) {

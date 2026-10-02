@@ -1,11 +1,8 @@
-> [!NOTE]
-> Preview: **v2.5.0-rc.1** is distributed through [GitHub Releases](https://github.com/Ghqqqq/codex-overleaf-link/releases/tag/v2.5.0-rc.1), with no npm publication. To install this RC, use the pinned source installers in Option B below. Numeric npm commands apply only after the stable version is published. Existing installations require one managed reinstall, extension reload, and Overleaf refresh for Bootstrap protocol 3.
-
 <div align="center">
   <img src="extension/assets/icons/codex-overleaf-icon.png" width="96" alt="Codex Overleaf Link">
   <h1>Codex Overleaf Link</h1>
   <p><strong>English</strong> | <a href="README.zh-CN.md" lang="zh-CN">简体中文</a></p>
-  <p><strong>Empower Overleaf with Codex.</strong></p>
+  <p><strong>Codex, right inside your Overleaf project.</strong></p>
   <p>
     <img src="https://img.shields.io/badge/version-2.5.0-blue" alt="version">
     <img src="https://img.shields.io/badge/platform-macOS%20%2F%20Windows%20%2F%20Linux-lightgrey" alt="platform">
@@ -19,64 +16,54 @@
 
 ---
 
-## Why
+Getting AI help with a paper in Overleaf usually means copying a section out, pasting the answer back, and hoping nothing broke on the way. Codex Overleaf Link removes that loop. It adds a Codex panel next to the Overleaf editor, keeps a local copy of your project in sync, lets Codex work on the real files, and writes the result back into Overleaf for you.
 
-Overleaf is great for collaborative LaTeX writing. Codex is great for AI-assisted editing. But switching between them breaks flow — you lose Overleaf's real-time collaboration, or you lose Codex's local intelligence.
+You never leave Overleaf. Collaborators still see edits live, compiling works as usual, and every change Codex makes comes with a receipt and an Undo.
 
-Codex Overleaf Link adds a Codex panel directly inside Overleaf and mirrors the project locally. Use **Ask** to read and analyze, or **Auto** to edit the local workspace and write eligible changes back through the browser. Project rules, conflict checks, Track Changes integration, and per-run recovery help you control those writes.
+![The Codex panel beside the Overleaf source editor and PDF preview](assets/codex-preview.jpg)
 
-![Codex Overleaf Link beside the source editor and PDF preview](assets/codex-preview.jpg)
+[Install](#install) · [First run](#your-first-run) · [Ask, Auto and Track](#ask-auto-and-track) · [Models](#models-and-api-providers) · [Updating](#updating) · [FAQ](#faq-and-troubleshooting) · [Development](#development)
 
-*The example project with the v2.3.4 panel: Ask / Auto, Track / Compile, and model controls stay beside your document.*
+## What it's like to use
 
-[Install](#install) · [Task modes](#task-modes-and-review) · [Models & APIs](#models-and-api-providers) · [Workflows](#common-workflows) · [Troubleshooting](#faq-and-troubleshooting) · [Development](#development)
+- **Ask about the whole project.** "Why does Theorem 3 need assumption (A2)?" Codex reads every file, not only the one you have open.
+- **Point at the exact sentence.** Select text in the editor and attach it, or type `@` to add a file. `@compile-log` hands Codex the current errors and warnings.
+- **Watch it work.** While a task runs, a three-line live view under the run header shows what Codex is reading, thinking and editing. Expand it to see every step.
+- **See what changed, word by word.** After a write, each file folds into one line with `+/−` counts. Open it and only the changed words are highlighted.
+- **Change your mind.** Undo reverts a run's writes, including after a page reload. With Track on, edits land in Overleaf's Review panel instead.
+- **Keep the conversation going.** Queue a follow-up while Codex is busy, steer the running task, or fork an earlier turn to try something else.
 
-## Features
+Also included: per-project session history, file and image attachments, figure generation with a confirmation step, project rules that keep chosen files read-only, a sensitive-content check before anything leaves your machine, and English and Chinese interfaces in light and dark themes.
 
-- **Write in my style (experimental)**: learn reusable style guidance from selected Overleaf projects and PDFs, then update the style skill as references change.
-- **Concurrent subagents**: follow parallel work and inspect child conversations while the main agent continues.
-- **Integrated settings and providers**: configure connections, models, reasoning, and writing preferences in one workbench.
-- **Multi-file recovery**: undo eligible text edits and newly created text or images; retry only files still pending after an interrupted or partially completed Undo.
+<!-- Screenshot pending: assets/readme-run.png, a run in progress with the live view under the run header. -->
 
-- **Ask and Auto** — analyze without Overleaf writes, or edit with conflict checks, project rules, and optional Track Changes. Inspect written text diffs and use the run's available Accept / Undo actions.
-- **Live progress and follow-ups** — watch Codex events, cancel a task, queue the next input, or use **Guide** to send a queued message into the active turn when it is ready. A paused queue can be resumed from the panel.
-- **Session history** — create, rename, resume, and delete sessions; copy a result or fork a conversation from an eligible turn. Recent-project history helps you return to earlier work.
-- **Project context** — select files through `@` autocomplete or the **＋** tray, include `@compile-log`, and paste/drop files as attachments for the next turn.
-- **Binary assets** — confirm Codex-created images, PDFs, and other supported assets before creating or replacing them in Overleaf; transfer is chunked to support files larger than a single Native Messaging response.
-- **Compile feedback** — the **Compile** toggle requests Overleaf recompilation after eligible files are written and records the result. Ask mode does not trigger post-write compilation.
-- **Project rules and preflight** — read-only / writable path rules gate browser writes; sensitive-content detection checks task context before sending it to Codex. File focus prioritizes context; use project rules to enforce writable paths.
-- **Models and skills** — discover local Codex models, choose supported reasoning and speed settings, and install or select Codex Overleaf skills from the slash menu. Skill loading and individual skill enablement are configurable.
-- **Local records and diagnostics** — preserve run outcomes and recovery evidence, inspect diagnostics, and export redacted issue-report bundles. Plugin Codex sessions use an isolated home.
-- **OT warm mirror** (Operational Transformation) keeps focused mirror files warm through optional, read-only observation of active Overleaf text edits. It is off by default and falls back to the normal snapshot path when unavailable, stale, or inconsistent. Overleaf writeback still uses the page bridge.
+### Experimental
 
-OT freshness expires after 30 seconds, and focused warm starts still verify current file content through the page bridge. OT observation never establishes whole-project freshness or replaces the Overleaf writeback path.
+- **Write in my style** learns your phrasing from Overleaf projects and PDFs you choose, and turns it into a reusable writing-style skill.
+- **Third-party model providers** let you point Codex at a Responses API, OpenAI-compatible Chat Completions, or Anthropic Messages endpoint instead of the built-in provider.
+- **Parallel subagents** split a large job across workers. Each worker's conversation can be opened from the main timeline.
+- **OT warm mirror** keeps the files you are focused on fresh by observing your live edits. It is read-only and off by default.
 
-### Experimental features
+## What you need
 
-- **Third-party model providers** — configure Responses API, OpenAI-compatible Chat Completions, or Anthropic Messages endpoints in Settings. The local Codex CLI remains the agent runtime, with local protocol bridges adapting the selected endpoint. Compatibility varies by model and gateway; the built-in Codex provider remains the default.
-- **Parallel subagents** — enable the `parallel-subagents` skill for decomposable tasks. The native host runs workers with assigned files; the skill can split a single file into section jobs. Worker progress appears in the timeline, and detected ownership violations are withheld from Overleaf writeback.
-
-## Requirements
-
-| Requirement | Notes |
-|-------------|-------|
-| macOS / Windows / Linux | Native Messaging host targets the current user's browser registration location |
-| Chrome / Chromium | macOS Chrome, Windows Chrome, and Linux Chrome are supported. Linux Chromium is supported only when installed with `--browser chromium`. macOS Chromium and Windows Chromium are not claimed as supported yet. |
-| Node.js >= 20 | Powers the native host bridge |
-| Git | Required by the one-command source installers and manual checkout flow |
-| Codex CLI | Installed (`codex --version` to verify); sign in for the built-in Codex provider. Custom providers also use the local Codex CLI. |
-| Overleaf account | Access to the target project on `overleaf.com` |
-| TeX distribution *(optional)* | For `latexmk` / local compile checks |
+| | |
+|---|---|
+| Computer | macOS, Windows, or Linux |
+| Browser | Google Chrome. Linux Chromium also works; see [Browser support](#browser-support). |
+| Node.js 20+ and Git | Used by the installers and the local bridge |
+| [Codex CLI](https://github.com/openai/codex) | Installed and signed in. Check with `codex --version`. |
+| Overleaf | An account on `overleaf.com` or `cn.overleaf.com` |
+| TeX *(optional)* | Only for local `latexmk` checks |
 
 ## Install
 
-Codex Overleaf Link has two parts: a **native host** (a local Node bridge) and the **Chrome extension**. Installation with Codex is recommended; the installer script and npm commands remain available below.
+There are two pieces: a small local program, the **native host**, that runs Codex on your machine, and the **Chrome extension** that draws the panel. The installers set up both as a matched pair that can update itself later.
 
-Chrome may require a manual **Load unpacked** or **Reload** action. Codex should explain any remaining browser step and respect browser and operating-system permission boundaries.
+Chrome does not let scripts load an extension for you, so every route ends with one short manual step in `chrome://extensions`.
 
 ### Option A: Let Codex install it (recommended)
 
-Give the following prompt to Codex with terminal access on the computer where Chrome runs:
+If you already use Codex in a terminal on the computer where Chrome runs, give it this prompt:
 
 ```text
 Install Codex Overleaf Link from https://github.com/Ghqqqq/codex-overleaf-link on this computer.
@@ -88,45 +75,41 @@ Complete the terminal-side setup and checks. If Chrome requires a manual Load un
 Report the chosen release, installed Extension and Native Host versions, the browser-loaded version when observable, and the native connection check. Matching on-disk versions alone do not prove Chrome has loaded the update. Clearly identify anything still requiring manual action.
 ```
 
-### Option B: installer script
-
-One command installs the managed native host **and** managed extension runtime. On macOS/Linux it also creates the visible `~/Codex Overleaf Link Extension` shortcut when that path is available. The script attempts to copy the extension path on macOS and Windows; on macOS it also attempts to open Chrome's extensions page. Every platform prints the folder to load. Future signed stable updates target this same managed directory.
+### Option B: One-line installer
 
 macOS / Linux:
 
 ```bash
-CODEX_OVERLEAF_REF=v2.5.0-rc.1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.5.0-rc.1/install.sh)"
+CODEX_OVERLEAF_REF=v2.5.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.5.0/install.sh)"
 ```
 
 Windows PowerShell:
 
 ```powershell
-iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.5.0-rc.1/install.ps1 -OutFile install.ps1
-$env:CODEX_OVERLEAF_REF='v2.5.0-rc.1'
+iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.5.0/install.ps1 -OutFile install.ps1
+$env:CODEX_OVERLEAF_REF='v2.5.0'
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-Then open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and choose the extension folder printed by the installer. If the installer reports that it copied the path, you can paste it into the folder picker.
+The script checks the prerequisites, builds the extension, installs the native host, and prints the folder Chrome should load. On macOS it also copies that path and opens Chrome's extensions page. On macOS and Linux it leaves a `~/Codex Overleaf Link Extension` shortcut in your home folder.
 
-### Option C: npm managed install
-
-`npm exec` installs the same managed native host and extension runtime without keeping a source checkout. Use it if you prefer a pinned npm package.
+### Option C: npm
 
 ```bash
 npm exec --yes codex-overleaf-link@2.5.0 -- install-managed
 ```
 
-Then, in `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the managed extension path printed by the command. The Release extension zip remains available for explicitly unmanaged/manual installations.
+Same result as Option B, without keeping a source checkout around.
 
-### Open Overleaf
+### Finish in Chrome
 
-Open a project on `overleaf.com` — the Codex panel appears on the right. Use its diagnostics to confirm the native host is connected, then start in **Ask** mode. When you want edits, select **Auto** and choose whether **Track** should be enabled. Auto writes eligible changes directly; Track records supported text edits in Overleaf Reviewing for inspection and acceptance afterward. See [Task Modes And Review](#task-modes-and-review).
+1. Open `chrome://extensions` and turn on **Developer mode**.
+2. Click **Load unpacked** and choose the folder the installer printed.
+3. Open or refresh an Overleaf project. The panel appears on the right.
 
-Close the panel from its header and reopen it with the Codex edge control on the Overleaf page. The extension popup controls whether that edge entry is shown. The panel supports dark, light, and system appearance, with English and Chinese interface text.
+If an older copy is still loaded from a different folder, remove it so Chrome doesn't show two.
 
-Appearance, language, and global skill preferences synchronize across Overleaf tabs in the same Chrome profile and are restored when you reopen the dashboard or a project. The Preload project context setting is also preserved across refreshes.
-
-The bundled extension key gives the official build a stable id, so normal installs do not need `--extension-id`. If Chrome assigns a custom build a different id, rerun the installer for that installation type with `--extension-id <chrome-extension-id>` so the native manifest `allowed_origins` entry matches. See [Extension ID](#extension-id).
+The official build carries a bundled extension key, so it always gets the same stable id and you never need `--extension-id`. Custom builds are covered under [Extension ID](#extension-id).
 
 <details>
 <summary><strong>Manual checkout install</strong> (custom location)</summary>
@@ -139,125 +122,110 @@ npm run build:content
 npm run install:native
 ```
 
-Then load `extension/` as an unpacked extension in Chrome. This checkout installation is unmanaged: rebuild and reload the extension after changes, and reinstall the native host after changes to its runtime. If Chrome assigns a different extension id, rerun `npm run install:native -- --extension-id <chrome-extension-id>`.
+Then load `extension/` as an unpacked extension in Chrome. This install is unmanaged: rebuild and reload the extension after changes, and rerun `npm run install:native` after changing the native runtime. If Chrome assigns a different extension id, rerun `npm run install:native -- --extension-id <chrome-extension-id>`.
 
 </details>
 
-## Task Modes And Review
+## Your first run
 
-There are two task modes, Ask and Auto. Track is a separate setting for Auto writes.
+1. Open a project and click the Codex edge tab if the panel is hidden. The header turns green once the native host is connected.
+2. Leave the mode on **Ask** and try something that reads the project: *"Summarise what each chapter argues, in one sentence each."*
+3. When you want edits, switch to **Auto**, describe the change, and send. Codex edits its local copy, then the extension writes the changes into Overleaf and recompiles if **Compile** is on.
+4. Check the result under the answer. The summary line says what was written and whether it can be undone; the file rows show the actual changes.
 
-| Mode / Track setting | What happens | How to inspect the result |
-|------|--------------|--------------------------|
-| **Ask** | Codex reads and analyzes the project. Local changes, if any, are not sent back to Overleaf. | Read the answer; switch to Auto when you want edits. |
-| **Auto + Track on** | Eligible changes are written immediately; supported text edits are recorded in Overleaf Reviewing / Track Changes. The run is blocked if the required mode cannot be confirmed. | Inspect the written diff and Overleaf tracked edits, then use the run's available **Accept** or **Undo** action. |
-| **Auto + Track off** | Eligible changes are written after confirming Overleaf Editing mode. | Inspect the written diff and use **Undo** where recovery evidence is available. |
+The run header tells you what is happening at each moment: reading the project, starting Codex, waiting for the model's first reply, then thinking and editing. If something needs your attention, such as a skipped file or a save Overleaf hasn't confirmed yet, the details open by themselves.
 
-Auto text writes do not wait for a per-hunk approval step. Deletes and binary create/overwrite operations require separate confirmation. Track applies to supported text edits; it does not make every file-tree or binary operation reversible.
+## Ask, Auto and Track
 
-**Accept** is intended to finalize a run's tracked text edits and leaves Overleaf in Editing mode. If the operation unexpectedly creates new tracked changes, the extension attempts to roll it back and reports what could be verified.
+| | What Codex may do | Where the changes go |
+|---|---|---|
+| **Ask** | Read and analyse | Nowhere. Overleaf is not touched. |
+| **Auto** | Read and edit | Written straight into Overleaf in Editing mode. |
+| **Auto + Track** | Read and edit | Written as tracked changes you can review in Overleaf's Review panel. |
+
+Auto does not stop for per-hunk approval, but deleting files and creating or replacing images and PDFs always ask first. Before each write the extension checks that the text it is about to change still matches what Codex saw. If a collaborator edited the same lines in the meantime, that file is skipped and reported, never overwritten.
+
+**Undo changes** puts the run's files back the way they were, created files included, and works after a page reload. If someone edited the same text afterwards, Undo stops for that file instead of guessing.
+
+**Accept changes** finalises a Track run's changes in one step and leaves Overleaf in Editing mode.
 
 > [!WARNING]
-> Do not use the run card's **Accept** action when the affected files contain unrelated pending tracked changes from other runs or collaborators. Review and accept those changes individually in Overleaf's native Review panel. An Accepted badge or successful compilation alone does not prove that unrelated pending changes were preserved.
+> Don't use the run card's **Accept changes** when the same files contain unrelated tracked changes from collaborators or other runs. Accept those individually in Overleaf's Review panel instead.
 
-**Undo** uses the run's saved recovery information. Concurrent changes or incomplete verification can prevent a full restoration. Cancel stops further work but does not automatically undo writes that already reached Overleaf; inspect the run card for the written parts and available recovery actions.
+**Cancel** stops the run. Anything already written stays, and the card shows which parts landed so you can undo them.
 
-Suggest mode was removed in v2.3.1. For a reviewable editing workflow, use **Auto + Track** and inspect the changes after they are written.
+## Models and API providers
 
-## Models And API Providers
+By default the panel uses your local Codex CLI: its login, models and settings. Pick a model and reasoning level from the control in the composer.
 
-The default **Built-in Codex** option uses the authentication, model catalog, and provider configuration of your local Codex CLI. You can also connect an experimental third-party API while keeping the same Overleaf panel, local workspace, and Codex agent workflow.
+To use another endpoint, open **Project Settings → Model providers → Configure → Add provider**:
 
-### Add or switch a provider
+1. Enter a **Provider name**, the **Base URL** and your **API key**. HTTPS is required except for localhost.
+2. Under **Models**, add each model with the exact ID your endpoint accepts, and mark one as the default.
+3. Leave **API protocol** on Auto, or pick Responses API, Chat Completions or Anthropic Messages. If the URL already ends with the full endpoint path, tick **Base URL is the full protocol endpoint**.
+4. **Test connection** sends one real request to a model you pick. Then choose **Save and use for this project**.
 
-1. Open **Project Settings → Model providers → Configure**, then choose **+ Add provider**.
-2. Enter a **Provider name**, **Base URL**, **API key**, and **Default model** ID. Add other model IDs one per line in **Additional models**. Use the exact IDs accepted by your endpoint; custom providers use this configured list. HTTPS is required except for localhost.
-3. Under **Advanced compatibility**, leave **API protocol** on Auto or select the protocol your endpoint supports. If the URL already ends with the complete protocol endpoint, enable **Base URL is the full protocol endpoint**.
-4. Review the endpoint disclosure. **Test connection** is optional and sends a live probe to the selected test model. Choose **Save** to keep the profile, or **Save and use for this project** to select it for future runs in this project.
+The choice applies to every session in the current project; other projects keep their own. Switching keeps your history and starts fresh threads for new turns. Gateways differ in how they handle tools and reasoning, so a passing test doesn't guarantee every model behaves the same in long tasks. API keys stay with the native host on your machine; task context is sent to the endpoint you chose.
 
-To switch between saved providers, select one in the dialog and choose **Use for this project**, then confirm **Switch provider** when prompted. To return to the default, select **Built-in Codex → Use for this project**. Back in the composer, open the model control to choose a configured model and its supported reasoning settings. The **Current project** label identifies the selected provider.
+## Context and attachments
 
-Provider profiles are shared locally across projects, while the active choice applies to **all sessions in the current project**. Switching keeps existing run history and starts fresh provider threads for future turns; model, reasoning, and speed choices may change. Editing a shared profile can affect other projects using it. Submitted and queued runs retain their captured provider configuration; resubmit if a profile change makes that captured revision unavailable.
+- **Files**: type `@` or use the **＋** tray to add up to five files. They stay selected across turns until you clear them. Codex can still read the rest of the project.
+- **Selections**: select text in the editor and attach it as context, or as **Selection only** to restrict the edit to that range. The chip stays visible on the message you sent.
+- **Compile log**: `@compile-log` attaches the current errors and warnings.
+- **Attachments**: paste or drop PDFs and images into the composer. Up to 8 per turn, 12 MiB each and 32 MiB in total. They are only for Codex to read and are never written to Overleaf.
+- **Generated files**: images, PDFs and other assets Codex creates (up to 10 MiB each) ask for confirmation before they're added to the project. LaTeX build output is filtered out.
 
-The project dashboard lets you manage shared provider profiles. Open a project before choosing which provider it should use.
+## Updating
 
-### Supported API formats
+Managed installs check GitHub for new signed stable releases on their own. When one is available, choose **Update now** in the notice or under **Settings → Software updates**. The update waits until every Overleaf tab is saved and no task is running, replaces the extension and native host together, and restores the previous version if the new one fails its health check. Drafts and prereleases are never picked up, and an update never adds Chrome permissions silently.
 
-| API protocol | Use it for |
-|----------|------------|
-| **Auto (detect during test)** | Negotiate a compatible route during a connection test or first use. |
-| **Responses API** | Endpoints that accept the Responses API format. |
-| **Chat Completions** | OpenAI-compatible chat completion endpoints. |
-| **Anthropic Messages** | Endpoints that accept the Anthropic Messages format. |
+The updater respects HTTP(S) proxy environment variables and the macOS/Windows system proxy. SOCKS-only or PAC-only setups need an HTTP proxy endpoint.
 
-Advanced settings also expose authentication headers, streaming/buffered response behavior, reasoning compatibility, and gateway-specific headers or request overrides. Configure these to match your provider's documentation. A successful probe checks one model and route; tool calling, reasoning, and long-running task behavior can still vary by endpoint. API keys are stored locally by the native host, and task context is sent to the selected endpoint.
+### Coming from v2.4.x or earlier
 
-## Context And Attachments
+v2.5.0 adds `cn.overleaf.com` support, which needs a new Chrome permission, so it moves the install to Bootstrap protocol 3. Older updaters refuse that step by design rather than granting permissions themselves. **Update now will not work for this one release.** Run the installer once:
 
-Type `@` and choose a file, or select it in the **＋** tray. Choosing a file adds it to persistent focus context; up to five files can be selected, and the tray lets you remove or clear them. With a complete project snapshot, Codex may also read and edit related files. Focus is a hard writeback boundary only for restricted partial-snapshot and OT warm-start runs; use project governance rules for a persistent write restriction.
+```bash
+npm exec --yes codex-overleaf-link@2.5.0 -- install-managed
+```
 
-Include `@compile-log` to request the current project's compile log, errors, and warnings. For a paragraph or section, select its file and name the section or quote the target text in your request.
+Then click **Reload** on the extension in `chrome://extensions` and refresh Overleaf. Your sessions, settings, provider keys and project mirrors are kept. Later releases update in place again.
 
-Paste or drop PDFs, images, or other files into the composer as turn-scoped context. The composer accepts **8 attachments**, up to **12 MiB each** and **32 MiB total raw size** per turn. These files are staged locally for Codex and excluded from Overleaf writeback. Unsent attachment restoration after a page reload is limited to a small subset, so check the attachment strip before submitting.
+From v2.5.0 on, a release that ever needs another reinstall is announced in the panel as **Reinstall needed for this update**, with the reason, the exact command for that version, and a copy button, instead of a failed update. New Overleaf sites no longer need a reinstall at all: the extension popup asks you to allow the site, and Chrome confirms it.
 
-Generated binary writeback is a separate operation: supported assets up to **10 MiB per file** are offered for confirmation and sent in chunks. LaTeX build outputs are filtered; in particular, a changed root-level PDF with a matching root TeX source is treated as a build artifact.
+Checkout and Release-zip installs are unmanaged and always update by hand.
 
-## Common Workflows
-
-- **Understand a project** — use Ask to explain the document structure, equations, or a selected file without writing to Overleaf.
-- **Fix a compile error** — include `@compile-log` in Ask for diagnosis. To apply a fix, switch to Auto, choose Track as needed, leave Compile enabled, and inspect the written changes and compile result.
-- **Rewrite or translate a section** — choose its file from `@` autocomplete, name the section and desired changes, and use Auto + Track. Inspect the edits in Overleaf, then Accept or Undo the run as appropriate.
-- **Create a figure** — provide references as composer attachments, ask Codex to create a supported asset and update the LaTeX in Auto, and review the separate asset confirmation. Check the run report for any skipped files.
-- **Continue or try an alternative** — queue a follow-up while Codex is running, use Guide for an immediate correction, or fork an eligible completed turn to explore another approach. A conversation fork shares the same Overleaf project; it does not create a project copy.
-- **Polish several sections in parallel** — enable the experimental `parallel-subagents` skill, specify the sections or files, and use Auto + Track to inspect the combined changes after writeback.
-
-## Update
-
-Update downloads retry transient network failures within a bounded time budget, including stalled response bodies. The updater respects HTTP/HTTPS environment proxies and supported macOS/Windows system proxy settings. TLS certificate and release-signature failures remain blocking errors. SOCKS/PAC-only configurations require an HTTP proxy endpoint.
-
-After a manual reinstall, installed files and running components are shown separately. Use the reload action once Overleaf is saved and idle; pending Overleaf tabs can then refresh. A disk replacement alone is not reported as a successfully health-confirmed update.
-
-Managed installations **check** for signed stable updates automatically. When an update is available, choose **Update now** in the update notice or **Settings → Software updates** to authorize that version. The updater then downloads and verifies the coordinated extension/native bundle, waits until connected Overleaf tabs are saved and idle and the native host has no active work, and applies both components together. A failed health check restores the previous version. The update notice also offers postponement and progress details.
-
-Stable updates use signed release metadata and artifact hashes; draft and prerelease versions are not selected. Releases that require a different Bootstrap protocol need a managed reinstall. The updater does not silently add Chrome permissions.
-
-Re-run `install-managed` for recovery or migration, including when the panel reports **Native host update required**. After recovery, reload the extension in `chrome://extensions` and refresh Overleaf. Unmanaged checkout or Release-zip installations require a manual extension/native update.
-
-### Managed-update baseline
-
-v2.5.0 introduces Bootstrap protocol 3 for `cn.overleaf.com` permissions and the updated popup shell. Existing protocol-1/2 managed installations need one managed reinstall using this release's installer, then an extension reload and Overleaf refresh. Older updaters reject the incompatible bootstrap; they cannot add permissions. Later compatible protocol-3 stable releases can use the in-product updater. RC builds are excluded from automatic stable updates. The Native Messaging handshake remains protocol 2, separate from this installation boundary.
-
-## npm Managed CLI
-
-npm installs, updates, and uninstalls the coordinated managed extension/native pair. Diagnostics still target the native host. The legacy `install-native` command remains available only for explicitly unmanaged extension directories.
+## Commands
 
 | Action | Command |
-|--------|---------|
-| Install / recover / migrate | `npm exec --yes codex-overleaf-link@2.5.0 -- install-managed` |
+|---|---|
+| Install, repair or migrate | `npm exec --yes codex-overleaf-link@2.5.0 -- install-managed` |
 | Diagnose | `npm exec --yes codex-overleaf-link@2.5.0 -- doctor` |
 | Uninstall | `npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed` |
 
-Use `--extension-id <chrome-extension-id>` only for a custom/dev unpacked extension id that differs from the official bundled id.
+npm installs, updates, and uninstalls the coordinated managed extension/native pair. The legacy `install-native` command remains available only for explicitly unmanaged extension directories:
+
+```bash
+npm exec --yes codex-overleaf-link@2.5.0 -- install-native
+```
+
+Use `--extension-id <chrome-extension-id>` only for a custom/dev unpacked extension id that differs from the official bundled id. On Linux Chromium, add `--browser chromium` to any of these.
 
 <a id="uninstall"></a>
 <details>
 <summary><strong>Uninstall</strong></summary>
 
-Remove the managed extension/native installation (append `--browser chromium` on Linux Chromium):
-
 ```bash
 npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed
 ```
 
-The same command works in Windows PowerShell. It also applies to current `install.sh` / `install.ps1` installations, which install the managed pair.
-
-For an unmanaged checkout or native-only installation, use `npm run uninstall:native` from the checkout, or:
+This works in PowerShell too, and also removes installs made by `install.sh` / `install.ps1`. For an unmanaged checkout or native-only install, run `npm run uninstall:native` from the checkout, or:
 
 ```bash
 npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-native
 ```
 
-If you are removing an older native-only source installation and still have its source checkout, its bundled uninstaller can also be invoked directly:
+An older native-only source install can also be removed with its bundled uninstaller:
 
 ```bash
 node ~/.codex-overleaf/source/scripts/uninstall-native-host.mjs
@@ -267,67 +235,43 @@ node ~/.codex-overleaf/source/scripts/uninstall-native-host.mjs
 node "$env:LOCALAPPDATA\CodexOverleaf\source\scripts\uninstall-native-host.mjs"
 ```
 
-`uninstall-managed` removes the registered Native Messaging host, bridge executable, managed extension, and versioned native runtime. `uninstall-native` removes the native-only registration and runtime copy. Neither command clears browser session history/settings, project mirrors, plugin Codex history, provider credentials, or stored skills.
-
-Remove the extension entry from `chrome://extensions` as well. To erase saved Codex Overleaf history, use the panel's history controls before removing the extension. Windows keeps the native installation under `%LOCALAPPDATA%\CodexOverleaf` and mirrors, plugin Codex history, providers, and skills under `%USERPROFILE%\.codex-overleaf`; full filesystem cleanup requires both roots. See [Local Data And Cleanup](#local-data-and-cleanup) for the separate browser and filesystem cleanup steps.
+Uninstalling removes the native host registration, bridge, managed extension and runtimes. It leaves your history, settings, project mirrors, provider keys and skills alone. Remove the extension from `chrome://extensions` as well. On Windows the install lives under `%LOCALAPPDATA%\CodexOverleaf` and your data under `%USERPROFILE%\.codex-overleaf`, so a full cleanup covers both. See [Local data and cleanup](#local-data-and-cleanup).
 
 </details>
 
-## FAQ And Troubleshooting
+## FAQ and troubleshooting
 
-**Native host missing or update required**
-
-For a managed installation, rerun the [managed installer](#install), reload the extension in `chrome://extensions`, then refresh the Overleaf tab. This recovers the coordinated extension/native pair after an incomplete installation or incompatible runtime update.
+**The panel says "Native host update required", or can't find the native host.**
+Rerun the installer, reload the extension in `chrome://extensions`, then refresh Overleaf:
 
 ```bash
 npm exec --yes codex-overleaf-link@2.5.0 -- install-managed
 ```
 
-For an unmanaged checkout, rebuild the extension and reinstall its native host from the same checkout. Use PowerShell installation commands on Windows.
+For a checkout install, rebuild and rerun `npm run install:native` from the same checkout.
 
-**Codex CLI not found**
+**Codex CLI not found.**
+Make sure `codex --version` works in a new terminal (on Windows, `Get-Command codex`), and that you're signed in for the built-in provider. Then rerun the installer so the launcher picks up your PATH.
 
-Confirm `codex --version` works in a new terminal and, for the built-in provider, that you are logged in. On macOS/Linux, reinstalling the native host regenerates the launcher after PATH changes. On Windows, confirm `Get-Command codex` succeeds in PowerShell before reinstalling.
+**Extension id mismatch.**
+Copy the id from `chrome://extensions` and reinstall with it. See [Extension ID](#extension-id).
 
-**Extension id mismatch**
+**A file was skipped.**
+Usually a collaborator changed those lines, the file couldn't be opened in the editor in time, or a project rule marks it read-only. The details under the answer say which, and **Retry sync** writes only the files that are still pending. Don't rerun the whole task just to retry. That can apply the same edit twice.
 
-Copy the id shown in `chrome://extensions` and reinstall the native host with that id (see [Extension ID](#extension-id)).
+**Undo changes or Accept changes is missing.**
+Both depend on what the run actually wrote. If files were written but the button is gone, check the changes in Overleaf before doing anything else, and attach exported diagnostics to an issue.
 
-**Linux Chromium does not connect**
+**A write was blocked by a project rule, or the sensitive-content check fired.**
+Rules can make paths read-only or restrict where Codex may write. Adjust them in Project Settings or narrow the request. The sensitive-content check looks for things like tokens and keys before context leaves your machine; remove or redact what it found.
 
-Reinstall the native host with `--browser chromium`, reload the unpacked extension, and refresh Overleaf. The Chromium manifest path is different from Chrome's path.
+**A queued message or a fork won't run.**
+Queued messages keep the settings they were sent with. If that provider profile was changed or deleted, send the message again. A fork needs a recorded Codex turn and is disabled when there isn't one.
 
-**Diagnostics and logs**
+**Reporting a bug.**
+Use **Export Diagnostics** in the panel. The bundle leaves out project text, prompts, compile logs, diffs and secrets by default. If you attach other logs, check them for file names, tokens and document text first.
 
-Use the diagnostics export for issue reports. Diagnostics are intended to exclude project text, prompt bodies, compile logs, raw diffs, binary content, and raw secrets by default. If you manually attach logs, review and redact file names, project ids, tokens, prompts, and document text.
-
-**Stale collaborator conflict**
-
-The stale-write guard checks the original content and expected patch ranges. It can preserve unrelated edits when the target ranges still match; conflicting or unaligned changes are skipped. Inspect the skipped-file report and collaborator edits, then rerun from fresh context. A project switch can also stop a write because it no longer targets the project where the run started.
-
-**Track / Accept / Undo is unavailable**
-
-Track requires an Overleaf Reviewing state that the extension can verify. Accept and Undo depend on the run's actual writes and saved recovery evidence; some operations or later collaborator edits prevent full recovery. Follow the run card's specific next action. Turning Track off selects ordinary Editing for future Auto runs.
-
-If files were written but Accept is missing, inspect the actual changes in Overleaf before retrying. Repeating a task solely to recover the button can duplicate edits. Export redacted diagnostics with the run result when reporting the issue.
-
-**Governance blocked write**
-
-Project governance rules can mark paths read-only or restrict writable paths. Switch to ask-only mode, adjust the project governance settings, or narrow the requested edit to an allowed path.
-
-**Sensitive preflight warning**
-
-Sensitive preflight checks task context for likely tokens or secrets before a Codex run. Review the reported files and redact or remove sensitive content. A selected focus file does not exclude the rest of a complete project snapshot. Explicit confirmation is available only when allowed by the project's sensitive-content settings.
-
-**Attachments and binary limits**
-
-Composer attachments are context, while generated binary create/overwrite operations have a separate confirmation. Writeback uses chunked transfer up to the 10 MiB per-file limit. Unsupported types, oversized files, and filtered build artifacts are reported as skipped local changes. See [Context And Attachments](#context-and-attachments).
-
-**A queued follow-up or fork cannot run**
-
-A queued turn retains the settings captured when it was submitted. Changed or deleted provider configuration can require a new submission. Guide becomes available when the active Codex turn can receive it; otherwise the message stays queued. Fork requires a recorded Codex turn position and is disabled when that position is unavailable.
-
-## How It Works
+## How it works
 
 ```mermaid
 flowchart TD
@@ -340,20 +284,13 @@ flowchart TD
     A -->|Reads and edits| M
 ```
 
-**Task lifecycle:**
-
-1. The extension captures the submitted mode, provider/model settings, Track/Compile choices, and focus files, then prepares a project snapshot or a verified reusable mirror.
-2. The native host synchronizes the snapshot and records a baseline. A partial snapshot is handled differently from a complete project snapshot.
-3. Codex runs against the local workspace through `codex app-server`, with an isolated Codex home, session history, and streaming events.
-4. The native host collects actual file changes, computes text diffs/patches, and prepares supported binary transfers. Ask returns its answer without writeback.
-5. Auto applies eligible operations through the browser after checking project identity, path rules, edit mode, and the expected text at each patch. Conflicting operations are skipped and reported.
-6. The extension records recovery evidence immediately after writes, then verifies save state, updates the mirror baseline, and optionally recompiles. The report distinguishes writes from save and compile verification.
-
-Tracked-text acceptance uses Overleaf's native undo path to restore the pre-run text, then replays the run's edits with tracking off. The page bridge checks that Editing mode remains stable and attempts rollback if replay unexpectedly creates new tracked changes.
+1. When you send a task, the extension captures your settings and syncs the Overleaf project into a local mirror, or reuses the mirror if it's still current.
+2. The native host starts `codex app-server` against that mirror with an isolated Codex home, so plugin runs don't mix with your own Codex sessions.
+3. When Codex finishes, the host compares the mirror with its baseline and turns the differences into text patches and asset transfers. Ask stops here.
+4. In Auto, the extension writes each patch through the Overleaf editor after checking the project, path rules, edit mode and the expected text. Anything that doesn't line up is skipped and reported.
+5. The undo point is recorded before any further step, then the save state is verified, the mirror refreshed and, if enabled, the project recompiled.
 
 ## Development
-
-Install locked development dependencies and build the content script before loading the checkout extension:
 
 ```bash
 npm ci
@@ -366,14 +303,12 @@ npm run check:architecture
 npm run benchmark:large
 ```
 
-The project has no npm runtime dependencies. Development uses pinned **esbuild**; Markdown and math rendering libraries are vendored in the extension. Tests use Node's built-in runner and include VM/mock browser integration tests. The [CI workflow](.github/workflows/test.yml) currently uses Node 24.18.0 on macOS, Ubuntu, and Windows, with the managed-update hop rehearsal on Ubuntu.
+There are no npm runtime dependencies. Development uses a pinned **esbuild**; the Markdown and math libraries are vendored into the extension. Tests use Node's built-in runner, including VM-based browser integration tests. [CI](.github/workflows/test.yml) runs on macOS, Ubuntu and Windows with Node 24.18.0 and rehearses the managed-update hop on Ubuntu.
 
-The isolated-world bundle is generated from [content-entry.mjs](extension/entries/content-entry.mjs). Edit the source modules, then run `npm run build:content` and reload the extension; page-world bridge modules remain separate. For an unmanaged checkout, rerun `npm run install:native` after changing native runtime or shared files copied into it. `npm run bridge` starts the stdio Native Host directly for protocol work.
-
-To update an existing managed installation from a prepared checkout, run `npm run install:managed` after building, then reload the extension and Overleaf.
+The content script is bundled from [content-entry.mjs](extension/entries/content-entry.mjs). Edit the modules, run `npm run build:content`, and reload the extension. To push a local build into an existing managed install, run `npm run install:managed`, then reload the extension and Overleaf. `npm run bridge` starts the native host on stdio for protocol work.
 
 | Area | Entry points |
-|------|--------------|
+|---|---|
 | Panel and task orchestration | `extension/src/content/contentRuntime.js`, `extension/src/content/runController.js` |
 | Page snapshot and writeback | `extension/src/pageBridge.js`, `extension/src/page/snapshotRouter.js`, `extension/src/page/writebackRouter.js` |
 | Browser/native transport | `extension/src/background.js`, `native-host/src/index.js` |
@@ -381,168 +316,113 @@ To update an existing managed installation from a prepared checkout, run `npm ru
 | Shared contracts and persistence | `extension/src/shared/`, `extension/src/content/scopedPersistenceCoordinator.js` |
 | Managed updates and packaging | `extension/bootstrap/`, `extension/src/backgroundUpdateCoordinator.js`, `native-host/src/updateManager.js`, `scripts/` |
 
-For a real browser smoke check, provide an Overleaf project URL accessible in the Chrome profile used for the test:
+Browser smoke test against a real project:
 
 ```bash
 npm run smoke:extension -- --url 'https://www.overleaf.com/project/<project-id>' --probe panel,native,project,diagnostics --json .local/smoke.json
 ```
 
-The smoke script launches Chrome with a temporary profile by default. Use `--profile-dir <test-profile-dir> --keep-profile` when you need a dedicated profile with an Overleaf login, and ensure its native host is registered. For release work, see `npm run build:release`, `npm run verify:release-artifacts`, and `npm run rehearse:update-hop`.
+It launches Chrome with a temporary profile by default. Use `--profile-dir <test-profile-dir> --keep-profile` for a profile that's already signed in to Overleaf. For releases, see `npm run build:release`, `npm run verify:release-artifacts` and `npm run rehearse:update-hop`.
 
-## Browser Support
+## Browser support
 
-| Platform | Supported browser path | Notes |
-|----------|------------------------|-------|
-| macOS | Google Chrome | Use the default installer. macOS Chromium native registration is not documented as supported. |
-| Windows | Google Chrome | Use the PowerShell installer. Windows Chromium native registration is not documented as supported. |
-| Linux | Google Chrome | Use the default installer. |
-| Linux | Chromium | Pass `--browser chromium` to install or uninstall the native host. |
+| Platform | Browser | Notes |
+|---|---|---|
+| macOS | Google Chrome | Default installer |
+| Windows | Google Chrome | PowerShell installer |
+| Linux | Google Chrome | Default installer |
+| Linux | Chromium | Add `--browser chromium` when installing or uninstalling |
 
-The shipped extension targets `https://overleaf.com/project` and `https://www.overleaf.com/project` and their project pages. Other Overleaf deployments are not included in its host permissions.
+Chromium on macOS and Windows isn't supported yet. The extension runs on project pages of `overleaf.com`, `www.overleaf.com` and `cn.overleaf.com`; self-hosted Overleaf isn't covered.
 
-Linux Chromium install or update:
-
-```bash
-CODEX_OVERLEAF_REF=v2.5.0-rc.1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.5.0-rc.1/install.sh)" -- --browser chromium
-```
-
-Linux Chromium uninstall:
+Linux Chromium:
 
 ```bash
+CODEX_OVERLEAF_REF=v2.5.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.5.0/install.sh)" -- --browser chromium
 npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed --browser chromium
 ```
 
 ## Extension ID
 
-This repo ships a stable Chrome extension `key`, producing the deterministic id:
+The repo ships a fixed extension key, so the official build always gets this id:
 
 ```
 illdpneeeopfffmiepaejglgmhpmdhdc
 ```
 
-The installer uses this id by default. For a managed installation with a custom id, rerun the managed installer with the id shown in `chrome://extensions`:
+If you load a custom build and Chrome gives it a different id, reinstall with that id so the native host's `allowed_origins` matches:
 
 ```bash
 npm exec --yes codex-overleaf-link@2.5.0 -- install-managed --extension-id "<your-chrome-extension-id>"
 ```
 
-For an unmanaged extension, use the native-only installer:
+For an unmanaged extension, use `install-native --extension-id "<your-chrome-extension-id>"` instead. The source installers also read `CODEX_OVERLEAF_EXTENSION_ID`.
 
-```bash
-npm exec --yes codex-overleaf-link@2.5.0 -- install-native --extension-id "<your-chrome-extension-id>"
-```
+## Release artifacts
 
-Both npm commands work in PowerShell. Source installers also accept the `CODEX_OVERLEAF_EXTENSION_ID` environment variable. The Native Messaging manifest's `allowed_origins` must match the loaded extension id.
+Each GitHub Release includes:
 
-## GitHub Release Artifacts
+- `codex-overleaf-link-extension-v2.5.0.zip`: the extension, for manual unpacked installation.
+- `codex-overleaf-native-host-v2.5.0.tar.gz`: the native host runtime used by the installers.
+- `codex-overleaf-update-v2.5.0.tar.gz`: the combined bundle the in-product updater downloads.
+- `codex-overleaf-link-2.5.0.tgz`: the npm package behind the `npm exec` commands.
+- `install.sh` and `install.ps1`: installers pinned to this release.
+- `uninstall-native-host.mjs` plus its helpers `nativeHostPlatform.js`, `manifest.js` and `runtimeInstaller.js`.
+- `SHA256SUMS`, `release-manifest.json` and `release-manifest.sig`: checksums and the Ed25519-signed release metadata the updater verifies.
+- `release-notes.md`.
 
-The v2.5.0 GitHub Release contains:
+## Local data and cleanup
 
-- `codex-overleaf-link-extension-v2.5.0.zip`: loadable Chrome extension package for manual unpacked installation.
-- `codex-overleaf-native-host-v2.5.0.tar.gz`: native host runtime files used by the installer and release verification.
-- `codex-overleaf-update-v2.5.0.tar.gz`: coordinated extension/native bundle used by the managed updater.
-- `codex-overleaf-link-2.5.0.tgz`: npm native host CLI package for pinned install, doctor, and uninstall flows.
-- `install.sh`: release-pinned macOS / Linux installer that defaults to `v2.5.0` when run directly from the release artifact.
-- `install.ps1`: release-pinned Windows PowerShell installer that defaults to `v2.5.0` when run directly from the release artifact.
-- `uninstall-native-host.mjs`: native host uninstaller that removes the Chrome Native Messaging manifest, bridge executable, and runtime copy.
-- `nativeHostPlatform.js`, `manifest.js`, `runtimeInstaller.js`: helper files required by the loose uninstaller asset.
-- `SHA256SUMS`, `release-manifest.json`, and `release-manifest.sig`: checksums, release metadata, and its Ed25519 signature.
-- `release-notes.md`: release notes shipped with the artifacts.
+There is no hosted backend and no telemetry. Everything below lives on your machine. During a run, task context is sent to Codex or to the provider you configured. Project rules control what may be written; they don't hide files from the model.
 
-## Local Data And Cleanup
+| What | Where (macOS/Linux; Windows in brackets) |
+|---|---|
+| Sessions, runs, history | IndexedDB database `codex-overleaf` under the Overleaf site in Chrome |
+| Preferences and project settings | `chrome.storage.local` of the extension |
+| Managed extension | `~/.codex-overleaf/managed/extension` (`%LOCALAPPDATA%\CodexOverleaf\managed\extension`) |
+| Managed native host | `~/.codex-overleaf/managed/native` (`%LOCALAPPDATA%\CodexOverleaf\managed\native`) |
+| Installer checkout | `~/.codex-overleaf/source` (`%LOCALAPPDATA%\CodexOverleaf\source`) |
+| Native bridge | `~/.codex-overleaf/codex-overleaf-bridge` (`%LOCALAPPDATA%\CodexOverleaf\codex-overleaf-bridge.cmd`) |
+| Project mirrors | `~/.codex-overleaf/projects` (`%USERPROFILE%\.codex-overleaf\projects`) |
+| Plugin Codex home | `~/.codex-overleaf/codex-home` (`%USERPROFILE%\.codex-overleaf\codex-home`) |
+| Codex Overleaf skills | `~/.codex-overleaf/skills` (`%USERPROFILE%\.codex-overleaf\skills`) |
+| Provider profiles and keys | `~/.codex-overleaf/providers.json`, `provider-secrets.json` (`%USERPROFILE%\.codex-overleaf`) |
+| Logs | `~/.codex-overleaf/native-host.log`, `native-host-launcher.log` (`%LOCALAPPDATA%\CodexOverleaf\native-host.log`) |
 
-Codex Overleaf Link has no hosted application backend or default telemetry. It stores project mirrors and session data locally, but task context is sent to Codex or the selected third-party model endpoint during a run. Project rules control browser writes; they do not remove files from the model's reading context.
+The history database belongs to the Overleaf page, not to the extension, so removing the extension does not erase it. See Chrome's notes on [content-script storage](https://developer.chrome.com/docs/extensions/develop/concepts/storage-and-cookies#storage).
 
-Codex Overleaf history and browser extension settings use different stores. The content script opens the `codex-overleaf` IndexedDB database in the Overleaf page's origin; extension preferences use `chrome.storage.local`. Removing the extension should not be treated as erasing that page-origin database. See Chrome's [content-script storage behavior](https://developer.chrome.com/docs/extensions/develop/concepts/storage-and-cookies#storage).
+The plugin's Codex home copies your login and config but not your personalisation: no `~/.codex/AGENTS.md`, no top-level `personality` key, no global `rules` or `memories`. Skill loading toggles default to enabled, and both live in Settings:
 
-| Area | Location | Contents |
-|------|----------|----------|
-| Browser IndexedDB | Database `codex-overleaf` under the Overleaf page origin | Sessions, turns, events, artifacts, and audit logs. |
-| Browser extension storage | `chrome.storage.local` | Global UI preferences in `codexOverleafGlobalPrefsV1`, plus project settings, governance rules, selected skill ids, and panel state. |
-| Managed extension | `~/.codex-overleaf/managed/extension` on macOS/Linux; `%LOCALAPPDATA%\CodexOverleaf\managed\extension` on Windows | Stable directory loaded into Chrome, including bootstrap and replaceable runtime files. |
-| Managed native host | `~/.codex-overleaf/managed/native` on macOS/Linux; `%LOCALAPPDATA%\CodexOverleaf\managed\native` on Windows | Versioned runtimes, active/previous version pointers, bootstrap launcher, and update staging. |
-| Source installer checkout | `~/.codex-overleaf/source` on macOS/Linux; `%LOCALAPPDATA%\CodexOverleaf\source` on Windows | Source retained by `install.sh` / `install.ps1`; npm managed installs do not require this checkout. |
-| Native-only runtime | `~/.codex-overleaf/native-host-runtime` on macOS/Linux; `%LOCALAPPDATA%\CodexOverleaf\native-host-runtime` on Windows | Runtime copy for unmanaged/native-only installations. The Windows Native Messaging manifest also lives in this directory for managed installs. |
-| Native bridge | `~/.codex-overleaf/codex-overleaf-bridge` on macOS/Linux; `%LOCALAPPDATA%\CodexOverleaf\codex-overleaf-bridge.cmd` on Windows | Native Messaging launcher executable. |
-| Project mirrors | `~/.codex-overleaf/projects` on macOS/Linux, `%USERPROFILE%\.codex-overleaf\projects` on Windows | Local mirror workspaces and mirror metadata for each Overleaf project. |
-| Plugin Codex home | `~/.codex-overleaf/codex-home` on macOS/Linux, `%USERPROFILE%\.codex-overleaf\codex-home` on Windows | Isolated Codex home for plugin runs. It copies auth/config metadata but does not reuse global Codex sessions or inherit global Codex personalization. |
-| Codex Overleaf skills | `~/.codex-overleaf/skills` on macOS/Linux, `%USERPROFILE%\.codex-overleaf\skills` on Windows | Project/plugin skills managed by the extension. |
-| Provider configuration | `~/.codex-overleaf/providers.json` and `provider-secrets.json`; under `%USERPROFILE%\.codex-overleaf` on Windows | Model provider profiles and separately stored API keys. |
-| Native logs | `~/.codex-overleaf/native-host.log` on macOS/Linux, `%LOCALAPPDATA%\CodexOverleaf\native-host.log` on Windows | Native debug events with content length summaries where possible. |
-| Launcher logs | `~/.codex-overleaf/native-host-launcher.log` on macOS/Linux | POSIX launcher startup path and Node diagnostics. The Windows `.cmd` launcher does not currently emit a separate launcher log. |
+- `Load local Codex skills` brings your own skills and plugins (`~/.codex/skills`, local Codex `plugins`, `superpowers` and related configuration) into the isolated `~/.codex-overleaf/codex-home`. It only affects that plugin home and does not write to or reuse global `~/.codex/sessions`.
+- `Load Codex Overleaf skills` loads the skills this extension manages from `~/.codex-overleaf/skills` (`%USERPROFILE%\.codex-overleaf\skills` on Windows). Turning it off hides them without deleting the files.
 
-These are default locations; custom installation paths and environment overrides may differ. Skill loading toggles default to enabled. In Settings:
+Native Messaging registration:
 
-- `Load local Codex skills` loads the user's local Codex skill environment from the global Codex home into the isolated `~/.codex-overleaf/codex-home`: `~/.codex/skills`, local Codex `plugins`, `superpowers`, and related skill/plugin configuration. Turning it off hides user/system Codex skills and local Codex plugins from Codex Overleaf runs. This affects only the plugin CODEX_HOME prepared for the run; it does not write to or reuse global `~/.codex/sessions`.
-- `Load Codex Overleaf skills` loads project/plugin skills managed by the extension from `~/.codex-overleaf/skills` on macOS/Linux or `%USERPROFILE%\.codex-overleaf\skills` on Windows into the same isolated Codex home. Turning it off hides those extension-managed skills while preserving the stored skill files. If both toggles are off, the run starts without local Codex skills or Codex Overleaf skills.
-
-The isolated plugin Codex home copies auth and config metadata but excludes global Codex personalization: it does not copy `~/.codex/AGENTS.md`, strips the top-level `personality` key from the copied `config.toml`, and does not link the global `rules` or `memories` directories.
-
-Native registration paths:
-
-| Platform/browser | Registration path |
-|------------------|-------------------|
+| Platform | Path |
+|---|---|
 | macOS Chrome | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.codex.overleaf.json` |
 | Linux Chrome | `~/.config/google-chrome/NativeMessagingHosts/com.codex.overleaf.json` |
 | Linux Chromium | `~/.config/chromium/NativeMessagingHosts/com.codex.overleaf.json` |
-| Windows Chrome | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.codex.overleaf`, pointing to `%LOCALAPPDATA%\CodexOverleaf\native-host-runtime\com.codex.overleaf.json` |
+| Windows Chrome | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.codex.overleaf` → `%LOCALAPPDATA%\CodexOverleaf\native-host-runtime\com.codex.overleaf.json` |
 
-Full uninstall and data deletion:
+To remove everything:
 
-1. Before removing the extension, use **Settings → History & storage → Clear all history** if you want to erase saved run history. Repeat for each browser profile and Overleaf origin you used. If the extension is already removed, the `codex-overleaf` database can be deleted from the Overleaf page's **DevTools → Application → IndexedDB**. Target that database rather than clearing all Overleaf site data.
-2. Run `uninstall-managed` for a managed installation, or `uninstall-native` for an unmanaged/native-only installation, as described under [Uninstall](#uninstall). Use `--browser chromium` for Linux Chromium.
-3. Remove the extension entry from `chrome://extensions` in each browser profile. Chrome removes that extension's `chrome.storage.local` settings when it is uninstalled. See the [Chrome storage API documentation](https://developer.chrome.com/docs/extensions/reference/api/storage#storage_areas).
-4. To erase all remaining default filesystem data, including project mirrors, plugin Codex history, provider credentials, skills, and source checkouts, use the appropriate command below. Also remove any custom installation roots you configured.
-
-**The following commands permanently delete data in the listed directories. Back up any project mirrors, history, or configuration that must be kept before running them.**
-
-macOS/Linux:
+1. While the extension is still installed, use **Settings → History & storage → Clear local history…** in each Chrome profile you used. If it's already gone, delete the `codex-overleaf` database from the Overleaf page's **DevTools → Application → IndexedDB**.
+2. Run `uninstall-managed` (or `uninstall-native` for an unmanaged install). See [Uninstall](#uninstall).
+3. Remove the extension in `chrome://extensions`. Chrome clears its `chrome.storage.local` with it.
+4. Delete the local folders. **This permanently removes mirrors, plugin history, provider keys and skills.**
 
 ```bash
 rm -rf ~/.codex-overleaf ~/Codex\ Overleaf\ Link\ Extension
 ```
 
-Windows PowerShell:
-
 ```powershell
 Remove-Item -Recurse -Force "$env:LOCALAPPDATA\CodexOverleaf", "$env:USERPROFILE\.codex-overleaf" -ErrorAction SilentlyContinue
 ```
 
-Composer attachments are staged under `.codex-overleaf-attachments` inside the mirror workspace and are ignored during writeback. Submission clears the composer strip; it is not a promise of immediate deletion from local mirrors or Codex history.
-
-## Compatibility Matrix
-
-Use this matrix for release-candidate signoff and compatibility reports. Record exact versions from the machine under test before publishing release guidance.
-
-| Field | macOS Chrome | Windows Chrome | Linux Chrome | Linux Chromium |
-|-------|--------------|----------------|--------------|----------------|
-| OS/version/arch | Record exact macOS version and `arm64`/`x64`. | Record exact Windows version and `arm64`/`x64`. | Record distro, version, and `arm64`/`x64`. | Record distro, version, and `arm64`/`x64`. |
-| Browser/channel/version | Google Chrome channel and version. | Google Chrome channel and version. | Google Chrome channel and version. | Chromium channel/package and version. |
-| Install mode | Managed pair recommended; unmanaged Release zip or checkout also available. | Same as macOS Chrome. | Same as macOS Chrome. | Managed or unmanaged; register with `--browser chromium`. |
-| Extension id | Bundled id `illdpneeeopfffmiepaejglgmhpmdhdc`, or actual custom id passed with `--extension-id`. | Bundled id `illdpneeeopfffmiepaejglgmhpmdhdc`, or actual custom id passed with `--extension-id`. | Bundled id `illdpneeeopfffmiepaejglgmhpmdhdc`, or actual custom id passed with `--extension-id`. | Bundled id `illdpneeeopfffmiepaejglgmhpmdhdc`, or actual custom id passed with `--extension-id`. |
-| Installer/update command | `npm exec --yes codex-overleaf-link@2.5.0 -- install-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- install-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- install-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- install-managed --browser chromium` |
-| Uninstall command | `npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed` | `npm exec --yes codex-overleaf-link@2.5.0 -- uninstall-managed --browser chromium` |
-| Manifest/registry path | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.codex.overleaf.json` | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.codex.overleaf` -> `%LOCALAPPDATA%\CodexOverleaf\native-host-runtime\com.codex.overleaf.json` | `~/.config/google-chrome/NativeMessagingHosts/com.codex.overleaf.json` | `~/.config/chromium/NativeMessagingHosts/com.codex.overleaf.json` |
-| Managed runtime paths | `~/.codex-overleaf/managed/extension` and `~/.codex-overleaf/managed/native`. | `%LOCALAPPDATA%\CodexOverleaf\managed\extension` and `%LOCALAPPDATA%\CodexOverleaf\managed\native`. | Same as macOS Chrome. | Same as macOS Chrome. |
-| Node/Git/Codex/TeX | Record exact versions; see [Requirements](#requirements) for installation and provider prerequisites. | Same as macOS Chrome. | Same as macOS Chrome. | Same as macOS Chrome. |
-| Native compatibility | Current protocol 2; extension supports native protocol range 1–2. Required capabilities and runtime versions are checked separately; see below. | Same as macOS Chrome. | Same as macOS Chrome. | Same as macOS Chrome. |
-| Overleaf behavior checks | Current file detection, full snapshot source, file tree write operations, undo checkpoint, Reviewing control, compile capture, save-state verification, OT warm mirror fallback. | Same checks. | Same checks. | Same checks. |
-| Last smoke date/result | Record date, tester, and pass/fail. | Record date, tester, and pass/fail. | Record date, tester, and pass/fail. | Record date, tester, and pass/fail. |
-
-The current handshake requires `bridgePing`, `mirrorSync`, `mirrorPatchFiles`, `mirrorStatus`, `codexRun`, `codexCancel`, `codexSteer`, `codexModels`, `historyClearPlugin`, `localSkills`, `mirrorSensitiveScan`, `providerProfiles`, `assetTransfer`, and `threadFork`. [compatibility.js](extension/src/shared/compatibility.js) owns this list and the protocol/version rules. An overlapping protocol range alone does not establish full compatibility.
-
-The table is a reporting template, not evidence that every listed browser/version has been exercised. CI covers local tests on macOS, Ubuntu, and Windows; real Overleaf compatibility requires a browser smoke run.
-
 ## Contributing
 
-Contributions are welcome. Please open an issue before submitting large changes so we can discuss the approach.
-
-1. Fork the repository.
-2. Create a feature branch.
-3. Run `npm test` and ensure all tests pass.
-4. Submit a pull request with a clear description.
-
-Keep [README.md](README.md) and [README.zh-CN.md](README.zh-CN.md) aligned when changing behavior, version pins, installation commands, or troubleshooting. Translate prose while preserving commands, file paths, and API identifiers.
+Issues and pull requests are welcome. For larger changes, open an issue first so we can talk through the approach. Run `npm test` before submitting, and keep [README.md](README.md) and [README.zh-CN.md](README.zh-CN.md) in step when behaviour, versions or commands change.
 
 ## License
 

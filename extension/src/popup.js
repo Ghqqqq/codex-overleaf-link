@@ -122,7 +122,43 @@
         applyPopupPreferences(changes.codexOverleafGlobalPrefsV1.newValue.values);
       }
     });
-    await Promise.all([checkNativeHost(), refreshPanelButtonState()]);
+    await Promise.all([checkNativeHost(), refreshPanelButtonState(), offerNewSites()]);
+  }
+
+  // A runtime update can list an Overleaf site the install did not grant.
+  // Chrome only grants it from a click here; nothing changes until then.
+  async function offerNewSites() {
+    if (!chrome.permissions?.contains || !chrome.permissions?.request) return;
+    let matches = [];
+    try {
+      const url = new URL('../runtime-manifest.json', popupScriptUrl).href;
+      matches = (await (await fetch(url, { cache: 'no-store' })).json()).matches || [];
+    } catch (_error) { return; }
+    const missing = [];
+    for (const value of matches) {
+      if (!/^https:\/\/(?:[a-z0-9-]+\.)*overleaf\.com\/project(?:\/\*)?$/.test(value)) continue;
+      if (!(await chrome.permissions.contains({ origins: [value] }).catch(() => true))) missing.push(value);
+    }
+    if (!missing.length) return;
+    const hosts = [...new Set(missing.map(value => new URL(value.replace(/\*$/, '')).host))];
+    const section = document.createElement('section');
+    section.className = 'install';
+    section.dataset.newSites = '';
+    const title = document.createElement('strong');
+    title.textContent = utx('This version supports another Overleaf site', '这一版支持新的 Overleaf 站点');
+    const detail = document.createElement('p');
+    detail.textContent = utx(`Allow access to ${hosts.join(', ')} to use Codex there. Chrome will ask you to confirm.`,
+      `允许访问 ${hosts.join('、')} 后即可在那里使用 Codex，Chrome 会请你确认。`);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'copy-command';
+    button.textContent = utx('Allow', '允许');
+    button.addEventListener('click', async () => {
+      const granted = await chrome.permissions.request({ origins: missing }).catch(() => false);
+      if (granted) section.remove();
+    });
+    section.append(title, detail, button);
+    document.getElementById('popup-shell')?.append(section);
   }
 
   function applyPopupPreferences(preferences) {

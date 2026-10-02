@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.5.0 - 2026-09-30
+## v2.5.0 - 2026-10-02
 
 ### Added
 
@@ -9,6 +9,10 @@
 - Show concurrent subagent activity and inspect child conversations without blocking the main agent. Preserve activity and terminal state through history restoration.
 - Support cn.overleaf.com, with account-scoped session sharing across supported Overleaf hosts.
 - Add editor-selection actions for context attachment and selection-scoped editing, compact attachment previews, and a settings workbench.
+- Redesign the run view: an animated run header that names the current start-up step, a three-row live peek of thoughts and tool calls while a run is collapsed, round-by-round thoughts, and a one-line done summary.
+- Show written changes as one folded row per file with `+/−` counts and word-level highlights; Reviewing-mode hunks keep their Accept and Reject controls.
+- Fold the completion report's write result, Undo, save and next-step rows into one summary line that opens by itself when a write was skipped or failed. The answer no longer carries a "Conclusion:" prefix.
+- Dock queued follow-ups to the composer as one card with Steer now, pull-back editing, and a count of further queued messages.
 
 ### Fixed
 
@@ -18,15 +22,21 @@
 - Preserve subagent event identity and child transcripts, and keep the Overleaf mirror's no-Git workspace rules aligned for parent and child agents.
 - Make update downloads cancellable and bound network retries without discarding version-specific consent or safe-point checks.
 - Reduce non-actionable process notices, refresh Undo summaries and mode hints, and improve diagnostics, settings, popup sizing, and localization.
+- Make multi-file writeback more reliable: retry files whose editor did not open in time, verify the editor content after each write, retry pending edits and deletes from Retry sync, and merge the retry result into the run's settlement.
+- Keep Undo and Accept available after a page reload for runs that edit large files; the per-run recovery payload limit rises from 320 KB to 2 MB.
+- Stop session rows and the composer scan line from spinning after a Retry sync or save check finished; restored sessions repair runs that were persisted as running after their final report.
+- Keep the selected-text chip on the sent message, keep the empty-state logo after a language refresh, and right-align sent attachments and the run's action buttons.
+- Fix a compile-summary error after successful writes, the misplaced switch-provider confirmation, and adding third-party models that were not yet saved to the profile.
 
 ### Compatibility and installation
 
 - Move the managed Bootstrap protocol from 2 to 3 for the expanded Overleaf host permissions and new popup shell. The Native Messaging protocol remains 2.
+- Prepare later releases to avoid reinstalls: Overleaf sites now come from the replaceable runtime manifest, extra `*.overleaf.com` sites are requested as optional permissions from the popup, and the Bootstrap popup is a shell drawn by the runtime.
+- When a future release does need a reinstall, the updater reports it as "Reinstall needed for this update" with the signed reason, the pinned command for that version and a copy button, even after an automatic check. Such releases are never staged or applied in place.
 - Existing managed installations must run this release's managed installer once, reload the Chrome extension, and refresh Overleaf. The protocol-2 updater rejects this migration instead of replacing its fixed bootstrap or adding permissions automatically.
-- RC builds are GitHub prereleases only and are excluded from automatic stable updates. Use the version-pinned installers attached to the RC; the numeric npm commands apply after a stable npm publication.
 - Preserve the extension identity, project data, account-scoped history, provider settings, and signing trust anchor. No npm runtime dependency is added; PDF parsing resources and their licenses ship inside the package.
 
-### Known issues in this RC
+### Known issues
 
 - After a partial Undo succeeds on retry, the run header may retain the earlier conflict summary. The final Undone state and remaining-file recovery are correct; the stale summary is a presentation issue.
 

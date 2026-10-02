@@ -420,6 +420,10 @@
   });
   const runTimelineView = Modules.RunTimelineView.create({
     RunActivitySummary: Modules.RunActivitySummary,
+    RunPresence: Modules.RunPresence,
+    // recentProjects is composed below; the empty state only reads it after startup.
+    getProjectName: () => { try { return recentProjects.readCurrentProjectNameFromDom(); } catch { return ''; } },
+    getCurrentProjectId: () => getCurrentProjectId(),
     RunActivityModel: Modules.RunActivityModel,
     SubagentActivityView: Modules.SubagentActivityView,
     RunGuidanceView: Modules.RunGuidanceView,
@@ -435,6 +439,7 @@
     formatEventDetail,
     formatEventTime,
     renderAttachmentPreviewList,
+    renderSentSelection: Modules.SelectionContextView.renderSent,
     formatModeLabel,
     undoRun,
     acceptRun,
@@ -860,6 +865,7 @@
     getRunEvents: () => currentRunView?.events,
     appendRunEvent,
     scrollLogToBottom,
+    renderWrittenChanges: changes => Modules.WrittenChangesView.render(changes, { document, tx }),
     onRejectedHunks: summaries => {
       if (currentRunView && Array.isArray(summaries) && summaries.length) {
         currentRunView.rejectedHunks = summaries;
@@ -1079,7 +1085,7 @@
     // Shared history may belong to a live run in another tab. Loading it is
     // read-only; only an owner-lost journal may mark that run interrupted.
     return normalizePanelState(getGlobalPreferences().overlay(input), {
-      restoreRunningRuns: Modules.StorageDb.sharedSessionsEnabled?.() !== true
+      restoreRunningRuns: Modules.StorageDb.sharedSessionsEnabled?.() !== true, recoverSettledRuns: true
     });
   }
 
@@ -1168,7 +1174,6 @@
       ? chrome.runtime.id
       : '';
   }
-
 
 
 
@@ -1508,10 +1513,8 @@
     if (contextStatus && !contextStatus.dataset.customStatus) {
       contextStatus.textContent = tr('contextStatus');
     }
-    const emptyRunLabel = panel.querySelector('.empty-runs div');
-    if (emptyRunLabel) {
-      emptyRunLabel.textContent = tr('emptyRunLabel');
-    }
+    // Re-render rather than patch text: the first div is the animated mark.
+    if (panel.querySelector('.empty-runs')) renderRunHistory();
 
     syncModeControls();
     updateOtStatusDisplay();
@@ -6413,10 +6416,6 @@
   }
 
 
-
-
-
-
   function applyPanelWidth(width, options = {}) {
     const nextWidth = PanelRenderer.setWidth(panelRendererInstance, width, { notify: false });
     if (state) {
@@ -6427,10 +6426,6 @@
     }
     return nextWidth;
   }
-
-
-
-
 
   function getCurrentProjectMathSources() {
     const sources = [];
@@ -6995,12 +6990,12 @@
     const record = findRunRecord(target.recordId, target.sessionId);
     if (!record) throw new Error('The writeback run is no longer available.');
     const creates = operations.filter(op => op.type === 'create' && typeof op.content === 'string');
+    record.retryRequireReviewing = requireReviewing === true; // In-memory; seeds an edit-only retry intent.
     if (!creates.length) return;
     const candidate = Modules.WritebackIntent.normalize({ ...recoveryOwner(target), id: crypto.randomUUID(),
       operations: creates, baseFiles: [], requireReviewing });
-    const safe = Modules.SessionState.pickWritebackRecovery({ ...record, retryWriteback: candidate });
-    if (safe.retryWriteback) record.retryWriteback = safe.retryWriteback;
-    else delete record.retryWriteback;
+    const safe = Modules.SessionState.pickWritebackRecovery({ ...record, retryWriteback: candidate }).retryWriteback;
+    if (safe) record.retryWriteback = safe; else delete record.retryWriteback;
     await flushQueuedSaveState();
   }
 
@@ -7008,13 +7003,18 @@
     const record = findRunRecord(target.recordId, target.sessionId);
     if (!record) return;
     const owner = recoveryOwner(target);
-    if (record.retryWriteback) {
-      const skippedPaths = new Set((applied.skipped || []).map(entry => entry.operation?.path));
-      const operations = record.retryWriteback.operations.filter(op => skippedPaths.has(op.path));
-      if (operations.length) record.retryWriteback = Modules.WritebackIntent.normalize({ ...record.retryWriteback,
-        operations, requestId: applied.receiptUnconfirmed ? applied.requestId || '' : '' });
-      else delete record.retryWriteback;
-    }
+    const skippedPaths = new Set((applied.skipped || []).map(entry => entry.operation?.path));
+    const creates = (record.retryWriteback?.operations || []).filter(op => skippedPaths.has(op.path));
+    // Untouched edits (never opened / rejected) and deletes whose server check failed are safe to replay.
+    const edits = (applied.skipped || []).filter(({ operation: op, result }) => result?.failure?.changedDocument === false && ((op?.type === 'edit'
+      && (result.failure.stage === 'navigation' || result.failure.code === 'write_operation_failed')) || (op?.type === 'delete' && result.failure.code === 'source_zip_unavailable'))).map(entry => entry.operation);
+    const base = { ...(record.retryWriteback || { ...owner, id: crypto.randomUUID(), requireReviewing: record.retryRequireReviewing === true }),
+      baseFiles: project?.files || [], requestId: applied.receiptUnconfirmed ? applied.requestId || '' : '' };
+    // An oversized edit pre-image must not cost the create retries (the intent has a 300 KiB ceiling).
+    const safeRetry = [[...creates, ...edits], creates].filter(ops => ops.length).map(ops => Modules.SessionState
+      .pickWritebackRecovery({ ...record, retryWriteback: Modules.WritebackIntent.normalize({ ...base, operations: ops }) }).retryWriteback).find(Boolean);
+    if (safeRetry) record.retryWriteback = safeRetry; else delete record.retryWriteback;
+    delete record.retryRequireReviewing;
     const next = await writebackController.buildSaveCheck(applied, project, owner);
     const files = new Map((record.saveCheck?.files || []).map(file => [file.path, file]));
     for (const file of next?.files || []) {
@@ -7040,6 +7040,10 @@
       || owner.accountScopeId !== cachedAccountScopeId || owner.sessionId !== session.id
       || owner.runId !== record.id || record.undoStatus === 'applied' || record.trackedChangeStatus === 'rejected') return;
     const originalStatus = record.status;
+    // State is renormalized during the awaits below (probes, session sync), which
+    // replaces run objects; always write through the current copy.
+    const live = () => findRunRecord(runId, session.id) || record;
+    let finished = false;
     runCancellationRequested = false;
     runCancellationController = new AbortController();
     record.status = 'running';
@@ -7067,32 +7071,39 @@
         if (receipt?.state === 'running') throw new Error(tx('The previous upload is still finishing. Try again shortly.', '上一轮上传仍在收尾，请稍后再试。'));
       }
       if (intent?.operations.length) {
-        const result = await applySyncChangesToOverleaf(intent.operations.map(op => ({ ...op, type: 'create' })),
-          { id: owner.projectId, files: [] }, { mode: 'auto', requireReviewing: intent.requireReviewing,
+        // Edits replay against the run's original base files, so the stale guard still refuses changed documents.
+        const result = await applySyncChangesToOverleaf(intent.operations.map(op => op.type === 'edit'
+          ? { type: 'write', path: op.path, patches: op.patches, content: op.replaceAll } : op.type === 'delete' ? { type: 'delete', path: op.path } : { ...op, type: 'create' }),
+          { id: owner.projectId, files: intent.baseFiles }, { mode: 'auto', requireReviewing: intent.requireReviewing,
             retryCreates: true, assistantMessage: tx('Retried the remaining file transfers for this task.', '已重试本轮未完成的文件同步。') });
         assertOwner();
-        if (result.settlement) record.settlement = result.settlement;
+        if (result.settlement?.facts) live().settlement = WritebackSettlement.mergeRetrySettlement(live().settlement, result.settlement.facts); // Keep files outside the retry.
         await finishRunView(result.hasSkippedOperations ? tx('Sync incomplete', '同步未完成') : tx('Synced', '已同步'),
           result.hasSkippedOperations ? 'failed' : 'completed');
+        finished = true;
       } else if (check) {
         const result = await writebackController.confirmSaveCheck(check, { assertCurrent: assertOwner,
           readSnapshot: params => callPageBridge('getProjectSnapshot', { ...params, runProjectId: owner.projectId }) });
         assertOwner();
+        const current = live();
         if (result.ok) {
-          delete record.saveCheck;
-          record.saveConfirmedAt = new Date().toISOString();
-          if (record.settlement) record.settlement.evidence = { ...record.settlement.evidence, saved: 'verified' };
+          delete current.saveCheck;
+          current.saveConfirmedAt = new Date().toISOString();
+          if (current.settlement) current.settlement.evidence = { ...current.settlement.evidence, saved: 'verified' };
         }
-        record.status = originalStatus;
         showPluginToast(result.ok ? tx('Saved content confirmed.', '已确认文件保存。')
           : tx('Saved content is still unconfirmed. No file was uploaded again.', '保存状态仍待确认，本次没有重复上传文件。'));
       }
       await flushQueuedSaveState();
     } catch (error) {
-      record.status = originalStatus;
       showPluginToast(error.message || String(error));
     } finally {
-      delete record.retryingWriteback;
+      // Only finishRunView settles a new terminal status; every other exit
+      // returns the card to the status it had before the retry.
+      for (const copy of new Set([record, live()])) {
+        delete copy.retryingWriteback;
+        if (!finished && copy.status === 'running') copy.status = originalStatus;
+      }
       if (currentRunView?.recordId === runId) currentRunView = null;
       runCancellationRequested = false;
       runCancellationController = null;

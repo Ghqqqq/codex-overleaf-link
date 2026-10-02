@@ -334,6 +334,36 @@ test('tree operations opens nested files without falling back to a root basename
   assert.ok(nestedNode.clickCount >= 1, 'nested node should be clicked at least once');
 });
 
+test('a dropped first click is retried on the re-resolved row before reporting open failure', async () => {
+  const nestedId = '444444444444444444444444';
+  const nestedNode = makeTreeNode({ label: 'Chap_05.tex', docId: nestedId, openPath: 'Tex/Chap_05.tex' });
+  let events = 0;
+  // Overleaf ignores the first activation sequence while the previous document settles.
+  nestedNode.dispatchEvent = function dispatchEvent() {
+    this.clickCount += 1;
+    events += 1;
+    if (events > 4) this.onClick?.();
+    return true;
+  };
+  const harness = createTreeOperationsHarness({ selectedPath: 'roadmap.md', nodes: [nestedNode],
+    docs: [{ path: 'Tex/Chap_05.tex', id: nestedId }] });
+  const opened = await harness.ops.openFileByPath('Tex/Chap_05.tex', { activeWaitMs: 50, retryWaitMs: 500 });
+  assert.equal(opened.ok, true, opened.reason);
+  assert.equal(opened.method, 'dom-click-retry');
+  assert.equal(harness.getSelectedPath(), 'Tex/Chap_05.tex');
+});
+
+test('open failure diagnostics record the retry outcome', async () => {
+  const node = makeTreeNode({ label: 'stuck.tex', docId: '555555555555555555555555', openPath: 'stuck.tex' });
+  node.dispatchEvent = function dispatchEvent() { this.clickCount += 1; return true; };
+  const harness = createTreeOperationsHarness({ selectedPath: 'main.tex', nodes: [node],
+    docs: [{ path: 'stuck.tex', id: '555555555555555555555555' }] });
+  const opened = await harness.ops.openFileByPath('stuck.tex', { activeWaitMs: 20, retryWaitMs: 20 });
+  assert.equal(opened.ok, false);
+  assert.match(opened.reason, /domRetryActive=unknown/);
+  assert.equal(node.clickCount, 8, 'both activation sequences were dispatched');
+});
+
 test('cold native selection resolves nested paths without the legacy doc registry', () => {
   const file = makeDomNode({ tagName: 'LI', role: 'treeitem', ariaLabel: 'my  draft.tex', ariaSelected: 'true' });
   const root = { contains: node => node === file };

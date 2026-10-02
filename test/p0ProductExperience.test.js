@@ -4338,25 +4338,101 @@ test('markdown renderer recognizes multi-character headings with project line ra
   assert.equal(collectElementText(target.children[1]), '后续正文。');
 });
 
-test('completion reports keep leading markdown headings at logical line start', () => {
-  const contentScript = getContentScriptSource();
-  const source = [
-    extractFunction(contentScript, 'hasLeadingMarkdownBlock'),
-    extractFunction(contentScript, 'formatConclusionMarkdown')
-  ].join('\n');
-  const formatConclusionMarkdown = Function('getLocale', `
-    ${source}
-    return formatConclusionMarkdown;
-  `)(() => 'en');
+test('completion reports render the answer without a Conclusion label', () => {
+  const body = extractFunction(getContentScriptSource(), 'renderCompletionReport');
+  assert.doesNotMatch(body, /formatConclusionMarkdown|Conclusion:|结论：/);
+  assert.match(body, /mainSections\.push\(String\(structured\.conclusion\)\)/);
 
-  assert.equal(
-    formatConclusionMarkdown('## 教育背景 (resume-zh_CN.tex:56-60)'),
-    'Conclusion:\n## 教育背景 (resume-zh_CN.tex:56-60)'
-  );
-  assert.equal(formatConclusionMarkdown('- first\n- second'), 'Conclusion:\n- first\n- second');
-  assert.equal(formatConclusionMarkdown('Plain answer.'), 'Conclusion: Plain answer.');
+  // Older stored reports still begin with the prefix; the decorator drops it.
+  const { decorateCompletionReport } = require('../extension/src/content/markdownDomRenderer');
+  const document = createMinimalDocument();
+  const make = text => {
+    const block = document.createElement('p');
+    const node = document.createTextNode(text);
+    node.parentNode = block;
+    block.childNodes = [node];
+    block.append(node);
+    block.ownerDocument = document;
+    block.remove = () => { container.children = container.children.filter(child => child !== block); };
+    return block;
+  };
+  const container = document.createElement('div');
+  container.ownerDocument = document;
+  const answer = make('结论：刷新后历史仍应显示这段回答。');
+  const heading = make('Conclusion:');
+  container.append(answer, heading);
+  decorateCompletionReport(container);
+  assert.equal(collectElementText(answer), '刷新后历史仍应显示这段回答。');
+  assert.equal(container.children.includes(heading), false, 'a bare legacy label line is removed');
 });
 
+test('completion meta folds into a one-line summary that opens only when action is needed', () => {
+  const { summarizeCompletionMeta } = require('../extension/src/content/runResultActions').create();
+  const tx = en => en;
+  const zh = (en, value) => value;
+  const texts = summary => summary.facts.map(fact => fact.text);
+
+  const none = summarizeCompletionMeta([
+    { key: 'unchangedReason', value: 'No file changes need to sync back to Overleaf.' },
+    { key: 'writeResult', value: 'wrote 0 items, skipped 0 items' },
+    { key: 'undo', value: 'this run has no reversible writes' },
+    { key: 'nextStep', value: 'You can continue the conversation, or adjust @context and run again.' }
+  ], { id: 'r1' }, { tx });
+  assert.deepEqual(texts(none), ['No files written', 'Nothing to undo']);
+  assert.equal(none.open, false);
+  assert.equal(none.warnKeys.size, 0);
+
+  const wrote = summarizeCompletionMeta([
+    { key: 'writeResult', value: '已写入 3 项，跳过 0 项' },
+    { key: 'undo', value: '可撤销本轮 3 项写入' }
+  ], { id: 'r2' }, { tx: zh });
+  assert.deepEqual(texts(wrote), ['已写入 3 项', '可撤销 3 项']);
+  assert.deepEqual(texts(summarizeCompletionMeta([
+    { key: 'writeResult', value: '已写入 3 项，跳过 0 项' },
+    { key: 'undo', value: '可撤销本轮 3 项写入' }
+  ], { id: 'r2', undoStatus: 'applied' }, { tx: zh })), ['已写入 3 项', '已撤销本轮修改']);
+
+  const skipped = summarizeCompletionMeta([
+    { key: 'writeResult', value: 'wrote 2 items, skipped 1 item' },
+    { key: 'undo', value: 'this run has 2 reversible writes' },
+    { key: 'nextStep', value: 'Open Tex/Chap_05.tex, then retry.' }
+  ], { id: 'r3' }, { tx });
+  assert.deepEqual(texts(skipped), ['Wrote 2 items', '1 skipped', '2 undoable']);
+  assert.equal(skipped.open, true);
+  assert.deepEqual([...skipped.warnKeys].sort(), ['nextStep', 'writeResult']);
+
+  const failed = summarizeCompletionMeta([
+    { key: 'writeResult', value: 'wrote 0 items, skipped 0 items' },
+    { key: 'undo', value: 'this run has no reversible writes' }
+  ], { id: 'r4' }, { tx, failed: true, unconfirmed: true });
+  assert.deepEqual(texts(failed), ['Write not confirmed']);
+  assert.equal(failed.facts[0].tone, 'fail');
+  assert.equal(failed.open, true);
+
+  const save = summarizeCompletionMeta([
+    { key: 'writeResult', value: 'wrote 1 item, skipped 0 items' },
+    { key: 'undo', value: 'this run has 1 reversible write' },
+    { key: 'saveState', value: 'Pending confirmation; check save status' }
+  ], { id: 'r5' }, { tx });
+  assert.deepEqual(texts(save), ['Wrote 1 item', '1 undoable', 'Save pending']);
+  assert.equal(save.open, false, 'a pending save is highlighted, not expanded');
+  assert.deepEqual([...save.warnKeys], ['saveState']);
+
+  const specific = summarizeCompletionMeta([
+    { key: 'unchangedReason', value: 'refs.bib is read-only in this project.' },
+    { key: 'writeResult', value: 'wrote 0 items, skipped 0 items' }
+  ], { id: 'r6' }, { tx });
+  assert.equal(texts(specific)[0], 'Not written: refs.bib is read-only in this project');
+});
+
+test('completion meta block keeps every row behind the summary toggle', () => {
+  const appender = extractFunction(getContentScriptSource(), 'appendCompletionMetaBlock');
+  assert.match(appender, /summarizeCompletionMeta/);
+  assert.match(appender, /aria-expanded/);
+  assert.match(appender, /aria-controls/);
+  assert.match(appender, /metaOpenChoices/, 'a manual open/close choice survives re-renders');
+  assert.doesNotMatch(appender, /continue;/, 'no meta row is dropped');
+});
 test('markdown renderer turns resolvable plain line references into safe jump buttons', async () => {
   const harness = loadMarkdownRendererHarness([
     { path: 'main.tex', kind: 'text' },

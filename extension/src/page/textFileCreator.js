@@ -32,7 +32,7 @@
         throw Object.assign(new Error('Writeback was cancelled.'), { code: 'codex_cancelled' });
       }
     }
-    async function readServerSnapshot({ projectId, isCurrent, budget = verificationBudget() }) {
+    async function readServerSnapshot({ projectId, isCurrent, budget = verificationBudget(), includeBinaryFiles = false }) {
       const started = now(), deadline = started + Math.max(0, budget.remainingMs);
       let last;
       try {
@@ -44,7 +44,7 @@
           let result;
           try {
             result = await snapshotRouter.fetchProjectZipSnapshot({ force: true, maxAgeMs: 0,
-              serverOnly: true, writebackVerification: true, includeBinaryFiles: false, includeContent: true,
+              serverOnly: true, writebackVerification: true, includeBinaryFiles, includeContent: true,
               signal: controller?.signal, saveCheckId: String(now()) + '-' + attempt,
               zipTimeoutMs: Math.min(30000, Math.max(1, deadline - now())) });
           } catch (error) {
@@ -528,15 +528,23 @@
         } while (Date.now() < deadline);
         throw new Error(`Overleaf did not confirm ${stage} before timeout.`);
       };
+      // Same retried, budgeted server read as uploads: one dropped ZIP request must not block a delete.
+      const readBudget = verificationBudget();
       const readServerFiles = async () => {
         assertCurrent();
         snapshotRouter.invalidateCache?.();
-        const result = await snapshotRouter.fetchProjectZipSnapshot({ force: true, maxAgeMs: 0,
-          includeBinaryFiles: binary, includeContent: true, zipTimeoutMs: 15000 });
-        assertCurrent();
-        if (result?.ok !== true || !Array.isArray(result.files)
-          || (result.skipped || []).some(file => file?.path === target)) {
-          throw new Error('Server source ZIP is unavailable; deletion cannot be verified safely.');
+        let result;
+        try {
+          result = await readServerSnapshot({ projectId, budget: readBudget, includeBinaryFiles: binary,
+            isCurrent: () => { assertCurrent(); return true; } });
+        } catch (error) {
+          if (['codex_cancelled', 'aborted_project_changed'].includes(error?.code)) throw error;
+          throw Object.assign(new Error('Server source ZIP is unavailable; deletion cannot be verified safely.'),
+            { code: 'source_zip_unavailable', diagnostics: error?.diagnostics || null, technicalMessage: error?.technicalMessage || error?.message || '' });
+        }
+        if ((result.skipped || []).some(file => file?.path === target)) {
+          throw Object.assign(new Error('Server source ZIP skipped the target file; deletion cannot be verified safely.'),
+            { code: 'source_zip_unavailable', technicalMessage: 'The target was skipped in the server snapshot.' });
         }
         return result.files;
       };
@@ -627,6 +635,15 @@
         return { ok: true, method: binary ? 'overleaf.native-created-file-delete' : 'overleaf.native-text-delete', changedDocument: true,
           verified: true, verification: 'overleaf-zip' };
       } catch (error) {
+        if (!mutationAttempted && error?.code === 'source_zip_unavailable') {
+          // Nothing was touched: keep the server diagnostics and let Retry sync replay the delete.
+          return { ok: false, code: 'source_zip_unavailable', reason: error.message, stage: stage.replace(/ /g, '_'), changedDocument: false,
+            diagnostics: { verificationPhase: 'delete-' + stage.replace(/ /g, '-'), ...(error.diagnostics || {}), reason: error.technicalMessage || '' },
+            failure: { code: 'source_zip_unavailable', stage: 'preflight', severity: 'blocked', retryable: true, terminalState: 'blocked',
+              changedDocument: false, file: target, operationType: 'delete', userMessage: 'The server copy of ' + target
+                + ' could not be checked, so it was not deleted.', nextAction: 'Retry sync to delete it once Overleaf responds.',
+              technicalMessage: error.technicalMessage || error.message } };
+        }
         return { ok: false, code: mutationAttempted ? 'file_tree_operation_unverified' : 'file_tree_controls_unavailable',
           reason: error.message, stage: stage.replace(/ /g, '_'), changedDocument: mutationAttempted };
       } finally {

@@ -33,6 +33,7 @@ const {
   clearProviderSecret,
   listProviders,
   loadProviderState,
+  recordProviderDiagnostic,
   upsertProvider
 } = require('../native-host/src/providerStore');
 const ModelPickerSupport = require('../extension/src/content/modelPickerSupport');
@@ -154,6 +155,23 @@ test('providers can be saved and activated without a prior compatibility test', 
       disclosureBaseUrl: draft.baseUrl
     }, env);
     assert.equal(active.activeProviderId, provider.id);
+  });
+});
+
+test('testing an unsaved model on a saved provider skips the diagnostic instead of failing', () => {
+  withProviderStore(env => {
+    const catalog = saveVerifiedProvider(env, makeDraft());
+    const profile = catalog.providers.find(provider => provider.kind === 'custom');
+    const result = recordProviderDiagnostic({
+      profileId: profile.id,
+      expectedRevision: profile.revision,
+      modelId: 'draft-only-model',
+      connectionFingerprint: 'unused',
+      wireApi: 'responses',
+      upstreamResponseMode: 'streaming',
+      durationMs: 1
+    }, env);
+    assert.deepEqual(result, { recorded: false });
   });
 });
 

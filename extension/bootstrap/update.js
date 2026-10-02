@@ -88,6 +88,7 @@
       up_to_date: ['Everything is up to date', 'Extension and Native Host are on the latest stable release.', 'Up to date', 'success'],
       checking: ['Checking for updates', 'Reading the latest signed stable release.', 'Checking', 'active'],
       update_available: ['A stable update is ready', 'Review the target version, then update when convenient.', 'Available', 'success'],
+      manual_install_required: ['This update needs a one-time reinstall', 'Update now cannot apply this release. Run the command below once, then reload the extension and refresh Overleaf. Your sessions, settings, provider keys and project mirrors are kept.', 'Reinstall', 'warning'],
       downloading: ['Downloading the signed release', 'The package is being fetched and verified before any files change.', 'Downloading', 'active'],
       staged: ['Update verified', 'The signed package is ready and waiting for a safe installation point.', 'Verified', 'active'],
       waiting: ['Waiting for a safe point', 'Active Overleaf work will finish before the runtime changes.', 'Waiting', 'warning'],
@@ -164,6 +165,12 @@
         { id: 'install', label: 'Update now', kind: 'primary' }
       ];
     }
+    if (phase === 'manual_install_required') {
+      return [
+        { id: 'later', label: 'Later', kind: 'quiet' },
+        { id: 'copy-command', label: 'Copy command', kind: 'primary' }
+      ];
+    }
     if (['failed', 'rolled_back'].includes(phase)) {
       return [
         { id: 'close', label: 'Close', kind: 'quiet' },
@@ -229,8 +236,14 @@
       ? 'The extension may restart briefly. This window will reconnect and restore the saved progress.'
       : 'This window can stay open while work continues elsewhere. Progress is saved automatically.';
 
-    const technical = technicalText(currentView);
-    elements.details.hidden = !technical || !['failed', 'rolled_back'].includes(presentation.phase);
+    // The signed reason and the exact reinstall command replace the generic
+    // detail; the command stays visible and selectable in the details box.
+    const manual = presentation.phase === 'manual_install_required';
+    const reason = manual ? String(currentView.manualReason?.en || currentView.manualReason?.zh || '').trim() : '';
+    if (reason) elements.detail.textContent = reason + ' ' + presentation.detail;
+    const technical = manual ? manualCommand(target) : technicalText(currentView);
+    elements.details.hidden = !technical || !['failed', 'rolled_back', 'manual_install_required'].includes(presentation.phase);
+    elements.details.open = manual || elements.details.open;
     elements.technicalMessage.textContent = technical;
     renderActions(presentation.phase);
     schedulePolling(presentation.phase);
@@ -286,8 +299,18 @@
     }, 1100);
   }
 
+  function manualCommand(version) {
+    const pinned = /^\d+\.\d+\.\d+$/.test(String(version || '')) ? version : 'latest';
+    return `npm exec --yes codex-overleaf-link@${pinned} -- install-managed`;
+  }
+
   async function runAction(action) {
     if (actionPending) return;
+    if (action === 'copy-command') {
+      const target = versionOf(currentView, ['latestVersion', 'targetVersion', 'availableVersion'], '');
+      await navigator.clipboard.writeText(manualCommand(target)).catch(() => {});
+      return;
+    }
     if (action === 'close') {
       window.close();
       return;

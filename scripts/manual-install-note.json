@@ -1,0 +1,7 @@
+{
+  "bootstrapProtocol": 3,
+  "reason": {
+    "en": "This release adds cn.overleaf.com and lets new Overleaf sites be enabled later without reinstalling. Chrome only grants that through a one-time reinstall.",
+    "zh": "这一版新增了 cn.overleaf.com，并让以后新增的 Overleaf 站点不必再重装即可启用。Chrome 只允许通过一次重新安装授予这些权限。"
+  }
+}

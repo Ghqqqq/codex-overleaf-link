@@ -148,6 +148,7 @@
       case 'codex-overleaf/consent-update-install':
         return installUpdate();
       case 'codex-overleaf/consent-update-later':
+        return snoozeManualInstall().then(view => view || postponeUpdate());
       case 'codex-overleaf/consent-update-cancel':
         return postponeUpdate();
       case 'codex-overleaf/consent-update-dismiss':
@@ -188,6 +189,14 @@
             currentVersion: result.currentVersion || currentVersion(), latestVersion,
             managed: true, etag: result.etag || currentState.etag || '', lastCheckedAt: checkedAt,
             postponeUntil: LEGACY_GUARD, code: '', message: '', cancelRequested: false
+          }, { operation });
+        } else if (result.reason === 'manual_install_required'
+          && policy.compareStableVersions(result.latestVersion, currentVersion()) > 0) {
+          await setUpdateState({ ...currentState, state: 'manual_install_required', operationId: operation.id,
+            currentVersion: result.currentVersion || currentVersion(), latestVersion: result.latestVersion,
+            managed: true, etag: result.etag || currentState.etag || '', lastCheckedAt: checkedAt,
+            postponeUntil: LEGACY_GUARD, code: 'update_bootstrap_upgrade_required', message: '',
+            manualReason: result.manualInstall?.reason || {}, cancelRequested: false
           }, { operation });
         } else {
           await setUpdateState({ ...currentState, state: 'idle', operationId: operation.id,
@@ -263,6 +272,8 @@
         consent = await getConsentState();
         assertOperation(operation);
       }
+      // The fresh check found a release only a reinstall can apply; show that notice.
+      if (state.state === 'manual_install_required') return getView();
       if (state.state !== 'update_available'
         || policy.compareStableVersions(state.latestVersion, currentVersion()) <= 0) {
         throw codedError('update_candidate_missing', 'No newer signed stable update is available.');
@@ -469,6 +480,15 @@
     } catch (error) {
       return { idle: false, blockers: [safeCode(error) === 'tab_probe_timeout' ? 'tab_probe_timeout' : 'tab_probe_unavailable'] };
     }
+  }
+
+  // A reinstall notice has no download or authorization to cancel; Later only
+  // hides it for a day.
+  async function snoozeManualInstall() {
+    const [state, consent] = await Promise.all([getUpdateState(), getConsentState()]);
+    if (state.state !== 'manual_install_required') return null;
+    await setConsentState({ ...consent, snoozedVersion: state.latestVersion, snoozedUntil: Date.now() + SNOOZE_MS });
+    return getView();
   }
 
   function postponeUpdate() {

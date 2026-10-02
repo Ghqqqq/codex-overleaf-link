@@ -1056,6 +1056,7 @@
     return {
       loadProjectNameCacheFromStorage,
       rememberCurrentProjectName,
+      readCurrentProjectNameFromDom,
       formatRelativeTime,
       textNode,
       renderStatusBadge,

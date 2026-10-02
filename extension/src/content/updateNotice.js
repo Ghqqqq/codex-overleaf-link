@@ -71,6 +71,11 @@
   async function handleClick(event) {
     const action = event.target?.closest?.('[data-update-notice-action]')?.dataset?.updateNoticeAction;
     if (!action) return;
+    if (action === 'release-notes') {
+      const version = currentView?.state?.latestVersion || '';
+      window.open('https://github.com/Ghqqqq/codex-overleaf-link/releases/tag/v' + version, '_blank', 'noopener');
+      return;
+    }
     if (action === 'copy-manual') {
       try {
         await navigator.clipboard.writeText(manualUpdateCommand(currentView?.state));
@@ -269,6 +274,23 @@
     detail.textContent = copy.detail;
     body.append(eyebrow, title, detail);
 
+    if (state.state === 'manual_install_required') {
+      const steps = document.createElement('ol');
+      steps.className = 'codex-update-notice-steps';
+      for (const text of [
+        tx('Run this once in a terminal:', '在终端运行一次：'),
+        tx('Reload the extension in chrome://extensions, then refresh Overleaf.', '在 chrome://extensions 里重新加载扩展，再刷新 Overleaf。')
+      ]) steps.append(Object.assign(document.createElement('li'), { textContent: text }));
+      const command = document.createElement('code');
+      command.className = 'codex-update-notice-command';
+      command.textContent = manualUpdateCommand(state);
+      steps.firstElementChild.append(command);
+      const keep = document.createElement('span');
+      keep.className = 'codex-update-notice-recovery';
+      keep.textContent = tx('Sessions, settings, provider keys and project mirrors are kept.', '会话、设置、模型服务的密钥和项目镜像都会保留。');
+      body.append(steps, keep);
+    }
+
     if (state.state === 'failed' && !state.cancelRequested && !state.recoveryPending) {
       const recovery = document.createElement('span');
       recovery.className = 'codex-update-notice-recovery';
@@ -279,7 +301,7 @@
       body.append(recovery, command);
     }
 
-    if (!['update_available', 'failed', 'rolled_back', 'reload_required', 'reload_tabs_required'].includes(state.state)) {
+    if (!['update_available', 'manual_install_required', 'failed', 'rolled_back', 'reload_required', 'reload_tabs_required'].includes(state.state)) {
       const bar = document.createElement('div');
       bar.className = 'codex-update-notice-progress' + (progress.determinate ? '' : ' is-indeterminate');
       bar.setAttribute('role', 'progressbar');
@@ -344,6 +366,9 @@
       summaryText = tx(`Stable v${latestVersion} is available.`, `稳定版本 v${latestVersion} 已可用。`);
       statusText = tx('Ready to download and verify.', '已可下载并验证。');
       buttonText = tx('Update now', '立即更新');
+    } else if (stateName === 'manual_install_required') {
+      summaryText = tx(`v${latestVersion} is available but needs a one-time reinstall.`, `v${latestVersion} 已发布，但需要重新安装一次。`);
+      statusText = manualReasonText(state) || getCopy(state).detail;
     } else if (ACTIVE_UPDATE_STATES.has(stateName)) {
       statusText = getCopy(state).detail;
       buttonText = tx('Update in progress', '更新进行中');
@@ -395,6 +420,13 @@
     if (['staged', 'waiting_for_idle'].includes(state)) {
       return [{ id: 'cancel', label: tx('Cancel update', '取消更新'), primary: false }];
     }
+    if (state === 'manual_install_required') {
+      return [
+        { id: 'later', label: tx('Later', '稍后'), primary: false },
+        { id: 'release-notes', label: tx('Release notes', '发布说明'), primary: false },
+        { id: 'copy-manual', label: manualCommandCopied ? tx('Copied', '已复制') : tx('Copy command', '复制命令'), primary: true }
+      ];
+    }
     if (['failed', 'rolled_back'].includes(state)) {
       return [
         { id: 'copy-manual', label: manualCommandCopied ? tx('Copied', '已复制') : tx('Copy command', '复制命令'), primary: false },
@@ -428,6 +460,11 @@
       reload_tabs_required: {
         eyebrow: tx('Updated runtime is ready', '新版运行组件已就绪'), title: target,
         detail: state.message || tx('Refresh the saved, idle Overleaf tabs to load the updated panel.', '刷新已保存且空闲的 Overleaf 标签页以加载新版面板。')
+      },
+      manual_install_required: {
+        eyebrow: tx('Reinstall needed for this update', '这次更新需要重新安装'),
+        title: target,
+        detail: manualReasonText(state) || tx('This release changes what Chrome lets the extension do, so Update now cannot apply it.', '这一版改动了 Chrome 授予扩展的权限，无法通过“立即更新”完成。')
       },
       update_available: {
         eyebrow: tx('Update available', '发现新版本'),
@@ -515,6 +552,11 @@
       'Waiting until every Overleaf tab is saved and idle.',
       '正在等待所有 Overleaf 标签页完成保存并进入空闲状态。'
     );
+  }
+
+  function manualReasonText(state = {}) {
+    const reason = state.manualReason || {};
+    return tx(reason.en || reason.zh || '', reason.zh || reason.en || '');
   }
 
   function tx(english, chinese) {

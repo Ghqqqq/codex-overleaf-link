@@ -103,13 +103,13 @@
         const acceptHunkBtn = document.createElement('button');
         acceptHunkBtn.type = 'button';
         acceptHunkBtn.setAttribute('data-diff-hunk-accept', '');
-        acceptHunkBtn.textContent = '✓';
+        acceptHunkBtn.innerHTML = '<svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg>';
         acceptHunkBtn.title = tr('diffHunkAccept');
         acceptHunkBtn.setAttribute('aria-label', tr('diffHunkAccept'));
         const rejectHunkBtn = document.createElement('button');
         rejectHunkBtn.type = 'button';
         rejectHunkBtn.setAttribute('data-diff-hunk-reject', '');
-        rejectHunkBtn.textContent = '✗';
+        rejectHunkBtn.innerHTML = '<svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m4 4 8 8M12 4l-8 8"/></svg>';
         rejectHunkBtn.title = tr('diffHunkReject');
         rejectHunkBtn.setAttribute('aria-label', tr('diffHunkReject'));
         const jumpHunkBtn = document.createElement('button');
@@ -619,13 +619,13 @@
           const acceptBtn = document.createElement('button');
           acceptBtn.type = 'button';
           acceptBtn.dataset.diffAccept = '';
-          acceptBtn.textContent = '✓';
+          acceptBtn.innerHTML = '<svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg>';
           acceptBtn.title = tr('diffAccept');
           acceptBtn.setAttribute('aria-label', tr('diffAccept'));
           const rejectBtn = document.createElement('button');
           rejectBtn.type = 'button';
           rejectBtn.dataset.diffReject = '';
-          rejectBtn.textContent = '✗';
+          rejectBtn.innerHTML = '<svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m4 4 8 8M12 4l-8 8"/></svg>';
           rejectBtn.title = tr('diffReject');
           rejectBtn.setAttribute('aria-label', tr('diffReject'));
 
@@ -775,7 +775,10 @@
         title,
         status: 'completed'
       });
-      const { container } = createDiffReviewElement(visibleChanges, { readonly: true });
+      // Written changes are a receipt, not a review: one folded row per file.
+      const container = typeof deps.renderWrittenChanges === 'function'
+        ? deps.renderWrittenChanges(visibleChanges)
+        : createDiffReviewElement(visibleChanges, { readonly: true }).container;
       events = getRunEvents() || events;
       events.append(container);
       scrollLogToBottom();

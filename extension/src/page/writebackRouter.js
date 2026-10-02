@@ -269,6 +269,11 @@
         fallbackUserMessage: 'The edit anchor no longer matches current Overleaf content.',
         fallbackNextAction: 'Rerun the task against the current document.'
       },
+      write_operation_failed: {
+        stage: 'write', severity: 'error', defaultRetryable: true,
+        fallbackUserMessage: 'Editor write call failed.',
+        fallbackNextAction: 'Retry after the editor is stable.'
+      },
       write_observed_mismatch: {
         stage: 'verify', severity: 'error', defaultRetryable: false,
         fallbackUserMessage: 'Codex attempted to write, but the content read back from Overleaf did not match the approved change.',
@@ -471,6 +476,18 @@
       ? await deps.beginTextCreateBatch(createCandidates, { isCurrent: () =>
         treeOperations.getProjectId?.() === runProjectId && readWriteCancellationSequence() === cancelBaselineSequence }) : null;
     const deferredCreates = [];
+    const reopenQueue = [];
+    const editOptions = () => ({ baseFileLookup, runProjectId,
+      recheckWriteProject: writeGuardSurface ? () => writeGuardSurface.runWriteGuard({ runProjectId }) : null,
+      trackReviewingChanges: options.trackReviewingChanges === true, noTraceUndo: options.noTraceUndo === true });
+    const record = (operation, result) => {
+      if (result.trackedChangeCapture) trackedChangeCaptures.push(result.trackedChangeCapture);
+      if (operation.type === 'edit' && result.ok && Array.isArray(result.trackedChanges)) {
+        trackedChanges.push(...result.trackedChanges);
+      }
+      (result.ok ? applied : skipped).push({ operation, result });
+      options.onOperationResult?.({ operation, result });
+    };
 
     for (const rawOperation of operations) {
       // Cross-world cancel check. Cheap (synchronous read of a counter),
@@ -512,12 +529,11 @@
       }
       let result;
       if (operation.type === 'edit') {
-        result = await applyEditOperation(operation, {
-          baseFileLookup, runProjectId,
-          recheckWriteProject: writeGuardSurface ? () => writeGuardSurface.runWriteGuard({ runProjectId }) : null,
-          trackReviewingChanges: options.trackReviewingChanges === true,
-          noTraceUndo: options.noTraceUndo === true
-        });
+        result = await applyEditOperation(operation, editOptions());
+        if (isUntouchedOpenFailure(result)) {
+          reopenQueue.push({ operation, result });
+          continue;
+        }
       } else if (['binary-create', 'overwrite-binary'].includes(operation.type)) {
         result = await applyBinaryAssetOperation(operation, { baseFileLookup, baseBinaryFileLookup });
       } else if (['create', 'rename', 'move', 'delete'].includes(operation.type)) {
@@ -539,12 +555,21 @@
         deferredCreates.push({ operation, result });
         continue;
       }
-      if (result.trackedChangeCapture) trackedChangeCaptures.push(result.trackedChangeCapture);
-      if (operation.type === 'edit' && result.ok && Array.isArray(result.trackedChanges)) {
-        trackedChanges.push(...result.trackedChanges);
-      }
-      (result.ok ? applied : skipped).push({ operation, result });
-      options.onOperationResult?.({ operation, result });
+      record(operation, result);
+    }
+
+    // A file that could not be opened mid-batch usually opens once the
+    // previous document has settled: give untouched open failures one pass.
+    if (reopenQueue.length && readWriteCancellationSequence() === cancelBaselineSequence
+      && !skipped.some(entry => entry.result?.code === 'aborted_project_changed')) {
+      await delay(deps.reopenRetryDelayMs ?? 1200);
+    }
+    for (const entry of reopenQueue) {
+      const blocked = readWriteCancellationSequence() !== cancelBaselineSequence
+        || skipped.some(item => item.result?.code === 'aborted_project_changed')
+        || Boolean(runProjectId && writeGuardSurface && await writeGuardSurface.runWriteGuard({ runProjectId }));
+      const result = blocked ? entry.result : await applyEditOperation(entry.operation, editOptions());
+      record(entry.operation, result);
     }
 
     if (deferredCreates.length) {
@@ -568,29 +593,10 @@
     };
   }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+  function isUntouchedOpenFailure(result) {
+    return result?.ok === false && result.failure?.code === 'target_file_open_failed'
+      && result.failure.changedDocument === false;
+  }
 
   async function applyEditOperation(operation, options = {}) {
     const currentPath = getActiveFilePath();
@@ -729,12 +735,23 @@
       return result;
     }
 
-    const verified = await verifyActiveEditorText(nextContent, operation.path);
+    const verified = await verifyActiveEditorText(nextContent, operation.path, deps.writeVerifyWaitMs ?? 2500, current);
     if (!verified.ok) {
       const decorated = attachWritebackDebug(verified, 'write_verification', operation, options.baseFileLookup, readActiveEditorText(), {
         initialActivePath: currentPath,
         editorReadyDebug: editorReady.debug || null
       });
+      const evidence = { originalCode: verified.code || '', writeMethod: result.method || '', writeStarted: true,
+        ...verified.evidence };
+      if (verified.evidence?.observedIsBefore && verified.evidence.activeMatchesTarget) {
+        // The editor still holds exactly the pre-write text: the write never landed, so a retry is safe.
+        decorated.failure = buildPageFailure('write_operation_failed', {
+          file: operation?.path || '', operationType: operation?.type || 'edit', changedDocument: false,
+          userMessage: `Overleaf did not accept the edit to ${operation?.path || 'the target file'}; the document was left unchanged.`,
+          technicalMessage: verified.reason || '', evidence
+        });
+        return decorated;
+      }
       // §9.3 write_observed_mismatch: the write call landed but the readback
       // does not match. changedDocument:true — the editor state moved, just
       // not as Codex expected.
@@ -744,12 +761,7 @@
         changedDocument: true,
         userMessage: `${operation?.path || 'The target file'} did not read back the content Codex wrote; the document state may differ from what was approved.`,
         technicalMessage: verified.reason || '',
-        evidence: {
-          originalCode: verified.code || '',
-          expectedLength: verified.expectedLength,
-          actualLength: verified.actualLength,
-          writeStarted: true
-        }
+        evidence
       });
       return decorated;
     }
@@ -811,7 +823,7 @@
   }
 
 
-  async function verifyActiveEditorText(expected, filePath, waitMs = 1000) {
+  async function verifyActiveEditorText(expected, filePath, waitMs = 1000, before) {
     const deadline = Date.now() + waitMs;
     let actual = readActiveEditorText();
     while (actual !== expected && Date.now() < deadline) {
@@ -828,8 +840,35 @@
       code: 'write_verification_failed',
       reason: `${filePath || '当前文件'} 写入后读回内容和 Codex 预期不一致，已停止把这次操作标记为成功。请刷新 Overleaf 后重试。`,
       expectedLength: String(expected || '').length,
-      actualLength: String(actual || '').length
+      actualLength: String(actual || '').length,
+      evidence: describeReadbackMismatch(expected, actual, before, filePath)
     };
+  }
+
+  // Content-free mismatch evidence: offsets, lengths and short hashes only.
+  function describeReadbackMismatch(expected, actual, before, filePath) {
+    const left = String(expected ?? ''), right = String(actual ?? '');
+    let firstDiff = 0;
+    while (firstDiff < left.length && left[firstDiff] === right[firstDiff]) firstDiff += 1;
+    let tail = 0;
+    while (tail < left.length - firstDiff && tail < right.length - firstDiff
+      && left[left.length - 1 - tail] === right[right.length - 1 - tail]) tail += 1;
+    const activePath = getActiveFilePath() || '';
+    return { expectedLength: left.length, actualLength: right.length, firstDiffOffset: firstDiff,
+      expectedDiffLength: left.length - firstDiff - tail, actualDiffLength: right.length - firstDiff - tail,
+      expectedHash: shortHash(left), actualHash: shortHash(right),
+      beforeHash: typeof before === 'string' ? shortHash(before) : '',
+      observedIsBefore: typeof before === 'string' && right === before,
+      activePath, activeMatchesTarget: !filePath || activePath === filePath };
+  }
+
+  function shortHash(value) {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash.toString(16).padStart(8, '0');
   }
 
   async function ensureEditorReadyForOperation(operation, baseFileLookup, initialActivePath) {

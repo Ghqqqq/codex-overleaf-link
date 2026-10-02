@@ -13,6 +13,7 @@
     'up_to_date',
     'checking',
     'update_available',
+    'manual_install_required',
     'downloading',
     'staged',
     'waiting_for_idle',
@@ -75,7 +76,9 @@
   const TRANSITIONS = Object.freeze({
     idle: Object.freeze(['checking']),
     up_to_date: Object.freeze(['checking', 'idle']),
-    checking: Object.freeze(['idle', 'up_to_date', 'update_available', 'failed']),
+    checking: Object.freeze(['idle', 'up_to_date', 'update_available', 'manual_install_required', 'failed']),
+    // Only a reinstall resolves it; leave by checking again or going idle.
+    manual_install_required: Object.freeze(['checking', 'idle', 'update_available', 'failed']),
     update_available: Object.freeze(['checking', 'downloading', 'deferred', 'failed']),
     downloading: Object.freeze(['staged', 'failed', 'update_available', 'idle']),
     staged: Object.freeze(['waiting_for_idle', 'applying', 'update_available', 'deferred', 'failed']),

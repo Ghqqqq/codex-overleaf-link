@@ -246,12 +246,26 @@
     if (node) {
       dispatchFileTreeOpenClick(node);
       await delay(250);
-      const active = await waitForActiveFile(normalizedPath, 5000);
+      const active = await waitForActiveFile(normalizedPath, options.activeWaitMs ?? 5000);
       diagnostics.domClickActivePath = getActiveFilePath();
       if (active) {
         return {
           ok: true,
           method: 'dom-click'
+        };
+      }
+      // Overleaf can drop a click while the previous document is still
+      // settling (e.g. right after a multi-file write). Re-resolve the row,
+      // activate the row itself plus a keyboard Enter, and wait once more.
+      const retryNode = findFileTreeNode(normalizedPath, { invalidateCache: true }) || node;
+      dispatchActivationSequence(retryNode);
+      dispatchKeyboardOpen(findFileTreeOpenClickTarget(retryNode) || retryNode);
+      const retried = await waitForActiveFile(normalizedPath, options.retryWaitMs ?? 4000);
+      diagnostics.domRetryActivePath = getActiveFilePath() || 'unknown';
+      if (retried) {
+        return {
+          ok: true,
+          method: 'dom-click-retry'
         };
       }
     }
@@ -322,7 +336,7 @@
       .map(item => `${item.method}/${item.argType}:ok=${item.ok ? 'yes' : 'no'},active=${item.activePath || 'unknown'}${item.error ? ',error=' + item.error : ''}`)
       .slice(0, 8)
       .join('|') || 'none';
-    return `open diagnostics initial=${diagnostics.initialActivePath || 'unknown'}, initialNode=${diagnostics.initialDomNodeFound ? 'yes' : 'no'}, folders=${folders}, postExpandNode=${diagnostics.postExpandDomNodeFound ? 'yes' : 'no'}, domClickActive=${diagnostics.domClickActivePath || 'unknown'}, manager=${managers}`;
+    return `open diagnostics initial=${diagnostics.initialActivePath || 'unknown'}, initialNode=${diagnostics.initialDomNodeFound ? 'yes' : 'no'}, folders=${folders}, postExpandNode=${diagnostics.postExpandDomNodeFound ? 'yes' : 'no'}, domClickActive=${diagnostics.domClickActivePath || 'unknown'}, domRetryActive=${diagnostics.domRetryActivePath || 'none'}, manager=${managers}`;
   }
 
   function dispatchFileTreeOpenClick(node) {
@@ -357,6 +371,16 @@
         node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
       } catch (_error) {
         // Keep trying the rest of the activation sequence.
+      }
+    }
+  }
+
+  function dispatchKeyboardOpen(node) {
+    for (const type of ['keydown', 'keyup']) {
+      try {
+        node?.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+      } catch (_error) {
+        // KeyboardEvent may be unavailable in synthetic harnesses.
       }
     }
   }

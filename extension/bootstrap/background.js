@@ -6,17 +6,19 @@ const UPDATE_STATE_KEY = 'codex-overleaf-managed-update-state-v1';
 const UPDATE_RELOAD_TABS_KEY = 'codex-overleaf-managed-update-tabs-v1';
 const CHECK_ALARM = 'codex-overleaf-stable-update-check';
 const IDLE_ALARM = 'codex-overleaf-staged-update-idle';
-const OVERLEAF_EDITOR_MATCHES = [
-  'https://www.overleaf.com/project/*',
-  'https://overleaf.com/project/*',
-  'https://cn.overleaf.com/project/*'
-];
-const OVERLEAF_MATCHES = [
+// Built-in sites. The replaceable runtime manifest may list more; any extra
+// site is used only after Chrome reports its permission as granted, so a later
+// release can add an Overleaf site without changing this Bootstrap file.
+const BUILT_IN_OVERLEAF_MATCHES = Object.freeze([
   'https://www.overleaf.com/project',
   'https://overleaf.com/project',
   'https://cn.overleaf.com/project',
-  ...OVERLEAF_EDITOR_MATCHES
-];
+  'https://www.overleaf.com/project/*',
+  'https://overleaf.com/project/*',
+  'https://cn.overleaf.com/project/*'
+]);
+let OVERLEAF_MATCHES = [...BUILT_IN_OVERLEAF_MATCHES];
+let OVERLEAF_HOSTS = hostsOf(OVERLEAF_MATCHES);
 const APPLYING_STATES = new Set(['applying', 'awaiting_health', 'rolling_back']);
 const FAST_IDLE_RETRY_BLOCKERS = new Set(['recent_user_activity', 'save_state_not_stable']);
 const FAST_IDLE_RETRY_MS = 4000;
@@ -59,6 +61,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   return undefined;
 });
+
+// A newly granted site starts working without a reload or reinstall.
+chrome.permissions?.onAdded?.addListener(() => { registerManagedRuntime().catch(() => {}); });
+chrome.permissions?.onRemoved?.addListener(() => { registerManagedRuntime().catch(() => {}); });
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === CHECK_ALARM) {
@@ -107,6 +113,10 @@ async function registerManagedRuntime() {
   }
   const manifest = await response.json();
   validateRuntimeManifest(manifest);
+  const matches = await grantedMatches(manifest.matches);
+  if (!matches.length) throw new Error('No Overleaf site in the runtime manifest is permitted.');
+  OVERLEAF_MATCHES = [...new Set([...BUILT_IN_OVERLEAF_MATCHES, ...matches])];
+  OVERLEAF_HOSTS = hostsOf(OVERLEAF_MATCHES);
   managedRuntimeAssets = {
     js: ['bootstrap/runtimeContext.js', ...manifest.js.map(value => 'runtime/' + value)],
     css: manifest.css.map(value => 'runtime/' + value)
@@ -117,7 +127,7 @@ async function registerManagedRuntime() {
   }
   await chrome.scripting.registerContentScripts([{
     id: RUNTIME_SCRIPT_ID,
-    matches: manifest.matches,
+    matches,
     js: managedRuntimeAssets.js,
     css: managedRuntimeAssets.css,
     runAt: manifest.runAt || 'document_idle',
@@ -129,7 +139,7 @@ function validateRuntimeManifest(manifest) {
   if (!manifest || manifest.schemaVersion !== 1 || !Array.isArray(manifest.matches) || !Array.isArray(manifest.js) || !Array.isArray(manifest.css)) {
     throw new Error('Managed runtime manifest is invalid.');
   }
-  if (!manifest.matches.length || manifest.matches.some(value => !OVERLEAF_MATCHES.includes(value))) {
+  if (!manifest.matches.length || manifest.matches.some(value => !isProjectMatch(value))) {
     throw new Error('Managed runtime match patterns are invalid.');
   }
   const paths = [...manifest.js, ...manifest.css];
@@ -305,11 +315,36 @@ async function probeTabIdle(tab) {
   return { idle: false, blockers: ['tab_probe_unavailable'] };
 }
 
+// Only project pages on overleaf.com or one of its subdomains: the same scope
+// as optional_host_permissions and web_accessible_resources in the manifest.
+function isProjectMatch(value) {
+  return typeof value === 'string'
+    && /^https:\/\/(?:[a-z0-9-]+\.)*overleaf\.com\/project(?:\/\*)?$/.test(value);
+}
+
+function hostsOf(matches) {
+  return new Set(matches.map(value => {
+    try { return new URL(value.replace(/\*$/, '')).host; } catch (_error) { return ''; }
+  }).filter(Boolean));
+}
+
+// Built-in sites are granted at install; a site a later runtime adds only
+// counts once the user has approved Chrome's prompt for it (see the popup).
+async function grantedMatches(matches) {
+  const result = [];
+  for (const value of matches) {
+    if (BUILT_IN_OVERLEAF_MATCHES.includes(value)) { result.push(value); continue; }
+    const granted = await chrome.permissions.contains({ origins: [value] }).catch(() => false);
+    if (granted) result.push(value);
+  }
+  return result;
+}
+
 function isEditorProjectTab(tab) {
   try {
     const url = new URL(tab?.url || '');
     return url.protocol === 'https:' &&
-      (['overleaf.com', 'www.overleaf.com', 'cn.overleaf.com'].includes(url.hostname)) &&
+      OVERLEAF_HOSTS.has(url.host) &&
       /^\/project\/[^/]+(?:\/|$)/.test(url.pathname);
   } catch (_error) {
     return false;

@@ -6,6 +6,7 @@
   function create(deps = {}) {
     const {
       RunActivitySummary,
+      RunPresence,
       RunActivityModel,
       SubagentActivityView,
       RunGuidanceView,
@@ -21,6 +22,7 @@
       formatEventDetail,
       formatEventTime,
       renderAttachmentPreviewList,
+      renderSentSelection,
       formatModeLabel,
       undoRun,
       acceptRun,
@@ -43,7 +45,9 @@
       openProjectFileForFailure,
       openStorageSettings,
       trackedChangeInFlight,
-      projectRunSettlement
+      projectRunSettlement,
+      getCurrentProjectId,
+      getProjectName
     } = deps;
 
   let logAutoFollow = true;
@@ -65,8 +69,11 @@
     onLayoutChange: scroller => logAutoFollow ? scrollLogToBottom() : updateJumpToLatestButton(scroller)
   });
   const failureNotice = RunFailureNotice?.create({ tr, projectRunSettlement, sanitizeText: sanitizeAssistantVisibleText });
+  const presence = RunPresence?.create({ tx, getLocale, formatElapsed });
   const activitySummary = RunActivitySummary?.create({ RunActivityModel, SubagentActivityView, tx, findRunRecord, getPanel, cssEscape,
     formatEventTime, formatElapsed, renderMarkdownBlockText, renderRunEvent, formatEventDetail,
+    presence, classifyStatus: classifyRunPresence, getProjectId: () => getCurrentProjectId?.() || '',
+    summarizeCommand: RunPresence?.commandSummary,
     isGuidance: event => Boolean(RunGuidanceView.getGuidanceText(event)), sanitizeAssistantVisibleText });
 
   // Re-arm auto-follow (called by the runtime when a new run starts, so the
@@ -265,7 +272,7 @@
         stopRunElapsedTick();
         return;
       }
-      activitySummary?.update(getCurrentRunView());
+      if (activitySummary?.update(getCurrentRunView()) && presence) return;
       const statusEl = getCurrentRunView().status
         || getCurrentRunView().root?.querySelector('[data-run-status]');
       if (statusEl) {
@@ -281,6 +288,13 @@
       window.clearInterval(runElapsedTimer);
     }
     runElapsedTimer = null;
+  }
+
+  function classifyRunPresence(run = {}) {
+    if (run.retryingWriteback) return 'plain';
+    if (run.status === 'completed') return 'done';
+    if (run.status === 'cancelled' || run.status === 'rejected') return 'stopped';
+    return run.status === 'failed' || run.status === 'abandoned_after_navigation' ? 'failed' : 'plain';
   }
 
   function formatProcessedSummary(status, elapsedMs) {
@@ -318,7 +332,12 @@
       const hint = document.createElement('div');
       hint.className = 'empty-runs-hint';
       hint.textContent = tr('emptyRunsHint');
+      label.className = 'empty-runs-title';
       empty.append(icon, label, hint);
+      if (presence) {
+        icon.remove();
+        presence.decorateEmpty(empty, { projectName: getProjectName?.() || '' });
+      }
       log.append(empty);
       return;
     }
@@ -351,6 +370,7 @@
     root.innerHTML = `
       <div class="transcript-turn-main">
         <div class="run-attachments codex-attachment-preview-list" data-run-attachments hidden></div>
+        <div class="run-selection" data-run-selection hidden></div>
         <div class="run-prompt" data-run-task></div>
         <div class="run-guidance-list" data-run-guidance></div>
         <div class="run-turn-meta">
@@ -376,6 +396,7 @@
     `;
 
     renderAttachmentPreviewList(run.attachments, root.querySelector('[data-run-attachments]'), { readonly: true });
+    renderSentSelection?.(root.querySelector('[data-run-selection]'), run.executionSnapshot?.selectionContext, { document, tx });
     const runTask = root.querySelector('[data-run-task]');
     runTask.classList.add('run-user-message');
     runTask.textContent = run.task || '';
@@ -566,29 +587,66 @@
     tx, trackedChangeInFlight, isTrackedChangeLifecycleRun, projectRunSettlement
   });
 
-  // Renders the demoted run-metadata block (Why nothing changed / Write result /
-  // Undo / Next) beneath the answer. Shared by the structured and flat-fallback
-  // render paths so both demote identically.
+  // The user's own open/closed choice per run survives card re-renders.
+  const metaOpenChoices = new Map();
+
+  // Renders the run-metadata rows (Why nothing changed / Write result / Undo /
+  // Next) behind a one-line summary beneath the answer. Shared by the
+  // structured and flat-fallback render paths so both demote identically.
   function appendCompletionMetaBlock(report, meta, run) {
     if (!Array.isArray(meta) || !meta.length) {
       return;
     }
+    const rows = projectCompletionMeta(meta, run).filter(row => row?.label && row.value)
+      .map(row => ({ ...row, shown: failureNotice?.formatMetaValue(report, row) ?? row.value }));
+    if (!rows.length) return;
+    const summary = RunResultActions.summarizeCompletionMeta(rows, run, {
+      tx, failed: report.dataset.status === 'failed', unconfirmed: rows.some(row => row.shown !== row.value)
+    });
     const metaBlock = document.createElement('dl');
     metaBlock.className = 'run-final-answer__meta';
-    for (const row of projectCompletionMeta(meta, run)) {
-      if (!row || !row.label || !row.value) continue;
+    metaBlock.id = `codex-run-meta-${String(run?.id || 'report').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    for (const row of rows) {
       const dt = document.createElement('dt');
       dt.className = 'run-final-answer__meta-label';
       dt.textContent = row.label;
       if (row.key) dt.dataset.metaKey = row.key;
       const dd = document.createElement('dd');
       dd.className = 'run-final-answer__meta-value';
-      dd.textContent = failureNotice?.formatMetaValue(report, row) ?? row.value;
+      dd.textContent = row.shown;
+      if (summary.warnKeys.has(row.key)) dt.dataset.tone = dd.dataset.tone = 'warn';
       metaBlock.append(dt, dd);
     }
-    if (metaBlock.children.length) {
-      report.append(metaBlock);
-    }
+    const facts = document.createElement('div');
+    facts.className = 'run-final-answer__facts';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'run-final-answer__facts-sum';
+    toggle.setAttribute('aria-controls', metaBlock.id);
+    summary.facts.forEach((fact, index) => {
+      if (index) toggle.append(Object.assign(document.createElement('span'), { className: 'run-final-answer__facts-sep', textContent: '·' }));
+      const item = Object.assign(document.createElement('span'), { className: 'run-final-answer__fact', textContent: fact.text });
+      if (fact.tone) item.dataset.tone = fact.tone;
+      item.dataset.fact = fact.key;
+      toggle.append(item);
+    });
+    const more = Object.assign(document.createElement('span'), { className: 'run-final-answer__facts-more' });
+    toggle.append(Object.assign(document.createElement('span'), { className: 'run-final-answer__facts-sep', textContent: '·' }), more);
+    const setOpen = open => {
+      facts.dataset.open = String(open);
+      metaBlock.hidden = !open;
+      toggle.setAttribute('aria-expanded', String(open));
+      more.innerHTML = `${open ? tx('Hide', '收起') : tx('Details', '详情')}<svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m6 4 4 4-4 4"/></svg>`;
+    };
+    setOpen(metaOpenChoices.get(run?.id) ?? summary.open);
+    toggle.addEventListener('click', event => {
+      event.stopPropagation();
+      const open = facts.dataset.open !== 'true';
+      if (run?.id) metaOpenChoices.set(run.id, open);
+      setOpen(open);
+    });
+    facts.append(toggle, metaBlock);
+    report.append(facts);
   }
 
   function renderCompletionReport(input, run) {
@@ -649,7 +707,7 @@
       main.className = 'run-final-answer';
       const mainSections = [];
       if (structured.conclusion) {
-        mainSections.push(formatConclusionMarkdown(structured.conclusion));
+        mainSections.push(String(structured.conclusion));
       }
       if (structured.body) {
         mainSections.push(structured.body);
@@ -686,19 +744,6 @@
     appendCompletionMetaBlock(report, split.meta, run);
     appendRecoveryActionForFailure(report, event, run);
     return report;
-  }
-
-  function formatConclusionMarkdown(value) {
-    const conclusion = String(value || '');
-    const label = getLocale() === 'zh' ? '结论：' : 'Conclusion:';
-    return hasLeadingMarkdownBlock(conclusion)
-      ? `${label}\n${conclusion}`
-      : `${label} ${conclusion}`;
-  }
-
-  function hasLeadingMarkdownBlock(value) {
-    const firstLine = String(value || '').trimStart().split(/\r?\n/, 1)[0];
-    return /^(?:#{1,6}\s+\S|```|~~~|(?:[-+*]|\d+[.)])\s+\S|\*\*[^*]+\*\*:?\s*$)/.test(firstLine);
   }
 
   // For failure codes that have an actionable recovery path the user can

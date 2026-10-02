@@ -131,8 +131,10 @@ export const ARCHITECTURE_FILE_BUDGETS = Object.freeze([
     // recovery-action registry (per-failure-code buttons), the compile-fix /
     // rejected-redo report actions, and the jump-to-turn navigator.
     // v1.8.0 B3 raised 1080 -> 1160 for the in-session run search.
+    // v2.5.0 raised 1160 -> 1190 for the folded completion facts line and the
+    // sent-selection chip on run cards.
     path: 'extension/src/content/runTimelineView.js',
-    maxLines: 1160
+    maxLines: 1190
   },
   {
     // Carved from contentRuntime in v1.4.7: the session lifecycle + list
@@ -248,8 +250,10 @@ export const ARCHITECTURE_FILE_BUDGETS = Object.freeze([
     // Phase 7 (v1.8.0, #117): the tracked-changes lifecycle (~1500 lines)
     // moved to trackedChangesLifecycle.js; the router keeps applyOperations,
     // the write pipeline, and the failure catalog. 3400 -> 1950.
+    // 1950 -> 1990 in v2.5.0: batch reopen pass for dropped file opens and
+    // content-free readback-mismatch evidence (multi-file writeback fixes).
     path: 'extension/src/page/writebackRouter.js',
-    maxLines: 1950
+    maxLines: 1990
   },
   {
     // Carved from writebackRouter in v1.8.0 (phase 7, #117): accept/reject

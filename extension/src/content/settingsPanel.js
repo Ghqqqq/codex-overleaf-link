@@ -60,7 +60,7 @@
           <details class="codex-set-group" data-set-group="personalization" open>
             <summary class="codex-set-group-head">
               <span class="codex-set-group-title">${codexSetIcon('pen')}<span data-i18n="personalizationConfig">Personalization</span></span>
-              <span class="codex-set-saved" data-set-saved hidden>✓ <span data-i18n="settingsSaved">Saved</span></span>
+              <span class="codex-set-saved" data-set-saved hidden><svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg><span data-i18n="settingsSaved">Saved</span></span>
             </summary>
             <div class="codex-set-card">
               <p class="codex-set-row-help" data-i18n="personalizationHelp">Style, terminology, and LaTeX conventions Codex should follow in this project.</p>
@@ -70,7 +70,7 @@
           <details class="codex-set-group" data-set-group="protection" open>
             <summary class="codex-set-group-head">
               <span class="codex-set-group-title">${codexSetIcon('shield')}<span data-i18n="fileProtectionTitle">File protection</span></span>
-              <span class="codex-set-saved" data-set-saved hidden>✓ <span data-i18n="settingsSaved">Saved</span></span>
+              <span class="codex-set-saved" data-set-saved hidden><svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg><span data-i18n="settingsSaved">Saved</span></span>
             </summary>
             <div class="codex-set-card">
               <div class="codex-set-row">
@@ -90,7 +90,7 @@
           <details class="codex-set-group" data-set-group="privacy" open>
             <summary class="codex-set-group-head">
               <span class="codex-set-group-title">${codexSetIcon('lock')}<span data-i18n="privacyTitle">Privacy</span></span>
-              <span class="codex-set-saved" data-set-saved hidden>✓ <span data-i18n="settingsSaved">Saved</span></span>
+              <span class="codex-set-saved" data-set-saved hidden><svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg><span data-i18n="settingsSaved">Saved</span></span>
             </summary>
             <div class="codex-set-card">
               <label class="codex-project-settings-row codex-project-settings-row--switch">
@@ -108,7 +108,7 @@
           <details class="codex-set-group" data-set-group="experimental">
             <summary class="codex-set-group-head">
               <span class="codex-set-group-title">${codexSetIcon('database')}<span data-i18n="otSettingsTitle">Project cache</span></span>
-              <span class="codex-set-saved" data-set-saved hidden>✓ <span data-i18n="settingsSaved">Saved</span></span>
+              <span class="codex-set-saved" data-set-saved hidden><svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg><span data-i18n="settingsSaved">Saved</span></span>
             </summary>
             <div class="codex-set-card">
               <label class="codex-project-settings-row codex-project-settings-row--switch">
@@ -155,7 +155,7 @@
           <details class="codex-set-group" data-set-group="appearance" open>
             <summary class="codex-set-group-head">
               <span class="codex-set-group-title">${codexSetIcon('appearance')}<span data-i18n="appearanceTitle">Appearance</span></span>
-              <span class="codex-set-saved" data-set-saved hidden>✓ <span data-i18n="settingsSaved">Saved</span></span>
+              <span class="codex-set-saved" data-set-saved hidden><svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg><span data-i18n="settingsSaved">Saved</span></span>
             </summary>
             <div class="codex-set-card">
               <label class="codex-project-settings-row codex-project-settings-row--select">
@@ -192,7 +192,7 @@
           <details class="codex-set-group" data-set-group="context-loading" open>
             <summary class="codex-set-group-head">
               <span class="codex-set-group-title">${codexSetIcon('database')}<span data-i18n="contextLoadingTitle">Context loading</span></span>
-              <span class="codex-set-saved" data-set-saved hidden>✓ <span data-i18n="settingsSaved">Saved</span></span>
+              <span class="codex-set-saved" data-set-saved hidden><svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg><span data-i18n="settingsSaved">Saved</span></span>
             </summary>
             <div class="codex-set-card">
               <label class="codex-project-settings-row codex-project-settings-row--switch">
@@ -233,7 +233,7 @@
           <details class="codex-set-group" data-set-group="skills" open>
             <summary class="codex-set-group-head">
               <span class="codex-set-group-title">${codexSetIcon('bolt')}<span data-i18n="localSkillsTitle">Skills</span></span>
-              <span class="codex-set-saved" data-set-saved hidden>✓ <span data-i18n="settingsSaved">Saved</span></span>
+              <span class="codex-set-saved" data-set-saved hidden><svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg><span data-i18n="settingsSaved">Saved</span></span>
             </summary>
             <div class="codex-set-card">
               <label class="codex-project-settings-row codex-project-settings-row--switch">
@@ -256,7 +256,7 @@
           <div>
             <div class="codex-custom-instructions-title" data-i18n="codexOverleafSkillsTitle">Codex Overleaf skills</div>
           </div>
-          <span class="codex-set-saved" data-set-saved hidden>✓ <span data-i18n="settingsSaved">Saved</span></span>
+          <span class="codex-set-saved" data-set-saved hidden><svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg><span data-i18n="settingsSaved">Saved</span></span>
         </div>
         <div class="codex-set-card">
           <label class="codex-project-settings-row codex-project-settings-row--switch">
@@ -489,11 +489,11 @@
     element.textContent = text || '';
   }
 
-  // Flash the "✓ Saved" indicator after a field auto-saves, then fade it out.
+  // Flash the check-mark "Saved" indicator after a field auto-saves, then fade it out.
   // The fields persist immediately on change, so this is purely a confirmation
   // cue — it never gates the save itself.
   function flashSaved(instance, event) {
-    // Card-level feedback: the ✓ appears on the card that was actually
+    // Card-level feedback: the check appears on the card that was actually
     // changed (falls back to the screen's first badge, e.g. the skills page).
     const origin = event?.target?.closest?.('details.codex-set-group, section');
     const badge = origin?.querySelector?.('[data-set-saved]')

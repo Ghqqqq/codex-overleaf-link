@@ -62,8 +62,17 @@ function validateReleaseManifest(manifest, options = {}) {
   if (!version || manifest.tag !== expectedTag) {
     throw updateError('update_manifest_version_invalid', 'Update manifest version or tag is invalid.');
   }
-  if (!Number.isInteger(manifest.bootstrapProtocol) || manifest.bootstrapProtocol !== bootstrapProtocol) {
+  if (!Number.isInteger(manifest.bootstrapProtocol) || manifest.bootstrapProtocol < 1) {
+    throw updateError('update_manifest_protocol_invalid', 'Update manifest Bootstrap protocol is invalid.');
+  }
+  // A signed release for another Bootstrap protocol is still a real release:
+  // the checker reads it (allowBootstrapMismatch) to tell the user to reinstall,
+  // while staging and applying keep refusing it.
+  if (manifest.bootstrapProtocol !== bootstrapProtocol && options.allowBootstrapMismatch !== true) {
     throw updateError('update_bootstrap_upgrade_required', 'This release requires a different Bootstrap protocol.');
+  }
+  if (manifest.manualInstall !== undefined && !isManualInstallNote(manifest.manualInstall)) {
+    throw updateError('update_manifest_manual_install_invalid', 'Update manifest manual-install note is invalid.');
   }
   if (!/^[0-9a-f]{40}$/.test(String(manifest.gitCommit || ''))) {
     throw updateError('update_manifest_commit_invalid', 'Update manifest commit is invalid.');
@@ -86,6 +95,16 @@ function validateReleaseManifest(manifest, options = {}) {
     throw updateError('update_manifest_artifacts_invalid', 'Update manifest artifacts must be an array.');
   }
   return manifest;
+}
+
+// Optional signed note shown when a release cannot be applied in place.
+function isManualInstallNote(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const reason = value.reason;
+  if (reason === undefined) return true;
+  return Boolean(reason) && typeof reason === 'object' && !Array.isArray(reason)
+    && Object.entries(reason).every(([locale, text]) => ['en', 'zh'].includes(locale)
+      && typeof text === 'string' && text.length > 0 && text.length <= 400);
 }
 
 function parseSemver(value) {

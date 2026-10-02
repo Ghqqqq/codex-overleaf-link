@@ -247,11 +247,11 @@ test('terminal and forked runs cannot be resurrected by background capture', asy
   }
 });
 
-test('action storage round-trips pending capture and keeps Undo within the old budget', () => {
+test('action storage round-trips pending capture and keeps Undo within the action budget', () => {
   const run = pendingRun();
   const payload = StorageActions.compactRunActionPayload(run, true);
   assert.deepEqual(payload.trackedChangeCaptures, run.trackedChangeCaptures);
-  run.trackedChangeCaptures[0].oversize = 'x'.repeat(400 * 1024);
+  run.trackedChangeCaptures[0].oversize = 'x'.repeat(2100 * 1024);
   const limited = StorageActions.compactRunActionPayload(run, true);
   assert.deepEqual(limited.appliedOperations, run.appliedOperations);
   assert.deepEqual(limited.undoExpectedFiles, run.undoExpectedFiles);

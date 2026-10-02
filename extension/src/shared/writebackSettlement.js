@@ -190,6 +190,27 @@
       : (state === 'not_started' || !state ? 'not-attempted' : 'unknown');
   }
 
+  // A Retry sync re-settles only the files it replays: merge them over the run's original facts.
+  function mergeRetrySettlement(previous, retryFacts, failureReasons = DefaultFailureReasons) {
+    if (!retryFacts || typeof retryFacts !== 'object') return previous || null;
+    if (!previous || typeof previous !== 'object') return retryFacts;
+    const retried = new Map((retryFacts.fileSettlements || []).map(file => [file.path, file]));
+    const fileSettlements = [...(previous.fileSettlements || []).map(file => retried.get(file.path) || file),
+      ...[...retried.values()].filter(file => !(previous.fileSettlements || []).some(old => old.path === file.path))];
+    const stillFailing = new Set(fileSettlements.flatMap(file => file.failureCodes || []));
+    const resolved = new Set([...retried.values()].filter(file => file.applied === 'complete').map(file => file.path));
+    const failures = [...(previous.failures || []).filter(failure => !resolved.has(failure.file)
+      && (failure.file || stillFailing.has(failure.code))), ...(retryFacts.failures || [])];
+    const all = (key, value) => fileSettlements.every(file => file[key] === value);
+    const any = (key, value) => fileSettlements.some(file => file[key] === value);
+    return compactSettlementFacts({ ...previous, fileSettlements, failures, documentEffect: retryFacts.documentEffect === 'changed' ? 'changed' : previous.documentEffect,
+      evidence: { ...previous.evidence, saved: retryFacts.evidence?.saved || previous.evidence?.saved,
+        applied: all('applied', 'complete') ? 'complete' : any('applied', 'complete') ? 'partial' : previous.evidence?.applied,
+        readBack: all('readBack', 'exact') ? 'exact' : any('readBack', 'mismatch') ? 'mismatch' : 'partial',
+        settled: deriveSettledEvidence(selectPrimaryFailure(failures, failureReasons), fileSettlements) },
+      capturedAt: retryFacts.capturedAt || previous.capturedAt });
+  }
+
   function deriveSettledEvidence(primaryFailure, fileSettlements = []) {
     if (primaryFailure?.terminalState === 'needs_review'
       || fileSettlements.some(file => file.readBack === 'mismatch')) {
@@ -707,6 +728,7 @@
     SETTLEMENT_FACTS_MAX_BYTES,
     aggregateFileSettlements,
     applySettlementTransition,
+    mergeRetrySettlement,
     acceptDiagnosticStatus,
     attachVerifiedContentToOperation,
     attachAcceptNotVerifiedFailure,

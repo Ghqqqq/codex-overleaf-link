@@ -2459,7 +2459,7 @@ test('writebackRouter patch-anchor mismatch emits structured failure for patch_a
   assert.equal(failureReasonsModule.validateFailureReason(skip.result.failure).ok, true);
 });
 
-test('writebackRouter readback mismatch emits structured failure for write_observed_mismatch (verify/error, changedDocument:true)', async () => {
+test('writebackRouter readback of the untouched pre-write text emits write_operation_failed (write/error, changedDocument:false)', async () => {
   const bridge = createPageBridgeHarness({
     activePath: 'main.tex',
     dispatchApplies: false,
@@ -2479,11 +2479,16 @@ test('writebackRouter readback mismatch emits structured failure for write_obser
   const skip = result.skipped[0];
   assert.equal(skip.result.code, 'write_verification_failed');
   assert.ok(skip.result.failure);
-  assert.equal(skip.result.failure.code, 'write_observed_mismatch');
-  assert.equal(skip.result.failure.stage, 'verify');
+  // The editor ignored the dispatch, so the readback equals the pre-write text:
+  // nothing landed and the edit is safe to retry. Real divergence keeps
+  // write_observed_mismatch (see writebackRouterNavigation.test.js).
+  assert.equal(skip.result.failure.code, 'write_operation_failed');
+  assert.equal(skip.result.failure.stage, 'write');
   assert.equal(skip.result.failure.severity, 'error');
   assert.equal(skip.result.failure.file, 'main.tex');
-  assert.equal(skip.result.failure.changedDocument, true, 'write landed; readback differs');
+  assert.equal(skip.result.failure.changedDocument, false, 'the document still holds its pre-write text');
+  assert.equal(skip.result.failure.retryable, true);
+  assert.equal(skip.result.failure.evidence.observedIsBefore, true);
   assert.equal(failureReasonsModule.validateFailureReason(skip.result.failure).ok, true);
 });
 

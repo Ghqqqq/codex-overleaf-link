@@ -492,3 +492,116 @@ function normalizeTextPatches(patches, length) {
   }
   return { ok: true, patches: normalized };
 }
+
+test('a file that fails to open mid-batch is retried after the rest of the batch settles', async () => {
+  const files = new Map([['roadmap.md', 'plan'], ['Proof.md', 'proof'], ['Tex/Chap_05.tex', 'chapter']]);
+  let activePath = 'roadmap.md';
+  const openAttempts = new Map();
+  const router = writebackRouter.create({
+    activeEditorIdentityChanged: () => true,
+    compileBridge: { markSourceEdited() {} },
+    delay: () => Promise.resolve(),
+    reopenRetryDelayMs: 0,
+    getActiveEditorIdentity: () => ({ type: 'codemirror-view', doc: activePath }),
+    normalizeSafeProjectPath: projectFiles.normalizeSafeProjectPath,
+    normalizeTextPatches,
+    readActiveEditorText: () => files.get(activePath),
+    replaceActiveEditorPatches(patches) {
+      const text = files.get(activePath);
+      files.set(activePath, patches.slice().sort((a, b) => b.from - a.from)
+        .reduce((value, patch) => value.slice(0, patch.from) + patch.insert + value.slice(patch.to), text));
+      return { ok: true, method: 'codemirror-view-patch' };
+    },
+    treeOperations: {
+      contentSignature: content => String(content || '').length + ':' + String(content || ''),
+      getActiveFilePath: () => activePath,
+      openFileByPath(path) {
+        const attempt = (openAttempts.get(path) || 0) + 1;
+        openAttempts.set(path, attempt);
+        // The chapter's first open is dropped while the previous file settles.
+        if (path === 'Tex/Chap_05.tex' && attempt === 1) return Promise.resolve({ ok: false, reason: 'click dropped' });
+        activePath = path;
+        return Promise.resolve({ ok: true, method: 'dom-click' });
+      },
+      waitForActiveEditorText: path => Promise.resolve({ ok: true, path, text: files.get(activePath) })
+    },
+    window: { CodexOverleafStaleGuard: staleGuard, setTimeout, clearTimeout }
+  });
+  const edit = (path, insert) => ({ type: 'edit', path, patches: [{ from: 0, to: 0, expected: '', insert }] });
+  const result = await router.applyOperations({
+    baseFiles: [...files].map(([path, content]) => ({ path, content })),
+    operations: [edit('roadmap.md', 'A '), edit('Tex/Chap_05.tex', 'C '), edit('Proof.md', 'B ')]
+  });
+  assert.equal(result.skipped.length, 0, JSON.stringify(result.skipped.map(entry => entry.result.code)));
+  assert.deepEqual(result.applied.map(entry => entry.operation.path), ['roadmap.md', 'Proof.md', 'Tex/Chap_05.tex']);
+  assert.equal(files.get('Tex/Chap_05.tex'), 'C chapter');
+  assert.equal(openAttempts.get('Tex/Chap_05.tex'), 2);
+});
+
+test('a file that still cannot be opened stays skipped with its open failure', async () => {
+  let activePath = 'main.tex';
+  const router = writebackRouter.create({
+    activeEditorIdentityChanged: () => true, compileBridge: { markSourceEdited() {} }, delay: () => Promise.resolve(),
+    getActiveEditorIdentity: () => ({ doc: activePath }), normalizeSafeProjectPath: projectFiles.normalizeSafeProjectPath,
+    normalizeTextPatches, readActiveEditorText: () => 'body',
+    treeOperations: { contentSignature: String, getActiveFilePath: () => activePath,
+      openFileByPath: () => Promise.resolve({ ok: false, reason: 'no row' }),
+      waitForActiveEditorText: () => Promise.resolve({ ok: true, text: 'body' }) },
+    window: { CodexOverleafStaleGuard: staleGuard, setTimeout, clearTimeout }
+  });
+  const result = await router.applyOperations({ baseFiles: [{ path: 'gone.tex', content: 'body' }],
+    operations: [{ type: 'edit', path: 'gone.tex', patches: [{ from: 0, to: 0, expected: '', insert: 'x' }] }] });
+  assert.equal(result.applied.length, 0);
+  assert.equal(result.skipped[0].result.failure.code, 'target_file_open_failed');
+  assert.equal(result.skipped[0].result.failure.changedDocument, false);
+});
+
+function singleFileRouter({ text, replace }) {
+  let current = text;
+  return {
+    read: () => current,
+    router: writebackRouter.create({
+      activeEditorIdentityChanged: () => true, compileBridge: { markSourceEdited() {} }, delay: () => Promise.resolve(),
+      writeVerifyWaitMs: 0, getActiveEditorIdentity: () => ({ doc: 'a' }),
+      normalizeSafeProjectPath: projectFiles.normalizeSafeProjectPath, normalizeTextPatches,
+      readActiveEditorText: () => current,
+      replaceActiveEditorPatches(patches, next) { current = replace(current, next); return { ok: true, method: 'codemirror-view-patch' }; },
+      treeOperations: { contentSignature: String, getActiveFilePath: () => 'roadmap.md',
+        openFileByPath: () => Promise.resolve({ ok: true, method: 'already-active' }),
+        waitForActiveEditorText: () => Promise.resolve({ ok: true, text: current }) },
+      window: { CodexOverleafStaleGuard: staleGuard, setTimeout, clearTimeout }
+    })
+  };
+}
+
+const roadmapEdit = { type: 'edit', path: 'roadmap.md', patches: [{ from: 5, to: 9, expected: 'plan', insert: 'road' }] };
+
+test('an edit the editor silently rejected is reported as unchanged and retryable, not as a possible change', async () => {
+  const h = singleFileRouter({ text: 'Long plan text', replace: before => before });
+  const result = await h.router.applyOperations({ baseFiles: [{ path: 'roadmap.md', content: 'Long plan text' }], operations: [roadmapEdit] });
+  const failure = result.skipped[0].result.failure;
+  assert.equal(failure.code, 'write_operation_failed');
+  assert.equal(failure.changedDocument, false);
+  assert.equal(failure.retryable, true);
+  assert.equal(failure.evidence.observedIsBefore, true);
+  assert.equal(failure.evidence.writeMethod, 'codemirror-view-patch');
+});
+
+test('a real readback mismatch keeps content-free diagnostics that locate the divergence', async () => {
+  // Same length, different content — the shape seen in the field (12747 vs 12747).
+  const h = singleFileRouter({ text: 'Long plan text', replace: () => 'Long roaX text' });
+  const result = await h.router.applyOperations({ baseFiles: [{ path: 'roadmap.md', content: 'Long plan text' }], operations: [roadmapEdit] });
+  const failure = result.skipped[0].result.failure;
+  assert.equal(failure.code, 'write_observed_mismatch');
+  assert.equal(failure.changedDocument, true);
+  const evidence = failure.evidence;
+  assert.equal(evidence.expectedLength, evidence.actualLength);
+  assert.equal(evidence.firstDiffOffset, 8);
+  assert.equal(evidence.expectedDiffLength, 1);
+  assert.equal(evidence.actualDiffLength, 1);
+  assert.match(evidence.expectedHash, /^[0-9a-f]{8}$/);
+  assert.notEqual(evidence.expectedHash, evidence.actualHash);
+  assert.equal(evidence.activeMatchesTarget, true);
+  const stored = JSON.stringify({ ...evidence, activePath: '' });
+  assert.ok(!/Long|roaX|text/.test(stored), 'no document text is stored');
+});

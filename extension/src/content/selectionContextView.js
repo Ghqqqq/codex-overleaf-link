@@ -4,6 +4,46 @@
 })(typeof globalThis !== 'undefined' ? globalThis : window, function (SelectionContext) {
   'use strict';
 
+  // The chip shared by the composer and sent messages: file:lines, the edit-only
+  // scope label, and the selected text behind a disclosure.
+  function buildChip(selection, { document: doc = globalThis.document, tx = en => en, expanded = false } = {}) {
+    const lines = selection.lineStart === selection.lineEnd
+      ? String(selection.lineStart) : selection.lineStart + '-' + selection.lineEnd;
+    const location = selection.path + ':' + lines;
+    const details = doc.createElement('details');
+    details.open = expanded;
+    const summary = doc.createElement('summary');
+    summary.title = location;
+    summary.setAttribute('aria-label', tx('Preview selection from ' + location, '预览选区：' + location));
+    const file = doc.createElement('span');
+    file.className = 'codex-selection-file';
+    file.textContent = selection.path.split('/').pop();
+    const range = doc.createElement('span');
+    range.className = 'codex-selection-range';
+    range.textContent = ':' + lines;
+    summary.append(file, range);
+    if (selection.mode === 'edit') {
+      const scope = doc.createElement('span');
+      scope.className = 'codex-selection-scope';
+      scope.textContent = tx('Selection only', '仅此处');
+      summary.append(scope);
+    }
+    const source = doc.createElement('pre');
+    source.textContent = selection.text;
+    details.append(summary, source);
+    return details;
+  }
+
+  // Read-only chip for a sent message: the selection travels with the run's
+  // execution snapshot, so the bubble keeps showing what was attached.
+  function renderSent(host, value, options = {}) {
+    if (!host) return;
+    const selection = SelectionContext.normalize(value);
+    host.replaceChildren();
+    host.hidden = !selection;
+    if (selection) host.append(buildChip(selection, options));
+  }
+
   function create(deps = {}) {
     let generation = 0;
     let probeGeneration = 0;
@@ -42,38 +82,14 @@
       host.hidden = !selection;
       if (!selection) return;
 
-      const lines = selection.lineStart === selection.lineEnd
-        ? String(selection.lineStart) : selection.lineStart + '-' + selection.lineEnd;
-      const location = selection.path + ':' + lines;
-      const details = document.createElement('details');
-      details.open = expanded;
-      const summary = document.createElement('summary');
-      summary.title = location;
-      summary.setAttribute('aria-label', tx('Preview selection from ' + location, '预览选区：' + location));
-      const file = document.createElement('span');
-      file.className = 'codex-selection-file';
-      file.textContent = selection.path.split('/').pop();
-      const range = document.createElement('span');
-      range.className = 'codex-selection-range';
-      range.textContent = ':' + lines;
-      summary.append(file, range);
-      if (selection.mode === 'edit') {
-        const scope = document.createElement('span');
-        scope.className = 'codex-selection-scope';
-        scope.textContent = tx('Selection only', '仅此处');
-        summary.append(scope);
-      }
-      const source = document.createElement('pre');
-      source.textContent = selection.text;
-      details.append(summary, source);
-
+      host.append(buildChip(selection, { document, tx, expanded }));
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.textContent = '\u00d7';
       remove.title = tx('Remove selection', '移除选区');
       remove.setAttribute('aria-label', remove.title);
       remove.addEventListener('click', clear);
-      host.append(details, remove);
+      host.append(remove);
     }
 
     async function attach(mode = 'reference', selected = null) {
@@ -280,5 +296,5 @@
     return { attach, capture, clear, render, start, destroy };
   }
 
-  return { create };
+  return { create, buildChip, renderSent };
 });

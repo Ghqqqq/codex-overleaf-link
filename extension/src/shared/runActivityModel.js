@@ -60,11 +60,39 @@
     };
   }
 
+  // Start-up steps before the model's first response. Plugin titles are matched in both locales so
+  // persisted history (which drops technicalDetail) still classifies; `written` carries a file count.
+  const SETUP_TITLES = [
+    ['editing', /^(?:Checking Overleaf (?:Editing mode|Reviewing\/Track Changes) before starting\.|正在确认 Overleaf (?:Editing 模式|留痕状态)。)$/],
+    ['editing', /(?:Starting the task\.|开始处理任务。)$/],
+    ['read', /^(?:Syncing the Overleaf project to the local Codex workspace\.|正在同步 Overleaf 项目到本地 Codex workspace。)$/],
+    ['read', /^(?:Read Overleaf project: (\d+) text file|已读取 Overleaf 项目：(\d+) 个文本文件)/],
+    ['warm', /^(?:Using the warmed local workspace|使用已预热的本地 workspace)/],
+    ['workspace', /^(?:Syncing the Overleaf project into the local Codex workspace(?:: (\d+))?|正在同步 Overleaf 项目到本地 Codex workspace：(\d+)|Synced (\d+) text files\.|已同步 (\d+) 个文本文件)/],
+    ['codex', /^(?:Local Codex session is starting\.|本地 Codex session 开始运行。)$/],
+    ['codex', /^Using Codex CLI ([^;\s]+?)(?:;|\.?$)/],
+    ['hidden', /^Disabled non-Overleaf Codex skills/]
+  ];
+  function captureSetup(event, type, detail, sanitize) {
+    const title = text(event.title).trim();
+    let step = type.startsWith('overleaf.sync.') && type !== 'overleaf.sync.changes' ? 'workspace'
+      : type === 'codex.runtime.selected' ? 'codex' : type === 'codex.skill_isolation.applied' ? 'hidden' : '';
+    let match = null;
+    if (!step) for (const [name, pattern] of SETUP_TITLES) if ((match = pattern.exec(title))) { step = name; break; }
+    if (!step) return undefined;
+    const fileCount = Number(detail.fileCount) || Number(match?.slice(1).find(Boolean)) || undefined;
+    const version = text(detail.version) || (step === 'codex' && match?.[1]) || '';
+    return normalize({ kind: 'lifecycle', target: 'setup.' + step, state: event.status === 'running' ? 'running' : 'completed',
+      written: Number.isSafeInteger(fileCount) ? fileCount : undefined, output: version }, sanitize);
+  }
+
   function capture(event = {}, sanitize = text) {
     if (event.activity?.v === 1) return normalize(event.activity, sanitize);
     if (event.kind === 'report' || event.kind === 'guidance' || event.kind === 'stream') return undefined;
     const raw = event.technicalDetail || (event.kind === 'technical' ? event.detail : null) || {};
     const detail = raw.detail || {};
+    const setup = event.kind === 'activity' || !event.kind ? captureSetup(event, text(raw.type), detail, sanitize) : undefined;
+    if (setup) return setup;
     const params = detail.params || {};
     const item = params.item || {};
     const type = text(raw.type);
@@ -207,14 +235,51 @@
     });
     let stage = 'preparing';
     let clipped = false;
+    let previousAt = '';
+    // Start-up rows until the first thought, message or tool step: a running row is updated in place by its finish.
+    const setup = { steps: [], done: false, firstWorkAt: '' };
+    const startWork = event => {
+      if (setup.done) return;
+      setup.done = true;
+      setup.firstWorkAt = text(event.timestamp);
+      for (const entry of setup.steps) if (entry.state === 'running') Object.assign(entry, { state: 'completed', endAt: setup.firstWorkAt || entry.at });
+    };
+    const addSetupStep = (step, event, meta) => {
+      if (setup.done || step === 'hidden') return;
+      if (step === 'note') {
+        // Snapshot advisories ("Note: 1 file(s) have empty/loading content.") attach to the project read.
+        const owner = setup.steps.findLast(entry => entry.step === 'read') || setup.steps.at(-1);
+        if (owner) (owner.notes ||= []).push(text(event.title).trim().replace(/^(?:Note: |提示：)/, ''));
+        return;
+      }
+      const last = setup.steps.at(-1);
+      const state = meta?.state || (event.status === 'running' ? 'running' : 'completed');
+      const at = text(event.timestamp);
+      // A finished step closes any step still running before it (start-up is sequential).
+      for (const entry of setup.steps) if (entry.state === 'running' && entry.step !== step) Object.assign(entry, { state: 'completed', endAt: at });
+      const entry = { step, state, at, endAt: state === 'running' ? '' : at, count: meta?.written, version: meta?.output || '',
+        reviewing: /Reviewing|留痕/.test(text(event.title)) };
+      if (last && last.step === step && last.state === 'running') {
+        Object.assign(last, { ...entry, at: last.at, count: entry.count ?? last.count, version: entry.version || last.version });
+      } else setup.steps.push(entry);
+    };
     events.forEach((event, index) => {
       if (!event || event.kind === 'report') return;
       const key = eventKey(event, index);
+      // A stream event keeps only its latest timestamp; the event before it marks when it began.
+      const startedAt = previousAt || text(event.timestamp);
+      previousAt = text(event.timestamp) || previousAt;
       if (event.kind === 'guidance' || event.guidanceId || options.isGuidance?.(event)) {
         const id = 'guidance:' + key;
         const existing = byId.get(id);
         if (existing) existing.event = event;
         else { const row = { key: id, kind: 'guidance', event }; ordered.push(row); byId.set(id, row); }
+        return;
+      }
+      if (event.kind === 'stream' && event.streamRole === 'reasoning' && text(event.title).trim()) {
+        startWork(event);
+        ordered.push({ key: 'thought:' + key, kind: 'thought', event, startedAt });
+        stage = 'working';
         return;
       }
       if (event.kind === 'stream' && event.streamRole !== 'assistant') { diagnostics.push({ key, event }); return; }
@@ -224,6 +289,7 @@
           || (index === lastAssistant && body && finalText
             && (finalText === body || finalText.startsWith(body + '\n') || finalText.startsWith(body + ' '))));
         if (!body || alreadyFinal) return;
+        startWork(event);
         ordered.push({ key: 'message:' + key, kind: 'message', event });
         stage = 'working';
         return;
@@ -236,6 +302,14 @@
         diagnosticNotices.add(noticeKey);
         return;
       }
+      if (meta?.kind === 'lifecycle' && meta.target.startsWith('setup.')) {
+        addSetupStep(meta.target.slice(6), event, meta);
+        diagnostics.push({ key, event });
+        return;
+      }
+      if (meta?.kind === 'lifecycle' && meta.target === 'working' && !setup.steps.some(entry => entry.step === 'waiting')) {
+        addSetupStep('waiting', event, { state: 'running' });
+      } else if (!meta && /^(?:Note: |提示：)/.test(text(event.title))) addSetupStep('note', event);
       if (!meta || meta.kind === 'lifecycle' || event.kind === 'technical') {
         diagnostics.push({ key, event });
         if (meta?.kind === 'lifecycle') stage = meta.target;
@@ -254,6 +328,7 @@
           previous.event = event;
         }
       } else {
+        if (meta.kind !== 'notice') startWork(event);
         const row = { key: identity, kind: meta.kind, meta, event, startedAt: event.timestamp };
         byId.set(identity, row);
         ordered.push(row);
@@ -278,7 +353,8 @@
       } else blocks.push(row);
     }
     const legacy = diagnostics.some(({ event }) => event.kind !== 'technical' && !event.technicalDetail && !event.activity);
-    return { blocks, diagnostics, notices, stage, fileCount: files.size, clipped, hasReport: Boolean(report), legacy };
+    if (stage === 'local_completed') startWork({});
+    return { blocks, diagnostics, notices, stage, setup, fileCount: files.size, clipped, hasReport: Boolean(report), legacy };
   }
 
   return { normalize, capture, project, normalizePhase: phase, isRoutineCancellationEvent };

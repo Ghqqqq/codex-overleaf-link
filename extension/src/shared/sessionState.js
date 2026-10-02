@@ -619,6 +619,18 @@
     return event;
   }
 
+  // On restore only: a run that already finished (finishedAt plus a terminal
+  // report as its last visible event) but was persisted as running by a stale
+  // status write. Live retries also carry an old finishedAt, so never in memory.
+  function recoverSettledRunningRun(run) {
+    if (run?.status !== 'running' || !Number.isFinite(Date.parse(run.finishedAt))) return run;
+    const last = [...(Array.isArray(run.events) ? run.events : [])].reverse()
+      .find(item => item && item.kind !== 'technical' && item.subagent !== true);
+    if (last?.kind !== 'report' || !['completed', 'failed'].includes(last.status)
+      || Date.parse(last.timestamp) > Date.parse(run.finishedAt)) return run;
+    return { ...run, status: last.status };
+  }
+
   function recoverRecordedRunFailure(run, locale = i18n.DEFAULT_LOCALE) {
     if (run?.status !== 'running') return run;
     const event = recordedRunFailure(run);
@@ -631,6 +643,7 @@
   }
 
   function normalizeRun(run, options = {}) {
+    if (options.restoreRunningRuns === true || options.recoverSettledRuns === true) run = recoverSettledRunningRun(run);
     run = recoverRecordedRunFailure(run, options.locale);
     const shouldStopRestoredRun = options.restoreRunningRuns === true && run.status === 'running';
     const locale = options.locale || i18n.DEFAULT_LOCALE;
@@ -1678,7 +1691,10 @@
     const result = {};
     const retry = WritebackIntent.normalize(run.retryWriteback);
     if (retry && retry.runId === run.id && retry.projectId === normalizeProjectPrefKey(run.runProjectId)
-      && retry.operations.every(op => op.type === 'create' && typeof op.content === 'string')
+      && retry.operations.every(op => (op.type === 'create' && typeof op.content === 'string')
+        || (op.type === 'edit' && (op.patches?.length || typeof op.replaceAll === 'string')
+          && retry.baseFiles.some(file => file.path === op.path))
+        || (op.type === 'delete' && retry.baseFiles.some(file => file.path === op.path)))
       && !containsSecretLikeText(retry)) result.retryWriteback = retry;
     const check = WritebackIntent.normalizeSaveCheck(run.saveCheck);
     if (check && check.runId === run.id && check.projectId === normalizeProjectPrefKey(run.runProjectId)) result.saveCheck = check;
@@ -1703,6 +1719,7 @@
     normalizeRuns,
     normalizeRunStatus,
     recoverRecordedRunFailure,
+    recoverSettledRunningRun,
     normalizeProjectReferenceFiles,
     normalizeSelectionContext: SelectionContext.normalize,
     prepareStateForStorage,

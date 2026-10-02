@@ -107,7 +107,7 @@
       if (!copied) throw new Error('clipboard_copy_failed');
     }
 
-    return Object.freeze({ configureResultActions, projectUndoAvailability, splitFlatCompletionReport, projectCompletionMeta });
+    return Object.freeze({ configureResultActions, projectUndoAvailability, splitFlatCompletionReport, projectCompletionMeta, summarizeCompletionMeta });
   }
 
 
@@ -168,6 +168,43 @@
         ? { ...row, label: tx('Save', '保存'), value: run.saveCheck
           ? tx('Pending confirmation', '待确认') : tx('Saved', '已确认保存') }
         : row);
+  }
+
+  // Generic reasons say nothing beyond "no files were written", so they stay in
+  // the details. Both locales match because a report keeps its original locale.
+  const GENERIC_UNCHANGED_REASONS = new Set([
+    'No file changes need to sync back to Overleaf.', '没有产生需要同步回 Overleaf 的文件改动。',
+    'No approved file changes remain to sync back to Overleaf.', '没有剩余已确认的文件改动需要同步回 Overleaf。',
+    'This run was Ask mode.', '这轮是只问不改。'
+  ]);
+
+  // One summary line for the meta rows: what was written, whether it can be
+  // undone, and a pending save. The rows themselves stay behind the disclosure,
+  // which opens by itself only when something needs the user's attention.
+  function summarizeCompletionMeta(rows, run, { tx, failed = false, unconfirmed = false } = {}) {
+    const find = key => String(rows.find(row => row?.key === key)?.value || '').trim();
+    const counts = find('writeResult').match(/wrote (\d+) items?, skipped (\d+)|已写入 (\d+) 项，跳过 (\d+) 项/);
+    const wrote = Number(counts?.[1] ?? counts?.[3] ?? 0), skipped = Number(counts?.[2] ?? counts?.[4] ?? 0);
+    const reason = find('unchangedReason');
+    const savePending = Boolean(run?.saveCheck) || (!run?.saveConfirmedAt && /^(?:Pending|待确认)/.test(find('saveState')));
+    const facts = [];
+    if (failed) facts.push({ key: 'write', tone: 'fail', text: unconfirmed ? tx('Write not confirmed', '写入结果未确认') : tx('Write incomplete', '写入未完成') });
+    else if (wrote) facts.push({ key: 'write', text: tx(`Wrote ${wrote} item${wrote === 1 ? '' : 's'}`, `已写入 ${wrote} 项`) });
+    else if (reason && !GENERIC_UNCHANGED_REASONS.has(reason)) facts.push({ key: 'write', text: tx('Not written: ', '未写入：') + reason.replace(/[.。]$/, '') });
+    else facts.push({ key: 'write', text: tx('No files written', '未写入文件') });
+    if (skipped) facts.push({ key: 'skip', tone: 'warn', text: tx(`${skipped} skipped`, `跳过 ${skipped} 项`) });
+    const undoable = Number(find('undo').match(/(\d+)/)?.[1] || 0);
+    const undo = run?.undoStatus === 'running' ? tx('Undoing…', '正在撤销…')
+      : run?.undoStatus === 'applied' || run?.trackedChangeStatus === 'rejected' ? tx('Changes undone', '已撤销本轮修改')
+        : run?.trackedChangeStatus === 'accepted' ? tx('Changes accepted', '修改已接受')
+          : run?.undoStatus === 'partial' ? tx('Partly undone', '已撤销部分修改')
+            : undoable ? tx(`${undoable} undoable`, `可撤销 ${undoable} 项`)
+              : failed ? '' : tx('Nothing to undo', '无可撤销写入');
+    if (undo) facts.push({ key: 'undo', text: undo });
+    if (savePending) facts.push({ key: 'save', tone: 'warn', text: tx('Save pending', '保存待确认') });
+    const attention = failed || skipped > 0;
+    const warnKeys = new Set([...(attention ? ['writeResult', 'nextStep'] : []), ...(savePending ? ['saveState'] : [])]);
+    return { facts, open: attention, warnKeys };
   }
 
   function projectUndoAvailability(run, projectRunSettlement) {

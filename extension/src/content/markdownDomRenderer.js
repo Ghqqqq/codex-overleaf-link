@@ -454,11 +454,16 @@
       const text = String(textNode.textContent || '');
       const match = text.match(/^(\s*)(Conclusion:|结论：|Changes:|修改：)(\s*)/);
       if (!match || !textNode.parentNode) continue;
+      // The answer speaks for itself: older stored reports still begin with a
+      // "Conclusion:" prefix, which is dropped rather than labelled.
+      if (['Conclusion:', '结论：'].includes(match[2])) {
+        textNode.textContent = `${match[1]}${text.slice(match[0].length)}`;
+        if (!String(block.textContent || '').trim()) block.remove?.();
+        continue;
+      }
       const label = document.createElement('span');
       label.className = 'run-system-label';
-      label.dataset.systemLabel = ['Conclusion:', '结论：'].includes(match[2])
-        ? 'conclusion'
-        : 'changes';
+      label.dataset.systemLabel = 'changes';
       label.textContent = `${match[2]}${match[3]}`;
       textNode.textContent = `${match[1]}${text.slice(match[0].length)}`;
       textNode.parentNode.insertBefore(label, textNode);
@@ -487,7 +492,7 @@
     const check = document.createElement('span');
     check.className = 'run-change-summary__check';
     check.setAttribute('aria-hidden', 'true');
-    check.textContent = '✓';
+    check.innerHTML = '<svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg>';
     const text = document.createElement('span');
     text.textContent = tx(
       `${syncedFiles} ${syncedFiles === 1 ? 'file' : 'files'} synced`,

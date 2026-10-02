@@ -155,6 +155,14 @@ test('passed checks collapse their explanations while warnings and failures stay
   assert.ok(rows.every(row => row.children[0].tag === 'summary'));
 });
 
+test('confirmations opened from the settings workbench cover the viewport instead of the sidebar', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '../extension/src/content/panelRenderer.js'), 'utf8');
+  const overlay = css.match(/#codex-overleaf-panel \.codex-plugin-confirm\[data-context="workbench"\]\s*\{[^}]*\}/)?.[0] || '';
+  assert.match(renderer, /\.codex-settings-workbench\[open\][\s\S]{0,80}overlay\.dataset\.context = 'workbench'/);
+  assert.match(overlay, /inset:\s*0;/);
+  assert.match(overlay, /width:\s*100vw/);
+});
+
 test('confirmation actions have intrinsic height and can wrap long labels', () => {
   const actions = css.match(/#codex-overleaf-panel \.codex-plugin-confirm-actions\s*\{[^}]*\}/)?.[0] || '';
   const button = css.match(/#codex-overleaf-panel \.codex-plugin-confirm-actions button\s*\{[^}]*\}/)?.[0] || '';

@@ -4,7 +4,7 @@
   function create(deps = {}) {
     if (!deps.RunActivityModel) return null;
     const { RunActivityModel: Model, tx, findRunRecord, getPanel, cssEscape, isGuidance,
-      formatElapsed, renderMarkdownBlockText, renderRunEvent,
+      formatElapsed, renderMarkdownBlockText, renderRunEvent, presence, classifyStatus, getProjectId, summarizeCommand,
       sanitizeAssistantVisibleText: sanitize = value => String(value || '') } = deps;
     const cards = new WeakMap();
     const choices = new Map();
@@ -94,7 +94,7 @@
       }
       if (meta.target) return meta.target;
       if (meta.paths?.length) return meta.paths.join(', ');
-      if (meta.command) return meta.command.replace(/\s+/g, ' ');
+      if (meta.command) return summarizeCommand?.(meta.command) || meta.command.replace(/\s+/g, ' ');
       return plain(item.event?.title);
     }
 
@@ -177,7 +177,242 @@
       }
       for (const [key, row] of cache) if (!keep.has(key)) { row.el.remove(); cache.delete(key); }
     }
+    // Reasoning (CoT): the live one streams its last lines; settled ones fold to one line and open to the full text.
+    function makeThought(block, card) {
+      const el = make('details', 'run-work-block run-workflow-thought');
+      el.dataset.kind = 'thought';
+      const summary = make('summary', 'run-workflow-thought-line');
+      const label = make('span', 'run-workflow-thought-label');
+      const lead = make('span', 'run-workflow-thought-lead');
+      summary.append(label, lead);
+      const tail = make('div', 'run-workflow-thought-tail');
+      tail.append(make('span', ''));
+      const full = make('div', 'run-workflow-thought-full');
+      el.append(summary, tail, full);
+      const key = card.id + ':thought:' + block.key;
+      disclosure(el, key);
+      const row = { el, key, label, lead, tail, full, stamp: '', value: '', rendered: null, live: false };
+      // Full text renders only when opened; long CoT stays cheap in collapsed history.
+      row.showFull = () => {
+        if (row.live || !el.open || row.rendered === row.value) return;
+        row.rendered = row.value;
+        renderMarkdownBlockText(full, row.value, { streaming: false });
+      };
+      el.addEventListener('toggle', row.showFull);
+      return row;
+    }
+    function updateThought(row, block, run) {
+      const value = String(sanitize(block.event.title) || '').trim();
+      const live = run.status === 'running' && block.event.status === 'running';
+      const stamp = String(live) + ':' + value;
+      if (row.stamp === stamp) return;
+      row.stamp = stamp;
+      row.el.dataset.live = String(live);
+      row.live = live;
+      // A closed <details> hides everything but its summary, so the live tail needs the row open.
+      if (live) { row.el.open = true; text(row.tail.firstChild, value.slice(-900)); return; }
+      if (!choices.has(row.key)) row.el.open = false;
+      const started = Date.parse(block.startedAt || ''), ended = Date.parse(block.event.timestamp || '');
+      const seconds = Number.isFinite(started) && Number.isFinite(ended) && ended > started ? formatElapsed(ended - started) : '';
+      text(row.label, seconds ? tx('Thought ' + seconds, '思考 ' + seconds) : tx('Thought', '思考'));
+      const flat = value.replace(/\s+/g, ' ');
+      text(row.lead, (flat.match(/^.{12,160}?[.!?。！？](?=\s|$)/) || [flat.slice(0, 160)])[0]);
+      row.value = value;
+      row.showFull();
+    }
+    // Start-up block: what happens between Send and the model's first response, step by step.
+    const SETUP_CALM_MS = 30000;
+    function setupStepText(entry, live) {
+      const n = entry.count;
+      const copy = {
+        editing: live ? tx('Checking Overleaf editing mode', '检查 Overleaf 编辑模式')
+          : entry.reviewing ? tx('Overleaf Track Changes is on', 'Overleaf 已开启留痕') : tx('Overleaf is in Editing mode', 'Overleaf 处于编辑模式'),
+        read: live ? tx('Reading the Overleaf project', '正在读取 Overleaf 项目')
+          : n ? tx('Read the Overleaf project · ' + n + ' text files', '已读取 Overleaf 项目 · ' + n + ' 个文本文件') : tx('Read the Overleaf project', '已读取 Overleaf 项目'),
+        warm: tx('Using the already synced workspace', '使用已同步的工作区，无需重新读取项目'),
+        workspace: live ? tx('Writing the local workspace', '正在写入本地工作区')
+          : n ? tx('Synced ' + n + ' files to the local workspace', '已同步 ' + n + ' 个文件到本地工作区') : tx('Synced the local workspace', '已同步本地工作区'),
+        codex: live ? tx('Starting Codex', '正在启动 Codex')
+          : entry.version ? tx('Started Codex CLI ' + entry.version, '已启动 Codex CLI ' + entry.version) : tx('Started Codex', '已启动 Codex'),
+        waiting: live ? tx("Waiting for the model's first response", '等待模型首次响应') : tx('The model responded', '模型已开始响应')
+      };
+      return copy[entry.step] || '';
+    }
+    function setupNote(note) {
+      const empty = /^(\d+) file\(s\) have empty\/loading content\.$/.exec(note);
+      if (empty) return tx(empty[1] + ' file(s) are empty or still loading', empty[1] + ' 个文件内容为空或尚未加载完');
+      const short = /^(\d+) captured file\(s\) are shorter than 80 characters\.$/.exec(note);
+      if (short) return tx(short[1] + ' file(s) are very short and may not have loaded', short[1] + ' 个文件内容很短，可能没有加载完');
+      return note;
+    }
+    function setupLiveLabel(setup) {
+      const live = setup.steps.findLast(entry => entry.state === 'running');
+      return live ? setupStepText(live, true) : tx('Starting the task', '正在启动任务');
+    }
+    function renderSetup(card, setup, active) {
+      const el = card.setup;
+      const steps = setup?.steps || [];
+      el.hidden = !steps.length && !active;
+      if (el.hidden) return;
+      const folded = setup.done || !active;
+      el.dataset.folded = String(folded);
+      el.dataset.live = String(active && !setup.done);
+      const first = Date.parse(steps[0]?.at || ''), waitAt = Date.parse(steps.find(entry => entry.step === 'waiting')?.at || '');
+      const parts = [Number.isFinite(first) && Number.isFinite(waitAt) && waitAt >= first
+        ? tx('Setup ' + formatElapsed(waitAt - first), '启动 ' + formatElapsed(waitAt - first)) : tx('Setup', '启动')];
+      const files = steps.find(entry => entry.step === 'workspace')?.count;
+      if (files) parts.push(tx(files + ' files', files + ' 个文件'));
+      else if (steps.some(entry => entry.step === 'warm')) parts.push(tx('synced workspace', '已同步的工作区'));
+      const version = steps.find(entry => entry.version)?.version;
+      if (version) parts.push('Codex ' + version);
+      text(card.setupFold, parts.join(' · '));
+      card.setupSummary.dataset.notes = String(steps.some(entry => entry.notes?.length));
+      const rows = steps.length ? steps : [{ step: 'start', state: 'running', at: '' }];
+      while (card.setupSteps.children.length > rows.length) card.setupSteps.lastChild.remove();
+      rows.forEach((entry, index) => {
+        let row = card.setupSteps.children[index];
+        if (!row) {
+          row = make('div', 'run-setup-step');
+          row.append(make('span', 'run-setup-glyph'), make('span', 'run-setup-text'), make('span', 'run-setup-time'));
+          card.setupSteps.append(row);
+        }
+        const live = active && entry.state === 'running';
+        const warn = Boolean(entry.notes?.length);
+        row.dataset.state = live ? 'running' : warn ? 'warning' : 'completed';
+        const glyph = row.children[0];
+        const glyphKind = live ? 'spinner' : warn ? 'notice' : 'check';
+        if (glyph.dataset.kind !== glyphKind) {
+          glyph.dataset.kind = glyphKind;
+          glyph.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">' + ({
+            spinner: '<circle cx="8" cy="8" r="5.5" opacity=".25"/><path d="M13.5 8A5.5 5.5 0 0 0 8 2.5"/>',
+            notice: '<circle cx="8" cy="8" r="6"/><path d="M8 4.5v4 M8 11h.01"/>', check: '<path d="m3.5 8 3 3 6-6"/>' })[glyphKind] + '</svg>';
+        }
+        const label = entry.step === 'start' ? tx('Starting the task', '正在启动任务') : setupStepText(entry, live);
+        const body = row.children[1];
+        const extras = [...(entry.notes || []).map(note => ['run-setup-note', setupNote(note)])];
+        const started = Date.parse(entry.at || ''), ended = Date.parse(entry.endAt || '');
+        const elapsed = Number.isFinite(started) ? Math.max(0, (live ? Date.now() : (Number.isFinite(ended) ? ended : started)) - started) : NaN;
+        if (live && entry.step === 'waiting' && elapsed > SETUP_CALM_MS) {
+          extras.push(['run-setup-calm', tx('The model is thinking. With some third-party providers, its reasoning arrives all at once when this step ends.',
+            '模型正在思考。部分第三方服务的思考内容会在这一段结束后一起显示。')]);
+        }
+        const stamp = label + '\0' + extras.map(pair => pair.join(':')).join('\0');
+        if (body.dataset.stamp !== stamp) {
+          body.dataset.stamp = stamp;
+          const main = make('span', 'run-setup-label');
+          main.textContent = label + (live ? '…' : '');
+          body.replaceChildren(main);
+          for (const [className, value] of extras) { const line = make('span', className); line.textContent = value; body.append(line); }
+        }
+        text(row.children[2], Number.isFinite(elapsed) && (live || elapsed >= 1000) ? formatElapsed(elapsed) : '');
+      });
+    }
+    // Collapsed live peek: a three-row window onto the newest start-up step, thought or tool call.
+    // Prose stays out of it; new rows enter at the bottom and push older ones up.
+    const PEEK_ROWS = 3;
+    const PEEK_GLYPHS = {
+      spinner: '<circle cx="8" cy="8" r="5.5" opacity=".25"/><path d="M13.5 8A5.5 5.5 0 0 0 8 2.5"/>',
+      check: '<path d="m3.5 8 3 3 6-6"/>', notice: '<circle cx="8" cy="8" r="6"/><path d="M8 4.5v4 M8 11h.01"/>',
+      fail: '<path d="m4 4 8 8M12 4l-8 8"/>'
+    };
+    function firstSentence(value) {
+      const flat = String(value || '').replace(/\s+/g, ' ').trim();
+      return (flat.match(/^.{12,160}?[.!?。！？](?=\s|$)/) || [flat.slice(0, 160)])[0];
+    }
+    function peekToolResult(item, state) {
+      if (state === 'running' || state === 'pending') return '';
+      if (['failed', 'warning', 'cancelled', 'unknown', 'skipped'].includes(state)) return stateLabel(state);
+      if (item.file && item.file.added !== undefined) return '+' + item.file.added + ' −' + item.file.removed;
+      const found = /found (\d+) relevant line|找到 (\d+) 处/.exec(plain(item.event?.title));
+      const count = found && Number(found[1] || found[2]);
+      return count ? tx(count + (count === 1 ? ' match' : ' matches'), count + ' 处匹配') : '';
+    }
+    function peekEntries(card, result, run) {
+      const entries = [];
+      const setup = result.setup || { steps: [] };
+      if (!setup.done) {
+        const steps = setup.steps.length ? setup.steps : [{ step: 'start', state: 'running' }];
+        steps.forEach((entry, index) => {
+          const live = entry.state === 'running';
+          const started = Date.parse(entry.at || ''), ended = Date.parse(entry.endAt || '');
+          const elapsed = Number.isFinite(started) ? Math.max(0, (live ? Date.now() : (Number.isFinite(ended) ? ended : started)) - started) : NaN;
+          entries.push({ key: 'setup:' + index, kind: 'setup', glyph: live ? 'spinner' : entry.notes?.length ? 'notice' : 'check',
+            state: live ? 'running' : entry.notes?.length ? 'warning' : 'completed',
+            lead: (entry.step === 'start' ? tx('Starting the task', '正在启动任务') : setupStepText(entry, live)) + (live ? '…' : ''),
+            result: entry.notes?.length ? setupNote(entry.notes[0]) : Number.isFinite(elapsed) && (live || elapsed >= 1000) ? formatElapsed(elapsed) : '' });
+        });
+        return entries;
+      }
+      if (setup.steps.length) entries.push({ key: 'setup:fold', kind: 'setup', glyph: 'check', state: 'completed', lead: card.setupFold.textContent });
+      for (const block of result.blocks) {
+        if (block.kind === 'thought') {
+          const value = String(sanitize(block.event.title) || '').trim();
+          const live = run.status === 'running' && block.event.status === 'running';
+          const started = Date.parse(block.startedAt || ''), ended = Date.parse(block.event.timestamp || '');
+          const seconds = Number.isFinite(started) && Number.isFinite(ended) && ended > started ? ' ' + formatElapsed(ended - started) : '';
+          const flat = value.replace(/\s+/g, ' ');
+          entries.push({ key: block.key, kind: 'thought', state: live ? 'running' : 'completed',
+            label: live ? tx('Thinking', '思考中') : tx('Thought', '思考') + seconds,
+            lead: live ? (flat.length > 90 ? '…' + flat.slice(-90) : flat) : firstSentence(value) });
+        } else if (block.kind !== 'message' && block.kind !== 'guidance') {
+          for (const item of block.kind === 'exploreGroup' ? block.items : [block]) {
+            if (item.kind === 'notice') continue;
+            const state = effectiveState(item, run);
+            entries.push({ key: item.key + (item.file ? ':' + item.file.path : ''), kind: 'tool', state, toolKind: item.kind,
+              glyph: state === 'running' ? 'spinner' : state === 'failed' ? 'fail' : '',
+              label: kindLabel(item), target: targetText(item), result: peekToolResult(item, state) });
+          }
+        }
+      }
+      return entries;
+    }
+    function renderPeek(card, result, run, active) {
+      const show = active && !card.process.open;
+      card.peek.hidden = !show;
+      card.peekMore.hidden = true;
+      if (!show) return;
+      const entries = peekEntries(card, result, run);
+      const recent = entries.slice(-PEEK_ROWS);
+      const keep = new Set(recent.map(entry => entry.key));
+      for (const [key, row] of card.peekRows) if (!keep.has(key)) { row.el.remove(); card.peekRows.delete(key); }
+      let cursor = card.peekTrack.firstChild;
+      for (const entry of recent) {
+        let row = card.peekRows.get(entry.key);
+        if (!row) {
+          const el = make('div', 'run-peek-row is-entering');
+          row = { el, glyph: make('span', 'run-peek-glyph'), label: make('span', 'run-peek-label'), lead: make('span', 'run-peek-lead'),
+            result: make('span', 'run-peek-result') };
+          el.append(row.glyph, row.label, row.lead, row.result);
+          card.peekRows.set(entry.key, row);
+        } else if (row.el.className !== 'run-peek-row') {
+          row.el.className = 'run-peek-row'; // the slide-in plays once, on the render that created the row
+        }
+        // Touch the DOM only when the order changes: re-inserting a node restarts its CSS animation,
+        // which made the rows jump on every one-second timer tick.
+        if (row.el !== cursor) card.peekTrack.insertBefore(row.el, cursor);
+        cursor = row.el.nextSibling;
+        row.el.dataset.kind = entry.kind;
+        row.el.dataset.state = entry.state;
+        const glyph = entry.kind === 'tool' && !entry.glyph ? 'tool:' + entry.toolKind : entry.glyph || 'dot';
+        if (row.glyphKind !== glyph) {
+          row.glyphKind = glyph;
+          row.glyph.replaceChildren();
+          if (glyph.startsWith('tool:')) row.glyph.append(icon(entry.toolKind));
+          else if (glyph !== 'dot') row.glyph.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">' + PEEK_GLYPHS[glyph] + '</svg>';
+        }
+        text(row.label, entry.label || '');
+        text(row.lead, entry.kind === 'tool' ? entry.target : entry.lead);
+        text(row.result, entry.result ? (entry.kind === 'tool' ? '⎿ ' : '') + entry.result : '');
+      }
+      const hidden = entries.length - recent.length;
+      // The window grows with its rows (1→3) so a fresh run has no empty band; the top fade only appears once rows scroll out.
+      card.peek.dataset.rows = String(recent.length);
+      card.peek.dataset.overflow = String(hidden > 0);
+      card.peekMore.hidden = hidden <= 0;
+      text(card.peekMore, tx(hidden + (hidden === 1 ? ' earlier step' : ' earlier steps') + ' · expand to see all', '之前还有 ' + hidden + ' 步 · 展开查看全部'));
+    }
     function buildBlock(block, card) {
+      if (block.kind === 'thought') return makeThought(block, card);
       if (block.kind === 'message' || block.kind === 'guidance') {
         const el = make('div', 'run-work-block run-workflow-' + block.kind + (block.kind === 'message' ? ' run-stream-text' : ''));
         el.dataset.kind = block.kind;
@@ -188,6 +423,7 @@
       return row;
     }
     function updateBlock(row, block, card, run) {
+      if (block.kind === 'thought') { updateThought(row, block, run); return; }
       if (block.kind === 'message') {
         const value = String(sanitize(block.event.title) || '');
         const streaming = run.status === 'running' && block.event.status === 'running';
@@ -244,16 +480,44 @@
       attention.hidden = true;
       attention.addEventListener('click', () => { remember(String(run.id) + ':run', true); process.open = true; update({ root, recordId: run.id }); });
       process.before(attention);
+      const setupEl = make('details', 'run-setup');
+      const setupSummary = make('summary', 'run-setup-summary');
+      const setupFold = make('span', 'run-setup-fold');
+      setupSummary.append(make('span', 'run-setup-done'), setupFold);
+      const setupSteps = make('div', 'run-setup-steps');
+      setupEl.append(setupSummary, setupSteps);
+      setupEl.hidden = true;
+      events.before(setupEl);
+      const peek = make('div', 'run-peek');
+      peek.setAttribute('aria-hidden', 'true');
+      const peekTrack = make('div', 'run-peek-track');
+      peek.append(peekTrack);
+      peek.hidden = true;
+      const peekMore = make('button', 'run-peek-more');
+      peekMore.type = 'button';
+      peekMore.hidden = true;
+      setupEl.before(peek);
+      setupEl.before(peekMore);
       const busy = make('div', 'run-workflow-busy');
       busy.setAttribute('role', 'status');
       events.after(busy);
       const card = { id: String(run.id), root, process, summary, events, metrics, attention,
-        busy, rows: new Map(), run };
+        busy, rows: new Map(), run, setup: setupEl, setupSummary, setupFold, setupSteps,
+        peek, peekTrack, peekMore, peekRows: new Map() };
+      const expand = () => { remember(card.id + ':run', true); process.open = true; update({ root, recordId: run.id }); };
+      peek.addEventListener('click', expand);
+      peekMore.addEventListener('click', expand);
+      disclosure(setupEl, String(run.id) + ':setup');
       cards.set(root, card);
       disclosure(process, card.id + ':run');
       process.addEventListener('toggle', () => {
         events.dataset.expanded = String(process.open);
         card.attention.hidden = process.open || !card.noticeCount;
+        if (card.projection) {
+          renderSetup(card, card.projection.setup, card.run.status === 'running');
+          if (!process.open) card.setup.hidden = true;
+          renderPeek(card, card.projection, card.run, card.run.status === 'running');
+        }
       });
       render(card, run);
     }
@@ -265,25 +529,75 @@
       const active = run.status === 'running';
       const abnormal = ['failed', 'interrupted', 'needs_review_after_navigation', 'abandoned_after_navigation'].includes(run.status);
       if (choices.has(card.id + ':run')) card.process.open = choices.get(card.id + ':run');
-      else card.process.open = active || abnormal;
+      // A live run starts collapsed onto its peek window; problems open it.
+      else card.process.open = abnormal;
       card.events.dataset.expanded = String(card.process.open);
       card.summary.setAttribute('aria-expanded', String(card.process.open));
       reconcile(card.events, result.blocks, card.rows, block => buildBlock(block, card),
         (row, block) => updateBlock(row, block, card, run));
+      renderSetup(card, result.setup, active);
+      // Live start-up stays open; once work begins (or in history) it follows the run disclosure.
+      if (active && !result.setup?.done) card.setup.open = true;
+      else if (!choices.has(card.id + ':setup')) card.setup.open = false;
+      if (!card.process.open) card.setup.hidden = true;
+      renderPeek(card, result, run, active);
       card.noticeCount = result.notices.length;
       const latestNotice = result.notices.at(-1);
       card.attention.hidden = card.process.open || !latestNotice;
       text(card.attention, latestNotice ? plain(latestNotice.event.title) : '');
-      card.metrics.hidden = active || !result.fileCount;
+      paintPresence(card, run, result, active);
+      // The ∎ header carries the file count (and its recorded-only caveat) whenever presence is on.
+      card.metrics.hidden = active || !result.fileCount || Boolean(presence);
       text(card.metrics, (result.clipped ? tx('Recorded: ', '已记录：') : '')
         + tx(result.fileCount + ' local files changed', result.fileCount + ' 个本地文件有改动'));
       const hasActive = result.blocks.some(block => block.kind === 'message' && block.event.status === 'running'
         || block.kind === 'exploreGroup' && block.items.some(item => item.meta.state === 'running')
         || block.meta?.state === 'running');
-      card.busy.hidden = !active || hasActive;
+      // The presence header already narrates the live state.
+      card.busy.hidden = !active || hasActive || Boolean(presence);
       text(card.busy, result.stage === 'local_completed'
         ? (run.mode === 'ask' ? tx('Preparing the answer…', '正在整理回答…') : tx('Preparing writeback and verification…', '正在准备写回与验证…'))
         : result.stage === 'preparing' ? tx('Preparing project context…', '正在准备项目上下文…') : tx('Working…', '正在处理…'));
+    }
+    // Live header: long phases are named; otherwise a rarely-changing word. Tool steps stay in the round list.
+    function runningLabel(result, run) {
+      if (result.stage === 'sync') return { kind: 'stage', text: tx('Syncing changes to Overleaf', '正在同步改动到 Overleaf') };
+      // Before the model's first response the header names the real start-up step, not a playful word.
+      if (result.setup && !result.setup.done) return { kind: 'stage', text: setupLiveLabel(result.setup) };
+      if (result.stage === 'preparing') return { kind: 'stage', text: tx('Preparing project context', '正在准备项目上下文') };
+      if (result.stage === 'local_completed') {
+        return { kind: 'stage', text: run.mode === 'ask' ? tx('Preparing the answer', '正在整理回答')
+          : tx('Preparing writeback and verification', '正在准备写回与验证') };
+      }
+      return { kind: 'idle' };
+    }
+    function paintPresence(card, run, result, active) {
+      const status = card.root.querySelector('[data-run-status]');
+      if (!presence || !status) return;
+      // History cards arrive with plain status text; keep it for failure and fallback labels.
+      if (!status.dataset.presence && !status.dataset.presenceText) status.dataset.presenceText = status.textContent;
+      const started = Date.parse(run.startedAt || '');
+      if (active) {
+        presence.paintRunning(status, { runId: card.id, label: runningLabel(result, run),
+          elapsedMs: Number.isFinite(started) ? Math.max(0, Date.now() - started) : undefined });
+        return;
+      }
+      const finished = Date.parse(run.finishedAt || '');
+      const facts = { kind: classifyStatus?.(run) || 'plain', text: status.dataset.presenceText || status.textContent,
+        elapsedMs: Number.isFinite(started) && Number.isFinite(finished) ? Math.max(0, finished - started) : null,
+        files: result.fileCount, filesClipped: result.clipped === true, added: 0, removed: 0, steps: 0, compiled: false,
+        projectId: getProjectId?.() || '', animate: card.animateNext === true };
+      card.animateNext = false;
+      for (const block of result.blocks) {
+        if (['message', 'guidance', 'thought'].includes(block.kind)) continue;
+        facts.steps += block.kind === 'exploreGroup' ? block.items.length : 1;
+        if (block.file && block.meta?.state === 'completed') {
+          facts.added += block.file.added || 0;
+          facts.removed += block.file.removed || 0;
+        }
+        if (block.kind === 'compile' && block.meta?.state === 'completed') facts.compiled = true;
+      }
+      presence.paintSettled(status, facts);
     }
     function update(view, incoming) {
       const { root, run } = resolve(view);
@@ -294,9 +608,16 @@
       return true;
     }
     function settle(view, statusText) {
-      update(view);
       const { root } = resolve(view);
-      text(view?.status || root?.querySelector('[data-run-status]'), statusText);
+      const card = root && cards.get(root);
+      const status = view?.status || root?.querySelector('[data-run-status]');
+      if (presence && card && status) {
+        status.dataset.presenceText = statusText;
+        card.animateNext = true;
+        if (update(view)) return;
+      }
+      update(view);
+      text(status, statusText);
     }
     function appendDetail(view, row, event) {
       if (!update(view, event)) view.events?.append(row);

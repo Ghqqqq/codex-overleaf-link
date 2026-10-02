@@ -27,11 +27,15 @@ test('toolbar Popup stays focused on connection status and removes duplicate upd
   assert.doesNotMatch(bootstrapPopupMarkup, /<script src="popup\.js"><\/script>/);
   assert.match(bootstrapPopupCss, /html\s*\{[\s\S]*background:/);
   assert.doesNotMatch(bootstrapPopupCss, /@keyframes popup-enter\s*\{[^@]*translateY/);
+  // The Bootstrap popup is only a shell; the replaceable runtime draws the body,
+  // so popup changes no longer need a Bootstrap migration.
+  assert.match(bootstrapPopupMarkup, /data-bootstrap-shell/);
+  assert.doesNotMatch(bootstrapPopupMarkup, /id="launcher-toggle"/);
+  const shell = extractFunction(popupSource, 'ensureMinimalPopupShell');
   for (const id of ['connection-toggle', 'connection-details', 'extension-version', 'native-version', 'native-install']) {
-    assert.match(bootstrapPopupMarkup, new RegExp(`id="${id}"`));
+    assert.match(shell, new RegExp(`id=\\\\"${id}\\\\"`));
   }
-  assert.match(bootstrapPopupMarkup, /aria-controls="connection-details"/);
-  assert.match(bootstrapPopupMarkup, /id="launcher-toggle"[^>]*type="checkbox"/);
+  assert.match(shell, /if \(!document\.getElementById\('launcher-toggle'\)\)/);
   assert.match(bootstrapPopupMarkup, /<script src="\.\.\/runtime\/src\/popup\.js"><\/script>/);
   assert.doesNotMatch(popupSource, /navigator\.language/);
 });
@@ -183,7 +187,8 @@ test('panel notice loads after the idle gate and before content runtime', () => 
   assert.equal(runtimeManifest.matches.includes('https://www.overleaf.com/project'), true);
   assert.equal(extensionManifest.content_scripts[0].matches.includes('https://www.overleaf.com/project'), true);
   assert.equal(extensionManifest.host_permissions.includes('https://www.overleaf.com/project'), true);
-  assert.match(bootstrapSource, /OVERLEAF_EDITOR_MATCHES/);
+  assert.match(bootstrapSource, /isEditorProjectTab/);
+  assert.match(bootstrapSource, /OVERLEAF_HOSTS\.has\(url\.host\)/);
   assert.match(noticeSource, /isRuntimeRestartError/);
   assert.match(noticeSource, /buildRestartingView/);
   assert.match(noticeSource, /consent-update-get-state/);

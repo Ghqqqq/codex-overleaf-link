@@ -427,7 +427,7 @@
 
     const check = document.createElement('span');
     check.className = 'codex-model-config-check';
-    check.textContent = '✓';
+    check.innerHTML = '<svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg>';
     check.setAttribute('aria-hidden', 'true');
     button.append(check);
     return button;

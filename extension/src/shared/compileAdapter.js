@@ -205,6 +205,7 @@
 
   return {
     buildPostWriteCompileSummary,
+    formatCompileDiagnosticForSummary,
     COMPILABLE_EXTENSIONS,
     MAX_LOG_BYTES,
     extractErrorBlocks,

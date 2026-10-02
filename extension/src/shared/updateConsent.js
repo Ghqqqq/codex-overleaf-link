@@ -13,6 +13,7 @@
     'idle',
     'checking',
     'update_available',
+    'manual_install_required',
     'downloading',
     'staged',
     'waiting_for_idle',
@@ -41,6 +42,7 @@
     idle: { value: 0, determinate: true, phase: 'idle' },
     checking: { value: 0, determinate: false, phase: 'checking' },
     update_available: { value: 0, determinate: true, phase: 'available' },
+    manual_install_required: { value: 0, determinate: true, phase: 'manual' },
     downloading: { value: 35, determinate: false, phase: 'downloading' },
     staged: { value: 65, determinate: true, phase: 'staged' },
     waiting_for_idle: { value: 65, determinate: true, phase: 'waiting' },
@@ -77,8 +79,20 @@
       heartbeatAt: finiteNumber(value.heartbeatAt),
       postponeUntil: finiteNumber(value.postponeUntil),
       code: safeToken(value.code),
-      message: String(value.message || '').replace(/\s+/g, ' ').trim().slice(0, 300)
+      message: String(value.message || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+      manualReason: normalizeManualReason(value.manualReason)
     };
+  }
+
+  // Signed per-locale reason a release needs a one-time reinstall.
+  function normalizeManualReason(value) {
+    if (!value || typeof value !== 'object') return {};
+    const out = {};
+    for (const locale of ['en', 'zh']) {
+      const text = String(value[locale] || '').replace(/\s+/g, ' ').trim().slice(0, 400);
+      if (text) out[locale] = text;
+    }
+    return out;
   }
 
   function normalizeConsentState(value = {}) {
@@ -109,6 +123,13 @@
       consent.snoozedUntil > now;
     const execution = EXECUTION_STATES.has(state.state);
     const available = state.state === 'update_available' && newer;
+    // A newer release that only a reinstall can apply. It is shown even after
+    // an automatic check, because no Update now button can ever resolve it.
+    // Compare with the running version: after the reinstall the stored state
+    // still names the old one, and the notice must clear by itself.
+    const runningVersion = safeVersion(options.currentVersion) || state.currentVersion;
+    const manualInstall = state.state === 'manual_install_required'
+      && compareStableVersions(state.latestVersion, runningVersion) > 0;
     const progress = getProgressModel(state);
     const quietFailure = state.state === 'failed' &&
       state.initiatedBy !== 'manual' &&
@@ -127,16 +148,18 @@
       },
       progress,
       available,
+      manualInstall,
       snoozed,
       execution,
       showPanel: state.cancelRequested || state.recoveryPending
         || (state.state === 'checking' && state.initiatedBy === 'manual')
-        || (available && !snoozed) || execution || state.state === 'rolled_back' || visibleFailure,
-      badge: getBadge(state, { available, snoozed }),
+        || ((available || manualInstall) && !snoozed) || execution || state.state === 'rolled_back' || visibleFailure,
+      badge: getBadge(state, { available: available || manualInstall, snoozed }),
       actions: {
-        check: !state.cancelRequested && !state.recoveryPending && ['idle', 'committed', 'rolled_back', 'failed'].includes(state.state),
+        check: !state.cancelRequested && !state.recoveryPending && ['idle', 'committed', 'rolled_back', 'failed', 'manual_install_required'].includes(state.state),
+        copyInstall: manualInstall,
         install: available && !state.cancelRequested && !state.recoveryPending,
-        later: !state.recoveryPending && (available || ['staged', 'waiting_for_idle'].includes(state.state)),
+        later: !state.recoveryPending && (available || manualInstall || ['staged', 'waiting_for_idle'].includes(state.state)),
         cancel: !state.recoveryPending && (state.cancelRequested || ['checking', 'downloading', 'staged', 'waiting_for_idle'].includes(state.state)),
         recover: state.recoveryPending,
         retry: !state.cancelRequested && !state.recoveryPending && ['failed', 'rolled_back'].includes(state.state)

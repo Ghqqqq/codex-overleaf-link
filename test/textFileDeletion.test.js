@@ -74,6 +74,7 @@ function fixture(options = {}) {
       if (++reads === 2 && options.concurrentEdit) files.set(target, options.binary
         ? Buffer.from('collaborator image').toString('base64') : 'collaborator edit');
       if (deleted && options.missingReceipt) return { ok: false };
+      if (!deleted && options.zipDown && reads <= options.zipDown) return { ok: false, reason: 'zip timeout', diagnostics: { attempts: [{ status: 504 }] } };
       return { ok: true, files: Array.from(files, ([path, content]) => options.binary && path === target
         ? { path, contentBase64: content } : { path, content }) };
     } }
@@ -219,4 +220,23 @@ for (const option of ['missingReceipt', 'cancelAfterDelete']) {
 test('guarded text deletion tolerates an already-deleted sibling on retry', async () => {
   const f = fixture({ guarded: true }); assert.equal((await f.remove()).ok, true);
   const repeated = await f.remove(); assert.equal(repeated.ok, true); assert.equal(repeated.idempotent, true);
+});
+
+test('a dropped server ZIP read is retried before the delete gives up', async () => {
+  const f = fixture({ zipDown: 1 });
+  const result = await f.remove();
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(f.files.has(f.target), false);
+});
+
+test('a delete whose server check keeps failing is untouched, retryable and keeps diagnostics', async () => {
+  const f = fixture({ zipDown: 99 });
+  const result = await f.remove();
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'source_zip_unavailable');
+  assert.equal(result.changedDocument, false);
+  assert.equal(result.failure.retryable, true);
+  assert.equal(result.failure.changedDocument, false);
+  assert.deepEqual(result.diagnostics.attempts, [{ status: 504 }]);
+  assert.equal(f.files.has(f.target), true);
 });
