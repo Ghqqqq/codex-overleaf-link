@@ -466,7 +466,10 @@ function createSubagentBroker(options = {}) {
         const requestPath = path.join(adoptionsDir, name), stat = fs.lstatSync(requestPath);
         if (!stat.isFile() || stat.size > MAX_JOB_FILE_BYTES) throw new Error('invalid_adoption_file');
         const request = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
-        if (request.token !== adoptionToken || request.reviewed !== true || !Array.isArray(request.files)
+        const tokenBuf = Buffer.from(String(request.token || ''), 'utf8');
+        const expectedBuf = Buffer.from(adoptionToken, 'utf8');
+        const tokenMatches = tokenBuf.length === expectedBuf.length && crypto.timingSafeEqual(tokenBuf, expectedBuf);
+        if (!tokenMatches || request.reviewed !== true || !Array.isArray(request.files)
           || !request.files.length || request.files.length > 100) throw new Error('adoption_not_authorized');
         const approved = [];
         for (const item of request.files) {
