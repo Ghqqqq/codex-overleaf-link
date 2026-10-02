@@ -7,7 +7,7 @@ const options = { tx: en => en, trackedChangeInFlight: new Map(),
   isTrackedChangeLifecycleRun: run => Boolean(run.trackedChangeStatus),
   projectRunSettlement: () => ({ canUndo: true }) };
 
-test('completion metadata follows Undo and saved state without rewriting the recorded answer', () => {
+test('completion metadata follows Undo and removes obsolete save state without rewriting the recorded answer', () => {
   const meta = [{ key: 'undo', label: 'Undo', value: '1 reversible write' },
     { key: 'saveState', label: 'Save', value: 'unconfirmed' }];
   const before = JSON.stringify(meta);
@@ -15,7 +15,7 @@ test('completion metadata follows Undo and saved state without rewriting the rec
     id: 'run', undoStatus: 'applied', saveConfirmedAt: '2026-09-29T00:00:00Z'
   }, options);
   assert.match(result[0].value, /have been undone/);
-  assert.equal(result[1].value, 'Saved');
+  assert.equal(result.some(row => row.key === 'saveState'), false);
   assert.equal(JSON.stringify(meta), before);
 });
 

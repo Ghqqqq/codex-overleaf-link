@@ -147,6 +147,7 @@ function createHarness(spec = {}) {
     buildTrackedUndoPostFiles: record => postController.buildPostFiles(record),
     getTrackedChangeCaptureController: () => postController,
     getRunProjectIdForWriteback: record => record.runProjectId,
+    getPageBridgeTimeoutMs: () => 120000,
     requireReviewing: spec.currentTrack === true,
     async callPageBridge(method, params) {
       state.requests.push(params);

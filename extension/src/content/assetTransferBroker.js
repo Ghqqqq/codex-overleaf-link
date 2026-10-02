@@ -14,31 +14,45 @@
 
     async function applyOperations(input = {}) {
       const results = [];
+      const deadlineAt = Number.isFinite(input.deadlineAt) && input.deadlineAt > 0 ? input.deadlineAt : null;
+      const invalidDeadline = input.deadlineAt !== undefined && deadlineAt === null;
+      const expired = () => invalidDeadline || (deadlineAt !== null && now() >= deadlineAt);
       let textBatch = [], blocked = false;
+      function skipUndispatched(operations) {
+        const result = normalizeTextResult({ ok: false,
+          code: blocked ? 'writeback_tail_not_started' : 'writeback_deadline_exceeded',
+          error: blocked ? 'An earlier writeback is unconfirmed. This operation was not dispatched.'
+            : invalidDeadline ? 'The writeback deadline is invalid. This operation was not dispatched.'
+              : 'The writeback deadline has elapsed. This operation was not dispatched.',
+          changedDocument: false }, operations);
+        result.receiptUnconfirmed = false;
+        results.push(result);
+      }
       async function flushTextBatch() {
         if (!textBatch.length) return;
         const operations = textBatch;
         textBatch = [];
+        if (blocked || expired()) { skipUndispatched(operations); return; }
         const response = await callPageBridge('applyOperations', {
           operations,
           baseFiles: input.baseFiles || [],
+          reviewingPolicy: input.reviewingPolicy || '',
+          ...(deadlineAt !== null ? { deadlineAt } : {}),
           requireReviewing: input.requireReviewing === true,
           requireEditing: input.requireEditing === true,
           retryCreates: input.retryCreates === true,
           runProjectId: input.runProjectId || ''
         });
         const recovered = response?.code === 'page_bridge_timeout' && response.requestId
-          ? await recoverTextReceipt(response, operations, input.runProjectId || '')
+          ? await recoverTextReceipt(response, operations, input.runProjectId || '', deadlineAt)
           : response;
         const result = normalizeTextResult(recovered, operations);
         results.push(result);
         blocked = result.receiptUnconfirmed === true;
       }
       for (const operation of Array.isArray(input.operations) ? input.operations : []) {
-        if (blocked) {
-          results.push(normalizeTextResult({ ok: false, code: 'writeback_tail_not_started',
-            error: 'An earlier writeback is unconfirmed. This operation was not dispatched.',
-            changedDocument: false }, [operation]));
+        if (blocked || expired()) {
+          skipUndispatched([operation]);
           continue;
         }
         if (!BINARY_TYPES.has(operation?.type)) {
@@ -46,10 +60,8 @@
           continue;
         }
         await flushTextBatch();
-        if (blocked) {
-          results.push(normalizeTextResult({ ok: false, code: 'writeback_tail_not_started',
-            error: 'An earlier writeback is unconfirmed. This operation was not dispatched.',
-            changedDocument: false }, [operation]));
+        if (blocked || expired()) {
+          skipUndispatched([operation]);
           continue;
         }
         const binaryResult = await applyBinaryOperation(operation, input);
@@ -60,33 +72,57 @@
       return mergeApplyResults(results);
     }
 
-    async function recoverTextReceipt(timeout, operations, runProjectId) {
+    async function recoverTextReceipt(timeout, operations, runProjectId, deadlineAt = null) {
       const budget = Number.isFinite(deps.receiptTimeoutMs) ? Math.max(0, deps.receiptTimeoutMs)
         : Math.min(600000, Math.max(90000, operations.length * 60000));
-      const deadline = now() + budget;
-      let partial = {}, state = 'unavailable', recoveryError = '';
-      do {
-        let receipt;
+      const deadline = deadlineAt ?? (now() + budget);
+      let partial = {}, state = 'unavailable', recoveryError = '', first = true;
+      while (deadlineAt === null ? (first || now() <= deadline) : now() < deadline) {
+        first = false;
+        let receipt, transportFailed = false;
         try {
-          receipt = await callPageBridge('getWritebackReceipt', { requestId: timeout.requestId, runProjectId });
+          receipt = await callPageBridge('getWritebackReceipt', { requestId: timeout.requestId, runProjectId,
+            ...(deadlineAt !== null ? { deadlineAt } : {}) });
         } catch (error) {
-          if (error?.code === 'codex_cancelled') throw error;
+          if (error?.code === 'codex_cancelled' || error?.cancelled === true) throw error;
           recoveryError = error?.message || String(error);
-          break;
+          if (!isTransientReceiptFailure(error)) break;
+          transportFailed = true;
         }
-        if (!receipt?.ok || receipt.requestId !== timeout.requestId || receipt.runProjectId !== runProjectId) {
-          recoveryError = receipt?.error || 'Writeback receipt identity could not be confirmed.';
-          break;
+        if (!transportFailed) {
+          if (receipt?.code === 'codex_cancelled' || receipt?.cancelled === true) {
+            throw responseError(receipt, 'codex_cancelled');
+          }
+          if (receipt?.ok !== true) {
+            recoveryError = receipt?.error?.message || receipt?.error || receipt?.reason
+              || 'Writeback receipt could not be read.';
+            if (!isTransientReceiptFailure(receipt)) break;
+          } else {
+            if (receipt.requestId !== timeout.requestId || receipt.runProjectId !== runProjectId) {
+              recoveryError = 'Writeback receipt identity could not be confirmed.';
+              break;
+            }
+            state = receipt.state;
+            if (receipt.result && typeof receipt.result === 'object') partial = receipt.result;
+            if (state === 'completed') {
+              if (!receipt.result || typeof receipt.result !== 'object') {
+                recoveryError = 'The completed writeback receipt has no result.';
+                break;
+              }
+              if (deadlineAt !== null && now() > deadline) break;
+              return { ...partial,
+                receiptRecovery: { requestId: timeout.requestId, recovered: true, initialError: timeout.error } };
+            }
+            if (state !== 'running') {
+              recoveryError = 'The original writeback receipt is no longer available.';
+              break;
+            }
+          }
         }
-        state = receipt.state;
-        partial = receipt.result || {};
-        if (state === 'completed') return { ...partial,
-          receiptRecovery: { requestId: timeout.requestId, recovered: true, initialError: timeout.error } };
-        if (state !== 'running') break;
         if (now() >= deadline) break;
         await delay(Math.min(deps.receiptPollMs || 500, Math.max(1, deadline - now())));
-      } while (now() <= deadline);
-      return { ...partial, ok: false, code: timeout.code, error: timeout.error,
+      }
+      return { ...timeout, ...partial, ok: false, code: timeout.code, error: timeout.error,
         requestId: timeout.requestId, receiptUnconfirmed: true, receiptState: state, recoveryError };
     }
 
@@ -255,11 +291,15 @@
       // recordUndoFromApply classify a successful Track write as legacy Undo,
       // which hides Accept and prevents the lifecycle from surviving reload.
       merged.trackedChanges.push(...(Array.isArray(result?.trackedChanges) ? result.trackedChanges : []));
+      if (result?.reviewingPolicy !== undefined) merged.reviewingPolicy = result.reviewingPolicy;
       if (result?.trackedChangeCaptures?.length) (merged.trackedChangeCaptures ||= []).push(...result.trackedChangeCaptures);
       if (result?.ok !== true) {
         merged.ok = false;
-        for (const key of ['code', 'error', 'failure', 'requestId', 'receiptState', 'recoveryError', 'receiptUnconfirmed']) {
+        for (const key of ['code', 'error', 'failure', 'requestId', 'receiptState', 'recoveryError']) {
           if (result?.[key] !== undefined && merged[key] === undefined) merged[key] = result[key];
+        }
+        if (result?.receiptUnconfirmed !== undefined) {
+          merged.receiptUnconfirmed = merged.receiptUnconfirmed === true || result.receiptUnconfirmed === true;
         }
       }
       if (result?.receiptRecovery) (merged.receiptRecoveries ||= []).push(result.receiptRecovery);
@@ -280,6 +320,15 @@
       };
     }
     return safe;
+  }
+
+  function isTransientReceiptFailure(value) {
+    const code = value?.code || value?.error?.code;
+    if (code) return ['page_bridge_timeout', 'page_bridge_unavailable', 'page_bridge_transport_error',
+      'page_bridge_disconnected', 'network_error', 'ETIMEDOUT', 'ECONNRESET', 'ECONNABORTED',
+      'EPIPE', 'ERR_NETWORK'].includes(code);
+    const message = value?.message || value?.error?.message || value?.error || '';
+    return /timed?\s*out|timeout|network|transport|bridge unavailable|port.*closed|receiving end|socket hang up/i.test(String(message));
   }
 
   function responseError(response, fallbackCode) {

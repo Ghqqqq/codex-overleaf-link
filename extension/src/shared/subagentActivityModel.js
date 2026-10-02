@@ -54,6 +54,18 @@
     if (TERMINAL.has(agent.status) || agent.status === 'unknown' || run.status === 'running') return agent.status;
     return ['cancelled', 'rejected'].includes(run.status) ? 'cancelled' : 'unknown';
   }
+  function terminalTime(agent, run) {
+    const terminal = [agent.finishedAt, run.status === 'running' ? '' : run.finishedAt]
+      .map(value => Date.parse(value || '')).find(Number.isFinite);
+    const evidence = [agent.startedAt, agent.updatedAt, ...(agent.events || []).map(event => event.timestamp)];
+    if (run.status !== 'running') evidence.push(run.startedAt, run.updatedAt, ...(run.events || []).map(event => event.timestamp));
+    return terminal ?? Math.max(...evidence.map(value => Date.parse(value || '')).filter(Number.isFinite));
+  }
+  function elapsedMs(agent, run, now = Date.now()) {
+    const start = Date.parse(agent.startedAt || '');
+    const live = run.status === 'running' && ['pending', 'running'].includes(effectiveStatus(agent, run));
+    return Number.isFinite(start) ? Math.max(0, (live ? now : terminalTime(agent, run)) - start) : null;
+  }
   function append(agent, input, sanitize) {
     const event = {
       title: clean(input.title, sanitize), status: input.status || 'running',
@@ -111,7 +123,9 @@
     if (sequence > 0 && sequence <= (agent.lastSequence || 0)) return true;
     agent.nativeEventSeq = Math.max(agent.nativeEventSeq || 0, seq);
     agent.lastSequence = Math.max(agent.lastSequence || 0, sequence);
-    const timestamp = string(raw.timestamp) || new Date().toISOString();
+    const timestamp = string(raw.timestamp) || new Date().toISOString(), at = Date.parse(string(raw.timestamp));
+    const wasTerminal = TERMINAL.has(agent.status), previousEnd = terminalTime(agent, run);
+    if (Number.isFinite(at) && at < Date.parse(agent.startedAt || '')) return true;
     agent.updatedAt = timestamp;
     for (const field of ['title', 'task', 'threadId', 'parentThreadId', 'model', 'reasoningEffort']) {
       const value = detail[field] || (field === 'title' ? raw.title : '');
@@ -126,9 +140,15 @@
     const method = inner?.detail?.method, params = inner?.detail?.params || {};
     if (method === 'turn/started') next = 'running';
     if (method === 'turn/completed' && source === 'codex') next = params.turn?.status === 'interrupted' ? 'cancelled' : params.turn?.status;
-    if (STATES.has(next) && (!TERMINAL.has(agent.status) || TERMINAL.has(next) || method === 'turn/started')) agent.status = next;
+    const reopening = wasTerminal && method === 'turn/started';
+    if (STATES.has(next) && (!wasTerminal || TERMINAL.has(next) || reopening)) agent.status = next;
+    if (reopening) { agent.startedAt = timestamp; agent.finishedAt = ''; }
     if (agent.status === 'running' && !agent.startedAt) agent.startedAt = timestamp;
-    if (TERMINAL.has(agent.status)) agent.finishedAt = timestamp;
+    if (TERMINAL.has(agent.status) || run.status !== 'running') {
+      // Late snapshots describe the same stopped interval; only a new turn resets it.
+      const end = wasTerminal || run.status !== 'running' || !Number.isFinite(at) ? previousEnd : at;
+      if (Number.isFinite(end)) agent.finishedAt = new Date(end).toISOString();
+    }
     if (inner) {
       const boundThread = inner.detail?.threadId || params.threadId || params.thread?.id;
       if (boundThread) agent.threadId = clean(boundThread, sanitize, 160);
@@ -150,5 +170,5 @@
     }
     return true;
   }
-  return { normalize, ingest, effectiveStatus };
+  return { normalize, ingest, effectiveStatus, elapsedMs };
 });

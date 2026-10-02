@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.5.0 - 2026-10-02
+## v2.5.0 - 2026-10-03
 
 ### Added
 
@@ -27,6 +27,14 @@
 - Stop session rows and the composer scan line from spinning after a Retry sync or save check finished; restored sessions repair runs that were persisted as running after their final report.
 - Keep the selected-text chip on the sent message, keep the empty-state logo after a language refresh, and right-align sent attachments and the run's action buttons.
 - Fix a compile-summary error after successful writes, the misplaced switch-provider confirmation, and adding third-party models that were not yet saved to the profile.
+- Undo newly created text files safely from collapsed folders by expanding their parents and checking the target editor before deletion.
+- Share an absolute Undo deadline across page requests and server confirmation, recover original writeback receipts without replaying mutations, and preserve verified partial progress through blocked results and refresh.
+- Clear resolved Undo warnings and obsolete save/retry summaries while retaining the original audit trail; keep subagent elapsed times stable after completion and history restoration.
+
+### Documentation and packaging
+
+- Refresh the English and Simplified Chinese README with seven native Retina PNG captures, the "Empower Overleaf with Codex." subtitle, and a prominent manual-upgrade notice for installations older than 2.5.0.
+- Remove the handoff snapshot's machine-specific node_modules symlink from Git tracking while keeping development dependencies local and ignored.
 
 ### Compatibility and installation
 
@@ -35,10 +43,6 @@
 - When a future release does need a reinstall, the updater reports it as "Reinstall needed for this update" with the signed reason, the pinned command for that version and a copy button, even after an automatic check. Such releases are never staged or applied in place.
 - Existing managed installations must run this release's managed installer once, reload the Chrome extension, and refresh Overleaf. The protocol-2 updater rejects this migration instead of replacing its fixed bootstrap or adding permissions automatically.
 - Preserve the extension identity, project data, account-scoped history, provider settings, and signing trust anchor. No npm runtime dependency is added; PDF parsing resources and their licenses ship inside the package.
-
-### Known issues
-
-- After a partial Undo succeeds on retry, the run header may retain the earlier conflict summary. The final Undone state and remaining-file recovery are correct; the stale summary is a presentation issue.
 
 ## v2.4.1 - 2026-09-22
 

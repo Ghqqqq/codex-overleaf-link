@@ -1,48 +1,118 @@
 <div align="center">
-  <img src="extension/assets/icons/codex-overleaf-icon.png" width="96" alt="Codex Overleaf Link">
+  <img src="extension/assets/icons/codex-overleaf-icon.png" width="72" alt="Codex Overleaf Link">
   <h1>Codex Overleaf Link</h1>
-  <p><a href="README.md" lang="en">English</a> | <strong>简体中文</strong></p>
-  <p><strong>在 Overleaf 项目里直接用 Codex。</strong></p>
-  <p>
-    <img src="https://img.shields.io/badge/version-2.5.0-blue" alt="版本">
-    <img src="https://img.shields.io/badge/platform-macOS%20%2F%20Windows%20%2F%20Linux-lightgrey" alt="支持平台">
-    <img src="https://img.shields.io/badge/chrome-MV3-green" alt="Chrome Manifest V3">
-    <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Node.js 版本要求">
-    <a href="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml"><img src="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml/badge.svg" alt="测试状态"></a>
-    <img src="https://img.shields.io/badge/runtime%20dependencies-0-orange" alt="无 npm 运行时依赖">
-    <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT 许可证">
-  </p>
+  <p><strong>Empower Overleaf with Codex.</strong></p>
+  <p><img src="https://img.shields.io/badge/version-2.5.0-blue" alt="version 2.5.0"></p>
+  <p><a href="README.md">English</a> | 简体中文</p>
+  <p>Chrome · macOS / Windows / Linux · 本地 Codex</p>
 </div>
 
----
+理解项目、修改段落、对照 PDF 查看结果。Codex Overleaf Link 把本地 Codex 工作流带进 Overleaf 编辑器，让项目上下文、模型选择和写作对话留在同一个工作区。
 
-在 Overleaf 里让 AI 帮忙改论文，通常得把一段复制出去，再把结果粘回来，还要担心中途有没有弄坏格式。Codex Overleaf Link 省掉了这一来一回：它在 Overleaf 编辑器旁边放一个 Codex 面板，在本机同步一份项目副本，让 Codex 直接改真实的文件，再把结果写回 Overleaf。
+![Example paper 演示项目中的源码、PDF 和真实 Codex 项目导览](assets/readme/2.5.0/overview@2x.png)
 
-你全程不用离开 Overleaf。合作者照常实时看到修改，编译照常进行，Codex 的每一次改动都有记录，也都能撤销。
+*2.5.0 当前界面实拍，展示对 Overleaf 默认示例项目的一次只读导览。*
 
-![Codex 面板与 Overleaf 源码编辑器、PDF 预览并排](assets/codex-preview.jpg)
+<details>
+<summary>展开对话细节（原生 2× PNG）</summary>
 
-[安装](#安装) · [第一次使用](#第一次使用) · [Ask、Auto 和 Track](#askauto-和-track) · [模型](#模型与-api-服务) · [更新](#更新) · [常见问题](#常见问题与故障排查) · [开发](#开发)
+<p align="center"><img src="assets/readme/2.5.0/conversation@2x.png" width="393" alt="Codex 真实对话的原生高清细节图"></p>
 
-## 用起来是什么样
+</details>
 
-- **针对整个项目提问**：“定理 3 为什么需要假设 (A2)？”Codex 会读所有文件，不只是你打开的那一个。
-- **精确到某一句**：在编辑器里选中文字附加给 Codex，或输入 `@` 添加文件。`@compile-log` 会把当前的编译错误和警告一起交给它。
-- **看着它干活**：任务运行时，标题行下方有一个三行的实时窗口，显示 Codex 正在读什么、想什么、改什么。展开能看到每一步。
-- **逐字看改了什么**：写入之后，每个文件收成一行，带 `+/−` 行数。点开只高亮真正改动的字词。
-- **随时反悔**：撤销会把这一轮的写入恢复原样，刷新页面后也能用。打开 Track 时，改动会进入 Overleaf 的审阅面板。
-- **接着聊下去**：Codex 忙的时候可以排队下一条消息、给正在运行的任务插话，或者从之前某一轮分叉出去换个思路。
 
-另外还有：按项目保存的会话历史，文件和图片附件，生成图片前的确认步骤，把指定文件设为只读的项目规则，内容发出本机前的敏感信息检查，以及中英文界面和深浅色主题。
+[快速开始](#quick-start) · [写作流程](#workflow) · [写作风格](#writing-style) · [模型连接](#connections) · [详细文档](#reference)
 
-<!-- 截图待补：assets/readme-run.png，运行中的任务，标题行下方是实时窗口。 -->
+<a id="workflow"></a>
 
-### 实验功能
+## 阅读、修改、审阅，在同一个工作区完成
 
-- **按我的风格写**：从你选的 Overleaf 项目和 PDF 里学习你的措辞习惯，生成一个可复用的写作风格 skill。
-- **第三方模型服务**：让 Codex 使用 Responses API、OpenAI 兼容的 Chat Completions 或 Anthropic Messages 接口，替代内置服务。
-- **并行子代理**：把大任务拆给多个 worker 同时做，每个 worker 的对话都能从主时间线打开。
-- **OT 预热镜像**：通过观察你在编辑器里的实时修改，让正在关注的文件保持最新。只读，默认关闭。
+| 需要完成的事 | 使用方式 | 结果 |
+|---|---|---|
+| 理解章节或定位问题 | **Ask** | 结合可用的项目上下文回答，不向 Overleaf 写入。 |
+| 修改论文内容 | **Auto** | 改动写回项目，并在本轮记录中展示。 |
+| 在 Overleaf 中审阅修改 | **Auto + Track** | 文本修改以留痕形式进入 Overleaf 审阅面板。 |
+| 撤回某一轮修改 | **Undo changes** | 恢复符合条件的修改，移除符合条件的新建文件。 |
+
+撤销在刷新后仍可继续。如果文件随后又被改动，该文件会保留供进一步处理；已经完成的撤销步骤会被记住，重试只处理剩余内容。
+
+### 让对话带上合适的上下文
+
+通过 `@` 或 **＋** 添加项目文件，用 `@compile-log` 引用编译问题，也可以直接选中编辑器里的文字。**Add to Chat** 把选区加入上下文；**Edit Selection** 指定本次修改范围。PDF 和图片也可以作为参考附在输入框中。
+
+<p align="center"><img src="assets/readme/2.5.0/context@2x.png" width="510" alt="真实输入框草稿，附有 main.tex 和 sample.bib 两个上下文文件"></p>
+
+*尚未发送的草稿，已附加两个项目文件。上下文条目直接显示在输入框中。*
+
+### 看清执行过程，也能进入子代理对话
+
+每一轮对话保留运行记录和最终结果。展开时间线，可以查看读取、命令与修改。启用 **Parallel Subagents** 后，主 agent 可以在子代理执行期间继续工作；点击子任务卡片即可查看对应对话，再返回主任务。
+
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="assets/readme/2.5.0/activity@2x.png" width="393" alt="真实运行记录，包含两个已完成的子代理任务"></td>
+    <td width="50%" align="center"><img src="assets/readme/2.5.0/subagent@2x.png" width="393" alt="Structure 子代理的真实只读对话"></td>
+  </tr>
+</table>
+
+*同一次真实任务的运行记录与子对话。图中子任务已经完成；并行子代理目前属于实验功能。*
+
+<a id="writing-style"></a>
+
+## Write in My Style <sub>实验功能</sub>
+
+从选定的 Overleaf 项目与 PDF 中提取写作习惯，生成可复用的写作风格 skill。
+
+1. 打开 **Settings → General & appearance → Writing style**。
+2. 选择参考项目，或加入可提取文本的 PDF。
+3. 生成风格后为当前项目启用；参考资料变化后，通过 **Update style** 更新已有 skill。
+
+风格 skill 用于指导措辞、句式节奏、组织方式和语气。参考资料提供风格依据，当前写作任务提供论文的事实、结果与引用。
+
+![General 设置中的真实 Write in My Style 参考资料界面](assets/readme/2.5.0/writing-style@2x.png)
+
+*参考资料选择与风格生成入口，截图未包含私人写作样本。*
+
+<a id="connections"></a>
+
+## 选择合适的模型与连接方式
+
+默认使用本机 Codex CLI 的模型目录，在输入框中选择模型与推理强度。需要其他接口时，打开 **Settings → Models & connections**。
+
+快捷入口覆盖 OpenAI 兼容接口、Anthropic 兼容接口，以及 Kimi、GLM 和 DeepSeek。快捷入口预填连接默认值，API 密钥和模型 ID 仍需单独填写。第三方模型服务目前属于实验功能。
+
+![真实的自定义连接、OpenAI、Anthropic、Kimi、GLM 和 DeepSeek 快捷入口](assets/readme/2.5.0/providers@2x.png)
+
+*连接配置界面实拍，没有展示 API 密钥。*
+
+<a id="quick-start"></a>
+
+## 快速开始
+
+> **从旧版本升级**
+>
+> **2.5.0 之前的版本需要手动更新到 2.5.0。** 本次升级无法通过插件内的“立即更新”完成。运行下方安装命令后，在 `chrome://extensions` 中重新加载扩展，并刷新 Overleaf 页面。
+
+**准备条件：** Chrome、Node.js 20+，以及已安装并登录的 Codex CLI。源码安装还需要 Git。
+
+```bash
+npm exec --yes codex-overleaf-link@2.5.0 -- install-managed
+```
+
+1. 运行托管安装命令，取得安装器输出的扩展目录。
+2. 在 `chrome://extensions` 开启**开发者模式**，点击**加载已解压的扩展程序**并选择该目录。
+3. 打开 Overleaf 项目，先用 **Ask** 阅读和提问；需要改文件时切换到 **Auto**。
+
+支持 `overleaf.com`、`www.overleaf.com` 和 `cn.overleaf.com` 的项目页面。
+
+<a id="reference"></a>
+
+## 安装与维护参考
+
+完整的安装、升级、隐私、排障和开发说明见下文。
+
+<details>
+<summary><strong>展开详细文档</strong></summary>
 
 ## 需要准备
 
@@ -429,3 +499,6 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\CodexOverleaf", "$env:USERPROFILE
 [MIT](LICENSE)
 
 <p align="center"><a href="README.md" lang="en">English</a> | <strong>简体中文</strong></p>
+
+
+</details>

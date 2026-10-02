@@ -5242,6 +5242,9 @@
   }
 
   async function callPageBridge(method, params) {
+    if (method === 'applyOperations' && params?.reviewingPolicy === 'no-trace-undo') {
+      return Modules.AssetTransferBroker.create({ callPageBridge: (name, input) => pageBridgeClient.call(name, input), sendBackgroundNative }).applyOperations(params);
+    }
     return pageBridgeClient.call(method, params);
   }
 
@@ -5322,7 +5325,7 @@
           accountScopeId: session.accountScopeId || accountScopeId,
           title: session.title || '',
           titleSource: session.titleSource || 'auto',
-          focusFiles: session.focusFiles || [],
+          focusFiles: session.focusFiles || [], selectionContext: session.selectionContext?.projectId === projectId ? session.selectionContext : null,
           projectReferenceFiles: session.projectReferenceFiles || [],
           codexThreadId: session.codexThreadId || '',
           createdAt: session.createdAt,
@@ -6661,6 +6664,7 @@
       }
     }
 
+    const deadlineAt = Date.now() + getPageBridgeTimeoutMs('rejectTrackedChanges');
     setRunUndoStatus(runId, 'running');
     appendRunRecordEvent(runId, {
       title: tr('undoNoTraceStarted'),
@@ -6669,12 +6673,10 @@
     });
 
       const result = await callPageBridge('applyOperations', {
-        operations: selectedOperations,
+        operations: selectedOperations, deadlineAt,
         baseFiles: run.undoBaseFiles || [],
         reviewingPolicy: 'no-trace-undo',
-        // Welcome-panel + write-guard:
-        // route the undo through the same project-ID guard. The undo is
-        // bound to the run's original project, not the editor's active one.
+        // Undo remains bound to its original project, including after navigation.
         runProjectId: getRunProjectIdForWriteback(run)
       });
       const undoApplied = isUndoResultEffectivelyApplied(run, result);
@@ -6727,6 +6729,7 @@
       return;
     }
 
+    const deadlineAt = Date.now() + getPageBridgeTimeoutMs('rejectTrackedChanges');
     // Keep the review lifecycle until every pending part has settled.
     // Its local lock stays active while verified recovery progress is persisted.
     const lifecycleReject = (trackedUndo || createdUndoOperations.length > 0) && isTrackedChangeLifecycleRun(run);
@@ -6746,16 +6749,13 @@
     try {
       const trackedUndoPostFilesAtDispatch = buildTrackedUndoPostFiles(run);
       let result = hasTextUndo ? await callPageBridge('rejectTrackedChanges', {
-        trackedChanges: run.undoTrackedChanges || [],
+        trackedChanges: run.undoTrackedChanges || [], deadlineAt,
         expectedFiles: run.undoExpectedFiles || [],
         postFiles: trackedUndoPostFilesAtDispatch,
         untrackedUndo: run.executionSnapshot
           ? run.executionSnapshot.requireReviewing === false && ['submitted', 'legacy-captured'].includes(run.executionSnapshot.source)
           : getTrackedChangeCaptureController().hasLegacyUntrackedCheckpoint(run),
-        // Welcome-panel + write-guard:
-        // bind the reject to the run's original project. If the user has
-        // navigated away the page-side guard refuses with
-        // `aborted_project_changed` and the document is left untouched.
+        // The page-side project guard still refuses writes after navigation.
         runProjectId: getRunProjectIdForWriteback(run)
       }) : { ok: true, applied: [], skipped: [] };
       if (createdUndoOperations.length && lifecycleReject && hasTextUndo) {
@@ -6769,7 +6769,7 @@
             throw new Error('Text changes remain unresolved; created files were kept for the next undo attempt.');
           }
           createdResult = await callPageBridge('applyOperations', {
-            operations: createdUndoOperations,
+            operations: createdUndoOperations, deadlineAt,
             baseFiles: run.undoBaseFiles || [],
             reviewingPolicy: 'no-trace-undo',
             runProjectId: getRunProjectIdForWriteback(run)
@@ -6950,7 +6950,7 @@
       result,
       failureReasons: FailureReasons
     });
-    if (settlement.decision === 'blocked') {
+    if (settlement.decision === 'blocked' && !(kind === 'reject' && createdUndo)) {
       return;
     }
     await Modules.ScopedPersistenceCoordinator.applyReviewTransition({
@@ -7405,11 +7405,11 @@
   }
 
   function refreshRunCardControls(runId) {
-    const run = findRunRecord(runId);
-    const root = panel?.querySelector(`[data-run-id="${cssEscape(runId)}"]`);
+    const run = findRunRecord(runId), root = panel?.querySelector(`[data-run-id="${cssEscape(runId)}"]`);
     if (!run || !root) {
       return;
     }
+    if (runTimelineView.refreshResolvedUndo?.(runId)) return;
     configureAcceptButton(root, run);
     configureUndoButton(root, run);
     const reportEvent = (run.events || []).filter(event => event.kind === 'report').pop();

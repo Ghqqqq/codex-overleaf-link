@@ -17,6 +17,7 @@
       ? Math.max(0, Number(deps.writebackOpenSettleMs))
       : 1200;
     const diagnosticsRevision = String(deps.diagnosticsRevision || '');
+    const now = deps.now || Date.now;
     // Cross-world cancel signal reader. Returns the current page-bridge
     // sequence number, which monotonically increments when content-side
     // calls pageBridge.cancelActiveWrite. applyOperationsCore captures the
@@ -403,7 +404,8 @@
     for (let attempt = 0; attempt < 2; attempt++) {
       if (!isEditingConfirmedForNoTraceUndo(getReviewingState({}))) {
         toggle = await setReviewingEnabled(false, { waitMs: 1800 });
-        if (!toggle.ok) return toggle;
+        if (!toggle.ok && (!['editing_not_confirmed', 'reviewing_disable_failed'].includes(toggle.code)
+          || !isEditingConfirmedForNoTraceUndo(getReviewingState({})))) return toggle;
         changed = changed || toggle.changed === true;
       }
       await delay(180);
@@ -477,8 +479,15 @@
         treeOperations.getProjectId?.() === runProjectId && readWriteCancellationSequence() === cancelBaselineSequence }) : null;
     const deferredCreates = [];
     const reopenQueue = [];
+    const deadlineFailure = () => Number.isFinite(options.deadlineAt) && now() >= options.deadlineAt
+      ? { ok: false, code: 'writeback_deadline_exceeded', changedDocument: false,
+        reason: 'The undo time budget expired before this operation could start.' } : null;
     const editOptions = () => ({ baseFileLookup, runProjectId,
-      recheckWriteProject: writeGuardSurface ? () => writeGuardSurface.runWriteGuard({ runProjectId }) : null,
+      recheckWriteProject: () => {
+        const expired = deadlineFailure();
+        return expired ? { applied: [], skipped: [{ operation: {}, result: expired }] }
+          : writeGuardSurface?.runWriteGuard({ runProjectId }) || null;
+      },
       trackReviewingChanges: options.trackReviewingChanges === true, noTraceUndo: options.noTraceUndo === true });
     const record = (operation, result) => {
       if (result.trackedChangeCapture) trackedChangeCaptures.push(result.trackedChangeCapture);
@@ -490,10 +499,7 @@
     };
 
     for (const rawOperation of operations) {
-      // Cross-world cancel check. Cheap (synchronous read of a counter),
-      // runs before the writeGuard re-check so a click-cancel that arrived
-      // during the previous op's await microtasks short-circuits before we
-      // burn time on guard / open-file work for the next op.
+      // Stop undispatched work when cancellation arrives during an awaited operation.
       if (readWriteCancellationSequence() !== cancelBaselineSequence) {
         skipped.push({ operation: normalizeOperationPaths(rawOperation), result: cancelledSkipResult });
         const remainingForCancel = operations.slice(operations.indexOf(rawOperation) + 1);
@@ -502,16 +508,11 @@
         }
         break;
       }
-      // Per-op re-check: if a runProjectId was supplied and the page-side
-      // guard is available, verify the editor still shows the same project
-      // before committing the next write. Mismatch → push aborted_project_changed
-      // for THIS op and every remaining op in the queue, then return.
+      // Re-check project ownership before this operation and preserve every skipped tail entry.
       if (runProjectId && writeGuardSurface) {
         const guardBlock = await writeGuardSurface.runWriteGuard({ runProjectId });
         if (guardBlock) {
-          // First push the guard's structured skip for the current op so the
-          // caller can attribute the abort to a real operation path, then
-          // pad the remaining ops with the same failure shape.
+          // Keep the current path and the remaining operations attributable.
           const guardFailure = guardBlock.skipped[0].result;
           skipped.push({ operation: normalizeOperationPaths(rawOperation), result: guardFailure });
           const remaining = operations.slice(operations.indexOf(rawOperation) + 1);
@@ -522,7 +523,7 @@
         }
       }
       const operation = normalizeOperationPaths(rawOperation);
-      const pathSafety = validateOperationProjectPaths(operation);
+      const pathSafety = deadlineFailure() || validateOperationProjectPaths(operation);
       if (!pathSafety.ok) {
         skipped.push({ operation, result: pathSafety });
         continue;
@@ -537,7 +538,7 @@
       } else if (['binary-create', 'overwrite-binary'].includes(operation.type)) {
         result = await applyBinaryAssetOperation(operation, { baseFileLookup, baseBinaryFileLookup });
       } else if (['create', 'rename', 'move', 'delete'].includes(operation.type)) {
-        result = await applyFileTreeOperation(operation, { baseFileLookup, runProjectId,
+        result = await applyFileTreeOperation(operation, { baseFileLookup, runProjectId, deadlineAt: options.deadlineAt,
           createBatch: createBatch?.targets.has(operation.path) ? createBatch : null,
           retryCreates: options.retryCreates === true });
       } else {
@@ -1468,8 +1469,9 @@
       }
     }
     const result = await deps.deleteTextFile(operation, {
-      isCurrent, undoCreatedFile: true,
+      isCurrent, undoCreatedFile: true, deadlineAt: options.deadlineAt,
       expectedContent: text ? expected : undefined,
+      prepareTextPreimage: text ? () => readCurrentTextFileForFreshness(operation.path) : undefined,
       expectedSha256: binary ? proof.sha256.toLowerCase() : undefined,
       canDelete: () => isCurrent() && (binary || (treeOperations.getActiveFilePath?.() === operation.path
         && readActiveEditorText() === expected))

@@ -70,7 +70,8 @@
   });
   const failureNotice = RunFailureNotice?.create({ tr, projectRunSettlement, sanitizeText: sanitizeAssistantVisibleText });
   const presence = RunPresence?.create({ tx, getLocale, formatElapsed });
-  const activitySummary = RunActivitySummary?.create({ RunActivityModel, SubagentActivityView, tx, findRunRecord, getPanel, cssEscape,
+  const displayRun = run => RunFailureNotice?.projectResolvedUndo?.(run) || run;
+  const activitySummary = RunActivitySummary?.create({ RunActivityModel, SubagentActivityView, tx, findRunRecord: (...args) => displayRun(findRunRecord(...args)), getPanel, cssEscape,
     formatEventTime, formatElapsed, renderMarkdownBlockText, renderRunEvent, formatEventDetail,
     presence, classifyStatus: classifyRunPresence, getProjectId: () => getCurrentProjectId?.() || '',
     summarizeCommand: RunPresence?.commandSummary,
@@ -356,6 +357,7 @@
   }
 
   function renderRunCard(run) {
+    run = displayRun(run);
     const root = document.createElement('section');
     root.className = 'transcript-turn run-card';
     root.dataset.status = run.status || 'completed';
@@ -1144,13 +1146,20 @@
     const log = getPanel()?.querySelector('[data-log]');
     const existing = log?.querySelector(`[data-run-id="${cssEscape(runId)}"]`);
     const run = findRunRecord(runId);
-    if (!log || !existing || !run) {
-      return;
+    if (!log || !existing || !run || displayRun(run) === run) {
+      return false;
     }
-    existing.replaceWith(renderRunCard(run));
+    const reading = scrollLayout?.snapshot(), open = existing.querySelector('[data-run-process]')?.open;
+    const next = renderRunCard(run);
+    const process = next.querySelector('[data-run-process]');
+    if (process && typeof open === 'boolean') process.open = open;
+    existing.replaceWith(next);
+    if (reading) scrollLayout?.restore(reading);
+    return true;
   }
 
     return {
+      refreshResolvedUndo: refreshRunCard,
       refreshActivitySummary: activitySummary?.update,
       appendActivityDetail,
       resetAutoFollow,

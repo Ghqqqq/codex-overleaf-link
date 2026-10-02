@@ -49,6 +49,7 @@
     const Contract = options.contract;
     const Compatibility = options.compatibility;
     const timeoutOverrides = { ...(options.timeoutOverrides || {}) };
+    const now = options.now || Date.now;
     const revision = Contract.REVISION;
     const capability = createCapability(cryptoImpl);
     const activeCancellationHandlers = new Map();
@@ -71,9 +72,17 @@
     function send(method, params, policy = {}) {
       const id = cryptoImpl.randomUUID();
       return new Promise((resolve, reject) => {
-        const timeoutMs = Number.isFinite(Number(policy.timeoutMs))
+        const requestTimeoutMs = Number.isFinite(Number(policy.timeoutMs))
           ? Number(policy.timeoutMs)
           : Contract.resolveTimeoutMs(method, timeoutOverrides);
+        const remainingMs = params?.deadlineAt == null ? Infinity
+          : Number.isFinite(params.deadlineAt) ? params.deadlineAt - now() : 0;
+        if (remainingMs <= 0) {
+          resolve({ ok: false, code: 'writeback_deadline_exceeded', changedDocument: false,
+            rpcMethod: method, error: 'The operation deadline expired before this request was sent.' });
+          return;
+        }
+        const timeoutMs = Math.min(requestTimeoutMs, remainingMs);
         const cancellable = policy.cancellation === 'content_abort';
         let settled = false;
         let timeout = null;

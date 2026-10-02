@@ -177,6 +177,7 @@ function createReviewPersistenceHarness(options = {}) {
     const tr = key => key, tx = en => en, truncateRunTitle = value => value;
     const formatTrackedChangeFiles = () => 'notes.tex', formatTrackedUndoFiles = () => 'notes.tex';
     const getRunProjectIdForWriteback = value => value.runProjectId;
+    const getPageBridgeTimeoutMs = () => 120000;
     const buildTrackedUndoPostFiles = value => value.undoPostFiles || [];
     const getTrackedChangeCaptureController = () => ({ hasLegacyUntrackedCheckpoint: () => false });
     const showPluginConfirm = async () => true;

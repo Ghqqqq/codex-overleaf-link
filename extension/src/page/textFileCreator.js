@@ -32,34 +32,64 @@
         throw Object.assign(new Error('Writeback was cancelled.'), { code: 'codex_cancelled' });
       }
     }
-    async function readServerSnapshot({ projectId, isCurrent, budget = verificationBudget(), includeBinaryFiles = false }) {
-      const started = now(), deadline = started + Math.max(0, budget.remainingMs);
+    async function boundedSnapshotRead(params, controller, timeoutMs) {
+      const deadline = now() + timeoutMs;
+      const expired = diagnostics => Object.assign(new Error('The server snapshot request timed out.'), {
+        code: 'source_zip_unavailable', diagnostics,
+        technicalMessage: 'The server snapshot request reached its deletion verification deadline.'
+      });
+      let timer, onAbort;
+      try {
+        const interruption = new Promise((_, reject) => {
+          onAbort = () => reject(Object.assign(new Error('Writeback was cancelled.'), { code: 'codex_cancelled' }));
+          controller?.signal.addEventListener('abort', onAbort, { once: true });
+          timer = window.setTimeout(() => { reject(expired(null)); controller?.abort(); }, timeoutMs);
+        });
+        const result = await Promise.race([snapshotRouter.fetchProjectZipSnapshot(params), interruption]);
+        if (now() >= deadline) throw expired(result?.diagnostics);
+        return result;
+      } finally {
+        (window.clearTimeout || globalThis.clearTimeout)(timer);
+        controller?.signal.removeEventListener('abort', onAbort);
+      }
+    }
+    async function readServerSnapshot({ projectId, isCurrent, budget = verificationBudget(), includeBinaryFiles = false,
+      singleAttempt = false, deadlineAt = Infinity }) {
+      const started = now(), deadline = Math.min(started + Math.max(0, budget.remainingMs), deadlineAt);
+      const attemptLimit = singleAttempt ? 1 : 3;
       let last;
       try {
-        for (let attempt = 0; attempt < 3 && now() < deadline; attempt++) {
+        for (let attempt = 0; attempt < attemptLimit && now() < deadline; attempt++) {
           assertVerificationOwner(projectId, isCurrent);
           const Controller = window.AbortController || globalThis.AbortController;
           const controller = typeof Controller === 'function' ? new Controller() : null;
           if (controller) verificationReads.add(controller);
           let result;
           try {
-            result = await snapshotRouter.fetchProjectZipSnapshot({ force: true, maxAgeMs: 0,
+            const params = { force: true, maxAgeMs: 0,
               serverOnly: true, writebackVerification: true, includeBinaryFiles, includeContent: true,
               signal: controller?.signal, saveCheckId: String(now()) + '-' + attempt,
-              zipTimeoutMs: Math.min(30000, Math.max(1, deadline - now())) });
+              zipTimeoutMs: Math.min(30000, Math.max(1, deadline - now())) };
+            result = singleAttempt ? await boundedSnapshotRead(params, controller, params.zipTimeoutMs)
+              : await snapshotRouter.fetchProjectZipSnapshot(params);
           } catch (error) {
+            if (singleAttempt) assertVerificationOwner(projectId, isCurrent);
             if (['codex_cancelled', 'aborted_project_changed'].includes(error?.code)) throw error;
-            result = { ok: false, reason: error?.message || String(error) };
+            result = { ok: false, reason: error?.message || String(error), ...(singleAttempt ? {
+              reason: error?.technicalMessage || error?.message || String(error), diagnostics: error?.diagnostics,
+              status: error?.status || error?.statusCode || error?.response?.status, code: error?.code, retryable: error?.retryable
+            } : {}) };
           } finally { if (controller) verificationReads.delete(controller); }
           assertVerificationOwner(projectId, isCurrent);
           if (result?.ok === true && Array.isArray(result.files)) return result;
           last = Object.assign(new Error('The server project snapshot could not be read.'), {
             code: 'source_zip_unavailable', diagnostics: result?.diagnostics || null,
-            technicalMessage: result?.reason || 'No complete server snapshot was returned.'
+            technicalMessage: result?.reason || 'No complete server snapshot was returned.',
+            ...(singleAttempt ? { status: result?.status || result?.statusCode, originalCode: result?.code, retryable: result?.retryable } : {})
           });
           const attempts = result?.diagnostics?.attempts || [];
           if (attempts.length && attempts.every(item => [401, 403].includes(item.status))) break;
-          if (attempt < 2 && now() < deadline) await delay(Math.min(1000 * (2 ** attempt), deadline - now()));
+          if (attempt < attemptLimit - 1 && now() < deadline) await delay(Math.min(1000 * (2 ** attempt), deadline - now()));
         }
         throw last || Object.assign(new Error('The project verification budget was exhausted.'), { code: 'source_zip_unavailable' });
       } finally { budget.remainingMs = Math.max(0, budget.remainingMs - Math.max(0, now() - started)); }
@@ -399,8 +429,33 @@
     async function prepareUploadParent(folderPath, options = {}) {
       const target = normalizeSafeProjectPath(folderPath);
       const projectId = getProjectId();
-      if (!target || !projectId) throw new Error('A valid upload parent and project are required.');
+      if (!projectId || (!target && folderPath !== '')) throw new Error('A valid upload parent and project are required.');
       const assertCurrent = () => assertVerificationOwner(projectId, options.isCurrent);
+      if (!target) {
+        // Uppy inherits the selected entity's parent. A previous nested upload
+        // must not redirect a root asset into that folder. Use a direct root
+        // file row, never the tree adapter's basename fallback.
+        assertCurrent();
+        const readRoot = () => document.querySelector('[data-testid="file-tree-list-root"], .file-tree-list[role="tree"]');
+        const root = readRoot();
+        const anchor = Array.from(root?.querySelectorAll?.('[role="treeitem"]') || []).find(row =>
+          row.closest?.('[role="tree"]') === root
+          && !row.querySelector('[data-file-type="folder"]')
+          && row.querySelector('[data-file-type="doc"][data-file-id], [data-file-type="file"][data-file-id]'));
+        if (!anchor) throw new Error('A root-level file could not be selected safely for asset upload.');
+        if (anchor.getAttribute('aria-selected') !== 'true') {
+          (anchor.querySelector('.file-tree-entity-button, .file-tree-entity-details') || anchor).click();
+          await delay(100);
+        }
+        assertCurrent();
+        const currentRoot = readRoot();
+        const selected = Array.from(currentRoot?.querySelectorAll?.('[role="treeitem"]') || [])
+          .filter(row => row.getAttribute('aria-selected') === 'true');
+        if (selected.length !== 1 || selected[0] !== anchor || anchor.closest('[role="tree"]') !== currentRoot) {
+          throw new Error('Overleaf did not confirm the selected root upload parent.');
+        }
+        return anchor;
+      }
       const expand = async path => {
         assertCurrent();
         const node = findFolder(path);
@@ -494,6 +549,8 @@
     async function deleteFile(operation, options = {}) {
       const target = normalizeSafeProjectPath(operation.path);
       const projectId = getProjectId();
+      const deadlineAt = Math.min(now() + 90000, Number.isFinite(options.deadlineAt) ? options.deadlineAt : Infinity);
+      const preflightDeadlineAt = deadlineAt - 15000;
       const expected = options.expectedContent;
       const binary = operation.undoCreatedFile?.v === 1 && operation.undoCreatedFile.kind === 'binary'
         && options.undoCreatedFile === true && /^[a-f0-9]{64}$/i.test(options.expectedSha256 || '');
@@ -514,39 +571,66 @@
       let mutationAttempted = false;
       let stage = 'preflight';
       let ownedDialog = null;
+      let zipReadCount = 0;
+      const zipFailures = [];
+      const remainingMs = () => Math.max(0, deadlineAt - now());
+      const budgetExpired = () => Object.assign(new Error('The deletion verification budget was exhausted.'), {
+        code: 'delete_confirmation_budget_exhausted',
+        technicalMessage: mutationAttempted ? 'No time remains to confirm the deletion in the server snapshot.'
+          : 'Deletion was not submitted because at least 15000ms must remain for server confirmation.'
+      });
       const visible = node => Boolean(node && !node.disabled && node.getClientRects?.().length);
       const dialogs = () => Array.from(document.querySelectorAll('[role="dialog"]')).filter(visible);
-      const assertCurrent = () => assertVerificationOwner(projectId, options.isCurrent);
+      const assertCurrent = () => {
+        assertVerificationOwner(projectId, options.isCurrent);
+        if (now() >= (mutationAttempted ? deadlineAt : preflightDeadlineAt)) throw budgetExpired();
+      };
       const waitFor = async (read, timeoutMs = 5000) => {
-        const deadline = Date.now() + timeoutMs;
-        do {
+        const deadline = Math.min(now() + timeoutMs, preflightDeadlineAt);
+        while (now() < deadline) {
           assertCurrent();
           invalidateDomProjectPathCache();
           const value = await read();
+          assertCurrent();
           if (value) return value;
-          await delay(100);
-        } while (Date.now() < deadline);
+          await delay(Math.max(0, Math.min(100, deadline - now())));
+        }
+        assertCurrent();
         throw new Error(`Overleaf did not confirm ${stage} before timeout.`);
       };
-      // Same retried, budgeted server read as uploads: one dropped ZIP request must not block a delete.
-      const readBudget = verificationBudget();
+      const canRetryRead = error => {
+        if (['codex_cancelled', 'aborted_project_changed'].includes(error?.code) || error?.retryable === false) return false;
+        const diagnostics = error?.diagnostics || {};
+        return ![error?.status, diagnostics.status, diagnostics.statusCode,
+          ...(Array.isArray(diagnostics.attempts) ? diagnostics.attempts.map(item => item?.status) : [])]
+          .some(status => [401, 403].includes(Number(status)));
+      };
       const readServerFiles = async () => {
-        assertCurrent();
-        snapshotRouter.invalidateCache?.();
-        let result;
-        try {
-          result = await readServerSnapshot({ projectId, budget: readBudget, includeBinaryFiles: binary,
-            isCurrent: () => { assertCurrent(); return true; } });
-        } catch (error) {
-          if (['codex_cancelled', 'aborted_project_changed'].includes(error?.code)) throw error;
-          throw Object.assign(new Error('Server source ZIP is unavailable; deletion cannot be verified safely.'),
-            { code: 'source_zip_unavailable', diagnostics: error?.diagnostics || null, technicalMessage: error?.technicalMessage || error?.message || '' });
+        const deadline = mutationAttempted ? deadlineAt : preflightDeadlineAt;
+        for (let attempt = 0; ; attempt++) {
+          assertCurrent();
+          snapshotRouter.invalidateCache?.();
+          zipReadCount++;
+          try {
+            const result = await readServerSnapshot({ projectId, includeBinaryFiles: binary, singleAttempt: true,
+              deadlineAt: deadline, budget: { remainingMs: Math.max(0, deadline - now()) }, isCurrent: options.isCurrent });
+            assertCurrent();
+            if ((result.skipped || []).some(file => file?.path === target)) {
+              throw Object.assign(new Error('The target was skipped in the server snapshot.'), {
+                code: 'source_zip_unavailable', retryable: false, diagnostics: result.diagnostics || null,
+                technicalMessage: 'The target was skipped in the server snapshot; absence cannot confirm deletion.'
+              });
+            }
+            return result.files;
+          } catch (error) {
+            zipFailures.push({ code: error?.originalCode || error?.code, status: error?.status,
+              technicalMessage: error?.technicalMessage || error?.message, diagnostics: error?.diagnostics || null,
+              remainingMs: remainingMs() });
+            if (zipFailures.length > MAX_CONFIRMATION_OBSERVATIONS) zipFailures.shift();
+            if (!canRetryRead(error) || now() >= deadline) throw error;
+            await delay(Math.min(1000 * (2 ** Math.min(attempt, 2)), deadline - now()));
+          }
         }
-        if ((result.skipped || []).some(file => file?.path === target)) {
-          throw Object.assign(new Error('Server source ZIP skipped the target file; deletion cannot be verified safely.'),
-            { code: 'source_zip_unavailable', technicalMessage: 'The target was skipped in the server snapshot.' });
-        }
-        return result.files;
       };
       const choose = (scope, selector, pattern) => {
         const matches = Array.from(scope.querySelectorAll(selector)).filter(node => visible(node)
@@ -579,11 +663,33 @@
         }
         const originalMatches = await matchesExpected(original);
         assertCurrent();
-        if (!originalMatches || canDelete() !== true) {
+        if (!originalMatches) {
           throw new Error('The file no longer matches the checked pre-image; deletion was stopped.');
         }
         const parentPath = target.split('/').slice(0, -1).join('/');
-        if (parentPath) await prepareUploadParent(parentPath, options);
+        // Folder expansion must share the preflight deadline too. Uploads keep their existing timing.
+        const parents = parentPath ? parentPath.split('/') : [];
+        for (let depth = 1; depth <= parents.length; depth++) {
+          assertCurrent();
+          const path = parents.slice(0, depth).join('/'), parent = findFolder(path);
+          if (!parent) throw new Error('The target parent folder is unavailable.');
+          if (parent.getAttribute('aria-expanded') !== 'false') continue;
+          stage = 'parent folder expansion';
+          const toggle = parent.querySelector('.folder-expand-collapse-button');
+          if (!toggle) throw new Error('The target parent folder cannot be expanded safely.');
+          toggle.click();
+          await waitFor(() => findFolder(path)?.getAttribute('aria-expanded') === 'true');
+        }
+        // Collapsed folders can hide an existing file from the tree adapter.
+        // Server presence proves existence; prepare its editor only after expansion.
+        if (!binary && canDelete() !== true && typeof options.prepareTextPreimage === 'function') {
+          const current = await options.prepareTextPreimage();
+          assertCurrent();
+          if (!current?.ok || current.text !== expected) {
+            throw new Error('The file no longer matches the checked pre-image; deletion was stopped.');
+          }
+        }
+        if (canDelete() !== true) throw new Error('The file no longer matches the checked pre-image; deletion was stopped.');
         const row = resolveRow();
         const identity = rowIdentity(row);
         if (!row || !identity || row.querySelector('[data-file-type="folder"]')) {
@@ -628,24 +734,35 @@
           throw new Error('The target changed before confirmation; deletion was stopped.');
         }
         const confirm = choose(ownedDialog, 'button', /^(?:Delete|删除)$/i);
+        assertCurrent();
         stage = 'server deletion receipt';
         mutationAttempted = true;
         confirm.click();
-        await waitFor(async () => !(await readServerFiles()).some(file => file.path === target), 15000);
-        return { ok: true, method: binary ? 'overleaf.native-created-file-delete' : 'overleaf.native-text-delete', changedDocument: true,
-          verified: true, verification: 'overleaf-zip' };
-      } catch (error) {
-        if (!mutationAttempted && error?.code === 'source_zip_unavailable') {
-          // Nothing was touched: keep the server diagnostics and let Retry sync replay the delete.
-          return { ok: false, code: 'source_zip_unavailable', reason: error.message, stage: stage.replace(/ /g, '_'), changedDocument: false,
-            diagnostics: { verificationPhase: 'delete-' + stage.replace(/ /g, '-'), ...(error.diagnostics || {}), reason: error.technicalMessage || '' },
-            failure: { code: 'source_zip_unavailable', stage: 'preflight', severity: 'blocked', retryable: true, terminalState: 'blocked',
-              changedDocument: false, file: target, operationType: 'delete', userMessage: 'The server copy of ' + target
-                + ' could not be checked, so it was not deleted.', nextAction: 'Retry sync to delete it once Overleaf responds.',
-              technicalMessage: error.technicalMessage || error.message } };
+        for (let observation = 0; ; observation++) {
+          const files = await readServerFiles();
+          if (!files.some(file => file.path === target)) {
+            return { ok: true, method: binary ? 'overleaf.native-created-file-delete' : 'overleaf.native-text-delete', changedDocument: true,
+              verified: true, verification: 'overleaf-zip' };
+          }
+          await delay(Math.min(250 * (2 ** Math.min(observation, 3)), remainingMs()));
         }
-        return { ok: false, code: mutationAttempted ? 'file_tree_operation_unverified' : 'file_tree_controls_unavailable',
-          reason: error.message, stage: stage.replace(/ /g, '_'), changedDocument: mutationAttempted };
+      } catch (error) {
+        const interrupted = ['codex_cancelled', 'aborted_project_changed'].includes(error?.code);
+        const code = interrupted ? error.code : mutationAttempted ? 'file_tree_operation_unverified'
+          : error?.code || 'file_tree_controls_unavailable';
+        const retryable = canRetryRead(error), technicalMessage = error?.technicalMessage || error?.message || '';
+        const reason = interrupted ? error.message : mutationAttempted ? 'Deletion could not be confirmed.'
+          : code === 'source_zip_unavailable' ? 'The server copy could not be checked. No file was deleted.'
+            : code === 'delete_confirmation_budget_exhausted' ? 'Not enough time remains to verify deletion. No file was deleted.' : error.message;
+        return { ok: false, code, reason, stage: stage.replace(/ /g, '_'), changedDocument: mutationAttempted,
+          technicalMessage, deadlineAt, remainingMs: remainingMs(), diagnostics: {
+            ...(error?.diagnostics || {}), verificationPhase: 'delete-' + stage.replace(/ /g, '-'), zipReadCount, zipFailures,
+            reason: technicalMessage, originalCode: error?.originalCode || error?.code || '', status: error?.status,
+            deadlineAt, remainingMs: remainingMs(), mutationAttempted
+          }, failure: { code, stage: mutationAttempted ? 'verify' : 'preflight', severity: mutationAttempted ? 'warning' : 'blocked',
+            retryable, terminalState: interrupted ? 'cancelled' : mutationAttempted ? 'needs_review' : 'blocked',
+            changedDocument: mutationAttempted, file: target, operationType: 'delete', userMessage: reason,
+            nextAction: retryable ? 'Retry Undo to check the file.' : '', technicalMessage } };
       } finally {
         // Close only the dialog opened by this operation; never another modal.
         if (ownedDialog && dialogs().includes(ownedDialog) && getProjectId() === projectId) {

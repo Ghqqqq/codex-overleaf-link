@@ -231,16 +231,14 @@
 
     async function uploadWithDom(file, transfer) {
       const parentPath = transfer.path.split('/').slice(0, -1).join('/');
-      if (parentPath) {
-        if (typeof deps.prepareUploadParent !== 'function') {
-          return { ok: false, reason: 'Verified folder selection is unavailable for nested asset upload.' };
-        }
-        await deps.prepareUploadParent(parentPath, {
-          createMissing: true,
-          onMutation: () => { transfer.mutationAttempted = true; },
-          isCurrent: () => treeOperations.getProjectId() === transfer.projectId && transfers.get(transfer.id) === transfer
-        });
+      if (typeof deps.prepareUploadParent !== 'function') {
+        return { ok: false, reason: 'Verified folder selection is unavailable for asset upload.' };
       }
+      await deps.prepareUploadParent(parentPath, {
+        createMissing: true,
+        onMutation: () => { transfer.mutationAttempted = true; },
+        isCurrent: () => treeOperations.getProjectId() === transfer.projectId && transfers.get(transfer.id) === transfer
+      });
       assertTransferProject(transfer);
       let input = findFileInput();
       if (!input) {
@@ -369,9 +367,13 @@
       let lastObserved = null;
       while (Date.now() < deadline) {
         assertTransferProject(transfer);
-        const node = findNativeTreeNode(projectPath, 'file')
-          || treeOperations.findFileTreeNode(projectPath, { invalidateCache: true });
-        let observed = node || treeOperations.projectPathExists(projectPath)
+        // A matching digest identifies bytes, not their project path. In the
+        // native tree, require the exact ancestry; the generic tree adapter
+        // can resolve a root name to an identically named nested file.
+        const nativeRoot = documentRef.querySelector?.('[data-testid="file-tree-list-root"]');
+        const node = nativeRoot ? findNativeTreeNode(projectPath, 'file')
+          : treeOperations.findFileTreeNode(projectPath, { invalidateCache: true });
+        let observed = node || (!nativeRoot && treeOperations.projectPathExists(projectPath))
           ? { path: projectPath, id: readTreeEntityId(node) } : null;
         if (!observed?.id) {
           try {

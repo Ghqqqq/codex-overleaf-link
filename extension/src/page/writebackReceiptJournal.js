@@ -12,6 +12,10 @@
     const clone = value => JSON.parse(JSON.stringify(value));
     const empty = () => ({ applied: [], skipped: [], trackedChanges: [], trackedChangeCaptures: [] });
     function failure(code, error) { return { ok: false, code, error, changedDocument: false }; }
+    function deadlineFailure(params) {
+      return params.deadlineAt != null && (!Number.isFinite(params.deadlineAt) || now() >= params.deadlineAt)
+        ? failure('writeback_deadline_exceeded', 'The operation deadline expired before any new write could start.') : null;
+    }
     function prune() {
       for (const [id, receipt] of receipts) {
         if (receipt.state === 'completed' && now() - receipt.updatedAt > retentionMs) receipts.delete(id);
@@ -55,6 +59,8 @@
         }
         return previous.promise; // Duplicate delivery retrieves the original work; it never executes it again.
       }
+      const expired = deadlineFailure(params);
+      if (expired) return expired;
       if (active) return failure('writeback_in_progress', 'An earlier writeback is still running. Wait for its result before writing again.');
       prune();
       const receipt = { id, projectId, fingerprint, state: 'running', updatedAt: now(), partial: empty() };
@@ -71,17 +77,20 @@
       };
       // Defer execution until the promise is assigned, including for immediately completed operations.
       receipt.promise = Promise.resolve().then(async () => {
+        if (deadlineFailure(params)) return deadlineFailure(params);
         if (params.reviewingPolicy === 'no-trace-undo') {
           const prepared = await prepareEditor(params);
           if (prepared.ok !== true) return { applied: [], changedDocument: false,
             skipped: (params.operations || []).map(operation => ({ operation, result: prepared })) };
         }
+        if (deadlineFailure(params)) return deadlineFailure(params);
         return applyOperations(params.operations || [], {
           baseFiles: params.baseFiles || null,
           reviewingPolicy: params.reviewingPolicy || '',
           requireReviewing: params.requireReviewing === true,
           requireEditing: params.requireEditing === true,
           runProjectId: projectId,
+          ...(params.deadlineAt == null ? {} : { deadlineAt: params.deadlineAt }),
           onOperationResult
         });
       }).catch(error => ({

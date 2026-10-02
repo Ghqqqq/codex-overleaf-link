@@ -1687,7 +1687,7 @@
   }
 
   function pickWritebackRecovery(run = {}) {
-    if (run.forkSnapshot === true) return {};
+    if (run.forkSnapshot === true || run.undoStatus === 'applied' || run.trackedChangeStatus === 'rejected') return {};
     const result = {};
     const retry = WritebackIntent.normalize(run.retryWriteback);
     if (retry && retry.runId === run.id && retry.projectId === normalizeProjectPrefKey(run.runProjectId)

@@ -146,6 +146,7 @@ function harness(options = {}) {
     setRunUndoStatus: (_id, value) => { run.undoStatus = value; },
     isTrackedChangeLifecycleRun: value => Boolean(value.trackedChangeStatus || value.undoTrackedChanges?.length),
     trackedChangeInFlight: new Map(), getRunProjectIdForWriteback: value => value.runProjectId,
+    getPageBridgeTimeoutMs: () => 120000,
     WritebackSettlement: Settlement, buildContentFailure: (code, details) => ({ code, ...details }),
     writebackOrchestrator: { invalidateMirrorAfterUndo() {} },
     isUndoResultEffectivelyApplied: Settlement.isUndoResultEffectivelyApplied,

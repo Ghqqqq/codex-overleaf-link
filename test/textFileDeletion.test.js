@@ -9,7 +9,7 @@ function fixture(options = {}) {
   const files = new Map([['main.tex', 'original'], ['qa/sub/seed.tex', 'seed'],
     ['qa/sub/green.png', 'binary'], [target, options.binary ? Buffer.from('created image').toString('base64') : '% new\n']]);
   let project = 'example', active = target, selected = null, menu = null, dialog = null, deleted = false, reads = 0;
-  let selectedFolderPath = '';
+  let selectedFolderPath = '', clock = 0;
   const visible = props => ({ disabled: false, getClientRects: () => [{}], getAttribute: () => '', ...props });
   const button = (name, click) => visible({ textContent: name, click });
   const rows = new Map();
@@ -62,7 +62,9 @@ function fixture(options = {}) {
     }
   };
   const creator = Creator.create({
-    window: { crypto: webcrypto, setTimeout: callback => setImmediate(callback),
+    now: () => clock,
+    window: { crypto: webcrypto, setTimeout: (callback, ms = 0) => setImmediate(() => { clock += ms; callback(); }),
+      clearTimeout: clearImmediate,
       MouseEvent: class { constructor(type) { this.type = type; } },
       CodexOverleafProjectFiles: { isTextProjectPath: path => path.endsWith('.tex') } },
     document,
@@ -233,10 +235,12 @@ test('a delete whose server check keeps failing is untouched, retryable and keep
   const f = fixture({ zipDown: 99 });
   const result = await f.remove();
   assert.equal(result.ok, false);
-  assert.equal(result.code, 'source_zip_unavailable');
+  assert.equal(result.code, 'delete_confirmation_budget_exhausted');
   assert.equal(result.changedDocument, false);
   assert.equal(result.failure.retryable, true);
   assert.equal(result.failure.changedDocument, false);
-  assert.deepEqual(result.diagnostics.attempts, [{ status: 504 }]);
+  assert.ok(result.diagnostics.zipFailures.some(failure =>
+    failure.diagnostics?.attempts?.some(attempt => attempt.status === 504)));
+  assert.equal(result.remainingMs, 15000, 'failed preflight preserves the confirmation reserve');
   assert.equal(f.files.has(f.target), true);
 });

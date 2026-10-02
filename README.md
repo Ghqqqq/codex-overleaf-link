@@ -1,48 +1,118 @@
 <div align="center">
-  <img src="extension/assets/icons/codex-overleaf-icon.png" width="96" alt="Codex Overleaf Link">
+  <img src="extension/assets/icons/codex-overleaf-icon.png" width="72" alt="Codex Overleaf Link">
   <h1>Codex Overleaf Link</h1>
-  <p><strong>English</strong> | <a href="README.zh-CN.md" lang="zh-CN">简体中文</a></p>
-  <p><strong>Codex, right inside your Overleaf project.</strong></p>
-  <p>
-    <img src="https://img.shields.io/badge/version-2.5.0-blue" alt="version">
-    <img src="https://img.shields.io/badge/platform-macOS%20%2F%20Windows%20%2F%20Linux-lightgrey" alt="platform">
-    <img src="https://img.shields.io/badge/chrome-MV3-green" alt="chrome manifest v3">
-    <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="node version">
-    <a href="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml"><img src="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml/badge.svg" alt="tests"></a>
-    <img src="https://img.shields.io/badge/runtime%20dependencies-0-orange" alt="zero npm runtime dependencies">
-    <img src="https://img.shields.io/badge/license-MIT-blue" alt="license">
-  </p>
+  <p><strong>Empower Overleaf with Codex.</strong></p>
+  <p><img src="https://img.shields.io/badge/version-2.5.0-blue" alt="version 2.5.0"></p>
+  <p>English | <a href="README.zh-CN.md">简体中文</a></p>
+  <p>Chrome · macOS / Windows / Linux · Local Codex</p>
 </div>
 
----
+Ask about the project, revise a passage, and review the result beside the PDF. Codex Overleaf Link brings a local Codex workflow into the Overleaf editor, with project context, model selection, and conversations in one place.
 
-Getting AI help with a paper in Overleaf usually means copying a section out, pasting the answer back, and hoping nothing broke on the way. Codex Overleaf Link removes that loop. It adds a Codex panel next to the Overleaf editor, keeps a local copy of your project in sync, lets Codex work on the real files, and writes the result back into Overleaf for you.
+![The source editor, PDF preview, and a real Codex project review in the Example paper demo](assets/readme/2.5.0/overview@2x.png)
 
-You never leave Overleaf. Collaborators still see edits live, compiling works as usual, and every change Codex makes comes with a receipt and an Undo.
+*Actual 2.5.0 interface. A read-only review of the standard Overleaf example project.*
 
-![The Codex panel beside the Overleaf source editor and PDF preview](assets/codex-preview.jpg)
+<details>
+<summary>Read the conversation detail (native 2x PNG)</summary>
 
-[Install](#install) · [First run](#your-first-run) · [Ask, Auto and Track](#ask-auto-and-track) · [Models](#models-and-api-providers) · [Updating](#updating) · [FAQ](#faq-and-troubleshooting) · [Development](#development)
+<p align="center"><img src="assets/readme/2.5.0/conversation@2x.png" width="393" alt="Native high-resolution capture of the actual Codex conversation"></p>
 
-## What it's like to use
+</details>
 
-- **Ask about the whole project.** "Why does Theorem 3 need assumption (A2)?" Codex reads every file, not only the one you have open.
-- **Point at the exact sentence.** Select text in the editor and attach it, or type `@` to add a file. `@compile-log` hands Codex the current errors and warnings.
-- **Watch it work.** While a task runs, a three-line live view under the run header shows what Codex is reading, thinking and editing. Expand it to see every step.
-- **See what changed, word by word.** After a write, each file folds into one line with `+/−` counts. Open it and only the changed words are highlighted.
-- **Change your mind.** Undo reverts a run's writes, including after a page reload. With Track on, edits land in Overleaf's Review panel instead.
-- **Keep the conversation going.** Queue a follow-up while Codex is busy, steer the running task, or fork an earlier turn to try something else.
 
-Also included: per-project session history, file and image attachments, figure generation with a confirmation step, project rules that keep chosen files read-only, a sensitive-content check before anything leaves your machine, and English and Chinese interfaces in light and dark themes.
+[Quick start](#quick-start) · [Writing workflow](#workflow) · [Writing style](#writing-style) · [Models](#connections) · [Detailed reference](#reference)
 
-<!-- Screenshot pending: assets/readme-run.png, a run in progress with the live view under the run header. -->
+<a id="workflow"></a>
 
-### Experimental
+## Read, revise, and review in one workspace
 
-- **Write in my style** learns your phrasing from Overleaf projects and PDFs you choose, and turns it into a reusable writing-style skill.
-- **Third-party model providers** let you point Codex at a Responses API, OpenAI-compatible Chat Completions, or Anthropic Messages endpoint instead of the built-in provider.
-- **Parallel subagents** split a large job across workers. Each worker's conversation can be opened from the main timeline.
-- **OT warm mirror** keeps the files you are focused on fresh by observing your live edits. It is read-only and off by default.
+| Intent | Control | Result |
+|---|---|---|
+| Understand a section or investigate a problem | **Ask** | An answer grounded in the available project context, without writing to Overleaf. |
+| Make a change to the paper | **Auto** | Changes are written back to the project and shown in the run record. |
+| Review edits in Overleaf | **Auto + Track** | Text edits appear as Overleaf tracked changes. |
+| Reverse a run | **Undo changes** | Eligible edits are restored and eligible newly created files are removed. |
+
+Undo also works after refresh. If a file was edited again afterwards, that file stays available for review; completed Undo steps are retained so a retry can focus on the remaining work.
+
+### Give the conversation the right context
+
+Use `@` or **＋** to attach project files, add `@compile-log` for a compile issue, or select text in the editor. **Add to Chat** provides context; **Edit Selection** sets the requested edit range. PDFs and images can be attached to the composer as references.
+
+<p align="center"><img src="assets/readme/2.5.0/context@2x.png" width="510" alt="A real composer draft with main.tex and sample.bib attached as context"></p>
+
+*An unsent draft with two project files attached. File context remains visible in the composer.*
+
+### Follow the work and open a subagent's conversation
+
+A run keeps its activity and result together. Expand its timeline to inspect reads, commands, and edits. With **Parallel Subagents** enabled, the main agent can continue working while delegated readers or workers run alongside it. Open a worker card to read that conversation, then return to the main task.
+
+<table>
+  <tr>
+    <td width="50%" align="center"><img src="assets/readme/2.5.0/activity@2x.png" width="393" alt="The actual run timeline and two completed subagent cards"></td>
+    <td width="50%" align="center"><img src="assets/readme/2.5.0/subagent@2x.png" width="393" alt="The actual read-only Structure subagent conversation"></td>
+  </tr>
+</table>
+
+*The same real task, shown as an activity view and as a child conversation. These captures show completed workers. Parallel Subagents is experimental.*
+
+<a id="writing-style"></a>
+
+## Write in My Style <sub>Experimental</sub>
+
+Build a reusable writing-style skill from selected Overleaf projects and PDFs.
+
+1. Open **Settings → General & appearance → Writing style**.
+2. Choose references from projects or add text-based PDFs.
+3. Generate the style, then enable it for the project. Add or change references and use **Update style** to refresh the skill.
+
+The skill is intended to guide phrasing, rhythm, organization, and tone. Reference material supports the writing style; the current task supplies the paper's facts, results, and citations.
+
+![The real Write in My Style reference setup in General settings](assets/readme/2.5.0/writing-style@2x.png)
+
+*Reference selection and generation controls. No private writing samples are shown.*
+
+<a id="connections"></a>
+
+## Bring the model that fits
+
+Use the local Codex CLI's model catalog, choose a reasoning level in the composer, or configure a compatible provider in **Settings → Models & connections**.
+
+Connection shortcuts cover OpenAI-compatible and Anthropic-compatible APIs, Kimi, GLM, and DeepSeek. A shortcut fills connection defaults; the API key and accepted model IDs are still supplied separately. Third-party providers are experimental.
+
+![Real connection shortcuts for custom, OpenAI-compatible, Anthropic-compatible, Kimi, GLM, and DeepSeek endpoints](assets/readme/2.5.0/providers@2x.png)
+
+*Actual connection setup. No API keys are visible.*
+
+<a id="quick-start"></a>
+
+## Quick start
+
+> **Upgrading from an older version**
+>
+> **Versions earlier than 2.5.0 require a manual update to 2.5.0.** The in-extension **Update now** action cannot perform this upgrade. Run the installation command below, reload the extension in `chrome://extensions`, then refresh the Overleaf page.
+
+**Prerequisites:** Chrome, Node.js 20+, and an installed, signed-in Codex CLI. Source installation also uses Git.
+
+```bash
+npm exec --yes codex-overleaf-link@2.5.0 -- install-managed
+```
+
+1. Run the managed installer. It prints the extension directory.
+2. In `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select that directory.
+3. Open an Overleaf project and start with **Ask**. Switch to **Auto** when a file change is intended.
+
+The extension supports project pages on `overleaf.com`, `www.overleaf.com`, and `cn.overleaf.com`.
+
+<a id="reference"></a>
+
+## Setup and reference
+
+Detailed installation, upgrade, privacy, troubleshooting, and development instructions are available below.
+
+<details>
+<summary><strong>Open the detailed reference</strong></summary>
 
 ## What you need
 
@@ -429,3 +499,6 @@ Issues and pull requests are welcome. For larger changes, open an issue first so
 [MIT](LICENSE)
 
 <p align="center"><strong>English</strong> | <a href="README.zh-CN.md" lang="zh-CN">简体中文</a></p>
+
+
+</details>

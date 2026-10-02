@@ -90,6 +90,7 @@ for (const kind of ['legacy', 'tracked']) {
       findUnsafeFullFileUndoOperation: () => null,
       buildTrackedUndoPostFiles: () => written,
       getRunProjectIdForWriteback: () => 'undo-project',
+      getPageBridgeTimeoutMs: () => 120000,
       callPageBridge: async () => receipt,
       isUndoResultEffectivelyApplied: () => true,
       tr: key => key, truncateRunTitle: value => value,

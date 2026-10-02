@@ -16,9 +16,9 @@
       const item = last?.kind === 'exploreGroup' ? last.items.at(-1) : last;
       return plain(item?.meta?.target || item?.meta?.command || item?.event?.title || agent.task).slice(0, 180);
     }
-    function elapsed(agent) {
-      const start = Date.parse(agent.startedAt || ''), end = Date.parse(agent.finishedAt || '');
-      return Number.isFinite(start) ? formatElapsed(Math.max(0, (Number.isFinite(end) ? end : Date.now()) - start)) : '';
+    function elapsed(agent, run) {
+      const duration = Agents.elapsedMs(agent, run, Date.now());
+      return duration === null ? '' : formatElapsed(duration);
     }
     function close() {
       if (!viewer) return;
@@ -123,7 +123,7 @@
         row.name.textContent = plain(agent.title || agent.jobId || agent.threadId);
         row.activity.textContent = latest(agent) || statusLabel(status);
         row.activity.title = row.activity.textContent;
-        row.status.textContent = statusLabel(status); row.time.textContent = elapsed(agent);
+        row.status.textContent = statusLabel(status); row.time.textContent = elapsed(agent, card.run);
         row.el.setAttribute('aria-label', row.name.textContent + ', ' + statusLabel(status) + ', ' + tx('Open conversation', '查看子对话'));
       }
       for (const [key, row] of group.cache) if (!keep.has(key)) { row.el.remove(); group.cache.delete(key); }
@@ -153,7 +153,7 @@
       const follow = !switched && viewer.body.scrollHeight - viewer.body.scrollTop - viewer.body.clientHeight < 70;
       const childStatus = Agents.effectiveStatus(agent, card.run);
       viewer.title.textContent = plain(agent.title || agent.jobId || agent.threadId);
-      viewer.meta.textContent = [statusLabel(childStatus), elapsed(agent), agent.model, agent.reasoningEffort].filter(Boolean).join(' · ');
+      viewer.meta.textContent = [statusLabel(childStatus), elapsed(agent, card.run), agent.model, agent.reasoningEffort].filter(Boolean).join(' · ');
       viewer.prompt.textContent = plain(agent.task);
       viewer.assignment.hidden = !viewer.prompt.textContent;
       const parent = Activity.project(card.run), last = parent.blocks.at(-1);

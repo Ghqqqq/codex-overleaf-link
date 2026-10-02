@@ -10,6 +10,19 @@
   const REVIEW_CODES = new Set(['write_timeout', 'partial_write_needs_review']);
   const CANCEL_CODES = new Set(['cancelled', 'user_cancelled', 'codex_cancelled']);
 
+  // Old attempts remain in the stored audit trail; a resolved undo must not
+  // advertise them as a current failure in the transcript or its summary.
+  function projectResolvedUndo(run) {
+    if (!run || (run.undoStatus !== 'applied' && run.trackedChangeStatus !== 'rejected')
+      || !Array.isArray(run.events)) return run;
+    const events = run.events.filter(event => {
+      if (event?.status !== 'failed' || event.streamRole
+        || ['report', 'guidance', 'stream'].includes(event.kind)) return true;
+      return !/^(?:Undo result:\s*(?:undone|rejected)\s+\d+\s+(?:item\(s\)|file\(s\)|tracked change\(s\)),\s*skipped\s+\d+(?:\s+item\(s\))?|撤销结果[：:]\s*已(?:撤销|拒绝)\s*\d+\s*(?:项|条留痕|个文件)，\s*跳过\s*\d+\s*(?:项|条))$/.test(String(event.title || '').trim());
+    });
+    return events.length === run.events.length ? run : { ...run, events };
+  }
+
   function create({ tr, projectRunSettlement, sanitizeText = value => value,
     document: documentRef = globalThis.document } = {}) {
     const notices = new WeakMap();
@@ -100,5 +113,5 @@
       && !path.split('/').includes('..') ? path.slice(0, 300) : '';
   }
 
-  return Object.freeze({ create });
+  return Object.freeze({ create, projectResolvedUndo });
 });

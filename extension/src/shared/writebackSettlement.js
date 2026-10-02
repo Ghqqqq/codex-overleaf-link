@@ -385,6 +385,7 @@
         next[field] = cloneValue(disposition.value);
       }
     }
+    if (next.undoStatus === 'applied' || next.trackedChangeStatus === 'rejected') Object.assign(next, { saveCheck: null, retryWriteback: null });
     if (settlementResult.facts) {
       const existingSettlement = next.settlement && typeof next.settlement === 'object'
         ? next.settlement
