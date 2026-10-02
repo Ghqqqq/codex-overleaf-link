@@ -29,6 +29,7 @@
 - Fix a compile-summary error after successful writes, the misplaced switch-provider confirmation, and adding third-party models that were not yet saved to the profile.
 - Undo newly created text files safely from collapsed folders by expanding their parents and checking the target editor before deletion.
 - Share an absolute Undo deadline across page requests and server confirmation, recover original writeback receipts without replaying mutations, and preserve verified partial progress through blocked results and refresh.
+- Keep no-trace Undo blocked when the project identity guard is unavailable, including when a deadline callback is present; recheck identity and remaining time before mutation.
 - Clear resolved Undo warnings and obsolete save/retry summaries while retaining the original audit trail; keep subagent elapsed times stable after completion and history restoration.
 
 ### Documentation and packaging

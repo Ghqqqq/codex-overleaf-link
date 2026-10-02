@@ -483,11 +483,11 @@
       ? { ok: false, code: 'writeback_deadline_exceeded', changedDocument: false,
         reason: 'The undo time budget expired before this operation could start.' } : null;
     const editOptions = () => ({ baseFileLookup, runProjectId,
-      recheckWriteProject: () => {
+      recheckWriteProject: writeGuardSurface ? () => {
         const expired = deadlineFailure();
         return expired ? { applied: [], skipped: [{ operation: {}, result: expired }] }
-          : writeGuardSurface?.runWriteGuard({ runProjectId }) || null;
-      },
+          : writeGuardSurface.runWriteGuard({ runProjectId });
+      } : null,
       trackReviewingChanges: options.trackReviewingChanges === true, noTraceUndo: options.noTraceUndo === true });
     const record = (operation, result) => {
       if (result.trackedChangeCapture) trackedChangeCaptures.push(result.trackedChangeCapture);

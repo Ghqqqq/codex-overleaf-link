@@ -1456,3 +1456,65 @@ test('no-trace undo fails closed when the project identity guard is unavailable'
   assert.equal(harness.state.writes.length, 0);
   assert.equal(harness.state.editorText, harness.postContent);
 });
+
+for (const scenario of [
+  { name: 'missing identity guard with time remaining', missingGuard: true, code: 'editor_project_id_unavailable' },
+  { name: 'verified identity with time remaining' },
+  { name: 'verified identity at the deadline', expired: true, code: 'writeback_deadline_exceeded' },
+  { name: 'missing identity guard at the deadline', missingGuard: true, expired: true, code: 'writeback_deadline_exceeded' },
+  { name: 'deadline expires before the mutation', expiresBeforeWrite: true, code: 'writeback_deadline_exceeded' }
+]) {
+  test('no-trace undo keeps identity and deadline checks independent: ' + scenario.name, async () => {
+    let clockReads = 0;
+    const harness = createAcceptHarness({ startReviewing: false, depOverrides: {
+      writebackOpenSettleMs: 0,
+      now: () => scenario.expiresBeforeWrite ? (++clockReads === 1 ? 0 : 100) : scenario.expired ? 100 : 0,
+      ...(scenario.missingGuard ? { window: { setTimeout, clearTimeout } } : {})
+    } });
+    const result = await harness.router.applyOperations({
+      runProjectId: 'test-project', reviewingPolicy: 'no-trace-undo', deadlineAt: 100,
+      baseFiles: [{ path: harness.path, content: harness.postContent }],
+      operations: [{ type: 'edit', path: harness.path, replaceAll: harness.preContent }]
+    });
+    if (scenario.code) {
+      assert.equal(result.ok, false, JSON.stringify(result));
+      assert.equal(result.skipped[0].result.code, scenario.code);
+      assert.equal(result.applied.length, 0);
+      assert.equal(harness.state.writes.length, 0);
+      assert.equal(harness.state.editorText, harness.postContent);
+    } else {
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.equal(result.skipped.length, 0);
+      assert.equal(result.applied.length, 1);
+      assert.ok(harness.state.writes.length > 0);
+      assert.equal(harness.state.editorText, harness.preContent);
+    }
+    if (scenario.expiresBeforeWrite) assert.ok(clockReads >= 2, 'the deadline is checked again before writing');
+  });
+}
+
+test('no-trace undo rechecks real project identity after reading the target', async () => {
+  const win = { setTimeout, clearTimeout,
+    CodexOverleafWriteGuard: require('../extension/src/page/writeGuard'),
+    _ide: { project: { _id: 'test-project' } } };
+  let harness, reads = 0;
+  harness = createAcceptHarness({ startReviewing: false, depOverrides: {
+    window: win, now: () => 0, writebackOpenSettleMs: 0,
+    readActiveEditorText() {
+      reads++;
+      win._ide.project._id = 'another-project';
+      return harness.state.editorText;
+    }
+  } });
+  const result = await harness.router.applyOperations({
+    runProjectId: 'test-project', reviewingPolicy: 'no-trace-undo', deadlineAt: 100,
+    baseFiles: [{ path: harness.path, content: harness.postContent }],
+    operations: [{ type: 'edit', path: harness.path, replaceAll: harness.preContent }]
+  });
+  assert.ok(reads > 0);
+  assert.equal(result.ok, false);
+  assert.equal(result.skipped[0].result.code, 'aborted_project_changed');
+  assert.equal(result.applied.length, 0);
+  assert.equal(harness.state.writes.length, 0);
+  assert.equal(harness.state.editorText, harness.postContent);
+});
