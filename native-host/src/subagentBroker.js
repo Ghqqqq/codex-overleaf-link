@@ -177,11 +177,12 @@ function createSubagentBroker(options = {}) {
   }
 
   function idFromFileName(name) {
-    return name.replace(/\.json$/, '').slice(0, 32) || 'unknown';
+    const id = name.replace(/\.json$/, '');
+    return JOB_ID_PATTERN.test(id) ? id : `rejected-${crypto.randomBytes(11).toString('hex')}`;
   }
 
   function jobIdOrFallback(job, name) {
-    return typeof job?.id === 'string' && job.id ? job.id.slice(0, 32) : idFromFileName(name);
+    return typeof job?.id === 'string' && JOB_ID_PATTERN.test(job.id) ? job.id : idFromFileName(name);
   }
 
   function validateJob(job) {
@@ -245,6 +246,10 @@ function createSubagentBroker(options = {}) {
   }
 
   function writeResult(result) {
+    // Rejection receipts cross the same filesystem boundary as accepted jobs.
+    if (typeof result.id !== 'string' || !JOB_ID_PATTERN.test(result.id)) {
+      throw new Error('Invalid subagent result ID');
+    }
     atomicWrite(path.join(resultsDir, `${result.id}.json`), JSON.stringify(result, null, 2));
   }
 
