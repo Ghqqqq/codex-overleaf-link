@@ -89,7 +89,7 @@
 - 状态 owner：会话保存 focused files；附件控制器管理当次输入文件、异步读取和去重；运行快照保留提交时信息。
 - 必须联动：[contentRuntime](../../extension/src/content/contentRuntime.js) 注入的限额、[turnAttachments](../../native-host/src/turnAttachments.js)、[nativeQuotas](../../native-host/src/nativeQuotas.js)、[runInputQueue](../../extension/src/shared/runInputQueue.js) 与附件持久化裁剪。
 - 普通 `@path` 文字与 focus 列表独立；批量附件的部分读入与末尾渲染也分别处理。排查缺附件需核对内部数组、可见 tray 和最终运行参数。
-- 最近测试：[contextTray](../../test/contextTray.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js)、[runInputQueue](../../test/runInputQueue.test.js)。
+- 最近测试：[contextTray](../../test/contextTray.test.js)、[composerAttachmentsConcurrency](../../test/composerAttachmentsConcurrency.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js)、[runInputQueue](../../test/runInputQueue.test.js)。
 
 ### 改编译日志引用或编译错误修复入口
 
@@ -147,23 +147,23 @@
 - 状态 owner：Page 提供读取证据；[mirrorWorkspace](../../native-host/src/mirrorWorkspace.js) 管理本地文件与 baseline；[mirrorHealth](../../extension/src/content/mirrorHealth.js) 投影镜像可用性。
 - 必须联动：[otWarmMirrorController](../../extension/src/content/otWarmMirrorController.js)、[shared/otText](../../extension/src/shared/otText.js)、[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 的 mirror 方法、快照完整性和空字符串语义。
 - ZIP 前快启入口为 `resolveWarmRunStart`；OT producer 的非空 overlays 与 Native validator 的拒绝条件存在冲突，需同时定位 `mirror_stale` 回退，详见写回章节。
-- 最近测试：[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)、[otWarmMirrorIntegration](../../test/otWarmMirrorIntegration.test.js)、[mirrorHealth](../../test/mirrorHealth.test.js)。
+- 最近测试：[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[snapshotEmptyContent](../../test/snapshotEmptyContent.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)、[otWarmMirrorIntegration](../../test/otWarmMirrorIntegration.test.js)、[mirrorHealth](../../test/mirrorHealth.test.js)。
 
 ### 改 Auto 编辑、保存确认、编译或失败重试
 
 - 入口：[WritebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js)、[writebackRouter](../../extension/src/page/writebackRouter.js)。
 - 状态 owner：[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 汇总结果；[saveState](../../extension/src/page/saveState.js) 观察保存；[writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 保存页面操作回执。
-- 必须联动：[staleGuard](../../extension/src/shared/staleGuard.js)、[writebackController](../../extension/src/content/writebackController.js)、[compileBridge](../../extension/src/page/compileBridge.js)、[runSettlementPersistence](../../extension/src/content/runSettlementPersistence.js)。详细链路见[Auto 编辑与 Undo](auto-edit-undo.md)。
+- 必须联动：[staleGuard](../../extension/src/shared/staleGuard.js)、[writebackController](../../extension/src/content/writebackController.js)、[compileBridge](../../extension/src/page/compileBridge.js)、[runSettlementPersistence](../../extension/src/content/runSettlementPersistence.js)。详细链路见[Auto 编辑与 Undo](auto-edit-undo.md)。 空基线与整文兜底的行为入口见 [emptyContentWriteback](../../test/emptyContentWriteback.test.js)；Page 闭包变化同时核对共享 revision 和重新注入。
 - 最近测试：[writebackSaveCheck](../../test/writebackSaveCheck.test.js)、[writebackSettlementContract](../../test/writebackSettlementContract.test.js)、[writebackReceiptRecovery](../../test/writebackReceiptRecovery.test.js)、[writebackCancellationFlow](../../test/writebackCancellationFlow.test.js)。
 
 ### 改 Accept、Undo、新建/删除文件或二进制资产
 
 - 入口：runtime 的 run 操作回调、[trackedChangesLifecycle](../../extension/src/page/trackedChangesLifecycle.js)、[AssetTransferBroker](../../extension/src/content/assetTransferBroker.js)。
 - 状态 owner：[undoOperations](../../extension/src/shared/undoOperations.js) 与 run checkpoint 保存撤销证据；页面 receipt 和 settlement 记录部分完成结果。
-- 支持范围：Auto 重命名按 create/delete 拆分，二进制删除、生成 PDF 与资产扩展名另有过滤；原有文件删除的恢复不能套用“编辑＋新建”的 Undo 路线，详见[文件操作与撤销限制](auto-edit-undo.md)。
+- 支持范围：Auto 重命名按 create/delete 拆分，二进制删除、生成 PDF 与资产扩展名另有过滤；删除恢复由 UndoOperations 分离文本 review 与文件重建，历史补齐需要保留原文及已应用删除证据，详见[文件操作与撤销](auto-edit-undo.md)。
 - 二进制覆盖走 uploader 独立链，当前未携带旧版本基线比较；新载荷完整性和上传后核验不能单独证明覆盖前远端未变化。
 - 必须联动：[treeOperations](../../extension/src/page/treeOperations.js)、[nativeAssetTransfer](../../native-host/src/nativeAssetTransfer.js)、[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 和镜像失效处理。详细链路见[Auto 编辑与 Undo](auto-edit-undo.md)。
-- 最近测试：[writebackRouterAccept](../../test/writebackRouterAccept.test.js)、[createdFileUndo](../../test/createdFileUndo.test.js)、[ordinaryUndoRouting](../../test/ordinaryUndoRouting.test.js)、[binaryUploadUndoRoundTrip](../../test/binaryUploadUndoRoundTrip.test.js)。
+- 最近测试：[writebackRouterAccept](../../test/writebackRouterAccept.test.js)、[createdFileUndo](../../test/createdFileUndo.test.js)、[deletedFileUndo](../../test/deletedFileUndo.test.js)、[ordinaryUndoRouting](../../test/ordinaryUndoRouting.test.js)、[binaryUploadUndoRoundTrip](../../test/binaryUploadUndoRoundTrip.test.js)。
 
 ## Native、Provider、子代理与写作风格
 
@@ -181,14 +181,14 @@
 - 入口：[background.js](../../extension/src/background.js) → [native index](../../native-host/src/index.js) → [taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) / [providerRuntime.handleProviderRequest](../../native-host/src/providerRuntime.js)。
 - 状态 owner：Native 管理进程与运行；[providerStore](../../native-host/src/providerStore.js) 保存 Provider 配置；[providerProfile](../../native-host/src/providerProfile.js) 定义配置结构。
 - 必须联动：[NativeChannel](../../extension/src/content/nativeChannel.js)、[nativeTransportEnvelope](../../native-host/src/nativeTransportEnvelope.js)、[nativeQuotas](../../native-host/src/nativeQuotas.js)、[providerBridgeRoutes](../../native-host/src/providerBridgeRoutes.js)、双方 compatibility、secret 脱敏与取消路径。
-- 最近测试：[nativeMessaging](../../test/nativeMessaging.test.js)、[streamEvents](../../test/streamEvents.test.js)、[providerReliability](../../test/providerReliability.test.js)、[providerStoreCapacity](../../test/providerStoreCapacity.test.js)、[responsesProtocolRedaction](../../test/responsesProtocolRedaction.test.js)、[codexTerminalStatus](../../test/codexTerminalStatus.test.js)、[nativeTransportEnvelope](../../test/nativeTransportEnvelope.test.js)。
+- 最近测试：[nativeMessaging](../../test/nativeMessaging.test.js)、[streamEvents](../../test/streamEvents.test.js)、[providerReliability](../../test/providerReliability.test.js)、[providerStoreCapacity](../../test/providerStoreCapacity.test.js)、[responsesProtocolRedaction](../../test/responsesProtocolRedaction.test.js)、[providerToolCompletion](../../test/providerToolCompletion.test.js)、[codexTerminalStatus](../../test/codexTerminalStatus.test.js)、[nativeTransportEnvelope](../../test/nativeTransportEnvelope.test.js)。
 
 ### 改并行子代理、文件归属或子对话展示
 
 - 入口：[subagentBroker.createSubagentBroker](../../native-host/src/subagentBroker.js)、[subagentActivityView](../../extension/src/content/subagentActivityView.js)。
 - 状态 owner：broker 管理任务槽、worker 和取消；[subagentWorkspace](../../native-host/src/subagentWorkspace.js) 管理工作空间；[subagentTelemetry](../../native-host/src/subagentTelemetry.js) 生成运行事件。
 - 必须联动：[codexSessionRunner](../../native-host/src/codexSessionRunner.js)、[subagentActivityModel](../../extension/src/shared/subagentActivityModel.js)、[parallel-subagents skill](../../native-host/src/skills/parallel-subagents/SKILL.md)，以及运行 settlement。
-- 最近测试：[subagentBroker](../../test/subagentBroker.test.js)、[codexTerminalStatus](../../test/codexTerminalStatus.test.js)、[parallelSubagents](../../test/parallelSubagents.test.js)、[subagentTelemetry](../../test/subagentTelemetry.test.js)、[subagentActivityView](../../test/subagentActivityView.test.js)。
+- 最近测试：[subagentBroker](../../test/subagentBroker.test.js)、[subagentIoFailure](../../test/subagentIoFailure.test.js)、[codexTerminalStatus](../../test/codexTerminalStatus.test.js)、[parallelSubagents](../../test/parallelSubagents.test.js)、[subagentTelemetry](../../test/subagentTelemetry.test.js)、[subagentActivityView](../../test/subagentActivityView.test.js)。
 
 ### 改 Write in My Style、参考资料或 skills
 

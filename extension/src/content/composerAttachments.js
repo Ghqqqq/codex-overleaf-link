@@ -15,6 +15,7 @@
     let attachments = [];
     const pendingAttachmentKeys = new Set();
     let pendingAttachmentBytes = 0;
+    let attachmentGeneration = 0;
 
     function handlePaste(event) {
       const files = collectFilesFromDataTransfer(event.clipboardData);
@@ -59,7 +60,9 @@
     }
 
     async function addFiles(files) {
+      const generation = attachmentGeneration;
       for (const file of Array.from(files || [])) {
+        if (generation !== attachmentGeneration) return;
         const dedupeKey = buildAttachmentDedupeKey(file);
         if (isDuplicateAttachmentFile(dedupeKey)) {
           continue;
@@ -84,7 +87,9 @@
         pendingAttachmentBytes += fileSize;
         try {
           const dataUrl = await readFileAsDataUrl(file);
+          if (generation !== attachmentGeneration) return;
           const preview = await buildAttachmentPreviewData(file, dataUrl);
+          if (generation !== attachmentGeneration) return;
           const attachment = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
             name: normalizeAttachmentName(file.name),
@@ -98,9 +103,15 @@
           if (!attachments.some(existing => buildAttachmentDedupeKey(existing) === dedupeKey)) {
             attachments.push(attachment);
           }
+        } catch (error) {
+          if (generation !== attachmentGeneration) return;
+          throw error;
         } finally {
-          pendingAttachmentBytes = Math.max(0, pendingAttachmentBytes - fileSize);
-          pendingAttachmentKeys.delete(dedupeKey);
+          // Cleared work no longer owns reservations in the current composer.
+          if (generation === attachmentGeneration) {
+            pendingAttachmentBytes = Math.max(0, pendingAttachmentBytes - fileSize);
+            pendingAttachmentKeys.delete(dedupeKey);
+          }
         }
       }
       renderComposerAttachments();
@@ -145,8 +156,10 @@
     }
 
     function clear() {
+      attachmentGeneration += 1;
       attachments = [];
       pendingAttachmentKeys.clear();
+      pendingAttachmentBytes = 0;
       renderComposerAttachments();
     }
 

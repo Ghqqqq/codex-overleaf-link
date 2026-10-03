@@ -217,11 +217,65 @@
     return { undoOperations, undoBaseFiles };
   }
 
+  function isFileUndoOperation(operation) {
+    return operation?.undoCreatedFile?.v === 1
+      || (operation?.type === 'create' && typeof operation.content === 'string');
+  }
+
+  // A deleted original has no editor post-image. Its inverse is a guarded
+  // file creation, backed by both the forward delete and the captured original.
+  // This also recovers older Track-on records that omitted that inverse.
+  function getFileUndoOperations(run = {}) {
+    const operations = (run.undoOperations || []).filter(isFileUndoOperation);
+    const before = filesListToMap(run.undoExpectedFiles);
+    const after = buildExpectedFilesAfterOperations({ files: run.undoExpectedFiles }, run.appliedOperations);
+    const deleted = new Set((run.appliedOperations || []).filter(operation => operation?.type === 'delete'
+      && before.has(operation.path) && !after.has(operation.path)).map(operation => operation.path));
+    return [...operations.filter(operation => !deleted.has(operation.path)), ...Array.from(deleted, path =>
+      normalizeUndoOperation({ type: 'create', path, content: before.get(path), reason: 'Undo delete' }))];
+  }
+
+  function prepareRunUndo(run = {}) {
+    const files = getFileUndoOperations(run);
+    const restored = new Set(files.filter(operation => operation.type === 'create').map(operation => operation.path));
+    const pending = [...files], operations = [];
+    for (const operation of run.undoOperations || []) {
+      if (isFileUndoOperation(operation)) {
+        const index = pending.findIndex(file => file.path === operation.path && file.type === operation.type);
+        if (index >= 0) operations.push(...pending.splice(index, 1));
+      } else if (!restored.has(operation.path)) operations.push(operation);
+    }
+    return { ...run, undoOperations: [...operations, ...pending] };
+  }
+
+  function textUndoRun(run = {}) {
+    const restored = new Set(getFileUndoOperations(run).filter(operation => operation.type === 'create').map(operation => operation.path));
+    return { ...run,
+      undoExpectedFiles: (run.undoExpectedFiles || []).filter(file => !restored.has(file.path)),
+      undoTrackedChanges: (run.undoTrackedChanges || []).filter(ref => !restored.has(ref.path))
+    };
+  }
+
+  function mergeFileUndoResult(textResult, fileResult, operations) {
+    const applied = [...(textResult.applied || []), ...(fileResult.applied || [])];
+    const skipped = [...(textResult.skipped || []), ...(fileResult.skipped || [])];
+    for (const operation of operations) {
+      if (!(fileResult.applied || []).some(entry => entry.operation?.path === operation.path
+        && entry.operation?.type === operation.type && entry.result?.ok === true && entry.result?.verified === true
+        && entry.result.verification === 'overleaf-zip')
+        && !(fileResult.skipped || []).some(entry => entry.operation?.path === operation.path)) {
+        skipped.push({ operation, result: { ok: false, code: 'undo_operation_failed',
+          reason: 'The file restoration has no verified server receipt.' } });
+      }
+    }
+    return { ...textResult, ok: textResult.ok !== false && fileResult.ok !== false && !skipped.length, applied, skipped };
+  }
+
   // Consume only independently verified rollback receipts. Forward writes
   // remain audit evidence; recovery arrays describe only unfinished work.
   function advanceUndoCheckpoint(run = {}, result = {}, verifyText = () => false) {
     const operations = Array.isArray(run?.undoOperations) ? run.undoOperations : [];
-    if (!operations.some(operation => operation?.undoCreatedFile?.v === 1)) return run;
+    if (!operations.some(isFileUndoOperation)) return run;
     const applied = Array.isArray(result.applied) ? result.applied : [];
     const skipped = Array.isArray(result.skipped) ? result.skipped : [];
     const failed = path => skipped.some(entry => {
@@ -239,8 +293,14 @@
         && JSON.stringify(entry.operation.undoCreatedFile) === JSON.stringify(operation.undoCreatedFile)
         && entry.result?.ok === true && entry.result.verified === true
         && entry.result.verification === 'overleaf-zip')).map(operation => operation.path));
+    const restoredPaths = new Set(operations.filter(operation => operation?.type === 'create'
+      && !failed(operation.path) && applied.some(entry => entry?.operation?.type === 'create'
+        && entry.operation.path === operation.path && entry.operation.content === operation.content
+        && entry.result?.ok === true && entry.result.verified === true
+        && entry.result.verification === 'overleaf-zip')).map(operation => operation.path));
+    for (const path of restoredPaths) textPaths.add(path);
     if (!textPaths.size && !deletedPaths.size) return run;
-    const pending = operations.filter(operation => !(operation?.type === 'edit' && textPaths.has(operation.path))
+    const pending = operations.filter(operation => !restoredPaths.has(operation.path) && !(operation?.type === 'edit' && textPaths.has(operation.path))
       && !(operation?.type === 'delete' && operation.undoCreatedFile?.v === 1 && deletedPaths.has(operation.path)));
     const needed = new Set(pending.flatMap(operation => [operation?.path, operation?.to]).filter(Boolean));
     return { ...run,
@@ -492,6 +552,11 @@
   }
 
   return {
+    isFileUndoOperation,
+    getFileUndoOperations,
+    prepareRunUndo,
+    textUndoRun,
+    mergeFileUndoResult,
     buildUndoCheckpoint,
     buildCreatedFileUndoCheckpoint,
     advanceUndoCheckpoint,

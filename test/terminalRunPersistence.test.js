@@ -142,8 +142,8 @@ function createReviewPersistenceHarness(options = {}) {
   // Start at the live post-write boundary; reload the durable result through the real codecs below.
   const session = { id: 'review-session', title: 'QA', runs: [run] };
   const state = { activeSessionId: session.id, sessions: [session], runs: session.runs };
-  return new Function('state', 'WritebackSettlement', 'StorageDb', 'FailureReasons', 'options', 'PanelState', `
-    const Modules = { ScopedPersistenceCoordinator: PanelState };
+  return new Function('state', 'WritebackSettlement', 'StorageDb', 'FailureReasons', 'options', 'PanelState', 'UndoOperations', `
+    const Modules = { ScopedPersistenceCoordinator: PanelState, UndoOperations };
     const record = state.runs[0];
     const trackedChangeInFlight = new Map(), timers = new Map(), pendingSaves = [], saved = [], calls = [];
     let saveStateTimer = null, saveStateInFlight = false, saveStateRunAfterFlight = false;
@@ -208,7 +208,7 @@ function createReviewPersistenceHarness(options = {}) {
       beginOlderSave: runQueuedSaveState, render() { refreshRunCardControls(); return rendered; },
       start: kind => kind === 'accept' ? acceptRun(record.id) : undoRunTrackedChanges(record.id, record) };
 `)(state, ReviewSettlement, ReviewStorageDb, ReviewFailureReasons, options,
-    require('../extension/src/content/scopedPersistencePanelState'));
+    require('../extension/src/content/scopedPersistencePanelState'), require('../extension/src/shared/undoOperations'));
 }
 
 for (const kind of ['accept', 'reject']) {

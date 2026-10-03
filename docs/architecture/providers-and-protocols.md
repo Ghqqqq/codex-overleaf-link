@@ -271,10 +271,10 @@ Anthropic `buildAnthropicHistoryContinuation` 仅对 max_output_tokens 且没有
 在正常配置的 120 秒 idle 下，若响应头后第 35、70、105 秒仍有 JSON 正文字节到达，但正文尚未结束，第 120 秒仍会中止请求，距最近流量仅 15 秒。
 该阶段的 idle 实际约束从收到响应头到完整 JSON 读完的时间，不能统一解释为网络持续静默；更长的 HTTP total 或 Codex watchdog 不会推迟已触发的 idle 中止。
 
-Chat/Anthropic 的异常恢复分支要求已有可恢复文本或 reasoning，且尚未出现任何工具调用，才可能生成 incomplete。
-该 guard 不覆盖所有提前结束：缺少协议终止标记的正常 EOF 仍可能在 `completeStream` 中把工具项标为 completed；Anthropic 的 `canonicalArguments` 还可能将残缺 JSON 归一为 `{}`。
-因此不能宣称整条协议链统一拒绝半段工具调用；最近工具调用测试提供终止原因，正常 EOF 与残缺参数组合仍需专项验证，下游是否实际执行也未确认。
-相关 owner 为 [chatBridgeResponse.js](../../native-host/src/chatBridgeResponse.js) 的异常恢复与 `completeStream/completeTool`、[anthropicBridgeResponse.js](../../native-host/src/anthropicBridgeResponse.js) 的 EOF 分支及参数规范化。
+Chat/Anthropic 的异常恢复分支要求已有可恢复文本或 reasoning，且尚未出现任何工具调用，才可能生成 incomplete；已有工具时的异常断流仍失败。
+工具完成还需参数 JSON 语法完整：[chatBridgeResponse.js](../../native-host/src/chatBridgeResponse.js) 的 `completeTool/normalizeToolCalls` 在标 completed 或生成最终工具项前调用 `assertCompleteToolArguments`；[anthropicBridgeResponse.js](../../native-host/src/anthropicBridgeResponse.js) 的 `canonicalArguments` 解析失败直接报错，`closeBlock` 在标 closed/completed 前完成该检查，覆盖 `content_block_stop` 和 EOF。
+残缺参数返回固定的 `provider_response_invalid`，错误文案不回显参数正文，也不将解析失败改成空对象。正常无参调用、custom/namespace 映射及多工具按原路线处理；完整合法参数在普通 EOF 的兼容完成仍保留，不强制新增终止标记要求。
+JSON 语法通过只证明参数可解析，不证明满足工具 schema、业务含义正确或实际工具执行成功。[providerToolCompletion.test.js](../../test/providerToolCompletion.test.js) 通过真实 loopback 桥验证完成前的拒绝、正常调用和断流保护，未执行真实 Codex 工具。
 Responses SSE 转发没有同样的 partial-output 恢复转换入口，错误可能结束为 response.failed 或请求失败。
 Anthropic 对特定 HTTP 400 最多修正一次并重新 fetch；普通错误无通用自动重发保证。
 [background.js](../../extension/src/background.js) 的 `getNativeRetryClass` 对 codex.providers.* 和 codex.models 当前落到 no_silent_retry；UI 明确刷新与 Auto 协商属于各自业务流程。
@@ -349,8 +349,8 @@ guard 允许 cache key 等例外；`sanitizeProfile` 会复制允许的 headers/
 | 内建/自定义发现 | codexModels、ProviderRuntime、ModelPicker | `node --test test/codexModels.test.js test/modelSelectionRecovery.test.js`；cache 优先级、不可用模型与 fallback |
 | Built-in 配置继承 | codexHome、ProviderRuntime、codexSessionRunner、ProviderSettingsCoordinator 与审计 | `node --test test/codexHome.test.js test/codexSessionRunner.test.js`；分别检查配置保留与参数构造；实际服务解析、配置变更后的快照及审计投影需组合验证 |
 | Speed 参数映射 | ModelPicker、运行快照、codexSessionRunner、codexArgs | `node --test test/codexArgs.test.js test/codexSessionRunner.test.js`；standard/fast 的 exec 与 app-server 参数构造 |
-| Chat 转换/reasoning | chatBridgeRequest/Response、providerReasoning、launch | `node --test test/providerReliability.test.js`；工具命名空间、finish_reason、可选字段和认证路由 |
-| Anthropic 转换/续传 | anthropicBridgeRequest/Response、MessagesBridge | `node --test test/anthropicBridge.test.js`；工具往返、签名、限额续传与 cache usage |
+| Chat 转换/reasoning | chatBridgeRequest/Response、providerReasoning、launch | `node --test test/providerReliability.test.js test/providerToolCompletion.test.js`；工具命名空间、参数完整性、finish_reason、可选字段和认证路由 |
+| Anthropic 转换/续传 | anthropicBridgeRequest/Response、MessagesBridge | `node --test test/anthropicBridge.test.js test/providerToolCompletion.test.js`；工具往返、完成前参数检查、签名、限额续传与 cache usage |
 | 队列执行配置 | RunExecutionSnapshot、Native resolver、Provider catalog | `node --test test/runExecutionSnapshot.test.js test/providerReliability.test.js`；提交快照固定与消费时 revision 守卫 |
 
 Response passthrough、真实 bridge HTTP 中断及 profile→launch→最终 wire body 的组合行为，应继续核对相应测试覆盖和实际环境。
@@ -377,4 +377,4 @@ Response passthrough、真实 bridge HTTP 中断及 profile→launch→最终 wi
 1. **连接测试成功后的持久化。** 已保存模型且指纹匹配时会写 diagnostics；核对 storeRevision 增加、profile revision 保持，以及未保存模型跳过记录的分支。
 2. **不同协议的响应模式与 bodyOverrides。** Chat、Anthropic、Responses 的实际请求构造不同；使用本地模拟端点覆盖 UI→profile→launch→wire body，检查探测诊断与实际 stream 参数是否一致。
 3. **专用 API key 之外的敏感配置。** headers/query/body 的键名检查和日志调用者范围有限；使用合成标记检验未识别字段、错误回显、URL 路径及事务恢复文件，验证数据不得使用真实凭据。
-4. **流中断后的续传与工具调用。** partial 工具 guard、内存 history、重复预算和 Anthropic incomplete 原因各有限定；模拟 socket reset、idle、client close、history 淘汰及半段工具参数，分别验证失败、继续与不重放边界。
+4. **流中断后的续传与工具调用。** 工具参数语法检查、内存 history、重复预算和 Anthropic incomplete 原因各有限定；分别验证 socket reset、idle、client close、history 淘汰、参数完整的 EOF 与残缺工具参数，检查失败、继续及不重放边界。

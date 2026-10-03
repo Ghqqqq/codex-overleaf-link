@@ -19,9 +19,7 @@ const Session = require('../extension/src/shared/sessionState');
 // Only native DOM/history actions and the remote delete receipt remain fixture
 // surfaces. The orchestrator, checkpoints, native review, mode guard and receipt
 // ownership execute their production implementations.
-const fixtureSource = fs.readFileSync(path.join(__dirname, 'createdFileUndo.test.js'), 'utf8');
-const fixtureEnd = fixtureSource.indexOf("\ntest('Track creates");
-assert.ok(fixtureEnd > 0);
+const { harness: makeHarness } = require('./_helpers/undoRuntimeHarness');
 const bridgeSource = fs.readFileSync(path.join(__dirname, '../extension/src/pageBridge.js'), 'utf8');
 const handlerStart = bridgeSource.indexOf('  const pageBridgeMessageHandler = async event => {');
 const handlerEnd = bridgeSource.indexOf('\n  window.__codexOverleafPageBridgeMessageHandler', handlerStart);
@@ -32,8 +30,7 @@ assert.ok(handlerStart >= 0 && handlerEnd > handlerStart && dispatchStart >= 0 &
 function harness(options = {}) {
   let h, dependencies, clock = 0, modeCalls = 0, preparationCalls = 0;
   const receipts = [], rpcCalls = [], serverChecks = [];
-  const fixtureRequire = id => id === '../extension/src/page/writebackRouter' ? {
-    create(deps) {
+  const createRouter = deps => {
       dependencies = deps;
       return Router.create({ ...deps,
         async setReviewingEnabled(enabled, params) {
@@ -59,12 +56,8 @@ function harness(options = {}) {
           }
         })
       });
-    }
-  } : require(id);
-  const makeHarness = vm.runInNewContext(fixtureSource.slice(0, fixtureEnd) + '\nharness;', {
-    require: fixtureRequire, __dirname, Buffer, setTimeout, clearTimeout
-  });
-  h = makeHarness({ mixed: true, track: options.track !== false });
+  };
+  h = makeHarness({ mixed: true, track: options.track !== false, createRouter });
   const editor = { closest: () => null, getAttribute: () => '', getClientRects: () => [{}] };
   let visibleEditor = !options.reopenEditor;
   const document = { querySelector: () => null,

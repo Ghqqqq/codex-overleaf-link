@@ -134,6 +134,7 @@ function createHarness(spec = {}) {
   });
   const undo = vm.runInNewContext('(' + undoSource + ')', {
     writebackOrchestrator,
+    Modules: { UndoOperations: undoOperations },
     showPluginConfirm: async () => true,
     tr: key => key,
     truncateRunTitle: value => value,

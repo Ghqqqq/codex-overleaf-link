@@ -104,10 +104,9 @@ content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言
 **目标契约。** 缺失内容、已知空字符串 `""`、已知非空内容应保持可区分。
 快照覆盖规则理应让成功读取的空编辑器内容覆盖旧 ZIP 内容。
 
-**已知限制。** 当前 [projectFiles](../../extension/src/shared/projectFiles.js) 的 `isUsableProjectFileContent` 会拒绝空白文本，
-`snapshotRouter.buildActiveEditorOverlay` 与 `mergeSnapshotFiles` 使用该判断。
-此例外限定于相应覆盖层路径；创建、保存核查、Undo 的空内容处理另有独立逻辑。
-空串、纯空白以及编辑器清空与旧 ZIP 冲突的组合，需要单独验证覆盖层和并发比较的结果。
+**当前读取规则。** [snapshotRouter.readActiveEditorOverlay](../../extension/src/page/snapshotRouter.js) 接受已成功读取的空串或纯空白；由于旧 reader 在编辑器缺失时也会返回空串，空白覆盖还要求 [pageBridge.getActiveEditorIdentity](../../extension/src/pageBridge.js) 提供可读的 CodeMirror doc、textarea 或 contenteditable，且其文本与读取结果一致。空白读取缺少或未就绪的来源不会覆盖 ZIP；读取异常及 Loading 占位也不构成覆盖证据。非空文本沿用无需 identity 的兼容路径。
+路径、文本与空白读取证据在等待 ZIP 前一并捕获；`mergeSnapshotFiles` 保留成功读取的空内容。ZIP 不可用时返回相应编辑器部分快照；`serverOnly` 始终不采纳编辑器覆盖层，不能用未保存空内容证明服务器已保存。
+[pageBridgeSnapshotCache.test.js](../../test/pageBridgeSnapshotCache.test.js) 装配完整 Page 入口；[snapshotEmptyContent.test.js](../../test/snapshotEmptyContent.test.js) 使用当前模块与显式网络替身检查不同读取来源和等待时序。创建、保存核查、Undo 的空内容语义仍需沿各自链路验证。
 
 ## 4. Auto 写回：先得到逐项结果，再记录恢复凭据
 
@@ -142,9 +141,9 @@ Page 先通过 [staleGuard.prepareOperationPatches](../../extension/src/shared/s
 `writebackRouter.applyEditOperation` 将同一套编辑器补丁用于实际派发、读回预期和 Track 捕获；批内另用 `sourceContent` 推进源坐标基线，避免第二个同文件操作误用编辑器表示。`verified:true` 表明读回符合本次基于当前内容构造的目标，服务器保存和其他并发边界仍分别取证。
 [textPatchLineEndings.test.js](../../test/textPatchLineEndings.test.js) 覆盖四种 LF/CRLF 组合、插入/替换、多补丁、相邻换行、UTF-16 代理对和协作者范围；[pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js) 串联真实模块的写回、Track、连续操作及回执后的 Undo。编辑器 I/O 采用替身，真实 Overleaf 的 ZIP、编辑器与保存行为仍需浏览器验收。
 
-**已知限制。** `staleGuard.checkOperationFreshness` 遇到空串或纯空白基线时直接通过检查。后续若采用 `replaceAll`，Page 身份与编辑器验证通过后可将后来内容整文替换，读回仍会符合这次替换目标；`verified:true` 不提供旧内容未变化的证据。
-[writebackController.buildSyncApplyOperations](../../extension/src/content/writebackController.js) 在缺少可用 patches 且无法由 previousContent 生成补丁时提供此兜底。当前 [mirrorWorkspace.collectMirrorChangesDetailed](../../native-host/src/mirrorWorkspace.js) 的文本差异携带 previousContent，[codexSessionRunner](../../native-host/src/codexSessionRunner.js) 再生成 patches；常规补丁路线还经过 expected 校验。空基线插入补丁可以保留后来文字，冲突替换补丁也可被拒绝，不能把整文兜底的反例推广到全部空文件写回。
-维护目标是让有效空基线参与新鲜度判断，同时保留合法空文件编辑和已有补丁保护。真实浏览器中的保存竞速与远端后果仍需独立验收。
+**空白基线。** `staleGuard.checkOperationFreshness` 将空串和纯空白作为有效内容参与相同比较。基线与当前内容不一致时，整文 `replaceAll` 兜底被拒绝；有补丁时仍可经过范围及 expected 检查保留未冲突的后来编辑。空文件的合法插入继续可用，已有基线 Map 但目标路径缺失时返回 missing_base_file；整个 Map 缺失时仍保留既有内部无基线操作。
+[writebackController.buildSyncApplyOperations](../../extension/src/content/writebackController.js) 在无法取得可用补丁时提供整文兜底；当前 Native 文本差异携带 previousContent 并生成 patches，两条路径均需维护。[emptyContentWriteback.test.js](../../test/emptyContentWriteback.test.js) 覆盖 Controller → StaleGuard → Page 写回，分别验证拒绝、允许及当前内容保持。
+Page router 与 snapshot 闭包通过共享 [pageRpcContract.REVISION](../../extension/src/shared/pageRpcContract.js) 重新注入；[pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js) 的重注入用例同时检查旧版本替换、换行补丁和空基线保护。实际 Chrome 重载、保存竞速与远端后果仍需独立验收。
 
 ### 4.2 新增文本与二进制
 
@@ -240,7 +239,7 @@ broker 在 commit 结果不确定时查询 `binaryUploadStatus`；仍不确定�
 ## 6. Undo 的入口、分支与后来修改保护
 
 **当前实现。** [runTimelineView](../../extension/src/content/runTimelineView.js) 的按钮调用 `contentRuntime.undoRun`。
-该入口等待 `pendingMirrorRefresh`，随后根据保存的 refs、前后像及创建证明路由。
+该入口先通过 `UndoOperations.prepareRunUndo` 补齐有证据的旧文件恢复，再等待 `pendingMirrorRefresh`，按保存的 refs、前后像及文件恢复操作路由。
 当前面板 Track 开关不能替代原运行的 `executionSnapshot.requireReviewing`。
 
 ```text
@@ -248,7 +247,7 @@ undoRun(runId)
   ├─ 存在 tracked refs / 可用前后像 / 指定创建恢复状态
   │    └─ undoRunTrackedChanges
   │         ├─ rejectTrackedChanges RPC：恢复已有文本
-  │         └─ applyOperations RPC：删除有证明的新建文件
+  │         └─ applyOperations RPC：删除有证明的新建文件／重建有原文的已删旧文件
   └─ 其余可用逆操作
        └─ buildNoTraceUndoRestore → applyOperations(no-trace-undo)
 抵达正常结果处理分支 → 镜像失效处理 → 验证证据 → 推进或保留恢复账本
@@ -285,8 +284,8 @@ Track 的 `selectExpectedFilesForTrackedUndo` 保留 `WritebackSettlement` 对�
 ### 6.2 文件创建、删除与混合 Undo
 
 **当前实现。** `buildCreatedFileUndoCheckpoint` 为该运行新建路径生成 `undoCreatedFile` 证明，保留文本 post-image 或二进制 SHA-256。
-`undoRunTrackedChanges` 先恢复已有文本；需要分段持久化的生命周期记录会先保存已确认的文本进度。
-文本仍未解决或进度无法保存时，新建文件保持原状，后续尝试继续处理未完成部分。
+`undoRunTrackedChanges` 先恢复仍存在的已有文本，再处理文件结构操作：撤销新建或重建原有删除。需要分段持久化的生命周期记录会先保存已确认的文本进度。
+文本仍未解决或进度无法保存时，后续文件结构操作不派发；新建文件和已删除文件保持该阶段的状态，恢复材料留给后续尝试。
 中间 `applyTrackedChangeSettlement` 保存失败可直接抛出；该点早于 `invalidateMirrorAfterUndo`，会绕过后续镜像失效调用。
 [scopedPersistencePanelState](../../extension/src/content/scopedPersistencePanelState.js) 在该保存失败时恢复材料、标记 `needs_review` 并继续抛错，控制流可直接进入 finally。
 因此“文件保留、恢复材料保留”不能同时证明镜像已失效；该控制流风险不等同于已复现下一次运行复用旧镜像。
@@ -300,18 +299,18 @@ Track 的 `selectExpectedFilesForTrackedUndo` 保留 `WritebackSettlement` 对�
 文件在写入后被用户改动时，删除证明失效，不能直接删除。
 `UndoOperations.advanceUndoCheckpoint` 随已验证进度收缩剩余恢复账本，避免下次重做已完成部分。
 
-**已知限制：删除原有文本。** `buildUndoOperations` 能用已保存的原始文本为 `delete` 生成 `create` 逆操作；该能力仍取决于 `recordUndoFromApply` 是否保留凭据，以及 `undoRun` 的实际路由。
+**删除原有文本的恢复。** [UndoOperations.getFileUndoOperations](../../extension/src/shared/undoOperations.js) 将旧文件重建与新建文件撤销统一为文件操作。已有 `create` 逆操作继续保留；补齐缺失的逆操作时，要求原文字符串保留在 undoExpectedFiles、appliedOperations 有成功删除，且推导后像不再包含该路径，空原文有效。只有后像缺项不足以推断应重建文件，先新建再删除的临时文件也不会因此复活。
+Track-on 记录同样保留这些 `create` 逆操作；历史 Track-on 记录缺少逆操作但仍保留上述证据时，`prepareRunUndo` 可补齐。已裁掉原文或删除证据的历史记录不具备该恢复保证。
 
-| 运行组合 | 当前恢复路线与边界 |
+| 运行组合 | 当前恢复路线 |
 |---|---|
-| Track-off，仅删除已有文本，原文已进入 checkpoint，且没有文本恢复分支条件 | 保留 `create` 逆操作，可进入 `applyOperations(no-trace-undo)`；仍需通过项目身份、路径存在性、创建和读回验证 |
-| Track-on，仅删除已有文本，没有其他 refs 或恢复材料 | `recordUndoFromApply` 仅把 `buildCreatedFileUndoCheckpoint` 的结果写入 `undoOperations`；原有文件删除不属于该创建证明，前后像推导也没有删除后的路径；原文仍可保存在 `undoExpectedFiles`，但缺少可达的重建步骤，`getRunUndoCount` 为 0 |
-| 编辑已有文本＋删除另一原有文本，Track-off | 虽有删除对应的 `create` 逆操作，`hasTrackedEditorUndo` 仍使 `undoRun` 进入 `undoRunTrackedChanges`；该分支只另行派发带 `undoCreatedFile` 的操作，不派发这个 `create`。传给页面的前像包含被删路径、后像缺少该路径，原生守卫返回 `native_untracked_undo_checkpoint_unavailable` |
-| 编辑已有文本＋删除另一原有文本，Track-on 且有可归属 refs | 文本恢复分支会检查前后像涉及的路径；被删文件无法打开时返回 `native_review_file_unavailable`，该分支也没有重建被删文件的派发步骤 |
+| 仅删除原有文本，Track 两态 | 有证据的 `create` 逆操作进入 `applyOperations(no-trace-undo)`；保留原项目、路径存在性、创建和服务器读回检查 |
+| 编辑＋删除原有文本，Track 两态 | `textUndoRun` 从原生文本 review 的前像和 refs 中排除待重建路径；文本恢复成功后派发文件结构操作，避免要求先打开已删除文件 |
+| 编辑＋新建＋删除原有文本 | 文本阶段后统一处理新建删除与旧文件重建，仍使用同一 deadline 和原项目身份；文件阶段可以逐项保留失败材料 |
+| 删除后该路径被用户重新创建 | 原有 Page 创建守卫拒绝覆盖，恢复操作保留供后续处理 |
 
-前后像分别表示运行前与运行后的内容，像两张带路径标签的对照照片；文件删除后缺少对应后像，与已读到空字符串的文件具有不同含义。
-这里应联查 [trackedChangeCaptureController.buildPostFiles](../../extension/src/content/trackedChangeCaptureController.js)、[writebackSettlement.selectExpectedFilesForTrackedUndo](../../extension/src/shared/writebackSettlement.js) 与 `trackedChangesLifecycle.prepareNativeReview`。
-上述混合删除限制不能由“编辑＋新增文件”的恢复验证推导为已解决；Track-off 的直接逆操作路线仍需单独保留与验证。
+`mergeFileUndoResult` 要求文件操作具备对应类型、路径及已验证的服务器回执，缺项进入失败结果。`advanceUndoCheckpoint` 还核对重建内容匹配，只有独立验证成功的项才消耗恢复材料；成功项的前像一并移除，进度成功持久化后，重载不会再次推导同一重建操作。失败兄弟项保留，needs_review 的文案和操作投影包含待重建旧文件。
+[deletedFileUndo.test.js](../../test/deletedFileUndo.test.js) 覆盖真实 runtime 函数、生产 Undo/Router/guard、历史记录及保存投影；文件树和服务器 I/O 使用替身。既有 [createdFileUndo.test.js](../../test/createdFileUndo.test.js) 与 [mixedUndoReceipt.test.js](../../test/mixedUndoReceipt.test.js) 继续约束新建撤销及回执，共用夹具为 test/_helpers/undoRuntimeHarness.js。真实浏览器、服务器写入及存储配额仍需独立验收。
 
 ### 6.3 Accept 与 Undo 的共同结算
 
@@ -382,7 +381,7 @@ Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirror
 | 保存待确认或刷新后核查 | writebackController、writebackIntent、sessionState | `node --test test/writebackSaveCheck.test.js` |
 | 普通 Undo 错撤用户历史 | contentRuntime 路由、提交 Track、trackedChangesLifecycle、ownership | `node --test test/ordinaryUndoRouting.test.js` |
 | 新建文件撤销或混合进度 | undoOperations、contentRuntime、router、textFileCreator、持久化 | `node --test test/createdFileUndo.test.js test/mixedUndoReceipt.test.js` |
-| 已有文本删除后的 Undo 或编辑＋删除混合恢复 | `recordUndoFromApply`、`undoRun`、`buildPostFiles`、`prepareNativeReview`；分别核对 Track 与前后像路径集合 | `node --test test/undoOperations.test.js test/ordinaryUndoRouting.test.js test/createdFileUndo.test.js`，仅作局部入口；删除组合需单独验证 |
+| 已有文本删除后的 Undo 或编辑＋删除混合恢复 | `recordUndoFromApply`、`UndoOperations.prepareRunUndo/textUndoRun/advanceUndoCheckpoint`、`undoRun`、Page guard；分别核对文本与文件恢复 | `node --test test/deletedFileUndo.test.js test/undoOperations.test.js test/ordinaryUndoRouting.test.js test/createdFileUndo.test.js`；两种 Track、冲突、历史材料、部分恢复及重载 |
 | Undo 超时、尾部未确认或重复删除 | contentRuntime.callPageBridge 的 broker 包装、deadlineAt、client/journal/router/creator | `node --test test/undoDeadlineRouting.test.js test/undoReceiptDeadline.test.js` |
 | 撤销后下一轮恢复旧内容 | orchestrator 镜像屏障、mirrorWorkspace、运行入口 | `node --test test/undoMirrorInvalidation.test.js` |
 | 取消后丢失部分结果 | cancellation sequence、router、broker、Page RPC、checkpoint 时序 | `node --test test/writebackCancellationFlow.test.js test/writebackReceiptRecovery.test.js`；router 局部测试不能替代真实 Page RPC 取消到 content checkpoint 的整链场景 |
@@ -398,7 +397,7 @@ Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirror
 `writebackReceiptRecovery` 检查部分模式参数转发，未覆盖 `retryCreates` 穿过真实 journal 的专项场景；创建重试还需核对同内容与异内容的完整传递链。
 `undoMirrorInvalidation` 的相关 harness 将 settlement 替换为成功 stub，无法证明混合 Undo 的中间持久化失败仍会使镜像失效。
 `mirrorWorkspace` 覆盖已有二进制删除上报、支持资产及生成 PDF 过滤；不能据此推定 Auto 重命名与拒绝删除的完整交互已经覆盖。
-`undoOperations` 验证删除对应的 `create` 逆操作生成；`ordinaryUndoRouting` 与 `createdFileUndo` 的文本或新建混合场景不能替代 Track-on 仅删除、Track-off 编辑＋删除和 Track-on 编辑＋删除的运行记录到页面恢复链验证。
+`deletedFileUndo` 从正向记录进入删除恢复与重载重试；`ordinaryUndoRouting` 和 `createdFileUndo` 继续覆盖普通文本与新建组合。这些模块组合验证不能替代真实 Overleaf 文件树、服务器保存与浏览器重载验收。
 这些范围各自提供定位依据；真实服务端协议、DOM、取消与立即刷新仍需相应执行证据。
 
 进一步缩小单个场景，可使用已经存在的测试名称，例如：

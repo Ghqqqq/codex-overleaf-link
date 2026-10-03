@@ -1191,6 +1191,41 @@ test('semantically different completed snapshot requests do not evict each other
   assert.equal(lightweightAgain.capabilities.diagnostics.snapshotCache, 'memory');
 });
 
+for (const content of ['', ' \t\n']) {
+  test('zip-only snapshot keeps a successfully read blank active editor over stale ZIP: ' + JSON.stringify(content), async () => {
+    const bridge = createSnapshotHarness({ files: { 'main.tex': content }, zipFiles: { 'main.tex': 'old server text' } });
+    const result = await bridge.call('getProjectSnapshot', { force: true, zipOnly: true, allowEditorNavigation: false });
+    assert.equal(result.files[0].content, content);
+    assert.equal(result.files[0].source, 'active-editor');
+    assert.equal(result.capabilities.fullProjectSnapshot, true);
+    assert.equal(bridge.getTreeQueryCount(), 0);
+    assert.equal(bridge.getOpenClickCount(), 0);
+  });
+
+  test('ZIP failure retains a successfully read blank editor as a partial snapshot: ' + JSON.stringify(content), async () => {
+    const bridge = createSnapshotHarness({ files: { 'main.tex': content }, fetchMode: 'hang' });
+    const result = await bridge.call('getProjectSnapshot', { zipOnly: true, zipTimeoutMs: 5 });
+    assert.equal(result.files.length, 1);
+    assert.equal(result.files[0].content, content);
+    assert.equal(result.capabilities.method, 'active-editor-zip-only-fallback');
+    assert.equal(result.capabilities.fullProjectSnapshot, false);
+  });
+}
+
+test('missing editor cannot turn stale server text into an empty snapshot', async () => {
+  const bridge = createSnapshotHarness({ files: { 'main.tex': '' }, zipFiles: { 'main.tex': 'server text' }, editorAvailable: false });
+  const result = await bridge.call('getProjectSnapshot', { zipOnly: true });
+  assert.equal(result.files[0].content, 'server text');
+  assert.equal(result.files[0].source, 'overleaf-zip');
+});
+
+test('server-only snapshot still reads empty ZIP content independently of the editor', async () => {
+  const bridge = createSnapshotHarness({ files: { 'main.tex': 'unsaved text' }, zipFiles: { 'main.tex': '' } });
+  const result = await bridge.call('getProjectSnapshot', { serverOnly: true });
+  assert.equal(result.files[0].content, '');
+  assert.equal(result.files[0].source, 'overleaf-zip');
+});
+
 function createSnapshotHarness({
   files,
   zipFiles = null,
@@ -1200,7 +1235,8 @@ function createSnapshotHarness({
   internalState = {},
   windowExtra = {},
   onFetch = null,
-  activePathKnown = true
+  activePathKnown = true,
+  editorAvailable = true
 }) {
   const fileMap = new Map(Object.entries(files));
   const zipBuffer = createStoredZip(zipFiles || files);
@@ -1256,7 +1292,7 @@ function createSnapshotHarness({
   };
 
   const document = {
-    activeElement: editorTextarea,
+    activeElement: editorAvailable ? editorTextarea : null,
     body: { innerText: '', textContent: '' },
     querySelector(selector) {
       if (/\[aria-selected="true"\]|\.selected/.test(selector)) {
@@ -1269,7 +1305,7 @@ function createSnapshotHarness({
     },
     querySelectorAll(selector) {
       if (selector === 'textarea') {
-        return [editorTextarea];
+        return editorAvailable ? [editorTextarea] : [];
       }
       if (/treeitem|role="row"|file-tree|project-tree|data-entity-id|data-doc-id|data-id|data-file-id/.test(selector)) {
         treeQueryCount += 1;
@@ -1279,7 +1315,7 @@ function createSnapshotHarness({
         return Array.from(fileMap.keys(), makeTreeNode);
       }
       if (selector === '*') {
-        return [editorTextarea, ...Array.from(fileMap.keys(), makeTreeNode)];
+        return [...(editorAvailable ? [editorTextarea] : []), ...Array.from(fileMap.keys(), makeTreeNode)];
       }
       return [];
     },

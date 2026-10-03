@@ -148,7 +148,7 @@
     const rows = undone ? meta.filter(row => row?.key !== 'saveState') : meta;
     const inFlight = trackedChangeInFlight?.get(run.id);
     const tracked = isTrackedChangeLifecycleRun(run);
-    const pendingCreatedUndo = tracked && run.trackedChangeStatus === 'needs_review' && run.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1);
+    const pendingFileUndo = tracked && run.trackedChangeStatus === 'needs_review' && run.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1 || operation?.type === 'create');
     let undo;
     if (run.undoStatus === 'running' || inFlight === 'reject') {
       undo = tx('Undoing changes...', '正在撤销修改…');
@@ -156,13 +156,13 @@
       undo = tx('This run\'s changes have been undone.', '本轮修改已撤销。');
     } else if (tracked && run.trackedChangeStatus === 'accepted') {
       undo = tx('Changes accepted; undo is no longer available.', '修改已接受，无法再撤销。');
-    } else if (run.undoStatus === 'partial' || pendingCreatedUndo) {
+    } else if (run.undoStatus === 'partial' || pendingFileUndo) {
       undo = hasUndoProgress(run)
         ? projectRunSettlement(run).canUndo
-          ? tx(pendingCreatedUndo ? 'Some changes were undone; retry the remaining files.' : 'Some changes were undone; remaining changes can still be undone.', pendingCreatedUndo ? '已撤销部分修改，可重试剩余文件。' : '已撤销部分修改，剩余修改仍可撤销。')
+          ? tx(pendingFileUndo ? 'Some changes were undone; retry the remaining files.' : 'Some changes were undone; remaining changes can still be undone.', pendingFileUndo ? '已撤销部分修改，可重试剩余文件。' : '已撤销部分修改，剩余修改仍可撤销。')
           : tx('Some changes were undone.', '已撤销部分修改。')
         : projectRunSettlement(run).canUndo
-          ? tx(pendingCreatedUndo ? 'Undo is incomplete; retry the remaining files.' : 'Undo is incomplete; remaining changes can still be undone.', pendingCreatedUndo ? '撤销未完成，可重试剩余文件。' : '撤销未完成，剩余修改仍可撤销。')
+          ? tx(pendingFileUndo ? 'Undo is incomplete; retry the remaining files.' : 'Undo is incomplete; remaining changes can still be undone.', pendingFileUndo ? '撤销未完成，可重试剩余文件。' : '撤销未完成，剩余修改仍可撤销。')
           : tx('Undo is incomplete.', '撤销未完成。');
     }
     if (!undo && !run.saveCheck && !run.saveConfirmedAt) return rows;
@@ -207,8 +207,8 @@
     const reason = find('unchangedReason');
     const undone = run?.undoStatus === 'applied' || run?.trackedChangeStatus === 'rejected';
     const savePending = !undone && (Boolean(run?.saveCheck) || (!run?.saveConfirmedAt && /^(?:Pending|待确认)/.test(find('saveState'))));
-    const pendingCreatedUndo = run?.trackedChangeStatus === 'needs_review'
-      && run.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1);
+    const pendingFileUndo = run?.trackedChangeStatus === 'needs_review'
+      && run.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1 || operation?.type === 'create');
     const facts = [];
     if (failed) facts.push({ key: 'write', tone: 'fail', text: unconfirmed ? tx('Write not confirmed', '写入结果未确认') : tx('Write incomplete', '写入未完成') });
     else if (wrote) facts.push({ key: 'write', text: tx(`Wrote ${wrote} item${wrote === 1 ? '' : 's'}`, `已写入 ${wrote} 项`) });
@@ -219,7 +219,7 @@
     const undo = run?.undoStatus === 'running' || /^(?:Undoing changes\.\.\.|正在撤销修改…)$/.test(find('undo')) ? tx('Undoing…', '正在撤销…')
       : run?.undoStatus === 'applied' || run?.trackedChangeStatus === 'rejected' ? tx('Changes undone', '已撤销本轮修改')
         : run?.trackedChangeStatus === 'accepted' ? tx('Changes accepted', '修改已接受')
-          : pendingCreatedUndo || run?.undoStatus === 'partial'
+          : pendingFileUndo || run?.undoStatus === 'partial'
             ? (hasUndoProgress(run) ? tx('Partly undone', '已撤销部分修改') : tx('Undo incomplete', '撤销未完成'))
             : undoable ? tx(`${undoable} undoable`, `可撤销 ${undoable} 项`)
               : failed ? '' : tx('Nothing to undo', '无可撤销写入');

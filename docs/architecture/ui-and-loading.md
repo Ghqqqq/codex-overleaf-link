@@ -193,11 +193,12 @@ runtime 的 `renderAtFileMenu` 提供 `@compile-log`；`runTask` 在首次模型
 ### 多附件异步、预算与恢复
 
 [ComposerAttachments.createComposerAttachmentController](../../extension/src/content/composerAttachments.js) 接收 paste/drop/file input，先去重和预约预算，再等待 FileReader 与图片预览。
-`pendingAttachmentKeys` 防止同一文件并发重复读取；预算计入已完成字节和 pending bytes，`finally` 释放预约，避免同时导入绕过总额判断。
+`pendingAttachmentKeys` 防止同一文件并发重复读取；预算计入当前 composer 代次内的已完成字节和 pending bytes，只有同代 `finally` 能释放该预约，避免旧读取扣除新批次预算或移除同文件的新预约。
 `addFiles` 按顺序处理一批文件。校验或读取抛错会提前退出整次调用，后续文件不再读取；此前已经 push 到内部数组的附件仍可被 `getAttachmentsForRun` 取出，但循环后的 `renderComposerAttachments` 被跳过，tray 可能尚未显示这些附件。数量上限的 `break` 与总预算不足的 `continue` 会继续到末尾重绘，须与抛错路径分别判断。
 批量导入验证应包含“有效文件 → 空文件或读取失败 → 有效文件”，同时检查错误提示、内部待发送列表、tray 和后续文件读取次数；单文件成功或 pending 去重不能证明批次失败后已全部回滚。
 普通 composer 的准入配置来自 runtime：\(n\le8\)、每件 \(b_i\le12\,\mathrm{MiB}\)、\(\sum b_i\le32\,\mathrm{MiB}\)。空附件被拒绝；该规则与合法空项目文件的语义不同。
-**清空与在途读取的数量边界。** `clear` 清空附件及 pending keys，未撤销读取或设置代次屏障；旧读取完成后仍可 push。先由并发 `addFiles` 调用启动 8 个在途读取，clear 后再启动 8 个新读取，全部完成可出现 16 件待发附件。一次批量调用内部顺序 await，不能将上述场景误写成单批同时读取 8 件。总字节预约未同时清零，该反例不证明字节总额也可绕过；Native 仍独立校验发送配额。
+**清空与在途读取。** 每次 `addFiles` 捕获 `attachmentGeneration`，在批次循环、FileReader 完成及预览完成后复核；`clear` 递增代次，清空附件、预约 keys 和 bytes，新批次可立即准入。旧读取结果、旧批次剩余文件及旧代错误失效，不能重入待发输入；旧 `finally` 不改变新代预约。底层 FileReader/Image 未强制 abort，允许完成后丢弃结果，因此当前预算约束有效 composer 内容与预约，不提供全部历史在途 I/O 的统一内存上限。
+[composerAttachmentsConcurrency.test.js](../../test/composerAttachmentsConcurrency.test.js) 使用完整控制器与可控读取/预览，覆盖清空、同文件重新导入、两批交错、旧错误及数量/字节约束；真实浏览器事件与发送仍需单独验收。
 [NativeQuotas](../../native-host/src/nativeQuotas.js) 普通附件保留单件/数量约束，聚合限制为 96 MiB；不能用 Native 更宽上限推断 UI 接受范围。写作风格参考采用另组 quotas。
 `getAttachmentsForRun` 包含本次发送内容；`createRunAttachmentSnapshots` 只保留名称、类型、大小与受限预览，避免把完整附件作为历史卡片内容复制。
 `serializePersistableAttachments/restorePersistedAttachments` 提供序列化与回填 helper：最多三件，单件 `contentBase64.length <= 1,048,576`；此单位为 Base64 字符。
@@ -208,7 +209,7 @@ runtime 的 `loadStoredStateForProject` 正常返回与 compact fallback 返回�
 [sessionState](../../test/sessionState.test.js) 中名为“composer attachments persist across refresh”的用例只调用 normalize/compact，未穿过真实存储及 hydration；刷新恢复验证需要覆盖 `saveState → persistPanelState → loadStoredStateForProject → restorePersistedAttachments`。此项与第 9 节的清空/迟到读取竞态分别处理。
 
 `runTask` 在异步 Provider/风格加载前捕获已完成附件，创建 run 后清空 composer；队列协调器拒绝带附件的排队输入，见 [RunQueueScheduler](../../extension/src/content/runQueueScheduler.js)。
-清空后迟到读取的实际交互影响仍需浏览器验收，见第 9 节；不能由去重测试推广出完整生命周期保证。
+提交只捕获当时已完成的附件，不等待在途读取；清空后旧代读取失效。完整提交交互与真实浏览器发送仍需验收，见第 9 节。
 
 ## 6. Markdown、公式和链接的呈现链
 
@@ -303,7 +304,7 @@ launcher 开关先读 `get-panel-state`，按需发 `toggle-launcher`，再读�
 | 草稿、编辑重发或排队回填 | textarea / RunTimelineView → PanelMaintenance → runtime / RunController → 会话或队列 owner | [runControllerContent](../../test/runControllerContent.test.js)、[runInputQueueSnapshotRegression](../../test/runInputQueueSnapshotRegression.test.js)、[runQueueSchedulerDurability](../../test/runQueueSchedulerDurability.test.js) |
 | 结果卡分叉 | RunResultActions → SessionForkController → [Native thread fork](../../native-host/src/codexThreadFork.js) → 记录复制 / 保存 / 补偿 | [sessionForkController](../../test/sessionForkController.test.js)、[sessionForkConcurrency](../../test/sessionForkConcurrency.test.js)、[sessionState](../../test/sessionState.test.js)、[storageDb](../../test/storageDb.test.js)；刷新字段保留另见运行状态页 |
 | 模型或选区输入 | 请求身份/能力 → 视图 → state → execution snapshot → Native 消费者 | [modelSelectionRecovery](../../test/modelSelectionRecovery.test.js)、[projectProviderSelection](../../test/projectProviderSelection.test.js)、[sentSelectionChip](../../test/sentSelectionChip.test.js)、[cuaRepairState](../../test/cuaRepairState.test.js) |
-| 附件/输出展示 | 输入预算/恢复或 renderer → 消费者 → CSS/资源 → 失败回退 | [p0ProductExperience](../../test/p0ProductExperience.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js)、[markdownTextFallback](../../test/markdownTextFallback.test.js)、[markdownDomRenderer](../../test/markdownDomRenderer.test.js)、[mathRendering](../../test/mathRendering.test.js)、[lineReferences](../../test/lineReferences.test.js) |
+| 附件/输出展示 | 输入预算/恢复或 renderer → 消费者 → CSS/资源 → 失败回退 | [p0ProductExperience](../../test/p0ProductExperience.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js)、[composerAttachmentsConcurrency](../../test/composerAttachmentsConcurrency.test.js)、[markdownTextFallback](../../test/markdownTextFallback.test.js)、[markdownDomRenderer](../../test/markdownDomRenderer.test.js)、[mathRendering](../../test/mathRendering.test.js)、[lineReferences](../../test/lineReferences.test.js) |
 | 活动卡或写后回执 | AgentTranscript / RunActivityModel → RunTimelineView / RunActivitySummary；writeback → WrittenChangesView | [agentTranscript](../../test/agentTranscript.test.js)、[subagentActivityView](../../test/subagentActivityView.test.js)、[writtenChangesView](../../test/writtenChangesView.test.js) |
 | Popup/诊断 | 两个 HTML shell → shared runtime → 偏好/状态读取 → 摘要字段 | [popupInstallGuidance](../../test/popupInstallGuidance.test.js)、[popupUpdateExperience](../../test/popupUpdateExperience.test.js)、[diagnosticsHealth](../../test/diagnosticsHealth.test.js)、[auditRecords](../../test/auditRecords.test.js) |
 
@@ -332,8 +333,7 @@ OT 点击、滚动及重绘可从[真实 Chrome 本地夹具](../../test/browser
 1. **新增脚本的加载。** content 缺入口 import 或组合依赖时无法进入实际应用；MAIN 模块即使公开为 WAR，也仍需要注入和 dispatcher。需检查执行链，不能仅搜索文件存在。
 2. **设置过滤器与持久化作用域。** Workbench 只筛选可见 group；preloadProjectContext 属于全局字段，Track 经活动会话写入。改作用域必须修改 owner 与迁移，不能只移动 DOM。
 3. **模型目录请求的迟到响应。** generation/provider/revision 守卫会忽略迟到响应；fallback 保留 unverified 选择也不代表服务已验证支持。需测试慢请求覆盖快请求和无目录的自定义 Provider。
-4. **附件清空与迟到读取。** `addFiles` 等待 FileReader/预览后直接 push；`clear` 清数组与 pending keys，没有取消读取或 generation 校验；runtime 清 composer 前只捕获已完成附件，发送可用性未检查 pending bytes。
-   按静态链路，旧读取可能在清空后重新进入 tray；实际影响需要通过“读取中提交或清空 → 读取完成”的生命周期用例确认。现有 `p0ProductExperience` 仅覆盖 pending 去重/预算。
+4. **附件清空与提交时机。** 控制器以代次阻止旧读取、预览及批次余项重入，相关回归见第 5 节。runtime 提交仍只捕获已完成附件，发送可用性未等待 pending bytes；需要在真实浏览器中分别验证读取中提交、主动清空和新批次导入，不能将控制器失效保证推广为全部附件均已被本次任务接收。
 5. **富文本主路径与降级路径的资源限额。** 诊断同步异常已隔离；超长 Markdown、恶意链接与复杂公式仍需分别验证主路径和兼容路径的实际资源及呈现边界，主 renderer 的参数不足以证明所有降级路径具有相同上限。
 6. **真实浏览器中的 modal 与加载副本。** 原生 dialog 的 top-layer、焦点恢复、字体及旧 managed shell 依赖 Chrome 和页面状态；验证需要覆盖真实浏览器中的挂载、键盘操作、关闭和重载。
 7. **附件序列化与刷新恢复。** 附件虽通过 SessionState normalize/compact，实际 prefs/session 写入与 hydration 未携带该字段；须按第 5 节完整保存和加载路线验证。

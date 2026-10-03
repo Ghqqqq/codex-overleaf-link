@@ -43,12 +43,6 @@
     }
 
     const baseContent = normalizeText(baseFileLookup.get(filePath));
-    if (!baseContent || baseContent.trim().length === 0) {
-      if (typeof console !== 'undefined') {
-        console.warn('[codex-overleaf] staleGuard: base empty for', filePath, '→ skipping check');
-      }
-      return { ok: true };
-    }
     const current = normalizeText(currentContent);
     if (current !== baseContent) {
       if (typeof console !== 'undefined') {

@@ -102,7 +102,7 @@ job 包含 `id`、`task`、非空 `files` 和可选 `title/readOnlyContext`。
 
 队列目录每轮重建；历史子对话必须依赖运行记录，不能从下一轮的 `results/` 目录恢复。
 
-**已知实现限制。** [writeBrokerFile](../../native-host/src/subagentBroker.js#L107) 只在 start、beginWave、endWave、close 写出 `activeWorkers`；`beginWave` 在 `running` 为空时执行，[startWorker](../../native-host/src/subagentBroker.js#L293) 的 `running.set` 后没有刷新文件。
+**已知实现限制。** [writeBrokerFile](../../native-host/src/subagentBroker.js) 只在 start、beginWave、endWave、close 写出 `activeWorkers`；`beginWave` 在 `running` 为空时执行，[startWorker](../../native-host/src/subagentBroker.js) 的 `running.set` 后没有刷新文件。
 正常活动波次中，磁盘 `activeWorkers` 因而仍可显示 0，不能单独作为空闲证据。实际调度与 `processAdoptions` 检查内存 `running`，接管还检查当前 token；此计数缺口不证明接管守卫失效。
 [握手测试](../../test/subagentBroker.test.js#L54) 只核对 ready/closed 等字段，未覆盖运行期间的磁盘计数。
 
@@ -146,15 +146,11 @@ worker 自有计时器会触发 abort，持续产生输出也不会豁免该计�
 `drained` 表示 broker 收尾路径到达该事件；真实进程停止还依赖 [codexSessionTiming](../../native-host/src/codexSessionTiming.js) 的 `stopCodexAppServer`。
 runner 捕获 `codex_process_stop_unconfirmed` 后阻止正常结果继续同步；有界等待本身不证明全部 OS 进程已退出。
 
-**取消回执失败的收尾缺口。** [subagentBroker.stop](../../native-host/src/subagentBroker.js) 在中止活动 worker 前，先为 queued 项调用 `writeResult`；[subagentWorkspace.atomicWrite](../../native-host/src/subagentWorkspace.js) 的写入和 rename 错误会向外抛出。
-若该回执写入失败，`stop` 会在活动 worker 的 abort、有界等待和 `close` 之前拒绝，轮询计时器也未经过 close 清理。
-[runCodexSession](../../native-host/src/codexSessionRunner.js) 的父成功与父异常路径均直接 await stop，没有 finally 补做 broker 清理；随后 [taskRunnerRuntime.handleCodexRun](../../native-host/src/taskRunnerRuntime.js) 的 finally 仍移除运行登记并释放项目锁。
-该文件错误自身不产生 `codex_process_stop_unconfirmed`，不能据此假定已有停止屏障。活动 worker 的自有 deadline 仍保留，可能继续到后续 deadline 或自然完成；实际进程寿命和后续镜像操作的交错需另行验证。
-[subagentBroker.test.js](../../test/subagentBroker.test.js) 的 drain 与 queued cancellation 用例使用可写临时目录及假 worker，未注入回执写入失败，也未贯通 task runner 的锁释放。
-验证应同时保留 running 和 queued 项，在 queued 回执写入处注入错误，检查活动信号、轮询清理、worker deadline 与外层运行登记；普通 drain 成功不能证明异常收尾也已完成。
-
-**worker 完成回执的异常边界。** `startWorker` 的成功回调调用 `finishWorker` 写回执；写入失败会进入 catch，再按 `timeout/cancelled/failed` 分类调用 `finishWorker`，未超时且未取消时为 failed。若第二次写入仍失败，worker Promise 保持 rejection，finally 又将它从 `running` 删除。父任务尚未进入 `stop` 时，该拒绝没有统一消费路径；[Native index](../../native-host/src/index.js) 的全局 `unhandledRejection` 处理会退出 host。
-这条链与 queued 取消回执失败具有不同触发条件。维护时应分别注入两处 I/O 失败，检查 Promise 消费、轮询清理和运行登记；局部 broker 反例不能证明真实 Codex 子进程已经停止或镜像后果已经确定。
+**回执失败与收尾。** [subagentBroker](../../native-host/src/subagentBroker.js) 对 worker 自然结束的持续回执错误、queued 取消回执以及 stop 清理错误调用 `recordFailure`，停止接纳新任务、发出失败事件并保留 `subagent_io_failed`。单次完成回执失败仍可写后备 failed 回执；连续失败由 Promise 链显式消费，finally 也有错误收束，不交给 Native index 的全局未处理拒绝入口。
+`stop` 在副作用发生前保存共享的清理 Promise，重复调用、同步事件重入与父取消复用一次收尾。queued 回执失败不会跳过 worker abort、有界等待和 close；清理完成后错误继续向调用者传播，后续 stop 也不能把已有错误改写为成功。遥测回调异常不阻断清理，父取消的 dirty 回调失败会被保留并报告。
+[runCodexSession](../../native-host/src/codexSessionRunner.js) 在父成功或失败时等待 stop，故该错误阻止正常写回结果交付；[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 随后释放运行登记与项目锁。父任务尚在执行时，broker 立即停止接纳任务并发事件，但不额外中断父 Codex；错误在父任务后续调用 stop 时向上传播。
+停止的有界等待后仍活跃的 worker，其声明路径进入 quarantine；stop／父取消触发 abort 后的迟到 resolve 按取消处理，自有 deadline 触发时保持 timeout，均不能重新取得 completed 同步资格。worker deadline 仍可继续存在，有界等待与路径隔离均不构成 OS 进程已经退出的证明，后续迟到磁盘活动另需进程证据。
+[subagentIoFailure.test.js](../../test/subagentIoFailure.test.js) 使用临时目录、精确写入/rename 故障和隔离子 Node，覆盖真实 Native→session→broker 控制流、当前 index 全局处理器、重入及迟到 worker；模型执行采用合成 Promise。同步 `startWorker` 启动失败后，`fillSlots` 的后备回执写错仍采用既有 best-effort 处理，不能将上述保证扩展为所有 broker I/O 分支已经统一收束。
 
 ## 5. 波次哈希、归属与隔离输出
 
@@ -168,12 +164,12 @@ runner 捕获 `codex_process_stop_unconfirmed` 后阻止正常结果继续同步
 **静态边界。** `ownedUnion` 内的跨 worker 或父任务越界写入无法仅靠波次末尾扫描准确归因；“先改后恢复”的中间操作也不产生净差异证据。
 
 `finishWorker` 对 broker 判为 failed/timeout/cancelled 且实际改动过的所属文件建立 `quarantined` 记录。
-隔离为同步资格标记，文件字节仍可留在共享磁盘；主任务后来修改同路径也不会自动解除隔离。
+隔离为同步资格标记，文件字节仍可留在共享磁盘；主任务后来修改同路径也不会自动解除隔离。 stop 有界等待后仍未 settle 的 worker 声明路径也会直接隔离。
 ownership violation 始终被阻止，不能通过 adoption 获得同步资格。
 
-**worker 终态与输出隔离。** [startWorker](../../native-host/src/subagentBroker.js#L345) 对正常 runner resolve 记录 completed；真实 runner 的 `getTurnCompletionError` 将 failed/interrupted、未知显式状态及错误证据送入拒绝路径，兼容缺少 status 且无 error 的旧成功通知。
+**worker 终态与输出隔离。** [startWorker](../../native-host/src/subagentBroker.js) 对未 abort 且完成处理成功的 runner resolve 最终记录 completed，回执错误仍可转为 failed；真实 runner 的 `getTurnCompletionError` 将 failed/interrupted、未知显式状态及错误证据送入拒绝路径，兼容缺少 status 且无 error 的旧成功通知。
 broker 按 timeout、abort 或 `codex_cancelled`、普通失败分类，failed/timeout/cancelled 的已改文件进入未完成输出隔离；无需等待单独 error 通知才能识别失败终态。[codexTerminalStatus.test.js](../../test/codexTerminalStatus.test.js) 覆盖通知→runner→broker→`syncChanges/unsupportedChanges` 的真实模块组合，模型进程使用合成 fixture，未验证真实模型或远端写回。
-回执 I/O 异常、正常成功后的进程退出证据和原生 observer 仍有各自边界；终态正确分类不能替代这些验证。
+回执错误的传播时机、正常成功后的进程退出证据和原生 observer 仍有各自边界；终态正确分类不能替代这些验证。
 
 **当前实现。** `processAdoptions` 仅在 broker 未关闭、未取消、无活动 worker 且 token 有效时处理请求。
 请求须同时具备当前 `token`、`reviewed: true`、原 `jobId`、所属 `path` 和当前最终字节 `sha256`。
@@ -229,7 +225,7 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 | 启动 gate、继承、禁递归 | codexSessionRunner、localSkills、技能正文、面板技能目录 | `node scripts/run-tests.mjs test/parallelSubagents.test.js` |
 | 首次目录预取与 Ask 投递边界 | contentRuntime、projectSettingsCoordinator、localSkillsPanel；runner gate、thread 参数与文件队列 | `node scripts/run-tests.mjs test/parallelSubagents.test.js test/codexSessionRunner.test.js`；现有预取装配和线程参数测试不能替代延迟目录响应、恢复提交及真实沙箱投递验证 |
 | 共享技能目录与交错准备 | codexHome、codexSessionRunner、writingStyleRuntime、项目锁；installer 映射 | `node scripts/run-tests.mjs test/codexHome.test.js test/codexSessionRunner.test.js`；还需覆盖活跃路径及安装持久性的交错准备场景 |
-| 并发、同文件串行、预算、取消 | subagentBroker、subagentWorkspace 回执写入、runner、codexSessionTiming、taskRunnerRuntime 登记与锁、镜像 dirty | `node scripts/run-tests.mjs test/subagentBroker.test.js`；回执失败时的 abort/close 与外层释放还需组合验证 |
+| 并发、同文件串行、预算、取消 | subagentBroker、subagentWorkspace 回执写入、runner、codexSessionTiming、taskRunnerRuntime 登记与锁、镜像 dirty | `node scripts/run-tests.mjs test/subagentBroker.test.js test/subagentIoFailure.test.js`；回执失败后的 abort/close、外层释放、并发 stop 与迟到完成 |
 | 拒绝回执身份与目标目录 | subagentBroker 的 jobIdOrFallback/idFromFileName/writeResult、输入拒绝原因及事件 | `node scripts/run-tests.mjs test/subagentReceiptIdentity.test.js test/subagentBroker.test.js`；保留合法 ID 查找，并检查异常 ID/文件名不会选中结果目录外的目标 |
 | 文件归属、quarantine、adoption | subagentWorkspace、subagentWorkspacePath、broker、最终 syncChanges 过滤 | `node scripts/run-tests.mjs test/subagentBroker.test.js test/parallelSubagents.test.js` |
 | 原生发现、历史与终态 | subagentTelemetry、runner eventScope/getTurnCompletionError、broker、Native取消分类、subagentActivityModel | `node scripts/run-tests.mjs test/subagentTelemetry.test.js test/codexTerminalStatus.test.js` |
@@ -252,6 +248,6 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 8. **活跃 worker 期间重建技能目录。** 另一个项目或风格生成会按自身开关准备共享 home；核对父任务与 worker 已发现的路径能否继续读取，以及并行 installer 的目标是否仍为持久技能根。文件路径检查与 app-server 缓存行为分别取证。
 9. **目录预取尚未返回时提交。** 从空技能目录开始，延迟 `skills.list` 响应，检查该次参数中的启用 ID 与 broker gate；再分别覆盖预取成功、预取失败后打开 Skills 刷新并重新提交，确认恢复作用于后续运行。
 10. **Ask 中的 ready 与实际投递。** 分别核对 broker 创建、父 thread 的只读配置、模型写 job 的结果及 worker 是否启动；使用隔离项目验证实际沙箱行为，并把原生 collab 事件与文件 broker 结果分开记录。
-11. **queued 取消回执写入失败。** 在已有活动 worker 时使 stop 的 queued 回执写入失败，核对 abort/close 是否执行，以及外层登记和项目锁是否释放；保留对 worker 自有 deadline 的检查，不能把 stop 拒绝或锁释放当作 worker 已停止的证据。
+11. **回执错误与停止重入。** 分别注入自然完成和 queued 取消回执故障，检查错误保留、abort/close、重入次数及外层登记；对忽略 abort 或迟到 resolve 的 worker 检查输出隔离，不能把 stop 返回或锁释放当作 OS 退出证据。
 
 **集成验证范围。** 同文件长队列与 admission 预算的实际时长、忽略 abort 的 worker 与 drain/停止确认的交接、波次内跨所有权路径写入，以及真实 app-server 版本的子线程历史字段均需集成验证。拒绝回执路径、活动计数、协议失败终态与暂时性历史错误应分别覆盖；源码中的限制与真实运行后果须保持区分。

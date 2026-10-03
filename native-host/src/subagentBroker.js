@@ -46,7 +46,10 @@ function createSubagentBroker(options = {}) {
   if (typeof runWorkerTask !== 'function') {
     throw new Error('subagent broker requires a runWorkerTask function');
   }
-  const emit = typeof options.emit === 'function' ? options.emit : () => {};
+  const emit = (...args) => {
+    try { if (typeof options.emit === 'function') options.emit(...args); }
+    catch (_error) { /* Observability cannot prevent worker cleanup. */ }
+  };
   const onMirrorDirty = typeof options.onMirrorDirty === 'function' ? options.onMirrorDirty : () => {};
   const parentSignal = options.signal || null;
   const env = options.env || process.env;
@@ -84,6 +87,8 @@ function createSubagentBroker(options = {}) {
   let anyWorkerStarted = false;
   let cancelled = false;
   let closed = false;
+  let brokerError = null;
+  let stopping = null;
 
   function start() {
     // Stale queue dirs from a previous run carry old results/logs — clear
@@ -129,9 +134,20 @@ function createSubagentBroker(options = {}) {
       intakeJobs();
       fillSlots();
       processAdoptions();
-    } catch (_error) {
-      // The queue is adversarial model output; the broker never throws on it.
+    } catch (error) {
+      recordFailure(error);
     }
+  }
+
+  function recordFailure(error, jobId) {
+    accepting = false;
+    if (brokerError) return;
+    brokerError = Object.assign(new Error('Subagent broker results or cleanup could not be persisted.'), {
+      code: 'subagent_io_failed', cause: error
+    });
+    emit('codex.subagent.failed', 'Subagent result storage failed', {
+      jobId, status: 'failed', reason: brokerError.message, code: brokerError.code
+    }, 'warning');
   }
 
   function intakeJobs() {
@@ -343,6 +359,7 @@ function createSubagentBroker(options = {}) {
         } catch (_error) { /* Observability must not fail or stop the worker. */ }
       }
     }).then(workerResult => {
+      if (controller.signal.aborted) throw controller.signal.reason || new Error('Subagent aborted');
       finishWorker(entry, {
         status: 'completed',
         summary: String(workerResult?.assistantMessage || '').slice(0, SUMMARY_LIMIT_CHARS),
@@ -354,14 +371,14 @@ function createSubagentBroker(options = {}) {
       const status = timedOut ? 'timeout' : controller.signal.aborted || error?.code === 'codex_cancelled' ? 'cancelled' : 'failed';
       appendLog(job.id, `${status}: ${error?.stack || error?.message || String(error)}`);
       finishWorker(entry, { status, reason: error?.message || String(error) });
-    }).finally(() => {
+    }).catch(error => recordFailure(error, job.id)).finally(() => {
       clearTimeout(deadlineTimer);
       running.delete(job.id);
       if (running.size === 0) {
         endWave();
       }
       fillSlots();
-    });
+    }).catch(error => recordFailure(error, job.id));
 
     running.set(job.id, { controller, deadlineTimer, promise });
   }
@@ -502,69 +519,56 @@ function createSubagentBroker(options = {}) {
     for (const { controller } of running.values()) {
       controller.abort(new Error('run cancelled'));
     }
-    for (const jobId of queued.splice(0)) {
-      const entry = jobs.get(jobId);
-      entry.status = 'cancelled';
-      writeResult({ id: jobId, status: 'cancelled', reason: 'run cancelled' });
-      emit('codex.subagent.failed', publicText(entry.job.title || jobId, 160), {
-        jobId, status: 'cancelled', reason: 'run cancelled'
-      }, 'warning');
-    }
     if (anyWorkerStarted) {
-      // Partial worker edits must be deterministically discarded: cancellation
-      // already skips writeback, and the dirty mark forces the next run's
-      // mirror sync to rebuild the workspace from Overleaf (spec P1-3 fix).
-      onMirrorDirty();
+      try { onMirrorDirty(); } catch (error) { recordFailure(error); }
     }
-    close();
+    // Event listeners cannot expose an async rejection. The same sticky stop
+    // promise is still awaited by the parent runner and reports any I/O error.
+    stop({ drain: false }).catch(() => {});
   }
 
-  async function stop({ drain = true } = {}) {
-    processAdoptions();
-    accepting = false;
-    // Queued-but-unstarted jobs would otherwise vanish with no result file,
-    // hanging a lead still polling for its job count. Settle them first
-    // (mirrors onParentAbort's queue handling).
+  function cancelQueued(reason) {
     for (const jobId of queued.splice(0)) {
       const entry = jobs.get(jobId);
-      if (entry) {
-        entry.status = 'cancelled';
-      }
-      writeResult({ id: jobId, status: 'cancelled', reason: 'The run ended before this subagent started.' });
+      if (entry) entry.status = 'cancelled';
+      try { writeResult({ id: jobId, status: 'cancelled', reason }); }
+      catch (error) { recordFailure(error, jobId); }
       emit('codex.subagent.failed', publicText(entry?.job?.title || jobId, 160), {
-        jobId, status: 'cancelled', reason: 'The run ended before this subagent started.'
+        jobId, status: 'cancelled', reason
       }, 'warning');
     }
-    if (drain && running.size) {
-      let graceTimer = null;
-      const grace = new Promise(resolve => {
-        graceTimer = setTimeout(resolve, limits.drainGraceMs);
-      });
-      await Promise.race([
-        Promise.allSettled([...running.values()].map(worker => worker.promise)),
-        grace
-      ]);
-      // The grace timer gates an awaited race; if the workers settled first it
-      // must be cleared or it keeps the event loop alive for drainGraceMs
-      // (the "keep timers gated, then clear" discipline from c3cd357).
-      if (graceTimer) {
-        clearTimeout(graceTimer);
+  }
+
+  function stop({ drain = true } = {}) {
+    accepting = false;
+    if (!stopping) stopping = Promise.resolve().then(() => stopWorkers(drain));
+    return stopping.then(() => { if (brokerError) throw brokerError; });
+  }
+
+  async function stopWorkers(drain) {
+    accepting = false;
+    try {
+      try { processAdoptions(); } catch (error) { recordFailure(error); }
+      cancelQueued(cancelled ? 'run cancelled' : 'The run ended before this subagent started.');
+      if (drain && !cancelled && !brokerError) await settleRunningWithin(limits.drainGraceMs);
+    } finally {
+      for (const { controller } of running.values()) controller.abort(new Error('broker drained'));
+      // Keep bounded waiting for workers that ignore abort; their own deadline
+      // remains active until settlement. OS exit proof belongs to the runner.
+      try { await settleRunningWithin(limits.drainGraceMs); } finally {
+        for (const jobId of running.keys()) for (const file of jobs.get(jobId).job.files) {
+          quarantined.set(file, { jobId, status: 'cancelled', adoptedHash: '' });
+        }
+        close();
       }
     }
-    for (const { controller } of running.values()) {
-      controller.abort(new Error('broker drained'));
-    }
-    // Bounded final settle: a worker that ignores its abort must not hang
-    // stop() forever — that strands codex.run and leaks the project lock (the
-    // very zombie-lock case handleCodexCancel exists to recover from).
-    await settleRunningWithin(limits.drainGraceMs);
     if (jobs.size) {
       emit('codex.subagent.drained', 'subagents drained', {
         jobs: jobs.size,
         violations: violations.length
-      }, 'completed');
+      }, brokerError ? 'warning' : 'completed');
     }
-    close();
+    if (brokerError) throw brokerError;
   }
 
   async function settleRunningWithin(timeoutMs) {
@@ -595,7 +599,7 @@ function createSubagentBroker(options = {}) {
     parentSignal?.removeEventListener?.('abort', onParentAbort);
     try {
       writeBrokerFile('closed');
-    } catch (_error) { /* workspace may already be gone */ }
+    } catch (error) { recordFailure(error); }
   }
 
   return {

@@ -81,6 +81,7 @@ for (const kind of ['legacy', 'tracked']) {
     const receipt = { changedDocument: true, skipped: [], applied: operations.map(operation => ({ operation,
       trackedChange: { path: operation.path, id: operation.path } })) };
     const scope = {
+      Modules: { UndoOperations: require('../extension/src/shared/undoOperations') },
       writebackOrchestrator: h.instance,
       getPendingMirrorRefresh: h.instance.getPendingMirrorRefresh,
       findRunRecord: () => run, getRunUndoCount: () => 1,

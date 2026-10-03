@@ -216,6 +216,7 @@ function appendBlockDelta(state, res, index, delta) {
 function closeBlock(state, res, index) {
   const entry = state.blocks.get(index);
   if (!entry || entry.closed) return;
+  const args = entry.type === 'tool_use' ? canonicalArguments(entry.arguments) : '';
   entry.closed = true;
   if (entry.type === 'text') {
     const part = { type: 'output_text', text: entry.text, annotations: [] };
@@ -236,7 +237,6 @@ function closeBlock(state, res, index) {
     state.assistantBlocks[index] = block;
   } else {
     entry.item.status = 'completed';
-    const args = canonicalArguments(entry.arguments);
     if (entry.kind === 'custom') {
       entry.item.input = unwrapCustomInput(args);
       emit(state, res, 'response.custom_tool_call_input.done', { item_id: entry.item.id, output_index: entry.outputIndex, input: entry.item.input });
@@ -401,7 +401,11 @@ function reserve(state, item) {
 }
 
 function canonicalArguments(value) {
-  try { return JSON.stringify(JSON.parse(value || '{}')); } catch (_error) { return '{}'; }
+  try {
+    return JSON.stringify(JSON.parse(value || '{}'));
+  } catch (_error) {
+    throw responseError('The provider returned incomplete or invalid JSON tool arguments.');
+  }
 }
 
 function unwrapCustomInput(value) {

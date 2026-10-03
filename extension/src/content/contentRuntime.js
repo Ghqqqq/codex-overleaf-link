@@ -6594,6 +6594,7 @@
 
   async function undoRun(runId) {
     const run = findRunRecord(runId);
+    if (run) Object.assign(run, Modules.UndoOperations.prepareRunUndo(run));
     if (!getRunUndoCount(run) || run.undoStatus === 'applied') {
       return;
     }
@@ -6606,7 +6607,7 @@
     }
 
     if ((Array.isArray(run.undoTrackedChanges) && run.undoTrackedChanges.length) || hasTrackedEditorUndo(run)
-      || (run.trackedChangeStatus === 'needs_review' && run.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1))) {
+      || (run.trackedChangeStatus === 'needs_review' && run.undoOperations?.some(Modules.UndoOperations.isFileUndoOperation))) {
       await undoRunTrackedChanges(runId, run);
       return;
     }
@@ -6708,9 +6709,10 @@
   }
 
   async function undoRunTrackedChanges(runId, run) {
-    const createdUndoOperations = (run.undoOperations || []).filter(operation => operation?.undoCreatedFile?.v === 1);
-    const trackedUndo = Array.isArray(run.undoTrackedChanges) && run.undoTrackedChanges.length > 0;
-    const hasTextUndo = trackedUndo || buildTrackedUndoPostFiles(run).length > 0;
+    const fileUndoOperations = Modules.UndoOperations.getFileUndoOperations(run);
+    const textRun = Modules.UndoOperations.textUndoRun(run);
+    const trackedUndo = textRun.undoTrackedChanges.length > 0;
+    const hasTextUndo = trackedUndo || buildTrackedUndoPostFiles(textRun).length > 0;
     const approved = await showPluginConfirm({
       title: !hasTextUndo ? tr('undoNoTraceTitle') : trackedUndo ? tr('undoTrackedTitle') : tr('undoNativeTitle'),
       message: [
@@ -6719,7 +6721,7 @@
         ...(hasTextUndo ? [trackedUndo
           ? tr('undoTrackedMessage', { files: formatTrackedChangeFiles(run.undoTrackedChanges) })
           : tr('undoNativeMessage', { files: formatTrackedUndoFiles(run) })] : []),
-        ...(createdUndoOperations.length ? [tr('undoNoTraceMessage', { files: formatOperationFiles(createdUndoOperations) })] : [])
+        ...(fileUndoOperations.length ? [tr('undoNoTraceMessage', { files: formatOperationFiles(fileUndoOperations) })] : [])
       ].join('\n'),
       confirmLabel: trackedUndo ? tr('undoTrackedConfirm') : tr('undoConfirm'),
       cancelLabel: tr('confirmDefaultCancel'),
@@ -6732,7 +6734,7 @@
     const deadlineAt = Date.now() + getPageBridgeTimeoutMs('rejectTrackedChanges');
     // Keep the review lifecycle until every pending part has settled.
     // Its local lock stays active while verified recovery progress is persisted.
-    const lifecycleReject = (trackedUndo || createdUndoOperations.length > 0) && isTrackedChangeLifecycleRun(run);
+    const lifecycleReject = (trackedUndo || fileUndoOperations.length > 0) && isTrackedChangeLifecycleRun(run);
     if (lifecycleReject) {
       trackedChangeInFlight.set(runId, 'reject');
       refreshRunCardControls(runId);
@@ -6742,15 +6744,15 @@
     appendRunRecordEvent(runId, {
       title: !hasTextUndo ? tr('undoNoTraceStarted') : trackedUndo ? tr('undoTrackedStarted') : tr('undoNativeStarted'),
       status: 'running',
-      detail: { [tr('detailWillUndo')]: !hasTextUndo ? formatOperationFiles(createdUndoOperations)
+      detail: { [tr('detailWillUndo')]: !hasTextUndo ? formatOperationFiles(fileUndoOperations)
         : trackedUndo ? formatTrackedChangeFiles(run.undoTrackedChanges) : formatTrackedUndoFiles(run) }
     });
 
     try {
-      const trackedUndoPostFilesAtDispatch = buildTrackedUndoPostFiles(run);
+      const trackedUndoPostFilesAtDispatch = buildTrackedUndoPostFiles(textRun);
       let result = hasTextUndo ? await callPageBridge('rejectTrackedChanges', {
-        trackedChanges: run.undoTrackedChanges || [], deadlineAt,
-        expectedFiles: run.undoExpectedFiles || [],
+        trackedChanges: textRun.undoTrackedChanges || [], deadlineAt,
+        expectedFiles: textRun.undoExpectedFiles || [],
         postFiles: trackedUndoPostFilesAtDispatch,
         untrackedUndo: run.executionSnapshot
           ? run.executionSnapshot.requireReviewing === false && ['submitted', 'legacy-captured'].includes(run.executionSnapshot.source)
@@ -6758,47 +6760,37 @@
         // The page-side project guard still refuses writes after navigation.
         runProjectId: getRunProjectIdForWriteback(run)
       }) : { ok: true, applied: [], skipped: [] };
-      if (createdUndoOperations.length && lifecycleReject && hasTextUndo) {
-        WritebackSettlement.attachUndoNotVerifiedFailure(run, result, { buildFailure: buildContentFailure, postFiles: trackedUndoPostFilesAtDispatch });
+      if (fileUndoOperations.length && lifecycleReject && hasTextUndo) {
+        WritebackSettlement.attachUndoNotVerifiedFailure(textRun, result, { buildFailure: buildContentFailure, postFiles: trackedUndoPostFilesAtDispatch });
         await applyTrackedChangeSettlement(runId, 'reject', { ...result, ok: false });
       }
-      if (createdUndoOperations.length) {
+      if (fileUndoOperations.length) {
         let createdResult;
         try {
           if (result.ok === false || result.skipped?.length) {
-            throw new Error('Text changes remain unresolved; created files were kept for the next undo attempt.');
+            throw new Error('Text changes remain unresolved; file restoration was kept for the next undo attempt.');
           }
           createdResult = await callPageBridge('applyOperations', {
-            operations: createdUndoOperations, deadlineAt,
+            operations: fileUndoOperations, deadlineAt,
             baseFiles: run.undoBaseFiles || [],
             reviewingPolicy: 'no-trace-undo',
             runProjectId: getRunProjectIdForWriteback(run)
           });
         } catch (error) {
-          createdResult = { ok: false, applied: [], skipped: createdUndoOperations.map(operation => ({
+          createdResult = { ok: false, applied: [], skipped: fileUndoOperations.map(operation => ({
             operation, result: { ok: false, code: 'undo_operation_failed', reason: error.message }
           })) };
         }
-        const applied = [...(result.applied || []), ...(createdResult.applied || [])];
-        const skipped = [...(result.skipped || []), ...(createdResult.skipped || [])];
-        for (const operation of createdUndoOperations) {
-          if (!(createdResult.applied || []).some(entry => entry.operation?.path === operation.path
-            && entry.result?.ok === true && entry.result?.verified === true)
-            && !(createdResult.skipped || []).some(entry => entry.operation?.path === operation.path)) {
-            skipped.push({ operation, result: { ok: false, code: 'undo_operation_failed',
-              reason: 'The created file has no verified deletion receipt.' } });
-          }
-        }
-        result = { ...result, ok: result.ok !== false && createdResult.ok !== false && !skipped.length, applied, skipped };
+        result = Modules.UndoOperations.mergeFileUndoResult(result, createdResult, fileUndoOperations);
       }
       writebackOrchestrator.invalidateMirrorAfterUndo(runId, getRunProjectIdForWriteback(run), result);
       appendRunRecordEvent(runId, {
-        title: createdUndoOperations.length ? tr('undoResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }) : trackedUndo
+        title: fileUndoOperations.length ? tr('undoResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }) : trackedUndo
           ? tr('undoTrackedResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 })
           : tr('undoNativeResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
         status: result.skipped?.length ? 'failed' : 'completed',
         detail: {
-          [trackedUndo && !createdUndoOperations.length ? tr('detailRejected') : tr('detailUndone')]: (result.applied || []).map(item => ({
+          [trackedUndo && !fileUndoOperations.length ? tr('detailRejected') : tr('detailUndone')]: (result.applied || []).map(item => ({
             [tr('detailFile')]: item.trackedChange?.path || item.operation?.path || tr('unknownFile'),
             [tr('detailRecord')]: item.trackedChange?.label || item.trackedChange?.id || item.trackedChange?.key || item.operation?.type
           })),
@@ -6810,7 +6802,7 @@
         }
       });
       if (lifecycleReject) {
-        WritebackSettlement.attachUndoNotVerifiedFailure(run, result, {
+        WritebackSettlement.attachUndoNotVerifiedFailure(textRun, result, {
           buildFailure: buildContentFailure,
           postFiles: trackedUndoPostFilesAtDispatch
         });
@@ -6942,7 +6934,7 @@
 
   async function applyTrackedChangeSettlement(runId, kind, result) {
     const record = findRunRecord(runId);
-    const createdUndo = record?.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1);
+    const createdUndo = record?.undoOperations?.some(Modules.UndoOperations.isFileUndoOperation);
     const run = kind === 'reject' && createdUndo ? advanceRunUndoProgress(record, result) : record;
     const settlement = WritebackSettlement.settleTrackedChangeLifecycle({
       kind,
@@ -6972,9 +6964,9 @@
     }
     const trackedEditorUndoCount = hasTrackedEditorUndo(run) ? 1 : 0;
     if (trackedEditorUndoCount) {
-      return trackedEditorUndoCount + (run.undoOperations || []).filter(operation => operation?.undoCreatedFile?.v === 1).length;
+      return trackedEditorUndoCount + Modules.UndoOperations.getFileUndoOperations(run).length;
     }
-    return (run.undoOperations?.length || 0)
+    return Modules.UndoOperations.prepareRunUndo(run).undoOperations.length
       + (run.undoTrackedChanges?.length || 0);
   }
 
@@ -7231,6 +7223,7 @@
         combinedTrackedChanges,
         record.undoExpectedFiles
       );
+      record.undoOperations = Modules.UndoOperations.getFileUndoOperations(record);
       record.undoStatus = '';
       record.partialWriteback = skippedEntries.length > 0;
       // Recording tracked-change refs enters the run into the tracked-change
@@ -7390,7 +7383,7 @@
   function applyLegacyUndoSettlement(runId, undoStatus, result) {
     const run = findRunRecord(runId);
     if (!run) return;
-    const checkpoint = run.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1)
+    const checkpoint = run.undoOperations?.some(Modules.UndoOperations.isFileUndoOperation)
       ? advanceRunUndoProgress(run, result) : run;
     Object.assign(run, WritebackSettlement.applySettlementTransition(
       checkpoint,

@@ -438,15 +438,14 @@
 
   async function buildZipOnlyProjectSnapshot(params = {}) {
     const activePath = getPassiveActiveFilePath();
-    const activeText = params.serverOnly === true ? '' : activePath ? readActiveEditorText() : '';
+    // Capture read evidence together with the path/text before awaiting ZIP.
+    // A later editor identity cannot prove that an earlier empty read succeeded.
+    const activeOverlay = params.serverOnly === true ? [] : readActiveEditorOverlay(activePath);
 
     const zipSnapshot = await fetchProjectZipSnapshot(params);
     if (zipSnapshot.ok && zipSnapshot.files.length) {
-      const activeOverlay = params.serverOnly === true ? [] : buildActiveEditorOverlay(activePath, activeText, {
-        allowedPaths: zipSnapshot.files.map(file => file.path)
-      });
       const files = filterRequestedSnapshotFiles(
-        mergeSnapshotFiles(zipSnapshot.files, activeOverlay),
+        mergeSnapshotFiles(zipSnapshot.files, filterZipSnapshotOverlayFiles(zipSnapshot.files, activeOverlay)),
         params,
         activePath
       );
@@ -478,11 +477,11 @@
       id: getProjectId(),
       url: window.location.href,
       activePath,
-      files: params.serverOnly === true ? [] : buildActiveEditorOverlay(activePath, activeText),
+      files: activeOverlay,
       capabilities: {
         fullProjectSnapshot: false,
         method: params.serverOnly === true ? 'overleaf-zip-unavailable'
-          : activePath && window.CodexOverleafProjectFiles.isUsableProjectFileContent(activeText)
+          : activeOverlay.length
           ? 'active-editor-zip-only-fallback'
           : 'zip-only-fallback-empty',
         skipped: [{
@@ -520,19 +519,32 @@
     return (files || []).filter(file => requestedSet.has(file?.path));
   }
 
-  function buildActiveEditorOverlay(activePath, activeText, options = {}) {
-    if (!activePath || !window.CodexOverleafProjectFiles.isUsableProjectFileContent(activeText)) {
+  function readActiveEditorOverlay(activePath) {
+    if (!activePath) return [];
+    try {
+      const content = readActiveEditorText();
+      if (typeof content !== 'string') return [];
+      if (!content.trim()) {
+        // The legacy reader also returns '' when no surface exists. A readable
+        // identity must independently confirm blank text before it can erase ZIP.
+        const identity = deps.getActiveEditorIdentity?.();
+        let observed;
+        if (identity?.type === 'codemirror-view' && typeof identity.doc?.toString === 'function') {
+          observed = identity.doc.toString();
+        } else if (identity?.type === 'textarea') {
+          observed = identity.node?.value;
+        } else if (identity?.type === 'contenteditable') {
+          const node = identity.node;
+          if (typeof node?.innerText === 'string' || typeof node?.textContent === 'string') {
+            observed = node.innerText || node.textContent || '';
+          }
+        }
+        if (typeof observed !== 'string' || observed !== content) return [];
+      } else if (!window.CodexOverleafProjectFiles.isUsableProjectFileContent(content)) return [];
+      return [{ path: activePath, content, source: 'active-editor', kind: 'text' }];
+    } catch (_error) {
       return [];
     }
-    if (Array.isArray(options.allowedPaths) && !options.allowedPaths.includes(activePath)) {
-      return [];
-    }
-    return [{
-      path: activePath,
-      content: activeText,
-      source: 'active-editor',
-      kind: 'text'
-    }];
   }
 
   function mergeSnapshotFiles(primaryFiles = [], overrideFiles = []) {
@@ -541,7 +553,7 @@
       if (!file?.path || file.kind === 'binary' || typeof file.content !== 'string') {
         continue;
       }
-      if (!window.CodexOverleafProjectFiles.isUsableProjectFileContent(file.content)) {
+      if (file.content.trim() && !window.CodexOverleafProjectFiles.isUsableProjectFileContent(file.content)) {
         continue;
       }
       filesByPath.set(file.path, {

@@ -300,7 +300,7 @@ Undo 能力来自可用恢复材料和结算结果，不能只看 completed 或�
 当前 preserveRunActionPayload 路径最多保留每会话最近两个合格运行，每运行材料上限 2 MiB；超限可丢弃动作 payload。
 可选 trackedChangeCaptures 不能挤掉已满足预算的核心撤销材料；历史文本仍存在不能证明 Undo 材料仍完整。
 
-`contentRuntime.undoRun` 等待旧 mirror 刷新，再选择 tracked/editor Undo 或无留痕操作路径，页面调用始终携带原 runProjectId。
+`contentRuntime.undoRun` 先经 `UndoOperations.prepareRunUndo` 补齐有原文及已应用删除证据的旧文件恢复操作，再等待旧 mirror 刷新并选择恢复路径；页面调用始终携带原 runProjectId。文件结构恢复的已验证成功项经 `advanceUndoCheckpoint` 从逆操作和待恢复前像中移除，进度成功持久化后重载只保留未完成项；已被存储预算裁掉的原文不因此恢复。详细链路见[文件创建、删除与混合 Undo](auto-edit-undo.md#62-文件创建删除与混合-undo)及 [deletedFileUndo.test.js](../../test/deletedFileUndo.test.js)。
 tracked Undo/Accept 经过 `applyTrackedChangeSettlement → ScopedPersistenceCoordinator.applyReviewTransition`。
 [scopedPersistencePanelState.js](../../extension/src/content/scopedPersistencePanelState.js) 强制 preserveRunActionPayload 和 reviewRunIds，并验证持久记录中的结果。
 保存失败时恢复先前材料、标记 needs_review 并继续抛错，因为页面操作可能已经发生。部分验证失败生成 `review_state_not_persisted`，底层保存异常也可能原样传播，不能只匹配单一错误码。

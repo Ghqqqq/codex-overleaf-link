@@ -295,6 +295,7 @@ function completeMessage(state, res) {
 }
 
 function completeTool(state, res, tool) {
+  assertCompleteToolArguments(tool.arguments);
   if (!tool.opened) openTool(state, res, tool);
   tool.item.status = 'completed';
   if (tool.kind === 'custom') {
@@ -419,6 +420,7 @@ function normalizeToolCalls(values, toolKinds) {
     const name = normalizeText(value?.function?.name) || 'tool';
     const callId = normalizeText(value?.id) || randomId('call');
     const argumentsText = normalizeText(value?.function?.arguments) || '{}';
+    assertCompleteToolArguments(argumentsText);
     const spec = toolKinds?.get(name);
     const kind = (typeof spec === 'object' ? spec.kind : spec) === 'custom' ? 'custom' : 'function';
     const originalName = typeof spec === 'object' ? spec.name || name : name;
@@ -530,6 +532,14 @@ function unwrapCustomArguments(value) {
     return typeof parsed?.input === 'string' ? parsed.input : text;
   } catch (_error) {
     return text;
+  }
+}
+
+function assertCompleteToolArguments(value) {
+  try {
+    JSON.parse(value || '{}');
+  } catch (_error) {
+    throw responseError('The provider returned incomplete or invalid JSON tool arguments.');
   }
 }
 

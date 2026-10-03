@@ -63,6 +63,7 @@
     window
   });
   snapshotRouter = requirePageModule('CodexOverleafSnapshotRouter').create({
+    getActiveEditorIdentity,
     normalizePath: normalizeSafeProjectPath,
     readActiveEditorText,
     treeOperations,
