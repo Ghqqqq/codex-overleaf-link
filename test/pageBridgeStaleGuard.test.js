@@ -9,6 +9,10 @@ const projectFiles = require('../extension/src/shared/projectFiles');
 const overleafEditor = require('../extension/src/page/overleafEditor');
 const reviewing = require('../extension/src/shared/reviewing');
 const staleGuard = require('../extension/src/shared/staleGuard');
+const { computeTextPatches } = require('../native-host/src/textPatch');
+const WritebackController = require('../extension/src/content/writebackController');
+const UndoOperations = require('../extension/src/shared/undoOperations');
+const WritebackSettlement = require('../extension/src/shared/writebackSettlement');
 const writebackReceiptJournalSource = fs.readFileSync(path.join(__dirname, '../extension/src/page/writebackReceiptJournal.js'), 'utf8');
 const pageRpcContractSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/shared/pageRpcContract.js'),
@@ -77,6 +81,96 @@ const overleafRealtimeObserverSource = fs.readFileSync(
   path.join(__dirname, '../extension/src/page/overleafRealtimeObserver.js'),
   'utf8'
 );
+
+for (const [label, baseEnding, editorEnding, policy] of [
+  ['LF/LF Editing', '\n', '\n', 'editing'],
+  ['CRLF/CRLF Editing', '\r\n', '\r\n', 'editing'],
+  ['CRLF/LF Editing', '\r\n', '\n', 'editing'],
+  ['LF/CRLF Editing', '\n', '\r\n', 'editing'],
+  ['CRLF/LF Track', '\r\n', '\n', 'track'],
+  ['LF/CRLF Track', '\n', '\r\n', 'track'],
+  ['CRLF/LF Undo', '\r\n', '\n', 'undo'],
+  ['LF/CRLF Undo', '\n', '\r\n', 'undo']
+]) test('page bridge newline coordinates: ' + label, async () => {
+  const before = '😀 heading\nalpha beta\nkept paragraph\nend omega';
+  const after = '😀 heading\nalpha NEW beta\nkept paragraph\nend delta';
+  const baseline = before.replace(/\n/g, baseEnding), target = after.replace(/\n/g, baseEnding);
+  let current = before.replace(/\n/g, editorEnding), expected = after.replace(/\n/g, editorEnding);
+  let baseFiles = [{ path: 'main.tex', kind: 'text', content: baseline }];
+  const patches = computeTextPatches(baseline, target);
+  assert.ok(patches.length > 1, 'exercise multiple patches, including zero-width insertion');
+  assert.ok(patches.some(patch => patch.expected === ''));
+  let operations = WritebackController.buildSyncApplyOperations([
+    { type: 'write', path: 'main.tex', previousContent: baseline, content: target, patches }
+  ], { files: baseFiles });
+  const project = { files: baseFiles };
+  const bridge = createPageBridgeHarness({ activePath: 'main.tex', files: { 'main.tex': current },
+    reviewingOk: policy !== 'editing', reviewingClickBehavior: 'toggle', trackChangesOnDispatch: policy === 'track' });
+  if (policy === 'undo') {
+    const forward = await bridge.call('applyOperations', { operations, baseFiles, requireEditing: true });
+    assert.equal(forward.ok, true, JSON.stringify(forward));
+    assert.equal(bridge.getFile('main.tex'), expected);
+    const recorded = forward.applied.map(entry => WritebackSettlement.attachVerifiedContentToOperation(entry.operation, entry.result));
+    const checkpoint = UndoOperations.buildUndoCheckpoint(project, recorded);
+    assert.deepEqual(WritebackSettlement.selectExpectedFilesForTrackedUndo(project, recorded), [{ path: 'main.tex', content: current }]);
+    operations = checkpoint.undoOperations;
+    baseFiles = checkpoint.undoBaseFiles;
+    [current, expected] = [expected, current];
+    assert.ok(operations[0].patches.length > 1, 'keep the production inverse patches');
+  }
+  const result = await bridge.call('applyOperations', { operations, baseFiles,
+    requireEditing: policy === 'editing', requireReviewing: policy === 'track',
+    ...(policy === 'undo' ? { reviewingPolicy: 'no-trace-undo' } : {}) });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(bridge.getFile('main.tex'), expected, 'verified output must match the Native target in editor representation');
+  assert.equal(result.applied[0].result.verified, true);
+  assert.equal(result.applied[0].result.verifiedContent, expected);
+  assert.equal(bridge.getDispatchCount(), policy === 'undo' ? 2 : 1, 'each patch set must remain one editor transaction');
+  const expectedOffset = current.indexOf('alpha ') + 'alpha '.length;
+  assert.equal(bridge.getLastDispatchChanges()[0].from, expectedOffset);
+  if (policy === 'track') {
+    assert.equal(result.trackedChangeCaptures[0].state, 'observed');
+    assert.equal(result.trackedChangeCaptures[0].ranges[0].from, expectedOffset);
+    assert.ok(result.trackedChanges.length > 0);
+    const recorded = result.applied.map(entry => WritebackSettlement.attachVerifiedContentToOperation(entry.operation, entry.result));
+    const expectedFiles = WritebackSettlement.selectExpectedFilesForTrackedUndo(project, recorded, result.trackedChanges);
+    assert.deepEqual(expectedFiles, [{ path: 'main.tex', content: current }]);
+    const undone = await bridge.call('rejectTrackedChanges', { trackedChanges: result.trackedChanges, expectedFiles,
+      postFiles: [{ path: 'main.tex', content: expected }] });
+    assert.equal(undone.ok, true, JSON.stringify(undone));
+    assert.equal(bridge.getFile('main.tex'), current);
+  } else assert.equal(bridge.isReviewingActive(), false);
+});
+
+for (const [baseEnding, editorEnding] of [['\r\n', '\n'], ['\n', '\r\n']]) {
+  test('page bridge newline coordinates: sequential edits retain source baseline ' + JSON.stringify(baseEnding), async () => {
+    const texts = ['heading\nalpha beta\nend', 'heading\nalpha NEW beta\nend', 'heading\nalpha NEW beta\nDONE'];
+    const sources = texts.map(text => text.replace(/\n/g, baseEnding));
+    const baseFiles = [{ path: 'main.tex', content: sources[0] }];
+    const operations = WritebackController.buildSyncApplyOperations(sources.slice(1).map((content, index) => ({
+      type: 'write', path: 'main.tex', previousContent: sources[index], content,
+      patches: computeTextPatches(sources[index], content)
+    })), { files: baseFiles });
+    const bridge = createPageBridgeHarness({ activePath: 'main.tex', reviewingOk: false,
+      files: { 'main.tex': texts[0].replace(/\n/g, editorEnding) + ' from collaborator' } });
+    const result = await bridge.call('applyOperations', { operations, baseFiles, requireEditing: true });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.applied.length, 2);
+    assert.equal(bridge.getFile('main.tex'), texts[2].replace(/\n/g, editorEnding) + ' from collaborator');
+  });
+}
+
+test('page bridge revision rebuilds the router for the line-ending correction', async () => {
+  const bridge = createPageBridgeHarness({ activePath: 'main.tex', reviewingOk: false, files: { 'main.tex': 'a\nbc' } });
+  assert.equal(bridge.reinject(), false, 'same revision keeps the existing handler');
+  assert.equal(bridge.reinject('2026-09-27-writing-style-references-v33'), true, 'previous revision rebuilds the handler at the same product version');
+  const base = 'a\r\nbc', target = 'a\r\nbXc';
+  const result = await bridge.call('applyOperations', { requireEditing: true,
+    baseFiles: [{ path: 'main.tex', content: base }],
+    operations: [{ type: 'edit', path: 'main.tex', patches: computeTextPatches(base, target) }] });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(bridge.getFile('main.tex'), 'a\nbXc');
+});
 
 test('page bridge save-state source requires tri-state positive verification', () => {
   assert.doesNotMatch(saveStateSource, /assume saved/i);
@@ -3094,6 +3188,9 @@ function createPageBridgeHarness({
         listener = callback;
       }
     },
+    removeEventListener(event, callback) {
+      if (event === 'message' && listener === callback) listener = null;
+    },
     postMessage(message) {
       if (message.source === 'codex-overleaf/page' && pendingResult) {
         pendingResult(message.result);
@@ -3181,6 +3278,14 @@ function createPageBridgeHarness({
   }
 
   return {
+    reinject(previousRevision) {
+      const previousHandler = window.__codexOverleafPageBridgeMessageHandler;
+      if (previousRevision) window.__codexOverleafPageBridgeInstalledRevision = previousRevision;
+      vm.runInContext(pageBridgeSource, context, { filename: 'pageBridge.js' });
+      const replaced = previousHandler !== window.__codexOverleafPageBridgeMessageHandler;
+      if (replaced) capabilityInitialized = false;
+      return replaced;
+    },
     async initializeCapability() {
       if (capabilityInitialized) {
         return { ok: true, alreadyInitialized: true };

@@ -665,8 +665,11 @@
     }
 
     let nextContent = null;
+    let preparedPatches;
     if (Array.isArray(operation.patches) && operation.patches.length) {
-      const patched = applyTextPatches(current, operation.patches);
+      preparedPatches = window.CodexOverleafStaleGuard?.prepareOperationPatches(operation, current, options.baseFileLookup)
+        || { ok: true, patches: operation.patches };
+      const patched = preparedPatches.ok ? applyTextPatches(current, preparedPatches.patches) : preparedPatches;
       if (!patched.ok) {
         const decorated = attachWritebackDebug(patched, 'apply_text_patches', operation, options.baseFileLookup, current, {
           initialActivePath: currentPath,
@@ -730,7 +733,7 @@
     }
 
     const result = Array.isArray(operation.patches) && operation.patches.length
-      ? replaceActiveEditorPatches(operation.patches, nextContent)
+      ? replaceActiveEditorPatches(preparedPatches.patches, nextContent)
       : replaceActiveEditorText(nextContent);
     if (!result.ok) {
       return result;
@@ -776,7 +779,7 @@
       // Slow batches are covered by request receipts; Accept replay retains
       // its independent safety window proving that no new tracking was added.
       const trackedDiff = trackReviewingChanges
-        ? await captureTrackedWrite({ trackedBefore, captureBaseline, operation, beforeContent: current,
+        ? await captureTrackedWrite({ trackedBefore, captureBaseline, operation: { ...operation, patches: preparedPatches?.patches }, beforeContent: current,
           postContent: nextContent, runProjectId: options.runProjectId, waitMs: deps.trackCaptureWaitMs ?? 35000 })
         : await waitForTrackedChangeDiff(trackedBefore, operationPaths, {
           waitMs: 3600, intervalMs: 180, stopOnFirst: true
@@ -812,7 +815,7 @@
     window.CodexOverleafStaleGuard?.updateExpectedFileContent(
       options.baseFileLookup,
       operation.path,
-      nextContent
+      preparedPatches?.sourceContent ?? nextContent
     );
     return {
       ...result,
@@ -822,7 +825,6 @@
       trackedChanges: mergeTrackedChangeRefs(trackedChanges)
     };
   }
-
 
   async function verifyActiveEditorText(expected, filePath, waitMs = 1000, before) {
     const deadline = Date.now() + waitMs;
@@ -1148,7 +1150,6 @@
       patches: normalized.patches
     };
   }
-
 
   async function applyBinaryAssetOperation(operation, options = {}) {
     const freshness = await checkBinaryAssetFreshness(operation, options);

@@ -1,10 +1,10 @@
 (function initUndoOperations(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./staleGuard'));
   } else {
-    root.CodexOverleafUndoOperations = factory();
+    root.CodexOverleafUndoOperations = factory(root.CodexOverleafStaleGuard);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function undoOperationsFactory() {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function undoOperationsFactory(StaleGuard) {
   'use strict';
 
   function buildUndoOperations(project, appliedOperations) {
@@ -15,6 +15,7 @@
       }
     }
 
+    const sourceFilesByPath = new Map(workingFilesByPath);
     const undo = [];
     const fullRestoreEditPaths = new Set();
 
@@ -29,7 +30,8 @@
         }
         const currentBeforeEdit = workingFilesByPath.get(operation.path);
         if (!fullRestoreEditPaths.has(operation.path)) {
-          const inversePatches = buildInverseTextPatches(currentBeforeEdit, operation.patches);
+          const inversePatches = buildInverseTextPatches(sourceFilesByPath.get(operation.path), operation.patches,
+            operation.verifiedContent, operation.path);
           if (inversePatches.length) {
             undo.push(normalizeUndoOperation({
               type: 'edit',
@@ -89,12 +91,13 @@
       }
 
       applyOperationToFiles(workingFilesByPath, operation);
+      applyOperationToFiles(sourceFilesByPath, { ...operation, verifiedContent: undefined });
     }
 
     return undo.reverse();
   }
 
-  function buildInverseTextPatches(textBeforeEdit, patches) {
+  function buildInverseTextPatches(textBeforeEdit, patches, verifiedContent, path) {
     if (!Array.isArray(patches) || !patches.length) {
       return [];
     }
@@ -108,7 +111,7 @@
     }
 
     let offset = 0;
-    return normalized.patches.map(patch => {
+    const inverse = normalized.patches.map(patch => {
       const from = patch.from + offset;
       const to = from + patch.insert.length;
       offset += patch.insert.length - (patch.to - patch.from);
@@ -119,6 +122,41 @@
         insert: patch.expected
       };
     });
+    if (typeof verifiedContent !== 'string' || verifiedContent === applied.text) return inverse;
+    // The stored checkpoint uses the verified editor post-image. Its inverse
+    // must use those same offsets, while Native patches retain their source
+    // representation for later operations in the batch.
+    const prepared = StaleGuard.prepareOperationPatches({ type: 'edit', path, patches: inverse }, verifiedContent,
+      StaleGuard.buildBaseFileLookup([{ path, content: applied.text }]));
+    return prepared.ok && applyTextPatches(verifiedContent, prepared.patches).ok ? prepared.patches : [];
+  }
+
+  function selectExpectedFilesForTrackedUndo(project, operations = [], trackedChanges = [], previousExpectedFiles = []) {
+    const paths = new Set();
+    for (const change of trackedChanges || []) if (change?.path) paths.add(change.path);
+    for (const operation of operations || []) {
+      if (operation?.path) paths.add(operation.path);
+      if (operation?.to) paths.add(operation.to);
+    }
+    const expectedByPath = new Map();
+    for (const file of previousExpectedFiles || []) {
+      if (paths.has(file?.path) && typeof file?.content === 'string' && !expectedByPath.has(file.path)) {
+        expectedByPath.set(file.path, { path: file.path, content: file.content });
+      }
+    }
+    // Reconstruct the pre-image with the same inverse patches as plain Undo.
+    // This preserves the editor's unchanged line endings and collaborator
+    // content, including when the ZIP baseline used a different representation.
+    const hasVerifiedPatches = operations.some(operation => typeof operation?.verifiedContent === 'string'
+      && Array.isArray(operation.patches) && operation.patches.length);
+    const checkpoint = hasVerifiedPatches ? buildUndoCheckpoint(project, operations) : null;
+    const restored = checkpoint ? buildExpectedFilesAfterOperations({ files: checkpoint.undoBaseFiles }, checkpoint.undoOperations) : new Map();
+    for (const file of project?.files || []) {
+      if (paths.has(file?.path) && typeof file?.content === 'string' && !expectedByPath.has(file.path)) {
+        expectedByPath.set(file.path, { path: file.path, content: restored.get(file.path) ?? file.content });
+      }
+    }
+    return Array.from(expectedByPath.values());
   }
 
   function buildUndoCheckpoint(project, appliedOperations) {
@@ -459,6 +497,7 @@
     advanceUndoCheckpoint,
     buildExpectedFilesAfterOperations,
     buildUndoOperations,
+    selectExpectedFilesForTrackedUndo,
     buildSnapshotRestoreUndo
   };
 });

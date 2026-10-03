@@ -139,7 +139,7 @@
 
 ## 快照、镜像、写回与 Undo
 
-展示差异与执行补丁分别由 Native [diffEngine.computeLineDiff](../../native-host/src/diffEngine.js) 和 [textPatch.computeTextPatches](../../native-host/src/textPatch.js) 生成；page `applyTextPatches` 负责检查与应用。修改差异粒度或坐标时，先读[Auto 修改与撤销](auto-edit-undo.md)及 [diffEngine](../../test/diffEngine.test.js)、[textPatch](../../test/textPatch.test.js) 测试定义。
+展示差异与执行补丁分别由 Native [diffEngine.computeLineDiff](../../native-host/src/diffEngine.js) 和 [textPatch.computeTextPatches](../../native-host/src/textPatch.js) 生成；[StaleGuard.prepareOperationPatches](../../extension/src/shared/staleGuard.js) 转换源与编辑器的换行坐标，Page `applyTextPatches` 检查并应用。坐标变化还须联动 `verifiedContent → UndoOperations` 的恢复材料，先读[Auto 修改与撤销](auto-edit-undo.md)及 [diffEngine](../../test/diffEngine.test.js)、[textPatch](../../test/textPatch.test.js)；换行与恢复专项见 [textPatchLineEndings](../../test/textPatchLineEndings.test.js)、[undoOperations](../../test/undoOperations.test.js)。
 
 ### 改项目读取、ZIP 回退或 OT 预热镜像
 

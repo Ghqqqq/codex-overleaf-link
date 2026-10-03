@@ -1,6 +1,6 @@
 # 界面、加载与输入上下文
 
-产品源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。
+初始源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。当前行为随本仓库实现维护。
 本页介绍[系统总览](system-overview.md)与[功能索引](feature-map.md)中的界面领域。完整运行归属见[运行状态与恢复](run-state-and-recovery.md)，写入证据见[Auto 编辑与撤销](auto-edit-undo.md)。
 源码行为、局部测试覆盖和浏览器交互验收分别说明；测试入口用于定位相应验证范围。
 
@@ -39,6 +39,7 @@ ContentRuntime
 [ModuleRegistry.define/resolve](../../extension/src/content/moduleRegistryKernel.js) 保存命名定义、解析显式依赖、缓存实例；缺依赖、循环依赖或无有效导出时抛出受控错误。
 当前迁移仍兼容旧 `CodexOverleaf*` 全局发布。`define` 通过 getter 延迟解析；[LegacyGlobalRegistry.create](../../extension/src/content/legacyGlobalRegistry.js) 读取 `REQUIRED_MODULES/SUPPORT_MODULES`，构造给 runtime 的 `modules`。
 `SUPPORT_MODULES` 中缺失导出同样进入错误集合，名称中的 support 不能解释为可随意缺失。
+共享模块仍需遵守初始化顺序：[content-entry](../../extension/entries/content-entry.mjs) 在 `UndoOperations` 之前加载 `StaleGuard`，前者使用其补丁坐标映射；`WritebackSettlement` 将 `UndoOperations` 声明为显式 registry 依赖。修改恢复材料时需同时检查 CommonJS 与浏览器两条装配路径。
 [ContentRuntime.init](../../extension/src/content/contentRuntime.js) 是组合入口，向各 controller 注入 getter/callback；该文件仍包含业务流程，不能将其所有内容都归类为纯装配。
 runtime 对重复初始化设有标记；发现旧 panel 已在 DOM、runtime 尚未登记时，返回 `stale-panel-before-runtime-init`。这条守卫不能证明所有旧页面都已自动恢复。
 异步初始化先加载全局偏好、账号作用域与持久状态，再建立队列、面板和恢复流程；项目列表路由立即挂 dashboard shell，后续填充列表。
@@ -49,6 +50,7 @@ runtime 对重复初始化设有标记；发现旧 panel 已在 DOM、runtime �
 `injectPageBridge` 在 capability 模块之前尝试 OT 可选依赖；这部分失败可继续保留不可用回退，其他必需脚本加载失败使 `call` 返回 bridge unavailable。
 `injectScriptOnce` 生成资源 URL，等待 load/error/timeout；列表第三项 `force` 会影响已有脚本节点处理。完成脚本装配后还要 `initializeCapability` 握手。
 方法策略来自 [pageRpcContract.METHODS](../../extension/src/shared/pageRpcContract.js)，真正分派位于 [pageBridge.dispatch](../../extension/src/pageBridge.js)；新方法需要同时定义身份、超时、取消和重放语义。
+`pageBridge` 用产品版本与 `pageRpcContract.REVISION` 共同判断是否已经安装；两者相同会保留旧实例。Page 实现变化需要重新构造 router 等闭包时，应同步更新共享 revision，使同版本重新注入也加载新行为；client 的响应校验使用同一常量。这不替代实际扩展重载和页面刷新验收。
 身份策略须逐方法读取。当前 `ensureReviewing/ensureEditing` 的项目身份仍为 optional，`dispatch()` 仅在传入身份时执行相应守卫；修改页面模式时须核对调用方是否传入捕获的项目身份，参见[Auto 编辑与撤销](auto-edit-undo.md)。
 
 ## 2. Panel 与 Settings：DOM 是状态的投影

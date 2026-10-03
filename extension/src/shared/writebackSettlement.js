@@ -4,21 +4,24 @@
       require('./failureReasons'),
       require('./settlementFacts'),
       require('./writebackEvidenceProjection'),
-      require('./writebackOperationEvidence')
+      require('./writebackOperationEvidence'),
+      require('./undoOperations')
     );
   } else {
     root.CodexOverleafModuleRegistry.define('WritebackSettlement', [
       'FailureReasons',
       'SettlementFacts',
       'WritebackEvidenceProjection',
-      'WritebackOperationEvidence'
+      'WritebackOperationEvidence',
+      'UndoOperations'
     ], factory);
   }
 })(typeof window !== 'undefined' ? window : globalThis, function writebackSettlementFactory(
   DefaultFailureReasons,
   SettlementFacts,
   EvidenceProjection,
-  OperationEvidence
+  OperationEvidence,
+  UndoOperations
 ) {
   'use strict';
 
@@ -641,26 +644,7 @@
     trackedChanges = [],
     previousExpectedFiles = []
   ) {
-    const paths = new Set();
-    for (const change of trackedChanges || []) {
-      if (change?.path) paths.add(change.path);
-    }
-    for (const operation of operations || []) {
-      if (operation?.path) paths.add(operation.path);
-      if (operation?.to) paths.add(operation.to);
-    }
-    const expectedByPath = new Map();
-    for (const file of previousExpectedFiles || []) {
-      if (paths.has(file?.path) && typeof file?.content === 'string' && !expectedByPath.has(file.path)) {
-        expectedByPath.set(file.path, { path: file.path, content: file.content });
-      }
-    }
-    for (const file of project?.files || []) {
-      if (paths.has(file?.path) && typeof file?.content === 'string' && !expectedByPath.has(file.path)) {
-        expectedByPath.set(file.path, { path: file.path, content: file.content });
-      }
-    }
-    return Array.from(expectedByPath.values());
+    return UndoOperations.selectExpectedFilesForTrackedUndo(project, operations, trackedChanges, previousExpectedFiles);
   }
 
   function acceptDiagnosticStatus(step, info) {

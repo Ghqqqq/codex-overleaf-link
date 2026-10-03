@@ -1,5 +1,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const StaleGuard = require('../extension/src/shared/staleGuard');
+const Settlement = require('../extension/src/shared/writebackSettlement');
+const { computeTextPatches } = require('../native-host/src/textPatch');
 
 const {
   buildUndoCheckpoint,
@@ -7,6 +10,39 @@ const {
   buildUndoOperations,
   buildSnapshotRestoreUndo
 } = require('../extension/src/shared/undoOperations');
+
+for (const [sourceEnding, editorEnding] of [['\r\n', '\n'], ['\n', '\r\n']]) {
+  test('verified Undo checkpoints keep editor coordinates after mixed line endings ' + JSON.stringify(sourceEnding), () => {
+    const source = 'a\nbc'.replace(/\n/g, sourceEnding), target = 'a\nbXc'.replace(/\n/g, sourceEnding);
+    const verified = 'a\nbXc'.replace(/\n/g, editorEnding) + ' from collaborator';
+    const project = { files: [{ path: 'main.tex', content: source }] };
+    const operation = Settlement.attachVerifiedContentToOperation({ type: 'edit', path: 'main.tex',
+      patches: computeTextPatches(source, target) }, { verified: true, verifiedContent: verified });
+    const checkpoint = buildUndoCheckpoint(project, [operation]);
+    assert.ok(checkpoint.undoOperations[0].patches.length, 'retain local inverse patches');
+    assert.equal(checkpoint.undoOperations[0].replaceAll, null);
+    const inverse = StaleGuard.prepareOperationPatches(checkpoint.undoOperations[0], verified,
+      StaleGuard.buildBaseFileLookup(checkpoint.undoBaseFiles));
+    assert.equal(inverse.ok, true);
+    assert.equal(buildExpectedFilesAfterOperations({ files: checkpoint.undoBaseFiles }, checkpoint.undoOperations).get('main.tex'),
+      'a\nbc'.replace(/\n/g, editorEnding) + ' from collaborator');
+    assert.deepEqual(Settlement.selectExpectedFilesForTrackedUndo(project, [operation]),
+      [{ path: 'main.tex', content: 'a\nbc'.replace(/\n/g, editorEnding) + ' from collaborator' }]);
+  });
+
+  test('verified Undo checkpoints retain source coordinates across sequential edits ' + JSON.stringify(sourceEnding), () => {
+    const originals = ['a\nbc\nend', 'a\nbXc\nend', 'a\nbXc\nDONE'];
+    const texts = originals.map(text => text.replace(/\n/g, sourceEnding));
+    const project = { files: [{ path: 'main.tex', content: texts[0] }] };
+    const operations = texts.slice(1).map((content, index) => Settlement.attachVerifiedContentToOperation({
+      type: 'edit', path: 'main.tex', patches: computeTextPatches(texts[index], content)
+    }, { verifiedContent: originals[index + 1].replace(/\n/g, editorEnding) }));
+    const checkpoint = buildUndoCheckpoint(project, operations);
+    assert.ok(checkpoint.undoOperations.every(operation => operation.patches?.length && operation.replaceAll === null));
+    assert.equal(buildExpectedFilesAfterOperations({ files: checkpoint.undoBaseFiles }, checkpoint.undoOperations).get('main.tex'),
+      originals[0].replace(/\n/g, editorEnding));
+  });
+}
 
 test('builds undo operations from the pre-run project snapshot', () => {
   const project = {

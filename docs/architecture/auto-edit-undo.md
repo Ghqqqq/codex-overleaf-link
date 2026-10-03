@@ -3,7 +3,7 @@
 本页提供从一次 Auto 文本修改到写回、保存确认、撤销及刷新恢复的源码路线。
 适用于定位“改动写到了哪里”“保存依据是什么”“撤销为何跳过”“刷新后为何丢失按钮”等问题。
 
-源码基线：`main@2073ae74747431aab8d529803d4e9f8197262388`；包版本 `2.5.0`。
+初始源码基线：`main@2073ae74747431aab8d529803d4e9f8197262388`；初始参考包版本 `2.5.0`。当前行为随本仓库实现维护。
 总入口见 [架构目录](README.md)，其他功能见 [功能定位图](feature-map.md)。
 
 ## 1. 首先分清四份内容与两种身份
@@ -132,19 +132,15 @@ content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言
 补丁生成在 Native 的 `textPatch.computeTextPatches`：按行锚点划分窗口，再按词、句、段落等变化选择补丁；自然补丁集合通过 `isValidNaturalPatchSet` 校验，必要时回退到各行窗口内的替换。
 `diffEngine.computeLineDiff` 的展示结果有独立规模上限，展示截断不能推导执行补丁也被截断。
 content 的 `writebackController.getSyncChangePatches` 优先保留 Native 补丁，缺少可用补丁时才尝试前后像的单区间差异。
-page 的 `applyTextPatches` 校验 `expected` 并按起点降序应用，以免前面的写入移动后面的坐标；坐标使用 JavaScript 字符串索引，即 UTF-16 代码单元。
+Page 先通过 [staleGuard.prepareOperationPatches](../../extension/src/shared/staleGuard.js) 将源补丁转换到编辑器坐标；`applyTextPatches` 再校验 `expected` 并按起点降序应用，以免前面的写入移动后面的坐标。坐标使用 JavaScript 字符串索引，即 UTF-16 代码单元。
 实际编辑器写入由 [overleafEditor](../../extension/src/page/overleafEditor.js) 适配，陈旧检查依赖 [staleGuard](../../extension/src/shared/staleGuard.js)。
 
-整文件新鲜度按换行归一化函数 $L$ 判断 $L(B)=L(C)$，其中 $L$ 将 CRLF（`\r\n`）转换为 LF（`\n`）。若归一化后仍不同，`checkPatchRangeFreshness` 比较每个补丁位置的 `expected` 文本。
-即对补丁区间 $[a_i,b_i)$，检查 $L(C)[a_i:b_i]=expected_i$；实际 `applyTextPatches` 又在未归一化的当前字符串上核对并应用同一组坐标。
-该范围证明仅覆盖参与比较的补丁位置，不等同于整份文件完全一致。
+整文件新鲜度按换行归一化函数 $L$ 判断 $L(B)=L(C)$，其中 $L$ 将 CRLF（`\r\n`）转换为 LF（`\n`）；基线 Map 保留原始字符串，用于解释 Native 补丁坐标。归一化后内容不同的情况，再对转换后的编辑器区间和 `expected` 作范围核验，保留未冲突的其他编辑。范围证明只覆盖参与比较的位置，不能推广为整份文件完全一致。
 
-**已知限制：换行表示与补丁坐标。** [textPatch.computeTextPatches](../../native-host/src/textPatch.js) 按原始基线生成 UTF-16 偏移；`staleGuard` 的换行归一化没有同时重映射 `from/to`。同一逻辑位置之前每少一个 CRLF 中的 `\r`，偏移就相差一个代码单元。
-当 Native 基线保留 CRLF、编辑器返回 LF 时，归一化比较可以通过，补丁仍可能错位；非空 `expected` 常会令操作被拒绝，但零宽插入的空 `expected` 无法识别这种偏移。
-例如基线 `first\r\nalpha beta gamma` 的目标为 `first\r\nalpha NEW beta gamma`，生成的插入位置为 13；用于 LF 编辑器文本时，可得到 `first\nalpha bNEW eta gamma`。
-`writebackRouter.applyEditOperation` 把补丁及其计算所得的 `nextContent` 交给编辑器适配器，再以 `nextContent` 作为 `verifyActiveEditorText` 的读回预期，因此该分支仍可返回 `verified: true`；该字段不能独立证明结果等于 Native 原始目标文本。
-上述错位结果限定于这些换行条件下的本地合成模块调用链；真实 Overleaf 的 ZIP、活动覆盖层和编辑器分别采用何种换行表示，需另行验收。
-维护坐标时应联查快照解码、[textPatch.test.js](../../test/textPatch.test.js)、[staleGuard.test.js](../../test/staleGuard.test.js) 与 [pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js)，覆盖 CRLF/LF 混合、零宽插入、非空替换及最终目标内容；统一 UTF-16 单位仍需统一字符串表示或明确偏移映射。
+**换行表示与坐标转换。** `prepareOperationPatches` 使用“源原始偏移 → LF 逻辑偏移 → 编辑器原始偏移”的映射。对完整换行边界，源偏移 $p$ 的逻辑位置为 $p-N_B(p)$，其中 $N_B(p)$ 是该位置之前 CRLF 中被归一化省略的 `\r` 数量；目标侧再还原为编辑器的 UTF-16 偏移。
+涉及拆开 CRLF 或在编辑边缘新组成 CRLF 的操作，先补齐必要边界再转换；未编辑的相邻换行保留原样。转换同时处理 `from/to/expected/insert`，不改写 Native 的原始 diff，也不通过禁止合法混合换行编辑来规避坐标差异。同起点等组合仍需逐步通过 `expected` 校验。
+`writebackRouter.applyEditOperation` 将同一套编辑器补丁用于实际派发、读回预期和 Track 捕获；批内另用 `sourceContent` 推进源坐标基线，避免第二个同文件操作误用编辑器表示。`verified:true` 表明读回符合本次基于当前内容构造的目标，服务器保存和其他并发边界仍分别取证。
+[textPatchLineEndings.test.js](../../test/textPatchLineEndings.test.js) 覆盖四种 LF/CRLF 组合、插入/替换、多补丁、相邻换行、UTF-16 代理对和协作者范围；[pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js) 串联真实模块的写回、Track、连续操作及回执后的 Undo。编辑器 I/O 采用替身，真实 Overleaf 的 ZIP、编辑器与保存行为仍需浏览器验收。
 
 **已知限制。** `staleGuard.checkOperationFreshness` 遇到空白基线时直接通过检查。
 该结论限定为此函数分支；实际写入还经过身份、编辑器和操作验证。
@@ -273,6 +269,9 @@ Track-on 的恢复使用捕获的 refs、原生 ownership 和前后像。
 没有这类文本恢复条件的记录，走 [undoOperations](../../extension/src/shared/undoOperations.js) 的逆补丁或快照恢复操作。
 直接逆操作路径支持多文件子集选择；部分选择保留 `partial`，未处理文件仍可撤销。
 
+`recordUndoFromApply` 先经 `WritebackSettlement.attachVerifiedContentToOperation` 附加页面 `verifiedContent`，再建立 checkpoint。[UndoOperations.buildUndoOperations](../../extension/src/shared/undoOperations.js) 分别推进源映像与已验证编辑器映像，把源 post-image 上的逆补丁转换到实际 `verifiedContent` 坐标，确保逆补丁与 `undoBaseFiles` 使用同一表示。
+Track 的 `selectExpectedFilesForTrackedUndo` 保留 `WritebackSettlement` 对外入口，内部委派 `UndoOperations`。对含非空补丁和字符串 `verifiedContent` 的记录，通过相同 checkpoint 重建编辑器表示的预期前像；已有 `previousExpectedFiles` 优先保留，其余情况沿用项目快照回退。验证必须经过正向结果附加及 checkpoint 消费，写回前单独构建逆补丁不足以覆盖该链路。
+
 `contentRuntime.callPageBridge` 对 `applyOperations` 且 `reviewingPolicy: 'no-trace-undo'` 的调用专门包装一层 `AssetTransferBroker`，因此创建删除与直接逆操作也可查询原文本批次回执。
 `undoRun`、`undoRunTrackedChanges` 在确认后生成 `deadlineAt`；混合 Undo 的文本恢复请求与后续创建删除请求携带同一截止时间。
 对 no-trace apply 路线，client 按剩余时间收紧 RPC 等待，broker 将期限继续传给回执查询，journal 在准备前后检查，router 在操作边界检查并将其传入创建删除验证。
@@ -375,7 +374,7 @@ Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirror
 | Auto 重命名、二进制删除或资产类型被过滤 | `mirrorWorkspace.collectMirrorChangesDetailed`、路径类型规则、controller 转换及 orchestrator 独立删除确认 | `node --test test/mirrorWorkspace.test.js test/writebackController.test.js`；另验文本重命名拒绝删除、二进制重命名及 GIF/WebP |
 | 活动文件/ZIP/空内容不一致 | snapshotRouter、projectFiles、快照缓存、mirrorWorkspace | `node --test test/pageBridgeSnapshotCache.test.js test/staleGuard.test.js` |
 | ZIP 路径碰撞、丢弃或资产配额影响完整性 | `extractFilesFromZip`、`normalizeSafeProjectPath`、`mergeSnapshotFiles`、快照标志及 Native 全量清理 | [projectFiles](../../test/projectFiles.test.js)、[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)；需串联百分号字面名称、超限已有资产与基线更新 |
-| CRLF/LF 内容相同但补丁错位 | textPatch 原始偏移、staleGuard 归一化、controller 补丁传递、router 应用及读回 | [textPatch](../../test/textPatch.test.js)、[staleGuard](../../test/staleGuard.test.js)、[pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js)；需比较最终内容与 Native 目标，不能只断言 `verified` |
+| CRLF/LF 坐标转换及撤销 | textPatch 原始偏移、staleGuard.prepareOperationPatches、router 实际补丁、settlement verifiedContent、UndoOperations 双映像 | [textPatchLineEndings](../../test/textPatchLineEndings.test.js)、[undoOperations](../../test/undoOperations.test.js)、[pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js)；比较最终文本、保留内容与实际回执后的撤销结果 |
 | OT 快启进入快照重读回退 | `resolveWarmRunStart`、`runController.buildCodexRunParams`、Native `validateOtFocusedWarmMirrorReuse`、runtime 的 mirror_stale 回退 | `node --test test/otWarmMirrorIntegration.test.js test/taskRunner.test.js`；需另补快启结果经参数构造进入 Native 校验的组合场景 |
 | 原请求超时但文件已变化 | broker 查询原执行 receipt、逐项结果与尾部阻断 | `node --test test/writebackReceiptRecovery.test.js` |
 | 显式 Retry sync 创建已有文件 | creator 局部幂等、retryCreates 跨 journal 传递；现有测试缺少生产链专项用例 | `node --test test/textFileCreator.test.js test/writebackEditRetry.test.js`，仅覆盖局部能力与恢复意图 |
