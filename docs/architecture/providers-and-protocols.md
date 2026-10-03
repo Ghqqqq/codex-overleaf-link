@@ -1,6 +1,6 @@
 # 模型连接、Provider 配置与协议适配
 
-适用产品版本：`2.5.0`；产品源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。
+适用产品版本：`2.5.0`；初始参考基线：`2073ae74747431aab8d529803d4e9f8197262388`；正文随当前仓库维护。
 入口见 [系统总览](system-overview.md) 与 [功能索引](feature-map.md)；运行身份、队列见 [运行状态与恢复](run-state-and-recovery.md)。
 进程启动、app-server 生命周期、项目锁和退出屏障由 [Native 执行](native-execution.md) 说明。
 
@@ -198,7 +198,7 @@ Custom 的真实 API key 保留在上游 bridge launch 内存；传给 Codex 的
 
 | 桥 | 请求转换与消费符号 | 输出与限制 |
 |---|---|---|
-| Responses | `prepareResponsesRequest/buildResponsesUrl` | 普通请求保持 Responses 形状；compact 转发 opaque 响应 |
+| Responses | `prepareResponsesRequest/buildResponsesUrl` | 普通请求保持 Responses 形状；compact 检查 JSON 诊断，支持范围内的正常响应保留原字节 |
 | Chat | `buildChatRequest`、`appendResponsesInput`、`translateTools` | messages/tool_calls 转 Responses items，保留工具身份和结果 |
 | Anthropic | `buildAnthropicRequest/buildToolContext` | system、tool_use/tool_result、thinking 转 Responses items |
 
@@ -207,7 +207,7 @@ Custom 的真实 API key 保留在上游 bridge launch 内存；传给 Codex 的
 
 ### 6.1 Streaming、buffered 与工具调用
 
-Streaming 逐段转发 SSE；buffered 先拿到完整 JSON，再转换成 Codex 期待的 SSE 或 JSON。传输方式不改变工具结果需要回接原 call ID 的要求。
+Streaming 按事件转发 SSE，Responses 桥在完整事件诊断检查后转发；buffered 先拿到完整 JSON，再转换成 Codex 期待的 SSE 或 JSON。传输方式不改变工具结果需要回接原 call ID 的要求。
 Chat 请求同时检查 Codex `requestBody.stream` 和 launch.upstreamResponseMode；buffered 可规避部分网关流式工具标记解析问题。
 Chat 响应根据真实 content-type 选择 SSE parser 或 JSON 转换器；流式终止信号可来自 finish_reason，不必一直等待 socket 关闭。
 工具参数 delta 累积后产生完整调用；命名空间和 custom 工具名称通过转换上下文恢复，原始控制标记泄漏会报错。
@@ -239,7 +239,7 @@ supportsParallelToolCalls、supportsStreamOptions 等字段也有具体 adapter 
 模型级 `normalizeModelOutputTokens` 则将空值保留为 null，其他值要求为 256–65536 的整数，8192、32768 可原样保留。
 
 `createProviderLaunch` 优先采用模型有效值，再采用 Provider 值。正常 launch 总有正输出预算；Chat、Anthropic 和普通 Responses 的请求构造均优先采用该值，即使 Codex requestBody 请求了更小预算。
-相关消费符号为 [chatBridgeRequest.js](../../native-host/src/chatBridgeRequest.js) 的 `buildChatRequest`、[anthropicBridgeRequest.js](../../native-host/src/anthropicBridgeRequest.js) 的 `buildAnthropicRequest` 及 [responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js) 的 `prepareResponsesRequest/resolveMaxOutputTokens`；Responses compact 仍按前述 opaque 路径处理。
+相关消费符号为 [chatBridgeRequest.js](../../native-host/src/chatBridgeRequest.js) 的 `buildChatRequest`、[anthropicBridgeRequest.js](../../native-host/src/anthropicBridgeRequest.js) 的 `buildAnthropicRequest` 及 [responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js) 的 `prepareResponsesRequest/resolveMaxOutputTokens`；Responses compact 请求直接复制原 body，不经过普通请求的输出预算覆盖；响应另经 `forwardCompactResponse` 检查。
 Chat 的 [providerReasoning.js](../../native-host/src/providerReasoning.js) `resolveReasoningMaxOutputTokens` 还会对 DeepSeek 的 xhigh/max 抬升预算：\(T_{wire}=\max(T_{launch},65536)\)。
 例如模型配置4096并选择 max，发出的 Chat max_tokens 可变为65536；结合前述 Anthropic 400 修正，配置值不能统一解释为三协议均遵守的硬上限。
 [providerReliability.test.js](../../test/providerReliability.test.js) 已有 Provider 级8192迁移和 Chat launch 预算覆盖请求值的断言；迁移测试标题仍写32K，实际断言为65536，应以断言和当前源码为准。
@@ -266,7 +266,7 @@ Anthropic `buildAnthropicHistoryContinuation` 仅对 max_output_tokens 且没有
 
 [providerStreamLifecycle.js](../../native-host/src/providerStreamLifecycle.js) 管理 idle/total 计时和 AbortController。
 客户端连接关闭触发上游 abort；流消费入口调用 `touch` 才会重置 idle，total 不随流量延长。
-**Current behavior 限定**：三桥的 SSE 消费接入了逐块活动回调，JSON 消费则直接等待 `.json()`，正文块到达期间未调用 `touch`。
+**Current behavior 限定**：三桥的 SSE 消费接入了逐块活动回调；普通 JSON 消费等待完整正文（Chat/Anthropic 的 `.json()`，Responses 的 `.text()` 后解析），正文块到达期间未调用 `touch`。Responses compact 的 `forwardCompactResponse` 单独逐块读取并调用 `touch`，不受这个普通 JSON 分支缺口约束。
 对应入口为 [Chat](../../native-host/src/chatCompletionsBridge.js) 和 [Anthropic](../../native-host/src/anthropicMessagesBridge.js) 的 `handleRequest` JSON 分支，以及 [Responses](../../native-host/src/responsesPassthroughBridge.js) 的非流式 JSON 分支；Chat 的 `Codex stream=true → launch buffered → 上游 JSON` 也经过该路径。
 在正常配置的 120 秒 idle 下，若响应头后第 35、70、105 秒仍有 JSON 正文字节到达，但正文尚未结束，第 120 秒仍会中止请求，距最近流量仅 15 秒。
 该阶段的 idle 实际约束从收到响应头到完整 JSON 读完的时间，不能统一解释为网络持续静默；更长的 HTTP total 或 Codex watchdog 不会推迟已触发的 idle 中止。
@@ -310,8 +310,10 @@ Anthropic 对特定 HTTP 400 最多修正一次并重新 fetch；普通错误无
 这提供配套版本恢复，不能理解为秘密仅会出现在一个文件，也不能直接视为加密存储。
 目录请求 0700、原子写入临时文件请求 0600；chmod 失败被容忍，Windows/具体文件系统有效权限仍需验收。
 
-**Known gap / Store 容量。** [providerStore.readJson](../../native-host/src/providerStore.js) 对 public、secrets 和 transaction 文件设置 1 MiB 读取上限；`commitProviderState/atomicWriteJson` 未在提交前检查相同上限。[providerProfile.normalizeStringRecord](../../native-host/src/providerProfile.js) 的 customHeaders/queryParams 没有总体字节上限，累计 profiles 也无存储总量限制。因此通过当前 normalizer 的配置可被写入，事务文件删除后，后续读取再返回 `provider_store_corrupt`。
-列表、删除与 Built-in 运行解析均先读取整个 Store，因而也可能受阻；Save 返回错误不能证明磁盘仍保留旧配置。维护该边界需核对临界容量、保存失败后的可读性和事务恢复文件大小，先用临时目录与合成内容验证。
+**Current behavior / Store 容量。** [providerStore.js](../../native-host/src/providerStore.js) 的 `getStoreFileMaxBytes/serializeStoreJson` 按最终 JSON 的 UTF-8 字节执行读写预算：public、secrets 各为 `STORE_FILE_MAX_BYTES`（1 MiB），紧凑编码的恢复事务为 `STORE_TRANSACTION_MAX_BYTES`（2 MiB + 1024 字节）。事务需同时容纳两份旧快照及版本/编码标记，其预算与单份配置分别维护。
+`commitProviderState` 在首次替换文件前检查新配置、旧回滚快照与事务；超限返回 `provider_store_too_large`，保留原文件和 revision。累计 profiles、转义和多字节字符均计入最终字节数；字符数不能代替存储容量。
+运行时归一化数据与 `stored` 原始解析快照分别保存，`mergeStoredChanges` 只将实际变化合入存储值，避免清密钥、删除或写诊断时把无关默认字段扩写到旧数据。原文件为接近上限的紧凑 JSON 时可保留紧凑编码，事务的 `compactPublic/compactSecrets` 标记用于提交失败回滚及启动恢复；恢复也先检查两份副本再替换。
+[providerStoreCapacity.test.js](../../test/providerStoreCapacity.test.js) 覆盖临界容量、拒绝后可读性、旧数据管理与注入写入故障后的恢复。已经超出读取上限或损坏的旧文件仍返回 `provider_store_corrupt`，不会自动截断或删除；任意手写 JSON 的空白和转义拼写不提供逐字节恢复保证。存在大于旧版 1 MiB 上限的未完成事务时，降级到旧 Native 的恢复兼容性未验证。
 
 `normalizeBaseUrl` 拒绝 URL 用户名/密码、query、fragment，要求 HTTPS 或允许的 loopback HTTP。
 **网络目的地限定**：上述 URL 校验和 `resolveRunProvider` 的披露比较均作用于配置值；三桥没有固定 DNS 解析地址，也没有逐跳重定向目的地校验。
@@ -326,11 +328,11 @@ guard 允许 cache key 等例外；`sanitizeProfile` 会复制允许的 headers/
 
 [providerRedaction.js](../../native-host/src/providerRedaction.js) 的 `sanitizeProviderMessage` 支持精确替换已知 API key，并清洗部分 bearer/key/token 模式。
 桥错误和测试错误有传入精确 secret 的调用点，通用错误包装未必持有完整秘密集合，不能推导所有文本均安全。
-**Known gap / HTTP 200 内的协议失败**：[responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js) 的 `handleRequest` 仅在 `!upstream.ok` 时进入带 `launch.apiKey` 的 `forwardUpstreamError` 清洗。
-HTTP 200 内的 `response.failed` SSE 经 `forwardResponsesSse` 原字节转发，非流式 JSON 的 `status: failed` 也经 `sendJson` 原样返回；若其 `error.message` 回显专用 API key，该值可随错误载荷到达 Codex。
-HTTP 成功状态与模型协议成功状态属于两层判断；仅检查前者会漏掉上述失败出口。
-下游 [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) 的 `handleMessage` 可把 app-server 错误 params 发为运行事件，[background.js](../../extension/src/background.js) 的 `sanitizeJournalString` 仅按部分凭据形状清洗，均未接收该上游 key 做精确匹配。
-桥出口保留回显值不能证明真实 Codex 已将它写入日志或历史；Codex 的具体错误投影及最终持久化仍需使用合成凭据验证。
+**Current behavior / HTTP 成功响应内的协议诊断。** HTTP 200 表示 HTTP 层返回成功状态，协议体仍可声明 `response.failed`。两层状态分别判定。[responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js) 的 `sanitizeProtocolErrors` 在普通 JSON、SSE 和 compact 出口使用 `launch.apiKey` 清洗显式 error 子树及失败 envelope 的 message/code/param/detail/details/reason/description，并递归检查 response 包装。正常模型 output、工具参数和任意 metadata 不进行通用秘密替换。
+`hasDuplicateJsonKeys` 检查有效 JSON 内每个对象的重复键，包括转义键名；出现重复时保守清洗协议诊断并重新编码，避免后面的 status/error 覆盖前值后，原始字节中的旧诊断仍被透传。工具参数字符串内部的 JSON 文字保持原义。普通 JSON 解析失败使用固定安全错误，不返回解析器包含的原正文片段。
+`forwardResponsesSse` 使用增量 UTF-8 解码，缓冲完整事件再检查，单事件上限为 `MAX_STREAM_BUFFER_BYTES`（8 MiB，含帧格式）。无重复键且无需诊断改写的正常事件保持原格式，多个事件可在上游结束前陆续转发；畸形、非法编码或超限事件走安全失败路径，该事件的原始诊断不会先行转发。维护该路径需同时覆盖 CRLF/分块、多行 data 与流结束时无空行的最后一帧。
+`forwardCompactResponse` 逐块读取并续期 idle，支持 UTF-8 JSON 对象且总响应不超过 `MAX_COMPACT_RESPONSE_BYTES`（32 MiB）；无重复键且无需诊断改写的正常响应保留原字节、HTTP status 与 content-type，包括 encrypted_content。诊断清洗后重新编码，畸形或超限响应返回明确错误。此对象类型及接收容量构成当前支持边界，不能继续把 compact 描述为无限制的任意正文透传。
+[responsesProtocolRedaction.test.js](../../test/responsesProtocolRedaction.test.js) 通过真实 loopback HTTP 桥检查出口、正常输出及上述边界。下游 [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) 的 app-server 错误事件和 [background.js](../../extension/src/background.js) 的 journal 未获得该 key 做全局精确匹配；真实 Codex 的具体错误投影与最终持久化仍需独立验收。
 
 [debugLog.js](../../native-host/src/debugLog.js) 主要截断字段和摘要 content/files，未提供通用凭据清洗；三桥当前日志选择计数、状态和元数据。
 后台 journal 的模式清洗也不等于任意秘密检测；维护目标是从生产者阻止原密钥或任意配置 dump 进入日志、事件和诊断。
@@ -342,7 +344,8 @@ HTTP 成功状态与模型协议成功状态属于两层判断；仅检查前者
 | 修改意图 | 主改与联动 | 最窄命令及检查重点 |
 |---|---|---|
 | Save/Use、项目绑定 | dialog、coordinator、ProjectProviderSelection、store | `node --test test/providerSessionBinding.test.js test/projectProviderRevision.test.js`；同 ID revision、目录预加载、投影失败 |
-| secret/profile/schema | providerProfile、providerStore、浏览器 Profiles 和表单 | `node --test test/providerReliability.test.js`；字段校验、专用凭据、revision、披露和存储恢复 |
+| secret/profile/schema | providerProfile、providerStore、浏览器 Profiles 和表单 | `node --test test/providerReliability.test.js test/providerStoreCapacity.test.js`；字段校验、专用凭据、revision、披露、最终字节预算和旧数据恢复 |
+| Responses 诊断与透传 | responsesPassthroughBridge、providerRedaction、stream lifecycle | `node --test test/responsesProtocolRedaction.test.js`；JSON/SSE/compact 诊断、重复键、正常输出与接收边界 |
 | 内建/自定义发现 | codexModels、ProviderRuntime、ModelPicker | `node --test test/codexModels.test.js test/modelSelectionRecovery.test.js`；cache 优先级、不可用模型与 fallback |
 | Built-in 配置继承 | codexHome、ProviderRuntime、codexSessionRunner、ProviderSettingsCoordinator 与审计 | `node --test test/codexHome.test.js test/codexSessionRunner.test.js`；分别检查配置保留与参数构造；实际服务解析、配置变更后的快照及审计投影需组合验证 |
 | Speed 参数映射 | ModelPicker、运行快照、codexSessionRunner、codexArgs | `node --test test/codexArgs.test.js test/codexSessionRunner.test.js`；standard/fast 的 exec 与 app-server 参数构造 |
@@ -356,6 +359,8 @@ Response passthrough、真实 bridge HTTP 中断及 profile→launch→最终 wi
 | 已有测试定义 | 装配方式与证据边界 |
 |---|---|
 | [providerReliability.test.js](../../test/providerReliability.test.js) | Store 场景使用临时目录；能力、预算、URL/header 场景直接调用 helper；流转换使用构造的上游与 SSE 收集器。默认模型上下文和直接构造 catalog 的断言未覆盖 Provider 能力被模型默认值遮蔽的完整链路。 |
+| [providerStoreCapacity.test.js](../../test/providerStoreCapacity.test.js) | 真实 Store/Native dispatcher、临时目录和合成配置；临界容量、删除/清密钥、注入文件替换故障与重载恢复，不证明实际断电持久性。 |
+| [responsesProtocolRedaction.test.js](../../test/responsesProtocolRedaction.test.js) | 真实桥与本地 HTTP 上游、合成 key、临时日志；检查出口与逐事件流动，不调用真实 Provider、Codex 或浏览器。 |
 | [anthropicBridge.test.js](../../test/anthropicBridge.test.js) | 直接调用请求/响应及续传 helper，流场景使用 Readable 与响应 sink；URL/header 断言未经历真实 HTTP 重定向、DNS 或认证传播。 |
 | [providerSessionBinding.test.js](../../test/providerSessionBinding.test.js)、[projectProviderRevision.test.js](../../test/projectProviderRevision.test.js) | 使用 FakeBroadcastChannel、替换的目录/Native 返回或内存项目状态，验证投影和 revision 分支；不能证明实际浏览器持久化与 Native 事务共同完成。 |
 | [modelSelectionRecovery.test.js](../../test/modelSelectionRecovery.test.js) | VM 中的选择控件和替换的 sendBackgroundNative 返回验证模型恢复与迟到结果守卫；未连接真实 Provider。 |
@@ -365,8 +370,7 @@ Response passthrough、真实 bridge HTTP 中断及 profile→launch→最终 wi
 快捷预设维护需覆盖协议切换、手动覆盖的 authMode/reasoningAdapter、fullEndpoint、自定义 URL 与披露复位，分别检查最终草稿和 Native 保存结果。
 现有测试缺少“准备协议桥期间取消，随后进入测试 spawn”的覆盖，也缺少三桥 HTTP 重定向目的地与 DNS 地址变化的完整调用链用例。
 这些场景应采用合成凭据与受控端点验证，分别断言目标地址、正文/header 传播、能力取值、最终 wire 预算及取消后的进程启动/退出。
-上述请求/响应 helper 测试还不足以证明整桥 fallback 的 lineage 隔离、JSON 消费期间的逐块 idle 续期，以及 HTTP 200 协议错误到 Codex 事件和 journal 的凭据清洗。
-对应验证应进入三桥 `handleRequest`：同一桥依次发送 A 部分响应与 B 未知 response ID；用分块 JSON 和可控时钟核对 `touch`；以合成 key 构造 HTTP 200 的 SSE/JSON 失败载荷，并单独检查桥出口与下游错误投影。
+整桥 fallback 的 lineage 隔离、普通 JSON 消费期间的逐块 idle 续期，以及协议错误到真实 Codex 事件和 journal 的清洗仍需分别验证。对应场景应进入三桥 `handleRequest`：同一桥依次发送 A 部分响应与 B 未知 response ID；用分块普通 JSON 和可控时钟核对 `touch`；在已有 Responses 桥出口测试之外，单独检查下游错误投影。
 
 ## 10. 边界场景与验证要点
 

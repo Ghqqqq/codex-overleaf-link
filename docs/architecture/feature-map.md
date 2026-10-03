@@ -45,7 +45,7 @@
 - 入口：[MarkdownText.create](../../extension/src/content/markdownText.js)、[MarkdownDomRenderer.renderMarkdown](../../extension/src/content/markdownDomRenderer.js)。
 - 状态 owner：渲染器管理 DOM；[lineReferences](../../extension/src/shared/lineReferences.js) 规范化路径，[MathText](../../extension/src/content/mathText.js) 管理公式解析与回退。
 - 必须联动：项目文件身份、TeX 宏来源、KaTeX/vendor 加载与字体公开资源；保留原始 HTML 禁用、公式失败显示源码和本地路径脱敏。
-- 最近测试：[markdownDomRenderer](../../test/markdownDomRenderer.test.js)、[mathRendering](../../test/mathRendering.test.js)、[lineReferences](../../test/lineReferences.test.js)。
+- 最近测试：[markdownDomRenderer](../../test/markdownDomRenderer.test.js)、[markdownTextFallback](../../test/markdownTextFallback.test.js)、[mathRendering](../../test/mathRendering.test.js)、[lineReferences](../../test/lineReferences.test.js)。
 
 ### 改诊断检查或导出内容
 
@@ -114,7 +114,7 @@
 - 入口：[SessionManager](../../extension/src/content/sessionManager.js)、[SessionForkController](../../extension/src/content/sessionForkController.js)、[SharedSessionViewSync.install](../../extension/src/content/sharedSessionViewSync.js)。
 - 状态 owner：[backgroundSharedSessions.createService](../../extension/src/backgroundSharedSessions.js) 管理共享持久存储；[ScopedPersistenceTransaction](../../extension/src/shared/scopedPersistenceTransaction.js) 管理作用域提交；content 保留当前视图。
 - 必须联动：[scopedPersistenceCoordinator](../../extension/src/content/scopedPersistenceCoordinator.js)、[storageSessionClaims](../../extension/src/shared/storageSessionClaims.js)、[sessionState](../../extension/src/shared/sessionState.js)、Native [codexThreadFork](../../native-host/src/codexThreadFork.js)。详细链路见[运行状态与恢复](run-state-and-recovery.md)。
-- 最近测试：[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)、[crossTabRuntimeRegression](../../test/crossTabRuntimeRegression.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)、[sessionForkController](../../test/sessionForkController.test.js)。
+- 最近测试：[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)、[crossTabRuntimeRegression](../../test/crossTabRuntimeRegression.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)、[sessionForkController](../../test/sessionForkController.test.js)、[sessionForkConcurrency](../../test/sessionForkConcurrency.test.js)。
 
 ### 改新建、重命名、最后会话或清空历史
 
@@ -181,14 +181,14 @@
 - 入口：[background.js](../../extension/src/background.js) → [native index](../../native-host/src/index.js) → [taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) / [providerRuntime.handleProviderRequest](../../native-host/src/providerRuntime.js)。
 - 状态 owner：Native 管理进程与运行；[providerStore](../../native-host/src/providerStore.js) 保存 Provider 配置；[providerProfile](../../native-host/src/providerProfile.js) 定义配置结构。
 - 必须联动：[NativeChannel](../../extension/src/content/nativeChannel.js)、[nativeTransportEnvelope](../../native-host/src/nativeTransportEnvelope.js)、[nativeQuotas](../../native-host/src/nativeQuotas.js)、[providerBridgeRoutes](../../native-host/src/providerBridgeRoutes.js)、双方 compatibility、secret 脱敏与取消路径。
-- 最近测试：[nativeMessaging](../../test/nativeMessaging.test.js)、[streamEvents](../../test/streamEvents.test.js)、[providerReliability](../../test/providerReliability.test.js)、[nativeTransportEnvelope](../../test/nativeTransportEnvelope.test.js)。
+- 最近测试：[nativeMessaging](../../test/nativeMessaging.test.js)、[streamEvents](../../test/streamEvents.test.js)、[providerReliability](../../test/providerReliability.test.js)、[providerStoreCapacity](../../test/providerStoreCapacity.test.js)、[responsesProtocolRedaction](../../test/responsesProtocolRedaction.test.js)、[codexTerminalStatus](../../test/codexTerminalStatus.test.js)、[nativeTransportEnvelope](../../test/nativeTransportEnvelope.test.js)。
 
 ### 改并行子代理、文件归属或子对话展示
 
 - 入口：[subagentBroker.createSubagentBroker](../../native-host/src/subagentBroker.js)、[subagentActivityView](../../extension/src/content/subagentActivityView.js)。
 - 状态 owner：broker 管理任务槽、worker 和取消；[subagentWorkspace](../../native-host/src/subagentWorkspace.js) 管理工作空间；[subagentTelemetry](../../native-host/src/subagentTelemetry.js) 生成运行事件。
 - 必须联动：[codexSessionRunner](../../native-host/src/codexSessionRunner.js)、[subagentActivityModel](../../extension/src/shared/subagentActivityModel.js)、[parallel-subagents skill](../../native-host/src/skills/parallel-subagents/SKILL.md)，以及运行 settlement。
-- 最近测试：[subagentBroker](../../test/subagentBroker.test.js)、[parallelSubagents](../../test/parallelSubagents.test.js)、[subagentTelemetry](../../test/subagentTelemetry.test.js)、[subagentActivityView](../../test/subagentActivityView.test.js)。
+- 最近测试：[subagentBroker](../../test/subagentBroker.test.js)、[codexTerminalStatus](../../test/codexTerminalStatus.test.js)、[parallelSubagents](../../test/parallelSubagents.test.js)、[subagentTelemetry](../../test/subagentTelemetry.test.js)、[subagentActivityView](../../test/subagentActivityView.test.js)。
 
 ### 改 Write in My Style、参考资料或 skills
 
@@ -221,7 +221,7 @@
 - 入口：[UpdateNotice.mount](../../extension/src/content/updateNotice.js) 的 `runUpdateAction/handleSettingsAction`，控件由 [SettingsPanel](../../extension/src/content/settingsPanel.js) 定义；当前操作在 Overleaf 面板内完成。
 - 状态 owner：[BackgroundUpdateCoordinator](../../extension/src/backgroundUpdateCoordinator.js)、[UpdateConsent](../../extension/src/shared/updateConsent.js) 和 [ManagedUpdateProjection](../../extension/src/shared/managedUpdateProjection.js) 分别协调流程、动作及阶段语义；`background.reconcileManagedUpdateTransaction` 另有恢复写入路径。
 - 必须联动：取消 generation、恢复待定、重装命令、四版本加载投影及恢复写入顺序；旧 `bootstrap/update.html` 不承担现行面板入口。
-- 最近测试：[updateCenter](../../test/updateCenter.test.js)、[updateConsent](../../test/updateConsent.test.js)、[updateRevocationIntent](../../test/updateRevocationIntent.test.js)、[updateRuntimeRecovery](../../test/updateRuntimeRecovery.test.js)。
+- 最近测试：[updateCenter](../../test/updateCenter.test.js)、[managedUpdateSafetyGate](../../test/managedUpdateSafetyGate.test.js)、[updateConsent](../../test/updateConsent.test.js)、[updateRevocationIntent](../../test/updateRevocationIntent.test.js)、[updateRuntimeRecovery](../../test/updateRuntimeRecovery.test.js)。
 
 ### 改安装、doctor、托管更新或发布包
 

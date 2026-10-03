@@ -350,9 +350,8 @@ function createSubagentBroker(options = {}) {
       }, workerResult);
     }).catch(error => {
       // Any broker-initiated abort that is not the wall-clock deadline
-      // (parent cancel, drain) reads as 'cancelled'; only genuine worker
-      // errors read as 'failed'.
-      const status = timedOut ? 'timeout' : controller.signal.aborted ? 'cancelled' : 'failed';
+      // (parent cancel, drain), or an interrupted worker turn, is cancelled.
+      const status = timedOut ? 'timeout' : controller.signal.aborted || error?.code === 'codex_cancelled' ? 'cancelled' : 'failed';
       appendLog(job.id, `${status}: ${error?.stack || error?.message || String(error)}`);
       finishWorker(entry, { status, reason: error?.message || String(error) });
     }).finally(() => {

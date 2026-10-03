@@ -105,8 +105,8 @@ Provider 通过 `revealProviders` 嵌入工作台；相关编辑器由 [Provider
 结果卡按钮由 [RunTimelineView.renderRunCard](../../extension/src/content/runTimelineView.js) 装配 [RunResultActions.configureResultActions](../../extension/src/content/runResultActions.js)。
 其中 `configureForkButton` 在记录有 turnId、非 running、非 forkSnapshot 且具有 callback 时启用，再调用 [SessionForkController.forkRunFromNode](../../extension/src/content/sessionForkController.js)。
 分叉从所选节点复制历史并建立新 Native thread；来源线程优先级、撤销材料剥离、保存失败补偿及持久化字段缺口见[会话分叉与恢复材料隔离](run-state-and-recovery.md#61-会话分叉与恢复材料隔离)。
-Native 分叉等待后的回调缺少当前作用域复核，旧 `previousState` 可能覆盖等待期间的新视图；导航与异步返回的限制见[分叉等待与视图切换](run-state-and-recovery.md#fork-async-state)。
-[sessionForkController](../../test/sessionForkController.test.js) 使用真实 controller 与 SessionState，Native 和保存通过依赖替身提供；不能由该测试推定按钮、Native fork 与刷新恢复已联合通过。
+Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并保留后来选择的活动会话；乐观渲染、保存失败补偿和用户后续编辑的处理见[分叉等待与视图切换](run-state-and-recovery.md#fork-async-state)。
+[sessionForkConcurrency](../../test/sessionForkConcurrency.test.js) 和 [sessionForkController](../../test/sessionForkController.test.js) 使用真实 controller、SessionState 与会话管理模块，Native、渲染和保存通过依赖替身提供；不能据此推定真实浏览器、Native fork 与数据库重载已联合通过。
 
 ## 3. 配置作用域：按写入路径判断
 
@@ -271,8 +271,8 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 
 [MarkdownDomRenderer](../../extension/src/content/markdownDomRenderer.js) 配置 `html:false/linkify:false`，按 token 构造 DOM；默认限制为 1,000,000 UTF-16 code units、25,000 tokens、32 层嵌套。
 超限会抛受控错误，[MarkdownText.renderMarkdownBlockText](../../extension/src/content/markdownText.js) 的 catch 尝试记录诊断并降级。
-**静态缺口。** `recordRenderingDiagnostic` 引用未声明的 `options`，而工厂参数为 `deps`；首次出现的诊断可能在 catch 内再抛 ReferenceError，不能保证进入兼容路径。runtime 传入的诊断 callback 还进入空的 `appendTechnicalEvent`，记录能力也需单独核对。
-相关片段测试在外层额外提供 `options`，不能替代真实工厂装配的异常路径；验证需以实际工厂触发 renderer 失败，检查诊断与降级是否继续执行。即使降级成功，也不能推定整条消息统一截断或所有 fallback 遵循同一预算。
+`recordRenderingDiagnostic` 从工厂 `deps` 获取诊断 callback，按 code/detail 去重，并隔离其同步异常，使首次及重复的可恢复渲染失败均可继续降级。去重在回调之前登记，回调失败不会反复重发同一条诊断；该同步接口不等待回调返回的 Promise。
+[markdownTextFallback.test.js](../../test/markdownTextFallback.test.js) 装配完整工厂与真实 renderer，覆盖依赖缺失、渲染器异常、输入超限、回调缺失/抛错及正常 stream/non-stream 路线；DOM 使用替身。runtime callback 仍进入空的 `appendTechnicalEvent`，诊断可调用不构成持久记录保证。兼容路径也未统一采用主 renderer 的预算，资源和视觉边界仍需单独验证。
 [MathText.createMathNode](../../extension/src/content/mathText.js) 归一化公式、使用调用方提供的宏或默认宏，并调用 KaTeX：`trust:false`、`throwOnError:true`、`maxExpand:200`、`maxSize:20`。
 公式失败保留源码文本；KaTeX CSS、字体 WAR、过宽公式容器同属验收面。静态配置不能证明实际字体加载或窄屏视觉效果。
 `buildMarkdownLinkNodes` 对 HTTP(S) 建外链；项目路径解析为 `createLineReferenceButton`，点击时调用 `jumpToPosition` 并传当前 projectId；未识别目标退为文字。
@@ -301,9 +301,9 @@ launcher 开关先读 `get-panel-state`，按需发 `toggle-launcher`，再读�
 | 时间线滚动、最新按钮或重绘位置 | RunTimelineView 跟随意图／帧调度 → RunScrollLayout 阅读锚点 → history 重绘选项／CSS | [p2UiRegression](../../test/p2UiRegression.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js) |
 | 历史查看或清理 | PanelMaintenance / ChangeHistoryView → shared/legacy 存储范围 → ProjectSessionCleanup / Native → 重绘 | [p0ProductExperience](../../test/p0ProductExperience.test.js)、[dashboardSessions](../../test/dashboardSessions.test.js)、[storageDb](../../test/storageDb.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js) |
 | 草稿、编辑重发或排队回填 | textarea / RunTimelineView → PanelMaintenance → runtime / RunController → 会话或队列 owner | [runControllerContent](../../test/runControllerContent.test.js)、[runInputQueueSnapshotRegression](../../test/runInputQueueSnapshotRegression.test.js)、[runQueueSchedulerDurability](../../test/runQueueSchedulerDurability.test.js) |
-| 结果卡分叉 | RunResultActions → SessionForkController → [Native thread fork](../../native-host/src/codexThreadFork.js) → 记录复制 / 保存 / 补偿 | [sessionForkController](../../test/sessionForkController.test.js)、[sessionState](../../test/sessionState.test.js)、[storageDb](../../test/storageDb.test.js)；刷新字段保留另见运行状态页 |
+| 结果卡分叉 | RunResultActions → SessionForkController → [Native thread fork](../../native-host/src/codexThreadFork.js) → 记录复制 / 保存 / 补偿 | [sessionForkController](../../test/sessionForkController.test.js)、[sessionForkConcurrency](../../test/sessionForkConcurrency.test.js)、[sessionState](../../test/sessionState.test.js)、[storageDb](../../test/storageDb.test.js)；刷新字段保留另见运行状态页 |
 | 模型或选区输入 | 请求身份/能力 → 视图 → state → execution snapshot → Native 消费者 | [modelSelectionRecovery](../../test/modelSelectionRecovery.test.js)、[projectProviderSelection](../../test/projectProviderSelection.test.js)、[sentSelectionChip](../../test/sentSelectionChip.test.js)、[cuaRepairState](../../test/cuaRepairState.test.js) |
-| 附件/输出展示 | 输入预算/恢复或 renderer → 消费者 → CSS/资源 → 失败回退 | [p0ProductExperience](../../test/p0ProductExperience.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js)、[markdownDomRenderer](../../test/markdownDomRenderer.test.js)、[mathRendering](../../test/mathRendering.test.js)、[lineReferences](../../test/lineReferences.test.js) |
+| 附件/输出展示 | 输入预算/恢复或 renderer → 消费者 → CSS/资源 → 失败回退 | [p0ProductExperience](../../test/p0ProductExperience.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js)、[markdownTextFallback](../../test/markdownTextFallback.test.js)、[markdownDomRenderer](../../test/markdownDomRenderer.test.js)、[mathRendering](../../test/mathRendering.test.js)、[lineReferences](../../test/lineReferences.test.js) |
 | 活动卡或写后回执 | AgentTranscript / RunActivityModel → RunTimelineView / RunActivitySummary；writeback → WrittenChangesView | [agentTranscript](../../test/agentTranscript.test.js)、[subagentActivityView](../../test/subagentActivityView.test.js)、[writtenChangesView](../../test/writtenChangesView.test.js) |
 | Popup/诊断 | 两个 HTML shell → shared runtime → 偏好/状态读取 → 摘要字段 | [popupInstallGuidance](../../test/popupInstallGuidance.test.js)、[popupUpdateExperience](../../test/popupUpdateExperience.test.js)、[diagnosticsHealth](../../test/diagnosticsHealth.test.js)、[auditRecords](../../test/auditRecords.test.js) |
 
@@ -334,7 +334,7 @@ OT 点击、滚动及重绘可从[真实 Chrome 本地夹具](../../test/browser
 3. **模型目录请求的迟到响应。** generation/provider/revision 守卫会忽略迟到响应；fallback 保留 unverified 选择也不代表服务已验证支持。需测试慢请求覆盖快请求和无目录的自定义 Provider。
 4. **附件清空与迟到读取。** `addFiles` 等待 FileReader/预览后直接 push；`clear` 清数组与 pending keys，没有取消读取或 generation 校验；runtime 清 composer 前只捕获已完成附件，发送可用性未检查 pending bytes。
    按静态链路，旧读取可能在清空后重新进入 tray；实际影响需要通过“读取中提交或清空 → 读取完成”的生命周期用例确认。现有 `p0ProductExperience` 仅覆盖 pending 去重/预算。
-5. **富文本主路径与降级路径的资源限额。** 非 streaming renderer 失败后的预期兼容路径还可能被前述诊断异常打断；超长 Markdown、恶意链接与复杂公式应分别验证主路径和降级链，静态主路径参数不足以证明整体资源界限。
+5. **富文本主路径与降级路径的资源限额。** 诊断同步异常已隔离；超长 Markdown、恶意链接与复杂公式仍需分别验证主路径和兼容路径的实际资源及呈现边界，主 renderer 的参数不足以证明所有降级路径具有相同上限。
 6. **真实浏览器中的 modal 与加载副本。** 原生 dialog 的 top-layer、焦点恢复、字体及旧 managed shell 依赖 Chrome 和页面状态；验证需要覆盖真实浏览器中的挂载、键盘操作、关闭和重载。
 7. **附件序列化与刷新恢复。** 附件虽通过 SessionState normalize/compact，实际 prefs/session 写入与 hydration 未携带该字段；须按第 5 节完整保存和加载路线验证。
 

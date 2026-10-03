@@ -407,8 +407,8 @@
     SessionState: Modules.SessionState,
     getState: () => state,
     setState: next => { state = next; },
-    sendBackgroundNative,
-    saveState,
+    getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId(), generation: spaRouteGeneration }),
+    sendBackgroundNative, saveState,
     applyStateToPanel,
     showPluginToast,
     tr

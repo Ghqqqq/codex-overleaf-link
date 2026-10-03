@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { isDeepStrictEqual } = require('node:util');
 const {
   computeConnectionFingerprint,
   computeDraftFingerprint,
@@ -16,6 +17,9 @@ const {
 } = require('./providerProfile');
 
 const SCHEMA_VERSION = 1;
+const STORE_FILE_MAX_BYTES = 1024 * 1024;
+// A compact journal contains two bounded Store files plus revision/schema keys.
+const STORE_TRANSACTION_MAX_BYTES = 2 * STORE_FILE_MAX_BYTES + 1024;
 const STORE_LOCK_TIMEOUT_MS = 2500;
 const STORE_LOCK_STALE_MS = 30000;
 const STORE_LOCK_RETRY_MS = 25;
@@ -357,6 +361,7 @@ function loadProviderStateUnlocked(env = process.env) {
     : [];
   return {
     paths,
+    stored: { public: publicStore, secrets: secretStore },
     public: {
       schemaVersion: SCHEMA_VERSION,
       storeRevision: normalizeRevision(publicStore.storeRevision),
@@ -373,29 +378,61 @@ function loadProviderStateUnlocked(env = process.env) {
 
 function commitProviderState(previous, next) {
   const revision = previous.public.storeRevision + 1;
-  const nextPublic = { ...next.public, schemaVersion: SCHEMA_VERSION, storeRevision: revision };
-  const nextSecrets = { ...next.secrets, schemaVersion: SCHEMA_VERSION, storeRevision: revision };
+  const previousPublic = previous.stored.public;
+  const previousSecrets = previous.stored.secrets;
+  const nextPublic = { ...mergeStoredChanges(previousPublic, previous.public, next.public), schemaVersion: SCHEMA_VERSION, storeRevision: revision };
+  const nextSecrets = { ...mergeStoredChanges(previousSecrets, previous.secrets, next.secrets), schemaVersion: SCHEMA_VERSION, storeRevision: revision };
+  const compactPublic = Buffer.byteLength(`${JSON.stringify(previousPublic, null, 2)}\n`) > STORE_FILE_MAX_BYTES;
+  const compactSecrets = Buffer.byteLength(`${JSON.stringify(previousSecrets, null, 2)}\n`) > STORE_FILE_MAX_BYTES;
   const journal = {
     schemaVersion: SCHEMA_VERSION,
     nextRevision: revision,
-    previousPublic: previous.public,
-    previousSecrets: previous.secrets
+    previousPublic,
+    previousSecrets,
+    compactPublic,
+    compactSecrets
   };
+  // Validate every write, including rollback copies, before replacing any file.
+  serializeStoreJson(previous.paths.publicFile, nextPublic, compactPublic);
+  serializeStoreJson(previous.paths.secretFile, nextSecrets, compactSecrets);
+  serializeStoreJson(previous.paths.publicFile, previousPublic, compactPublic);
+  serializeStoreJson(previous.paths.secretFile, previousSecrets, compactSecrets);
+  serializeStoreJson(previous.paths.transactionFile, journal);
   atomicWriteJson(previous.paths.transactionFile, journal);
   try {
-    atomicWriteJson(previous.paths.secretFile, nextSecrets);
-    atomicWriteJson(previous.paths.publicFile, nextPublic);
+    atomicWriteJson(previous.paths.secretFile, nextSecrets, compactSecrets);
+    atomicWriteJson(previous.paths.publicFile, nextPublic, compactPublic);
     fs.rmSync(previous.paths.transactionFile, { force: true });
   } catch (error) {
     try {
-      atomicWriteJson(previous.paths.secretFile, previous.secrets);
-      atomicWriteJson(previous.paths.publicFile, previous.public);
+      atomicWriteJson(previous.paths.secretFile, previousSecrets, compactSecrets);
+      atomicWriteJson(previous.paths.publicFile, previousPublic, compactPublic);
       fs.rmSync(previous.paths.transactionFile, { force: true });
     } catch (_restoreError) {
       // The journal remains the recovery source on the next Native Host start.
     }
     throw providerError('provider_store_unavailable', 'Provider settings could not be saved.', { cause: error });
   }
+}
+
+function mergeStoredChanges(stored, before, after) {
+  if (isDeepStrictEqual(before, after)) return stored;
+  if (!stored || !before || !after || typeof stored !== 'object' || typeof before !== 'object' || typeof after !== 'object') return after;
+  if (Array.isArray(before) || Array.isArray(after)) {
+    // Profiles and models carry stable IDs; changed membership must not persist
+    // normalization defaults into unrelated records at the storage boundary.
+    if (!Array.isArray(stored) || !Array.isArray(before) || !Array.isArray(after)
+      || [...before, ...after].some(item => !item?.id)) return after;
+    const oldById = new Map(before.map(item => [item.id, item]));
+    const storedById = new Map(stored.map(item => [typeof item === 'string' ? item : item?.id, item]));
+    return after.map(item => mergeStoredChanges(storedById.get(item.id), oldById.get(item.id), item));
+  }
+  const result = { ...stored };
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!Object.prototype.hasOwnProperty.call(after, key)) delete result[key];
+    else if (!isDeepStrictEqual(before[key], after[key])) result[key] = mergeStoredChanges(stored[key], before[key], after[key]);
+  }
+  return result;
 }
 
 function recoverInterruptedTransaction(paths) {
@@ -412,8 +449,10 @@ function recoverInterruptedTransaction(paths) {
     fs.rmSync(paths.transactionFile, { force: true });
     return;
   }
-  atomicWriteJson(paths.secretFile, journal.previousSecrets);
-  atomicWriteJson(paths.publicFile, journal.previousPublic);
+  serializeStoreJson(paths.secretFile, journal.previousSecrets, journal.compactSecrets === true);
+  serializeStoreJson(paths.publicFile, journal.previousPublic, journal.compactPublic === true);
+  atomicWriteJson(paths.secretFile, journal.previousSecrets, journal.compactSecrets === true);
+  atomicWriteJson(paths.publicFile, journal.previousPublic, journal.compactPublic === true);
   fs.rmSync(paths.transactionFile, { force: true });
 }
 
@@ -634,11 +673,12 @@ function ensurePrivateDirectory(directory) {
   }
 }
 
-function atomicWriteJson(target, value) {
+function atomicWriteJson(target, value, compact = false) {
+  const serialized = serializeStoreJson(target, value, compact);
   const temp = `${target}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const fd = fs.openSync(temp, 'w', 0o600);
   try {
-    fs.writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(fd, serialized, 'utf8');
     fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
@@ -649,13 +689,26 @@ function atomicWriteJson(target, value) {
   fs.renameSync(temp, target);
 }
 
+function getStoreFileMaxBytes(target) {
+  return path.basename(target) === 'provider-transaction.json' ? STORE_TRANSACTION_MAX_BYTES : STORE_FILE_MAX_BYTES;
+}
+
+function serializeStoreJson(target, value, compact = false) {
+  const serialized = `${JSON.stringify(value, null, compact || path.basename(target) === 'provider-transaction.json' ? undefined : 2)}\n`;
+  const maxBytes = getStoreFileMaxBytes(target);
+  if (Buffer.byteLength(serialized, 'utf8') > maxBytes) {
+    throw providerError('provider_store_too_large', `Provider settings exceed the ${maxBytes}-byte limit for ${path.basename(target)}. Reduce the configuration and retry.`);
+  }
+  return serialized;
+}
+
 function readJson(target, fallback) {
   if (!fs.existsSync(target)) {
     return fallback;
   }
   try {
     const stat = fs.statSync(target);
-    if (!stat.isFile() || stat.size > 1024 * 1024) {
+    if (!stat.isFile() || stat.size > getStoreFileMaxBytes(target)) {
       throw new Error('invalid provider store file');
     }
     return JSON.parse(fs.readFileSync(target, 'utf8'));

@@ -349,11 +349,13 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
   }
 
   async function verifyManagedUpdateSafety() {
-    const tabs = await chrome.tabs.query({ url: MANAGED_OVERLEAF_MATCHES }).catch(() => []);
-    const editorTabs = tabs.filter(tab => (
+    const tabs = await chrome.tabs.query({ url: MANAGED_OVERLEAF_MATCHES }).catch(() => null);
+    const editorTabs = (Array.isArray(tabs) ? tabs : []).filter(tab => (
       isManagedEditorTab(tab) && !tab.discarded && tab.status !== 'unloaded'
     ));
     const probes = await Promise.all(editorTabs.map(tab => probeManagedUpdateTab(tab.id)));
+    // An unknown inventory cannot establish an idle safe point, even when Native is idle.
+    if (!Array.isArray(tabs)) probes.push({ idle: false, blockers: ['tab_inventory_unavailable'] });
     const nativeGate = await sendNativeRequest({
       id: crypto.randomUUID(),
       method: 'update.canApply',

@@ -1,6 +1,6 @@
 # 运行状态、队列与恢复
 
-源码基线：`main@2073ae74747431aab8d529803d4e9f8197262388`；包版本 `2.5.0`。
+初始源码基线：`main@2073ae74747431aab8d529803d4e9f8197262388`；初始参考包版本 `2.5.0`。当前行为随本仓库实现维护。
 阅读入口：[架构总览](README.md) → [功能定位表](feature-map.md) → 本文。
 Auto 写入和 Undo 的页面操作链见 [Auto 编辑与撤销](auto-edit-undo.md)。
 
@@ -317,15 +317,16 @@ legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；�
 它要求源运行已离开 running 且具有 turn ID；线程来源依次为运行自身 `codexThreadId`、与该 turn 匹配的 interruptedDraft 线程、旧记录的 session 线程回退。Provider 切换后的 session 线程不应覆盖已有的运行来源。
 调用 `codex.thread.fork` 成功后，复制到选定 run 为止的历史，生成新的 run ID 和 session，绑定返回的新线程并清空队列。
 `copyRunSnapshot` 标记 `forkSnapshot`、记录来源并剥离附件、应用及 Undo 材料、Native 请求和队列绑定；后续 SessionState 归一化还排除该快照的重试恢复材料。
-控制器随后等待普通 `saveState`；若调用抛错，则恢复先前 state，并尝试 `codex.history.clearPlugin` 清理新线程。普通保存仍受第 4.3 节 fallback 和错误处理限定，不能据 Promise 返回推定分叉记录已完整持久化。
+控制器将分叉合入当前会话集合，立即同步面板并等待普通 `saveState`；失败补偿只处理本次分叉，具体并发规则见下节。普通保存仍受第 4.3 节 fallback 和错误处理限定，不能据 Promise 返回推定分叉记录已完整持久化。
 
 <a id="fork-async-state"></a>
 
 #### 分叉等待与视图切换
 
-`forkRunFromNode` 在发送 Native 请求前捕获 `previousState`；返回后直接以它为底稿追加分叉会话并 `setState`。当前 [contentRuntime](../../extension/src/content/contentRuntime.js) 的 controller 装配未提供账号、项目或 view generation 检查，controller 也未重新读取当前状态进行合并；保存异常时的 `setState(previousState)` 同样使用旧快照。
-因此 Native 等待期间发生会话编辑或视图状态替换，迟到结果可覆盖后来状态。内存替身可复现“请求期间换入 B 状态，返回后提交 A 的旧状态及分叉”；真实 SPA 切换后的保存归属、数据库结果及可见表现仍需沿 runtime 与 scoped persistence 联合验证，不能从内存复现直接推定跨项目数据已经落盘。
-[sessionForkController.test.js](../../test/sessionForkController.test.js) 提供真实 controller 的模拟 Native/保存装配；验证此边界需延迟 Native 响应，在等待中替换 state，并分别检查成功及保存失败补偿分支。该生命周期问题与下述分叉字段裁剪独立。
+`forkRunFromNode` 捕获来源历史、请求参数和 scope，Native 返回后复核来源 session/turn 仍在，且账号、项目、路由代次未改变；scope 来自 [contentRuntime](../../extension/src/content/contentRuntime.js) 注入的实时 getter。失效返回不覆盖新视图，尚未附着的新线程会被尽力清理；清理失败也不恢复旧状态。
+有效返回基于当前 state 合并分叉，保留等待期间的草稿、新会话和其他运行状态。只有仍停留在原活动会话时才自动激活分叉，用户后来选择的会话优先保留。来源历史与配置仍来自请求时捕获的快照，避免与 Native 已分出的线程错配。
+乐观渲染和保存处于同一恢复边界。若分叉尚未被修改，失败时只移除该分叉并保留其他变化；只有整个安装后的状态确实未改变时才恢复合并前对象。用户已经编辑的新分叉及其线程会保留，错误继续提示。补偿重绘失败不能跳过线程清理或替换原错误。
+已经开始保存后 scope 改变时，迟到结果不重绘新视图，也不盲删可能已写入旧作用域的线程。持久化的捕获范围、fallback 和容量仍由其 owner 决定。[sessionForkConcurrency.test.js](../../test/sessionForkConcurrency.test.js) 与 [sessionForkController.test.js](../../test/sessionForkController.test.js) 使用真实状态及会话管理模块、受控 Native/存储和渲染替身，覆盖这些时序；真实浏览器和数据库仍需相应验收。该生命周期与下述分叉字段裁剪分别维护。
 
 **已知 schema 差异**：`SessionState.compactRunForStorage` 保留 `forkSnapshot/forkSourceRunId`，但主保存经过 `ScopedPersistencePanelState.persistPanelState → StorageDb.buildSessionRecord`，其 run 压缩白名单未保留这两个字段，会话白名单也未保留 `forkedFromSessionId/forkedFromRunId`。
 `RunResultActions.configureForkButton` 与 Timeline 的 Undo/Accept 展示依赖 `forkSnapshot`。因此内存中的分叉限制不能直接推广为共享库重载后的相同投影；当前只确认字段裁剪及消费者依赖，未复现真实按钮行为或证明动作材料被恢复。
@@ -345,7 +346,7 @@ legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；�
 | 旧终态修复 | SessionState 两类恢复 helper、runtime hydration、StorageDb | `node --test test/settledRunRecovery.test.js test/recordedRunFailureRecovery.test.js` | 识别已持久终态证据，同时保留真正活跃运行；不依赖 ownerLost |
 | 导航后结算 | detached coordinator、PostNavigationSettlementPersistence | `node --test test/postNavigationSettlementPersistence.test.js test/postNavigationSettlementWiring.test.js` | 只写原账号/项目/session/run，内层失败向外传播 |
 | Undo 重载能力 | StorageRunActions、SettlementFacts、RunResultActions、timeline | `node --test test/reviewingUndoPersistence.test.js test/runTimelineUndoAvailability.test.js` | 材料可保存，重载按钮只展示实际可执行能力 |
-| 会话分叉 | SessionForkController、SessionState/StorageDb schema、结果按钮 | `node --test test/sessionForkController.test.js` | 来源线程及材料剥离有定义；等待期间状态替换、失败补偿及分叉标记经过主存储后的保留缺口需另补用例 |
+| 会话分叉 | SessionForkController、SessionState/StorageDb schema、结果按钮 | `node --test test/sessionForkController.test.js test/sessionForkConcurrency.test.js` | 来源线程、材料剥离、等待期间并发编辑/切换、选择性补偿及渲染异常；分叉标记经过主存储后的保留缺口和真实浏览器数据库行为仍需单独验证 |
 
 上述队列测试替换保存和启动依赖；scoped transaction 测试使用内存 adapter；导航后结算行为测试替换 coordinator/StorageDb，wiring 测试检查源码；Undo 材料测试直接调用压缩 helper，Timeline 测试使用模拟按钮。它们适合定位各层契约，不能替代真实端口、IndexedDB、DOM 及跨页时序的组合验证。
 

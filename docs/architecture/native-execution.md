@@ -1,6 +1,6 @@
 # Native 消息、执行与进程寿命
 
-适用产品版本：`2.5.0`；产品源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。
+初始参考产品版本：`2.5.0`；初始源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。当前行为随本仓库实现维护。
 `Current behavior` 表示可定位的源码事实；`Target contract` 表示维护目标；`Known gap / 未验证` 表示具体限制或尚缺的运行证据。
 下文未单独标注的实现描述均属于 `Current behavior`，不能由此推定全部平台已经验收。
 浏览器运行状态见[运行与恢复](run-state-and-recovery.md)，页面写入见[Auto 修改与撤销](auto-edit-undo.md)，模型适配见 [Provider 与协议](providers-and-protocols.md)。
@@ -122,8 +122,8 @@ Provider revision、地址披露、模型和 Auto 协议协商由 `providerRunti
 `subagentTelemetry` 先观察原生协作事件，再进入父任务处理；子任务消息不会自动取得父任务终态地位。
 `buildFinalAssistantMessage` 优先从完成的消息项选择最终答复，commentary 与中间片段保留在流事件中。
 兼容例外：成功 turn 中没有 completed 项，且所有项都没有显式 phase 时，会选择最后一个非空 delta-only 项；带 phase 的未完成项不进入该回退。定义见同文件 `buildFinalAssistantMessage` 及 `codexSessionRunner.test.js` 的 legacy delta-only 场景。
-`Known gap / 未验证`：匹配 turn 的 `turn/completed` 直接进入 `succeed`；该入口没有以 `turn.status === completed` 单独拒绝其他终态。
-该 status 影响最终文本选择，但 runner 的 resolve 不能作为所有中断/失败协议组合均已准确投影的证明。
+匹配活动 turn 的 `turn/completed` 由 `getTurnCompletionError` 检查：`completed` 或兼容旧协议缺少 status，且 error 为 null/undefined 时才进入 `succeed`；`failed`、非 null/undefined 的 error 证据和未知显式状态走 `fail` 的停止与拒绝路径。`interrupted` 复用 `codex_cancelled`，原始 turn.status 仍保留在事件中。
+`taskRunnerRuntime.isCancellationError` 对明确的 `codex_turn_failed/codex_turn_status_invalid` 优先维持失败分类，避免错误文字中的取消字样改写协议事实；无结构化 code 的旧错误仍沿原兜底判断。[codexTerminalStatus.test.js](../../test/codexTerminalStatus.test.js) 使用合成 app-server，分别覆盖 Native → runner 的公共结果及锁/控制器清理，以及 session → runner → broker → 镜像差异过滤；真实 Codex 版本仍需独立验收。
 
 线程分叉走独立 [codexThreadFork.js](../../native-host/src/codexThreadFork.js) 的 `forkCodexThread`，执行 `initialize → thread/fork`。
 它有自己的 30 秒计时、pending 表和 best-effort kill；没有接入普通运行的 controller/停止屏障，不应套用普通运行取消保证。

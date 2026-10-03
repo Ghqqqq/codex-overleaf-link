@@ -19,6 +19,7 @@ const MAX_HISTORY_ITEMS = 4096;
 const MAX_HISTORY_BYTES = 32 * 1024 * 1024;
 const MAX_DUPLICATE_CONTINUATIONS = 2;
 const MAX_STREAM_BUFFER_BYTES = 8 * 1024 * 1024;
+const MAX_COMPACT_RESPONSE_BYTES = 32 * 1024 * 1024;
 const DEFAULT_MAX_OUTPUT_TOKENS = 65536;
 const CONTINUATION_MARKER = '[codex-overleaf-provider-reasoning-continuation]';
 
@@ -152,7 +153,7 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
       return;
     }
     if (route === 'compact') {
-      await forwardOpaqueResponse(upstream, res, lifecycle.touch);
+      await forwardCompactResponse(upstream, res, lifecycle.touch, launch.apiKey);
       return;
     }
 
@@ -165,10 +166,16 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
           'The provider returned a non-streaming payload for a streaming Responses request.'
         );
       }
-      response = await forwardResponsesSse(upstream, res, lifecycle.touch);
+      response = await forwardResponsesSse(upstream, res, lifecycle.touch, launch.apiKey);
     } else {
-      response = await upstream.json();
+      const text = await upstream.text();
+      try {
+        response = JSON.parse(text);
+      } catch (_error) {
+        throw providerError('provider_response_invalid', 'The provider returned an invalid Responses JSON response.');
+      }
       lifecycle.touch();
+      sanitizeProtocolErrors(response, launch.apiKey, hasDuplicateJsonKeys(text));
       sendJson(res, 200, response);
     }
     if (response?.id) {
@@ -405,7 +412,7 @@ function resolveMaxOutputTokens(configured, requested) {
   return Math.max(1, Math.floor(value));
 }
 
-async function forwardResponsesSse(upstream, res, onActivity) {
+async function forwardResponsesSse(upstream, res, onActivity, apiKey) {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache, no-store',
@@ -415,67 +422,199 @@ async function forwardResponsesSse(upstream, res, onActivity) {
     throw providerError('provider_response_invalid', 'The provider returned an empty Responses stream.');
   }
   const reader = upstream.body.getReader();
-  const decoder = new TextDecoder();
-  const observer = { buffer: '', terminalResponse: null };
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    onActivity();
-    observeSseText(observer, decoder.decode(value, { stream: true }));
-    if (!res.writableEnded) res.write(Buffer.from(value));
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  const observer = { buffer: '', position: 0, lineStart: 0, terminalResponse: null };
+  const forward = frame => {
+    const safeFrame = inspectSseFrame(observer, frame, apiKey);
+    if (!res.writableEnded) res.write(safeFrame);
+  };
+  let complete = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      onActivity();
+      forwardSseText(observer, decoder.decode(value, { stream: true }), forward);
+    }
+    forwardSseText(observer, decoder.decode(), forward, true);
+    complete = true;
+  } finally {
+    if (!complete) await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
-  observeSseText(observer, decoder.decode(), true);
   if (!res.writableEnded) res.end();
   return observer.terminalResponse;
 }
 
-function observeSseText(observer, text, flush = false) {
+function forwardSseText(observer, text, forward, flush = false) {
   observer.buffer += text;
+  // Hold each event until its diagnostics can be inspected. Line endings and
+  // successful frames remain intact, including CRLF split across HTTP chunks.
+  while (observer.position < observer.buffer.length) {
+    const position = observer.position;
+    const char = observer.buffer[position];
+    if (char !== '\r' && char !== '\n') { observer.position += 1; continue; }
+    if (char === '\r' && position + 1 === observer.buffer.length && !flush) break;
+    const end = position + (char === '\r' && observer.buffer[position + 1] === '\n' ? 2 : 1);
+    if (position === observer.lineStart) {
+      forward(observer.buffer.slice(0, end));
+      observer.buffer = observer.buffer.slice(end);
+      observer.position = observer.lineStart = 0;
+    } else {
+      observer.position = observer.lineStart = end;
+    }
+  }
   if (Buffer.byteLength(observer.buffer, 'utf8') > MAX_STREAM_BUFFER_BYTES) {
     throw providerError('provider_stream_frame_too_large', 'Provider stream frame exceeded the local bridge limit.');
   }
-  let match;
-  while ((match = /\r?\n\r?\n/.exec(observer.buffer))) {
-    const block = observer.buffer.slice(0, match.index);
-    observer.buffer = observer.buffer.slice(match.index + match[0].length);
-    observeSseBlock(observer, block);
-  }
   if (flush && observer.buffer.trim()) {
-    observeSseBlock(observer, observer.buffer);
+    forward(observer.buffer);
     observer.buffer = '';
   }
 }
 
-function observeSseBlock(observer, block) {
-  const data = String(block || '')
-    .split(/\r?\n/)
-    .filter(line => line.startsWith('data:'))
-    .map(line => line.slice(5).trimStart())
-    .join('\n');
-  if (!data || data === '[DONE]') return;
+function inspectSseFrame(observer, frame, apiKey) {
+  if (Buffer.byteLength(frame, 'utf8') > MAX_STREAM_BUFFER_BYTES) {
+    throw providerError('provider_stream_frame_too_large', 'Provider stream frame exceeded the local bridge limit.');
+  }
+  const parts = frame.split(/(\r\n|\r|\n)/);
+  const dataIndexes = [];
+  let event = '';
+  for (let index = 0; index < parts.length; index += 2) {
+    const line = parts[index].replace(/^\uFEFF/, '');
+    if (/^data(?::|$)/.test(line)) dataIndexes.push(index);
+    if (line.startsWith('event:')) event = line.slice(6).replace(/^ /, '');
+  }
+  const failedEvent = ['error', 'response.failed', 'response.error'].includes(event);
+  if (!dataIndexes.length && !failedEvent) return frame;
+  const data = dataIndexes.map(index => parts[index].replace(/^\uFEFF/, '').replace(/^data:? ?/, '')).join('\n');
+  if ((!data || data === '[DONE]') && !failedEvent) return frame;
+  let payload;
   try {
-    const payload = JSON.parse(data);
-    if (['response.completed', 'response.incomplete', 'response.failed'].includes(payload?.type) && payload.response) {
-      observer.terminalResponse = payload.response;
-    }
-  } catch (_error) {}
+    payload = JSON.parse(data);
+  } catch (_error) {
+    throw providerError('provider_response_invalid', 'The provider returned an invalid Responses stream event.');
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw providerError('provider_response_invalid', 'The provider returned an invalid Responses stream event.');
+  }
+  const changed = sanitizeProtocolErrors(payload, apiKey, failedEvent || hasDuplicateJsonKeys(data));
+  if (['response.completed', 'response.incomplete', 'response.failed'].includes(payload.type || event) && payload.response) {
+    observer.terminalResponse = payload.response;
+  }
+  if (!changed) return frame;
+  parts[dataIndexes[0]] = `data: ${JSON.stringify(payload)}`;
+  for (const index of dataIndexes.slice(1)) parts[index] = parts[index + 1] = '';
+  return parts.join('');
 }
 
-async function forwardOpaqueResponse(upstream, res, onActivity) {
-  const contentType = upstream.headers.get('content-type') || 'application/json; charset=utf-8';
-  res.writeHead(upstream.status, { 'content-type': contentType, 'cache-control': 'no-store' });
+function sanitizeProtocolErrors(payload, apiKey, failedEvent = false) {
+  let changed = false;
+  const clean = value => {
+    if (typeof value === 'string' && value) {
+      const safe = sanitizeProviderMessage(value, [apiKey], MAX_ERROR_BYTES);
+      changed ||= safe !== value;
+      return safe;
+    }
+    if (value && typeof value === 'object') {
+      for (const key of Object.keys(value)) value[key] = clean(value[key]);
+    }
+    return value;
+  };
+  const visit = (value, inheritedFailure) => {
+    if (!value || typeof value !== 'object') return;
+    if (value.error != null) { changed = true; value.error = clean(value.error); }
+    const failed = inheritedFailure || ['error', 'response.failed', 'response.error'].includes(value.type)
+      || ['failed', 'error'].includes(value.status);
+    if (failed) {
+      // Re-encode failures even when the surviving values need no replacement:
+      // duplicate JSON keys must not retain an earlier raw diagnostic value.
+      changed = true;
+      for (const key of ['message', 'code', 'param', 'detail', 'details', 'reason', 'description']) {
+        if (value[key] != null) value[key] = clean(value[key]);
+      }
+    }
+    // Response envelopes carry diagnostics; model output and tool arguments
+    // retain their original protocol semantics, even if they resemble secrets.
+    visit(value.response, failed);
+  };
+  visit(payload, failedEvent);
+  return changed;
+}
+
+function hasDuplicateJsonKeys(text) {
+  // Called only after JSON.parse succeeds. Track keys per object and skip
+  // entire string values, including JSON-looking tool arguments. A duplicate
+  // can hide both an error value and an earlier failed status, so its protocol
+  // diagnostics require cleaning even when the surviving status is completed.
+  const stack = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '{') stack.push({ keys: new Set(), expectsKey: true });
+    else if (char === '[') stack.push(null);
+    else if (char === '}' || char === ']') stack.pop();
+    else if (char === ',' && stack.at(-1)) stack.at(-1).expectsKey = true;
+    else if (char === '"') {
+      let end = index;
+      while (true) {
+        end = text.indexOf('"', end + 1);
+        let backslashes = 0;
+        for (let at = end - 1; text[at] === '\\'; at -= 1) backslashes += 1;
+        if (backslashes % 2 === 0) break;
+      }
+      const object = stack.at(-1);
+      if (object?.expectsKey) {
+        const key = JSON.parse(text.slice(index, end + 1));
+        if (object.keys.has(key)) return true;
+        object.keys.add(key);
+        object.expectsKey = false;
+      }
+      index = end;
+    }
+  }
+  return false;
+}
+
+async function forwardCompactResponse(upstream, res, onActivity, apiKey) {
   if (!upstream.body) {
-    res.end();
-    return;
+    throw providerError('provider_response_invalid', 'The provider returned an empty compact response.');
   }
   const reader = upstream.body.getReader();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    onActivity();
-    if (!res.writableEnded) res.write(Buffer.from(value));
+  const chunks = [];
+  let bytes = 0;
+  let complete = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      onActivity();
+      bytes += value.byteLength;
+      if (bytes > MAX_COMPACT_RESPONSE_BYTES) {
+        throw providerError('provider_response_too_large', 'The compact response exceeded the 32 MiB local bridge limit.');
+      }
+      chunks.push(Buffer.from(value));
+    }
+    complete = true;
+  } finally {
+    if (!complete) await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
-  if (!res.writableEnded) res.end();
+  const body = Buffer.concat(chunks, bytes);
+  let text;
+  let payload;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(body);
+    payload = JSON.parse(text);
+  } catch (_error) {
+    throw providerError('provider_response_invalid', 'The provider returned an invalid compact JSON response.');
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw providerError('provider_response_invalid', 'The provider returned an invalid compact JSON response.');
+  }
+  const changed = sanitizeProtocolErrors(payload, apiKey, hasDuplicateJsonKeys(text));
+  const contentType = upstream.headers.get('content-type') || 'application/json; charset=utf-8';
+  res.writeHead(upstream.status, { 'content-type': contentType, 'cache-control': 'no-store' });
+  if (!res.writableEnded) res.end(changed ? JSON.stringify(payload) : body);
 }
 
 function buildResponsesUrl(baseUrl, launch = {}, route = 'responses') {
@@ -555,6 +694,7 @@ function normalizeBridgeErrorCode(value) {
   return [
     'provider_connection_timeout',
     'provider_response_invalid',
+    'provider_response_too_large',
     'provider_protocol_incompatible',
     'provider_request_invalid',
     'provider_request_too_large',

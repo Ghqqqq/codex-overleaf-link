@@ -656,6 +656,7 @@ function createCancellationError() {
 }
 
 function isCancellationError(error = {}) {
+  if (['codex_turn_failed', 'codex_turn_status_invalid'].includes(error.code)) return false;
   return error.code === 'codex_cancelled'
     || error.name === 'AbortError'
     || /cancelled by the user|was cancelled/i.test(error.message || '');

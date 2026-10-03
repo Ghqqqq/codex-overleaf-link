@@ -974,7 +974,10 @@ function runCodexAppServerProcess(input) {
         if (message.method === 'item/completed' && eventScope.owns(message.params) &&
           !readProgressController.observe(message.params?.item || {})) return;
         if (message.method === 'turn/completed' && activeTurnId && (message.params?.turn?.id === activeTurnId || message.params?.turnId === activeTurnId)) {
-          succeed(message.params?.turn || {});
+          const turn = message.params?.turn || {};
+          const terminalError = getTurnCompletionError(turn);
+          if (terminalError) fail(terminalError);
+          else succeed(turn);
         }
         if (message.method === 'error' && isTransientCodexAppServerError(message.params)) {
           return;
@@ -1404,6 +1407,10 @@ function emitCodexEvent(emit, type, title, detail = {}, status = 'running') {
 }
 
 function inferNotificationStatus(message) {
+  if (message.method === 'turn/completed') {
+    const error = getTurnCompletionError(message.params?.turn || {});
+    if (error) return error.code === 'codex_cancelled' ? 'cancelled' : 'failed';
+  }
   if (message.method === 'error' && isTransientCodexAppServerError(message.params)) {
     return 'warning';
   }
@@ -1411,6 +1418,19 @@ function inferNotificationStatus(message) {
     return /completed/.test(message.method || '') ? 'completed' : 'running';
   }
   return 'running';
+}
+
+function getTurnCompletionError(turn) {
+  const status = turn.status;
+  // Older peers omit status; explicit error evidence still prevents success.
+  if ((status === undefined || status === 'completed') && turn.error == null) return null;
+  const interrupted = status === 'interrupted';
+  const invalid = status !== undefined && !['completed', 'failed', 'interrupted'].includes(status);
+  const error = new Error(extractCodexAppServerErrorMessage(turn) || (interrupted
+    ? 'Codex turn was interrupted.' : invalid ? 'Codex turn ended with an invalid terminal status.' : 'Codex turn failed.'));
+  error.code = interrupted ? 'codex_cancelled' : invalid ? 'codex_turn_status_invalid' : 'codex_turn_failed';
+  error.turnStatus = status;
+  return error;
 }
 
 function isTransientCodexAppServerError(params = {}) {

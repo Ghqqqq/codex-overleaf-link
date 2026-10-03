@@ -1,11 +1,8 @@
 (function initCodexOverleafMarkdownText() {
   'use strict';
 
-  // Markdown / assistant-text rendering — block + inline markdown, the
-  // assistant-visible sanitizers, and line-reference resolution/buttons carved
-  // out of contentRuntime.js (v1.4.5 structural-debt phase 1). The code below
-  // moved verbatim (original indentation kept); the four runtime collaborators
-  // are factory-injected so behavior is unchanged.
+  // Assistant-text rendering, sanitizers, and line-reference controls.
+  // Runtime collaborators are factory-injected.
   function create(deps = {}) {
     const {
       LineReferences,
@@ -588,7 +585,9 @@
       return;
     }
     renderingDiagnosticKeys.add(key);
-    if (typeof options.recordRenderingDiagnostic === 'function') options.recordRenderingDiagnostic({ code, detail });
+    try {
+      if (typeof deps.recordRenderingDiagnostic === 'function') deps.recordRenderingDiagnostic({ code, detail });
+    } catch (_error) { /* A diagnostic sink must not interrupt rendering. */ }
   }
 
   function appendMarkdownParagraphFlow(target, value) {

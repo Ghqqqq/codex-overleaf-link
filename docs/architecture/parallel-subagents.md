@@ -171,10 +171,9 @@ runner 捕获 `codex_process_stop_unconfirmed` 后阻止正常结果继续同步
 隔离为同步资格标记，文件字节仍可留在共享磁盘；主任务后来修改同路径也不会自动解除隔离。
 ownership violation 始终被阻止，不能通过 adoption 获得同步资格。
 
-**已知实现限制。** [startWorker](../../native-host/src/subagentBroker.js#L345) 在 runner resolve 时先以 completed 处理；runner rejection 或成功处理回调中的异常都会进入 catch，再按错误或 abort 原因分类。
-[handleMessage](../../native-host/src/codexSessionRunner.js#L976) 收到匹配的 `turn/completed` 后无条件调用 [succeed](../../native-host/src/codexSessionRunner.js#L1082)，后者 resolve，未把协议 `turn.status` 的 failed/interrupted 转为 rejection。
-若 worker 已留下部分修改，仅收到这类结束帧且此前没有独立 error 或 abort，broker 可记为 completed，跳过未完成输出隔离；即 $Promise.resolve\not\Rightarrow turn.status=completed$。
-[broker 失败测试](../../test/subagentBroker.test.js#L354) 直接注入 reject，[原生子线程终态测试](../../test/subagentTelemetry.test.js#L320) 覆盖 observer 路线；二者不能替代失败结束帧经真实 runner 进入 broker 的组合验证，实际同步后果尚未验证。
+**worker 终态与输出隔离。** [startWorker](../../native-host/src/subagentBroker.js#L345) 对正常 runner resolve 记录 completed；真实 runner 的 `getTurnCompletionError` 将 failed/interrupted、未知显式状态及错误证据送入拒绝路径，兼容缺少 status 且无 error 的旧成功通知。
+broker 按 timeout、abort 或 `codex_cancelled`、普通失败分类，failed/timeout/cancelled 的已改文件进入未完成输出隔离；无需等待单独 error 通知才能识别失败终态。[codexTerminalStatus.test.js](../../test/codexTerminalStatus.test.js) 覆盖通知→runner→broker→`syncChanges/unsupportedChanges` 的真实模块组合，模型进程使用合成 fixture，未验证真实模型或远端写回。
+回执 I/O 异常、正常成功后的进程退出证据和原生 observer 仍有各自边界；终态正确分类不能替代这些验证。
 
 **当前实现。** `processAdoptions` 仅在 broker 未关闭、未取消、无活动 worker 且 token 有效时处理请求。
 请求须同时具备当前 `token`、`reviewed: true`、原 `jobId`、所属 `path` 和当前最终字节 `sha256`。
@@ -191,7 +190,7 @@ Promise 完成不证明 OS 进程已退出：runner 正常 `succeed` 发 SIGTERM
 对应变更从 `syncChanges` 移入 `unsupportedChanges`，原因分别为 `subagent_unauthorized_edit`、`subagent_unfinished_output`。
 content 的 `applySyncChangesToOverleaf` 展示阻止项；允许项仍经过同一套写回、保存及 Undo 规则。
 
-worker `completed` 只表示 runner Promise 正常返回；受上一节终态映射限制，不能单独证明协议 turn 成功，也无法证明文件已被 Overleaf 接受或保存。
+worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 completed 或旧协议缺少 status，且 error 为 null/undefined。该终态仍无法单独证明子进程已经退出，或文件已被 Overleaf 接受和保存。
 接管成功只解除对应隔离资格，之后仍受选区、focus、文件类型、治理和写回检查约束。
 父取消在差异交付前检查 abort；dirty mirror 使后续运行重新评估并重建所需内容。
 
@@ -233,13 +232,13 @@ worker `completed` 只表示 runner Promise 正常返回；受上一节终态映
 | 并发、同文件串行、预算、取消 | subagentBroker、subagentWorkspace 回执写入、runner、codexSessionTiming、taskRunnerRuntime 登记与锁、镜像 dirty | `node scripts/run-tests.mjs test/subagentBroker.test.js`；回执失败时的 abort/close 与外层释放还需组合验证 |
 | 拒绝回执身份与目标目录 | subagentBroker 的 jobIdOrFallback/idFromFileName/writeResult、输入拒绝原因及事件 | `node scripts/run-tests.mjs test/subagentReceiptIdentity.test.js test/subagentBroker.test.js`；保留合法 ID 查找，并检查异常 ID/文件名不会选中结果目录外的目标 |
 | 文件归属、quarantine、adoption | subagentWorkspace、subagentWorkspacePath、broker、最终 syncChanges 过滤 | `node scripts/run-tests.mjs test/subagentBroker.test.js test/parallelSubagents.test.js` |
-| 原生发现、历史与终态 | subagentTelemetry、runner eventScope、subagentActivityModel | `node scripts/run-tests.mjs test/subagentTelemetry.test.js` |
+| 原生发现、历史与终态 | subagentTelemetry、runner eventScope/getTurnCompletionError、broker、Native取消分类、subagentActivityModel | `node scripts/run-tests.mjs test/subagentTelemetry.test.js test/codexTerminalStatus.test.js` |
 | 子对话、刷新历史、计时 | subagentActivityView、subagentActivityModel、sessionState、runActivitySummary | `node scripts/run-tests.mjs test/subagentActivityView.test.js test/subagentTerminalClock.test.js` |
 
 具体定义可直接阅读 [subagentBroker 测试](../../test/subagentBroker.test.js)、[parallelSubagents 测试](../../test/parallelSubagents.test.js)、
 [subagentTelemetry 测试](../../test/subagentTelemetry.test.js)、[子对话测试](../../test/subagentActivityView.test.js) 和 [终态计时测试](../../test/subagentTerminalClock.test.js)。
 其中部分测试检查源码装配，部分使用注入的假 worker 或 app-server；真实进程、权限及 Chrome 状态需另取运行证据。
-回执身份专项使用内存文件系统；运行期间 `activeWorkers` 投影、失败结束帧经 runner 到 broker 的隔离，以及暂时性历史错误后的恢复，也不能由相近测试名称推定已完整覆盖；各自最近定义及边界见对应章节。
+回执身份专项使用内存文件系统；失败结束帧经真实 runner 到 broker 的隔离和镜像过滤由合成 app-server 组合测试覆盖。运行期间 `activeWorkers` 投影与暂时性历史错误后的恢复仍须核对各自最近定义及边界，不能由相近测试名称推定已完整覆盖。
 
 ## 9. 边界场景与验证要点
 
@@ -248,7 +247,7 @@ worker `completed` 只表示 runner Promise 正常返回；受上一节终态映
 3. **派发项完成后的子任务状态。** `subAgentActivity.kind=completed` 只唤醒历史补读；子 turn 的实际终态可能 failed，历史也可能不可用。检查重复通知、旧 turn 的迟到 completed 与父结束后的时钟冻结。
 4. **非法 ID 的拒绝回执。** 检查合法队列文件名回退、非法文件名生成标识及最终 writer 校验，确认错误仍可被发现且目标留在 `results/`；保持合法任务各终态的原 ID 查找能力。
 5. **磁盘 activeWorkers 为 0 时整合文件。** 该计数没有随每次 worker 启动刷新；核对内存 running、波次与 token，避免把非实时字段当成空闲证明。
-6. **worker 失败终态后的部分文件隔离。** 追踪 `turn.status=failed` 结束帧是否引发 runner rejection；缺少独立 error/abort 时，当前成功返回路径仍可令 broker 标为 completed。
+6. **worker 失败终态后的部分文件隔离。** 覆盖没有独立 error/abort 的 failed/interrupted 结束帧、矛盾 error 与未知状态；核对 runner 拒绝、停止处理、broker 隔离及差异过滤，同时保留旧无 status 成功兼容。
 7. **历史临时读取失败后的恢复。** 同一 child 的 `readDisabled` 会阻止后续补读；分别检查已保存活动、实时通知与缺失历史，不能由只读视图重新打开推定原生历史重试。
 8. **活跃 worker 期间重建技能目录。** 另一个项目或风格生成会按自身开关准备共享 home；核对父任务与 worker 已发现的路径能否继续读取，以及并行 installer 的目标是否仍为持久技能根。文件路径检查与 app-server 缓存行为分别取证。
 9. **目录预取尚未返回时提交。** 从空技能目录开始，延迟 `skills.list` 响应，检查该次参数中的启用 ID 与 broker gate；再分别覆盖预取成功、预取失败后打开 Skills 刷新并重新提交，确认恢复作用于后续运行。

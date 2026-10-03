@@ -1,7 +1,7 @@
 # 安装、托管更新与发布
 
 本页帮助维护者定位安装目录、加载版本、更新事务和发布产物，解释修改其中一层时需要检查的其他层。
-产品源码基线为 `2073ae74747431aab8d529803d4e9f8197262388`。
+初始源码基线为 `2073ae74747431aab8d529803d4e9f8197262388`，当前行为随本仓库实现维护。
 源码约束、测试覆盖、已安装运行状态和公开发布产物分别取证；各层验证范围在相应流程中说明。
 入口见[功能索引](feature-map.md)，运行取消与进程寿命见[运行状态与恢复](run-state-and-recovery.md)。
 
@@ -171,7 +171,8 @@ Native `applyStagedUpdate()`再次检查本地 gate、管理布局、事务及�
 当前 idle探针接受`verified_saved`或`verified_quiet`，要求30秒无相关编辑活动、保存判断稳定3秒；quiet证据弱于服务器内容核验。
 “所有标签页”在实现中指匹配支持站点、可用且未被discard/unload的编辑器标签页；项目列表、丢弃页与未授权站点有不同处理。
 应答失败、超时或保存未知会产生 blocker；不能把 tab探针不可达直接解释为空闲。
-**整体枚举失败的例外。** 后台 `verifyManagedUpdateSafety` 将 `tabs.query` 的拒绝回退为空列表；Native 空闲且后台没有 pending 执行时，该分支可返回 `ok:true`，实际尚未取得编辑器标签页清单。主协调器首次枚举错误会失败，但后台二次核验采用另一条路径；维护安全点时应分别覆盖单页探针失败、整体枚举失败及两次核验之间的状态变化。
+**整体枚举失败的处理。** 后台 `verifyManagedUpdateSafety` 将 `tabs.query` 拒绝或非数组结果记为 `tab_inventory_unavailable` blocker，不把未知清单等同合法空数组。该 blocker 与单页探针、Native gate 及后台 pending 检查共同决定是否允许 apply；合法空清单仍可在其他条件满足时放行。
+二次检查受阻经 `update_not_idle` 回到 `waiting_for_idle`，保留暂存事务和授权，并沿现有定时器重试；UI 仍采用已有 busy 投影。首次协调器枚举错误保留原失败/撤销处理。[managedUpdateSafetyGate.test.js](../../test/managedUpdateSafetyGate.test.js) 从实际安装消息入口装配完整后台与协调器，验证枚举恢复后只 apply 一次；Chrome/Native I/O 使用内存替身，真实浏览器异常仍需验收。
 
 Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入口从 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js) 的`getActiveNativeWorkState()`提供这两个计数。
 它没有扫描所有操作系统进程，也没有在该 gate 中直接枚举持久化`processStopBarrier`记录。
