@@ -118,7 +118,7 @@ I_{style}=(I_{scope},version,bundleHash).
 | --- | --- | --- |
 | `accountScopeId/projectId` | content 捕获，Native `scopeOf()` 验证 | 目标风格归属；参考项目 ID 另存于来源描述 |
 | `epoch` | Settings controller | 作用域切换后递增；迟到读取和 UI 响应不进入新视图 |
-| `revision` | Native `config.json` | 每次配置保存递增；保护生成期间更新的启用偏好 |
+| `revision` | Native `config.json` | 每次配置保存递增；生成结束时比较已读取的修订，决定是否沿用较新的启用偏好 |
 | `building.id/requestId/pid` | Native build/config | 构建所有权、取消路由及中断检测 |
 | `version` | Native UUID | 指向发布的版本目录；后续配置可切换当前版本 |
 | `bundleHash/files` | manifest 与 `safeBundleText()` | manifest SHA-256 加每个资产哈希，运行前验证 |
@@ -128,8 +128,11 @@ I_{style}=(I_{scope},version,bundleHash).
 manifest 记录账号哈希、目标项目、模型、来源元数据、特征索引、章节及文件哈希。
 资产文件创建权限为 `0400`，目录使用 `0700`；`versionRoot()` 和 `safeBundleText()` 拒绝版本目录或目标文件本身为符号链接，并检查哈希；平台权限效果仍有差异。
 
-`build()` 发布前核对 `latest.building.id`，防止被后续构建替代的结果覆盖当前配置。
-仅当 revision 等于构建开始后的预期值，才采用 `enableAfterBuild`；否则保留较新的开关状态。
+`build()` 发布前核对已读取的 `latest.building.id`，发现构建归属已变化时停止发布。
+仅当该次读取的 revision 等于构建开始后的预期值，才采用 `enableAfterBuild`；否则保留该次读取的开关状态。
+从读取 `latest` 到保存配置的这段实现为同步调用，但保护范围不能推广到多个 Native 进程。
+[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 的 `acquireProjectLock()` 使用进程内 Map；[writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) 的 `saveConfig()` 根据传入对象递增 revision，没有在提交时比较磁盘当前修订。
+原子 rename 保证配置文件完整替换；这里没有跨进程的 compare-and-swap（先核对当前修订仍等于预期，再提交）契约。其他进程在 `latest` 检查后保存的开关或构建归属，仍可能被后续旧对象覆盖。
 版本目录 rename 与 config 更新是两个步骤：目录发布成功不单独证明当前配置已切换。
 既有版本不会在成功更新时删除；当前模块没有版本垃圾回收或专用删除 API。
 
@@ -137,6 +140,8 @@ manifest 记录账号哈希、目标项目、模型、来源元数据、特征�
 `contentRuntime.runTask()` 在等待设置后复核账号及项目；排队任务通过原执行快照恢复风格。
 [runExecutionSnapshotCodec](../../extension/src/shared/runExecutionSnapshotCodec.js) 的 `normalizeSnapshot()` 固定风格字段；[storageRunActions](../../extension/src/shared/storageRunActions.js) 保留规范化引用。
 `forRun()` 根据快照读取指定版本，验证目标作用域、manifest 和全部声明资产，随后返回 Skill 路径及入口文本。
+普通 `get()` 通过 `readBundle()` 读取 manifest 后即可返回 `ready: true`，未逐一验证全部声明资产；`includePreview` 也只检查预览所读取的文件。
+因此已发布、元数据可读及全部资产可消费需要分别取证；消费限额与发布前验证的缺口见下文“限额与资料流向”。
 普通父任务与 broker worker prompt 使用同一风格上下文；installer 轮次跳过该上下文。
 快照为 null 时明确要求本轮不沿用早前风格，避免同一模型会话中的历史指令残留。
 后续资产读取由 agent 按需求完成；引用版本不会扩大本轮编辑范围或改变 Track/Undo 规则。
@@ -148,11 +153,19 @@ manifest 记录账号哈希、目标项目、模型、来源元数据、特征�
 | 读取阶段取消 | `cancel()` 调用 `cancelReferenceRead(readId)`；page AbortController 中止下载 | PDF 的 File 编码完成前后依赖取消检查，不代表编码瞬时中断 |
 | 生成阶段取消 | 已知 requestId 时发送 `codex.cancel`；requestId 迟到后再次检查 cancelled | 请求已发出与进程停止已确认分开取证 |
 | 切换账号/项目 | `alignScope()` 清空 UI 状态、增加 epoch，并取消仍在读取的引用 | 已进入 Native 的生成没有由此自动发送取消 |
-| 生成失败或取消 | 仅清除属于该 build 的 building 状态并写错误；保留已有 version | 未 ready 的首次生成仍无可应用版本 |
+| 生成失败或取消 | 进入 `try` 后，`catch` 在配置仍可读写时清除属于该 build 的 building 状态并写错误；保留已有 version | 初始化及配置读写失败另有边界；未 ready 的首次生成仍无可应用版本 |
+| 当前版本目录或 manifest 损坏 | `get()` 读取当前版本时报错，即使 enabled 已关闭；`set(false)` 可能先保存成功，再因返回 `get()` 结果失败而报错 | 关闭状态落盘、RPC 成功及 UI 显示分别取证；该故障还可能阻塞新的普通提交 |
 | Native 任务中断 | `get()` 根据 PID 存活及同进程 active request 检查纠正 building | PID 检查不构成跨重启的完整事务恢复证明 |
 | 进程停止未确认 | `keepStaging` 保留临时目录，并通知停止屏障 owner | 不能无条件宣称取消后临时语料已经删除 |
 
-正常成功或确认失败后，`finally` 清理 staging；已发布版本另行保留。
+进入 `try` 后，正常成功或确认失败均会经过 `finally`，在未设置 `keepStaging` 时调用 staging 删除；已发布版本另行保留。
+`build()` 在进入 `try` 前已创建 staging、调用 `config()` 并保存 building。配置 JSON 损坏或初始保存失败会跳过这段 `finally`，可能留下空 staging；此时尚未执行资料抽取。
+`writeJson()` 的临时配置文件也没有失败清理分支，写入或 rename 失败时不能保证该临时文件已清除。
+
+关闭风格时，[writingStyleRuntime.set()](../../native-host/src/writingStyleRuntime.js) 先调用 `saveConfig()`，随后调用 `get()`；后者只要存在 `state.version` 就读取 manifest。
+若此读取失败，[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 的 `writing-style.set` 分支返回错误，[writingStyleSettings.toggle()](../../extension/src/content/writingStyleSettings.js) 则按旧 meta 恢复开关显示。
+[contentRuntime.runTask()](../../extension/src/content/contentRuntime.js) 对非队列提交先执行 `ensureLoaded(true)`，因此即使风格已在磁盘上关闭，版本目录或 manifest 损坏仍可能阻塞新任务；直接携带 null 风格快照进入 `forRun()` 的行为应另行理解。
+这些为静态错误路线；当前页未提供损坏资产后的自动降级或修复保证，普通资产内容损坏也不能一概等同于 manifest 读取失败。
 跨视图刷新用 `CHANGE_KEY` 写入账号、项目、时间和 nonce，然后其他 controller 重新向 Native 读取配置。
 该浏览器通知只负责失效提醒；Native `config.json` 才决定权威启用状态。
 
@@ -162,6 +175,12 @@ manifest 记录账号哈希、目标项目、模型、来源元数据、特征�
 当前为最多三份资料，PDF 单份 20 MiB、合计 40 MiB，项目 JSON 附件最多 4 MiB，总附件原始体积最多 44 MiB。
 PDF worker 超时为 90 秒、最多读 80 页；抽取后的正文按约 60,000 字符采样，单行加入时可能越过字符阈值。
 TeX 引用正文也有约 60,000 字符及 80 个文件遍历界限；目录与文件完整读取不表示全部内容最终进入模型语料。
+
+输出资产另受 [writingStyleRuntime.safeBundleText()](../../native-host/src/writingStyleRuntime.js) 的单文件 `text.length <= 800000` 限制；这里按 JavaScript 字符串长度计数，与输入的 UTF-8 字节配额不同。
+`build()` 将全部 documents（包括正文及逐行 origins）序列化到 `references/source-index.json`，发布前未调用同一消费校验。
+出处路径逐行重复会放大索引：例如三份各约 3,000 行、每行 20 字符、出处路径约 100 字符的 TeX，仅正文加重复路径就约为 \(3\times3000\times(20+100)=1{,}080{,}000\) 字符，尚未计 JSON 字段。
+这是合规输入可能生成超限资产的静态边界示例，未执行复现。普通 `get()` 仍可能返回 ready，而 `forRun()` 的全资产检查及 `prepareSources()` 的 saved 来源复用会在读取该索引时拒绝。
+`Known gap`：发布前缺少与消费层一致的全资产可读性及大小检查；正文采样上限不能单独证明版本包可消费。
 
 Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元数据。
 44 MiB 附件预算使编码结果加预留低于浏览器 64 MiB 消息上限；普通聊天附件配额保持独立。
@@ -216,6 +235,7 @@ installer 完成由模型运行结果汇总，当前路径未统一核验是否�
 | PDF/附件限额 | `REFERENCE_LIMITS`；`nativeQuotas`、worker、source preparation | [writingStyleLimits](../../test/writingStyleLimits.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js) |
 | 表达画像和证据要求 | builder Skill；`writingStyleProfile`、`writingStyleEvidence`、bundle renderer | 需增加针对 JSON 修复、证据匹配和发布失败的行为验证 |
 | 版本捕获和队列恢复 | `capture/forRun`；execution snapshot codec、storage compaction、runner | [runExecutionSnapshot](../../test/runExecutionSnapshot.test.js)、[releaseBoundaryHelpers](../../test/releaseBoundaryHelpers.test.js) |
+| 配置保存与异常资产恢复 | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) 的 `get/set/build/saveConfig/writeJson/safeBundleText`；[writingStyleSettings](../../extension/src/content/writingStyleSettings.js) 的 `toggle/ensureLoaded`、[contentRuntime](../../extension/src/content/contentRuntime.js) 的 `runTask` | [writingStyleLimits](../../test/writingStyleLimits.test.js) 仅覆盖输入配额与编码预算；[p2UiRegression](../../test/p2UiRegression.test.js) 的风格依赖为同步刷新 stub。需增加关闭保存后读取失败、索引超限、初始化清理及跨进程竞争的合成故障验证 |
 | 普通技能安装和开关 | `localSkills`、`codexHome`；panel、偏好、runner、command approval | [localSkills](../../test/localSkills.test.js)、[codexHome](../../test/codexHome.test.js)、[contentPanelModules](../../test/contentPanelModules.test.js)、[codexSessionRunner](../../test/codexSessionRunner.test.js) |
 
 现有定义覆盖配额、RPC、快照、技能库与安装命令等契约；部分集成 harness 也加载参考模块。

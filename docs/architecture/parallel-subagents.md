@@ -64,8 +64,12 @@ worker 使用新的 thread，`session: null`、`threadId: ''`；继承本轮 mod
 
 job 包含 `id`、`task`、非空 `files` 和可选 `title/readOnlyContext`。
 `validateJob` 检查 ID、重复任务、数量、路径、路径存在性、任务文本和预算；单个 job 文件上限 32 KiB。
-ID 满足 `JOB_ID_PATTERN`：小写字母、数字、连字符，最多 32 字符。
+接纳的 job ID 满足 `JOB_ID_PATTERN`：小写字母、数字、连字符，最多 32 字符。
 主任务先写临时文件再重命名为 `.json`；`intakeJobs` 忽略 `.tmp-` 和已读文件名。
+
+**静态边界，未运行复现。** ID 校验失败后，对于非空字符串 `job.id`，[admitJobFile 与 jobIdOrFallback](../../native-host/src/subagentBroker.js#L167) 仍将原值截断后交给 [writeResult](../../native-host/src/subagentBroker.js#L247) 拼接回执路径，未再次约束为安全文件名。
+例如 `id: "../../victim"` 的拒绝回执路径会解析到镜像根的 `victim.json`，可能创建或替换该文件；拒绝任务不等于拒绝回执已被限制在 `results/` 内。
+这与下文声明文件的路径别名属于不同入口。[非法 ID 测试](../../test/subagentBroker.test.js#L100) 检查拒绝原因，未检查结果目录外的文件变化；实际文件影响与最终写回尚未验证。
 
 [subagentWorkspacePath](../../native-host/src/subagentWorkspacePath.js) 的 `safeWorkspaceRelativePath` 规范化 workspace 相对路径。
 `safeWorkspaceRelativePath` 拒绝直接以队列目录开头的控制路径，`work/` 下切片例外；声明路径须预先存在，通常由主任务先准备切片。
@@ -74,7 +78,7 @@ ID 满足 `JOB_ID_PATTERN`：小写字母、数字、连字符，最多 32 字�
 
 | 状态 | 权威 owner | 下游投影 |
 |---|---|---|
-| queued/running、并发槽、计时器 | broker 的 `jobs/queued/running` | `broker.json`、结果文件、subagent events |
+| queued/running、并发槽、计时器 | broker 的 `jobs/queued/running` | `broker.json` 的非实时投影、结果文件、subagent events |
 | 波次前像、所有权并集、违规路径 | broker 的 `waveSnapshot/violationPaths` | `getViolationPaths` 与 unsupported changes |
 | worker 文件变化证据 | [subagentWorkspace](../../native-host/src/subagentWorkspace.js) 的 `hashPaths/hashWorkspace` | `changedFiles`、wave violation |
 | 未完成文件与接管摘要 | broker 的 `quarantined`、`adoptionToken` | adoption result、同步过滤 |
@@ -83,9 +87,13 @@ ID 满足 `JOB_ID_PATTERN`：小写字母、数字、连字符，最多 32 字�
 
 队列目录每轮重建；历史子对话必须依赖运行记录，不能从下一轮的 `results/` 目录恢复。
 
+**静态边界，未运行复现。** [writeBrokerFile](../../native-host/src/subagentBroker.js#L107) 只在 start、beginWave、endWave、close 写出 `activeWorkers`；`beginWave` 在 `running` 为空时执行，[startWorker](../../native-host/src/subagentBroker.js#L288) 的 `running.set` 后没有刷新文件。
+正常活动波次中，磁盘 `activeWorkers` 因而仍可显示 0，不能单独作为空闲证据。实际调度与 `processAdoptions` 检查内存 `running`，接管还检查当前 token；此计数缺口不证明接管守卫失效。
+[握手测试](../../test/subagentBroker.test.js#L54) 只核对 ready/closed 等字段，未覆盖运行期间的磁盘计数。
+
 ## 4. 生命周期、冲突与预算
 
-**当前实现。** 正常路径如下，非法 job 直接得到 `rejected` 结果。
+**当前实现。** 正常路径如下，校验失败的 job 进入 `rejected` 回执路径；回执路径的静态限制见上一节。
 
 ```mermaid
 flowchart TD
@@ -94,9 +102,9 @@ flowchart TD
     C --> D[fillSlots：路径互斥与空闲槽]
     D --> E[startWorker / beginWave]
     E --> F[worker 与父任务并行存活]
-    F --> G[finishWorker：终态与 owned hashes]
+    F --> G[finishWorker：runner Promise 结算与 owned hashes]
     G --> H[endWave：扫描未授权路径]
-    G --> I[失败且有变化：quarantine]
+    G --> I[broker 判为 failed timeout cancelled 且有变化：quarantine]
     I --> J[主任务审阅最终字节并请求 adoption]
     H --> K[stop / drain]
     J --> K
@@ -134,9 +142,14 @@ runner 捕获 `codex_process_stop_unconfirmed` 后阻止正常结果继续同步
 哈希相当于内容指纹，能够比较前后版本；此处的波次指纹不记录每次写入来自哪个进程。
 **静态边界。** `ownedUnion` 内的跨 worker 或父任务越界写入无法仅靠波次末尾扫描准确归因；“先改后恢复”的中间操作也不产生净差异证据。
 
-`finishWorker` 对 failed/timeout/cancelled 且实际改动过的所属文件建立 `quarantined` 记录。
+`finishWorker` 对 broker 判为 failed/timeout/cancelled 且实际改动过的所属文件建立 `quarantined` 记录。
 隔离为同步资格标记，文件字节仍可留在共享磁盘；主任务后来修改同路径也不会自动解除隔离。
 ownership violation 始终被阻止，不能通过 adoption 获得同步资格。
+
+**静态边界，未运行复现。** [startWorker](../../native-host/src/subagentBroker.js#L340) 在 runner resolve 时先以 completed 处理；runner rejection 或成功处理回调中的异常都会进入 catch，再按错误或 abort 原因分类。
+[handleMessage](../../native-host/src/codexSessionRunner.js#L976) 收到匹配的 `turn/completed` 后无条件调用 [succeed](../../native-host/src/codexSessionRunner.js#L1082)，后者 resolve，未把协议 `turn.status` 的 failed/interrupted 转为 rejection。
+若 worker 已留下部分修改，仅收到这类结束帧且此前没有独立 error 或 abort，broker 可记为 completed，跳过未完成输出隔离；即 $Promise.resolve\not\Rightarrow turn.status=completed$。
+[broker 失败测试](../../test/subagentBroker.test.js#L354) 直接注入 reject，[原生子线程终态测试](../../test/subagentTelemetry.test.js#L320) 覆盖 observer 路线；二者不能替代失败结束帧经真实 runner 进入 broker 的组合验证，实际同步后果尚未验证。
 
 **当前实现。** `processAdoptions` 仅在 broker 未关闭、未取消、无活动 worker 且 token 有效时处理请求。
 请求须同时具备当前 `token`、`reviewed: true`、原 `jobId`、所属 `path` 和当前最终字节 `sha256`。
@@ -153,7 +166,7 @@ Promise 完成不证明 OS 进程已退出：runner 正常 `succeed` 发 SIGTERM
 对应变更从 `syncChanges` 移入 `unsupportedChanges`，原因分别为 `subagent_unauthorized_edit`、`subagent_unfinished_output`。
 content 的 `applySyncChangesToOverleaf` 展示阻止项；允许项仍经过同一套写回、保存及 Undo 规则。
 
-worker `completed` 只表示 worker 执行正常返回，无法证明文件已被 Overleaf 接受或保存。
+worker `completed` 只表示 runner Promise 正常返回；受上一节终态映射限制，不能单独证明协议 turn 成功，也无法证明文件已被 Overleaf 接受或保存。
 接管成功只解除对应隔离资格，之后仍受选区、focus、文件类型、治理和写回检查约束。
 父取消在差异交付前检查 abort；dirty mirror 使后续运行重新评估并重建所需内容。
 
@@ -168,6 +181,10 @@ worker `completed` 只表示 worker 执行正常返回，无法证明文件已�
 父任务上的“派发完成”或外层 `item/completed` 不能单独证明子任务成功；历史读取不支持时保留 `historyUnavailable`。
 `compactEvent` 限定字段、长度并遮盖常见 secret；原始私有 reasoning 和任意请求体不会直接进入子任务展示通道。
 
+**静态边界，未运行复现。** [snapshot](../../native-host/src/subagentTelemetry.js#L234) 对仍属当前活动代次的历史请求 rejection 设置 `readDisabled: true`，不区分能力不支持与暂时性读取错误。
+此后同一 child 在当前 observer 生命周期内不再补读；新 turn 的重置分支也未清除此值。2 秒节流不构成错误重试，后续 completed 活动通知同样无法恢复补读；实时子线程通知仍可更新记录。
+[unsupported history 测试](../../test/subagentTelemetry.test.js#L267) 检查停读与保留记录，未验证暂时性错误后的恢复；真实历史缺失范围尚未运行核验。
+
 [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `appendNativeEvent` 把子事件交给 `SubagentActivityModel.ingest` 后提前返回，防止混入父答案流。
 模型按 native journal 序号和子事件 sequence 去重；最多 16 子记录、每项 100 事件，并对事件序列按 48,000 字符阈值裁剪。
 该字符阈值属于序列裁剪策略，不应描述成严格的 UTF-8 字节限额。
@@ -176,6 +193,8 @@ worker `completed` 只表示 worker 执行正常返回，无法证明文件已�
 [subagentActivityView](../../extension/src/content/subagentActivityView.js) 的 `open/close` 展示只读子对话，主视图节点保留并临时 inert。
 返回时恢复输入、焦点和滚动；该导航不 resume、interrupt、Accept、Undo 或写回。
 `effectiveStatus/elapsedMs` 依据子终态与父运行状态展示 unknown/cancelled 和冻结时钟，不凭父完成伪造子成功。
+[renderViewer](../../extension/src/content/subagentActivityView.js#L132) 捕获子对话内容渲染异常，显示局部错误提示，后续更新可重新渲染；该恢复入口不重新请求原生历史。
+[子视图异常恢复测试](../../test/subagentActivityView.test.js#L159) 注入渲染失败，检查父运行结算继续、随后更新恢复显示；本轮未执行该测试或浏览器验收。
 
 ## 8. 修改路线与验证定义
 
@@ -192,12 +211,17 @@ worker `completed` 只表示 worker 执行正常返回，无法证明文件已�
 具体定义可直接阅读 [subagentBroker 测试](../../test/subagentBroker.test.js)、[parallelSubagents 测试](../../test/parallelSubagents.test.js)、
 [subagentTelemetry 测试](../../test/subagentTelemetry.test.js)、[子对话测试](../../test/subagentActivityView.test.js) 和 [终态计时测试](../../test/subagentTerminalClock.test.js)。
 其中部分测试检查源码装配，部分使用注入的假 worker 或 app-server；真实进程、权限及 Chrome 状态需另取运行证据。
+拒绝回执目录边界、运行期间 `activeWorkers` 投影、失败结束帧经 runner 到 broker 的隔离，以及暂时性历史错误后的恢复，均不能由上述相近测试名称推定已覆盖；各自最近定义及缺口见对应章节。
 
-## 9. 三个反例与红队挑战
+## 9. 反例与红队挑战
 
 1. **主任务“顺便改一个其他文件”。** 即使 worker 各自遵守范围，波次内父任务改未分配路径也会触发 violation；把该路径放进其他 job 的 ownedUnion 又会削弱作者归因。应检查真实写入者和波次边界，不能把路径哈希当进程审计。
 2. **超时后主任务修好文件就宣布可同步。** 磁盘字节变化不会解除 quarantine；broker 要求 running 清空并持有当前 token、reviewed 和最终哈希，随后读取 adoption 结果。OS 退出仍需独立证据。接管后再改一个字节，资格再次失效。
 3. **UI 的派发项完成，便显示子任务完成。** `subAgentActivity.kind=completed` 只唤醒历史补读；子 turn 的实际终态可能 failed，历史也可能不可用。应挑战重复通知、旧 turn 的迟到 completed 与父结束后的时钟冻结。
+4. **非法 ID 已被拒绝，便认为文件系统没有变化。** 拒绝回执仍使用该 ID 拼接路径；应检查 `../../victim` 一类输入是否写出 `results/`，并分别核查文件变化与最终同步结果。
+5. **磁盘 activeWorkers 为 0，便开始整合。** 该计数没有随每次 worker 启动刷新；应核对内存 running、波次与 token，避免把非实时字段当成空闲证明。
+6. **worker 的 turn.status 为 failed，便认为部分文件已隔离。** 应追踪结束帧是否引发 runner rejection；缺少独立 error/abort 时，当前成功返回路径仍可令 broker 标为 completed。
+7. **历史临时读取失败，等待下一次活动便会恢复。** 同一 child 的 `readDisabled` 会阻止后续补读；应分别检查已保存活动、实时通知与缺失历史，不能由只读视图重新打开推定原生历史重试。
 
-**待验证的重点。** 同文件长队列与 admission 预算的实际时长、忽略 abort 的 worker 与 drain/停止确认的交接、波次内跨所有权路径写入，以及真实 app-server 版本的子线程历史字段。
+**待验证的重点。** 同文件长队列与 admission 预算的实际时长、忽略 abort 的 worker 与 drain/停止确认的交接、波次内跨所有权路径写入，以及真实 app-server 版本的子线程历史字段；新增静态反例还需核查拒绝回执路径、活动计数、协议失败终态与暂时性历史错误。
 这些场景目前用于限制文档承诺和指导验证；本页不将静态边界描述成已复现的产品缺陷。

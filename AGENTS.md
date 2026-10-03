@@ -8,7 +8,8 @@
 2. 按需求查[功能修改索引](docs/architecture/feature-map.md)，只展开相关领域和源码。
 3. 修改、保存、Accept、Undo 读[Auto 修改与撤销](docs/architecture/auto-edit-undo.md)；提交、队列、持久化、刷新读[运行状态与恢复](docs/architecture/run-state-and-recovery.md)。
 4. 本地进程与消息读[Native 执行](docs/architecture/native-execution.md)；模型连接读[Provider 与协议](docs/architecture/providers-and-protocols.md)；其他领域按功能索引进入对应专题。
-5. 涉及旧描述或边界假设时，查[证据与差异登记](docs/architecture/evidence-and-drift.md)及[对抗式审阅记录](docs/architecture/red-team-review.md)。专题覆盖主路径与明确的例外，实际修改仍需核对调用者和测试。
+5. 上下文出站、敏感扫描与只读/可写路径规则读[上下文与治理](docs/architecture/context-and-governance.md)。这些检查有各自的入口与数据范围。
+6. 涉及旧描述或边界假设时，查[证据与差异登记](docs/architecture/evidence-and-drift.md)、[对抗式审阅记录](docs/architecture/red-team-review.md)及[逐节代码核验](docs/architecture/coverage-audit.md)。专题覆盖主路径与明确的例外，实际修改仍需核对调用者和测试。
 
 `docs/agents/`、其他本地历史文档及 `.local-handoff/` 可能只存在于某台机器，不是新克隆的必备依赖。其旧数值、安装步骤和 Known gap 必须重新核对。
 
@@ -33,7 +34,7 @@
 | Content 加载 | 源码纳入由 `extension/entries/content-entry.mjs` 管理，模块依赖通过 registry 或组合根显式传入；两份 manifest 注入生成 bundle。不要手改生成文件。 |
 | Page world | 核对 `pageBridgeClient.PAGE_WORLD_SCRIPTS`、资源公开清单、托管 allowlist、dispatcher、`pageRpcContract` 与测试。 |
 | 身份 | 写操作必须核对捕获的项目及运行归属；身份缺失或不匹配时应停止。现有 page-state RPC 的例外见差异登记。 |
-| 队列 | 已提交执行快照固定；后续 UI 或 Provider 设置变化不能静默改写队列、活动运行或历史。 |
+| 队列 | 已提交执行快照白名单中的字段固定；指令、技能、附件及治理等其他输入的实际捕获时机须读运行状态页，不能把白名单保证推广到全部上下文。 |
 | 空文件 | `""` 是合法内容；缺失、未读取和空白必须区分。现有空白基线限制见差异登记。 |
 | 成功证据 | applied、readback、saved、mirrored、compiled、settled 分别表达；部分失败和保存未知不能合并成完全成功。 |
 | 秘密数据 | 禁止凭据进入浏览器持久状态、运行事件 journal、诊断及日志。本地专用凭据与恢复事务存储按 `providerStore` 的权限及生命周期管理。 |

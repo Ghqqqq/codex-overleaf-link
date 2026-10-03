@@ -75,6 +75,8 @@
 
 ## 运行、队列与共享会话
 
+编辑重发和运行中草稿的 UI 路线另见[界面与加载](ui-and-loading.md)，主入口为 `RunTimelineView.configureEditButton`、`PanelMaintenance.refillComposerForRetry`、runtime `prepareRetryReplacement/persistPanelInputs`。已提交快照、当前草稿和排队项的字段及寿命分别核对。
+
 ### 改提交、取消、队列或运行中追加指导
 
 - 入口：runtime 的 `safeRunTask`、[RunQueueScheduler.createCoordinator](../../extension/src/content/runQueueScheduler.js)、[ActiveTurnControl](../../extension/src/content/activeTurnControl.js)。
@@ -97,6 +99,8 @@
 - 最近测试：[dashboardSessions](../../test/dashboardSessions.test.js)、[sessionManagement](../../test/sessionManagement.test.js)、[sessionPersistenceAccountIsolation](../../test/sessionPersistenceAccountIsolation.test.js)。
 
 ## 快照、镜像、写回与 Undo
+
+展示差异与执行补丁分别由 Native [diffEngine.computeLineDiff](../../native-host/src/diffEngine.js) 和 [textPatch.computeTextPatches](../../native-host/src/textPatch.js) 生成；page `applyTextPatches` 负责检查与应用。修改差异粒度或坐标时，先读[Auto 修改与撤销](auto-edit-undo.md)及 [diffEngine](../../test/diffEngine.test.js)、[textPatch](../../test/textPatch.test.js) 测试定义。
 
 ### 改项目读取、ZIP 回退或 OT 预热镜像
 
@@ -143,6 +147,15 @@
 - 状态 owner：Native 风格配置带 revision 和版本 bundle；[writingStyleProfile](../../native-host/src/writingStyleProfile.js) 校验生成结构；[localSkills](../../native-host/src/localSkills.js) 管理本地技能。
 - 必须联动：[referenceProjects](../../extension/src/page/referenceProjects.js)、[writingStyleEvidence](../../native-host/src/writingStyleEvidence.js)、[runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js)、[codexPromptAssembly](../../native-host/src/codexPromptAssembly.js)，以及全局 skill 开关。
 - 最近测试：[writingStyleLimits](../../test/writingStyleLimits.test.js)、[localSkills](../../test/localSkills.test.js)、[runExecutionSnapshot](../../test/runExecutionSnapshot.test.js)。
+
+## 上下文扫描与写入治理
+
+领域说明：[上下文与治理](context-and-governance.md)。
+
+- 入口：runtime `runSensitivePreflight`、[SensitiveScan](../../extension/src/shared/sensitiveScan.js)、[mirrorSensitiveScan](../../native-host/src/mirrorSensitiveScan.js)；写回时走 [WritebackPlan](../../extension/src/content/writebackPlan.js) 与 [GovernanceRules](../../extension/src/shared/governanceRules.js)。
+- 状态 owner：[ProjectSettingsCoordinator](../../extension/src/content/projectSettingsCoordinator.js) 保存项目规则；扫描发现、跳过项和审计摘要有各自的消费范围。
+- 必须联动：首次与业务重试的实际输入、[codexPromptAssembly](../../native-host/src/codexPromptAssembly.js)、写入类型及来源/目标路径、[AuditRecords](../../extension/src/shared/auditRecords.js)。规则不等同模型本地文件权限，零发现不等同全部材料已扫描。
+- 最近测试：[sensitiveScan](../../test/sensitiveScan.test.js)、[governanceRules](../../test/governanceRules.test.js)、[taskRunner](../../test/taskRunner.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js)。
 
 ## 安装、更新与发布
 

@@ -18,7 +18,7 @@ Auto 写入和 Undo 的页面操作链见 [Auto 编辑与撤销](auto-edit-undo.
 
 | 概念 | 含义与保存位置 | 修改时的约束 |
 |---|---|---|
-| `accountScopeId` | 派生的账号作用域，运行记录保存为 `runAccountScopeId` | 缺少身份时，涉及账号隔离的持久化拒绝提交 |
+| `accountScopeId` | 派生的账号作用域；活动运行句柄捕获为 `runAccountScopeId`，持久会话记录保存 `accountScopeId` | 缺少身份时，涉及账号隔离的持久化拒绝提交 |
 | `projectId` / `runProjectId` | 当前页面项目 / 提交时捕获的运行项目 | 页面切换后，后者继续指向原项目 |
 | `sessionId` | 插件对话容器，包含草稿、历史、runs、pendingInputs | 切换可见会话不改变已有 run 的归属 |
 | `runId` / `recordId` | 一次插件任务的记录身份 | 重试、队列提升和恢复需要明确记录边界 |
@@ -31,6 +31,11 @@ Auto 写入和 Undo 的页面操作链见 [Auto 编辑与撤销](auto-edit-undo.
 generation 类似取号单上的批次：同一个项目重新加载后，旧批次返回的数据仍需重新判定。
 实现中有 scoped transaction 的 generation，也有 `spaRouteGeneration`；两者承担相邻守卫职责，不能直接互换。
 入口为 [contentRuntime.js](../../extension/src/content/contentRuntime.js) 的 `deriveAccountScopeId`、`startRunView`、`onSpaRouteChange`，及 [scopedPersistenceTransaction.js](../../extension/src/shared/scopedPersistenceTransaction.js) 的 `beginHydration/isCurrent`。
+
+`startRunView` 在新建记录及 `currentRunView` 上捕获 `runAccountScopeId`，供活动运行和导航后结算使用。
+该字段未进入 [sessionState.js](../../extension/src/shared/sessionState.js) 的 `normalizeRun/compactRunForStorage`，也未进入 [storageDb.js](../../extension/src/shared/storageDb.js) 的 run 压缩白名单。
+持久账号身份位于 `StorageDb.buildSessionRecord` 生成的会话外层；重载后应核对所属会话及提交 scope，不能假定每条 run 都保留账号字段。
+[postNavigationSettlementWiring.test.js](../../test/postNavigationSettlementWiring.test.js) 检查 runtime 源码中的捕获和参数传递；[sessionPersistenceAccountIsolation.test.js](../../test/sessionPersistenceAccountIsolation.test.js) 使用模拟存储检查账号过滤，二者各自覆盖不同边界。
 
 | 状态领域 | 权威所有者 | 消费者与限定 |
 |---|---|---|
@@ -74,17 +79,21 @@ flowchart TD
 
 `runTask` 先保存提交时的面板字段、附件、选区和指令，再等待 Provider、写作风格等异步准备。
 准备完成后重新核对账号和项目，构造或解析 `executionSnapshot`。
-队列任务从原 payload 恢复快照，不能重新读取当前控件作为该任务的执行选择。
+队列任务从原 payload 恢复快照，快照白名单内的字段不重新取当前控件值。
 普通运行随后还会检查写入能力、准备完整或受限项目快照，再通过 `buildCodexRunParams` 形成 Native 参数。
 
-快照至少覆盖 mode、Provider ID/revision、model、reasoning、speed、自动编译、Track、focusFiles；选区与写作风格也进入当前快照模型。
+当前快照的执行字段为 mode、Provider ID/revision、model、reasoning、speed、自动编译、Track、focusFiles、选区和写作风格，另含 schemaVersion、capturedAt、source 等元数据。
 schema 与入口见 [runExecutionSnapshot.js](../../extension/src/shared/runExecutionSnapshot.js)，内部归一化见 [runExecutionSnapshotCodec.js](../../extension/src/shared/runExecutionSnapshotCodec.js)。
+队列提升调用 `runTask({ queuedInput })` 时，仍会读取当时的 custom instructions、技能加载设置、composer 附件及技能调用，并传给运行参数；`buildCodexRunParams` 还读取当时启用的插件技能 ID。
+这些输入未包含在队列执行快照中。入队入口拒绝附件，也不能据此推定提升时不会读取后来留在 composer 中的附件。
+真实装配见 [contentRuntime.js](../../extension/src/content/contentRuntime.js) 的 `initializeRunQueueScheduler/runTask/buildCodexRunParams`；这是当前字段来源的静态结论，尚未据此复现真实队列误用输入的场景。
 Provider revision 标识同一个服务配置的版本；排队后配置被修订或删除，执行校验可报冲突或不可用，避免悄悄换用后来的配置。
 浏览器执行入口是 `RunExecutionSnapshot.resolveForExecution`；`RunInputQueue.claimNext` 消费校验结果，`RunQueueScheduler.scheduleOne` 在冲突时保留输入并暂停。
 Native 还会在 [providerRuntime.js](../../native-host/src/providerRuntime.js) 的 `resolveRunProvider/resolveRunProviderForRun` 重新核验，调用方为 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js)。模型目录查询 `resolveProviderModels` 与实际执行校验分别承担职责。
 快照固定配置身份和选择，不保存完整旧 Provider 配置或凭据。原 Provider 被修改或删除时，旧任务可能被拒绝；不能承诺它始终可按旧配置启动。
 [projectProviderSelection.js](../../extension/src/content/projectProviderSelection.js) 的 `commit` 更新未来默认值与会话线程绑定，保留已有队列及运行历史。
 **维护目标**：新增运行选项同时检查 capture、queue payload、clone、持久化压缩和 Native 消费端，避免某一条路径丢失字段。
+若扩大“提交后固定”的范围，应将上述额外输入纳入同一链路并补验证。[runExecutionSnapshot.test.js](../../test/runExecutionSnapshot.test.js) 覆盖快照字段；[runInputQueueSnapshotRegression.test.js](../../test/runInputQueueSnapshotRegression.test.js) 覆盖队列压缩，其启动检查采用源码字符串断言，不能证明全部输入已冻结。
 
 ### 3.2 队列状态与 claim
 
@@ -164,16 +173,25 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 `sendTrackedCodexRun` 创建 request 后调用 [activeTurnControl.js](../../extension/src/content/activeTurnControl.js) 的 `bind`，通过 run-owner port 关联原项目、session 和 run。
 后台 journal 留存有限事件及 owner 状态；事件序号用于避免恢复时重复追加。
 后台 owner 连接与 `ownerLost` 标记入口在 [background.js](../../extension/src/background.js) 的 run-owner port 处理和 `interruptOwnerlessRun`；client 的绑定需要与后台判定一同检查。
-`normalizeLoadedPanelState` 在共享历史模式保留其他活页拥有的 running 记录；传统站点本地路径允许恢复中断状态。
+`normalizeLoadedPanelState` 在共享历史模式关闭通用的 running→interrupted 恢复，避免把其他活页拥有的运行当作中断；传统站点本地路径允许该恢复。
 `recoverInterruptedRunJournals → ActiveTurnControl.recoverJournals` 在共享模式设置 `requireOwnerLost: true`。
 Native terminal journal 可能早于 owner 页面的写回和存储完成，旁观页不能据此提前替它结算。
 owner 丢失后，恢复流程补齐未读取事件、记录 `interruptedDraft`、暂停该会话队列，等待 `saveState()` 返回后才 acknowledge journal。
 这里保证调用顺序；普通保存仍存在第 4.3 节所述错误捕获和紧凑 fallback，不能据此推定完整历史已获得耐久确认。
 恢复保留历史证据；重新执行需经过新的运行入口，不能把 journal 回放当作重新启动原 Native 请求。
-回归入口见 [crossTabRuntimeRegression.test.js](../../test/crossTabRuntimeRegression.test.js) 和 [activeTurnControl.test.js](../../test/activeTurnControl.test.js)。
+回归入口见 [crossTabRuntimeRegression.test.js](../../test/crossTabRuntimeRegression.test.js) 和 [activeTurnControl.test.js](../../test/activeTurnControl.test.js)。前者提取 hydration 函数、调用真实合并 helper 并模拟 journal 返回，未装配真实后台端口及共享 IndexedDB 服务。
+
+共享加载另有两类依据已持久证据修复旧状态的路径，无需 `ownerLost`：
+
+- [sessionState.js](../../extension/src/shared/sessionState.js) 的 `recoverSettledRunningRun` 要求有效 `finishedAt` 和末尾可见 completed/failed report；若 report 的解析时间晚于结束时刻则拒绝修复。该比较未单独拒绝无效 report 时间，不能概括为两端时间均已严格校验。`normalizeLoadedPanelState` 通过 `recoverSettledRuns: true` 启用它。
+- `recoverRecordedRunFailure` 由 `normalizeRun` 调用，依据严格匹配的父运行后处理失败事件修复 failed 状态；事件类型、活动元数据、作用域及时间均参与检查，普通工具失败或子代理错误不足以触发修复。
+
+这两条路径修正“证据已终结、标签仍为 running”的记录；journal 恢复负责 owner 丢失后的中断草稿。不能把两者统一解释为必须 ownerLost 才能改变运行状态。
+最近定义为 [settledRunRecovery.test.js](../../test/settledRunRecovery.test.js) 和 [recordedRunFailureRecovery.test.js](../../test/recordedRunFailureRecovery.test.js)：前者结合归一化行为与源码装配断言，后者检查事件识别及 StorageDb 投影往返，均未执行真实跨页恢复。
 
 [sharedSessionViewSync.js](../../extension/src/content/sharedSessionViewSync.js) 订阅跨页面变化，只在无活动运行、无保存、无本地草稿或未持久修改时刷新。
-刷新前后核对 scope、generation、本地版本与签名；只读 snapshot 被采用后才更新 merge baseline。
+刷新前后核对 scope、generation、本地版本与签名。守卫通过后先调用 `adoptSharedSessionBaseline(records)`，再调用 `apply` 归一化 state 并渲染；单独读取 snapshot 不更新 baseline。
+baseline 是下次三路合并的共同底稿。当前 `apply` 抛错后仅通知错误，未回滚已推进的 baseline，因而这两个步骤没有异常原子性保证；真实视图失败后的影响仍待验证。
 这一区分影响“另一个标签页的历史刷新覆盖了输入”的定位：先查被动刷新守卫，再查保存与三路合并。
 
 ### 5.2 离开项目后的 detached settlement
@@ -202,8 +220,20 @@ legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；�
 
 重载后，SessionState/StorageDb 归一化记录；`SettlementFacts.projectRunSettlement` 提供基础能力，`RunResultActions.projectUndoAvailability` 进一步检查实际材料。
 [runTimelineView.js](../../extension/src/content/runTimelineView.js) 的 `configureUndoButton/configureAcceptButton` 仅消费投影，不应补造恢复身份或修改持久证据。
-纯资源写入、缺少创建检查点、forkSnapshot 和已接受/撤销记录都有不同展示规则，见 [runResultActions.js](../../extension/src/content/runResultActions.js)。
+纯资源写入、缺少创建检查点、forkSnapshot 和已接受/撤销记录都有不同展示规则，见 [runResultActions.js](../../extension/src/content/runResultActions.js)；分叉标记经过主存储路径的保留差异见下节。
 相关已有定义为 [reviewingUndoPersistence.test.js](../../test/reviewingUndoPersistence.test.js)、[runTimelineUndoAvailability.test.js](../../test/runTimelineUndoAvailability.test.js) 和 [undoNoticeRecovery.test.js](../../test/undoNoticeRecovery.test.js)。
+
+### 6.1 会话分叉与恢复材料隔离
+
+分叉入口由 `contentRuntime` 装配到 `RunResultActions.configureForkButton`，调用 [sessionForkController.js](../../extension/src/content/sessionForkController.js) 的 `forkRunFromNode`。
+它要求源运行已离开 running 且具有 turn ID；线程来源依次为运行自身 `codexThreadId`、与该 turn 匹配的 interruptedDraft 线程、旧记录的 session 线程回退。Provider 切换后的 session 线程不应覆盖已有的运行来源。
+调用 `codex.thread.fork` 成功后，复制到选定 run 为止的历史，生成新的 run ID 和 session，绑定返回的新线程并清空队列。
+`copyRunSnapshot` 标记 `forkSnapshot`、记录来源并剥离附件、应用及 Undo 材料、Native 请求和队列绑定；后续 SessionState 归一化还排除该快照的重试恢复材料。
+控制器随后等待普通 `saveState`；若调用抛错，则恢复先前 state，并尝试 `codex.history.clearPlugin` 清理新线程。普通保存仍受第 4.3 节 fallback 和错误处理限定，不能据 Promise 返回推定分叉记录已完整持久化。
+
+**已知 schema 差异**：`SessionState.compactRunForStorage` 保留 `forkSnapshot/forkSourceRunId`，但主保存经过 `ScopedPersistencePanelState.persistPanelState → StorageDb.buildSessionRecord`，其 run 压缩白名单未保留这两个字段，会话白名单也未保留 `forkedFromSessionId/forkedFromRunId`。
+`RunResultActions.configureForkButton` 与 Timeline 的 Undo/Accept 展示依赖 `forkSnapshot`。因此内存中的分叉限制不能直接推广为共享库重载后的相同投影；当前只确认字段裁剪及消费者依赖，未复现真实按钮行为或证明动作材料被恢复。
+[sessionForkController.test.js](../../test/sessionForkController.test.js) 覆盖复制剥离、线程来源优先级及来源线程经两类投影后的保留；它使用模拟 Native 与保存函数，现有往返断言未检查上述分叉标记。后续修改应分别核对控制器、两套 schema、历史来源及按钮消费者。
 
 ## 7. 修改路由与最窄验证
 
@@ -211,12 +241,16 @@ legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；�
 
 | 改动 | 主改入口与联动消费者 | 最窄命令 | 检查条件 |
 |---|---|---|---|
-| 提交配置 | RunExecutionSnapshot、runtime capture、queue codec、Provider 默认值 | `node --test test/runExecutionSnapshot.test.js test/projectProviderSelection.test.js test/runQueueSchedulerArchitecture.test.js` | queued/historical tuple 不随设置漂移，revision 冲突保留输入并暂停；Native 二次校验另见 providerSessionBinding/providerReliability 测试 |
+| 提交配置 | RunExecutionSnapshot、runtime capture、queue codec、Provider 默认值 | `node --test test/runExecutionSnapshot.test.js test/projectProviderSelection.test.js test/runQueueSchedulerArchitecture.test.js` | 快照白名单 tuple 不随设置漂移，revision 冲突保留输入并暂停；提升时读取的额外输入见 3.1；Native 二次校验另见 providerSessionBinding/providerReliability 测试 |
 | 队列提升 | RunInputQueue、RunQueueScheduler、scoped queue policy | `node --test test/runQueueSchedulerArchitecture.test.js test/runQueueSchedulerDurability.test.js` | 检查 claim 保存调用顺序与拒绝分支；事务前早退例外另见 4.3，不能推定全部失败均保留队列 |
 | 作用域提交 | coordinator、transaction、browser adapter、SessionPersistence | `node --test test/scopedPersistenceTransaction.test.js test/sessionPersistenceAccountIsolation.test.js` | stale view、CAS、fence/receipt、账号隔离与恢复 |
-| 刷新恢复 | normalizeLoadedPanelState、ActiveTurnControl、shared history | `node --test test/crossTabRuntimeRegression.test.js test/activeTurnControl.test.js` | live owner 不被旁观页结算，ownerLost 才恢复并暂停 |
+| journal 恢复 | normalizeLoadedPanelState、ActiveTurnControl、shared history | `node --test test/crossTabRuntimeRegression.test.js test/activeTurnControl.test.js` | 共享 journal 回放要求 ownerLost 并暂停队列；已有终态修复另走下行 |
+| 旧终态修复 | SessionState 两类恢复 helper、runtime hydration、StorageDb | `node --test test/settledRunRecovery.test.js test/recordedRunFailureRecovery.test.js` | 识别已持久终态证据，同时保留真正活跃运行；不依赖 ownerLost |
 | 导航后结算 | detached coordinator、PostNavigationSettlementPersistence | `node --test test/postNavigationSettlementPersistence.test.js test/postNavigationSettlementWiring.test.js` | 只写原账号/项目/session/run，内层失败向外传播 |
 | Undo 重载能力 | StorageRunActions、SettlementFacts、RunResultActions、timeline | `node --test test/reviewingUndoPersistence.test.js test/runTimelineUndoAvailability.test.js` | 材料可保存，重载按钮只展示实际可执行能力 |
+| 会话分叉 | SessionForkController、SessionState/StorageDb schema、结果按钮 | `node --test test/sessionForkController.test.js` | 来源线程及材料剥离有定义；分叉标记经过主存储后的保留缺口需另补用例 |
+
+上述队列测试替换保存和启动依赖；scoped transaction 测试使用内存 adapter；导航后结算行为测试替换 coordinator/StorageDb，wiring 测试检查源码；Undo 材料测试直接调用压缩 helper，Timeline 测试使用模拟按钮。它们适合定位各层契约，不能替代真实端口、IndexedDB、DOM 及跨页时序的组合验证。
 
 **未验证**：真实浏览器关页与 worker 重启的时序、跨域同账号迁移、存储配额耗尽后的完整恢复、外部进程取消速度、Overleaf 实际 Undo 的效果。
 这些场景需按 [Auto 编辑与撤销](auto-edit-undo.md) 的端到端链准备证据；静态源码和测试定义不能替代实际验收。

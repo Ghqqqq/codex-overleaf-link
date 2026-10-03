@@ -16,11 +16,19 @@ Native Host 是浏览器启动的本机 Node 进程，负责消息接入、镜�
 | Content → 扩展后台 | [nativeChannel.js](../../extension/src/content/nativeChannel.js) 的 `create/sendNativeTracked` | `contentRuntime.sendTrackedCodexRun` 绑定插件运行及 requestId |
 | 后台 → Native Host | [background.js](../../extension/src/background.js) 的 `sendNativeRequest/ensurePort` | `pending` 路由回应；运行 journal 保存有限恢复投影 |
 | Native 字节入口 | [index.js](../../native-host/src/index.js) 的 `handleDecodedMessage/writeResponse` | 同一 stdio 通道接受多个异步请求 |
+| CLI 发现与运行环境 | [nativeEnvironment.js](../../native-host/src/nativeEnvironment.js) 的 `buildNativeRuntimeEnv/refreshCodexRuntimeEnv`；[codexRuntimeIdentity.js](../../native-host/src/codexRuntimeIdentity.js) | 启动发现及特定请求前刷新；每次请求保留自己的环境快照 |
+| Codex 配置与历史目录 | [codexHome.js](../../native-host/src/codexHome.js) 的 `buildCodexHomeEnv/preparePluginCodexHome` | app-server 使用插件 Codex home；与项目镜像目录分别管理 |
 | 传输信封 | [nativeTransportEnvelope.js](../../native-host/src/nativeTransportEnvelope.js) | 汇聚帧编码、方法配额、结果预算及超限兜底 |
 | 方法与运行控制 | [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js) 的 `handleRequest/handleCodexRun` | 锁、controller、活动 turn 控制；[taskRunner.js](../../native-host/src/taskRunner.js) 仅转发 exports |
 | 工作区到 agent 结果 | [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) 的 `runCodexSession` | 快照/镜像、提示词、worker 收束、差异收集 |
 | app-server RPC 与终止 | 同文件 `runCodexAppServerProcess`；[codexSessionTiming.js](../../native-host/src/codexSessionTiming.js) | `pending` 为这一子进程自己的 RPC 表，与后台表分开 |
 | 退出未确认的隔离 | [processStopBarrier.js](../../native-host/src/processStopBarrier.js) 的 `record/isBlocked` | 内存记录及项目镜像旁的持久屏障 |
+
+`index` 启动时通过 `buildNativeRuntimeEnv` 合并路径并发现 CLI；`handleRequest` 在配额检查后、处理 `bridge.ping/codex.run/codex.models/codex.thread.fork` 前调用 `refreshCodexRuntimeEnv`。
+刷新区分显式固定路径与按版本选择候选，返回当前请求的环境快照；后续请求重新发现 CLI 不会改写已有运行的该快照。运行时版本与路径的证据由 `buildCodexRuntimeEvent` 提供，不能只按终端中的 `codex` 路径判断实际子进程。
+
+`runCodexAppServerProcess` 启动前调用 `buildCodexHomeEnv`，默认把子进程 `CODEX_HOME` 指向插件目录；`preparePluginCodexHome` 准备配置、认证副本及技能，插件会话历史与用户全局历史分别管理。
+显式配置使 user home 与 plugin home 为同一路径时，准备函数有提前返回例外；不能将默认目录隔离推广到全部环境配置。目录选择与技能开关联动见[写作风格与技能](writing-style-and-skills.md)，排查续接应同时核对 CLI 身份与 Codex home。
 
 ## 2. 两层 RPC 的调用链
 
@@ -32,7 +40,7 @@ sequenceDiagram
     participant A as Codex app-server
     C->>B: native-request {id, method: codex.run, params}
     B->>N: Native Messaging 帧
-    N->>N: 配额、停止屏障、项目锁、Provider、快照
+    N->>N: 配额、CLI 环境、停止屏障、项目锁、Provider、快照
     N->>A: spawn app-server --listen stdio://
     N->>A: initialize → initialized
     N->>A: skills 隔离 → thread/start 或 thread/resume
@@ -64,10 +72,14 @@ Native 的 `emitCodexEvent` 创建 `type/title/status/detail/timestamp`；单调
 ## 3. codex.run 的准入与结果收集
 
 `handleRequest` 先调用信封的 `getRequestQuotaViolation`；超额返回 `native_request_quota_exceeded`，再进入具体方法。
-`handleCodexRun` 检查 Codex 可发现性，派发运行时身份事件，获取项目锁，登记 controller，再解析执行 Provider。
+`handleCodexRun` 检查 Codex 可发现性，派发运行时身份事件，获取项目锁并创建 controller；仅当 `request.id` 为真值时登记三个活动索引，再解析执行 Provider。
 Provider revision、地址披露、模型和 Auto 协议协商由 `providerRuntime.resolveRunProviderForRun` 决定，详见 [Provider 与协议](providers-and-protocols.md)。
-完整快照或聚焦部分快照须通过 `hasRunnableProjectSnapshotEvidence`；复用镜像另查 freshness，OT 聚焦复用另查覆盖并拒绝 overlays。
+普通非 `useExistingMirror` 请求的完整快照或聚焦部分快照须通过 `hasRunnableProjectSnapshotEvidence`；`useExistingMirror` 路径另查 freshness，OT 聚焦复用另查覆盖并拒绝 overlays。
 技能安装和风格生成有独立入口例外，不能把普通项目快照前置条件套到所有运行。
+
+`Known gap / 静态参数边界`：`handleCodexRun` 仅在 `useExistingMirror` 路径把 `skipMirrorSync` 设为 true，其余路径原样传递 params；[runCodexSession](../../native-host/src/codexSessionRunner.js) 独立按 `skipMirrorSync` 跳过同步。
+因此普通 Native 请求携带 `useExistingMirror:false、skipMirrorSync:true` 及满足准入的完整快照时，可以使用原镜像，未经过上述 freshness 检查，传入快照也不会同步。后台 `sanitizeNativeRequest` 只剥离兼容性字段，未移除此参数。
+常规 [contentRuntime.js](../../extension/src/content/contentRuntime.js) 在 `runSkillInstallerTask` 显式设置该字段；此反例针对直达 Native 的参数组合，未证明普通 UI 已触发旧镜像执行。快照获准与快照实际进入镜像须分别判断。
 
 `runCodexSession` 的普通项目顺序如下：
 
@@ -97,7 +109,7 @@ Provider revision、地址披露、模型和 Auto 协议协商由 `providerRunti
 每次 `runCodexAppServerSession` 准备 Provider launch，创建 app-server 进程，并在 finally 关闭本次 Provider 桥。
 传入 `threadId` 时执行 `thread/resume`，失败返回 `thread_resume_failed`；该路径不自动新建线程冒充续接成功。
 未传入时调用 `thread/start`，拿到线程后调用 `turn/start`；不支持 reasoning summary 的特定错误只重试该请求并移除 summary。
-该兼容重试与外层整个 `codex.run` 的重放不同，修改时必须分别评估副作用。
+该兼容重试、后台断连重放及 Content 业务恢复分别拥有入口和条件；三层范围见第 6 节。
 
 `publishActiveTurnControl` 取得 thread 与 turn 后仅发布一次冻结 control，发出 `codex.turn.bound`；其 `steer` 调用 `turn/steer`。
 `handleCodexSteer` 用 requestId 优先、projectKey 兜底查找活动 entry，控制尚未就绪报 `codex_turn_not_ready`。
@@ -121,12 +133,15 @@ Provider revision、地址披露、模型和 Auto 协议协商由 `providerRunti
 | 机制 | 当前作用 | 不能推出的保证 |
 | --- | --- | --- |
 | `activeProjectLocks` | `acquireProjectLock/releaseProjectLock` 用 token 防止旧 finally 释放新锁 | 同一进程的 Map 不能证明跨 Native 进程互斥 |
-| `activeRunControllers/activeRunEntries/activeRunByProject` | requestId 或 projectKey 定位普通 codex.run 的取消与 steer | 登记表不包含所有本机子进程 |
+| `activeRunControllers/activeRunEntries/activeRunByProject` | 对 `request.id` 为真值的普通 codex.run，以 requestId 或 projectKey 定位取消与 steer | 无真值 ID 的运行不进入三个索引；登记表也不包含所有本机子进程 |
 | `processStopBarrier` | 退出未确认后阻止特定入口继续修改该项目 | 屏障不等于关闭操作系统中的所有相关进程 |
 
 `resolveProjectKey` 规范化项目字符串，并有 `unknown` 兜底；它提供锁索引，不能替代账号、页面与运行身份认证。
 `mirror.sync/patchFiles/confirmWriteback/invalidate` 也使用项目锁；status/scan 等查询和下述停止屏障各有独立准入范围。
 `handleCodexRun` 在 finally 移除所属登记并释放 token 锁；异常停止时即使锁释放，持久屏障仍可独立阻止下次准入。
+
+`Known gap / 静态参数边界`：Native `getRequestQuotaViolation` 限制字符串 ID 长度，却未要求 ID 存在；缺失 ID 或 `id:0` 的请求仍可持锁执行，但其 controller 不登记，按项目取消、steer 及 `abortAllActiveOperations` 都无法通过活动表找到它。
+浏览器 [nativeChannel.js](../../extension/src/content/nativeChannel.js) 通常生成 UUID，后台 `sendNativeRequest` 还调用 [nativeRequestIdentity.js](../../extension/src/shared/nativeRequestIdentity.js) 的 `resolve` 补齐或校验 ID；显式 `id:0` 仍按有限数字保留。这些入口行为不能作为 Native 自身要求真值 ID 的证据。本轮仅核实参数与登记控制流，未复现常规浏览器运行失去登记。
 
 ### 取消调用链与回执强度
 
@@ -137,6 +152,7 @@ Native `handleCodexCancel` 命中 controller 后调用 abort，并返回 `{cance
 由此可写为 \(sent \not\Rightarrow cancelled \not\Rightarrow exited\)：各箭头左侧证据不足以推出右侧事实。
 
 无活动 controller 时，`force:true` 仅在项目未被 stop barrier 阻断、且内存锁存在时删除锁；它不执行额外 OS kill。
+“没有登记 controller”不能证明工作已经结束：上述无真值 ID 的运行可继续执行，而 force 分支释放其锁；使用同一项目锁的镜像操作也有独立寿命。锁 token 仅防止旧 finally 删除新锁，不能终止仍在进行的操作。
 `Known gap`：`forceCancelStuckTaskForCurrentProject` 读取 `cancelled/lockReleased` 来生成文案，但正常后台取消通道只返回 `sent`。
 因此该按钮的文字与调用成功均不足以证明 Native 已释放锁，需核对原运行终态、后续准入及实际进程证据。
 
@@ -171,7 +187,20 @@ app-server 的绝对 timeout 由 `CODEX_OVERLEAF_CODEX_TIMEOUT_MS` 可选开启�
 重复读取守卫由 `readProgressGuard` 先 steer，再在继续无进展时触发相同 fail 停止路径；活跃输出不能自动证明任务有进展。
 Provider HTTP 空闲/总预算属于另一层，见 [Provider 与协议](providers-and-protocols.md)，不能与 agent watchdog 相加后宣称统一超时。
 
-后台 `getNativeRetryClass/canRetryNativeRequest` 的当前分类如下；重连仅允许一次，收到终态后不再重试。
+### 三层重试及业务恢复
+
+| 层 | 实际入口与触发 | 重新执行的范围 |
+| --- | --- | --- |
+| app-server RPC | `startTurnWithSummaryFallback` 收到特定 reasoning summary 不支持错误 | 同一进程和线程内移除 summary，再发一次 `turn/start` |
+| 后台传输 | [background.js](../../extension/src/background.js) 的 `getNativeRetryClass/canRetryNativeRequest` | 按下表将安全请求重连重发一次；`codex.run` 禁止静默重放 |
+| Content 业务恢复 | [contentRuntime.js](../../extension/src/content/contentRuntime.js) 的 `runTask/buildCodexRunParams/sendTrackedCodexRun` | 收到已知错误后重建参数，再派发新的 Native 请求 |
+
+普通 `runTask` 收到 `mirror_stale` 且本次使用 `useExistingMirror` 时，先重新获取项目快照并调用 [otWarmMirror.js](../../extension/src/content/otWarmMirror.js) 的 `prepareMirrorStaleRetry`；准备成功后关闭镜像复用、清除 overlays 与 OT warm-start 标记，以返回的聚焦限制重发。准备失败会结束该路径。
+收到 `thread_resume_failed` 时，`showThreadResumeFailedPrompt` 提供选择；选择新线程后，先清空会话内存中的 `codexThreadId`，再在持久会话记录存在时保存空值，然后携带空线程 ID 重发。其他选择记录取消并返回；持久化异常也可能阻止重发，不能从弹窗选择推定新线程已经创建。
+两条路径均重新调用 `sendTrackedCodexRun`，经过兼容性及当前取消检查，并绑定新 requestId。后台禁止断连重放与这些显式业务分支可以同时成立；修改参数捕获时须检查初次派发及两条恢复分支。
+风格生成另有 [codexModelRecovery.js](../../native-host/src/codexModelRecovery.js) 的 `createRecoveringStyleRunner` 可重选较新 CLI，该策略仅供隔离的风格生成使用，见[写作风格与技能](writing-style-and-skills.md)，不能推广至普通项目任务。
+
+后台传输层的当前分类如下；安全请求重连仅允许一次，收到终态后不再重试。
 
 | 方法 | 分类与动作 |
 | --- | --- |
@@ -211,11 +240,30 @@ Base64 字节数约为 \(4\lceil n/3\rceil\)，外面还有 JSON 与 diff/patch�
 | 改动意图 | 必查联动 | 既有测试定义 |
 | --- | --- | --- |
 | 新 Native 方法/请求身份 | owner、index 路由、compatibility、后台重试分类、quota、content consumer | [taskRunner.test.js](../../test/taskRunner.test.js)、[nativeRequestIdentity.test.js](../../test/nativeRequestIdentity.test.js) |
+| CLI 选择与 Codex home | index 环境初始化、请求前 refresh、runtime identity、runner home、技能开关 | [nativeEnvironment.test.js](../../test/nativeEnvironment.test.js)、[codexRuntimeIdentity.test.js](../../test/codexRuntimeIdentity.test.js)、[codexHome.test.js](../../test/codexHome.test.js) |
 | 流事件或结果形状 | producer、信封、background journal、content reducer/时间线 | [nativeTransportEnvelope.test.js](../../test/nativeTransportEnvelope.test.js)、[nativeTransportEnvelopeFallback.test.js](../../test/nativeTransportEnvelopeFallback.test.js)、[streamEvents.test.js](../../test/streamEvents.test.js) |
-| 进程取消/无进展 | runtime controller、runner fail、timing、stop barrier、页面取消和状态投影 | [readProgressGuard.test.js](../../test/readProgressGuard.test.js)、[nativeDispatchCancellation.test.js](../../test/nativeDispatchCancellation.test.js)、[runCancellationLifecycle.test.js](../../test/runCancellationLifecycle.test.js) |
-| 断连/重连 | background pending/port、Native disconnect、owner/journal 恢复 | [backgroundNativeError.test.js](../../test/backgroundNativeError.test.js)、[activeTurnControl.test.js](../../test/activeTurnControl.test.js) |
+| 进程取消/无进展 | runtime controller、runner fail、timing、stop barrier、页面取消和状态投影 | [projectLock.test.js](../../test/projectLock.test.js)、[readProgressGuard.test.js](../../test/readProgressGuard.test.js)、[nativeDispatchCancellation.test.js](../../test/nativeDispatchCancellation.test.js)、[runCancellationLifecycle.test.js](../../test/runCancellationLifecycle.test.js) |
+| 断连/重连 | background pending/port、Native disconnect、owner/journal 恢复 | [backgroundNativeError.test.js](../../test/backgroundNativeError.test.js)、[activeTurnControl.test.js](../../test/activeTurnControl.test.js)、[crossTabRuntimeRegression.test.js](../../test/crossTabRuntimeRegression.test.js) |
+| 镜像或线程业务恢复 | runTask 两条错误分支、参数重建、线程清空持久化、新请求绑定及取消检查 | [p0ProductExperience.test.js](../../test/p0ProductExperience.test.js)、[taskRunner.test.js](../../test/taskRunner.test.js)、[nativeDispatchCancellation.test.js](../../test/nativeDispatchCancellation.test.js) |
 | thread/turn/最终回答 | start/resume 参数、事件 scope、steer 绑定、assistant item 完成规则 | [codexSessionRunner.test.js](../../test/codexSessionRunner.test.js)、[readProgressGuard.test.js](../../test/readProgressGuard.test.js) |
 | 配额或 diff 体积 | quota、响应预算、资产分块、不支持项呈现 | [nativeQuotas.test.js](../../test/nativeQuotas.test.js)、[codexSessionRunner.test.js](../../test/codexSessionRunner.test.js)、[nativeAssetTransfer.test.js](../../test/nativeAssetTransfer.test.js) |
+
+### 测试的真实入口与替换边界
+
+下表说明既有定义能够提供哪一层证据；未执行这些测试，也不能把不同 harness 的结果拼接成一次完整链路验收。
+
+| 测试范围 | 实际进入的实现 | 替换依赖及未覆盖部分 |
+| --- | --- | --- |
+| `nativeDispatchCancellation`；`nativeRequestIdentity` 的后台顺序断言 | 读取源码并匹配检查顺序；Identity helper 另有直接调用 | 未装配 Content → Background → Native 取消链 |
+| `runCancellationLifecycle` | 提取取消报告函数到 VM，直接调用 session/storage/activity 投影 | UI 依赖为 stub，未启动 Native 或页面写入 |
+| `projectLock`；`taskRunner` 的 Codex 运行用例 | 调用 `handleRequest`，部分使用真实临时镜像 | 替换 runner 与 CLI 环境发现；锁释放不能证明真实进程退出。`task.run` 的外部 agent 用例另行启动夹具进程 |
+| `codexSessionRunner`；`streamEvents` | 前者包含镜像/结果测试与合成 app-server 测试；后者注入 `executeCodex` 发事件 | 多数结果测试替换模型执行；合成协议进程也不能证明真实 Codex 协议兼容 |
+| `readProgressGuard` | 直接调用 runner，启动合成 app-server；部分场景创建后代进程 | 绕过 Native index/runtime 登记；Windows taskkill 用注入函数更新 child 状态；未贯通停止屏障落盘与重启 |
+| `backgroundNativeError`；`activeTurnControl` | 前者在同一 VM 加载真实后台及依赖；后者调用 bind/list/ack | Chrome API、Native port 为模拟；后者未调用 `recoverJournals`，不能独自证明恢复结算 |
+| `crossTabRuntimeRegression` 的 journal 恢复用例 | 直接调用 `recoverJournals`，检查 live owner 与 ownerLost 的不同投影 | 注入合成 journal 和 Chrome runtime，未经过真实后台 journal 持久化及页面重启 |
+| `p0ProductExperience` 的镜像/线程重发断言 | 检查 runTask 源码是否保留快照读取及上下文参数 | 未实际执行弹窗、持久化失败与重发交互 |
+| `nativeEnvironment/codexRuntimeIdentity/codexHome` | 环境发现、身份构造及临时目录准备 | 使用临时候选脚本、注入路径/平台或假配置；不代表当前安装、登录状态及真实全局目录验收 |
+| `nativeTransportEnvelope/nativeQuotas/nativeAssetTransfer` | 直接调用 helper；资产测试通过临时镜像读取分块 | 未经过 Chrome Native Messaging 平台限制与页面二进制 commit |
 
 以下仅为后续修改时的命令导航；本轮未执行：
 
@@ -227,6 +275,7 @@ node scripts/run-tests.mjs test/nativeTransportEnvelope.test.js test/nativeTrans
 
 `readProgressGuard.test.js` 已定义用户取消、POSIX 后代进程、Windows taskkill 注入、发信号不算退出等场景；测试定义不等于本轮通过。
 静态检索未发现独立 `processStopBarrier` 测试或 Native 断连 1,500 ms 与完整停止流程竞速的直接覆盖；跨重启和跨平台保证仍未验证。
+本轮静态检索也未发现普通运行直达 `skipMirrorSync`、缺失/零 ID 运行登记的专项断言。`projectLock` 中题为 force-release zombie lock 的用例实际检查无锁及正常取消后的无锁状态，不能作为“有锁但无 controller”删除分支的直接覆盖。
 遗留 `task.run → runExternalAgent` 在 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js) 另走 stdout 整体 JSON/stderr 事件路径，timeout 和 kill 实现独立；修改普通 runner 时须明确是否覆盖它。
 
 ## 9. 红队定位题与验收边界
@@ -238,6 +287,9 @@ node scripts/run-tests.mjs test/nativeTransportEnvelope.test.js test/nativeTrans
 3. **“持久屏障能拦住项目的一切写操作，重启总能自动解除。”** 应列出仅四个 `handleRequest` 方法、直接底层调用边界、未知/Windows 记录及写盘失败条件。
 4. **“所有只读 RPC 可以重连重试，requestId 保证一次执行。”** 应核对显式分类、默认禁重放与缺少通用重复请求去重协议。
 5. **“收到 matching turn/completed，就能把整个 UI 标为保存成功。”** 应区分协议通知 status、runner resolve、差异收集、页面写回/保存/镜像/编译及最终 settlement。
+6. **“Native 接受完整快照，执行前就一定同步；复用旧镜像必查 freshness。”** 应沿 `useExistingMirror` 与独立 `skipMirrorSync` 两个字段定位，区分常规 Content 生成参数与 Native 直达反例。
+7. **“按项目找不到 controller，force 释放的一定是已经停止的任务锁。”** 应检查 `if(request.id)` 登记条件、镜像操作的锁寿命，以及后台补 ID 与 Native 自身准入的差别。
+8. **“codex.run 禁止重试，所以错误后不会再派发；取消测试也已经贯通整条链。”** 应分别指出三层重试入口，并按第 8 节标明测试真实入口、替换依赖与尚缺的装配证据。
 
 `Target contract`：新实现若增强这些保证，应补准确的端到端证据，并更新本页、功能索引与[证据登记](evidence-and-drift.md)。
 当前指南只承诺可定位的实现与限制；异常终态协议组合、断连后残留子树、屏障重启恢复、真实浏览器后处理均保留独立验收需求。

@@ -17,6 +17,8 @@
 !/docs/architecture/ui-and-loading.md
 !/docs/architecture/installation-and-updates.md
 !/docs/architecture/red-team-review.md
+!/docs/architecture/context-and-governance.md
+!/docs/architecture/coverage-audit.md
 native-host/bin/
 node_modules/
 dist/

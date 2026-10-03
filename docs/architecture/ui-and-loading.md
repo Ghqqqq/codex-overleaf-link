@@ -72,6 +72,26 @@ dialog 的 `cancel` 只处理目标为 dialog 的事件，避免文件选择器�
 Provider 通过 `revealProviders` 嵌入工作台；相关编辑器由 [ProviderSettingsDialog](../../extension/src/content/providerSettingsDialog.js) 与 [ProviderSettingsCoordinator](../../extension/src/content/providerSettingsCoordinator.js) 管理。
 普通主题选项仍以已有 select 为值入口，Workbench 的主题卡片触发其 input/change；新增视觉代理控件应继续接入既有状态通路。
 
+### 历史查看、清理与结果动作
+
+[PanelMaintenance.openChangeHistory](../../extension/src/content/panelMaintenance.js) 打开设置历史卡，交给 [ChangeHistoryView.load](../../extension/src/content/changeHistoryView.js) 读取 auditLogs 和 sessions。
+后者捕获账号、项目、容器与请求 generation，异步返回后复核；超时或读取失败显示错误及重试入口，不能把失败投影成“没有历史”。历史行通过 runtime 的 `jumpToHistoryRun` 跳转到所属会话与运行。
+
+| 清理入口 | 实际 owner 与范围 | 独立结果与限制 |
+| --- | --- | --- |
+| 设置中的清空历史 | `PanelMaintenance.clearAllHistoryWithConfirm` → `StorageDb.clearAllStores`，随后重置项目名称缓存、重建会话状态并保存 | 入口检查当前页面 `currentRunView`，通过 destructive confirm 后执行；该入口未调用 Native `codex.history.clearPlugin` |
+| 共享历史启用时的清空实现 | [SharedSessionBridge.decorate](../../extension/src/shared/sharedSessionBridge.js) 将会话清理交给 `erase('clear-account')`；同时删除当前账号的站点 legacy 会话备份 | 其他账号的 legacy 会话备份保留；辅助 stores 仍调用站点本地 `clearStore`，其范围不能按会话的账号隔离推定 |
+| legacy 存储实现 | [StorageDb.clearAllStores](../../extension/src/shared/storageDb.js) 在当前站点 IndexedDB 事务中清空 `STORES` | 与后台共享账号会话库是不同存储边界；控件位于项目设置过滤器也不会缩小此范围 |
+| dashboard 的逐项目清理 | [ProjectSessionCleanup.clearProjectSessions](../../extension/src/content/projectSessionCleanup.js) 按 projectId 查询、按已解析账号过滤，检查近期 running 记录，再确认并写墓碑、删除会话及请求 Native 历史清理 | 会话删除数和 Native 历史清理失败分别统计；剩余记录仍可显示并重试。账号缺失时过滤条件有放行分支，不能从此函数单独推定始终账号隔离 |
+
+这些动作清理插件历史与恢复材料，Overleaf 文件写入、撤销属于其他入口；清理前应分别核对账号共享库、站点辅助库及 Native 历史的范围。
+[p0ProductExperience](../../test/p0ProductExperience.test.js) 的清空历史用例和 [dashboardSessions](../../test/dashboardSessions.test.js) 的逐项目清理用例主要检查源码调用结构，不能替代实际持久删除、部分失败与跨标签交互验收。
+
+结果卡按钮由 [RunTimelineView.renderRunCard](../../extension/src/content/runTimelineView.js) 装配 [RunResultActions.configureResultActions](../../extension/src/content/runResultActions.js)。
+其中 `configureForkButton` 在记录有 turnId、非 running、非 forkSnapshot 且具有 callback 时启用，再调用 [SessionForkController.forkRunFromNode](../../extension/src/content/sessionForkController.js)。
+分叉从所选节点复制历史并建立新 Native thread；来源线程优先级、撤销材料剥离、保存失败补偿及持久化字段缺口见[会话分叉与恢复材料隔离](run-state-and-recovery.md#61-会话分叉与恢复材料隔离)。
+[sessionForkController](../../test/sessionForkController.test.js) 使用真实 controller 与 SessionState，Native 和保存通过依赖替身提供；不能由该测试推定按钮、Native fork 与刷新恢复已联合通过。
+
 ## 3. 配置作用域：按写入路径判断
 
 | 作用域 | 代表字段与 owner | 修改后的影响 |
@@ -87,6 +107,27 @@ Provider 通过 `revealProviders` 嵌入工作台；相关编辑器由 [Provider
 全局 controller 将 pending patch 投影到本地视图，再接收递增 revision；失败时移除 pending patch 并报告错误。此结构旨在阻止旧会话 autosave 回滚全局偏好。
 语言存在三条呈现通路：[i18n](../../extension/src/shared/i18n.js) 的 `tr` 键、runtime 的 `tx(en, zh)`、Popup 的 `utx`。修改翻译需同时检查实际消费者。
 [ThemeController.applyTheme/watchAuto](../../extension/src/content/themeController.js) 负责主题效果；全局存储拥有偏好，CSS 与 dialog/浮动工具栏负责正确继承和显示。
+
+### 已提交输入、运行中草稿与编辑重发
+
+三类状态类似已寄出的信、桌上的草稿和等待寄出的信：已提交运行消费 execution snapshot，当前 textarea 的新输入写入活动会话 `task`，排队项保留自己的 text/payload。运行结束、切换会话和重新绘制时，须分别定位各自 owner。
+
+```text
+textarea input → persistPanelInputs → readPanelInputs → updateActiveSession → debounce save
+提交 → safeRunTask
+  ├─ 无当前运行：runTask 捕获输入 → startRunView → clearTaskComposer
+  └─ 有当前运行：queueComposerInput → RunQueueScheduler coordinator → pendingInputs
+结果卡 Edit & resend → refillComposerForRetry → prepareRetryReplacement → 会话草稿
+```
+
+[contentRuntime](../../extension/src/content/contentRuntime.js) 的 `syncComposerSendAvailability` 在运行中且无文字时呈现取消，有文字时呈现排队发送；`safeRunTask` 将活动运行期间的提交交给队列协调器。
+`runTask` 在 Provider/风格异步加载前捕获输入，建立 run 后还等待 audit 草稿等步骤，才调用 `clearTaskComposer` 清文字、选区、技能调用及附件；该顺序不能推广为任意提交等待期间的新输入都会保留。
+[PendingInputView.pullBack](../../extension/src/content/pendingInputView.js) 只回填 queued 项，已有非空草稿时提示并返回；实际移除队列项与持久化由回调完成，UI 回填动作本身不提供事务提交证明。队列准入、推进和保存边界见[运行状态与恢复](run-state-and-recovery.md)。
+
+[RunTimelineView.configureEditButton](../../extension/src/content/runTimelineView.js) 对 cancelled/rejected 且通过 `canEditRun` 的记录提供编辑重发，当前存在运行时禁用该按钮。
+[PanelMaintenance.refillComposerForRetry](../../extension/src/content/panelMaintenance.js) 回填任务并调用 runtime 的 `prepareRetryReplacement`：符合资格的 cancelled/rejected 记录在无当前运行时回到草稿，并从列表移除原卡，恢复其模式、focused files 和选区；其他符合替换条件的失败重试会记录 `pendingRetryReplacement`，在新 run 创建时解析替换。
+资格规则由 [RunController.isRetryReplacementEligible/resolveRetryReplacement](../../extension/src/content/runController.js) 根据写入与恢复材料判断；附件不会随任务文字自动恢复，UI 会提示重新添加。
+[runControllerContent](../../test/runControllerContent.test.js) 覆盖资格、会话归属与替换 helper；[p0ProductExperience](../../test/p0ProductExperience.test.js) 另有恢复按钮路由断言。运行中输入、异步提交、队列回填及刷新仍需组合用例，不能只运行纯 helper 就宣称草稿全生命周期通过。
 
 ## 4. 模型目录：请求返回顺序与用户选择分开处理
 
@@ -119,15 +160,32 @@ Save and use 可经 `providerSwitchApproved:true` 跳过该确认，删除当前
 普通 composer 的配置来自 runtime：\(n\le8\)、每件 \(b_i\le12\,\mathrm{MiB}\)、\(\sum b_i\le32\,\mathrm{MiB}\)。空附件被拒绝；该规则与合法空项目文件的语义不同。
 [NativeQuotas](../../native-host/src/nativeQuotas.js) 普通附件保留单件/数量约束，聚合限制为 96 MiB；不能用 Native 更宽上限推断 UI 接受范围。写作风格参考采用另组 quotas。
 `getAttachmentsForRun` 包含本次发送内容；`createRunAttachmentSnapshots` 只保留名称、类型、大小与受限预览，避免把完整附件作为历史卡片内容复制。
-刷新恢复由 `serializePersistableAttachments/restorePersistedAttachments` 支持：最多三件，单件 `contentBase64.length <= 1,048,576`；此单位为 Base64 字符。
-Base64 长度约为 \(4\lceil B/3\rceil\)，因此该字符阈值不能当作原始文件 1 MiB 限额。runtime 在每页首次恢复门槛后关闭再次恢复，避免重新出现已移除附件。
+`serializePersistableAttachments/restorePersistedAttachments` 提供序列化与回填 helper：最多三件，单件 `contentBase64.length <= 1,048,576`；此单位为 Base64 字符。
+Base64 长度约为 \(4\lceil B/3\rceil\)，因此该字符阈值不能当作原始文件 1 MiB 限额。runtime 的 `applyStateToPanel` 设有每页仅一次的回填门槛，避免已有状态中的附件在移除后再次出现。
+
+**当前持久链缺口。** `persistComposerAttachmentsToState` 写入顶层 `state.composerAttachments`，[SessionState.prepareStateForStorage](../../extension/src/shared/sessionState.js) 也保留该字段；但 [ScopedPersistencePanelState.persistPanelState](../../extension/src/content/scopedPersistencePanelState.js) 实际写入的 [StorageDb.extractLightweightPrefs/buildSessionRecord](../../extension/src/shared/storageDb.js) 均未包含它。
+runtime 的 `loadStoredStateForProject` 正常返回与 compact fallback 返回也不回填该字段，因此上述 helper 与一次性门槛不能证明当前刷新恢复已贯通。
+[sessionState](../../test/sessionState.test.js) 中名为“composer attachments persist across refresh”的用例只调用 normalize/compact，未穿过真实存储及 hydration；后续应覆盖 `saveState → persistPanelState → loadStoredStateForProject → restorePersistedAttachments`，本轮未执行复现。此项与第 9 节的清空/迟到读取竞态分别处理。
+
 `runTask` 在异步 Provider/风格加载前捕获已完成附件，创建 run 后清空 composer；队列协调器拒绝带附件的排队输入，见 [RunQueueScheduler](../../extension/src/content/runQueueScheduler.js)。
 当前 controller 也有尚待验证的清空/迟到读取边界，见第 9 节；不能由去重测试推广出完整生命周期保证。
 
 ## 6. Markdown、公式和链接的呈现链
 
+### 活动投影与写后回执
+
+事件进入 UI 前已有一层结构化投影：[contentRuntime.appendNativeEvent](../../extension/src/content/contentRuntime.js) 先尝试 `SubagentActivityModel.ingest`，普通事件再交给 [AgentTranscript.mapAgentEventToActivity](../../extension/src/shared/agentTranscript.js)。不可见或 technical 事件在此返回，其他事件进入运行记录及视图。
+[RunTimelineView](../../extension/src/content/runTimelineView.js) 创建 [RunActivitySummary](../../extension/src/content/runActivitySummary.js)，后者消费 [RunActivityModel](../../extension/src/shared/runActivityModel.js) 的投影，组织阶段、工具、通知、折叠项和子代理区域；需要富文本的内容继续调用下文 Markdown 链。
+活动展开选择写入页面 `sessionStorage`，运行事实另由会话持久化保存。修改折叠展示不能据此改写运行结果或历史。
+
+写后文件回执从 [WritebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js) 调用 `renderReadOnlyDiffReview`，经 [DiffReviewPanel](../../extension/src/content/diffReviewPanel.js) 使用 runtime 注入的 [WrittenChangesView.render](../../extension/src/content/writtenChangesView.js)。当前常规装配下，逐文件折叠回执的展示 owner 是 WrittenChangesView。
+DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHunks.js) 支持的交互 hunk 决策和 `renderDiffReview`。本基线静态调用检索未找到生产外部调用 `renderDiffReview`；`createDiffReviewElement` 仍可作为未注入回执 renderer 时的只读回退。模块被打包和独立测试存在，不能证明交互式逐块审阅属于当前可达用户流程。
+[agentTranscript](../../test/agentTranscript.test.js) 检查事件映射；[subagentActivityView](../../test/subagentActivityView.test.js) 在伪 DOM 中装配共享活动 renderer；[writtenChangesView](../../test/writtenChangesView.test.js) 覆盖回执 helper 并用源码断言检查 runtime 注入；[reviewHunks](../../test/reviewHunks.test.js) 检查纯决策模型。它们各自覆盖局部边界，真实长流、滚动和写后展示仍待验收。
+
+### 富文本、公式与引用
+
 ```text
-回答/事件文本
+需要富文本呈现的回答/事件文本
   → MarkdownText.renderMarkdownBlockText
       ├─ 非 streaming: MarkdownDomRenderer + markdown-it tokens → 显式 DOM
       └─ streaming 或 renderer 失败后的预期降级: 兼容块/行内路径
@@ -161,8 +219,12 @@ launcher 开关先读 `get-panel-state`，按需发 `toggle-launcher`，再读�
 | 新 content controller | source import → registry 依赖 → 必要时 legacy adapter → runtime callbacks/getters → bundle | [contentModuleRegistry](../../test/contentModuleRegistry.test.js)、[contentRuntimeInitialization](../../test/contentRuntimeInitialization.test.js)、[contentBuildIdentity](../../test/contentBuildIdentity.test.js) |
 | 新 MAIN 方法 | 实现 → RPC catalog → WAR → PageBridgeClient 顺序 → dispatcher/capability → 消费者 | [pageBridgeClient](../../test/pageBridgeClient.test.js)、[pageRpcContract](../../test/pageRpcContract.test.js)、[manifest](../../test/manifest.test.js) |
 | 设置项或布局 | 字段 owner → SettingsPanel read/load → coordinator → Workbench 映射 → i18n/CSS | [globalPreferences](../../test/globalPreferences.test.js)、[contentPanelModules](../../test/contentPanelModules.test.js)、[providerModalLifecycle](../../test/providerModalLifecycle.test.js)、[diagnosticsViewport](../../test/diagnosticsViewport.test.js) |
+| 历史查看或清理 | PanelMaintenance / ChangeHistoryView → shared/legacy 存储范围 → ProjectSessionCleanup / Native → 重绘 | [p0ProductExperience](../../test/p0ProductExperience.test.js)、[dashboardSessions](../../test/dashboardSessions.test.js)、[storageDb](../../test/storageDb.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js) |
+| 草稿、编辑重发或排队回填 | textarea / RunTimelineView → PanelMaintenance → runtime / RunController → 会话或队列 owner | [runControllerContent](../../test/runControllerContent.test.js)、[runInputQueueSnapshotRegression](../../test/runInputQueueSnapshotRegression.test.js)、[runQueueSchedulerDurability](../../test/runQueueSchedulerDurability.test.js) |
+| 结果卡分叉 | RunResultActions → SessionForkController → [Native thread fork](../../native-host/src/codexThreadFork.js) → 记录复制 / 保存 / 补偿 | [sessionForkController](../../test/sessionForkController.test.js)、[sessionState](../../test/sessionState.test.js)、[storageDb](../../test/storageDb.test.js)；刷新字段保留另见运行状态页 |
 | 模型或选区输入 | 请求身份/能力 → 视图 → state → execution snapshot → Native 消费者 | [modelSelectionRecovery](../../test/modelSelectionRecovery.test.js)、[projectProviderSelection](../../test/projectProviderSelection.test.js)、[sentSelectionChip](../../test/sentSelectionChip.test.js)、[cuaRepairState](../../test/cuaRepairState.test.js) |
 | 附件/输出展示 | 输入预算/恢复或 renderer → 消费者 → CSS/资源 → 失败回退 | [p0ProductExperience](../../test/p0ProductExperience.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js)、[markdownDomRenderer](../../test/markdownDomRenderer.test.js)、[mathRendering](../../test/mathRendering.test.js)、[lineReferences](../../test/lineReferences.test.js) |
+| 活动卡或写后回执 | AgentTranscript / RunActivityModel → RunTimelineView / RunActivitySummary；writeback → WrittenChangesView | [agentTranscript](../../test/agentTranscript.test.js)、[subagentActivityView](../../test/subagentActivityView.test.js)、[writtenChangesView](../../test/writtenChangesView.test.js) |
 | Popup/诊断 | 两个 HTML shell → shared runtime → 偏好/状态读取 → 摘要字段 | [popupInstallGuidance](../../test/popupInstallGuidance.test.js)、[popupUpdateExperience](../../test/popupUpdateExperience.test.js)、[diagnosticsHealth](../../test/diagnosticsHealth.test.js)、[auditRecords](../../test/auditRecords.test.js) |
 
 Content 新模块不要再向两份 manifest 追加源脚本；产物由 [build-content-bundle](../../scripts/build-content-bundle.mjs) 生成。Page 新脚本必须另外核对 WAR，content import 不能加载 MAIN 能力。
@@ -192,5 +254,6 @@ npm run check:module-graph
    静态链路提示旧读取可能在清空后重新进入 tray；尚未执行复现，不能据此断言已出现用户故障。现有 `p0ProductExperience` 覆盖 pending 去重/预算，仍需补“读取中提交或清空 → 读取完成”的生命周期用例。
 5. **“严格 renderer 限额就是整条消息全程限额”不成立。** 非 streaming renderer 失败后的预期兼容路径还可能被前述诊断异常打断；超长 Markdown、恶意链接与复杂公式应分别验证主路径和降级链，静态主路径参数不足以证明整体资源界限。
 6. **单元定义无法证明实际 modal 与加载副本。** 原生 dialog 的 top-layer、焦点恢复、字体及旧 managed shell 依赖 Chrome 和页面状态；本轮只确认源码与测试定义，相关交互仍待验收。
+7. **序列化 helper 不构成刷新恢复证据。** 附件虽通过 SessionState normalize/compact，实际 prefs/session 写入与 hydration 未携带该字段；须按第 5 节完整保存和加载路线验证。
 
 目标契约：控制器销毁、异步清空/切换和失效响应均应维护所属身份；渲染与诊断边界应随新增字段一同检查。上述目标不能反推未覆盖分支已经满足。

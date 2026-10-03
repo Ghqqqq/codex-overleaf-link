@@ -74,11 +74,17 @@ Windows:       %LOCALAPPDATA%/CodexOverleaf/managed/
 `installManagedNativeRegistration()`写桥接启动脚本和 Native Host manifest；Windows 还写注册表，其他平台使用浏览器规定的文件位置。
 扩展 ID 进入 `allowed_origins`，注册错误会使 Chrome 拒绝 Native Messaging，即使本机 Node 命令可以运行。
 
+自定义 `managedRoot`只改变安装内容的位置，不隔离用户级注册资源。[nativeHostPlatform.js](../../native-host/src/nativeHostPlatform.js)的 `getDefaultBridgePath()`对不同管理根、Chrome和Chromium返回同一个用户级bridge路径。
+[manifest.js](../../native-host/src/manifest.js)的 `getNativeHostManifestPath()`在macOS/Linux按浏览器区分manifest；Windows共用manifest文件，`getWindowsRegistryMetadata()`再按浏览器区分HKCU注册表键。`auto`按Chrome处理。
+因此多个管理根，或Direct与Managed安装共用默认入口时，后一次安装会改写已有bridge及相应注册；注册副作用超出管理根目录。
+
 失败恢复的范围需要准确限定：Native 安装/注册抛错时，外层 catch 恢复扩展目录；代码未提供跨所有 Native 指针和系统注册写入的统一回滚事务。
 因此安装失败后需核查两端标记、指针和注册结果，不能宣称每个失败点都使磁盘自动恢复成原样。
 `selectRunnableVersion()`位于 [managedLauncherRuntime.js](../../native-host/src/managedLauncherRuntime.js)，优先选择 active，缺少入口文件时尝试 previous。
 该 fallback 检查入口文件存在性；它不执行完整健康诊断，也不保证扩展 runtime 与 fallback Native 版本自动匹配。
 卸载入口为 `uninstallManagedDistribution()`；其删除范围是管理根和注册，项目镜像、浏览器历史等数据拥有其他生命周期。
+该入口按参数重算注册路径并删除bridge、manifest及所选Windows注册表键，未检查当前入口是否仍指向被卸载副本。静态反例是依次安装A、B两个管理根，再卸载A：B仍在磁盘上，却可能失去共用入口。
+现有 [managedInstall.test.js](../../test/managedInstall.test.js)覆盖扩展树、缺失引用文件与路径安全；[nativeInstallScripts.test.js](../../test/nativeInstallScripts.test.js)提供平台注册和独立Native安装测试定义，不能据此宣称上述多副本卸载链已验收。
 
 ## 4. 更新状态分别由谁负责
 
@@ -124,9 +130,11 @@ sequenceDiagram
 
 `checkForUpdate()`通过 GitHub `releases/latest`的公开跳转确定 stable tag，再读取签名 manifest；避免依赖 GitHub API配额。
 只发现更新不创建安装授权；`installUpdate()`会重新检查过期候选，再持久化授权意图并调用 `update.authorize`。
-`authorizeUpdate()`验证当前 active-version、签名目标与请求一致，授权默认有效两小时；其他目标不能复用它。
+`authorizeUpdate()`验证当前 active-version、签名目标与请求一致，创建`authorized`授权并设置两小时后的`expiresAt`；其他目标不能复用它。
 `stageCandidate()`下载并验证 bundle，解包后检查扩展/Native版本配对，创建 journal并将授权绑定事务。
-可复用 staged事务也需重验内容和授权；授权过期、候选变化、已有激活事务会中断该路径。
+`requireAuthorization()`只对`authorized`状态检查期限；`bindAuthorization()`将状态改为`bound`后，复用staged、apply及confirm仍校验版本、授权和事务身份，但不因`expiresAt`已过而拒绝。
+可复用 staged事务也需重验内容和授权；内容失效、身份不匹配或已有激活事务会中断相应路径。静态反例是stage完成后等待空闲超过两小时，绑定授权仍可继续安装，不能把两小时解释为整次更新的总期限。
+[updateAuthorizedCandidate.test.js](../../test/updateAuthorizedCandidate.test.js)的过期测试覆盖`authorized`候选；[updateManager.test.js](../../test/updateManager.test.js)使用`bound`事务fixture，测试范围应按实际授权状态区分。
 `tryActivateStagedUpdateCore()`收集标签页、Native及后台未完成执行请求的 blockers，存在阻断时保持`waiting_for_idle`。
 后台 `requestManagedInternal()`在 `update.apply`之前再次调用`verifyManagedUpdateSafety()`，通过后阻止新的`no_silent_retry`类执行请求；`update.*`和`codex.cancel`保留通行。
 Native `applyStagedUpdate()`再次检查本地 gate、管理布局、事务及授权，重验归档并从归档重新解包待应用内容。
@@ -152,7 +160,7 @@ Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入�
 `confirmPendingUpdate()`先调用`verifyPendingRuntimeHealth()`，刷新保存的开放标签页，在20秒预算内要求页面返回目标版本。
 没有可用待验证标签页时健康探测返回失败；关闭标签页、页面加载迟缓等场景需要作为浏览器验收条件记录。
 随后检查 Native ping版本、协议字段和必要capabilities，再请求`update.confirm`；Native核对事务、授权、指针及扩展Manifest版本。
-成功后 journal进入`committed`、授权进入`consumed`，保留目标及来源Native版本并清理staging。
+成功后 journal进入`committed`；`settleAuthorization()`先写授权`consumed`状态再删除`authorization.json`，因此该文件不长期保留消费记录。随后保留目标及来源Native版本并清理staging。
 该健康检查没有自动执行 Ask、写回、保存、Undo等业务流程；功能正确性仍依赖专项测试与交互验收。
 
 | 场景 | 代码行为 | 证据含义 |
@@ -169,7 +177,9 @@ Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入�
 [updateNetworkControl.js](../../native-host/src/updateNetworkControl.js) 的 `cancel()`写operation取消标记，中止本进程控制器并等待对应mutation锁释放。
 标记也用于拒绝其他Host中迟到的同operation网络工作；该取消针对更新网络操作，不承担agent子进程的停止职责。
 Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已apply的事务，恢复来源文件并对失败目标设置24小时cooldown。
-`supersedeObsoleteJournal()`可在新的对齐安装出现后淘汰旧失败journal，避免新安装继续展示旧回滚失败。
+`supersedeObsoleteJournal()`仅在安装对齐且active版本同时严格高于journal的source和target版本时淘汰旧journal；同target版本重装不满足该条件。
+`installManagedNativeVersion()`保留`native/updates`，完整扩展重装则建立新树。静态恢复反例是旧journal停在`applying`后重装同target：后续`update.status`仍可进入`recoverAndReadStatus()`的`rollbackFiles()`分支，重写source指针及旧manifest，而新扩展树可能已无旧runtime槽。
+该推导不代表已观察到损坏现场；重装不能直接作为账本已清理的证据，应核对journal、指针、manifest与实际runtime内容。[updateManager.test.js](../../test/updateManager.test.js)的supersede用例覆盖严格更高版本和保留旧回滚，同target重装链仍需专门演练。
 阶段期限在`PHASE_TIMEOUTS`统一声明，具体网络/页面探测还有更短预算；超时值不能混用为同一个总耗时保证。
 
 ## 8. 信任链与网络重试
@@ -189,7 +199,7 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 [releaseTransport.js](../../native-host/src/releaseTransport.js) 的`requestRelease()`对网络读取实施共享deadline、单请求/无数据期限和有界重试。
 默认最多3次，配置上限5次；408、429、500、502、503、504可重试，404、证书失败、大小越界、显式取消停止重试。
 重试属于下载层；授权、apply、confirm、rollback各有事务约束，不能把下载重试规则推广成任意RPC的自动重放。
-最终重定向目标需满足HTTPS与host allowlist；[releaseProxy.js](../../native-host/src/releaseProxy.js)处理环境/系统HTTP(S)代理和NO_PROXY，SOCKS/PAC需另行提供HTTP代理端点。
+最终重定向目标需满足HTTPS与host allowlist；[releaseProxy.js](../../native-host/src/releaseProxy.js)的`resolveReleaseProxy()`优先读取环境HTTP(S)代理并处理NO_PROXY，无环境代理时仅macOS/Windows读取系统代理，Linux使用环境配置或直接连接。SOCKS/PAC需另行提供HTTP代理端点。
 上述源码约束未在本轮真实代理、DNS故障或下载中断环境执行验证。
 
 ## 9. 手动升级与 Bootstrap 边界
@@ -197,6 +207,7 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 `BOOTSTRAP_PROTOCOL=3`定义于`updateTrust.js`；Native runtime协议为2，两者描述不同边界。
 固定Bootstrap、扩展权限/资源公开形状、Native固定launcher等无法通过runtime-only包任意替换。
 签名有效但Bootstrap协议不同的候选可展示`manual_install_required`及签名说明；staging/apply仍拒绝该候选。
+`checkForUpdate()`另有RC晋升例外：已安装标记为`prerelease`且最新stable具有相同数字版本时，返回`prerelease_promotion_requires_manual_update`、`available: false`，需要手动重装，不能按数字版本相等认定stable内容已经加载。
 当前2.5.0迁移说明见根 [README](../../README.md#quick-start)；完成磁盘重装后仍需核验扩展重载与页面刷新。
 
 [verify-update-boundary.mjs](../../scripts/verify-update-boundary.mjs)核对受保护路径的已提交、暂存、未暂存和未跟踪变化。
@@ -210,6 +221,10 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 构建生成托管扩展ZIP、Native tar、协调update bundle、npm tgz、安装辅助文件、manifest、notes和SHA256SUMS；签名步骤另行增加sig。
 `package.json.files`控制npm范围；[verify-npm-package.mjs](../../scripts/verify-npm-package.mjs)核对精确内容及禁止路径，指南与私有材料不能因复制目录而进入包。
 构建器检查应跟踪输入与dirty来源，生成bundle按构建结果纳入；产物目录需通过安全路径检查。
+
+[verify-release-artifacts.mjs](../../scripts/verify-release-artifacts.mjs)的`--require-signature`分别执行manifest签名、归档内容和`SHA256SUMS`校验。`verifyReleaseSignature()`验证签名字节，`verifyChecksums()`比较实际文件与checksum清单；当前没有将实际bundle大小及SHA-256再与已签manifest的`updateBundle`声明比较。
+静态反例是重压缩仍符合结构约束的bundle、同步更新`SHA256SUMS`并保留原签名manifest：这些检查可分别成立，运行时`stageCandidate()`仍会因签名声明与下载字节不符而拒绝。
+该验证缺口来自静态控制流核对，本轮没有已发布资产损坏的现场证据。[releaseScripts.test.js](../../test/releaseScripts.test.js)检查构建时产物与manifest摘要一致，不能替代签名后实际产物的绑定核验；该反例尚未执行。
 
 源码基线中的 [.github/workflows/release.yml](../../.github/workflows/release.yml)顺序如下；当前工作树的npm等待步骤另有未提交候选。
 
@@ -244,6 +259,7 @@ node scripts/run-tests.mjs test/updateManager.test.js test/updateRevocationInten
 ```
 
 包边界验证使用`npm run verify:update-boundary`；产物验证使用`npm run verify:release-artifacts -- --require-signature`，后者要求已有签名产物。
+产物验证的签名与实际bundle绑定限制见上一节；[autoUpdateBootstrap.test.js](../../test/autoUpdateBootstrap.test.js)主要使用源码字符串及manifest断言，也不能替代真实Bootstrap重载与恢复验收。
 `npm run build:release`会生成内容和发布目录；`npm run verify:update-hop`会访问旧资产并操作临时安装。执行前按任务范围选择这些有副作用的工具。
 源码测试、已安装浏览器检查、三平台CI、正式签名及公开下载核验分别记录，不能相互替代。
 
@@ -255,5 +271,8 @@ node scripts/run-tests.mjs test/updateManager.test.js test/updateRevocationInten
 4. 页面和Native版本相等、capabilities齐全、写回仍失败：健康检查已完成其加载职责，业务回归仍需单独验证。
 5. 安装注册阶段失败：扩展目录恢复不足以证明Native指针及系统注册全部回退，应检查实际磁盘与注册状态。
 6. update-hop迁移分支通过：证据是旧版拒绝不兼容包，不能描述成旧版已经自动升级成功。
+7. staged等待超过授权创建时的两小时期限：`bound`不再按`expiresAt`拒绝，需按实际授权状态判断。
+8. 旧`applying`事务下手动重装同target：安装器保留journal，严格版本条件不会将它supersede；需核验后续恢复对指针、manifest和runtime的影响。
+9. 多个管理根中卸载旧副本：共用bridge和注册可能影响仍保留的副本，管理目录存在不足以证明Native入口可用。
 
 这些边界均未在本轮通过真实故障注入或Chrome验收确认；后续红队应挑战上述限定是否覆盖实际调用路径，再补证据或调整契约。
