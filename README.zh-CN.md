@@ -5,6 +5,14 @@
   <p><img src="https://img.shields.io/badge/version-2.5.0-blue" alt="version 2.5.0"></p>
   <p><a href="README.md">English</a> | 简体中文</p>
   <p>Chrome · macOS / Windows / Linux · 本地 Codex</p>
+  <p>
+    <img src="https://img.shields.io/badge/platform-macOS%20%2F%20Windows%20%2F%20Linux-lightgrey" alt="支持平台">
+    <img src="https://img.shields.io/badge/chrome-MV3-green" alt="Chrome Manifest V3">
+    <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Node.js 版本要求">
+    <a href="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml"><img src="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml/badge.svg" alt="测试状态"></a>
+    <img src="https://img.shields.io/badge/runtime%20dependencies-0-orange" alt="无 npm 运行时依赖">
+    <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT 许可证">
+  </p>
 </div>
 
 理解项目、修改段落、对照 PDF 查看结果。Codex Overleaf Link 把本地 Codex 工作流带进 Overleaf 编辑器，让项目上下文、模型选择和写作对话留在同一个工作区。

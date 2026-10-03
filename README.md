@@ -5,6 +5,14 @@
   <p><img src="https://img.shields.io/badge/version-2.5.0-blue" alt="version 2.5.0"></p>
   <p>English | <a href="README.zh-CN.md">简体中文</a></p>
   <p>Chrome · macOS / Windows / Linux · Local Codex</p>
+  <p>
+    <img src="https://img.shields.io/badge/platform-macOS%20%2F%20Windows%20%2F%20Linux-lightgrey" alt="platform">
+    <img src="https://img.shields.io/badge/chrome-MV3-green" alt="chrome manifest v3">
+    <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="node version">
+    <a href="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml"><img src="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml/badge.svg" alt="tests"></a>
+    <img src="https://img.shields.io/badge/runtime%20dependencies-0-orange" alt="zero npm runtime dependencies">
+    <img src="https://img.shields.io/badge/license-MIT-blue" alt="license">
+  </p>
 </div>
 
 Ask about the project, revise a passage, and review the result beside the PDF. Codex Overleaf Link brings a local Codex workflow into the Overleaf editor, with project context, model selection, and conversations in one place.
