@@ -1,8 +1,8 @@
 # 安装、托管更新与发布
 
 本页帮助维护者定位安装目录、加载版本、更新事务和发布产物，解释修改其中一层时需要检查的其他层。
-产品源码基线为 `2073ae74747431aab8d529803d4e9f8197262388`，文档首版提交为 `86d5a17`，核验日期为 2026-10-03。
-以下 `Current behavior` 来自静态源码及测试定义；本轮未执行安装、构建、产品测试、浏览器验收或远端核验。
+产品源码基线为 `2073ae74747431aab8d529803d4e9f8197262388`。
+源码约束、测试覆盖、已安装运行状态和公开发布产物分别取证；各层验证范围在相应流程中说明。
 入口见[功能索引](feature-map.md)，运行取消与进程寿命见[运行状态与恢复](run-state-and-recovery.md)。
 
 ## 1. 先确定正在观察哪一层
@@ -152,7 +152,7 @@ Native `applyStagedUpdate()`再次检查本地 gate、管理布局、事务及�
 
 Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入口从 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js) 的`getActiveNativeWorkState()`提供这两个计数。
 它没有扫描所有操作系统进程，也没有在该 gate 中直接枚举持久化`processStopBarrier`记录。
-因此 UI idle、当前 Native计数为零、所有历史子进程已退出，分别属于不同证据；本页不建立三者等价关系。
+因此 UI idle、当前 Native计数为零、所有历史子进程已退出，分别属于不同证据，不能相互推定。
 `Target contract`：更新不能破坏活动任务与保存工作；更强的跨进程退出保证需要单独追踪屏障、锁寿命和异常终止证据。
 
 ## 7. 健康、取消、超时与恢复
@@ -179,7 +179,7 @@ Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入�
 Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已apply的事务，恢复来源文件并对失败目标设置24小时cooldown。
 `supersedeObsoleteJournal()`仅在安装对齐且active版本同时严格高于journal的source和target版本时淘汰旧journal；同target版本重装不满足该条件。
 `installManagedNativeVersion()`保留`native/updates`，完整扩展重装则建立新树。静态恢复反例是旧journal停在`applying`后重装同target：后续`update.status`仍可进入`recoverAndReadStatus()`的`rollbackFiles()`分支，重写source指针及旧manifest，而新扩展树可能已无旧runtime槽。
-该推导不代表已观察到损坏现场；重装不能直接作为账本已清理的证据，应核对journal、指针、manifest与实际runtime内容。[updateManager.test.js](../../test/updateManager.test.js)的supersede用例覆盖严格更高版本和保留旧回滚，同target重装链仍需专门演练。
+该静态恢复路径的实际结果需要故障演练确认；重装不能直接作为账本已清理的证据，应核对journal、指针、manifest与实际runtime内容。[updateManager.test.js](../../test/updateManager.test.js)的supersede用例覆盖严格更高版本和保留旧回滚，同target重装链仍需专门演练。
 阶段期限在`PHASE_TIMEOUTS`统一声明，具体网络/页面探测还有更短预算；超时值不能混用为同一个总耗时保证。
 
 ## 8. 信任链与网络重试
@@ -200,7 +200,7 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 默认最多3次，配置上限5次；408、429、500、502、503、504可重试，404、证书失败、大小越界、显式取消停止重试。
 重试属于下载层；授权、apply、confirm、rollback各有事务约束，不能把下载重试规则推广成任意RPC的自动重放。
 最终重定向目标需满足HTTPS与host allowlist；[releaseProxy.js](../../native-host/src/releaseProxy.js)的`resolveReleaseProxy()`优先读取环境HTTP(S)代理并处理NO_PROXY，无环境代理时仅macOS/Windows读取系统代理，Linux使用环境配置或直接连接。SOCKS/PAC需另行提供HTTP代理端点。
-上述源码约束未在本轮真实代理、DNS故障或下载中断环境执行验证。
+网络验证需覆盖真实代理、DNS故障和下载中断，并分别检查重试次数、共享deadline及取消传播。
 
 ## 9. 手动升级与 Bootstrap 边界
 
@@ -224,9 +224,9 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 
 [verify-release-artifacts.mjs](../../scripts/verify-release-artifacts.mjs)的`--require-signature`分别执行manifest签名、归档内容和`SHA256SUMS`校验。`verifyReleaseSignature()`验证签名字节，`verifyChecksums()`比较实际文件与checksum清单；当前没有将实际bundle大小及SHA-256再与已签manifest的`updateBundle`声明比较。
 静态反例是重压缩仍符合结构约束的bundle、同步更新`SHA256SUMS`并保留原签名manifest：这些检查可分别成立，运行时`stageCandidate()`仍会因签名声明与下载字节不符而拒绝。
-该验证缺口来自静态控制流核对，本轮没有已发布资产损坏的现场证据。[releaseScripts.test.js](../../test/releaseScripts.test.js)检查构建时产物与manifest摘要一致，不能替代签名后实际产物的绑定核验；该反例尚未执行。
+该静态边界需以重压缩后的签名产物验证；它本身不证明已发布资产存在损坏。[releaseScripts.test.js](../../test/releaseScripts.test.js)检查构建时产物与manifest摘要一致，不能替代签名后实际产物的绑定核验。
 
-源码基线中的 [.github/workflows/release.yml](../../.github/workflows/release.yml)顺序如下；当前工作树的npm等待步骤另有未提交候选。
+源码基线中的 [.github/workflows/release.yml](../../.github/workflows/release.yml)顺序如下：
 
 1. macOS、Ubuntu、Windows矩阵执行测试、架构预算、更新边界和大型项目benchmark。
 2. 核对版本/tag/日期，检查目标GitHub release尚未正式发布。
@@ -235,14 +235,14 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 5. 验证npm可见性与integrity，最后解除GitHub draft标记。
 
 已正式发布的GitHub release会被前置检查拒绝覆盖；draft上传配置仍允许覆盖文件，故重跑工作流不能直接视为安全的恢复动作。
-基线npm等待逻辑仍是十二次、每次五秒轮询后比较metadata integrity；工作树的新等待脚本只属于候选，见[证据登记](evidence-and-drift.md)。
+该基线的npm等待逻辑为十二次、每次五秒轮询后比较metadata integrity。
 `verify:update-hop`默认选择前一稳定版；同Bootstrap协议测试实际升级，不同协议测试旧updater拒绝并要求重装。
 它会准备临时安装并下载旧资产；`--local-test-key`使用临时签名验证流程，不能证明正式发布密钥和公开资产正确。
 “覆盖最旧支持版本”需额外明确base ref及证据；默认前一稳定版演练不能自动提供该结论。
 
-## 11. 修改联动与最近验证
+## 11. 修改联动与验证入口
 
-| 改动 | 必须联动阅读 | 最近测试定义 |
+| 改动 | 必须联动阅读 | 相关测试 |
 | --- | --- | --- |
 | 目录/扩展ID/系统注册 | managedInstall、nativeHostPlatform、manifest、CLI | [managedInstall.test.js](../../test/managedInstall.test.js)、[nativeInstallScripts.test.js](../../test/nativeInstallScripts.test.js) |
 | 更新按钮/延后/撤销 | coordinator、consent、revocation、UI | [updateConsent.test.js](../../test/updateConsent.test.js)、[updateRevocationIntent.test.js](../../test/updateRevocationIntent.test.js) |
@@ -251,7 +251,7 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 | Bootstrap形状/协议迁移 | 两份manifest、protected paths、manual note、update-hop | [updateManualInstall.test.js](../../test/updateManualInstall.test.js)、[updateBoundaryWorkingTree.test.js](../../test/updateBoundaryWorkingTree.test.js) |
 | 发布包/工作流 | build-release、npm范围、签名与产物验证、workflow | [releaseScripts.test.js](../../test/releaseScripts.test.js)、[updateHopRehearsalWiring.test.js](../../test/updateHopRehearsalWiring.test.js) |
 
-以下命令仅提供验证入口，本轮未执行；第一条列出测试，第二条执行所选测试：
+以下命令提供验证入口；第一条列出测试，第二条执行所选测试：
 
 ```sh
 node scripts/run-tests.mjs --list test/updateManager.test.js test/updateRevocationIntent.test.js
@@ -263,10 +263,10 @@ node scripts/run-tests.mjs test/updateManager.test.js test/updateRevocationInten
 `npm run build:release`会生成内容和发布目录；`npm run verify:update-hop`会访问旧资产并操作临时安装。执行前按任务范围选择这些有副作用的工具。
 源码测试、已安装浏览器检查、三平台CI、正式签名及公开下载核验分别记录，不能相互替代。
 
-## 12. 反例与待验证主张
+## 12. 边界场景与验证要点
 
 1. 磁盘版本已升级、页面仍旧：应检查`reload_required`与当前加载摘要，不能宣布全部runtime已切换。
-2. UI空闲、Native计数归零、仍有退出未确认记录：更新gate未提供全进程退出证明，需单独审阅屏障与异常生命周期。
+2. UI空闲、Native计数归零、仍有退出未确认记录：更新gate未提供全进程退出证明，需单独检查屏障与异常生命周期。
 3. 点击取消、下载请求已abort、Native锁尚未释放：只能报告取消待确认；安装已开始时还可能返回too-late并转恢复。
 4. 页面和Native版本相等、capabilities齐全、写回仍失败：健康检查已完成其加载职责，业务回归仍需单独验证。
 5. 安装注册阶段失败：扩展目录恢复不足以证明Native指针及系统注册全部回退，应检查实际磁盘与注册状态。
@@ -275,4 +275,4 @@ node scripts/run-tests.mjs test/updateManager.test.js test/updateRevocationInten
 8. 旧`applying`事务下手动重装同target：安装器保留journal，严格版本条件不会将它supersede；需核验后续恢复对指针、manifest和runtime的影响。
 9. 多个管理根中卸载旧副本：共用bridge和注册可能影响仍保留的副本，管理目录存在不足以证明Native入口可用。
 
-这些边界均未在本轮通过真实故障注入或Chrome验收确认；后续红队应挑战上述限定是否覆盖实际调用路径，再补证据或调整契约。
+这些场景需要通过故障注入和Chrome验收检查实际调用路径；验证结果应分别记录安装事实、加载身份、事务恢复和业务功能，避免以单一成功信号替代整条链路的保证。

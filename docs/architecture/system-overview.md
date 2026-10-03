@@ -1,6 +1,6 @@
 # 系统结构与状态归属
 
-本页说明 Codex Overleaf Link 的执行环境、代码加载、主调用链和领域术语。基线为 `2073ae74747431aab8d529803d4e9f8197262388`，核对日期 2026-10-03。以下运行描述为 `Current behavior` 的静态源码结论；具体兼容性和故障恢复仍需对应执行证据。
+本页说明 Codex Overleaf Link 的执行环境、代码加载、主调用链和领域术语。适用产品版本为 `2.5.0`，源码基线为 `2073ae74747431aab8d529803d4e9f8197262388`。
 
 ## 执行环境
 
@@ -105,7 +105,7 @@ I_{run}=(projectId,sessionId,runId),\qquad
 I_{view}=(accountScopeId,projectId,generation).
 \]
 
-身份像收件标签，决定异步结果应交给哪个项目和运行；实际运行还捕获账号字段。不同层应传递各自所需身份，缺失或不匹配时停止相关写入属于 `Target contract`。现有 RPC 的具体 identity 策略及例外必须查协议目录和[差异登记](evidence-and-drift.md)，公式不能证明所有分支已经满足契约。
+身份像收件标签，决定异步结果应交给哪个项目和运行；实际运行还捕获账号字段。不同层应传递各自所需身份，缺失或不匹配时停止相关写入属于 `Target contract`。各 RPC 的 identity 策略定义在 [pageRpcContract](../../extension/src/shared/pageRpcContract.js)，现有例外见[写回章节](auto-edit-undo.md)；公式不能证明所有分支已经满足契约。
 
 ## 谁决定哪种状态
 

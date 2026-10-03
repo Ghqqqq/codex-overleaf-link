@@ -8,17 +8,13 @@
 !/docs/architecture/feature-map.md
 !/docs/architecture/auto-edit-undo.md
 !/docs/architecture/run-state-and-recovery.md
-!/docs/architecture/evidence-and-drift.md
-!/docs/architecture/navigation-acceptance.md
 !/docs/architecture/native-execution.md
 !/docs/architecture/providers-and-protocols.md
 !/docs/architecture/parallel-subagents.md
 !/docs/architecture/writing-style-and-skills.md
 !/docs/architecture/ui-and-loading.md
 !/docs/architecture/installation-and-updates.md
-!/docs/architecture/red-team-review.md
 !/docs/architecture/context-and-governance.md
-!/docs/architecture/coverage-audit.md
 native-host/bin/
 node_modules/
 dist/

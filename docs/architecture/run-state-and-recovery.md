@@ -1,15 +1,10 @@
 # 运行状态、队列与恢复
 
-基线：`main@2073ae74747431aab8d529803d4e9f8197262388`，包版本 `2.5.0`，核对日期 `2026-10-03`。
-本文依据该基线源码及已有测试定义；本轮未执行测试、构建或浏览器验收。
+源码基线：`main@2073ae74747431aab8d529803d4e9f8197262388`；包版本 `2.5.0`。
 阅读入口：[架构总览](README.md) → [功能定位表](feature-map.md) → 本文。
-Auto 写入和 Undo 的页面操作链见 [Auto 编辑与撤销](auto-edit-undo.md)；证据分级见 [证据与漂移](evidence-and-drift.md)。
+Auto 写入和 Undo 的页面操作链见 [Auto 编辑与撤销](auto-edit-undo.md)。
 
-## 1. 适用范围与证据标签
-
-- **源码事实**：能够沿当前调用链核对的行为，下文未另作标注的实现描述均属此类。
-- **维护目标**：后续修改必须维持的约束；目标本身不证明所有异常环境已经通过验证。
-- **未验证**：需要运行测试、实际浏览器或外部进程才能确认的性质。
+## 1. 本页用途
 
 本页回答四类修改问题：任务如何取得执行配置、状态由谁修改、刷新后如何恢复、Undo 能力如何保存和重建。
 定位时优先查符号，再扩展到相邻模块；`contentRuntime.js` 仍包含编排和依赖装配，文件体量不能代表全部领域所有权。
@@ -44,10 +39,10 @@ generation 类似取号单上的批次：同一个项目重新加载后，旧批
 | 排队输入 | `RunInputQueue` 的值与 `RunQueueScheduler` 的调度 | composer 队列卡、claim 元数据、会话记录 |
 | 提交时执行选择 | `RunExecutionSnapshot` | run record、队列 payload、Native providerSelection |
 | Native 执行与项目锁 | Native task runner；content 保存绑定信息 | Native 完成后，页面写回仍可能继续 |
-| 写回证据与后续操作 | `WritebackSettlement`、`SettlementFacts` | 报告、Accept/Undo、重试能力 |
+| 写回证据与后续操作 | `WritebackSettlement`、`SettlementFacts` | 运行报告、Accept/Undo、重试能力 |
 | 共享历史的持久副本 | 后台共享库及 scoped persistence 协调 | 活页内存、最近项目与被动刷新均为消费方 |
 
-运行状态回答“本轮执行到哪一步”；Native turn 回答“模型当前接收哪个输入”；写回结算回答“文件发生了什么、证据到哪一步”。
+运行状态回答“该运行执行到哪一步”；Native turn 回答“模型当前接收哪个输入”；写回结算回答“文件发生了什么、证据到哪一步”。
 `applied/readBack/saved/mirrored/compiled/settled` 是不同证据维度，不能由 `run.status === completed` 推导全部成立。
 结算入口见 [writebackSettlement.js](../../extension/src/shared/writebackSettlement.js) 的 `settle`，历史投影见 [settlementFacts.js](../../extension/src/shared/settlementFacts.js) 的 `projectRunSettlement`。
 
@@ -162,7 +157,7 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 `persistPanelState` 使用事务捕获的账号和项目，`SessionPersistence.writeSessions` 再核对所属账号、墓碑和更新版本。
 进入事务后的 queueMutation 或 reviewRunIds 保存失败会向调用者抛出；普通保存存在紧凑 fallback，不能据此宣称完整历史一定耐久。
 `saveState` 在项目缺失或运行已导航分离的入口守卫，仅对 reviewRunIds 抛错；queueMutation 仍可正常返回而跳过提交。
-因此调度器等待保存 Promise 与获得 durable receipt 需要分别判断，具体时序是否导致丢失或重复执行尚未验证，见[证据与差异 G-07](evidence-and-drift.md#g-07队列保存调用可能在事务前静默跳过)。
+因此调度器等待保存 Promise 与获得 durable receipt 需要分别判断；入口早退与队列提升的可达时序需要组合验证，尚不能据此断言任务已经丢失或重复执行。
 `finishRunView` 尝试在终态展示前刷新排队保存，但调用存在错误捕获；“任何存储失败下均能即时重载同样终态”仍需单独验证。
 **维护目标**：新增强持久化操作应选择明确失败可见的保存入口，不应仅调用延迟保存后给出成功保证。
 
@@ -187,7 +182,7 @@ owner 丢失后，恢复流程补齐未读取事件、记录 `interruptedDraft`�
 - `recoverRecordedRunFailure` 由 `normalizeRun` 调用，依据严格匹配的父运行后处理失败事件修复 failed 状态；事件类型、活动元数据、作用域及时间均参与检查，普通工具失败或子代理错误不足以触发修复。
 
 这两条路径修正“证据已终结、标签仍为 running”的记录；journal 恢复负责 owner 丢失后的中断草稿。不能把两者统一解释为必须 ownerLost 才能改变运行状态。
-最近定义为 [settledRunRecovery.test.js](../../test/settledRunRecovery.test.js) 和 [recordedRunFailureRecovery.test.js](../../test/recordedRunFailureRecovery.test.js)：前者结合归一化行为与源码装配断言，后者检查事件识别及 StorageDb 投影往返，均未执行真实跨页恢复。
+相关测试为 [settledRunRecovery.test.js](../../test/settledRunRecovery.test.js) 和 [recordedRunFailureRecovery.test.js](../../test/recordedRunFailureRecovery.test.js)：前者结合归一化行为与源码装配断言，后者检查事件识别及 StorageDb 投影往返，均不覆盖真实跨页恢复。
 
 [sharedSessionViewSync.js](../../extension/src/content/sharedSessionViewSync.js) 订阅跨页面变化，只在无活动运行、无保存、无本地草稿或未持久修改时刷新。
 刷新前后核对 scope、generation、本地版本与签名。守卫通过后先调用 `adoptSharedSessionBaseline(records)`，再调用 `apply` 归一化 state 并渲染；单独读取 snapshot 不更新 baseline。
@@ -237,7 +232,7 @@ legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；�
 
 ## 7. 修改路由与最窄验证
 
-命令在仓库根目录执行；下列测试均为已有定义，本轮未执行。仅选择与改动对应的一行，再按实际失败扩展范围。
+命令在仓库根目录执行；下表列出各层行为对应的测试入口。仅选择与改动对应的一行，再按实际失败扩展范围。
 
 | 改动 | 主改入口与联动消费者 | 最窄命令 | 检查条件 |
 |---|---|---|---|
@@ -252,6 +247,6 @@ legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；�
 
 上述队列测试替换保存和启动依赖；scoped transaction 测试使用内存 adapter；导航后结算行为测试替换 coordinator/StorageDb，wiring 测试检查源码；Undo 材料测试直接调用压缩 helper，Timeline 测试使用模拟按钮。它们适合定位各层契约，不能替代真实端口、IndexedDB、DOM 及跨页时序的组合验证。
 
-**未验证**：真实浏览器关页与 worker 重启的时序、跨域同账号迁移、存储配额耗尽后的完整恢复、外部进程取消速度、Overleaf 实际 Undo 的效果。
+**验证边界**：真实浏览器关页与 worker 重启的时序、跨域同账号迁移、存储配额耗尽后的完整恢复、外部进程取消速度、Overleaf 实际 Undo 的效果，均需要独立的端到端验证。
 这些场景需按 [Auto 编辑与撤销](auto-edit-undo.md) 的端到端链准备证据；静态源码和测试定义不能替代实际验收。
-维护者修改身份、队列、存储 schema 或动作投影后，应同时更新本页对应链路、功能定位表和证据记录。
+维护者修改身份、队列、存储 schema 或动作投影后，应同时更新本页对应链路、功能定位表和相关测试。

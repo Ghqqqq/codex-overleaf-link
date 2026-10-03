@@ -1,10 +1,10 @@
 # 功能修改导航
 
-基线：`main@2073ae7`，版本 `2.5.0`；静态核查日期：2026-10-03。
+适用产品版本：`2.5.0`；源码基线：`2073ae7`。
 本页记录当前实现的入口、状态 owner、必要联动和最近测试。owner 指拥有状态或行为决策权的模块；UI 通常只展示该状态的投影。
-下列测试路径仅证明测试定义存在，本轮没有执行测试，也没有验证真实 Chrome/Overleaf 交互。
+下列测试提供对应行为的验证入口；实际 Chrome/Overleaf 交互还需按改动选择浏览器场景。
 
-入口：[架构指南首页](README.md) · [系统概览](system-overview.md) · [证据与漂移](evidence-and-drift.md)。
+入口：[架构指南首页](README.md) · [系统概览](system-overview.md)。
 核心链路：[Auto 编辑与 Undo](auto-edit-undo.md)、[运行状态与恢复](run-state-and-recovery.md)。其他领域页按以下分组展开主路径和失败边界；实现变动仍需检查对应源码。
 查找方法：先匹配用户改动意图，再沿“入口 → 状态 owner → 联动 → 测试”阅读；符号名可直接用于源码搜索。
 
@@ -174,7 +174,7 @@ Content 源模块采用以下顺序；源码入口与浏览器注入清单承担
 
 1. 在 [content-entry.mjs](../../extension/entries/content-entry.mjs) 加入 canonical source import；通过 [ModuleRegistry.define](../../extension/src/content/moduleRegistryKernel.js) 声明显式依赖。
 2. 需要直接暴露给组合根时，更新 [legacyGlobalRegistry](../../extension/src/content/legacyGlobalRegistry.js) 的依赖集合；在 [contentRuntime](../../extension/src/content/contentRuntime.js) 装配 callbacks/getters。
-3. 由 [build-content-bundle](../../scripts/build-content-bundle.mjs) 生成 bundle 与 metadata；不手改生成文件。该操作会写入产物，本轮未执行。
+3. 由 [build-content-bundle](../../scripts/build-content-bundle.mjs) 生成 bundle 与 metadata；不手改生成文件。该操作会写入产物。
 4. [direct manifest](../../extension/manifest.json) 与 [runtime manifest](../../extension/runtime-manifest.json) 当前各列一个 content bundle；新增普通 content 模块不向两处追加源脚本。
 5. 验证定义位于 [contentModuleRegistry](../../test/contentModuleRegistry.test.js)、[contentScriptLoadOrder](../../test/contentScriptLoadOrder.test.js)、[contentBuildIdentity](../../test/contentBuildIdentity.test.js) 和 [module graph 检查](../../scripts/check-content-module-graph.mjs)。
 

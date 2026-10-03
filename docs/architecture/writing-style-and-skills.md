@@ -1,7 +1,7 @@
 # 写作风格资产与技能
 
-源码基线：`2073ae74747431aab8d529803d4e9f8197262388`；首版指南提交：`86d5a17`；核对日期：2026-10-03。
-本页的 `Current behavior` 均来自源码与测试定义的静态核查；本轮未运行模型、PDF 样本、产品测试或浏览器验收。
+源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。
+本页说明风格资产的生成、发布、消费与普通技能的安装边界；源码推导、局部测试覆盖和完整生成验收分别说明。
 入口：[架构指南](README.md) · [功能修改索引](feature-map.md) · [运行状态与恢复](run-state-and-recovery.md)。
 
 ## 功能边界与术语
@@ -12,7 +12,7 @@ Write in My Style 从参考资料提取有出处的表达习惯，为目标项�
 
 | 对象 | 权威位置与作用 | 不应推导的保证 |
 | --- | --- | --- |
-| 本地 Codex skills | 用户 Codex home；由 `loadCodexLocalSkills` 控制继承 | 启用开关不证明任意技能本轮一定被调用 |
+| 本地 Codex skills | 用户 Codex home；由 `loadCodexLocalSkills` 控制继承 | 启用开关不证明任意技能在当前运行中一定被调用 |
 | Codex Overleaf skills | `getCodexOverleafSkillsRoot()` 下的 `<id>/SKILL.md` | 文件存在不证明内容可信或任务执行成功 |
 | 项目本地 skills | 镜像项目根的 `.codex-overleaf/skills/<id>.md`；兼容 API 及选定内容注入 | 当前 Settings 列表并未切换为项目 skills 列表 |
 | 参考草稿 | `WritingStyleSettings` 内存中的项目选择、PDF File、dirty 标记 | 修改草稿不会立即替换已有风格 |
@@ -143,8 +143,8 @@ manifest 记录账号哈希、目标项目、模型、来源元数据、特征�
 普通 `get()` 通过 `readBundle()` 读取 manifest 后即可返回 `ready: true`，未逐一验证全部声明资产；`includePreview` 也只检查预览所读取的文件。
 因此已发布、元数据可读及全部资产可消费需要分别取证；消费限额与发布前验证的缺口见下文“限额与资料流向”。
 普通父任务与 broker worker prompt 使用同一风格上下文；installer 轮次跳过该上下文。
-快照为 null 时明确要求本轮不沿用早前风格，避免同一模型会话中的历史指令残留。
-后续资产读取由 agent 按需求完成；引用版本不会扩大本轮编辑范围或改变 Track/Undo 规则。
+快照为 null 时明确要求当前运行不沿用早前风格，避免同一模型会话中的历史指令残留。
+后续资产读取由 agent 按需求完成；引用版本不会扩大当前运行的编辑范围或改变 Track/Undo 规则。
 
 ## 取消、导航与失败恢复
 
@@ -165,7 +165,7 @@ manifest 记录账号哈希、目标项目、模型、来源元数据、特征�
 关闭风格时，[writingStyleRuntime.set()](../../native-host/src/writingStyleRuntime.js) 先调用 `saveConfig()`，随后调用 `get()`；后者只要存在 `state.version` 就读取 manifest。
 若此读取失败，[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 的 `writing-style.set` 分支返回错误，[writingStyleSettings.toggle()](../../extension/src/content/writingStyleSettings.js) 则按旧 meta 恢复开关显示。
 [contentRuntime.runTask()](../../extension/src/content/contentRuntime.js) 对非队列提交先执行 `ensureLoaded(true)`，因此即使风格已在磁盘上关闭，版本目录或 manifest 损坏仍可能阻塞新任务；直接携带 null 风格快照进入 `forRun()` 的行为应另行理解。
-这些为静态错误路线；当前页未提供损坏资产后的自动降级或修复保证，普通资产内容损坏也不能一概等同于 manifest 读取失败。
+这些静态错误路线未提供损坏资产后的自动降级或修复保证；故障验证需区分普通资产内容损坏与 manifest 读取失败。
 跨视图刷新用 `CHANGE_KEY` 写入账号、项目、时间和 nonce，然后其他 controller 重新向 Native 读取配置。
 该浏览器通知只负责失效提醒；Native `config.json` 才决定权威启用状态。
 
@@ -179,7 +179,7 @@ TeX 引用正文也有约 60,000 字符及 80 个文件遍历界限；目录与�
 输出资产另受 [writingStyleRuntime.safeBundleText()](../../native-host/src/writingStyleRuntime.js) 的单文件 `text.length <= 800000` 限制；这里按 JavaScript 字符串长度计数，与输入的 UTF-8 字节配额不同。
 `build()` 将全部 documents（包括正文及逐行 origins）序列化到 `references/source-index.json`，发布前未调用同一消费校验。
 出处路径逐行重复会放大索引：例如三份各约 3,000 行、每行 20 字符、出处路径约 100 字符的 TeX，仅正文加重复路径就约为 \(3\times3000\times(20+100)=1{,}080{,}000\) 字符，尚未计 JSON 字段。
-这是合规输入可能生成超限资产的静态边界示例，未执行复现。普通 `get()` 仍可能返回 ready，而 `forRun()` 的全资产检查及 `prepareSources()` 的 saved 来源复用会在读取该索引时拒绝。
+该估算说明合规输入可能生成超限资产，实际输出大小需用合成资料验证。普通 `get()` 仍可能返回 ready，而 `forRun()` 的全资产检查及 `prepareSources()` 的 saved 来源复用会在读取该索引时拒绝。
 `Known gap`：发布前缺少与消费层一致的全资产可读性及大小检查；正文采样上限不能单独证明版本包可消费。
 
 Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元数据。
@@ -228,7 +228,7 @@ installer 完成由模型运行结果汇总，当前路径未统一核验是否�
 
 ## 修改路由与验证定义
 
-| 修改意图 | 主改与必要联动 | 最近测试定义，本轮未运行 |
+| 修改意图 | 主改与必要联动 | 相关测试与验证范围 |
 | --- | --- | --- |
 | 参考选择、状态和预览 | `writingStyleSettings`；content 组合、Settings 挂载和 epoch | [p2UiRegression](../../test/p2UiRegression.test.js)，仅相关 UI 协调覆盖 |
 | 项目读取与取消 | `referenceProjects`；snapshot router、page dispatcher、RPC 及加载清单 | [pageRpcContract](../../test/pageRpcContract.test.js)、[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js) |
@@ -239,17 +239,17 @@ installer 完成由模型运行结果汇总，当前路径未统一核验是否�
 | 普通技能安装和开关 | `localSkills`、`codexHome`；panel、偏好、runner、command approval | [localSkills](../../test/localSkills.test.js)、[codexHome](../../test/codexHome.test.js)、[contentPanelModules](../../test/contentPanelModules.test.js)、[codexSessionRunner](../../test/codexSessionRunner.test.js) |
 
 现有定义覆盖配额、RPC、快照、技能库与安装命令等契约；部分集成 harness 也加载参考模块。
-本轮未定位到 profile/evidence/build 的独立专项行为测试，不能据此断言整个风格功能没有覆盖。
-新增真实验证应使用合成参考资料，分别证明取消、旧版本保留、跨项目迟到响应及资产损坏拒绝；文档检查不替代这些运行证据。
+profile/evidence/build 的专项验证需覆盖 JSON 修复、引用匹配、资产发布及失败恢复，不能仅由配额或 UI 协调用例推导完整生成行为。
+完整链路验证应使用合成参考资料，分别证明取消、旧版本保留、跨项目迟到响应及资产损坏拒绝。
 
-## 反例与维护契约
+## 边界场景与验证要点
 
-- 反例：调换参考 PDF 后立即让排队任务读取“最新风格”。`dirty` 草稿与已发布版本各有生命周期，排队任务沿用提交引用。
-- 反例：关闭 Settings 或切换项目就宣告生成已停止。epoch 只阻止旧 UI 响应；Native 已开始的任务需要明确取消及停止证据。
-- 反例：把选定项目目录的完整读取当成全文学习。提取还有主文件、include、采样和可读性边界，需检查来源 metadata 的 truncated。
-- 反例：将章节例句自动变成目标论文提纲。validator 拒绝章节 guidance，证据只支持表达特征，目标事实和结构继续受当前请求约束。
-- 反例：复制新官方 Skill 到源码后推断现有安装全部升级。`ensureCodexOverleafSkillInstalled()` 保留已存在的正常文件。
+- 调换参考 PDF 后执行排队任务：`dirty` 草稿与已发布版本各有生命周期，应验证排队任务仍沿用提交引用。
+- 生成中关闭 Settings 或切换项目：epoch 只阻止旧 UI 响应；Native 已开始的任务需要明确取消及停止证据。
+- 完整读取选定项目目录：提取仍受主文件、include、采样和可读性边界约束，需检查来源 metadata 的 truncated。
+- 生成章节例句：validator 拒绝章节 guidance，证据只支持表达特征；验证需确认目标事实和结构继续受当前请求约束。
+- 更新源码内官方 Skill：`ensureCodexOverleafSkillInstalled()` 保留已存在的正常文件，需分别检查首次补装与既有安装的内容。
 
 `Target contract`：保留旧运行对旧版本的可解析引用；任何清理策略都需先定义队列、历史和活动运行的引用寿命。
 `Target contract`：新增资料类型须声明读取身份、字节/编码预算、抽取方式、出站、持久化、取消和清理条件。
-`Known gap`：尚缺上述完整生成与恢复路径的本轮执行证据；具体待验证边界已逐段注明，不将静态推断升级为浏览器验收结论。
+完整生成与恢复验收需要串联 Settings、Native build、版本发布、后续运行消费和异常恢复；局部测试及静态推导各自保留其适用范围。

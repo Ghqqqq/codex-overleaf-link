@@ -1,7 +1,6 @@
 # 上下文扫描与写入治理
 
-本页补足跨领域导航：任务哪些材料进入敏感扫描、项目路径规则何时生效、扫描与写回权限如何分工。产品源码基线 `2073ae74747431aab8d529803d4e9f8197262388`，文档审查起点 `d5109f1`，日期 2026-10-03。
-以下均为静态核对；测试仅阅读定义，未扫描真实项目或执行模型请求。
+本页说明哪些任务材料进入敏感扫描、项目路径规则何时生效，以及扫描与写回权限如何分工。适用产品版本为 `2.5.0`，源码基线为 `2073ae74747431aab8d529803d4e9f8197262388`。
 
 ## 1. 三种机制各自约束什么
 
@@ -96,6 +95,6 @@ runtime 的 `createAuditDraftForRun/updateAuditSensitiveFindings/finalizeAuditRe
 | 只读与可写路径规则 | GovernanceRules、WritebackPlan、orchestrator、错误展示和审计 | [governanceRules.test.js](../../test/governanceRules.test.js) 的路径和优先级行为；[writebackOrchestratorInitialization.test.js](../../test/writebackOrchestratorInitialization.test.js) 的装配 |
 | 新增诊断或历史字段 | auditRecords、storageDb、diagnosticsExport、历史视图 | [auditRecords.test.js](../../test/auditRecords.test.js) 的摘要与处理规则；真实导出另行验证 |
 
-最窄命令示例为 `node scripts/run-tests.mjs test/sensitiveScan.test.js test/governanceRules.test.js`；本轮没有执行。
+最窄命令示例为 `node scripts/run-tests.mjs test/sensitiveScan.test.js test/governanceRules.test.js`。
 高价值后续场景包括：超限文件返回零发现、mirror_stale 获得新内容、入队后修改规则、rename 跨只读路径、模型修改本地只读路径后是否被正确阻止写回。
 每个场景须分别记录检测覆盖、派发数据与实际写回，不用单一“扫描通过”状态代替这些事实。

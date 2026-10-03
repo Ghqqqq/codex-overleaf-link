@@ -1,7 +1,6 @@
 # 模型连接、Provider 配置与协议适配
 
-产品源码基线：`2073ae74747431aab8d529803d4e9f8197262388`；首版指南提交：`86d5a17`；核对日期：2026-10-03。
-本文依据源码和已有测试定义，未执行产品测试、真实连接、浏览器操作或凭据读取。
+适用产品版本：`2.5.0`；产品源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。
 入口见 [系统总览](system-overview.md) 与 [功能索引](feature-map.md)；运行身份、队列见 [运行状态与恢复](run-state-and-recovery.md)。
 进程启动、app-server 生命周期、项目锁和退出屏障由 [Native 执行](native-execution.md) 说明。
 
@@ -274,7 +273,7 @@ Anthropic 对特定 HTTP 400 最多修正一次并重新 fetch；普通错误无
 **网络目的地限定**：上述 URL 校验和 `resolveRunProvider` 的披露比较均作用于配置值；三桥没有固定 DNS 解析地址，也没有逐跳重定向目的地校验。
 [Responses](../../native-host/src/responsesPassthroughBridge.js) 和 [Chat](../../native-host/src/chatCompletionsBridge.js) 的 `handleRequest`、[Anthropic](../../native-host/src/anthropicMessagesBridge.js) 的 `fetchWithRectification` 调用 fetch 时未显式设置 redirect 策略，也未在返回后检查最终 URL。
 例如已披露端点返回指向另一主机的307/308，源码没有将下一跳与已披露 hostname/baseUrl 再次比较；不能据端点披露推定每次网络连接都到同一主机或 IP。
-此处确认的是目的地守卫缺失；重定向后的正文与不同认证 header 如何传播、DNS 变化的实际影响均未执行验证，也未据此确认真实凭据泄漏。
+目的地守卫缺失构成当前网络边界的限制；重定向后的正文与不同认证 header 传播、DNS 变化的实际影响仍需受控端点验证，不能仅据守卫缺失判断已发生凭据泄漏。
 
 headers/queryParams 通过 credential-like 键名 guard；bodyOverrides 递归检查敏感键，且禁止替换核心协议字段。
 guard 允许 cache key 等例外；`sanitizeProfile` 会复制允许的 headers/query/body 配置，不能将其统称为已脱敏秘密值。
@@ -288,7 +287,7 @@ guard 允许 cache key 等例外；`sanitizeProfile` 会复制允许的 headers/
 
 ## 9. 修改路由与最窄验证
 
-下列测试为已有定义，本轮未执行；命令从仓库根运行，先选与改动直接相关的文件。
+专项测试从仓库根目录运行，按改动选择直接相关的文件；各测试的装配方式和覆盖边界见下表。
 
 | 修改意图 | 主改与联动 | 最窄命令及检查重点 |
 |---|---|---|
@@ -309,12 +308,12 @@ Response passthrough、真实 bridge HTTP 中断及 profile→launch→最终 wi
 | [providerSessionBinding.test.js](../../test/providerSessionBinding.test.js)、[projectProviderRevision.test.js](../../test/projectProviderRevision.test.js) | 使用 FakeBroadcastChannel、替换的目录/Native 返回或内存项目状态，验证投影和 revision 分支；不能证明实际浏览器持久化与 Native 事务共同完成。 |
 | [modelSelectionRecovery.test.js](../../test/modelSelectionRecovery.test.js) | VM 中的选择控件和替换的 sendBackgroundNative 返回验证模型恢复与迟到结果守卫；未连接真实 Provider。 |
 
-本轮检查上述测试未发现“准备协议桥期间取消，随后进入测试 spawn”的覆盖，也未发现三桥 HTTP 重定向目的地与 DNS 地址变化的整链用例。
-后续补证应采用合成凭据与受控端点，分别断言目标地址、正文/header 传播、能力取值、最终 wire 预算及取消后的进程启动/退出；本轮未运行这些场景。
+现有测试缺少“准备协议桥期间取消，随后进入测试 spawn”的覆盖，也缺少三桥 HTTP 重定向目的地与 DNS 地址变化的完整调用链用例。
+这些场景应采用合成凭据与受控端点验证，分别断言目标地址、正文/header 传播、能力取值、最终 wire 预算及取消后的进程启动/退出。
 
-## 10. 红队反例与待验证问题
+## 10. 边界场景与验证要点
 
-1. **“Test 是只读检查，成功不会落盘。”** 已保存模型且指纹匹配时会写 diagnostics；应核对 storeRevision 增加、profile revision 保持，以及未保存模型跳过记录的分支。
-2. **“buffered/bodyOverrides 对三种协议都生效。”** Chat、Anthropic、Responses 的实际请求构造不同；待用本地模拟端点覆盖 UI→profile→launch→wire body，尤其检查探测报告与真实 stream 是否一致。
-3. **“专用 API key 没出现在目录，所以任意配置都不含秘密。”** headers/query/body 的键名检查和日志调用者范围有限；待用合成标记检验未识别字段、错误回显、URL 路径及事务恢复文件，禁止用真实凭据取证。
-4. **“流中断后续传一定保留任务，且不会重复工具调用。”** partial 工具 guard、内存 history、重复预算和 Anthropic incomplete 原因存在限定；待模拟 socket reset、idle、client close、history 淘汰及半段工具参数，分别验证失败、继续与不重放边界。
+1. **连接测试成功后的持久化。** 已保存模型且指纹匹配时会写 diagnostics；核对 storeRevision 增加、profile revision 保持，以及未保存模型跳过记录的分支。
+2. **不同协议的响应模式与 bodyOverrides。** Chat、Anthropic、Responses 的实际请求构造不同；使用本地模拟端点覆盖 UI→profile→launch→wire body，检查探测诊断与实际 stream 参数是否一致。
+3. **专用 API key 之外的敏感配置。** headers/query/body 的键名检查和日志调用者范围有限；使用合成标记检验未识别字段、错误回显、URL 路径及事务恢复文件，验证数据不得使用真实凭据。
+4. **流中断后的续传与工具调用。** partial 工具 guard、内存 history、重复预算和 Anthropic incomplete 原因各有限定；模拟 socket reset、idle、client close、history 淘汰及半段工具参数，分别验证失败、继续与不重放边界。

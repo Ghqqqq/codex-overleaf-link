@@ -1,7 +1,6 @@
 # Native 消息、执行与进程寿命
 
-产品源码基线：`2073ae74747431aab8d529803d4e9f8197262388`；文档首版基线：`86d5a17`；核对日期：2026-10-03。
-本页基于源码与既有测试定义，未运行产品测试、构建、浏览器操作或真实进程故障演练。
+适用产品版本：`2.5.0`；产品源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。
 `Current behavior` 表示可定位的源码事实；`Target contract` 表示维护目标；`Known gap / 未验证` 表示具体限制或尚缺的运行证据。
 下文未单独标注的实现描述均属于 `Current behavior`，不能由此推定全部平台已经验收。
 浏览器运行状态见[运行与恢复](run-state-and-recovery.md)，页面写入见[Auto 修改与撤销](auto-edit-undo.md)，模型适配见 [Provider 与协议](providers-and-protocols.md)。
@@ -79,7 +78,7 @@ Provider revision、地址披露、模型和 Auto 协议协商由 `providerRunti
 
 `Known gap / 静态参数边界`：`handleCodexRun` 仅在 `useExistingMirror` 路径把 `skipMirrorSync` 设为 true，其余路径原样传递 params；[runCodexSession](../../native-host/src/codexSessionRunner.js) 独立按 `skipMirrorSync` 跳过同步。
 因此普通 Native 请求携带 `useExistingMirror:false、skipMirrorSync:true` 及满足准入的完整快照时，可以使用原镜像，未经过上述 freshness 检查，传入快照也不会同步。后台 `sanitizeNativeRequest` 只剥离兼容性字段，未移除此参数。
-常规 [contentRuntime.js](../../extension/src/content/contentRuntime.js) 在 `runSkillInstallerTask` 显式设置该字段；此反例针对直达 Native 的参数组合，未证明普通 UI 已触发旧镜像执行。快照获准与快照实际进入镜像须分别判断。
+常规 [contentRuntime.js](../../extension/src/content/contentRuntime.js) 在 `runSkillInstallerTask` 显式设置该字段；该限制适用于直达 Native 的参数组合，普通 UI 是否能够触发旧镜像执行需结合参数生成路径验证。快照获准与快照实际进入镜像须分别判断。
 
 `runCodexSession` 的普通项目顺序如下：
 
@@ -141,7 +140,7 @@ Provider revision、地址披露、模型和 Auto 协议协商由 `providerRunti
 `handleCodexRun` 在 finally 移除所属登记并释放 token 锁；异常停止时即使锁释放，持久屏障仍可独立阻止下次准入。
 
 `Known gap / 静态参数边界`：Native `getRequestQuotaViolation` 限制字符串 ID 长度，却未要求 ID 存在；缺失 ID 或 `id:0` 的请求仍可持锁执行，但其 controller 不登记，按项目取消、steer 及 `abortAllActiveOperations` 都无法通过活动表找到它。
-浏览器 [nativeChannel.js](../../extension/src/content/nativeChannel.js) 通常生成 UUID，后台 `sendNativeRequest` 还调用 [nativeRequestIdentity.js](../../extension/src/shared/nativeRequestIdentity.js) 的 `resolve` 补齐或校验 ID；显式 `id:0` 仍按有限数字保留。这些入口行为不能作为 Native 自身要求真值 ID 的证据。本轮仅核实参数与登记控制流，未复现常规浏览器运行失去登记。
+浏览器 [nativeChannel.js](../../extension/src/content/nativeChannel.js) 通常生成 UUID，后台 `sendNativeRequest` 还调用 [nativeRequestIdentity.js](../../extension/src/shared/nativeRequestIdentity.js) 的 `resolve` 补齐或校验 ID；显式 `id:0` 仍按有限数字保留。这些入口行为不能作为 Native 自身要求真值 ID 的证据。该登记缺口由 Native 参数与控制流决定；常规浏览器运行是否会失去登记，仍需验证完整请求链。
 
 ### 取消调用链与回执强度
 
@@ -167,7 +166,7 @@ Windows 使用 `taskkill /pid <owned-pid> /t /f`，随后检查 child 退出状�
 
 `processStopBarrier.record` 原子写入镜像旁 `.codex-stop-barrier.json`；内存保留 `isStopped` 回调，持久数据去掉函数。
 重启后仅同平台、有效 PID、标记为 process group 的记录可用 `kill(-pid,0)` 探测；未知记录及 Windows 恢复记录保持隔离。
-文件解析失败、顶层非数组或超额数据按未知记录处理；数组元素结构尚未完整校验。合法 JSON `[null]` 会在 `stopped` 解引用时抛异常，不能声称所有损坏数据都能转为 unknown 隔离记录；此为静态恢复缺口，未进行真实文件故障验证。
+文件解析失败、顶层非数组或超额数据按未知记录处理；数组元素结构尚未完整校验。合法 JSON `[null]` 会在 `stopped` 解引用时抛异常，不能声称所有损坏数据都能转为 unknown 隔离记录。这是恢复路径的已知限制，真实文件故障的影响范围仍需验证。
 写盘失败仅附加错误信息，不能承诺重启后一定还保留屏障。
 当前屏障准入位于 `handleRequest`，只覆盖 `codex.run/mirror.sync/mirror.patchFiles/mirror.confirmWriteback`。
 直接调用更底层 workspace 函数、其他方法、线程分叉及外部 agent 路径不能自动继承这项检查。
@@ -250,7 +249,7 @@ Base64 字节数约为 \(4\lceil n/3\rceil\)，外面还有 JSON 与 diff/patch�
 
 ### 测试的真实入口与替换边界
 
-下表说明既有定义能够提供哪一层证据；未执行这些测试，也不能把不同 harness 的结果拼接成一次完整链路验收。
+下表说明既有测试的入口及依赖替换范围；不同测试环境的局部结果不能合并为完整调用链的验收结论。
 
 | 测试范围 | 实际进入的实现 | 替换依赖及未覆盖部分 |
 | --- | --- | --- |
@@ -265,7 +264,7 @@ Base64 字节数约为 \(4\lceil n/3\rceil\)，外面还有 JSON 与 diff/patch�
 | `nativeEnvironment/codexRuntimeIdentity/codexHome` | 环境发现、身份构造及临时目录准备 | 使用临时候选脚本、注入路径/平台或假配置；不代表当前安装、登录状态及真实全局目录验收 |
 | `nativeTransportEnvelope/nativeQuotas/nativeAssetTransfer` | 直接调用 helper；资产测试通过临时镜像读取分块 | 未经过 Chrome Native Messaging 平台限制与页面二进制 commit |
 
-以下仅为后续修改时的命令导航；本轮未执行：
+专项测试从仓库根目录运行；`--list` 只列出选中的测试：
 
 ```sh
 node scripts/run-tests.mjs --list test/readProgressGuard.test.js test/backgroundNativeError.test.js
@@ -273,23 +272,22 @@ node scripts/run-tests.mjs test/readProgressGuard.test.js test/backgroundNativeE
 node scripts/run-tests.mjs test/nativeTransportEnvelope.test.js test/nativeTransportEnvelopeFallback.test.js test/nativeQuotas.test.js
 ```
 
-`readProgressGuard.test.js` 已定义用户取消、POSIX 后代进程、Windows taskkill 注入、发信号不算退出等场景；测试定义不等于本轮通过。
-静态检索未发现独立 `processStopBarrier` 测试或 Native 断连 1,500 ms 与完整停止流程竞速的直接覆盖；跨重启和跨平台保证仍未验证。
-本轮静态检索也未发现普通运行直达 `skipMirrorSync`、缺失/零 ID 运行登记的专项断言。`projectLock` 中题为 force-release zombie lock 的用例实际检查无锁及正常取消后的无锁状态，不能作为“有锁但无 controller”删除分支的直接覆盖。
+`readProgressGuard.test.js` 覆盖用户取消、POSIX 后代进程、Windows taskkill 注入、发信号不算退出等场景，覆盖范围受上表的依赖替换限制。
+现有测试缺少独立 `processStopBarrier` 用例，也缺少 Native 断连 1,500 ms 与完整停止流程竞速的直接覆盖；跨重启和跨平台行为仍需集成验证。
+普通运行直达 `skipMirrorSync`、缺失/零 ID 运行登记也缺少专项断言。`projectLock` 中题为 force-release zombie lock 的用例实际检查无锁及正常取消后的无锁状态，不能作为“有锁但无 controller”删除分支的直接覆盖。
 遗留 `task.run → runExternalAgent` 在 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js) 另走 stdout 整体 JSON/stderr 事件路径，timeout 和 kill 实现独立；修改普通 runner 时须明确是否覆盖它。
 
-## 9. 红队定位题与验收边界
+## 9. 边界场景与验证要点
 
-以下题目供独立 agent 只凭指南定位源码并反驳过强结论；答案须同时引用调用方和实际守卫。
+验证应同时追踪调用方与实际守卫，并根据第 8 节区分局部测试和完整调用链。
 
-1. **“取消返回 ok，项目进程已经退出，可以立即重跑。”** 应指出后台 sent 回执、Native cancelled 回执、timing 退出证据三层，并检查 force 按钮的回执投影。
-2. **“正常 turn 完成也经过停止屏障，所有后代进程都结束。”** 应定位 `succeed` 与 `fail` 的不同路径，给出 SIGTERM 后立即 resolve 的实际位置。
-3. **“持久屏障能拦住项目的一切写操作，重启总能自动解除。”** 应列出仅四个 `handleRequest` 方法、直接底层调用边界、未知/Windows 记录及写盘失败条件。
-4. **“所有只读 RPC 可以重连重试，requestId 保证一次执行。”** 应核对显式分类、默认禁重放与缺少通用重复请求去重协议。
-5. **“收到 matching turn/completed，就能把整个 UI 标为保存成功。”** 应区分协议通知 status、runner resolve、差异收集、页面写回/保存/镜像/编译及最终 settlement。
-6. **“Native 接受完整快照，执行前就一定同步；复用旧镜像必查 freshness。”** 应沿 `useExistingMirror` 与独立 `skipMirrorSync` 两个字段定位，区分常规 Content 生成参数与 Native 直达反例。
-7. **“按项目找不到 controller，force 释放的一定是已经停止的任务锁。”** 应检查 `if(request.id)` 登记条件、镜像操作的锁寿命，以及后台补 ID 与 Native 自身准入的差别。
-8. **“codex.run 禁止重试，所以错误后不会再派发；取消测试也已经贯通整条链。”** 应分别指出三层重试入口，并按第 8 节标明测试真实入口、替换依赖与尚缺的装配证据。
+1. **取消后立即重跑。** 分别检查后台 sent 回执、Native cancelled 回执和 timing 退出证据，并核对 force 按钮的回执投影；取消请求送达不提供进程已经退出的证据。
+2. **正常 turn 完成后的进程寿命。** 对照 `succeed` 与 `fail` 的清理路径，检查 SIGTERM 后立即 resolve 对后代进程和迟到写入的影响。
+3. **持久屏障的准入与重启恢复。** 核对四个受屏障保护的 `handleRequest` 方法、底层直接调用、未知/Windows 记录和写盘失败条件。
+4. **只读 RPC 重连与重复请求。** 检查显式重试分类、默认禁止重放和 requestId 关联；当前没有通用的重复请求去重协议。
+5. **匹配的 turn/completed 到页面保存。** 分别检查协议通知 status、runner resolve、差异收集、页面写回、保存、镜像、编译及最终 settlement，避免将某一阶段的完成投影为全部成功。
+6. **完整快照准入与镜像复用。** 沿 `useExistingMirror` 与独立 `skipMirrorSync` 两个字段检查同步和 freshness 条件，并分别验证常规 Content 生成参数与直达 Native 的参数组合。
+7. **没有 controller 时 force 释放项目锁。** 核对 `if(request.id)` 登记条件、镜像操作的锁寿命，以及后台补 ID 与 Native 自身准入的差别；缺少登记不证明持锁操作已结束。
+8. **错误后重发与取消链装配。** 分别检查 app-server 兼容重试、后台传输重试和 Content 业务恢复；按第 8 节确认测试入口、替换依赖及尚缺的集成覆盖。
 
-`Target contract`：新实现若增强这些保证，应补准确的端到端证据，并更新本页、功能索引与[证据登记](evidence-and-drift.md)。
-当前指南只承诺可定位的实现与限制；异常终态协议组合、断连后残留子树、屏障重启恢复、真实浏览器后处理均保留独立验收需求。
+`Target contract`：实现或保证变化时，应补充对应端到端测试，并同步维护本页及[功能索引](feature-map.md)。异常终态协议组合、断连后残留子树、屏障重启恢复、真实浏览器后处理各需独立验收。

@@ -1,8 +1,8 @@
 # 界面、加载与输入上下文
 
-产品源码基线：`2073ae74747431aab8d529803d4e9f8197262388`；首版指南提交：`86d5a17`；核查日期：2026-10-03。
-本页补足[系统总览](system-overview.md)与[功能索引](feature-map.md)中的界面领域。`Current behavior` 指静态源码支持的实现；本轮未运行产品测试、构建、安装、浏览器或远端操作。
-完整运行归属见[运行状态与恢复](run-state-and-recovery.md)，写入证据见[Auto 编辑与撤销](auto-edit-undo.md)。本页中的测试只表示定义存在。
+产品源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。
+本页介绍[系统总览](system-overview.md)与[功能索引](feature-map.md)中的界面领域。完整运行归属见[运行状态与恢复](run-state-and-recovery.md)，写入证据见[Auto 编辑与撤销](auto-edit-undo.md)。
+源码行为、局部测试覆盖和浏览器交互验收分别说明；测试入口用于定位相应验证范围。
 
 ## 1. 两个执行世界与两种安装入口
 
@@ -49,7 +49,7 @@ runtime 对重复初始化设有标记；发现旧 panel 已在 DOM、runtime �
 `injectPageBridge` 在 capability 模块之前尝试 OT 可选依赖；这部分失败可继续保留不可用回退，其他必需脚本加载失败使 `call` 返回 bridge unavailable。
 `injectScriptOnce` 生成资源 URL，等待 load/error/timeout；列表第三项 `force` 会影响已有脚本节点处理。完成脚本装配后还要 `initializeCapability` 握手。
 方法策略来自 [pageRpcContract.METHODS](../../extension/src/shared/pageRpcContract.js)，真正分派位于 [pageBridge.dispatch](../../extension/src/pageBridge.js)；新方法需要同时定义身份、超时、取消和重放语义。
-身份策略须逐方法读取。当前 `ensureReviewing/ensureEditing` 的项目身份仍为 optional，相关边界见[证据与漂移](evidence-and-drift.md)中的 G-02。
+身份策略须逐方法读取。当前 `ensureReviewing/ensureEditing` 的项目身份仍为 optional，`dispatch()` 仅在传入身份时执行相应守卫；修改页面模式时须核对调用方是否传入捕获的项目身份，参见[Auto 编辑与撤销](auto-edit-undo.md)。
 
 ## 2. Panel 与 Settings：DOM 是状态的投影
 
@@ -165,7 +165,7 @@ Base64 长度约为 \(4\lceil B/3\rceil\)，因此该字符阈值不能当作原
 
 **当前持久链缺口。** `persistComposerAttachmentsToState` 写入顶层 `state.composerAttachments`，[SessionState.prepareStateForStorage](../../extension/src/shared/sessionState.js) 也保留该字段；但 [ScopedPersistencePanelState.persistPanelState](../../extension/src/content/scopedPersistencePanelState.js) 实际写入的 [StorageDb.extractLightweightPrefs/buildSessionRecord](../../extension/src/shared/storageDb.js) 均未包含它。
 runtime 的 `loadStoredStateForProject` 正常返回与 compact fallback 返回也不回填该字段，因此上述 helper 与一次性门槛不能证明当前刷新恢复已贯通。
-[sessionState](../../test/sessionState.test.js) 中名为“composer attachments persist across refresh”的用例只调用 normalize/compact，未穿过真实存储及 hydration；后续应覆盖 `saveState → persistPanelState → loadStoredStateForProject → restorePersistedAttachments`，本轮未执行复现。此项与第 9 节的清空/迟到读取竞态分别处理。
+[sessionState](../../test/sessionState.test.js) 中名为“composer attachments persist across refresh”的用例只调用 normalize/compact，未穿过真实存储及 hydration；刷新恢复验证需要覆盖 `saveState → persistPanelState → loadStoredStateForProject → restorePersistedAttachments`。此项与第 9 节的清空/迟到读取竞态分别处理。
 
 `runTask` 在异步 Provider/风格加载前捕获已完成附件，创建 run 后清空 composer；队列协调器拒绝带附件的排队输入，见 [RunQueueScheduler](../../extension/src/content/runQueueScheduler.js)。
 当前 controller 也有尚待验证的清空/迟到读取边界，见第 9 节；不能由去重测试推广出完整生命周期保证。
@@ -179,7 +179,7 @@ runtime 的 `loadStoredStateForProject` 正常返回与 compact fallback 返回�
 活动展开选择写入页面 `sessionStorage`，运行事实另由会话持久化保存。修改折叠展示不能据此改写运行结果或历史。
 
 写后文件回执从 [WritebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js) 调用 `renderReadOnlyDiffReview`，经 [DiffReviewPanel](../../extension/src/content/diffReviewPanel.js) 使用 runtime 注入的 [WrittenChangesView.render](../../extension/src/content/writtenChangesView.js)。当前常规装配下，逐文件折叠回执的展示 owner 是 WrittenChangesView。
-DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHunks.js) 支持的交互 hunk 决策和 `renderDiffReview`。本基线静态调用检索未找到生产外部调用 `renderDiffReview`；`createDiffReviewElement` 仍可作为未注入回执 renderer 时的只读回退。模块被打包和独立测试存在，不能证明交互式逐块审阅属于当前可达用户流程。
+DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHunks.js) 支持的交互 hunk 决策和 `renderDiffReview`。按该源码基线的静态调用关系，`renderDiffReview` 无生产外部调用；`createDiffReviewElement` 仍可作为未注入回执 renderer 时的只读回退。模块被打包和独立测试存在，不能证明交互式逐块审阅属于当前可达用户流程。
 [agentTranscript](../../test/agentTranscript.test.js) 检查事件映射；[subagentActivityView](../../test/subagentActivityView.test.js) 在伪 DOM 中装配共享活动 renderer；[writtenChangesView](../../test/writtenChangesView.test.js) 覆盖回执 helper 并用源码断言检查 runtime 注入；[reviewHunks](../../test/reviewHunks.test.js) 检查纯决策模型。它们各自覆盖局部边界，真实长流、滚动和写后展示仍待验收。
 
 ### 富文本、公式与引用
@@ -196,7 +196,7 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 [MarkdownDomRenderer](../../extension/src/content/markdownDomRenderer.js) 配置 `html:false/linkify:false`，按 token 构造 DOM；默认限制为 1,000,000 UTF-16 code units、25,000 tokens、32 层嵌套。
 超限会抛受控错误，[MarkdownText.renderMarkdownBlockText](../../extension/src/content/markdownText.js) 的 catch 尝试记录诊断并降级。
 **静态缺口。** `recordRenderingDiagnostic` 引用未声明的 `options`，而工厂参数为 `deps`；首次出现的诊断可能在 catch 内再抛 ReferenceError，不能保证进入兼容路径。runtime 传入的诊断 callback 还进入空的 `appendTechnicalEvent`，记录能力也需单独核对。
-相关片段测试在外层额外提供 `options`，不能替代真实工厂装配的异常路径。即使降级成功，也不能推定整条消息统一截断或所有 fallback 遵循同一预算；本轮未进行实际渲染复现。
+相关片段测试在外层额外提供 `options`，不能替代真实工厂装配的异常路径；验证需以实际工厂触发 renderer 失败，检查诊断与降级是否继续执行。即使降级成功，也不能推定整条消息统一截断或所有 fallback 遵循同一预算。
 [MathText.createMathNode](../../extension/src/content/mathText.js) 归一化公式、使用调用方提供的宏或默认宏，并调用 KaTeX：`trust:false`、`throwOnError:true`、`maxExpand:200`、`maxSize:20`。
 公式失败保留源码文本；KaTeX CSS、字体 WAR、过宽公式容器同属验收面。静态配置不能证明实际字体加载或窄屏视觉效果。
 `buildMarkdownLinkNodes` 对 HTTP(S) 建外链；项目路径解析为 `createLineReferenceButton`，点击时调用 `jumpToPosition` 并传当前 projectId；未识别目标退为文字。
@@ -206,7 +206,7 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 
 [DiagnosticsController.runAllDiagnostics](../../extension/src/content/diagnosticsController.js) 依次收集 Native、页面、快照和 OT 检查，并按最差 health 汇总；DiagnosticsPanel 负责菜单、loading 与结果 DOM。
 [DiagnosticsExport.exportDiagnosticsBundle](../../extension/src/content/diagnosticsExport.js) 取近期运行、audit、mirror、Native 摘要；异步采集后复核 projectId，再交给 [AuditRecords.buildDiagnosticBundle](../../extension/src/shared/auditRecords.js)。
-AuditRecords 构造摘要字段并使用 secret-like 文本处理。维护约束是避免正文、完整附件或凭据进入诊断；本轮证据只涵盖已阅读的字段与调用链，不构成全系统无泄漏证明。
+AuditRecords 构造摘要字段并使用 secret-like 文本处理。维护约束是避免正文、完整附件或凭据进入诊断；新增字段须沿采集、摘要和导出链检查，已有字段的处理不能作为其他出口的无泄漏保证。
 [Direct popup HTML](../../extension/popup.html) 和 [Managed popup HTML](../../extension/bootstrap/popup.html) 共用 [src/popup.js](../../extension/src/popup.js)；后者通过 runtime 路径加载可替换代码和 CSS。
 `ensureMinimalPopupShell` 可改造旧 managed HTML 外壳；`initPopupState/applyPopupPreferences` 读取全局语言主题、监听变化，并设置 `<html lang>`。
 launcher 开关先读 `get-panel-state`，按需发 `toggle-launcher`，再读回验证；该开关只控制侧边入口可见性，面板开合有自己的动作。
@@ -214,7 +214,7 @@ launcher 开关先读 `get-panel-state`，按需发 `toggle-launcher`，再读�
 
 ## 8. 最小改动配方与验证路由
 
-| 改动意图 | 最小联动 | 最近已有测试 |
+| 改动意图 | 最小联动 | 相关测试 |
 | --- | --- | --- |
 | 新 content controller | source import → registry 依赖 → 必要时 legacy adapter → runtime callbacks/getters → bundle | [contentModuleRegistry](../../test/contentModuleRegistry.test.js)、[contentRuntimeInitialization](../../test/contentRuntimeInitialization.test.js)、[contentBuildIdentity](../../test/contentBuildIdentity.test.js) |
 | 新 MAIN 方法 | 实现 → RPC catalog → WAR → PageBridgeClient 顺序 → dispatcher/capability → 消费者 | [pageBridgeClient](../../test/pageBridgeClient.test.js)、[pageRpcContract](../../test/pageRpcContract.test.js)、[manifest](../../test/manifest.test.js) |
@@ -229,7 +229,7 @@ launcher 开关先读 `get-panel-state`，按需发 `toggle-launcher`，再读�
 
 Content 新模块不要再向两份 manifest 追加源脚本；产物由 [build-content-bundle](../../scripts/build-content-bundle.mjs) 生成。Page 新脚本必须另外核对 WAR，content import 不能加载 MAIN 能力。
 新增设置须明确默认值、作用域、迁移、失败显示及销毁监听器；新增视觉代理控件须保留原有持久化事件入口。
-以下为后续执行命令，本轮均未运行；执行前按实际改动缩小文件集合：
+以下命令用于选择并执行专项验证；执行前按实际改动缩小文件集合：
 
 ```sh
 # 仅列出测试选择
@@ -245,15 +245,15 @@ npm run check:module-graph
 [run-tests.mjs](../../scripts/run-tests.mjs) 负责选择执行文件；具体测试仍可能创建 fixture 或构建临时产物。`npm run test:focus` 还前置模块图检查，不能当作纯只读操作。
 浏览器验收另需覆盖 Direct/Managed 首载、SPA 切项目、宽窄面板、dialog 键盘/焦点、旧 Popup shell、公式字体与真实 Overleaf 选区。
 
-## 9. 反例与验证缺口
+## 9. 边界场景与验证要点
 
-1. **“新文件写好就会加载”不成立。** content 缺入口 import 或组合依赖时无法进入实际应用；MAIN 模块即使公开为 WAR，也仍需要注入和 dispatcher。需检查执行链，不能仅搜索文件存在。
-2. **“切到项目过滤器就把设置存为项目级”不成立。** Workbench 只筛选可见 group；preloadProjectContext 属于全局字段，Track 经活动会话写入。改作用域必须修改 owner 与迁移，不能只移动 DOM。
-3. **“旧模型目录返回后总能刷新 UI”不成立。** generation/provider/revision 守卫会忽略迟到响应；fallback 保留 unverified 选择也不代表服务已验证支持。需测试慢请求覆盖快请求和无目录的自定义 Provider。
-4. **附件清空与迟到读取存在待验证竞态。** `addFiles` 等待 FileReader/预览后直接 push；`clear` 清数组与 pending keys，没有取消读取或 generation 校验；runtime 清 composer 前只捕获已完成附件，发送可用性未检查 pending bytes。
-   静态链路提示旧读取可能在清空后重新进入 tray；尚未执行复现，不能据此断言已出现用户故障。现有 `p0ProductExperience` 覆盖 pending 去重/预算，仍需补“读取中提交或清空 → 读取完成”的生命周期用例。
-5. **“严格 renderer 限额就是整条消息全程限额”不成立。** 非 streaming renderer 失败后的预期兼容路径还可能被前述诊断异常打断；超长 Markdown、恶意链接与复杂公式应分别验证主路径和降级链，静态主路径参数不足以证明整体资源界限。
-6. **单元定义无法证明实际 modal 与加载副本。** 原生 dialog 的 top-layer、焦点恢复、字体及旧 managed shell 依赖 Chrome 和页面状态；本轮只确认源码与测试定义，相关交互仍待验收。
-7. **序列化 helper 不构成刷新恢复证据。** 附件虽通过 SessionState normalize/compact，实际 prefs/session 写入与 hydration 未携带该字段；须按第 5 节完整保存和加载路线验证。
+1. **新增脚本的加载。** content 缺入口 import 或组合依赖时无法进入实际应用；MAIN 模块即使公开为 WAR，也仍需要注入和 dispatcher。需检查执行链，不能仅搜索文件存在。
+2. **设置过滤器与持久化作用域。** Workbench 只筛选可见 group；preloadProjectContext 属于全局字段，Track 经活动会话写入。改作用域必须修改 owner 与迁移，不能只移动 DOM。
+3. **模型目录请求的迟到响应。** generation/provider/revision 守卫会忽略迟到响应；fallback 保留 unverified 选择也不代表服务已验证支持。需测试慢请求覆盖快请求和无目录的自定义 Provider。
+4. **附件清空与迟到读取。** `addFiles` 等待 FileReader/预览后直接 push；`clear` 清数组与 pending keys，没有取消读取或 generation 校验；runtime 清 composer 前只捕获已完成附件，发送可用性未检查 pending bytes。
+   按静态链路，旧读取可能在清空后重新进入 tray；实际影响需要通过“读取中提交或清空 → 读取完成”的生命周期用例确认。现有 `p0ProductExperience` 仅覆盖 pending 去重/预算。
+5. **富文本主路径与降级路径的资源限额。** 非 streaming renderer 失败后的预期兼容路径还可能被前述诊断异常打断；超长 Markdown、恶意链接与复杂公式应分别验证主路径和降级链，静态主路径参数不足以证明整体资源界限。
+6. **真实浏览器中的 modal 与加载副本。** 原生 dialog 的 top-layer、焦点恢复、字体及旧 managed shell 依赖 Chrome 和页面状态；验证需要覆盖真实浏览器中的挂载、键盘操作、关闭和重载。
+7. **附件序列化与刷新恢复。** 附件虽通过 SessionState normalize/compact，实际 prefs/session 写入与 hydration 未携带该字段；须按第 5 节完整保存和加载路线验证。
 
 目标契约：控制器销毁、异步清空/切换和失效响应均应维护所属身份；渲染与诊断边界应随新增字段一同检查。上述目标不能反推未覆盖分支已经满足。
