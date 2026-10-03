@@ -5,10 +5,12 @@
 下列测试路径仅证明测试定义存在，本轮没有执行测试，也没有验证真实 Chrome/Overleaf 交互。
 
 入口：[架构指南首页](README.md) · [系统概览](system-overview.md) · [证据与漂移](evidence-and-drift.md)。
-首版详细链路：[Auto 编辑与 Undo](auto-edit-undo.md)、[运行状态与恢复](run-state-and-recovery.md)。其余条目均为**源码导航，领域说明待扩展**。
+核心链路：[Auto 编辑与 Undo](auto-edit-undo.md)、[运行状态与恢复](run-state-and-recovery.md)。其他领域页按以下分组展开主路径和失败边界；实现变动仍需检查对应源码。
 查找方法：先匹配用户改动意图，再沿“入口 → 状态 owner → 联动 → 测试”阅读；符号名可直接用于源码搜索。
 
 ## 界面、设置与诊断
+
+领域说明：[界面与加载](ui-and-loading.md)。
 
 ### 改面板入口、宽度或布局
 
@@ -46,6 +48,8 @@
 - 最近测试：[diagnosticsHealth](../../test/diagnosticsHealth.test.js)、[diagnosticsMenu](../../test/diagnosticsMenu.test.js)、[diagnosticsViewport](../../test/diagnosticsViewport.test.js)。
 
 ## 模型、选区与附件
+
+模型执行与连接见[Provider 与协议](providers-and-protocols.md)；选区和输入生命周期见[界面与加载](ui-and-loading.md)。
 
 ### 改模型、Reasoning、Speed 或切换 Provider
 
@@ -117,6 +121,8 @@
 
 ## Native、Provider、子代理与写作风格
 
+领域说明：[Native 执行](native-execution.md)、[Provider 与协议](providers-and-protocols.md)、[并行子代理](parallel-subagents.md)、[写作风格与技能](writing-style-and-skills.md)。
+
 ### 加 Native 方法、事件或 Provider 协议能力
 
 - 入口：[background.js](../../extension/src/background.js) → [native index](../../native-host/src/index.js) → [taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) / [providerRuntime.handleProviderRequest](../../native-host/src/providerRuntime.js)。
@@ -139,6 +145,8 @@
 - 最近测试：[writingStyleLimits](../../test/writingStyleLimits.test.js)、[localSkills](../../test/localSkills.test.js)、[runExecutionSnapshot](../../test/runExecutionSnapshot.test.js)。
 
 ## 安装、更新与发布
+
+领域说明：[安装与更新](installation-and-updates.md)。
 
 ### 改安装、doctor、托管更新或发布包
 

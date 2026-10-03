@@ -128,7 +128,7 @@ I_{view}=(accountScopeId,projectId,generation).
 
 取消横跨页面写入、Native 执行和本地异步工作。停止请求已收到、进程退出已确认分别取证。[processStopBarrier.js](../../native-host/src/processStopBarrier.js) 对退出未确认的项目保留屏障；其持久恢复与平台条件不能推广成所有成功或取消路径的统一保证。
 
-子代理 broker 使用共享镜像，通过文件所有权调度与哈希证据约束输出；未完成输出还涉及隔离与采纳。风格生成则创建按账号和项目隔离的版本资产，后续任务捕获具体版本。两种功能各有独立生命周期，见[功能索引](feature-map.md)。
+子代理 broker 使用共享镜像，通过文件所有权调度与哈希证据约束输出；未完成输出还涉及隔离与采纳，见[并行子代理](parallel-subagents.md)。风格生成创建按账号和项目隔离的版本资产，后续任务捕获具体版本，见[写作风格与技能](writing-style-and-skills.md)。
 
 Provider 凭据不能进入浏览器持久状态、运行 journal 或诊断。本地专用凭据存储及其事务恢复文件具有独立权限与清理规则，不能根据“日志”一词笼统推断内容。参考项目、PDF 提取语料、附件及编译日志也具有不同的数据路径，当前敏感扫描不能视为所有通道的统一保证。
 
@@ -142,4 +142,4 @@ Provider 凭据不能进入浏览器持久状态、运行 journal 或诊断。�
 | 浏览器与 Native 已加载代码 | Bootstrap 注册、页面加载、Native 握手及 [updateRuntimeIdentity.js](../../extension/src/shared/updateRuntimeIdentity.js) 的组合判断 |
 | 分发产物 | [build-release.mjs](../../scripts/build-release.mjs)、签名和产物验证 |
 
-Content bundle 的摘要只能说明它覆盖的输入，不能独自证明页面脚本、Native 和浏览器加载状态一致。安装、原位更新和发布的完整流程仍待后续领域页展开；本页提供定位框架。
+Content bundle 的摘要只能说明它覆盖的输入，不能独自证明页面脚本、Native 和浏览器加载状态一致。安装、原位更新和发布的流程见[安装与更新](installation-and-updates.md)；本页提供定位框架。

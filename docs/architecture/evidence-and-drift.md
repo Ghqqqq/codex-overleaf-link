@@ -27,7 +27,7 @@ CUA 指对真实浏览器界面的操作验收。它像特定车辆的一次路�
 
 | 范围 | 本轮事实 | 指南处理 |
 |---|---|---|
-| 已提交产品源码 | HEAD 如上；读取时未发现本任务改动产品 runtime | 作为本轮架构说明的基线 |
+| 已提交产品源码 | 产品核验提交如上；后续纯文档提交不改变 runtime | 作为架构说明的产品代码基线 |
 | 未提交发布候选 | `.github/workflows/release.yml` 已修改；`scripts/wait-for-npm-publication.mjs` 尚未跟踪 | 单列候选变化，不能称为已发布行为 |
 | 新架构指南 | 本轮新增的文档与入口调整 | 说明源码，不改变产品契约的执行结果 |
 | 私有交接材料 | `.local-handoff/` 包含发布恢复与 CUA 历史 | 只用于本地背景；不作为指南必需依赖，不复制私人现场内容 |
@@ -148,6 +148,47 @@ CUA 指对真实浏览器界面的操作验收。它像特定车辆的一次路�
 - 最近测试：[textFileCreator.test.js](../../test/textFileCreator.test.js) 直接覆盖 `allowExistingMatches`；[writebackReceiptRecovery.test.js](../../test/writebackReceiptRecovery.test.js) 检查部分模式参数转发；[writebackEditRetry.test.js](../../test/writebackEditRetry.test.js) 覆盖恢复意图。静态检索未找到 `retryCreates` 穿过真实 journal 的专项断言，本轮未执行这些测试。
 - 剩余动作：后续产品修复任务应先补 broker → journal → router 的参数与同内容/异内容集成用例，再修复传递；本轮只修正指南中的保证范围。
 
+### G-05：取消可能阻止页面部分写入结果返回到恢复账本
+
+- 来源：第二轮对抗式文档审阅及调用链静态复核；未进行故障注入，未修改产品。
+- 源码事实：[writebackRouter.js](../../extension/src/page/writebackRouter.js) 可保留取消前的逐项结果；但 [assetTransferBroker.js](../../extension/src/content/assetTransferBroker.js) 的 `recoverTextReceipt` 遇 `codex_cancelled` 会直接抛出。
+- 跨层条件：[pageBridgeClient.js](../../extension/src/content/pageBridgeClient.js) 在取消标志已置位时拒绝新发起的可取消请求；[pageRpcContract.js](../../extension/src/shared/pageRpcContract.js) 将 apply 与 receipt 读取均标为可取消。client 的 `cancelActiveRequests` 可拒绝活动请求，但本基线 `cancelActiveRun` 未调用该入口。
+- 后果范围：[writebackOrchestrator.js](../../extension/src/content/writebackOrchestrator.js) 在 broker 返回后才 `appendApplyResult/recordUndoFromApply`。写入已发生而回复超时后取消，可能阻止该结果进入 checkpoint；跨批次抛出还需核查先前累积结果。不能从 router 返回能力推导所有取消都具有完整持久撤销材料。
+- 目标契约：停止新增写入的同时，已发生的修改应保留可核对的事实与恢复材料；无法确认的部分明确标为待核查。
+- 最近定义：[writebackCancellationFlow.test.js](../../test/writebackCancellationFlow.test.js) 直接调用 router；[writebackReceiptRecovery.test.js](../../test/writebackReceiptRecovery.test.js) 覆盖回执恢复的其他分支。它们不能替代“真实 Page RPC 取消 → broker → content checkpoint”的组合测试。
+- 剩余动作：后续独立修复任务先构造已写入、回复丢失、取消及跨批次的可控用例，核查 intent、receipt、checkpoint 三者；本轮只收紧文档表述。
+
+### G-06：混合 Undo 中间持久化失败可绕过镜像失效
+
+- 静态路径：[contentRuntime.js](../../extension/src/content/contentRuntime.js) 的 `undoRunTrackedChanges` 在文本恢复后、删除新建文件前等待 `applyTrackedChangeSettlement`；调用位置早于 `invalidateMirrorAfterUndo`。
+- [scopedPersistencePanelState.js](../../extension/src/content/scopedPersistencePanelState.js) 在中间保存失败时恢复材料、标记 `needs_review` 后继续抛错。控制流可直接进入 finally，新建文件保留，但镜像失效尚未发生。
+- 目标契约：页面已有变更时，恢复材料与镜像基线分别得到可靠处理；保留 Undo checkpoint 不能代替镜像失效证据。
+- 最近定义：[undoMirrorInvalidation.test.js](../../test/undoMirrorInvalidation.test.js) 的相关 harness 将 settlement 替换为成功 stub，不能证明中间持久化失败路径。
+- 剩余动作：单独构造文本已恢复、保存失败的故障用例，检查镜像健康与下一次运行的读取路径。本轮只确认控制流可能跳过失效，未证明实际复用了旧镜像。
+
+### G-07：队列保存调用可能在事务前静默跳过
+
+- 静态路径：[contentRuntime.js](../../extension/src/content/contentRuntime.js) 的 `saveState` 在项目缺失或运行与当前项目分离时，仅对 `reviewRunIds` 抛错，其他调用可能直接返回。
+- [runQueueScheduler.js](../../extension/src/content/runQueueScheduler.js) 在 `scheduleOne/markExecuting` 等待保存 Promise；正常返回不能在上述路径证明队列 mutation 已持久提交。
+- 目标契约：队列所有权推进以明确提交证据为准；入口不适用时向调度器返回可区分结果。
+- 最近定义：[runQueueSchedulerDurability.test.js](../../test/runQueueSchedulerDurability.test.js)、[runQueueSchedulerArchitecture.test.js](../../test/runQueueSchedulerArchitecture.test.js)；现有覆盖不能直接推广至真实 runtime 的所有前置守卫。
+- 剩余动作：核对导航/会话变化与队列提升的可达时序，并补真实保存入口的测试。本轮未复现任务丢失或重复执行。
+
+### 其他领域的静态边界索引
+
+以下条目在领域页保存具体源码与验证限定，避免复制多份容易失效的保证。它们包含设计范围与待核实风险，不能全部当作已复现缺陷。
+
+| 范围 | 已确认的限定 | 后续核对入口 |
+| --- | --- | --- |
+| 共享历史断连 | 已接纳事务可以完成；meta-write 的独立锁检查未读取 disconnected | [运行状态与恢复](run-state-and-recovery.md) 的锁与版本部分 |
+| Native 取消 | 浏览器 sent 回执不包含 Native lockReleased；成功路径退出、断连停止和恢复屏障各有范围 | [Native 执行](native-execution.md) |
+| 屏障与流边界 | 数组元素校验、已排队迟到事件和内层流缓冲不能由外围守卫推定安全 | [Native 执行](native-execution.md) |
+| Provider 配置 | 协议桥消费字段存在差异；按键名筛查不覆盖允许字段中的所有秘密 | [Provider 与协议](providers-and-protocols.md) |
+| 附件异步 | 清空 tray 未必终止已开始的文件读取；迟到结果的真实交互影响待验证 | [界面与加载](ui-and-loading.md) |
+| 子代理 | 波次净哈希无法证明 ownedUnion 内的真实作者；drained 与 OS 退出分别判断 | [并行子代理](parallel-subagents.md) |
+| 风格与技能 | 资产生成、运行捕获、技能安装完成各有独立证明范围 | [写作风格与技能](writing-style-and-skills.md) |
+| 安装更新 | UI idle、当前 Native 计数、版本健康与完整业务安全分别取证 | [安装与更新](installation-and-updates.md) |
+
 ## 5. 后续覆盖顺序
 
 | 顺序 | 专题 | 优先补足的问题 |
@@ -158,7 +199,7 @@ CUA 指对真实浏览器界面的操作验收。它像特定车辆的一次路�
 | 4 | 安装、更新与发布 | 五层身份、事务恢复、重装边界、公开资产证据 |
 | 5 | Writing Style、子代理、附件及呈现 | 配额、所有权、取消、失败和实验功能限制 |
 
-前两项已有样板入口；其余项先经[功能地图](feature-map.md)找到实现，按实际改动补充专题，避免为目录完整而重复源码。
+各主要领域已有对应说明，经[功能地图](feature-map.md)进入专题。此顺序继续用于选择后续深度验证，具体静态审阅结果见[对抗式审阅记录](red-team-review.md)。
 
 ## 6. 维护与关闭规则
 

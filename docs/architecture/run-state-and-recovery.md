@@ -54,10 +54,10 @@ flowchart TD
   B -->|否| C[runTask 捕获执行快照]
   B -->|是| Q[enqueue 保存待执行输入]
   Q --> R[scheduleOne 校验并 claim]
-  R --> S[持久化 claim 成功]
+  R --> S[claim 保存调用返回 可能前置早退]
   S --> C
   C --> V[startRunView 固定身份]
-  V --> P[队列任务先持久化移除 pending item]
+  V --> P[remove 保存调用返回后移除内存项]
   P --> N[预检与快照后 codex.run]
   N --> W[结果处理与写回结算]
   W --> T[finishRunView 与清理 owner]
@@ -91,8 +91,9 @@ Native 还会在 [providerRuntime.js](../../native-host/src/providerRuntime.js) 
 [runInputQueue.js](../../extension/src/shared/runInputQueue.js) 定义 `queued/paused/claimed/executing/steering`；schema 能表示某状态，不代表正常流程会长期保存该状态。
 队列采用 FIFO，容量和文本预算由同一模块管理；composer 附件在入队入口被拒绝。
 `claim` 是执行领取凭据，类似仓库提货单：item ID、writer、claim token 与版本共同限制谁能消费该条任务。
-`scheduleOne` 的顺序为 Provider 准备 → `claimNext` → 持久化 claim → `startQueuedInput`；持久化失败不会启动任务。
-`runTask` 建立 run 后调用 `markExecuting`，先提交 remove mutation，成功后从 pendingInputs 和队列 UI 移除该项。
+`scheduleOne` 的顺序为 Provider 准备 → `claimNext` → 等待 claim 保存调用 → `startQueuedInput`；保存抛错时不会启动任务。
+实际是否发生持久提交还受第 4.3 节入口早退限制，不能只依据 Promise 正常返回证明 claim 已写入。
+`runTask` 建立 run 后调用 `markExecuting`，等待 remove 保存调用正常返回后从 pendingInputs 和队列 UI 移除该项；前置早退是否真正提交仍需单独核对。
 提升失败时保留恢复机会、暂停队列并尝试 restore；不能只隐藏卡片后假设所有权已经转移。
 普通并发保存还需保留等待期间新增的其他输入，相关回归定义位于 [runQueueSchedulerDurability.test.js](../../test/runQueueSchedulerDurability.test.js)。
 
@@ -123,7 +124,9 @@ Native 还会在 [providerRuntime.js](../../native-host/src/providerRuntime.js) 
 
 ### 4.2 锁、版本与三路合并
 
-共享写入使用长连接 port 取得后台锁，账号级 state 锁串行化跨项目清理与写入；port 断开后旧 owner 不能继续提交。
+共享写入使用长连接 port 取得后台锁，账号级 state 锁串行化跨项目清理与写入。
+port 断连后标记 disconnected，受 `ensureLock` 保护的后续请求拒绝接纳；已接纳的事务仍可能完成，锁等待 `inFlight` 清零后释放。
+`meta-write` 使用独立的 token/tabId 判断，当前未复用 disconnected 检查，不能把会话写入守卫推广到全部共享方法；迟到请求的真实可达性与影响仍待验证。
 后台还校验扩展身份、页面来源、顶层 frame 和锁 token；共享入口不可绕过这些检查降级成站点本地写入。
 传统 adapter 使用 `navigator.locks`；缺少可用跨上下文锁时拒绝持久提交。
 实现入口为 [scopedPersistenceBrowserAdapter.js](../../extension/src/shared/scopedPersistenceBrowserAdapter.js) 的 `createBrowserAdapter`。
@@ -148,7 +151,9 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 源码见 [scopedPersistenceCoordinator.js](../../extension/src/content/scopedPersistenceCoordinator.js)、[scopedPersistenceTransaction.js](../../extension/src/shared/scopedPersistenceTransaction.js) 和 [scopedPersistenceReceipt.js](../../extension/src/shared/scopedPersistenceReceipt.js)。
 
 `persistPanelState` 使用事务捕获的账号和项目，`SessionPersistence.writeSessions` 再核对所属账号、墓碑和更新版本。
-涉及 queueMutation 或 reviewRunIds 的保存失败会向调用者抛出；普通保存存在紧凑 fallback，不能据此宣称完整历史一定耐久。
+进入事务后的 queueMutation 或 reviewRunIds 保存失败会向调用者抛出；普通保存存在紧凑 fallback，不能据此宣称完整历史一定耐久。
+`saveState` 在项目缺失或运行已导航分离的入口守卫，仅对 reviewRunIds 抛错；queueMutation 仍可正常返回而跳过提交。
+因此调度器等待保存 Promise 与获得 durable receipt 需要分别判断，具体时序是否导致丢失或重复执行尚未验证，见[证据与差异 G-07](evidence-and-drift.md#g-07队列保存调用可能在事务前静默跳过)。
 `finishRunView` 尝试在终态展示前刷新排队保存，但调用存在错误捕获；“任何存储失败下均能即时重载同样终态”仍需单独验证。
 **维护目标**：新增强持久化操作应选择明确失败可见的保存入口，不应仅调用延迟保存后给出成功保证。
 
@@ -192,7 +197,7 @@ Undo 能力来自可用恢复材料和结算结果，不能只看 completed 或�
 `contentRuntime.undoRun` 等待旧 mirror 刷新，再选择 tracked/editor Undo 或无留痕操作路径，页面调用始终携带原 runProjectId。
 tracked Undo/Accept 经过 `applyTrackedChangeSettlement → ScopedPersistenceCoordinator.applyReviewTransition`。
 [scopedPersistencePanelState.js](../../extension/src/content/scopedPersistencePanelState.js) 强制 preserveRunActionPayload 和 reviewRunIds，并验证持久记录中的结果。
-保存失败时恢复先前材料、标记 needs_review 并抛出 `review_state_not_persisted`，因为页面操作可能已经发生。
+保存失败时恢复先前材料、标记 needs_review 并继续抛错，因为页面操作可能已经发生。部分验证失败生成 `review_state_not_persisted`，底层保存异常也可能原样传播，不能只匹配单一错误码。
 legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；后续修改不能假定它与 tracked review 路径有相同的确认屏障。
 
 重载后，SessionState/StorageDb 归一化记录；`SettlementFacts.projectRunSettlement` 提供基础能力，`RunResultActions.projectUndoAvailability` 进一步检查实际材料。
@@ -207,7 +212,7 @@ legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；�
 | 改动 | 主改入口与联动消费者 | 最窄命令 | 检查条件 |
 |---|---|---|---|
 | 提交配置 | RunExecutionSnapshot、runtime capture、queue codec、Provider 默认值 | `node --test test/runExecutionSnapshot.test.js test/projectProviderSelection.test.js test/runQueueSchedulerArchitecture.test.js` | queued/historical tuple 不随设置漂移，revision 冲突保留输入并暂停；Native 二次校验另见 providerSessionBinding/providerReliability 测试 |
-| 队列提升 | RunInputQueue、RunQueueScheduler、scoped queue policy | `node --test test/runQueueSchedulerArchitecture.test.js test/runQueueSchedulerDurability.test.js` | claim 持久化先于启动，失败不丢输入，不覆盖并发新增项 |
+| 队列提升 | RunInputQueue、RunQueueScheduler、scoped queue policy | `node --test test/runQueueSchedulerArchitecture.test.js test/runQueueSchedulerDurability.test.js` | 检查 claim 保存调用顺序与拒绝分支；事务前早退例外另见 4.3，不能推定全部失败均保留队列 |
 | 作用域提交 | coordinator、transaction、browser adapter、SessionPersistence | `node --test test/scopedPersistenceTransaction.test.js test/sessionPersistenceAccountIsolation.test.js` | stale view、CAS、fence/receipt、账号隔离与恢复 |
 | 刷新恢复 | normalizeLoadedPanelState、ActiveTurnControl、shared history | `node --test test/crossTabRuntimeRegression.test.js test/activeTurnControl.test.js` | live owner 不被旁观页结算，ownerLost 才恢复并暂停 |
 | 导航后结算 | detached coordinator、PostNavigationSettlementPersistence | `node --test test/postNavigationSettlementPersistence.test.js test/postNavigationSettlementWiring.test.js` | 只写原账号/项目/session/run，内层失败向外传播 |

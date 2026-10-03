@@ -7,7 +7,8 @@
 1. 首次接手阅读[指南入口](docs/architecture/README.md)与[系统总览](docs/architecture/system-overview.md)。
 2. 按需求查[功能修改索引](docs/architecture/feature-map.md)，只展开相关领域和源码。
 3. 修改、保存、Accept、Undo 读[Auto 修改与撤销](docs/architecture/auto-edit-undo.md)；提交、队列、持久化、刷新读[运行状态与恢复](docs/architecture/run-state-and-recovery.md)。
-4. 涉及旧描述或边界假设时，查[证据与差异登记](docs/architecture/evidence-and-drift.md)。索引中尚未展开的领域须继续读取所列源码，不能将导航条目当作完整设计。
+4. 本地进程与消息读[Native 执行](docs/architecture/native-execution.md)；模型连接读[Provider 与协议](docs/architecture/providers-and-protocols.md)；其他领域按功能索引进入对应专题。
+5. 涉及旧描述或边界假设时，查[证据与差异登记](docs/architecture/evidence-and-drift.md)及[对抗式审阅记录](docs/architecture/red-team-review.md)。专题覆盖主路径与明确的例外，实际修改仍需核对调用者和测试。
 
 `docs/agents/`、其他本地历史文档及 `.local-handoff/` 可能只存在于某台机器，不是新克隆的必备依赖。其旧数值、安装步骤和 Known gap 必须重新核对。
 
@@ -42,6 +43,8 @@
 ## 文档与验证
 
 入口、状态归属、协议、加载或恢复策略变化时，同步维护对应指南与功能索引。文档使用仓库相对链接和实际符号，重要数值优先指向权威常量。
+
+高风险契约的文档审阅应主动寻找反例：追踪参数是否穿过各层、状态是否有其他写入者、取消或断线是否跳过收尾、测试是否覆盖真实调用链。局部函数性质不能直接推广为整条链路保证；未证明的项保留明确范围。
 
 [指南入口](docs/architecture/README.md)列出验证方式；专项测试与真实 Chrome/Overleaf 验收各自提供不同证据。纯文档改动检查链接、符号、基线和定位可用性，不据此声称运行时测试通过。
 

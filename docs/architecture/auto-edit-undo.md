@@ -95,7 +95,8 @@ content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言
 5. page 通过 [writebackRouter](../../extension/src/page/writebackRouter.js) 的 `applyOperationsCore` 逐项执行，形成 `applied`、`skipped` 与留痕捕获证据。
 6. 返回后立即 `appendApplyResult`、`recordUndoFromApply`；随后才等待保存核查、镜像和编译。
 
-该顺序有实际意义：保存等待期间的取消仍需保留已经写入部分的 Undo checkpoint。
+该顺序有实际意义：broker 已返回逐项结果后，进入保存等待前可记录已知写入部分的 Undo checkpoint。
+它不能保证 broker 返回前的取消也已捕获页面实际修改；回执查询取消导致抛出的边界见第 7 节。
 `recordUndoFromApply` 位于较大的 contentRuntime 中；只阅读 orchestrator 会漏掉恢复账本如何建立。
 
 ### 4.1 编辑已有文本
@@ -176,7 +177,7 @@ undoRun(runId)
   │         └─ applyOperations RPC：删除有证明的新建文件
   └─ 其余可用逆操作
        └─ buildNoTraceUndoRestore → applyOperations(no-trace-undo)
-所有结果 → 镜像失效处理 → 验证证据 → 推进或保留恢复账本
+抵达正常结果处理分支 → 镜像失效处理 → 验证证据 → 推进或保留恢复账本
 ```
 
 ### 6.1 普通文本与 Track 文本共用部分运输路线
@@ -204,6 +205,8 @@ Track-on 的恢复使用捕获的 refs、原生 ownership 和前后像。
 **当前实现。** `buildCreatedFileUndoCheckpoint` 为本轮新建路径生成 `undoCreatedFile` 证明，保留文本 post-image 或二进制 SHA-256。
 `undoRunTrackedChanges` 先恢复已有文本；需要分段持久化的生命周期记录会先保存已确认的文本进度。
 文本仍未解决或进度无法保存时，新建文件保持原状，后续尝试继续处理未完成部分。
+中间 `applyTrackedChangeSettlement` 保存失败可直接抛出；该点早于 `invalidateMirrorAfterUndo`，会绕过后续镜像失效调用。
+因此“文件保留、恢复材料保留”不能同时证明镜像已失效，异常路线见[证据与差异 G-06](evidence-and-drift.md#g-06混合-undo-中间持久化失败可绕过镜像失效)。
 
 这里的生命周期分类由 [runTimelineView.js](../../extension/src/content/runTimelineView.js) 的 `isTrackedChangeLifecycleRun` 判断 `trackedChangeStatus` 或 refs。
 普通 Track-off、无该状态或 refs 的混合记录，即使调用 `undoRunTrackedChanges`，完成后仍可走 `applyLegacyUndoSettlement → saveStateSoon`。
@@ -227,8 +230,11 @@ Accept 需要可归属的留痕记录；`untrackedUndo` 不能赋予接受其他
 ## 7. 取消、部分失败与刷新后的定位
 
 **当前实现。** page cancellation sequence 在 `cancelActiveWrite` 时递增，router 在操作边界检查。
-已发生的修改保留真实结果；未开始的尾部项可以跳过。部分写回按逐项结果结算。
-主写回在保存等待前记录 checkpoint，因此排查取消后 Undo 丢失时，应先检查记录时序与持久化。
+router 可以返回已发生修改的逐项结果并跳过未开始项；content 获得这些结果后再结算与记录 checkpoint。
+当前 `assetTransferBroker.recoverTextReceipt` 遇取消直接抛出；取消标志已置位时，`pageBridgeClient` 会使新发起的可取消回执查询进入拒绝路径。
+client 另提供 `cancelActiveRequests` 拒绝活动请求，但本基线的 `cancelActiveRun` 未调用该入口，不能把接口能力当作用户取消时必然发生的步骤。
+因此 apply 已发生、响应超时、随后取消的组合，可能在结果到达 orchestrator 之前中断，不能声称所有已写入部分都已形成持久 Undo。
+跨文本与二进制批次还需检查前批结果是否随异常保留。静态依据和验证缺口见[证据与差异 G-05](evidence-and-drift.md#g-05取消可能阻止页面部分写入结果返回到恢复账本)。
 
 **当前实现。** `contentRuntime.stageWritebackRecovery`、`settleWritebackRecovery` 管理 `retryWriteback` 与 `saveCheck`。
 [writebackIntent](../../extension/src/shared/writebackIntent.js) 对请求记录设置 100 操作、300 KiB 上限；[sessionState](../../extension/src/shared/sessionState.js) 执行恢复字段筛选。
@@ -239,7 +245,8 @@ Accept 需要可归属的留痕记录；`untrackedUndo` 不能赋予接受其他
 `content/writebackRecovery.js` 另定义通用 prepare/reconcile 模块；本基线的 Auto 主调用链未发现其实例化。
 定位当前行为应从上述实际调用及 [run-state-and-recovery](run-state-and-recovery.md) 出发，不能凭模块文件名推定默认恢复流程。
 
-Undo 后 `writebackOrchestrator.invalidateMirrorAfterUndo` 调用原项目的 `mirror.invalidate`，并在仍处同项目时清快照缓存。
+Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirrorAfterUndo` 调用原项目的 `mirror.invalidate`，并在仍处同项目时清快照缓存。
+前述混合 Undo 中间持久化抛错可能尚未抵达该调用，不能概括为所有异常都会使镜像失效。
 失效任务挂入 `pendingMirrorRefresh`，下一轮等待屏障后重新评估镜像。
 失效失败会记录警告；“编辑器撤销完成”不自动证明本地基线已处理完成。
 
@@ -261,7 +268,7 @@ Undo 后 `writebackOrchestrator.invalidateMirrorAfterUndo` 调用原项目的 `m
 | 普通 Undo 错撤用户历史 | contentRuntime 路由、提交 Track、trackedChangesLifecycle、ownership | `node --test test/ordinaryUndoRouting.test.js` |
 | 新建文件撤销或混合进度 | undoOperations、contentRuntime、router、textFileCreator、持久化 | `node --test test/createdFileUndo.test.js test/mixedUndoReceipt.test.js` |
 | 撤销后下一轮恢复旧内容 | orchestrator 镜像屏障、mirrorWorkspace、运行入口 | `node --test test/undoMirrorInvalidation.test.js` |
-| 取消后丢失部分结果 | cancellation sequence、router、checkpoint 时序 | `node --test test/writebackCancellationFlow.test.js` |
+| 取消后丢失部分结果 | cancellation sequence、router、broker、Page RPC、checkpoint 时序 | `node --test test/writebackCancellationFlow.test.js test/writebackReceiptRecovery.test.js`；router 局部测试不能替代 G-05 的整链场景 |
 | 二进制位置/回执/撤销 | broker、binaryAssetUploader、textFileCreator、Native asset | `node --test test/binaryUploadUndoRoundTrip.test.js` |
 | Accept 归属或验证失败 | contentRuntime、trackedChangesLifecycle、ownership、settlement | `node --test test/writebackRouterAccept.test.js test/writebackSettlementContract.test.js` |
 | 编译状态投影异常 | orchestrator、compileBridge、compileAdapter | `node --test test/compileAdapter.test.js` |
