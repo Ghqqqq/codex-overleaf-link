@@ -1,6 +1,15 @@
 .DS_Store
 .local/
-docs/
+/docs/*
+!/docs/architecture/
+/docs/architecture/*
+!/docs/architecture/README.md
+!/docs/architecture/system-overview.md
+!/docs/architecture/feature-map.md
+!/docs/architecture/auto-edit-undo.md
+!/docs/architecture/run-state-and-recovery.md
+!/docs/architecture/evidence-and-drift.md
+!/docs/architecture/navigation-acceptance.md
 native-host/bin/
 node_modules/
 dist/

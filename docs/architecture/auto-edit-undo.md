@@ -1,0 +1,282 @@
+# Auto 修改、写回、保存与 Undo
+
+本页提供从一次 Auto 文本修改到写回、保存确认、撤销及刷新恢复的源码路线。
+适用于定位“改动写到了哪里”“保存依据是什么”“撤销为何跳过”“刷新后为何丢失按钮”等问题。
+
+- 核对基线：`main@2073ae74747431aab8d529803d4e9f8197262388`，2026-10-03。
+- 范围：该提交的运行源码；本地待提交的 release 工作不进入此页。
+- `当前实现`：由源码调用及状态读写确认；`目标契约`：维护时应保留的约束。
+- `待验证`：已有测试定义或静态推断，本轮未运行产品测试、构建或浏览器验收。
+- 总入口见 [架构目录](README.md)，其他功能见 [功能定位图](feature-map.md)。
+
+## 1. 首先分清四份内容与两种身份
+
+**当前实现。** 编辑器、服务器 ZIP、本地工作副本和运行基线分别承担不同职责。
+
+| 概念 | 含义与权威来源 | 首读源码与符号 |
+|---|---|---|
+| 编辑器内容 $C$ | 当前页面已打开文档的实时内容，可能尚未保存 | [pageBridge](../../extension/src/pageBridge.js) 的 `readActiveEditorText`；[overleafEditor](../../extension/src/page/overleafEditor.js) |
+| 项目快照 | 一次读取产生的项目文件集合，带来源、完整性、跳过项等元数据 | [snapshotRouter](../../extension/src/page/snapshotRouter.js) 的 `buildProjectSnapshot`、`buildZipOnlyProjectSnapshot` |
+| 本地镜像 $W$ | Native Host 管理的磁盘工作副本，agent 在此产生修改 | [mirrorWorkspace](../../native-host/src/mirrorWorkspace.js) 的 `getProjectMirror`、`syncOverleafToMirror` |
+| 基线 $B$ | 用于计算本轮差异及检查并发修改的原始文件内容与哈希 | 同文件的 `buildBaselineFile`、`collectMirrorChangesDetailed` |
+| 执行配置快照 | 提交时固定的模式、Track、模型、Provider、上下文等 | [runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js)；运行使用 `executionSnapshot` |
+| 运行归属 | 原项目、会话、运行记录，绑定晚到结果和恢复操作 | [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `currentRunView`、`getRunProjectIdForWriteback` |
+
+内容快照回答“本轮看到了什么”，执行配置快照回答“本轮按什么配置执行”。
+两者与本地镜像类似“底稿、操作单、工作台”的关系；工作台上的新内容不自动成为已保存的项目事实。
+
+运行归属可记为 $I=(projectId,sessionId,runId)$；持久化恢复记录还带 `accountScopeId`。
+用户切换项目或修改当前 Track 设置后，旧运行仍使用其原身份及提交配置。
+详细会话与持久化路线见 [运行状态与恢复](run-state-and-recovery.md)。
+
+**当前实现的边界。** [pageRpcContract](../../extension/src/shared/pageRpcContract.js) 的 `METHODS` 声明每个 RPC 的身份策略。
+`applyOperations`、Accept、Reject、编译触发要求项目身份；`ensureReviewing`、`ensureEditing` 为 `optional`。
+[pageBridge](../../extension/src/pageBridge.js) 的 `dispatch` 按目录执行 `writeGuard.runWriteGuard`。
+因此核查新调用时，应同时检查目录策略、调用方参数、实际 handler；不能从“跨过 Page RPC”推导所有方法都拒绝缺失身份。
+
+## 2. 端到端调用图
+
+**当前实现。** content 是侧边栏所在隔离世界；page 是可读取 Overleaf 编辑器对象的 MAIN 世界；native 是本机进程。
+此图保留主链，模式、权限和失败分支在后文展开。
+
+```mermaid
+flowchart TD
+    A[contentRuntime.runTask] --> B[getRunProjectSnapshot / warm mirror 判断]
+    B --> C[Native runCodexSession]
+    C --> D[mirrorWorkspace：同步 / 工作副本 / 收集差异]
+    D --> E[writebackOrchestrator.applySyncChangesToOverleaf]
+    E --> F[writebackController + writebackPlan：规范化与预检]
+    F --> G[assetTransferBroker.applyOperations]
+    G --> H[Page RPC dispatcher + writeGuard]
+    H --> I[writebackReceiptJournal.apply]
+    I --> J[writebackRouter：导航 / 编辑 / 新建 / 读回]
+    J --> K[contentRuntime.recordUndoFromApply]
+    K --> L[writebackController.confirmPostWriteSave]
+    L --> M[镜像确认或失效处理]
+    L --> N[可选 Overleaf 编译]
+    L --> O[WritebackSettlement + 运行持久化]
+    O --> P[runTimelineView：Undo / Accept / 保存核查]
+```
+
+源码入口为 [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `runTask`，以及
+[codexSessionRunner](../../native-host/src/codexSessionRunner.js) 的 `runCodexSession`。
+后者调用 `syncOverleafToMirror` 准备本地内容，执行后调用 `collectMirrorChangesDetailed`，最终返回 `syncChanges`。
+content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言总结不充当文件变更依据。
+
+## 3. 快照进入镜像时的关键分岔
+
+**当前实现。** `contentRuntime.getRunProjectSnapshot` 优先请求完整 ZIP，包含二进制，禁止为读取而导航编辑器。
+无法得到完整结果时，再尝试不导航的页面状态读取。
+[snapshotRouter](../../extension/src/page/snapshotRouter.js) 决定 ZIP、活动编辑器覆盖层和页面文件记录如何合并。
+[overleafProjectSnapshot](../../extension/src/page/overleafProjectSnapshot.js) 承担快照桥及缓存相关装配。
+
+- 完整快照：`mirrorWorkspace.syncOverleafToMirror` 可移除镜像内已从项目消失的文件，并更新完整基线。
+- 部分快照：只覆盖已读取路径，合并旧基线；不能用“本次未读到”推导服务器文件已删除。
+- Warm mirror：复用判断在 `contentRuntime.resolveWarmMirrorReuse`；实时同步另见 [otWarmMirror](../../extension/src/content/otWarmMirror.js) 与 [otWarmMirrorController](../../extension/src/content/otWarmMirrorController.js)。
+- 保存核查：`serverOnly: true` 明确要求服务器来源；编辑器覆盖层不能用于证明服务器已保存。
+
+**目标契约。** 缺失内容、已知空字符串 `""`、已知非空内容应保持可区分。
+快照覆盖规则理应让成功读取的空编辑器内容覆盖旧 ZIP 内容。
+
+**已确认的静态例外。** 当前 `projectFiles.isUsableProjectFileContent` 会拒绝空白文本，
+`snapshotRouter.buildActiveEditorOverlay` 与 `mergeSnapshotFiles` 使用该判断。
+此例外限定于相应覆盖层路径；创建、保存核查、Undo 的空内容处理另有独立逻辑。
+漂移及验证状态登记见 [证据与漂移](evidence-and-drift.md)。
+
+## 4. Auto 写回：先得到逐项结果，再记录恢复凭据
+
+**当前实现。** [writebackOrchestrator](../../extension/src/content/writebackOrchestrator.js) 的 `applySyncChangesToOverleaf` 是 content 主调度入口。
+运行传入提交时的 `mode`、`requireReviewing` 等配置；Ask 的防护分支会忽略本地变更。
+
+1. [writebackController](../../extension/src/content/writebackController.js) 的 `buildSyncApplyOperations` 把差异转成 edit/create/delete 等操作，保留已有补丁。
+2. [writebackPlan](../../extension/src/content/writebackPlan.js) 检查路径与治理规则；删除和二进制操作经过现有产品确认流程。
+3. `ensureReviewingBeforeWrite` 与 page 写入路径确认 Reviewing 或 Editing；Auto 仍受这些前置条件约束。
+4. `stageWritebackRecovery` 保存可恢复的新建请求；[assetTransferBroker](../../extension/src/content/assetTransferBroker.js) 的 `applyOperations` 按原顺序调度文本批次与二进制传输。
+5. page 通过 [writebackRouter](../../extension/src/page/writebackRouter.js) 的 `applyOperationsCore` 逐项执行，形成 `applied`、`skipped` 与留痕捕获证据。
+6. 返回后立即 `appendApplyResult`、`recordUndoFromApply`；随后才等待保存核查、镜像和编译。
+
+该顺序有实际意义：保存等待期间的取消仍需保留已经写入部分的 Undo checkpoint。
+`recordUndoFromApply` 位于较大的 contentRuntime 中；只阅读 orchestrator 会漏掉恢复账本如何建立。
+
+### 4.1 编辑已有文本
+
+**当前实现。** `writebackRouter.applyEditOperation` 负责目标编辑器就绪、陈旧检查、应用和读回。
+导航需确认目标路径与实际编辑器文档，文件树选中标签不能单独证明 CodeMirror 已切换文档。
+补丁计算在同文件的 `applyTextPatches`，实际编辑器写入由 [overleafEditor](../../extension/src/page/overleafEditor.js) 适配，陈旧检查依赖 [staleGuard](../../extension/src/shared/staleGuard.js)。
+
+一般比较关系为 $B=C$；若整个文件不同，`checkPatchRangeFreshness` 可用每个补丁的 `expected` 文本证明目标区间未变化。
+即对补丁区间 $[a_i,b_i)$，检查 $C[a_i:b_i]=expected_i$。
+该范围证明仅覆盖参与比较的补丁位置，不等同于整份文件完全一致。
+
+**已确认的静态例外。** `staleGuard.checkOperationFreshness` 遇到空白基线时直接通过检查。
+该结论限定为此函数分支；实际写入还经过身份、编辑器和操作验证。
+此处保留“所有有效空基线应参与并发比较”的目标契约，浏览器中的最终影响仍待验证。
+
+### 4.2 新增文本与二进制
+
+**当前实现。** [textFileCreator](../../extension/src/page/textFileCreator.js) 的 `beginCreateBatch`、`finishCreateBatch` 合并唯一新建路径的服务器预检与最终读取。
+同一路径重复操作保留顺序验证语义。
+底层 creator 在显式传入 `allowExistingMatches` 时，可把服务器已有相同内容识别为幂等结果；不同内容不能通过 create 重试覆盖。
+当前 Auto 的显式 Retry sync 虽传出 `retryCreates: true`，但 page receipt journal 重建 router 参数时遗漏该字段。
+因此底层能力尚不能作为真实 Retry sync 已贯通的保证；已有路径守卫仍可能拒绝创建，不能据此推断已发生重复创建。
+完整传递链及验证缺口见[证据与漂移的 G-04](evidence-and-drift.md#g-04显式创建重试参数在执行回执层未继续传递)。
+`recordUndoFromApply` 过滤 `idempotent: true` 的条目，避免把预先存在的文件误记成本轮可删除的新建文件。
+
+二进制经 broker 的 `applyBinaryOperation` 执行 begin/append/commit；大资源可通过 Native asset token 分块读取。
+联动 owner 为 [nativeAssetTransfer](../../native-host/src/nativeAssetTransfer.js) 与 [binaryAssetUploader](../../extension/src/page/binaryAssetUploader.js)。
+文本新建和二进制新建均可能获得创建撤销证明，但已有二进制覆盖不能直接按“撤销新建”删除。
+
+## 5. 两类 receipt 与保存、编译、镜像的分工
+
+**当前实现。** receipt 可类比“回执”，但不同回执证明的事件不同。
+
+| 证据 | 生成与消费位置 | 能支持的结论 |
+|---|---|---|
+| 执行 receipt | [writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 的 `apply/get`；broker 的 `recoverTextReceipt` | 原请求仍在执行或已结束，且已有逐项结果 |
+| 服务器内容 receipt | `textFileCreator.makeSaveReceipt`；`writebackController.receiptsConfirmExpectedFiles` | 某项目某路径的指定内容哈希曾在服务器 ZIP 中观察到 |
+| editor readback | `writebackRouter.verifyActiveEditorText` | 当前编辑器读回内容符合预期 |
+| 保存状态 | `writebackController.confirmPostWriteSave`；[saveState](../../extension/src/page/saveState.js) | 得到正向 UI 保存信号或对应服务器内容证据 |
+| 编译结果 | [compileBridge](../../extension/src/page/compileBridge.js) 与 [compileAdapter](../../extension/src/shared/compileAdapter.js) | 编译触发、成功或失败的独立证据 |
+| 镜像确认 | orchestrator 与 `mirrorWorkspace.confirmWritebackFiles` | 本地基线可前进或需要失效重读 |
+
+执行 receipt 使用 `requestId` 和原 `runProjectId`，存于 page 内存 Map。
+默认保留上限为 16 份、完成后 10 分钟；清理针对完成项，活动操作另受执行串行约束。
+收到 RPC timeout 后，broker 查询原请求；未确认的文本批次会阻止后续文本或二进制派发。
+页面重新加载后的恢复不能依赖这份内存 Map 永久存在。
+
+服务器内容 receipt 绑定路径、项目、UTF-8 内容 SHA-256、来源及观察时间。
+它相当于“这一版本曾送达”的证明；后续同路径写入需要更新证据。
+
+**当前实现。** `confirmPostWriteSave` 的取证顺序为：
+
+1. 尝试用已返回的服务器 receipt 覆盖本次预期内容。
+2. 读取正向保存 UI 信号。
+3. 在允许且预期内容可计算时，读取 `serverOnly` ZIP 并逐项比较；共享 90 秒预算，每次 ZIP 上限 30 秒，最多三次。
+4. 必要时再探测 UI；未确认时保留 `unknown_timeout` 或 `unavailable`，离线时不按正常在线路径继续取证。
+
+**当前实现。** 镜像刷新以 `verified_saved` 为门槛；不满足时调用失效处理。
+满足时可通过 `mirror.confirmWriteback` 就地更新文本基线，也可完整读取后 `mirror.sync`。
+后台 `pendingMirrorRefresh` 防止下一轮或 Undo 与晚到镜像更新交错。
+
+编译另有条件：启用 Auto Compile、非 Ask、实际写入可编译文件。
+`autoRecompileAfterWriteback` 在保存尚未确认时仍可触发 Overleaf Recompile，并请求页面等待保存。
+因此“编译触发了”“服务器保存了”“镜像已更新”应分别呈现；旧的单一编译保存门槛描述见 [证据与漂移](evidence-and-drift.md)。
+
+## 6. Undo 的入口、分支与后来修改保护
+
+**当前实现。** [runTimelineView](../../extension/src/content/runTimelineView.js) 的按钮调用 `contentRuntime.undoRun`。
+该入口等待 `pendingMirrorRefresh`，随后根据保存的 refs、前后像及创建证明路由。
+当前面板 Track 开关不能替代原运行的 `executionSnapshot.requireReviewing`。
+
+```text
+undoRun(runId)
+  ├─ 存在 tracked refs / 可用前后像 / 指定创建恢复状态
+  │    └─ undoRunTrackedChanges
+  │         ├─ rejectTrackedChanges RPC：恢复已有文本
+  │         └─ applyOperations RPC：删除有证明的新建文件
+  └─ 其余可用逆操作
+       └─ buildNoTraceUndoRestore → applyOperations(no-trace-undo)
+所有结果 → 镜像失效处理 → 验证证据 → 推进或保留恢复账本
+```
+
+### 6.1 普通文本与 Track 文本共用部分运输路线
+
+**当前实现。** 函数名 `undoRunTrackedChanges` 和 RPC 名 `rejectTrackedChanges` 同时承担部分普通文本恢复。
+Track-off 且有前后像的记录，可通过 `untrackedUndo: true` 进入
+[trackedChangesLifecycle](../../extension/src/page/trackedChangesLifecycle.js) 的 `restoreExpectedFilesWithNoTraceUndo`。
+它先检查原生变更归属和 checkpoint，按已保存内容恢复；这一分支不会借用不属于本轮的全局 editor Undo。
+
+Track-on 的恢复使用捕获的 refs、原生 ownership 和前后像。
+`rejectTrackedChanges` 可尝试受前后像保护的 editor Undo、快照恢复或变更节点操作。
+归属读取和捕获联动 [trackedChangeOwnership](../../extension/src/page/trackedChangeOwnership.js)、
+[trackedChangeCapture](../../extension/src/page/trackedChangeCapture.js)、[trackedChangeCaptureController](../../extension/src/content/trackedChangeCaptureController.js)。
+
+没有这类文本恢复条件的记录，走 [undoOperations](../../extension/src/shared/undoOperations.js) 的逆补丁或快照恢复操作。
+直接逆操作路径支持多文件子集选择；部分选择保留 `partial`，未处理文件仍可撤销。
+
+**目标契约与实现守卫。** 后来修改应保留；安全性依靠实际证据判断。
+原生 editor Undo 要求当前内容符合本轮 post-image；创建撤销要求文本内容或二进制哈希仍匹配。
+`waitForActiveEditorCheckpoint` 对能证明的前后缀变化支持受限重基，冲突或归属不明时应跳过并保留恢复信息。
+它不提供任意协作编辑的通用三方合并保证。
+
+### 6.2 修改已有文本＋新增文件的混合 Undo
+
+**当前实现。** `buildCreatedFileUndoCheckpoint` 为本轮新建路径生成 `undoCreatedFile` 证明，保留文本 post-image 或二进制 SHA-256。
+`undoRunTrackedChanges` 先恢复已有文本；需要分段持久化的生命周期记录会先保存已确认的文本进度。
+文本仍未解决或进度无法保存时，新建文件保持原状，后续尝试继续处理未完成部分。
+
+这里的生命周期分类由 [runTimelineView.js](../../extension/src/content/runTimelineView.js) 的 `isTrackedChangeLifecycleRun` 判断 `trackedChangeStatus` 或 refs。
+普通 Track-off、无该状态或 refs 的混合记录，即使调用 `undoRunTrackedChanges`，完成后仍可走 `applyLegacyUndoSettlement → saveStateSoon`。
+只有满足生命周期分类的路径才进入 `applyTrackedChangeSettlement → applyReviewTransition` 的持久化确认；函数名不决定保存强度。
+排查 Undo 后立即刷新时，两条保存路线须分别检查，详见[运行状态与恢复](run-state-and-recovery.md)。
+
+新建删除进入 `writebackRouter.applyCreatedFileUndo`，重新核验原项目、取消序号、内容/哈希和服务器删除结果。
+文件在写入后被用户改动时，删除证明失效，不能直接删除。
+`UndoOperations.advanceUndoCheckpoint` 随已验证进度收缩剩余恢复账本，避免下次重做已完成部分。
+
+### 6.3 Accept 与 Undo 的共同结算
+
+**当前实现。** `contentRuntime.acceptRun` 调用 page 的 `acceptTrackedChanges`，消费原运行 refs、前后像及已应用操作。
+Accept 需要可归属的留痕记录；`untrackedUndo` 不能赋予接受其他留痕的权限。
+混合运行接受后保留新建文件，并随已验证的生命周期关闭相应恢复状态。
+
+[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 的 `settleTrackedChangeLifecycle`、`attachAcceptNotVerifiedFailure`、`attachUndoNotVerifiedFailure` 判断终态。
+`contentRuntime.applyTrackedChangeSettlement` 通过 [scopedPersistenceCoordinator](../../extension/src/content/scopedPersistenceCoordinator.js) 保存迁移。
+`needs_review` 表示证据不足，不能仅因按钮点击完成就清空 refs、checkpoint 或创建证明。
+
+## 7. 取消、部分失败与刷新后的定位
+
+**当前实现。** page cancellation sequence 在 `cancelActiveWrite` 时递增，router 在操作边界检查。
+已发生的修改保留真实结果；未开始的尾部项可以跳过。部分写回按逐项结果结算。
+主写回在保存等待前记录 checkpoint，因此排查取消后 Undo 丢失时，应先检查记录时序与持久化。
+
+**当前实现。** `contentRuntime.stageWritebackRecovery`、`settleWritebackRecovery` 管理 `retryWriteback` 与 `saveCheck`。
+[writebackIntent](../../extension/src/shared/writebackIntent.js) 对请求记录设置 100 操作、300 KiB 上限；[sessionState](../../extension/src/shared/sessionState.js) 执行恢复字段筛选。
+只读保存核查保存摘要与身份，通过 `confirmSaveCheck` 重新读取服务器，不重新上传文件。
+重试写入则由 `retryRunWriteback` 进入写回链，两者应在指南和 UI 中保持语义区分。
+原请求 receipt 查询可以取回原结果，显式 Retry sync 则创建新的派发；后者的创建幂等参数目前有上述跨层传递缺口。
+
+`content/writebackRecovery.js` 另定义通用 prepare/reconcile 模块；本基线的 Auto 主调用链未发现其实例化。
+定位当前行为应从上述实际调用及 [run-state-and-recovery](run-state-and-recovery.md) 出发，不能凭模块文件名推定默认恢复流程。
+
+Undo 后 `writebackOrchestrator.invalidateMirrorAfterUndo` 调用原项目的 `mirror.invalidate`，并在仍处同项目时清快照缓存。
+失效任务挂入 `pendingMirrorRefresh`，下一轮等待屏障后重新评估镜像。
+失效失败会记录警告；“编辑器撤销完成”不自动证明本地基线已处理完成。
+
+**待验证。** 页面重载、浏览器存储限额、Native 断线、导航和取消组合下的恢复需分别验收。
+现有有界记录与内存回执不构成无限历史或全链路恰好一次保证。
+
+## 8. 修改路线与最窄验证入口
+
+下表为已找到的测试定义，本轮未执行；测试通过后仍需为 DOM、编辑器和服务器行为选择对应浏览器验收。
+命令从仓库根目录执行，按实际改动选择一行，不要求每次运行整组。
+
+| 改动或症状 | 主改位置与联动检查 | 最窄测试命令 |
+|---|---|---|
+| 文本差异转操作错误 | `writebackController.buildSyncApplyOperations`；patch 输入与基线 | `node --test test/writebackController.test.js` |
+| 活动文件/ZIP/空内容不一致 | snapshotRouter、projectFiles、快照缓存、mirrorWorkspace | `node --test test/pageBridgeSnapshotCache.test.js test/staleGuard.test.js` |
+| 原请求超时但文件已变化 | broker 查询原执行 receipt、逐项结果与尾部阻断 | `node --test test/writebackReceiptRecovery.test.js` |
+| 显式 Retry sync 创建已有文件 | creator 局部幂等、retryCreates 跨 journal 传递；G-04 尚缺生产链专项用例 | `node --test test/textFileCreator.test.js test/writebackEditRetry.test.js`，仅覆盖局部能力与恢复意图 |
+| 保存待确认或刷新后核查 | writebackController、writebackIntent、sessionState | `node --test test/writebackSaveCheck.test.js` |
+| 普通 Undo 错撤用户历史 | contentRuntime 路由、提交 Track、trackedChangesLifecycle、ownership | `node --test test/ordinaryUndoRouting.test.js` |
+| 新建文件撤销或混合进度 | undoOperations、contentRuntime、router、textFileCreator、持久化 | `node --test test/createdFileUndo.test.js test/mixedUndoReceipt.test.js` |
+| 撤销后下一轮恢复旧内容 | orchestrator 镜像屏障、mirrorWorkspace、运行入口 | `node --test test/undoMirrorInvalidation.test.js` |
+| 取消后丢失部分结果 | cancellation sequence、router、checkpoint 时序 | `node --test test/writebackCancellationFlow.test.js` |
+| 二进制位置/回执/撤销 | broker、binaryAssetUploader、textFileCreator、Native asset | `node --test test/binaryUploadUndoRoundTrip.test.js` |
+| Accept 归属或验证失败 | contentRuntime、trackedChangesLifecycle、ownership、settlement | `node --test test/writebackRouterAccept.test.js test/writebackSettlementContract.test.js` |
+| 编译状态投影异常 | orchestrator、compileBridge、compileAdapter | `node --test test/compileAdapter.test.js` |
+
+进一步缩小单个场景，可使用已经存在的测试名称，例如：
+
+```sh
+node --test --test-name-pattern='ordinary Undo after reload' test/ordinaryUndoRouting.test.js
+node --test --test-name-pattern='lost final reply' test/writebackReceiptRecovery.test.js
+```
+
+`ordinary Undo after reload` 覆盖先重载记录再执行 Undo；它不能独自证明“混合 Undo 完成后立即刷新”的结果。
+后者还涉及 Track 条件、延迟保存/确认保存、共享记录和按钮投影；本轮未找到该完整真实浏览器场景的新增执行证据。
+
+**目标契约。** 每次修改须说明：原运行身份如何保留、哪项证据新增或失效、恢复账本何时推进，以及相关调用方是否同步更新。
+新增 Page RPC 或 page 模块还需检查 [pageBridgeClient](../../extension/src/content/pageBridgeClient.js) 的注入顺序、协议目录、handler 和扩展注册。
+最小浏览器验收样例为：根文件和嵌套文件编辑、一个新建文本、用户后续修改、一次部分 Undo、刷新后重试剩余部分。
+涉及网络或取消逻辑时，再补慢 ZIP、丢失最终响应和写到一半取消；结果分别记录，避免把静态阅读当作运行验收。
