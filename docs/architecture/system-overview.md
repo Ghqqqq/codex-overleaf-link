@@ -31,6 +31,8 @@ flowchart LR
 
 Native Messaging 是浏览器扩展与本地程序之间的消息通道。Page RPC 是隔离环境请求页面主世界执行能力的调用协议。两种通道拥有不同的请求标识、限制与重试规则。
 
+同源检查、扩展来源、项目身份与版本能力分别回答不同问题。各消息族的准入条件以及 Page token 的同文档信任前提见[协议与信任边界](protocols-and-trust.md)，不能由一次握手推定所有方法具有相同权限检查。
+
 自定义 Provider 仍通过 Codex app-server 管理 agent 的工具与线程。[codexProviderLaunch.prepareProviderLaunch](../../native-host/src/codexProviderLaunch.js) 将 Responses、Chat Completions 或 Anthropic 上游连接接到本地桥，再向 Codex 提供统一入口。更换模型服务与更换 agent 执行引擎需要分别理解。
 
 ## 代码如何真正加载
@@ -128,11 +130,14 @@ I_{view}=(accountScopeId,projectId,generation).
 | Overleaf 文档内容 | 页面桥读取编辑器或服务器内容；保存强度由具体证据决定 | 本地快照、镜像、UI 提示 |
 | 镜像及差异基线 | [mirrorWorkspace](../../native-host/src/mirrorWorkspace.js) | 浏览器写回计划与镜像健康提示 |
 | Native 进程及项目锁 | [taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js)、[codexSessionTiming](../../native-host/src/codexSessionTiming.js) | 运行卡片、后台运行 journal |
-| Provider 配置及凭据 | [providerStore](../../native-host/src/providerStore.js)、[providerRuntime](../../native-host/src/providerRuntime.js) | 浏览器脱敏目录、执行快照中的身份引用 |
+| Custom Provider 配置及凭据 | [providerStore](../../native-host/src/providerStore.js)、[providerRuntime](../../native-host/src/providerRuntime.js) | 浏览器脱敏目录、执行快照中的身份引用 |
+| Built-in 的 Codex 配置 | 由运行所用 Codex home 配置及 Codex 解释；[codexProviderLaunch](../../native-host/src/codexProviderLaunch.js) 不创建 Custom Provider override | Provider 身份与选择投影使用 Built-in / revision 0，执行快照的 `providerRevision` 归一为空字符串；这些身份不覆盖继承的 `model_provider/model_providers` 配置或其真实出站目标，见[Provider 与协议](providers-and-protocols.md) |
 | 风格资产及版本 | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) | 参考草稿、运行捕获的版本与哈希 |
 | 更新事务 | [updateManager](../../native-host/src/updateManager.js)、Bootstrap 与后台协调；[managedUpdateProjection](../../extension/src/shared/managedUpdateProjection.js) 归一阶段语义 | 更新 UI、浏览器存储、Native 恢复记录 |
 
 “权威责任”需要按事实划分。一个 `state` 对象或一个数据库不能代表整个系统的唯一真相。共享会话的主路径、兼容回退和恢复限制见[运行状态与恢复](run-state-and-recovery.md)。
+
+失败目录、操作回执、运行报告、settlement、恢复按钮和卡片头部活动摘要还存在独立投影。修改“完成”或“可重试”的展示时，应逐一核对实际消费者，具体差异见[失败、结算与动作](ui-and-loading.md#failure-settlement-actions)。
 
 ## 生命周期和数据边界
 

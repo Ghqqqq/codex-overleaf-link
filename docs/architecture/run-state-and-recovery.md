@@ -134,9 +134,37 @@ Native 的 [taskRunnerRuntime.handleCodexSteer](../../native-host/src/taskRunner
 [sharedSessionBridge.js](../../extension/src/shared/sharedSessionBridge.js) 的 `enabled` 在受支持 Overleaf HTTPS `/project` 路由启用共享历史。
 此时 sessions、会话删除、相关索引查询和 scoped 元数据经扩展消息进入 [backgroundSharedSessions.js](../../extension/src/backgroundSharedSessions.js)。
 后台数据库 `codex-overleaf-shared-sessions` 属于扩展源，sessions 主键为 `[accountScopeId,id]`，项目索引为 `[accountScopeId,projectId]`。
-辅助 store 仍可能保留原站点存储行为；不能把整个 StorageDb 一概描述为全部迁入后台。
+`auditLogs/turns/events/artifacts` 仍走原站点数据库；不能把整个 StorageDb 一概描述为全部迁入后台。
 非共享路径继续使用旧站点源数据库；共享迁移只导入明确属于当前账号且具有项目身份的记录。
 迁移按账号和来源站点记录完成状态，未知账号的旧记录保留；同 ID 冲突可能生成去除危险操作能力的恢复副本。
+
+<a id="storage-lifecycle"></a>
+
+#### 数据对象、作用域与保留规则
+
+存储版本、迁移完成标记和记录保留上限分别回答“结构如何读取”“哪些来源已导入”“哪些材料仍可恢复”。TTL 指按时间到期清理，条数上限则按容量淘汰；两者也应分别核对。修改这些规则时，应沿对应 writer、reader 和清理入口检查，不能只修改数据库版本号。
+
+| 对象与实际 key | 写入、读取权威 | 保留与清理边界 |
+| --- | --- | --- |
+| 扩展 IndexedDB `codex-overleaf-shared-sessions` v1：`sessions`、`tombstones`、`migrations` | [backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js) 的 `writeMany/list/erase`；session 和墓碑按账号/会话，迁移按账号/origin | 删除保留墓碑；清空账号还写 `origin:'*'` 的 `clearedAt`，阻止旧导入及旧会话恢复。当前未设置这些记录的自动 TTL |
+| 站点 IndexedDB `codex-overleaf` v3：`sessions`、`auditLogs`、`turns/events/artifacts` | [StorageDb.STORES/openDb](../../extension/src/shared/storageDb.js)；共享 decorator 只替换 sessions 路由，站点 sessions 可作为旧备份 | 共享清空删除当前账号的旧 session 备份，并清空当前站点全部辅助 stores；单会话删除未级联清理 audit。后三个 store 有 schema/builders，当前生产调用链未使用其 turn/artifact builders 或 event buffer |
+| `codexOverleafPrefs` | [StorageMigration](../../extension/src/shared/storageMigration.js) 的 `loadPrefs/savePrefs`；`PROJECT_SCOPED_PREF_MAPS` 列出的五类映射使用 `account:…:project:…`，其余字段仍在全局对象内 | 旧无账号项目偏好由首次访问账号认领；`storageSchemaVersion` 是全局字段。它与共享库 migrations 的完成标记独立 |
+| `codexOverleafGlobalPrefsV1` | [GlobalPreferences.createStore](../../extension/src/shared/globalPreferences.js) 的 schema/revision；初次读取从旧 prefs 复制允许字段 | 后续字段 patch 递增 revision；旧会话 autosave 不拥有这份全局偏好，详见[配置作用域](ui-and-loading.md#3-配置作用域按写入路径判断) |
+| `codexOverleafPanelState:project:<id>` 旧 blob；其后加 `:account:<encoded-id>` 的 fallback | [StorageKeys.getProjectStorageKey](../../extension/src/shared/storageKeys.js)、runtime `buildScopedFallbackStorageKey/loadStoredStateForProject` | 旧 blob 仅在对应迁移分支完成后移除；fallback 必须匹配账号，`prepareCompactFallbackState` 清空 task、sessions、runs，不能恢复完整历史 |
+| `codex-overleaf-scoped-persistence-v1:<account>:<project>` | [ScopedPersistenceBrowserAdapter](../../extension/src/shared/scopedPersistenceBrowserAdapter.js)、后台 `meta-read/meta-write` | 保存 fence/receipt、queue claims 和墓碑；[QueuePolicy](../../extension/src/shared/scopedPersistenceQueuePolicy.js) 在冲突判断中将超过60秒的 claim 视为过期，移除队列项时保留最多500个 queue 墓碑；事务合并 session 墓碑时保留200个 |
+| `codexOverleafSessionTombstones` 与 `codexOverleafSessionTombstone:v2:<project>:<session>` | `StorageMigration.collectSessionTombstones/addSessionTombstones`、[SessionPersistence.writeSessions](../../extension/src/content/sessionPersistence.js) | 兼容墓碑按项目组织，未编码账号；合并读取视图每项目最多100个删除 ID，v2 条目按删除时间裁剪。裁剪未重写旧聚合 key，不能将100视为两种物理副本的总上限；与后台账号墓碑、scoped meta 墓碑分别维护 |
+| `chrome.storage.session` 中 `codex-overleaf:run-journal:<requestId>` | [background](../../extension/src/background.js) 的 `queueJournalWrite/listRunJournals/acknowledgeRunJournal` | `trimRunJournal` 按300事件及512 KiB估算预算淘汰事件，读取最近16个可恢复项；ack 删除，内存超过16项时清理已终止或失主记录。该存储区域与持久 local/IndexedDB 寿命不同 |
+| `projectNameCacheByAccount`；页面 shared-session baseline | [RecentProjects](../../extension/src/content/recentProjects.js) 的名称映射；`SharedSessionBridge` 的内存 Map | 名称缓存按账号/项目读取，全清时删除整个 key；baseline 仅存于当前页面，用于三路合并，不能充当持久备份 |
+
+`auditLogs` 的写链为 runtime `createAuditDraftForRun/finalizeAuditRecord` → `AuditRecords` → `StorageDb.buildAuditLogRecord`，记录包含 project/session/turn，未保存账号字段。它们不会随共享 sessions 跨 origin 导入，也没有自动 TTL；历史视图最多投影50条、诊断最多导出12条。这两条路径都先按 projectId 读出全部 audit，再筛选或裁剪，输出限额不能证明数据库读取量有界。`ChangeHistoryModel.project` 另要求关联可见会话；诊断导出仅按 projectId 查询，因此同站点同项目的其他账号 audit 也可能进入摘要。维护该边界须同时检查[历史及清理视图](ui-and-loading.md#历史查看清理与结果动作)与[诊断导出](ui-and-loading.md#7-诊断与-popup-的真实入口)，不能将 sessions 的账号隔离推广到辅助 store。
+
+#### 旧 panel blob 的迁移门控
+
+旧 blob 是保存在单个 key 下的整块面板状态。`loadStoredStateForProject` 调用 `StorageMigration.runMigrationIfNeeded(projectId, legacyKey, accountScopeId)`。该函数通过 `chrome.storage.local.get(null)` 读取存储，再检查全局 prefs 的 `storageSchemaVersion`；达到 `StorageDb.TARGET_SCHEMA_VERSION` 时，只查询/认领 sessions，不再转换已读入的当前项目旧 blob。低版本分支才转换该 blob、写 session、更新全局 schema 标记，并尝试删除当前 legacy key；删除错误被捕获，`migrated:true` 不证明旧 key 已清除。账号或项目缺失时返回空迁移结果；共享 bridge 另外拒绝缺失或失配账号。
+
+**当前迁移缺口。** 两个项目各有旧 blob 时，先迁移项目 A 会推进全局 schema；随后打开 B 会跳过 B 的 blob，其历史可仍保留在旧 key 中，却未进入当前 hydration。共享 `SharedSessionBridge.migrate` 只读取站点 IndexedDB，无法补读该 `chrome.storage.local` blob。全局 schema 达标不能证明所有项目的旧记录均已导入。
+
+[storageMigration.test.js](../../test/storageMigration.test.js) 检查单项目转换及字段处理，[storageMigrationAccountIsolation.test.js](../../test/storageMigrationAccountIsolation.test.js) 检查账号认领与偏好隔离；它们不能替代“同一全局 prefs 下依次打开两个旧项目”的组合验证。后续迁移改动应同时核对残留 legacy key、当前 sessions 和两套完成标记。
 
 ### 4.2 锁、版本与三路合并
 
@@ -172,6 +200,22 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 因此调度器等待保存 Promise 与获得 durable receipt 需要分别判断；入口早退与队列提升的可达时序需要组合验证，尚不能据此断言任务已经丢失或重复执行。
 `finishRunView` 尝试在终态展示前刷新排队保存，但调用存在错误捕获；“任何存储失败下均能即时重载同样终态”仍需单独验证。
 **维护目标**：新增强持久化操作应选择明确失败可见的保存入口，不应仅调用延迟保存后给出成功保证。
+
+<a id="storage-compaction"></a>
+
+#### 两套压缩预算与实际消费者
+
+`saveState` 同时捕获原始 `stateSnapshot` 和 `SessionState.prepareStateForStorage` 生成的 `compactStateSnapshot`。[ScopedPersistencePanelState.persistPanelState](../../extension/src/content/scopedPersistencePanelState.js) 仅从 compactState 提取轻量偏好；sessions 从原始 `state.sessions` 经 `StorageDb.buildSessionRecord` 构造，再交给 `SessionPersistence.writeSessions`。因此两套压缩常量不构成连续收紧的同一管道。
+
+| 路径 | 当前预算及裁剪依据 | 实际消费范围 |
+| --- | --- | --- |
+| [SessionState.prepareStateForStorage](../../extension/src/shared/sessionState.js) | `STORAGE_DEFAULT_LIMITS` 默认12会话、每会话10 runs、每 run 120事件；估算结果超过4 MiB时改用 `STORAGE_AGGRESSIVE_LIMITS` 的4会话、3 runs、20事件 | 主提交只提取其轻量偏好；该结果还参与 fallback 构造。4 MiB是切换压缩模式的目标，激进分支不继续循环直到达到某个总字节上限 |
+| [StorageDb.buildSessionRecord](../../extension/src/shared/storageDb.js) | `SESSION_STORAGE_LIMITS` 保留最近10条 history、20 runs、每 run 300事件；各文本字段另有长度约束 | 主 sessions 记录的实际裁剪；该 builder 未采用前一行的会话总量或总字节目标 |
+| [StorageRunActions.compactRunsForStorage/compactRunActionPayload](../../extension/src/shared/storageRunActions.js) | 启用 `preserveRunActionPayload` 后，最多保留最近2个具备可恢复材料的 run；每 run 的动作材料限2 MiB，超限整组丢弃，可选 captures 不得挤掉已有 Undo 材料 | 主 session 中的 Undo/Accept 恢复能力；保留 run 的显示记录不代表其动作材料仍在 |
+
+**当前容量边界。** compactState 可以只包含短摘要，而主 session 仍保存较长的可见事件文字；主存储负荷因此可能超过4 MiB，却未触发 `onAggressive`。即使回调触发，裁剪也没有经 compactState 传递到主 sessions。配额排查应检查最终 `putRecords` 的数据及共享传输限制，不能把 compactState 大小、激进提示或任一 helper 的预算当作全部 `StorageDb` 写入的硬上限。`StorageValuePruning` 仅删除摘要中的空字段，并保留 `false/0` 等有效值，也不执行容量回收。
+
+[sessionState.test.js](../../test/sessionState.test.js)、[storageDb.test.js](../../test/storageDb.test.js) 和 [reviewingUndoPersistence.test.js](../../test/reviewingUndoPersistence.test.js) 分别定义压缩或恢复材料行为；[scopedPersistencePanelState.test.js](../../test/scopedPersistencePanelState.test.js) 使用 builder 和 writer 替身检查提交装配。验证容量路径时须串联两份快照、真实 builder、`writeSessions` 和最终写入参数；局部预算断言不能证明真实浏览器配额耗尽后的恢复能力。
 
 <a id="session-lifecycle"></a>
 
@@ -214,6 +258,7 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 `sendTrackedCodexRun` 创建 request 后调用 [activeTurnControl.js](../../extension/src/content/activeTurnControl.js) 的 `bind`，通过 run-owner port 关联原项目、session 和 run。
 后台 journal 留存有限事件及 owner 状态；事件序号用于避免恢复时重复追加。
 后台 owner 连接与 `ownerLost` 标记入口在 [background.js](../../extension/src/background.js) 的 run-owner port 处理和 `interruptOwnerlessRun`；client 的绑定需要与后台判定一同检查。
+后台重建未将存储 journal 回填内存；失主标记又只修改内存中的记录，所以存储中存在旧 journal 不能证明刷新后可以恢复。写队列与淘汰的交错、读取限额和残留条件见[后台 journal 生命周期](native-execution.md#journal-lifecycle)。
 `normalizeLoadedPanelState` 在共享历史模式关闭通用的 running→interrupted 恢复，避免把其他活页拥有的运行当作中断；传统站点本地路径允许该恢复。
 `recoverInterruptedRunJournals → ActiveTurnControl.recoverJournals` 在共享模式设置 `requireOwnerLost: true`。
 Native terminal journal 可能早于 owner 页面的写回和存储完成，旁观页不能据此提前替它结算。
@@ -228,6 +273,7 @@ owner 丢失后，恢复流程补齐未读取事件、记录 `interruptedDraft`�
 - `recoverRecordedRunFailure` 由 `normalizeRun` 调用，依据严格匹配的父运行后处理失败事件修复 failed 状态；事件类型、活动元数据、作用域及时间均参与检查，普通工具失败或子代理错误不足以触发修复。
 
 这两条路径修正“证据已终结、标签仍为 running”的记录；journal 恢复负责 owner 丢失后的中断草稿。不能把两者统一解释为必须 ownerLost 才能改变运行状态。
+恢复后的 `run.status`、报告内容和写回 settlement 仍须分别核对；缺项回执与失败分类的投影差异见[失败、结算与动作](ui-and-loading.md#failure-settlement-actions)。
 相关测试为 [settledRunRecovery.test.js](../../test/settledRunRecovery.test.js) 和 [recordedRunFailureRecovery.test.js](../../test/recordedRunFailureRecovery.test.js)：前者结合归一化行为与源码装配断言，后者检查事件识别及 StorageDb 投影往返，均不覆盖真实跨页恢复。
 
 [sharedSessionViewSync.js](../../extension/src/content/sharedSessionViewSync.js) 订阅跨页面变化，只在无活动运行、无保存、无本地草稿或未持久修改时刷新。

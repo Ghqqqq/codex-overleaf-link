@@ -31,7 +31,7 @@
 `applyOperations`、Accept、Reject、编译触发要求项目身份；`ensureReviewing`、`ensureEditing` 为 `optional`。
 [pageBridge](../../extension/src/pageBridge.js) 的 `dispatch` 按目录执行 `writeGuard.runWriteGuard`。
 因此核查新调用时，应同时检查目录策略、调用方参数、实际 handler；不能从“跨过 Page RPC”推导所有方法都拒绝缺失身份。
-模式切换的可选项目身份不取消 Page Bridge 的 capability 认证；相关定义见 [pageRpcContract.test.js](../../test/pageRpcContract.test.js) 和 [pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js)，后者包含空参数切换模式用例。
+模式切换的可选项目身份仍保留 Page Bridge 的 capability token 检查；token 对同文档 MAIN 脚本的信任前提见[协议与信任边界](protocols-and-trust.md)。相关定义见 [pageRpcContract.test.js](../../test/pageRpcContract.test.js) 和 [pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js)，后者包含空参数切换模式用例。
 
 ## 2. 端到端调用图
 
@@ -77,10 +77,22 @@ content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言
 [snapshotRouter](../../extension/src/page/snapshotRouter.js) 决定 ZIP、活动编辑器覆盖层和页面文件记录如何合并。
 [overleafProjectSnapshot](../../extension/src/page/overleafProjectSnapshot.js) 承担快照桥及缓存相关装配。
 
-- 完整快照：`mirrorWorkspace.syncOverleafToMirror` 可移除镜像内已从项目消失的文件，并更新完整基线。
+- 完整快照：`mirrorWorkspace.syncOverleafToMirror` 根据 `fullProjectSnapshot` 进入全量替换分支，删除规范化输入中没有的镜像文件，并重建基线。只有输入路径集合完整且文件身份保持一致时，缺失路径才能代表项目中已删除的文件；当前 ZIP 路径处理与二进制配额存在下述例外。
 - 部分快照：只覆盖已读取路径，合并旧基线；不能用“本次未读到”推导服务器文件已删除。
 - Warm mirror：普通快启检查整体镜像健康与当前 overlay；OT 快启另由 [otWarmMirrorController.canUseOtWarmStart](../../extension/src/content/otWarmMirrorController.js) 检查聚焦文件的新鲜度。观察事件经 `otWarmMirror` 的队列送入 Native `mirror.patchFiles`；局部更新不能单独证明完整项目已同步。
 - 保存核查：`serverOnly: true` 明确要求服务器来源；编辑器覆盖层不能用于证明服务器已保存。
+
+**已知限制：ZIP 字面文件名与路径身份。** `snapshotRouter.extractFilesFromZip` 将 ZIP 名称按 UTF-8 解码后，交给 [projectFiles.normalizeSafeProjectPath](../../extension/src/shared/projectFiles.js)；后者还会执行最多三轮 `decodeURIComponent`。
+因此字面文件名 `chapter%20one.tex` 与 `chapter one.tex` 可归到同一路径；`mergeSnapshotFiles` 按路径建 Map，后项覆盖前项。`100%.tex` 这类含不完整百分号转义的名称会返回空路径，提取器直接忽略，未加入 `skipped`。
+只要至少一项 ZIP 文件被保留，未限制请求路径的快照仍可返回 `fullProjectSnapshot: true`，该标志没有反映上述碰撞或丢弃。
+这些结果限定于本地合成 ZIP 与当前模块调用链；真实 Overleaf 对这些文件名的接纳条件、页面寻址及远端写回后果需另行验证。
+维护时需区分 ZIP 字面名称与 URL 编码路径，并保持不同文件身份不可合并的目标契约；路径校验通过不能单独证明规范化前后仍指向同一文件。
+相关入口为 [projectFiles.test.js](../../test/projectFiles.test.js) 与 [pageBridgeSnapshotCache.test.js](../../test/pageBridgeSnapshotCache.test.js)；验证需串联原始名称、提取、合并及完整性标记，不能只检查单个路径 helper。
+
+**已知限制：配额跳过与全量镜像清理。** 请求包含二进制且读取内容时（`includeBinaryFiles` 且 `includeContent !== false`），`extractFilesFromZip` 对超过单文件或项目二进制预算的资产加入 `skipped`，并从 `files` 中省略该路径；限额由该模块的 `MAX_BINARY_FILE_BYTES/MAX_BINARY_TOTAL_BYTES` 决定，`buildProjectSnapshot/buildZipOnlyProjectSnapshot` 仍可返回完整标志。仅列文件清单的 `includeContent:false` 路径不执行这一预算裁剪。
+[contentRuntime.getProjectSnapshotWarnings](../../extension/src/content/contentRuntime.js) 将这些 skipped 项归为非阻断警告。[mirrorWorkspace.syncOverleafToMirror](../../native-host/src/mirrorWorkspace.js) 的全量分支只根据规范化后的文件集合清理，没有按快照 `skipped` 保留旧路径；随后重建基线、更新 `lastFullSyncAt` 并清除 `dirty`。
+因此本地合成链中，原先已同步的小资产在下一份 ZIP 因体积增长而超限时，其旧镜像文件和基线记录会被移除，尽管 ZIP 中仍有该资产。此结论涉及本地内容及基线，不提供远端删除或实际编译后果的证据。
+完整文件清单、完整内容读取与允许删除缺失路径应分别判断；新鲜度时间戳也不能单独证明所有资产已读取。[mirrorWorkspace.test.js](../../test/mirrorWorkspace.test.js) 的超限资产用例覆盖输入过滤，维护时还需与 ZIP 提取串联，检查已有资产、总预算跳过和全量清理后的基线。
 
 **已知限制：OT 快启参数冲突。** `resolveWarmRunStart` 要求非空 `fileOverlays` 才返回成功；[runController.buildCodexRunParams](../../extension/src/content/runController.js) 同时保留这些 overlays 和 `otWarmStart` 标记。
 [taskRunnerRuntime.validateOtFocusedWarmMirrorReuse](../../native-host/src/taskRunnerRuntime.js) 明确拒绝携带非空 overlays 的 OT 复用请求，调用方将该拒绝映射为 `mirror_stale`。
@@ -121,9 +133,16 @@ content 的 `writebackController.getSyncChangePatches` 优先保留 Native 补�
 page 的 `applyTextPatches` 校验 `expected` 并按起点降序应用，以免前面的写入移动后面的坐标；坐标使用 JavaScript 字符串索引，即 UTF-16 代码单元。
 实际编辑器写入由 [overleafEditor](../../extension/src/page/overleafEditor.js) 适配，陈旧检查依赖 [staleGuard](../../extension/src/shared/staleGuard.js)。
 
-一般比较关系为 $B=C$；若整个文件不同，`checkPatchRangeFreshness` 可用每个补丁的 `expected` 文本证明目标区间未变化。
-即对补丁区间 $[a_i,b_i)$，检查 $C[a_i:b_i]=expected_i$。
+整文件新鲜度按换行归一化函数 $L$ 判断 $L(B)=L(C)$，其中 $L$ 将 CRLF（`\r\n`）转换为 LF（`\n`）。若归一化后仍不同，`checkPatchRangeFreshness` 比较每个补丁位置的 `expected` 文本。
+即对补丁区间 $[a_i,b_i)$，检查 $L(C)[a_i:b_i]=expected_i$；实际 `applyTextPatches` 又在未归一化的当前字符串上核对并应用同一组坐标。
 该范围证明仅覆盖参与比较的补丁位置，不等同于整份文件完全一致。
+
+**已知限制：换行表示与补丁坐标。** [textPatch.computeTextPatches](../../native-host/src/textPatch.js) 按原始基线生成 UTF-16 偏移；`staleGuard` 的换行归一化没有同时重映射 `from/to`。同一逻辑位置之前每少一个 CRLF 中的 `\r`，偏移就相差一个代码单元。
+当 Native 基线保留 CRLF、编辑器返回 LF 时，归一化比较可以通过，补丁仍可能错位；非空 `expected` 常会令操作被拒绝，但零宽插入的空 `expected` 无法识别这种偏移。
+例如基线 `first\r\nalpha beta gamma` 的目标为 `first\r\nalpha NEW beta gamma`，生成的插入位置为 13；用于 LF 编辑器文本时，可得到 `first\nalpha bNEW eta gamma`。
+`writebackRouter.applyEditOperation` 把补丁及其计算所得的 `nextContent` 交给编辑器适配器，再以 `nextContent` 作为 `verifyActiveEditorText` 的读回预期，因此该分支仍可返回 `verified: true`；该字段不能独立证明结果等于 Native 原始目标文本。
+上述错位结果限定于这些换行条件下的本地合成模块调用链；真实 Overleaf 的 ZIP、活动覆盖层和编辑器分别采用何种换行表示，需另行验收。
+维护坐标时应联查快照解码、[textPatch.test.js](../../test/textPatch.test.js)、[staleGuard.test.js](../../test/staleGuard.test.js) 与 [pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js)，覆盖 CRLF/LF 混合、零宽插入、非空替换及最终目标内容；统一 UTF-16 单位仍需统一字符串表示或明确偏移映射。
 
 **已知限制。** `staleGuard.checkOperationFreshness` 遇到空白基线时直接通过检查。
 该结论限定为此函数分支；实际写入还经过身份、编辑器和操作验证。
@@ -217,6 +236,8 @@ broker 在 commit 结果不确定时查询 `binaryUploadStatus`；仍不确定�
 编译另有条件：启用 Auto Compile、非 Ask、实际写入可编译文件。
 `autoRecompileAfterWriteback` 在保存尚未确认时仍可触发 Overleaf Recompile，并请求页面等待保存。
 因此“编译触发了”“服务器保存了”“镜像已更新”应分别呈现。
+
+**结果投影的已知限制。** settlement 会为计划内缺失回执的操作补充 `write_result_missing`，完成报告仍按原始 applied/skipped 集合计数，`run.status` 也有独立收尾路径。因此需要检查的结算可能同时带有 completed 运行标签。失败主因、恢复按钮和页眉活动摘要的实际消费者见[失败、结算与动作](ui-and-loading.md#failure-settlement-actions)；修改成功语义时需同时核对这些投影。
 
 ## 6. Undo 的入口、分支与后来修改保护
 
@@ -351,6 +372,8 @@ Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirror
 | 文本差异转操作错误 | `writebackController.buildSyncApplyOperations`；patch 输入与基线 | `node --test test/writebackController.test.js` |
 | Auto 重命名、二进制删除或资产类型被过滤 | `mirrorWorkspace.collectMirrorChangesDetailed`、路径类型规则、controller 转换及 orchestrator 独立删除确认 | `node --test test/mirrorWorkspace.test.js test/writebackController.test.js`；另验文本重命名拒绝删除、二进制重命名及 GIF/WebP |
 | 活动文件/ZIP/空内容不一致 | snapshotRouter、projectFiles、快照缓存、mirrorWorkspace | `node --test test/pageBridgeSnapshotCache.test.js test/staleGuard.test.js` |
+| ZIP 路径碰撞、丢弃或资产配额影响完整性 | `extractFilesFromZip`、`normalizeSafeProjectPath`、`mergeSnapshotFiles`、快照标志及 Native 全量清理 | [projectFiles](../../test/projectFiles.test.js)、[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)；需串联百分号字面名称、超限已有资产与基线更新 |
+| CRLF/LF 内容相同但补丁错位 | textPatch 原始偏移、staleGuard 归一化、controller 补丁传递、router 应用及读回 | [textPatch](../../test/textPatch.test.js)、[staleGuard](../../test/staleGuard.test.js)、[pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js)；需比较最终内容与 Native 目标，不能只断言 `verified` |
 | OT 快启进入快照重读回退 | `resolveWarmRunStart`、`runController.buildCodexRunParams`、Native `validateOtFocusedWarmMirrorReuse`、runtime 的 mirror_stale 回退 | `node --test test/otWarmMirrorIntegration.test.js test/taskRunner.test.js`；需另补快启结果经参数构造进入 Native 校验的组合场景 |
 | 原请求超时但文件已变化 | broker 查询原执行 receipt、逐项结果与尾部阻断 | `node --test test/writebackReceiptRecovery.test.js` |
 | 显式 Retry sync 创建已有文件 | creator 局部幂等、retryCreates 跨 journal 传递；现有测试缺少生产链专项用例 | `node --test test/textFileCreator.test.js test/writebackEditRetry.test.js`，仅覆盖局部能力与恢复意图 |

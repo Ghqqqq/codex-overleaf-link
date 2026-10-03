@@ -4,6 +4,7 @@
 `Current behavior` 表示可定位的源码事实；`Target contract` 表示维护目标；`Known gap / 未验证` 表示具体限制或尚缺的运行证据。
 下文未单独标注的实现描述均属于 `Current behavior`，不能由此推定全部平台已经验收。
 浏览器运行状态见[运行与恢复](run-state-and-recovery.md)，页面写入见[Auto 修改与撤销](auto-edit-undo.md)，模型适配见 [Provider 与协议](providers-and-protocols.md)。
+消息发送者准入、Content 与后台的版本 gate 集合及当前未覆盖方法见[协议与信任边界](protocols-and-trust.md)。Native 的业务检查与浏览器两层 gate 分别维护。
 
 ## 1. 适用范围与 owner
 
@@ -214,6 +215,26 @@ Provider HTTP 空闲/总预算属于另一层，见 [Provider 与协议](provide
 运行 journal 支持有限事件恢复；`ActiveTurnControl.recoverJournals` 不把 Native terminal 直接当作页面写回完成，详见[运行与恢复](run-state-and-recovery.md)。
 `Target contract`：新增方法默认禁止重放，只有明确副作用、幂等条件与失败测试后再加入安全分类。
 
+<a id="journal-lifecycle"></a>
+
+### 后台重建与 journal 的寿命
+
+后台 [background.js](../../extension/src/background.js) 同时管理内存 `runJournals/journalWrites` 和 `chrome.storage.session` 中的 journal；两者的寿命不同。
+后台 worker 重建时，`pending/runJournals/ownerBindings` 从空 Map 开始，当前没有从 session 存储恢复这些运行登记的入口。
+[ActiveTurnControl.connect](../../extension/src/content/activeTurnControl.js) 可在 owner port 断连后重新连接并发送原 binding，但后台 bind 只登记连接，不加载旧 journal。
+随后 owner 再断连时，`interruptOwnerlessRun` 仅给内存中存在的 journal 设置 `ownerLost`，也仅对仍在 `pending` 的请求发送取消。
+因此，重建前保存的 `terminal:false、ownerLost:false` 记录可继续留在存储中，却被 `listRunJournals` 的终态/ownerLost 过滤排除；已 terminal 但尚无 ownerLost 的记录也不能通过共享恢复的 `requireOwnerLost` 条件。
+这是恢复入口的已知限制；原页面若及时完成失败结算、持久化及 acknowledge，仍可经其收尾路径处理。真实 worker 重建、消息失败与页面关闭的竞速需要独立验证，不能由存储记录存在推定恢复可达，也不能据此断言运行记录已经丢失。
+
+`queueJournalWrite` 为每次写入捕获快照，并按 requestId 串入 Promise 链。`pruneInMemoryRunJournals` 在创建 journal 时从内存中的 terminal/ownerLost 项选择淘汰对象，以 16 项为保留目标；活动项不会仅因超过该数量被淘汰。
+**已知实现限制。** 淘汰直接删除内存及 `journalWrites` 条目并调用 storage.remove，没有等待或取消此前的写链；删除 Map 条目不会取消已经排队的 Promise。
+若旧快照在 remove 之后执行 storage.set，已淘汰的持久记录可被重新写入；它已脱离内存 Map，后续这条淘汰路径无法再次选中它。
+`listRunJournals` 的 `slice(-16)` 仅限制返回列表，单条 journal 的事件裁剪也不能证明持久记录总量有相同上限。真实存储配额影响仍需验证。
+`acknowledgeRunJournal` 另有等待当前写链后删除的顺序，不能用该入口的顺序替代 prune 的实现。
+
+最近验证入口为 [backgroundNativeError.test.js](../../test/backgroundNativeError.test.js)、[activeTurnControl.test.js](../../test/activeTurnControl.test.js) 与 [crossTabRuntimeRegression.test.js](../../test/crossTabRuntimeRegression.test.js)。后台 VM 用例未提供 `chrome.storage.session`，恢复用例直接注入 journal，均未覆盖上述存储寿命。
+组合验证需保留 session 存储并重建后台，再检查旧 binding 断连后的 ownerLost 和恢复筛选；淘汰验证需延迟旧 journal 写入，在删除后释放写链，并重新读取存储。页面失败结算和 acknowledge 应作为独立收尾分支纳入验证。
+
 ## 7. 配额与超限后的降级
 
 | 层 | 权威符号 | 当前意义 |
@@ -258,7 +279,7 @@ Base64 字节数约为 \(4\lceil n/3\rceil\)，外面还有 JSON 与 diff/patch�
 | `projectLock`；`taskRunner` 的 Codex 运行用例 | 调用 `handleRequest`，部分使用真实临时镜像 | 替换 runner 与 CLI 环境发现；锁释放不能证明真实进程退出。`task.run` 的外部 agent 用例另行启动夹具进程 |
 | `codexSessionRunner`；`streamEvents` | 前者包含镜像/结果测试与合成 app-server 测试；后者注入 `executeCodex` 发事件 | 多数结果测试替换模型执行；合成协议进程也不能证明真实 Codex 协议兼容 |
 | `readProgressGuard` | 直接调用 runner，启动合成 app-server；部分场景创建后代进程 | 绕过 Native index/runtime 登记；Windows taskkill 用注入函数更新 child 状态；未贯通停止屏障落盘与重启 |
-| `backgroundNativeError`；`activeTurnControl` | 前者在同一 VM 加载真实后台及依赖；后者调用 bind/list/ack | Chrome API、Native port 为模拟；后者未调用 `recoverJournals`，不能独自证明恢复结算 |
+| `backgroundNativeError`；`activeTurnControl` | 前者在同一 VM 加载真实后台及依赖；后者调用 bind/list/ack | Chrome API、Native port 为模拟，后台 VM 未提供 session journal 存储；后者未调用 `recoverJournals`，不能独自证明恢复结算或后台重建后的日志寿命 |
 | `crossTabRuntimeRegression` 的 journal 恢复用例 | 直接调用 `recoverJournals`，检查 live owner 与 ownerLost 的不同投影 | 注入合成 journal 和 Chrome runtime，未经过真实后台 journal 持久化及页面重启 |
 | `p0ProductExperience` 的镜像/线程重发断言 | 检查 runTask 源码是否保留快照读取及上下文参数 | 未实际执行弹窗、持久化失败与重发交互 |
 | `nativeEnvironment/codexRuntimeIdentity/codexHome` | 环境发现、身份构造及临时目录准备 | 使用临时候选脚本、注入路径/平台或假配置；不代表当前安装、登录状态及真实全局目录验收 |
@@ -289,5 +310,6 @@ node scripts/run-tests.mjs test/nativeTransportEnvelope.test.js test/nativeTrans
 6. **完整快照准入与镜像复用。** 沿 `useExistingMirror` 与独立 `skipMirrorSync` 两个字段检查同步和 freshness 条件，并分别验证常规 Content 生成参数与直达 Native 的参数组合。
 7. **没有 controller 时 force 释放项目锁。** 核对 `if(request.id)` 登记条件、镜像操作的锁寿命，以及后台补 ID 与 Native 自身准入的差别；缺少登记不证明持锁操作已结束。
 8. **错误后重发与取消链装配。** 分别检查 app-server 兼容重试、后台传输重试和 Content 业务恢复；按第 8 节确认测试入口、替换依赖及尚缺的集成覆盖。
+9. **后台重建与 journal 淘汰。** 分别检查旧存储记录能否补记 ownerLost，以及淘汰后旧写链是否重新创建记录；内存登记、持久记录和恢复列表的数量与寿命分别取证，见[后台重建与 journal 的寿命](#journal-lifecycle)。
 
 `Target contract`：实现或保证变化时，应补充对应端到端测试，并同步维护本页及[功能索引](feature-map.md)。异常终态协议组合、断连后残留子树、屏障重启恢复、真实浏览器后处理各需独立验收。

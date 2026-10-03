@@ -141,10 +141,17 @@ admission 的估算为 $w=\lceil(q+r+1)/m\rceil$，检查 $now+wT\le start+B$。
 **静态边界。** 该估算未按同文件冲突调整串行波数，budget 不能直接表述为整次父运行的绝对截止时间。
 worker 自有计时器会触发 abort，持续产生输出也不会豁免该计时器。
 
-父 turn 返回后，`stop({drain:true})` 先取消尚未启动项，给活动 worker 一个 grace 窗口，再 abort 剩余项并有界等待。
+正常收尾时，父 turn 返回后，`stop({drain:true})` 先取消尚未启动项，给活动 worker 一个 grace 窗口，再 abort 剩余项并有界等待。
 父异常使用 `drain:false`；父取消会 abort 活动 worker、取消排队项，有 worker 启动过时标记镜像 dirty。
 `drained` 表示 broker 收尾路径到达该事件；真实进程停止还依赖 [codexSessionTiming](../../native-host/src/codexSessionTiming.js) 的 `stopCodexAppServer`。
 runner 捕获 `codex_process_stop_unconfirmed` 后阻止正常结果继续同步；有界等待本身不证明全部 OS 进程已退出。
+
+**取消回执失败的收尾缺口。** [subagentBroker.stop](../../native-host/src/subagentBroker.js) 在中止活动 worker 前，先为 queued 项调用 `writeResult`；[subagentWorkspace.atomicWrite](../../native-host/src/subagentWorkspace.js) 的写入和 rename 错误会向外抛出。
+若该回执写入失败，`stop` 会在活动 worker 的 abort、有界等待和 `close` 之前拒绝，轮询计时器也未经过 close 清理。
+[runCodexSession](../../native-host/src/codexSessionRunner.js) 的父成功与父异常路径均直接 await stop，没有 finally 补做 broker 清理；随后 [taskRunnerRuntime.handleCodexRun](../../native-host/src/taskRunnerRuntime.js) 的 finally 仍移除运行登记并释放项目锁。
+该文件错误自身不产生 `codex_process_stop_unconfirmed`，不能据此假定已有停止屏障。活动 worker 的自有 deadline 仍保留，可能继续到后续 deadline 或自然完成；实际进程寿命和后续镜像操作的交错需另行验证。
+[subagentBroker.test.js](../../test/subagentBroker.test.js) 的 drain 与 queued cancellation 用例使用可写临时目录及假 worker，未注入回执写入失败，也未贯通 task runner 的锁释放。
+验证应同时保留 running 和 queued 项，在 queued 回执写入处注入错误，检查活动信号、轮询清理、worker deadline 与外层运行登记；普通 drain 成功不能证明异常收尾也已完成。
 
 ## 5. 波次哈希、归属与隔离输出
 
@@ -220,7 +227,7 @@ worker `completed` 只表示 runner Promise 正常返回；受上一节终态映
 | 启动 gate、继承、禁递归 | codexSessionRunner、localSkills、技能正文、面板技能目录 | `node scripts/run-tests.mjs test/parallelSubagents.test.js` |
 | 首次目录预取与 Ask 投递边界 | contentRuntime、projectSettingsCoordinator、localSkillsPanel；runner gate、thread 参数与文件队列 | `node scripts/run-tests.mjs test/parallelSubagents.test.js test/codexSessionRunner.test.js`；现有预取装配和线程参数测试不能替代延迟目录响应、恢复提交及真实沙箱投递验证 |
 | 共享技能目录与交错准备 | codexHome、codexSessionRunner、writingStyleRuntime、项目锁；installer 映射 | `node scripts/run-tests.mjs test/codexHome.test.js test/codexSessionRunner.test.js`；还需覆盖活跃路径及安装持久性的交错准备场景 |
-| 并发、同文件串行、预算、取消 | subagentBroker、runner、codexSessionTiming、镜像 dirty | `node scripts/run-tests.mjs test/subagentBroker.test.js` |
+| 并发、同文件串行、预算、取消 | subagentBroker、subagentWorkspace 回执写入、runner、codexSessionTiming、taskRunnerRuntime 登记与锁、镜像 dirty | `node scripts/run-tests.mjs test/subagentBroker.test.js`；回执失败时的 abort/close 与外层释放还需组合验证 |
 | 文件归属、quarantine、adoption | subagentWorkspace、subagentWorkspacePath、broker、最终 syncChanges 过滤 | `node scripts/run-tests.mjs test/subagentBroker.test.js test/parallelSubagents.test.js` |
 | 原生发现、历史与终态 | subagentTelemetry、runner eventScope、subagentActivityModel | `node scripts/run-tests.mjs test/subagentTelemetry.test.js` |
 | 子对话、刷新历史、计时 | subagentActivityView、subagentActivityModel、sessionState、runActivitySummary | `node scripts/run-tests.mjs test/subagentActivityView.test.js test/subagentTerminalClock.test.js` |
@@ -242,5 +249,6 @@ worker `completed` 只表示 runner Promise 正常返回；受上一节终态映
 8. **活跃 worker 期间重建技能目录。** 另一个项目或风格生成会按自身开关准备共享 home；核对父任务与 worker 已发现的路径能否继续读取，以及并行 installer 的目标是否仍为持久技能根。文件路径检查与 app-server 缓存行为分别取证。
 9. **目录预取尚未返回时提交。** 从空技能目录开始，延迟 `skills.list` 响应，检查该次参数中的启用 ID 与 broker gate；再分别覆盖预取成功、预取失败后打开 Skills 刷新并重新提交，确认恢复作用于后续运行。
 10. **Ask 中的 ready 与实际投递。** 分别核对 broker 创建、父 thread 的只读配置、模型写 job 的结果及 worker 是否启动；使用隔离项目验证实际沙箱行为，并把原生 collab 事件与文件 broker 结果分开记录。
+11. **queued 取消回执写入失败。** 在已有活动 worker 时使 stop 的 queued 回执写入失败，核对 abort/close 是否执行，以及外层登记和项目锁是否释放；保留对 worker 自有 deadline 的检查，不能把 stop 拒绝或锁释放当作 worker 已停止的证据。
 
 **集成验证范围。** 同文件长队列与 admission 预算的实际时长、忽略 abort 的 worker 与 drain/停止确认的交接、波次内跨所有权路径写入，以及真实 app-server 版本的子线程历史字段均需集成验证。拒绝回执路径、活动计数、协议失败终态与暂时性历史错误应分别覆盖；源码中的限制与真实运行后果须保持区分。

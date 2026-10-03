@@ -214,8 +214,14 @@ Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元�
 现有正常 `SKILL.md` 会保留；升级 bundled 文件不自动覆盖该已安装文件。安装接口的覆盖行为与补装行为分别核对。
 安装时的文本和路径校验不审查技能语义，也没有风格画像所用的证据验证和不可变版本发布。
 
-`preparePluginCodexHome()` 默认维护插件专用 home，复制部分认证/配置，并移除继承的全局 AGENTS、rules、memories 及顶层 personality 配置；显式配置与用户 home 同路径时会提前返回，不能推广默认隔离结论。
+`preparePluginCodexHome()` 默认维护插件专用 home，复制部分认证/配置，并移除继承的全局 AGENTS、rules、memories；复制 `config.toml` 时还过滤可识别写法的顶层 personality。显式配置与用户 home 同路径时会提前返回，不能推广默认隔离结论。
 开关决定用户 skills、plugins、superpowers 等继承；`vendor_imports` 有单独规则，不能将关闭本地技能描述为目录完全空白。
+
+**Known gap / TOML 过滤形式。** [codexHome.js](../../native-host/src/codexHome.js) 的 `copyUserCodexFile()` 依次调用 `stripPersonalizationFromCodexConfig()`，并在关闭本地技能时调用 `sanitizeCodexConfigForLocalSkillIsolation()`。这些函数逐行匹配文本，未按 TOML 语义解析：前者识别首个 section 前的裸键 `personality = ...`；后者识别裸键 `notify = ...`，以及 `skills/plugins/mcp_servers/marketplaces` 的裸 section 前缀。
+因此语义等价的 `"personality" = ...`、`"notify" = ...`、`["mcp_servers".example]` 可保留；顶层 dotted key `mcp_servers.example.command = ...` 和 inline table `mcp_servers = { example = { command = "..." } }` 也不经过 section 过滤。配置含义相同，字符串形状不同，当前过滤结果即可不同。
+保留文本随后写入插件 home，普通父运行、worker 和关闭技能的风格生成均可经过这条准备链。关闭本地技能时，[codexSessionRunner](../../native-host/src/codexSessionRunner.js) 的 `buildCodexAppServerArgs()` 追加 `--disable plugins`，`applyCodexSkillIsolation()` 只操作 `skills/list` 与 `skills/config/write`；这些局部措施不能证明遗留 MCP 或 notify 配置已被清除。
+上述边界说明配置过滤及传播；具体 Codex 版本是否接受这些字段、实际发现 MCP 或执行 notify，仍需独立验证，不能据保留文本推定已发生网络请求或资料泄漏。[codexHome.test.js](../../test/codexHome.test.js) 的现有隔离用例覆盖裸键、普通 section 及多行 personality；维护过滤器时还需核对等价 quoted、dotted、inline 写法及生成配置的可解析性。
+
 `composePluginSkillsDirectory()` 先组合本地技能，再组合插件技能；同名插件技能覆盖组合目录中的本地入口。
 默认插件 home 由 `getPluginCodexHome()` 选定，各项目和 runner 共用同一目录。`runCodexAppServerProcess()` 每次启动均调用 `buildCodexHomeEnv()`；正常组合路径先删除 `$CODEX_HOME/skills`，再按本次开关重建。
 因此技能目录并非运行快照：另一个项目、worker 或风格生成准备环境时，可能影响活跃任务已发现的技能路径。风格生成的两个技能开关均关闭，重建后先前组合目录中的路径可消失；原技能源文件仍可能保留。

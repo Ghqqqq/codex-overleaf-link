@@ -71,12 +71,22 @@ Windows:       %LOCALAPPDATA%/CodexOverleaf/managed/
 `installManagedDistribution()`校验版本、扩展 ID、根目录和管理标记；拒绝替换未标记为本产品管理的现有扩展根。
 `buildManagedExtensionTree()`创建新扩展暂存树，复制 Bootstrap、runtime 及资产，调整托管路径并核验引用文件。
 安装器把旧扩展目录改名为 rollback 目录，再把新树移入；Native 安装和注册成功后清理扩展 rollback。
-`installManagedNativeVersion()`写入版本目录，复制固定 launcher，并更新 `active-version`和必要的`previous-version`。
-`installManagedNativeRegistration()`写桥接启动脚本和 Native Host manifest；Windows 还写注册表，其他平台使用浏览器规定的文件位置。
+`installManagedNativeVersion()`写入版本目录，复制内部固定 launcher，并更新 `active-version`和必要的`previous-version`。
+`installManagedNativeRegistration()`写外层 bridge 和 Native Host manifest；Windows 还写注册表，其他平台使用浏览器规定的文件位置。
 扩展 ID 进入 `allowed_origins`，注册错误会使 Chrome 拒绝 Native Messaging，即使本机 Node 命令可以运行。
+
+Native 固定启动链有两层，安装器分别生成或复制它们：
+
+| 层 | 安装写入者 | Chrome 连接后的消费者 |
+| --- | --- | --- |
+| 外层 bridge | `installManagedNativeRegistration()`调用 [launcher.js](../../native-host/src/launcher.js) 的`buildLauncher()`，生成用户级 shell 脚本；Windows生成`.cmd` | Native Host manifest的`path`指向bridge；bridge用安装时的Node路径启动内部launcher |
+| 内部 launcher | `installManagedNativeVersion()`将 [managedLauncherRuntime.js](../../native-host/src/managedLauncherRuntime.js) 复制到`native/bootstrap/launcher.js` | 读取active/previous版本指针、注入托管环境，再启动版本目录中的`native-host/src/index.js` |
+
+runtime-only更新只替换扩展runtime和Native版本目录，并更新指针、manifest版本及管理标记；上述两层启动文件都由完整安装路径维护。修改启动命令、PATH或Windows引号处理时，需要核对最终生成的bridge与内部launcher；仅确认新版runtime目录包含源码不足以证明启动行为已改变。
 
 自定义 `managedRoot`只改变安装内容的位置，不隔离用户级注册资源。[nativeHostPlatform.js](../../native-host/src/nativeHostPlatform.js)的 `getDefaultBridgePath()`对不同管理根、Chrome和Chromium返回同一个用户级bridge路径。
 [manifest.js](../../native-host/src/manifest.js)的 `getNativeHostManifestPath()`在macOS/Linux按浏览器区分manifest；Windows共用manifest文件，`getWindowsRegistryMetadata()`再按浏览器区分HKCU注册表键。`auto`按Chrome处理。
+Windows的manifest实际位于`%LOCALAPPDATA%/codex-overleaf/native-messaging-hosts/com.codex.overleaf.json`，与`%LOCALAPPDATA%/CodexOverleaf/`下的bridge和runtime分开；Direct安装、Managed安装及Doctor均通过同一注册路径helper定位它。
 因此多个管理根，或Direct与Managed安装共用默认入口时，后一次安装会改写已有bridge及相应注册；注册副作用超出管理根目录。
 
 连接故障指引目前未区分这两种加载类型。[compatibility.js](../../extension/src/shared/compatibility.js)的`buildInstallCommand()`固定生成`install-native`命令；[popup.js](../../extension/src/popup.js)的`getCompatibilityUpdateCommand()`和[contentRuntime.js](../../extension/src/content/contentRuntime.js)的`INSTALL_COMMAND`均使用该helper。
@@ -103,6 +113,7 @@ Windows:       %LOCALAPPDATA%/CodexOverleaf/managed/
 | 用户意图、目标授权、延后 | [backgroundUpdateCoordinator.js](../../extension/src/backgroundUpdateCoordinator.js)、`chrome.storage.local` | 操作 generation 阻止旧异步结果覆盖新意图 |
 | 授权撤销意图 | [updateRevocationIntent.js](../../extension/src/shared/updateRevocationIntent.js) | 持久化后再发送 cancel/revoke，重启继续清理 |
 | 已验证候选 | [updateManager.js](../../native-host/src/updateManager.js) 的 `candidate.json` | 保存签名 manifest、签名及 bundle 地址 |
+| 手动重装提示缓存 | 同模块的`manual-candidate.json` | 只保存目标、协议、说明及检查元数据；304恢复不重新验签，边界见第9节 |
 | 可执行授权 | 同模块的 `authorization.json` | 绑定 source/target version、authorization ID及 transaction ID |
 | 安装事务 | 同模块的 `transaction.json`及磁盘指针 | 决定 staged、activation_pending、applying、awaiting_health、committed等事实 |
 | 阶段规范与恢复解释 | [managedUpdateProjection.js](../../extension/src/shared/managedUpdateProjection.js) | 归一别名、阶段、期限、进度和迁移；不执行文件替换 |
@@ -226,14 +237,21 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 ## 9. 手动升级与 Bootstrap 边界
 
 `BOOTSTRAP_PROTOCOL=3`定义于`updateTrust.js`；Native runtime协议为2，两者描述不同边界。
-固定Bootstrap、扩展权限/资源公开形状、Native固定launcher等无法通过runtime-only包任意替换。
-签名有效但Bootstrap协议不同的候选可展示`manual_install_required`及签名说明；staging/apply仍拒绝该候选。
+固定Bootstrap、扩展权限/资源公开形状，以及第3节的外层bridge和内部Native launcher，均无法通过runtime-only包任意替换。
+`checkForUpdate()`首次下载并验证签名manifest后，若Bootstrap协议不同，会返回`manual_install_required`及其中的说明；staging/apply仍拒绝该候选。
+
+普通`candidate.json`保存原始manifest与签名，304分支会调用`verifySignedReleaseManifest()`重新验证。手动提示的`manual-candidate.json`只保存派生字段；304分支的`readManualCandidate()`检查重装原因、目标版本高于当前版本及所需协议不同，未保存或重新验证签名，也未将缓存ETag与本次请求匹配，`checkedAt`不参与有效期判断。
+因此缓存恢复的说明依赖本地派生数据，首次联网验签的保证不能推广到每次304恢复。[backgroundUpdateCoordinator.js](../../extension/src/backgroundUpdateCoordinator.js)的`checkOnly()`将该结果的目标和`manualInstall.reason`写入浏览器更新状态；[updateNotice.js](../../extension/src/content/updateNotice.js)的`manualUpdateCommand()`和[bootstrap/update.js](../../extension/bootstrap/update.js)据目标版本生成重装命令并展示说明。
+该缓存用于手动操作提示；`stageCandidate()`仍从`candidate.json`读取原始manifest与签名，执行验签、协议及下载字节校验。手动提示缓存的验证缺口不能作为staging签名校验被绕过的证据。
+[updateManualInstall.test.js](../../test/updateManualInstall.test.js)覆盖首次签名候选、后续304保留提示及重装后的版本判断；缓存内容损坏、ETag不匹配、检查时间过旧与UI目标命令的组合需另行覆盖。
+
 `checkForUpdate()`另有RC晋升例外：已安装标记为`prerelease`且最新stable具有相同数字版本时，返回`prerelease_promotion_requires_manual_update`、`available: false`，需要手动重装，不能按数字版本相等认定stable内容已经加载。
 该Native识别结果尚未映射到当前重装UI：`backgroundUpdateCoordinator.checkOnly()`只将`manual_install_required`且目标版本严格更高的结果转入重装状态，RC同数字版本原因落入`idle`分支并清空`code`；`updateConsent.deriveViewModel()`也要求目标版本高于运行版本才显示重装提示及复制安装命令入口。
 因此RC晋升的验证需分别检查Native返回原因与协调器、面板的实际呈现；当前同数字版本分支不会提供对应重装提示，不能将Native识别成功视为用户已收到操作指引。
 当前2.5.0迁移说明见根 [README](../../README.md#quick-start)；完成磁盘重装后仍需核验扩展重载与页面刷新。
 
 [verify-update-boundary.mjs](../../scripts/verify-update-boundary.mjs)核对受保护路径的已提交、暂存、未暂存和未跟踪变化。
+当前`protectedPaths`包含内部launcher源码`managedLauncherRuntime.js`，遗漏生成外层bridge的`launcher.js`。修改后者不会因该文件变化单独触发边界阻断；即使新版Native runtime携带了更新后的生成器，`applyStagedUpdate()`也不重新调用它。此类改动需要完整重装才能更新现有bridge，验证应分别核对生成器、安装后的启动文件和runtime-only升级后保留的旧启动文件，不能仅依赖边界脚本通过。
 `assertBootstrapProtocolTransition()`要求协议保持不变或恰增一；迁移必须进入新major/minor且patch为零。
 runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到边界检查。
 该校验描述当前发布规则；单独提高协议号不会自动实现旧安装的迁移功能。
@@ -268,9 +286,10 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 | 改动 | 必须联动阅读 | 相关测试 |
 | --- | --- | --- |
 | 目录/扩展ID/系统注册 | managedInstall、nativeHostPlatform、manifest、CLI | [managedInstall.test.js](../../test/managedInstall.test.js)、[nativeInstallScripts.test.js](../../test/nativeInstallScripts.test.js) |
+| 固定Native启动链 | launcher、managedLauncherRuntime、managedInstall、updateManager、protected paths；核对外层bridge与内部launcher | [launcher.test.js](../../test/launcher.test.js)、[managedInstall.test.js](../../test/managedInstall.test.js)、[nativeInstallScripts.test.js](../../test/nativeInstallScripts.test.js) |
 | 更新按钮/延后/撤销 | coordinator、consent、revocation、UI | [updateConsent.test.js](../../test/updateConsent.test.js)、[updateRevocationIntent.test.js](../../test/updateRevocationIntent.test.js) |
 | 安全点/安装/恢复 | background、updateIdle、updateManager、Bootstrap、runtime identity | [updateManager.test.js](../../test/updateManager.test.js)、[updateRuntimeRecovery.test.js](../../test/updateRuntimeRecovery.test.js)、[updateRuntimeIdentity.test.js](../../test/updateRuntimeIdentity.test.js)、[updateCenter.test.js](../../test/updateCenter.test.js)、[autoUpdateBootstrap.test.js](../../test/autoUpdateBootstrap.test.js) |
-| 候选/签名/归档/网络 | updateTrust、updateArchive、releaseTransport、releaseProxy | [updateAuthorizedCandidate.test.js](../../test/updateAuthorizedCandidate.test.js)、[updateTrust.test.js](../../test/updateTrust.test.js)、[updateArchive.test.js](../../test/updateArchive.test.js)、[releaseTransport.test.js](../../test/releaseTransport.test.js) |
+| 候选/签名/缓存/归档/网络 | updateManager、updateTrust、updateArchive、releaseTransport、releaseProxy；手动提示联动coordinator与UI | [updateAuthorizedCandidate.test.js](../../test/updateAuthorizedCandidate.test.js)、[updateManualInstall.test.js](../../test/updateManualInstall.test.js)、[updateTrust.test.js](../../test/updateTrust.test.js)、[updateArchive.test.js](../../test/updateArchive.test.js)、[releaseTransport.test.js](../../test/releaseTransport.test.js) |
 | Bootstrap形状/协议迁移 | 两份manifest、protected paths、manual note、update-hop | [updateManualInstall.test.js](../../test/updateManualInstall.test.js)、[updateBoundaryWorkingTree.test.js](../../test/updateBoundaryWorkingTree.test.js) |
 | 发布包/工作流 | build-release、npm范围、签名与产物验证、workflow | [releaseScripts.test.js](../../test/releaseScripts.test.js)、[updateHopRehearsalWiring.test.js](../../test/updateHopRehearsalWiring.test.js) |
 

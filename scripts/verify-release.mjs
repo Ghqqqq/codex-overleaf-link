@@ -6,8 +6,28 @@ import { fileURLToPath } from 'node:url';
 
 const EXPECTED_PACKAGE_NAME = 'codex-overleaf-link';
 const EXPECTED_PACKAGE_LOCK_VERSION = 3;
+// Public source documentation is versioned with the code. Keep this explicit:
+// private notes and review records under docs/ must remain rejected, and the
+// npm package verifier independently excludes all documentation directories.
+export const PUBLIC_ARCHITECTURE_GUIDE_PATHS = Object.freeze([
+  'docs/architecture/README.md',
+  'docs/architecture/system-overview.md',
+  'docs/architecture/feature-map.md',
+  'docs/architecture/auto-edit-undo.md',
+  'docs/architecture/run-state-and-recovery.md',
+  'docs/architecture/native-execution.md',
+  'docs/architecture/providers-and-protocols.md',
+  'docs/architecture/parallel-subagents.md',
+  'docs/architecture/writing-style-and-skills.md',
+  'docs/architecture/ui-and-loading.md',
+  'docs/architecture/installation-and-updates.md',
+  'docs/architecture/context-and-governance.md',
+  'docs/architecture/protocols-and-trust.md'
+]);
+const publicArchitectureGuidePaths = new Set(PUBLIC_ARCHITECTURE_GUIDE_PATHS);
 export const FORBIDDEN_TRACKED_PATH_PATTERNS = [
   /^\.local\//,
+  /^\.local-handoff\//,
   /^ROADMAP\.md$/,
   /^docs\//,
   /^dist\//,
@@ -206,6 +226,7 @@ function normalizeTrackedPath(relativePath) {
 }
 
 function isForbiddenTrackedReleasePath(relativePath) {
+  if (publicArchitectureGuidePaths.has(relativePath)) return false;
   return FORBIDDEN_TRACKED_PATH_PATTERNS.some((pattern) => pattern.test(relativePath))
     || isForbiddenPackagedSourceTreePath(relativePath);
 }

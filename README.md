@@ -481,7 +481,7 @@ Native Messaging registration:
 | macOS Chrome | `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.codex.overleaf.json` |
 | Linux Chrome | `~/.config/google-chrome/NativeMessagingHosts/com.codex.overleaf.json` |
 | Linux Chromium | `~/.config/chromium/NativeMessagingHosts/com.codex.overleaf.json` |
-| Windows Chrome | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.codex.overleaf` → `%LOCALAPPDATA%\CodexOverleaf\native-host-runtime\com.codex.overleaf.json` |
+| Windows Chrome | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.codex.overleaf` → `%LOCALAPPDATA%\codex-overleaf\native-messaging-hosts\com.codex.overleaf.json` |
 
 To remove everything:
 

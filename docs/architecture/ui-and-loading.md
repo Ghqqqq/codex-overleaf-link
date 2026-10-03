@@ -216,6 +216,35 @@ runtime 的 `loadStoredStateForProject` 正常返回与 compact fallback 返回�
 DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHunks.js) 支持的交互 hunk 决策和 `renderDiffReview`。按该源码基线的静态调用关系，`renderDiffReview` 无生产外部调用；`createDiffReviewElement` 仍可作为未注入回执 renderer 时的只读回退。模块被打包和独立测试存在，不能证明交互式逐块审阅属于当前可达用户流程。
 [agentTranscript](../../test/agentTranscript.test.js) 检查事件映射；[subagentActivityView](../../test/subagentActivityView.test.js) 在伪 DOM 中装配共享活动 renderer；[writtenChangesView](../../test/writtenChangesView.test.js) 覆盖回执 helper 并用源码断言检查 runtime 注入；[reviewHunks](../../test/reviewHunks.test.js) 检查纯决策模型。它们各自覆盖局部边界，真实长流、滚动和写后展示仍待验收。
 
+<a id="failure-settlement-actions"></a>
+
+### 失败、结算与恢复动作来源
+
+**当前实现。** 失败说明、运行终态、写回证据和可点击动作经不同路径生成。定位“报告说完成却有告警”或“提示可重试却没有按钮”时，应分别核对下表的生产者与消费者。
+
+| 展示或状态 | 实际来源与入口 | 不能据此推定的内容 |
+| --- | --- | --- |
+| 跳过项的原因、阶段、下一步 | [ApplyResultFormatters](../../extension/src/content/applyResultFormatters.js) 的 `normalizeSkippedFailure/appendApplyResult` 调用 [FailureReasons.normalizeFailureReason/selectPrimaryFailure](../../extension/src/shared/failureReasons.js) 并本地化 | 展开文案中的分类不保证等于结算保存的分类 |
+| 写回事实及其主因 | [WritebackSettlement.settle](../../extension/src/shared/writebackSettlement.js) 经 [WritebackOperationEvidence.normalizeOperationEvidence](../../extension/src/shared/writebackOperationEvidence.js) 收集失败；[SettlementFacts.projectRunSettlement](../../extension/src/shared/settlementFacts.js) 投影持久事实 | `evidence.settled`、failure 的 `terminalState` 和 `run.status` 具有不同含义 |
+| 完成报告与摘要 | [WritebackOrchestrator.promoteWritebackSkippedFailure](../../extension/src/content/writebackOrchestrator.js) 提升显式 failure；[Summary.buildChangeSummaryLine](../../extension/src/shared/summary.js) 与 [AgentTranscript.buildHumanCompletionReport](../../extension/src/shared/agentTranscript.js) 统计原始返回集合；runtime `appendCompletionReport` 保存 report event | 报告 failure 未统一采用严重度排序，返回条目计数也未补齐缺失回执 |
+| 报告中的失败告警 | [RunFailureNotice.append/formatMetaValue](../../extension/src/content/runFailureNotice.js) 优先读当前 settlement 主因，缺少时读 report event.failure | 刷新后重建的告警与报告中保存的原 failure 可能来源不同 |
+| 告警旁的恢复按钮 | `RunFailureNotice.prepareRecovery` 先处理写入不确定性；[RunTimelineView.appendRecoveryActionForFailure](../../extension/src/content/runTimelineView.js) 再按 event.failure.code 白名单及注入 callback 路由 | `canRetry` 或 `retryable` 为真不保证存在按钮；按钮出现也不单独证明原操作适合自动重放 |
+| 活动告警与运行页眉 | [RunActivityModel.project](../../extension/src/shared/runActivityModel.js) 分类活动；[RunActivitySummary](../../extension/src/content/runActivitySummary.js) 汇总活动事实，调用 [RunPresence](../../extension/src/content/runPresence.js)；timeline `classifyRunPresence` 读取 run.status | 活动 warning 不直接决定运行失败；页眉文件数不能当作页面已写文件数 |
+
+**失败归一化与排序的边界。** `FailureReasons.normalizeFailureReason` 校验显式 failure，失败时回退到 legacy code 映射和目录默认值；`WritebackOperationEvidence.normalizeFailure` 直接复制显式 failure，只有原始 code 时采用 `write/error/retryable=false` 等默认值。两者未共享同一归一化契约。例如合成输入 `code: stale_snapshot` 在前者变为 `stale_source_changed/preflight/blocked/retryable=true`，在后者保留 `stale_snapshot/write/error/retryable=false`。这一输入说明 helper 差异，不能推定当前真实页面仍会产生该 legacy 结果。
+
+`selectPrimaryFailure` 按严重度 `blocked > error > warning > info`，再按 `STAGE_TIE_BREAKER_ORDER` 选主因，可记为 \(f^*=\arg\min_f(\operatorname{severityRank}(f),\operatorname{stageRank}(f))\)，相同排序项保留输入顺序。当前 `promoteWritebackSkippedFailure` 只取首个带 code 的显式 failure；首项 warning 与后项 blocked 并存时，report event 与 settlement 可保存不同主因。修改其中一个消费者不能推定另一个已同步。
+单条 failure 的 `terminalState: needs_review` 与结算的 `evidence.settled: needs-review` 也须分别核对。`deriveSettledEvidence` 检查主因的 needs_review 或任一文件读回 mismatch；较低优先级的 needs_review 并不必然覆盖较高优先级的 blocked，不能将其概括为对全部 failure 取最严格终态。
+
+**已知缺口：计划操作缺少回执。** `normalizeOperationEvidence` 会为计划中未匹配到结果的操作补 `write_result_missing`，使对应结算需要检查；Summary、AgentTranscript 和 `appendApplyResult` 仍只统计原始 applied/skipped 集合。计划两项、仅返回一项 applied 且 skipped 为空时，结算可为 `applied=partial/settled=needs-review`，报告计数仍为“已写入 1 项，跳过 0 项”。
+[WritebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js) 先 append 报告，再在返回值构造 settlement；[contentRuntime.runTask](../../extension/src/content/contentRuntime.js) 随后调用 [RunSettlementPersistence.applyToCurrentRun](../../extension/src/content/runSettlementPersistence.js)。若上述缺项形状到达普通同项目返回路线，`writebackIncomplete/hasSkippedOperations` 仍可为 false，后续 `finishRunView` 可将 run.status 设为 completed。这个条件分支不能证明真实 RPC 已产生缺项，也不能把补齐结算事实描述成全部 UI 已同步修正。
+
+**恢复动作的边界。** `RunFailureNotice` 将 `write_timeout/partial_write_needs_review`、possibly-changed 或特定 unknown/needs-review 证据归入写入未确认，优先提供检查文件或展开详情，并覆盖报告的 Write result/Next 显示值。普通恢复 registry 随后只读 report event.failure.code：例如 `provider_rate_limited` 即使 retryable 为真也未进入编辑重发白名单；`write_operation_failed` 的白名单分支未再检查 retryable。当前 settlement 主因改变后，告警可显示新主因，普通按钮仍按原 report event 路由。Accept/Undo 另经实际恢复材料投影，见[运行状态与恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
+
+**活动与页眉的边界。** `RunActivityModel.isDiagnosticNotice` 将未携带显式 failure 且活动 state 非 failed 的普通 warning/configWarning 放入 diagnostics，保留 guardianWarning 等需要留意的事件；`needsUserAttention` 通常不把普通工具失败升级为任务告警，TeX 编译命令失败另有识别规则。页眉 files 统计 completed 本地 edit 活动中的路径，增删行数来自这些活动；compiled 取 completed compile 活动。`classifyRunPresence` 在 `retryingWriteback` 为真时先返回 plain，其余按 run.status 区分 Done 等分类。这些数值描述各自记录的活动，页面 applied/saved/compiled 结算证据仍需另查；裁剪历史还受 `filesClipped` 限定。
+
+**验证入口与范围。** [failureReasons](../../test/failureReasons.test.js) 检查目录、校验与排序；[writebackSettlement](../../test/writebackSettlement.test.js) 的缺项用例检查合成回执的结算；[writebackSettlementContract](../../test/writebackSettlementContract.test.js) 检查证据和恢复材料投影；[summary](../../test/summary.test.js) 与 [agentTranscript](../../test/agentTranscript.test.js) 覆盖各自的报告 helper。[p0ProductExperience](../../test/p0ProductExperience.test.js) 的恢复 registry 用例主要检查源码装配，[runPresence](../../test/runPresence.test.js) 检查局部页眉 renderer，[runActivityHistoryPersistence](../../test/runActivityHistoryPersistence.test.js) 检查活动元数据经过存储投影后仍可分类。它们不能共同替代 `orchestrator → report → settlement → finishRunView → hydration → 按钮/页眉` 的组合验证；修改这些语义时应同时比较运行中展示、重载后展示及各自保存的事实。
+
 ### 复制结论
 
 [RunResultActions.configureResultActions](../../extension/src/content/runResultActions.js) 把结果动作放入完成报告，再配置复制按钮、分叉和完成时间。
@@ -249,6 +278,7 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 [DiagnosticsPanel.closeResult](../../extension/src/content/diagnosticsPanel.js) 隐藏结果并设置 `resultDismissed`，`showResult` 在该布尔屏障为真时忽略结果；关闭按钮、Escape 和外部点击均可进入此路径。关闭没有取消底层检查，全检仍可继续并更新 health。
 下一次 `showLoading` 会清除 `resultDismissed`；该状态未绑定请求 ID 或 generation，不能据此保证新检查启动后会忽略旧检查的迟到结果。[diagnosticsViewport](../../test/diagnosticsViewport.test.js) 覆盖“关闭 → 原结果返回”与重新 loading 的局部状态；还需覆盖“关闭 → 另起检查 → 旧结果返回”的交错次序。
 [DiagnosticsExport.exportDiagnosticsBundle](../../extension/src/content/diagnosticsExport.js) 取近期运行、audit、mirror、Native 摘要；异步采集后复核 projectId，再交给 [AuditRecords.buildDiagnosticBundle](../../extension/src/shared/auditRecords.js)。
+辅助 audit 存储没有账号字段，导出查询只按 projectId；项目复核不能替代账号过滤。导出元数据、历史视图筛选与删除范围的差异见[审计和诊断消费](context-and-governance.md#5-审计和诊断消费)。
 AuditRecords 构造摘要字段并使用 secret-like 文本处理。维护约束是避免正文、完整附件或凭据进入诊断；新增字段须沿采集、摘要和导出链检查，已有字段的处理不能作为其他出口的无泄漏保证。
 [Direct popup HTML](../../extension/popup.html) 和 [Managed popup HTML](../../extension/bootstrap/popup.html) 共用 [src/popup.js](../../extension/src/popup.js)；后者通过 runtime 路径加载可替换代码和 CSS。
 `ensureMinimalPopupShell` 可改造旧 managed HTML 外壳；`initPopupState/applyPopupPreferences` 读取全局语言主题、监听变化，并设置 `<html lang>`。
@@ -288,6 +318,8 @@ npm run check:module-graph
 
 [run-tests.mjs](../../scripts/run-tests.mjs) 负责选择执行文件；具体测试仍可能创建 fixture 或构建临时产物。`npm run test:focus` 还前置模块图检查，不能当作纯只读操作。
 浏览器验收另需覆盖 Direct/Managed 首载、SPA 切项目、宽窄面板、dialog 键盘/焦点、旧 Popup shell、公式字体与真实 Overleaf 选区。
+
+OT 点击、滚动及重绘可从[真实 Chrome 本地夹具](../../test/browser/README.md)进入，由 [serve-ui-regression.mjs](../../scripts/serve-ui-regression.mjs) 提供页面。点击场景要求真实指针事件；脚本调用 `element.click()` 的微任务检查点顺序可能不同，可能导致 OT 复选框回滚用例误通过。该夹具装配本地控制器，不连接 Overleaf 或 Native；结果不能直接充当真实项目写回验收。
 
 ## 9. 边界场景与验证要点
 

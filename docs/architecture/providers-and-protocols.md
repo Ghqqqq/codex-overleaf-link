@@ -13,7 +13,7 @@ Provider 连接配置包括上游端点、协议、模型清单、能力声明�
 
 | 概念 | 当前含义 | 不应推导的结论 |
 |---|---|---|
-| Built-in Codex | 沿已有 Codex 认证及模型发现路径执行，`providerLaunch=null` | 任意自定义服务故障都自动改用 Built-in |
+| Built-in Codex | 沿已有 Codex 配置、认证及模型发现路径执行，`providerLaunch=null`；配置继承见第 5 节 | 插件已固定其实际网络端点；任意自定义服务故障都自动改用 Built-in |
 | Custom Provider | 本地保存的端点和模型配置，经本地桥接入 Codex | 直接由面板实现独立 agent 引擎 |
 | `wireApiPreference` | `auto/responses/chat/anthropic` 的配置偏好 | Auto 表示任意失败都尝试全部协议 |
 | `resolvedWireApi` / model diagnostics | 对已测试连接指纹记下的协议结果 | 测试过一个模型即可证明该 Provider 全部模型可用 |
@@ -57,7 +57,8 @@ flowchart TD
 
 | 数据 | 权威 owner | 浏览器侧持有的内容 |
 |---|---|---|
-| 配置及 profile revision | ProviderStore | 无专用 API key 的目录投影 |
+| Custom 配置及 profile revision | ProviderStore | 无专用 API key 的目录投影 |
+| Built-in 继承的连接配置 | 用户 Codex `config.toml`，经 `codexHome.copyUserCodexFile` 交给子进程 | Built-in 身份；未投影继承的端点或配置版本 |
 | 专用 API key | ProviderStore secrets | 输入期间的表单值与短期 request payload |
 | 当前项目选择 | ProjectProviderSelection 与项目状态 | providerId/revision、model、reasoning、speed |
 | 已提交运行选择 | RunExecutionSnapshot | 固定的执行身份及设置，无 Provider API key |
@@ -80,7 +81,7 @@ Custom 目录来自已保存 `profile.models`，附 reasoning 控件能力、Pro
 ### 3.2 配置版本与执行快照
 
 Provider 执行选择可表示为 \(P=(providerId,providerRevision,modelId,reasoningEffort,speedTier)\)，完整提交快照另含 mode、Track 等字段。
-浏览器提交和队列校验之外，`resolveRunProvider` 再次核验配置存在、revision 相等、模型已配置及端点披露仍有效。
+浏览器提交和队列校验之外，`resolveRunProvider` 对 Custom 再次核验配置存在、revision 相等、模型已配置及端点披露仍有效；Built-in 提前返回，其继承配置的边界见第 5 节。
 若 Native 默认服务为 Custom，却缺少来自页面的明确 providerSelection，会返回 `provider_selection_unavailable`。
 端点披露同时比较 hostname 与规范化 baseUrl；只保留相同域名不足以放行改变后的路径。
 这些检查核验提交选择与当前保存配置的身份；它们并不保存任意历史版本供旧队列恢复，版本变化后旧任务可被拒绝。
@@ -169,6 +170,13 @@ Chat 且响应模式 Auto 时先 streaming；只有工具不兼容或流式工�
 ## 5. 内建与自定义执行的共同边界
 
 两类服务都进入 Codex 的 agent、工具和线程执行路径；Custom 在 `prepareProviderLaunch` 中附加模型目录及本地协议桥。
+
+**Built-in 的配置来源。** [providerRuntime.resolveRunProvider](../../native-host/src/providerRuntime.js) 对 Built-in 返回 `providerLaunch: null` 和 revision 0；[codexProviderLaunch.buildProviderConfigArgs](../../native-host/src/codexProviderLaunch.js) 随之返回空参数，不覆盖 Codex 的 `model_provider`。
+[codexHome.copyUserCodexFile](../../native-host/src/codexHome.js) 将用户 `config.toml` 复制到插件 home 时，保留 `model_provider` 与 `[model_providers.*]`；关闭本地技能也不移除这些连接字段。[codexSessionRunner.runCodexAppServerProcess](../../native-host/src/codexSessionRunner.js) 把该 home 交给子进程，thread/start 与 thread/resume 的参数只指定本次 model、cwd、sandbox 等，未另行固定 Provider。
+因此 Built-in 的连接配置还受继承的 Codex 配置影响，插件的 Custom 端点披露及 profile revision 校验不覆盖这条来源。修改用户配置不会因此更新插件的 Built-in revision，固定的执行快照也不记录该配置的内容哈希。
+审计经 [contentRuntime.createAuditDraftForRun](../../extension/src/content/contentRuntime.js) 调用 [ProviderSettingsCoordinator.getProviderSnapshot](../../extension/src/content/providerSettingsCoordinator.js)，读取浏览器目录中的 Built-in 身份，端点为空；该记录不能作为继承配置实际网络目的地的证明。实际 Codex 版本的配置解析、认证选择及最终服务端点仍需独立验证，保留连接字段本身不证明已发送任何内容。配置过滤的 TOML 形式限制另见[技能继承与作用域](writing-style-and-skills.md#普通技能安装继承与作用域)。
+
+**Custom 的 prepared launch。**
 `providerModelCatalog.prepareProviderModelCatalog` 写临时 `models.json`，定义 shell_command、上下文窗口、reasoning 和输入模态等 Codex 可见能力。
 目录文件使用 0600，prepared close 删除临时目录；配置值进入目录不能解释为服务商能力已被检测。
 源码见 [providerModelCatalog.js](../../native-host/src/providerModelCatalog.js)。
@@ -331,6 +339,7 @@ HTTP 成功状态与模型协议成功状态属于两层判断；仅检查前者
 | Save/Use、项目绑定 | dialog、coordinator、ProjectProviderSelection、store | `node --test test/providerSessionBinding.test.js test/projectProviderRevision.test.js`；同 ID revision、目录预加载、投影失败 |
 | secret/profile/schema | providerProfile、providerStore、浏览器 Profiles 和表单 | `node --test test/providerReliability.test.js`；字段校验、专用凭据、revision、披露和存储恢复 |
 | 内建/自定义发现 | codexModels、ProviderRuntime、ModelPicker | `node --test test/codexModels.test.js test/modelSelectionRecovery.test.js`；cache 优先级、不可用模型与 fallback |
+| Built-in 配置继承 | codexHome、ProviderRuntime、codexSessionRunner、ProviderSettingsCoordinator 与审计 | `node --test test/codexHome.test.js test/codexSessionRunner.test.js`；分别检查配置保留与参数构造；实际服务解析、配置变更后的快照及审计投影需组合验证 |
 | Speed 参数映射 | ModelPicker、运行快照、codexSessionRunner、codexArgs | `node --test test/codexArgs.test.js test/codexSessionRunner.test.js`；standard/fast 的 exec 与 app-server 参数构造 |
 | Chat 转换/reasoning | chatBridgeRequest/Response、providerReasoning、launch | `node --test test/providerReliability.test.js`；工具命名空间、finish_reason、可选字段和认证路由 |
 | Anthropic 转换/续传 | anthropicBridgeRequest/Response、MessagesBridge | `node --test test/anthropicBridge.test.js`；工具往返、签名、限额续传与 cache usage |

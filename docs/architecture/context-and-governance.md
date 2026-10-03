@@ -89,6 +89,10 @@ runtime 的 `createAuditDraftForRun/updateAuditSensitiveFindings/finalizeAuditRe
 审计包含选择、发现、允许/阻止/跳过项及保存证据的投影；当前传入的摘要来源是 task，`promptSummary` 保存处理后的长度与哈希标记，不代表完整模型输入的摘要。实际诊断导出还沿 [DiagnosticsExport](../../extension/src/content/diagnosticsExport.js) 及 UI 入口检查身份和字段。
 不同模块的脱敏规则有不同输入范围，不能把一份审计摘要视作所有网络、日志或资产都不会包含敏感值的证明；Provider 凭据存储另见[Provider 与协议](providers-and-protocols.md)。
 
+**辅助存储的账号边界。** [StorageDb.buildAuditLogRecord](../../extension/src/shared/storageDb.js) 保存 project/session/turn，未写入账号字段。`DiagnosticsExport.exportDiagnosticsBundle` 按 projectId 取最近12条 audit；[ChangeHistoryModel.project](../../extension/src/shared/changeHistoryModel.js) 另外要求关联当前可见会话。诊断采集后的 projectId 复核不能提供账号过滤，因此同站点同项目切换账号后，摘要仍可能包含先前账号的审计元数据。该路径不直接导出完整 prompt 或文件正文；具体字段仍由 `AuditRecords` 裁剪。
+
+历史列表限额与诊断条数均属于输出范围，底层仍先读取该项目全部 audit；这些限额无法作为读取量、自动删除或保留期限的保证。单会话删除也未级联清理 audit。数据库、账号作用域、清空历史和保留规则见[数据生命周期](run-state-and-recovery.md#storage-lifecycle)。
+
 ## 6. 修改路由与验证入口
 
 | 改动 | 必须联动 | 最近已有定义与范围 |

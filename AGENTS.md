@@ -9,7 +9,8 @@
 3. 修改、保存、Accept、Undo 读[Auto 修改与撤销](docs/architecture/auto-edit-undo.md)；提交、队列、持久化、刷新读[运行状态与恢复](docs/architecture/run-state-and-recovery.md)。
 4. 本地进程与消息读[Native 执行](docs/architecture/native-execution.md)；模型连接读[Provider 与协议](docs/architecture/providers-and-protocols.md)；其他领域按功能索引进入对应专题。
 5. 上下文出站、敏感扫描与只读/可写路径规则读[上下文与治理](docs/architecture/context-and-governance.md)。这些检查有各自的入口与数据范围。
-6. 已知限制、异常分支与测试边界在对应领域页中说明；实际修改仍需核对调用者和测试。
+6. 消息准入、Page 握手、Native 兼容 gate 与本地桥身份读[协议与信任边界](docs/architecture/protocols-and-trust.md)，按实际通道区分发送者、项目归属与版本能力。
+7. 已知限制、异常分支与测试边界在对应领域页中说明；实际修改仍需核对调用者和测试。
 
 正式指南只保存项目架构、实现路线、已知限制与维护方法。审阅报告、定位验收记录、修改统计和临时研究材料不进入指南，也不作为阅读依赖；审阅结论应直接用于修正对应章节。
 
@@ -44,6 +45,8 @@
 ## 文档与验证
 
 入口、状态归属、协议、加载或恢复策略变化时，同步维护对应指南与功能索引。文档使用仓库相对链接和实际符号，重要数值优先指向权威常量。
+
+新增正式指南页面时同步维护 `.gitignore` 与 `scripts/verify-release.mjs` 的精确白名单；私人材料与报告继续排除。Git 跟踪范围与 npm、release 分发范围分别维护。
 
 高风险契约需追踪参数是否穿过各层、状态是否有其他写入者、取消或断线是否跳过收尾、测试是否覆盖真实调用链。局部函数性质不能直接推广为整条链路保证；未证明的项保留明确范围。
 

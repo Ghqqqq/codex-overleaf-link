@@ -55,6 +55,13 @@
 - 关闭结果只设置展示屏障，不取消原检查；再次开始检查会重置该屏障，不能把它当作请求 generation 保护。
 - 最近测试：[diagnosticsHealth](../../test/diagnosticsHealth.test.js)、[diagnosticsMenu](../../test/diagnosticsMenu.test.js)、[diagnosticsViewport](../../test/diagnosticsViewport.test.js)。
 
+### 改失败分类、完成报告、恢复按钮或页眉统计
+
+- 入口：[ApplyResultFormatters](../../extension/src/content/applyResultFormatters.js)、[RunFailureNotice](../../extension/src/content/runFailureNotice.js)、[RunTimelineView](../../extension/src/content/runTimelineView.js)。
+- 状态 owner：[FailureReasons](../../extension/src/shared/failureReasons.js) 管理目录及排序；[WritebackOperationEvidence](../../extension/src/shared/writebackOperationEvidence.js) 归一操作证据；[WritebackSettlement](../../extension/src/shared/writebackSettlement.js) 管理结算。报告、run.status 与活动摘要各有消费者。
+- 必须联动：[Summary](../../extension/src/shared/summary.js)、[AgentTranscript](../../extension/src/shared/agentTranscript.js)、orchestrator/runtime 收尾、[RunPresence](../../extension/src/content/runPresence.js)。缺项回执、主因排序、retryable 与按钮白名单的差异见[失败、结算与动作](ui-and-loading.md#failure-settlement-actions)。
+- 最近测试：[failureReasons](../../test/failureReasons.test.js)、[writebackSettlement](../../test/writebackSettlement.test.js)、[summary](../../test/summary.test.js)、[runPresence](../../test/runPresence.test.js)；需补核对真实调用链与重载后的展示。
+
 ## 模型、选区与附件
 
 模型执行与连接见[Provider 与协议](providers-and-protocols.md)；选区和输入生命周期见[界面与加载](ui-and-loading.md)。
@@ -116,6 +123,13 @@
 - 必须联动：当前可达的 PanelRenderer/SessionPanel callbacks、持久化墓碑、内存 `session/task`、提示文案；清库成功不能推定内存也已清空。详见[会话生命周期](run-state-and-recovery.md#session-lifecycle)和[清空历史状态](run-state-and-recovery.md#clear-history-state)。
 - 最近测试：[sessionState](../../test/sessionState.test.js)、[sessionManagement](../../test/sessionManagement.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)；实际清理还需检查状态归一化和保存结果。
 
+### 改迁移、存储配额、保留规则或账号隔离
+
+- 入口：[StorageMigration](../../extension/src/shared/storageMigration.js)、[StorageKeys](../../extension/src/shared/storageKeys.js)、[StorageDb](../../extension/src/shared/storageDb.js)、[backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js)。
+- 状态 owner：共享 sessions、站点 audit、全局 prefs、兼容 blob 及后台 journal 分别维护版本和清理；详见[数据生命周期](run-state-and-recovery.md#storage-lifecycle)。
+- 必须联动：runtime `loadStoredStateForProject/saveState`、[storageValuePruning](../../extension/src/shared/storageValuePruning.js)、[SessionPersistence](../../extension/src/content/sessionPersistence.js)、[ChangeHistoryModel](../../extension/src/shared/changeHistoryModel.js) 与诊断导出。存储压缩应检查[实际写入消费者](run-state-and-recovery.md#storage-compaction)，迁移标记和输出条数不能独自证明历史已迁移或磁盘占用有界。
+- 最近测试：[storageMigration](../../test/storageMigration.test.js)、[storageMigrationAccountIsolation](../../test/storageMigrationAccountIsolation.test.js)、[storageDb](../../test/storageDb.test.js)、[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)；后台重建另查[journal 生命周期](native-execution.md#journal-lifecycle)。
+
 ### 改项目主页、最近项目或会话列表
 
 - 入口：[RecentProjects](../../extension/src/content/recentProjects.js)、[SessionPanel](../../extension/src/content/sessionPanel.js)；runtime 处理 SPA route 切换。
@@ -155,6 +169,13 @@
 
 领域说明：[Native 执行](native-execution.md)、[Provider 与协议](providers-and-protocols.md)、[并行子代理](parallel-subagents.md)、[写作风格与技能](writing-style-and-skills.md)。
 
+### 改消息来源、项目身份或版本兼容准入
+
+- 入口：Page [pageBridgeClient](../../extension/src/content/pageBridgeClient.js) / [pageBridge.pageBridgeMessageHandler](../../extension/src/pageBridge.js)，Native [NativeCompatibilityController](../../extension/src/content/nativeCompatibilityController.js) / [background](../../extension/src/background.js)。
+- 状态 owner：[pageRpcContract](../../extension/src/shared/pageRpcContract.js) 管理 Page 方法策略；[compatibility](../../extension/src/shared/compatibility.js) 管理版本分类，runtime 与后台另存方法集合。共享历史、全局偏好及更新 listener 各有 sender 检查，详见[协议与信任边界](protocols-and-trust.md)。
+- 必须联动：实际调用者、两个方向的消息校验、项目身份、能力宣告、取消和重放。Page token、目录 capability 标签、Chrome sender 与 Native allowed_origins 分别取证。
+- 最近测试：[pageBridgeClient](../../test/pageBridgeClient.test.js)、[pageRpcContract](../../test/pageRpcContract.test.js)、[nativeCompatibilityController](../../test/nativeCompatibilityController.test.js)、[nativeCompatibilityRunDispatch](../../test/nativeCompatibilityRunDispatch.test.js)；注入集合测试不能代替生产方法集合核对。
+
 ### 加 Native 方法、事件或 Provider 协议能力
 
 - 入口：[background.js](../../extension/src/background.js) → [native index](../../native-host/src/index.js) → [taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) / [providerRuntime.handleProviderRequest](../../native-host/src/providerRuntime.js)。
@@ -193,7 +214,7 @@
 
 - 入口：[CLI](../../bin/codex-overleaf-link.mjs)、[install-managed](../../scripts/install-managed.mjs)、[bootstrap/background](../../extension/bootstrap/background.js)、[release workflow](../../.github/workflows/release.yml)。
 - 状态 owner：[managedInstall](../../native-host/src/managedInstall.js) 管理安装；[updateManager](../../native-host/src/updateManager.js) 管理更新；[backgroundUpdateCoordinator](../../extension/src/backgroundUpdateCoordinator.js) 协调授权与浏览器状态。
-- 必须联动：[nativeDoctor](../../native-host/src/nativeDoctor.js)、[managedUpdateProjection](../../extension/src/shared/managedUpdateProjection.js)、[updateTrust](../../native-host/src/updateTrust.js)、[build-release](../../scripts/build-release.mjs)、manifest/版本及 npm 包边界。
+- 必须联动：[nativeDoctor](../../native-host/src/nativeDoctor.js)、[launcher](../../native-host/src/launcher.js) 生成的外层桥及 [managedLauncherRuntime](../../native-host/src/managedLauncherRuntime.js) 内层启动器、[managedUpdateProjection](../../extension/src/shared/managedUpdateProjection.js)、[updateTrust](../../native-host/src/updateTrust.js)、[build-release](../../scripts/build-release.mjs)、manifest/版本及 npm 包边界。
 - 最近测试：[managedInstall](../../test/managedInstall.test.js)、[nativeInstallScripts](../../test/nativeInstallScripts.test.js)、[updateManager](../../test/updateManager.test.js)、[releaseScripts](../../test/releaseScripts.test.js)；发布还需另读当前发布 skill。
 
 ## 新增模块与能力的加载清单
