@@ -107,6 +107,8 @@ Native 还会在 [providerRuntime.js](../../native-host/src/providerRuntime.js) 
 提升失败时保留恢复机会、暂停队列并尝试 restore；不能只隐藏卡片后假设所有权已经转移。
 普通并发保存还需保留等待期间新增的其他输入，相关回归定义位于 [runQueueSchedulerDurability.test.js](../../test/runQueueSchedulerDurability.test.js)。
 
+**队列恢复与显示分开完成。** `init` 加载持久会话、建立调度器并恢复 journal，恢复流程把所属会话队列暂停；初始化和恢复完成后的 `applyStateToPanel` 当前未调用 `renderPendingInputs`。新建的队列容器默认隐藏，因此已恢复的暂停队列及 Resume 入口可能暂不可见。composer 输入会经 `handleTaskInput` 触发队列重绘，`setRunning` 等运行状态入口也会触发；无需发送草稿即可重新呈现已有队列。队列不可见不能单独推导为持久记录已删除。视图调用链及会话切换的同类边界见[队列显示与恢复入口](ui-and-loading.md#pending-queue-render)。
+
 即时指导由 `createCoordinator.guide` 发送 `codex.steer`，绑定 request、project、thread 与 `expectedTurnId`。
 该入口把队列 `item.text` 直接发送，未调用普通 `runTask` 的 `runSensitivePreflight`。
 Native 的 [taskRunnerRuntime.handleCodexSteer](../../native-host/src/taskRunnerRuntime.js) 检查活动绑定、传入的预期 thread/turn、非空文本与长度，再经 [codexSessionRunner.publishActiveTurnControl](../../native-host/src/codexSessionRunner.js) 的 control 发送 `turn/steer`；这两层均未补做敏感扫描。

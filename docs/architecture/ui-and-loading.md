@@ -43,6 +43,7 @@ ContentRuntime
 [ContentRuntime.init](../../extension/src/content/contentRuntime.js) 是组合入口，向各 controller 注入 getter/callback；该文件仍包含业务流程，不能将其所有内容都归类为纯装配。
 runtime 对重复初始化设有标记；发现旧 panel 已在 DOM、runtime 尚未登记时，返回 `stale-panel-before-runtime-init`。这条守卫不能证明所有旧页面都已自动恢复。
 异步初始化先加载全局偏好、账号作用域与持久状态，再建立队列、面板和恢复流程；项目列表路由立即挂 dashboard shell，后续填充列表。
+队列数据加载与队列卡重绘使用不同入口；初始化及恢复后的显示缺口见[队列显示与恢复入口](#pending-queue-render)。
 
 ### MAIN world 的独立装配
 
@@ -140,6 +141,12 @@ textarea input → persistPanelInputs → readPanelInputs → updateActiveSessio
 `runTask` 在首次 await 前捕获输入、提交会话、提示词会话投影和线程，再等待 `pendingMirror`、Provider 与风格准备；风格快照仍在加载后获取。`startRunView` 按捕获的 sessionId 建立记录；`safeRunTask` 用准备期标志防止重复启动。
 建立 run 后等待 audit 草稿，再复核账号项目并条件清理已提交输入。原会话草稿或当前文字、附件、技能、选区已变化时保留新输入；在途附件和 `SelectionContextView.getRevision` 的代次变化也阻止清理。切换会话后只可能清理仍匹配的原会话 task，当前 composer 保留；队列提升跳过此清理。普通与 skill-installer 参数消费已捕获的会话投影，详见[运行状态与恢复](run-state-and-recovery.md#31-执行快照)。
 [PendingInputView.pullBack](../../extension/src/content/pendingInputView.js) 只回填 queued 项，已有非空草稿时提示并返回；实际移除队列项与持久化由回调完成，UI 回填动作本身不提供事务提交证明。队列准入、推进和保存边界见[运行状态与恢复](run-state-and-recovery.md)。
+
+<a id="pending-queue-render"></a>
+
+**队列显示与恢复入口。** [ComposerPanel](../../extension/src/content/composerPanel.js) 创建的 `data-pending-inputs` 容器默认隐藏；`PendingInputView.render` 在队列非空时显示容器，暂停项同时显示 Queue paused 与 Resume。runtime 的 `renderPendingInputs` 通过队列 coordinator 读取活动会话的 `pendingInputs`。当前 `applyStateToPanel` 未调用该入口，初始化、journal 恢复及会话切换使用这条重绘路线时，队列卡可能仍为空或保留先前会话的投影。
+
+composer 输入触发 `handleTaskInput → renderPendingInputs`，可在不发送任务的情况下显示已恢复的暂停队列；运行状态变化和 turn 绑定也会触发重绘。刷新后暂时看不到队列卡或 Resume，不足以证明队列数据丢失。维护该处应同时核对会话加载、恢复后的暂停状态和 DOM 重绘，保证界面呈现属于当前会话的队列，且重绘本身不会启动任务。
 
 [RunTimelineView.configureEditButton](../../extension/src/content/runTimelineView.js) 对 cancelled/rejected 且通过 `canEditRun` 的记录提供编辑重发，当前存在运行时禁用该按钮。
 [PanelMaintenance.refillComposerForRetry](../../extension/src/content/panelMaintenance.js) 回填任务并调用 runtime 的 `prepareRetryReplacement`：符合资格的 cancelled/rejected 记录在无当前运行时回到草稿，并从列表移除原卡，恢复其模式、focused files 和选区；其他符合替换条件的失败重试会记录 `pendingRetryReplacement`，在新 run 创建时解析替换。
