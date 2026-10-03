@@ -288,7 +288,7 @@ Track 的 `selectExpectedFilesForTrackedUndo` 保留 `WritebackSettlement` 对�
 文本仍未解决或进度无法保存时，后续文件结构操作不派发；新建文件和已删除文件保持该阶段的状态，恢复材料留给后续尝试。
 中间 `applyTrackedChangeSettlement` 保存失败可直接抛出；该点早于 `invalidateMirrorAfterUndo`，会绕过后续镜像失效调用。
 [scopedPersistencePanelState](../../extension/src/content/scopedPersistencePanelState.js) 在该保存失败时恢复材料、标记 `needs_review` 并继续抛错，控制流可直接进入 finally。
-因此“文件保留、恢复材料保留”不能同时证明镜像已失效；该控制流风险不等同于已复现下一次运行复用旧镜像。
+因此“文件保留、恢复材料保留”不能同时证明镜像已失效。若旧镜像仍满足健康和年龄门槛，普通 `resolveWarmRunStart` 可采用当前活动文件及 focus 的覆盖层后复用；撤销过的文件仍在覆盖层中时可被修正，切到另一活动文件且未覆盖该路径时，旧字节仍可能留在复用工作区。缺覆盖层、镜像过期及普通完整快照同步各有保护，不能把此条件扩展为每次 Undo 失败后的运行都读取旧内容。
 
 这里的生命周期分类由 [runTimelineView.js](../../extension/src/content/runTimelineView.js) 的 `isTrackedChangeLifecycleRun` 判断 `trackedChangeStatus` 或 refs。
 普通 Track-off、无该状态或 refs 的混合记录，即使调用 `undoRunTrackedChanges`，完成后仍可走 `applyLegacyUndoSettlement → saveStateSoon`。

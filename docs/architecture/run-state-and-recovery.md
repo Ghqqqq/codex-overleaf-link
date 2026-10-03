@@ -265,7 +265,7 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 `recoverInterruptedRunJournals → ActiveTurnControl.recoverJournals` 在共享模式设置 `requireOwnerLost: true`。
 Native terminal journal 可能早于 owner 页面的写回和存储完成，旁观页不能据此提前替它结算。
 owner 丢失后，恢复流程补齐未读取事件、记录 `interruptedDraft`、暂停该会话队列，等待 `saveState()` 返回后才 acknowledge journal。
-这里保证调用顺序；普通保存仍存在第 4.3 节所述错误捕获和紧凑 fallback，不能据此推定完整历史已获得耐久确认。
+这里保证调用顺序；普通保存仍存在第 4.3 节所述错误捕获和紧凑 fallback。主 sessions 保存失败后，`saveState` 可在提示错误后正常返回，恢复调用者继续 acknowledge；[background.acknowledgeRunJournal](../../extension/src/background.js) 随后删除内存及 session storage 的对应 journal。紧凑 fallback 不保留完整 session/runs，不能充当回放材料已耐久保存的证明。旧主库或 fallback 的重载路线因而可能缺少刚回放的内容；原活页内存仍可保留它，后续成功保存可能救回，不能推导所有来源永久丢失。
 恢复保留历史证据；重新执行需经过新的运行入口，不能把 journal 回放当作重新启动原 Native 请求。
 回归入口见 [crossTabRuntimeRegression.test.js](../../test/crossTabRuntimeRegression.test.js) 和 [activeTurnControl.test.js](../../test/activeTurnControl.test.js)。前者提取 hydration 函数、调用真实合并 helper 并模拟 journal 返回，未装配真实后台端口及共享 IndexedDB 服务。
 

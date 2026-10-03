@@ -180,7 +180,7 @@ Windows 使用 `taskkill /pid <owned-pid> /t /f`，随后检查 child 退出状�
 `index.handleNativeDisconnect` 对 stdin end/close/error、预期 stdout 断连只处理一次，禁止继续写 stdout。
 它调用 `abortAllActiveOperations` 中止已登记普通运行，并安排 1,500 ms 后退出；此过程没有 await 全部停止与屏障写盘。
 该集合不包含独立的 Provider test、线程分叉或 `task.run` 外部 agent，不能把函数名推广为所有 native 操作的统一取消。
-`Known gap / 未验证`：真实断连与分阶段停止预算交错时，进程退出、子树残留及屏障落盘的组合仍需故障演练。
+`Known gap`：断连退出计时不等待停止 Promise。若 app-server 未及时响应 interrupt/SIGTERM，Host 的退出点可早于后续强制停止或 `onStopUnconfirmed` 写屏障；发出 abort 不构成所属进程已停止的证据。应分别核对 Host 退出、peer 是否仍可写镜像，以及独立读取持久屏障是否阻止新准入。真实 Codex、后代进程、Windows 与重启后的完整恢复仍需独立验收。
 
 app-server 的绝对 timeout 由 `CODEX_OVERLEAF_CODEX_TIMEOUT_MS` 可选开启，默认不设；idle watchdog 默认 600,000 ms。
 收到 stdout 或发出 RPC 会重置 idle；broker 有活动 worker 时会继续重置，worker 自有时间预算另行约束。
@@ -295,7 +295,7 @@ node scripts/run-tests.mjs test/nativeTransportEnvelope.test.js test/nativeTrans
 ```
 
 `readProgressGuard.test.js` 覆盖用户取消、POSIX 后代进程、Windows taskkill 注入、发信号不算退出等场景，覆盖范围受上表的依赖替换限制。
-现有测试缺少独立 `processStopBarrier` 用例，也缺少 Native 断连 1,500 ms 与完整停止流程竞速的直接覆盖；跨重启和跨平台行为仍需集成验证。
+现有正式测试缺少独立 `processStopBarrier` 用例，也缺少 Native 断连 1,500 ms 与完整停止流程竞速的直接覆盖；跨重启和跨平台行为仍需集成验证。
 普通运行直达 `skipMirrorSync`、缺失/零 ID 运行登记也缺少专项断言。`projectLock` 中题为 force-release zombie lock 的用例实际检查无锁及正常取消后的无锁状态，不能作为“有锁但无 controller”删除分支的直接覆盖。
 遗留 `task.run → runExternalAgent` 在 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js) 另走 stdout 整体 JSON/stderr 事件路径，timeout 和 kill 实现独立；修改普通 runner 时须明确是否覆盖它。
 

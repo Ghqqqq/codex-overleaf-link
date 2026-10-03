@@ -66,8 +66,8 @@ Native 扫描请求失败会生成 `mirror-sensitive-scan-unavailable` 发现，
 
 ### 命中后的行为与重试边界
 
-`sensitiveConfirmAllowed=false` 时，发现命中后在首次 Native 运行前停止；开启该字段后展示确认，结果决定是否继续。允许继续保留发现记录，不自动删除原始上下文中的匹配内容。
-`mirror_stale` 的业务恢复会重新读取快照，经 [prepareMirrorStaleRetry](../../extension/src/content/otWarmMirror.js) 的完整或聚焦部分可用性判定后再次派发；合格的部分快照会限制到 focus files。当前 `runTask` 分支未再次调用 `runSensitivePreflight`，原扫描结果不能作为新快照已扫描的证明。此为静态时序边界，尚未用真实模型验证数据流后果。
+敏感检查开启且 `sensitiveConfirmAllowed=false` 时，发现命中后在首次 Native 运行前停止；开启该字段后展示确认，结果决定是否继续。允许继续保留发现记录，不自动删除原始上下文中的匹配内容。
+`mirror_stale` 的业务恢复会重新读取快照，经 [prepareMirrorStaleRetry](../../extension/src/content/otWarmMirror.js) 的完整或聚焦部分可用性判定后再次派发；合格的部分快照会限制到 focus files。当前 `runTask` 分支未再次调用 `runSensitivePreflight`。敏感检查开启时，若首次预检通过后，新快照包含检测器可识别的内容，首次阻止/确认策略不会自动再次执行，新内容仍可进入第二次 Native 请求参数。聚焦范围和快照可用性检查不代替内容检查；原扫描结果不能作为新快照已扫描的证明。实际 Provider/模型接收及其后果仍需独立验收。
 
 ## 4. 路径治理如何判断
 
