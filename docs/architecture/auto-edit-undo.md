@@ -337,8 +337,9 @@ page 的实际分流在 `trackedChangesLifecycle.prepareNativeReview` 与 `accep
 router 可以返回已发生修改的逐项结果并跳过未开始项；content 获得这些结果后再结算与记录 checkpoint。
 当前 `assetTransferBroker.recoverTextReceipt` 遇 `codex_cancelled` 直接抛出；取消标志已置位时，[pageBridgeClient](../../extension/src/content/pageBridgeClient.js) 会使新发起的可取消回执查询进入拒绝路径。[pageRpcContract](../../extension/src/shared/pageRpcContract.js) 将 apply 与 receipt 读取均标为可取消。
 client 另提供 `cancelActiveRequests` 拒绝活动请求，但该基线的 `cancelActiveRun` 未调用该入口，不能把接口能力当作用户取消时必然发生的步骤。
+`Client.send` 对已取消的可取消请求安排拒绝微任务，但仍会派发 postMessage；拒绝后清理对应监听。因此 Page 保存了完成回执、甚至已经应答，也不等同于 Content 已取得可交给 orchestrator 的结果。
 因此 apply 已发生、响应超时、随后取消的组合，可能在结果到达 orchestrator 之前中断，不能声称所有已写入部分都已形成持久 Undo。
-跨文本与二进制批次还需检查前批结果是否随异常保留。这是调用链上的恢复边界，真实 Page RPC 取消、broker 返回与 content checkpoint 的组合仍需验证。
+这里需区分 Page 回执、Content Undo 记录与实际存储。原文、Page 回执或本地基线仍可能存在，缺少插件 Undo 凭据不能推导为原文永久丢失。真实 Chrome 跨 world 时序、服务器保存和重载恢复仍需独立验收；跨文本/二进制批次和 Track 捕获也须另查前批结果是否随异常保留。
 
 **当前实现。** `contentRuntime.stageWritebackRecovery`、`settleWritebackRecovery` 管理 `retryWriteback` 与 `saveCheck`。
 [writebackIntent](../../extension/src/shared/writebackIntent.js) 对请求记录设置 100 操作、300 KiB 上限；[sessionState](../../extension/src/shared/sessionState.js) 执行恢复字段筛选。

@@ -82,8 +82,9 @@ flowchart TD
 准备完成后的 scope 守卫只复核账号和项目，未捕获或比较提交时的 `activeSessionId`；随后 `startRunView` 通过 `updateActiveSession` 将记录写入届时的活动会话。
 因此镜像等待期间修改草稿或切换会话会影响普通任务随后读取的输入；Provider/风格等待期间切换会话，则可使先前捕获的任务归入后来活动的会话。
 [SessionManager.switchSession](../../extension/src/content/sessionManager.js) 依据已有 running 记录判断是否提示，这段准备期间尚未建立 run，不能依赖该提示固定归属。
-一旦 `startRunView` 建立记录并捕获运行归属，后续切换可见会话不迁移该运行；这一保证与建立记录前的窗口应分别维护。
-普通运行随后还会检查写入能力、准备完整或受限项目快照，再通过 `buildCodexRunParams` 形成 Native 参数。
+一旦 `startRunView` 建立记录并捕获运行归属，后续切换可见会话不迁移该运行记录；这一保证限定于已建立的显式身份，与全部输入上下文是否固定分别判断。
+建立 run 后还会等待 audit 草稿，随后 `clearTaskComposer` 读取当时的活动会话和 textarea。其间经确认切换会话时，原运行身份可保持，而新活动会话的草稿仍可能被清空。
+普通运行随后检查写入能力、准备项目快照，再通过 runtime `buildCodexRunParams` 将当前 state 与执行快照合成参数。[RunController.buildCodexRunParams](../../extension/src/content/runController.js) 的 `session` 仍取合成状态中的 `state.session`，不按 `currentRunView.sessionId` 重新定位；[codexPromptAssembly.buildCodexTurnPrompt](../../native-host/src/codexPromptAssembly.js) 直接将该对象的 id/history 放入提示词。因此显式 clientSessionId/threadId 保持在会话 A 时，后续等待中切到 B 仍可使这一轮的会话上下文来自 B。原项目/账号守卫不能代替同项目内的会话上下文绑定。
 
 当前快照的执行字段为 mode、Provider ID/revision、model、reasoning、speed、自动编译、Track、focusFiles、选区和写作风格，另含 schemaVersion、capturedAt、source 等元数据。
 schema 与入口见 [runExecutionSnapshot.js](../../extension/src/shared/runExecutionSnapshot.js)，内部归一化见 [runExecutionSnapshotCodec.js](../../extension/src/shared/runExecutionSnapshotCodec.js)。
@@ -97,7 +98,7 @@ Native 还会在 [providerRuntime.js](../../native-host/src/providerRuntime.js) 
 [projectProviderSelection.js](../../extension/src/content/projectProviderSelection.js) 的 `commit` 更新未来默认值与会话线程绑定，保留已有队列及运行历史。
 **维护目标**：新增运行选项同时检查 capture、queue payload、clone、持久化压缩和 Native 消费端，避免某一条路径丢失字段。
 若扩大“提交后固定”的范围，应将上述额外输入纳入同一链路并补验证。[runExecutionSnapshot.test.js](../../test/runExecutionSnapshot.test.js) 覆盖快照字段；[runInputQueueSnapshotRegression.test.js](../../test/runInputQueueSnapshotRegression.test.js) 覆盖队列压缩，其启动检查采用源码字符串断言，不能证明全部输入已冻结。
-提交生命周期验证还需串联 `safeRunTask/runTask/startRunView` 与 `SessionManager.switchSession`，分别覆盖镜像等待期间改变草稿、Provider/风格等待期间切换会话，以及运行建立后切换会话仍保留原归属。
+提交生命周期验证应串联 `safeRunTask/runTask/startRunView` 与 `SessionManager.switchSession`：覆盖镜像等待期间改变草稿、Provider/风格等待期间切换会话；run 已建立时分别核对显式身份、提示词会话历史及新草稿保留。
 
 ### 3.2 队列状态与 claim
 
@@ -229,7 +230,7 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 | --- | --- |
 | 新建：`startNewSession` | 先读取面板草稿；活动会话为空且空闲时复用原会话并聚焦输入框。需要新建时继承模式、Provider、模型、推理、速度和 Track 选择，切为活动会话后同步 Provider 并保存。 |
 | 容量：`startNewSession`、`normalizeSessions` | 新建入口在当前数组已有 20 个会话时请求容量确认；确认后追加并取末尾 20 个。归一化也有 `slice(-20)`。这是该入口及内存数组的行为，不能推广为所有创建入口均有确认，也不能替代持久化压缩预算。 |
-| 切换：`switchSession` | 保存原会话的面板输入，调用 `setActiveSession`，重绘、同步 Provider 并保存。新建或切换前发现活动会话有 running 记录时先提示；已经建立的运行保留原归属，建立前的等待窗口见 3.1。 |
+| 切换：`switchSession` | 保存原会话的面板输入，调用 `setActiveSession`，重绘、同步 Provider 并保存。新建或切换前发现活动会话有 running 记录时先提示；已建立的 run 记录保留显式归属；提示词上下文与准备等待窗口另见 3.1。 |
 | 重命名：`commitSessionRename` | 合并空白并去除首尾空格；非空且不同于本地化占位标题及自动推导标题的值标记为 `titleSource: manual`，其余回到 `auto`。手动标题与自动标题的来源需要随保存保留。 |
 | 删除空会话：`deleteSessionWithConfirm` | 运行中会话拒绝删除；空会话跳过破坏性确认。唯一空会话直接返回；还有其他会话时删除并携带 `deletedSessionIds` 保存，不请求 Native 线程清理。 |
 | 删除有内容会话：`deleteSessionWithConfirm`、`deleteSession` | 确认后删除并携带墓碑保存；删除最后一个会话时使用重置文案并创建新的空会话，否则活动会话被删时选择剩余最近会话。保存调用返回后才请求 `codex.history.clearPlugin` 清理目标线程，Native 失败单独提示，不恢复已删除会话；普通保存的确认强度见 4.3。 |

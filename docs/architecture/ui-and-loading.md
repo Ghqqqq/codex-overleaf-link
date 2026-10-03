@@ -131,14 +131,14 @@ Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并
 ```text
 textarea input → persistPanelInputs → readPanelInputs → updateActiveSession → debounce save
 提交 → safeRunTask
-  ├─ 无当前运行：runTask 等待旧镜像 → 捕获输入 → 准备 Provider/风格 → startRunView → clearTaskComposer
+  ├─ 无当前运行：runTask 等待旧镜像 → 捕获输入 → 准备 Provider/风格 → startRunView → audit 等待 → clearTaskComposer
   └─ 有当前运行：queueComposerInput → RunQueueScheduler coordinator → pendingInputs
 结果卡 Edit & resend → refillComposerForRetry → prepareRetryReplacement → 会话草稿
 ```
 
 [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `syncComposerSendAvailability` 在运行中且无文字时呈现取消，有文字时呈现排队发送；`safeRunTask` 将活动运行期间的提交交给队列协调器。
 `runTask` 在前次 `pendingMirror` 等待结束后、Provider/风格异步加载前捕获输入。准备期间仅复核账号和项目，`startRunView` 采用届时的活动会话；点击发送不等于会话归属已经固定。
-建立 run 后还等待 audit 草稿等步骤，才调用 `clearTaskComposer` 清文字、选区、技能调用及附件；该顺序不能推广为任意提交等待期间的新输入都会保留。等待窗口与运行建立后的身份规则见[运行状态与恢复](run-state-and-recovery.md)。
+建立 run 后还等待 audit 草稿等步骤，才调用 `clearTaskComposer` 清文字、选区、技能调用及附件；该函数作用于届时的活动会话，确认切换后的新草稿也可能被清空。显式运行/线程身份保持还不足以保证提示词历史一致，`params.session` 仍有读取当前会话的路径；等待窗口、参数构造与 Native 消费见[运行状态与恢复](run-state-and-recovery.md#31-执行快照)。
 [PendingInputView.pullBack](../../extension/src/content/pendingInputView.js) 只回填 queued 项，已有非空草稿时提示并返回；实际移除队列项与持久化由回调完成，UI 回填动作本身不提供事务提交证明。队列准入、推进和保存边界见[运行状态与恢复](run-state-and-recovery.md)。
 
 [RunTimelineView.configureEditButton](../../extension/src/content/runTimelineView.js) 对 cancelled/rejected 且通过 `canEditRun` 的记录提供编辑重发，当前存在运行时禁用该按钮。
