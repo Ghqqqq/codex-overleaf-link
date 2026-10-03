@@ -234,7 +234,7 @@ broker 在 commit 结果不确定时查询 `binaryUploadStatus`；仍不确定�
 `autoRecompileAfterWriteback` 在保存尚未确认时仍可触发 Overleaf Recompile，并请求页面等待保存。
 因此“编译触发了”“服务器保存了”“镜像已更新”应分别呈现。
 
-**结果投影的已知限制。** settlement 会为计划内缺失回执的操作补充 `write_result_missing`，完成报告仍按原始 applied/skipped 集合计数，`run.status` 也有独立收尾路径。因此需要检查的结算可能同时带有 completed 运行标签。失败主因、恢复按钮和页眉活动摘要的实际消费者见[失败、结算与动作](ui-and-loading.md#failure-settlement-actions)；修改成功语义时需同时核对这些投影。
+**结果投影与入口守卫。** settlement、完成报告和 `run.status` 有各自的收尾投影；普通 Auto 文本写回在此之前经过 [AssetTransferBroker.normalizeTextResult](../../extension/src/content/assetTransferBroker.js)，按计划补齐缺项为 skipped，并设置 `receiptUnconfirmed`，使缺项不能仅以原始 applied 数量被当作完整成功。`writebackOperationEvidence` 仍提供 `write_result_missing` 结算兜底。排查结算与运行标签分歧时，应先证明实际入口没有经过上述归一化，或证明现有守卫不足；只看末端条件不能认定普通 Auto 已出现假成功。失败主因、恢复按钮和页眉活动摘要的实际消费者见[失败、结算与动作](ui-and-loading.md#failure-settlement-actions)，修改成功语义时仍需同时核对这些投影。
 
 ## 6. Undo 的入口、分支与后来修改保护
 
