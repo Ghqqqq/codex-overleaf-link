@@ -43,7 +43,7 @@ Managed 的 `registerManagedRuntime()`读取 [runtime-manifest.json](../../exten
 runtime manifest 可扩展 Overleaf 站点范围，但实际注册受已授予 host permission 约束；可选权限的申请另由 UI 发起。
 
 当前 npm CLI 的 `install-managed`分派到 [scripts/install-managed.mjs](../../scripts/install-managed.mjs) 的 `installManaged()`，再调用 `installManagedDistribution()`。
-CLI 命令解析位于 [bin/codex-overleaf-link.mjs](../../bin/codex-overleaf-link.mjs)；`doctor`用于读取注册、运行根和工具发现信息。
+CLI 命令解析位于 [bin/codex-overleaf-link.mjs](../../bin/codex-overleaf-link.mjs)；`doctor`输出预期注册位置、可选运行根参数、bridge ping与工具发现信息，其注册验证范围见下一节。
 [install.sh](../../install.sh)、[install.ps1](../../install.ps1)还存在源码安装路径，可能准备开发依赖和构建 bundle；其信任与副作用应按脚本单独判断。
 已发布 npm 包携带预构建产物，终端用户的包安装路径不依赖 esbuild 现场构建；新增依赖时须分别检查这些入口。
 
@@ -78,6 +78,15 @@ Windows:       %LOCALAPPDATA%/CodexOverleaf/managed/
 自定义 `managedRoot`只改变安装内容的位置，不隔离用户级注册资源。[nativeHostPlatform.js](../../native-host/src/nativeHostPlatform.js)的 `getDefaultBridgePath()`对不同管理根、Chrome和Chromium返回同一个用户级bridge路径。
 [manifest.js](../../native-host/src/manifest.js)的 `getNativeHostManifestPath()`在macOS/Linux按浏览器区分manifest；Windows共用manifest文件，`getWindowsRegistryMetadata()`再按浏览器区分HKCU注册表键。`auto`按Chrome处理。
 因此多个管理根，或Direct与Managed安装共用默认入口时，后一次安装会改写已有bridge及相应注册；注册副作用超出管理根目录。
+
+连接故障指引目前未区分这两种加载类型。[compatibility.js](../../extension/src/shared/compatibility.js)的`buildInstallCommand()`固定生成`install-native`命令；[popup.js](../../extension/src/popup.js)的`getCompatibilityUpdateCommand()`和[contentRuntime.js](../../extension/src/content/contentRuntime.js)的`INSTALL_COMMAND`均使用该helper。
+若Managed安装的默认bridge原本指向固定launcher，按该指引安装独立Native时，[install-native-host.mjs](../../scripts/install-native-host.mjs)的`installNativeHost()`会把bridge改指独立runtime的`index.js`。该启动路径不经过`managedLauncherRuntime.js`注入托管环境；[updateManager.js](../../native-host/src/updateManager.js)的`getManagedContext()`不满足托管条件时，`update.*`请求返回`update_not_managed`，即使托管目录仍保留在磁盘上。
+`Target contract`：修复命令应按实际加载类型选择，Managed修复保持配套托管入口，Direct修复保持独立Native入口，并核对实际浏览器、安装根和扩展ID。不能将当前UI生成的命令视为所有安装类型的通用修复步骤。
+[compatibility.test.js](../../test/compatibility.test.js)断言当前`install-native`命令格式；[popupInstallGuidance.test.js](../../test/popupInstallGuidance.test.js)验证弹窗展示与复制该helper结果，这些测试未证明Managed修复后仍使用托管launcher。验证场景应覆盖两种加载类型的连接故障，分别核对展示命令、bridge目标、新Native的托管身份及`update.status`结果。
+
+[nativeDoctor.js](../../native-host/src/nativeDoctor.js)的`runDoctor()`按`getNativeHostRegistrationTarget()`计算预期manifest位置，读取该文件并直接执行其中的bridge完成ping。Windows路径输出HKCU（当前用户注册表）的预期键名，但没有查询该键是否存在或其默认值是否指向该manifest。
+因此预期manifest与bridge有效、ping兼容时，Doctor可返回`status: ok`和退出码0，即使Chrome所需的HKCU入口缺失或指向其他位置；该结果只证明直接启动链可用，不能证明Chrome已发现注册。[nativeInstallScripts.test.js](../../test/nativeInstallScripts.test.js)包含Doctor模拟bridge、兼容性结果及Windows命令启动方式的检查，不能替代浏览器注册发现验证。
+维护验证应分别构造正确注册、注册缺失和注册指向其他manifest的场景，比较Doctor结果与Chrome Native Messaging连接结果；`Target contract`应将注册发现与直接bridge执行分别取证。
 
 失败恢复的范围需要准确限定：Native 安装/注册抛错时，外层 catch 恢复扩展目录；代码未提供跨所有 Native 指针和系统注册写入的统一回滚事务。
 因此安装失败后需核查两端标记、指针和注册结果，不能宣称每个失败点都使磁盘自动恢复成原样。
@@ -178,6 +187,12 @@ Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入�
 [updateNetworkControl.js](../../native-host/src/updateNetworkControl.js) 的 `cancel()`写operation取消标记，中止本进程控制器并等待对应mutation锁释放。
 标记也用于拒绝其他Host中迟到的同operation网络工作；该取消针对更新网络操作，不承担agent子进程的停止职责。
 Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已apply的事务，恢复来源文件并对失败目标设置24小时cooldown。
+冷却期会影响“检查更新”和“重试”的实际含义：`checkForUpdate()`进入非304的新版本分支后，对仍在冷却的目标返回`available: false`、`reason: cooldown`及目标版本。更早的授权候选与304缓存分支有独立提前返回，不能把冷却判断推广到所有检查路径。
+[backgroundUpdateCoordinator.js](../../extension/src/backgroundUpdateCoordinator.js)的`checkOnly()`将 cooldown 结果转为`idle`并清空`code`、`message`，未保留冷却原因；[updateConsent.js](../../extension/src/shared/updateConsent.js)也不会为该状态提供安装动作。
+真实更新窗口由 [bootstrap/update.html](../../extension/bootstrap/update.html) 加载 [bootstrap/update.js](../../extension/bootstrap/update.js)，`presentationFor` 将 idle 映射为默认 `Stable updates / Ready`。[popup.js](../../extension/src/popup.js) 中旧 `getUpdateCopy/renderUpdateSection` 不在当前 Popup 调用链，`scheduleConsentUpdateUi` 实际移除更新区，不能据旧 helper 文案判断用户当前看到“已是最新版”。
+该路径的实际限制是冷却原因丢失、没有对应安装动作；idle 不能单独证明当前安装已达到最新目标版本。
+`Target contract`：无新版本与失败目标暂缓重试应保留各自原因；冷却提示应说明目标及可重试条件。[updateCenter.test.js](../../test/updateCenter.test.js)覆盖恢复终态，[updateConsent.test.js](../../test/updateConsent.test.js)覆盖视图规则，仍需验证“回滚→冷却期内手动检查→冷却到期后检查”完整路径中的Native原因、协调器状态、弹窗文案与按钮。
+
 `supersedeObsoleteJournal()`仅在安装对齐且active版本同时严格高于journal的source和target版本时淘汰旧journal；同target版本重装不满足该条件。
 `installManagedNativeVersion()`保留`native/updates`，完整扩展重装则建立新树。静态恢复反例是旧journal停在`applying`后重装同target：后续`update.status`仍可进入`recoverAndReadStatus()`的`rollbackFiles()`分支，重写source指针及旧manifest，而新扩展树可能已无旧runtime槽。
 该静态恢复路径的实际结果需要故障演练确认；重装不能直接作为账本已清理的证据，应核对journal、指针、manifest与实际runtime内容。

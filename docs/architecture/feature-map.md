@@ -15,9 +15,16 @@
 ### 改面板入口、宽度或布局
 
 - 入口：[PanelRenderer.create](../../extension/src/content/panelRenderer.js)；[ContentRuntime.ensurePanelOpen](../../extension/src/content/contentRuntime.js) 组装各 slot。
-- 状态 owner：PanelRenderer 管理 DOM、resize 与 launcher；runtime/session state 保存面板偏好。
+- 状态 owner：PanelRenderer 管理 DOM 和 resize；宽度进入 runtime/prefs，launcher 启用值独立存于 `chrome.storage.local['codex-overleaf:launcher-visible']`。面板开合为 DOM 状态，刷新初始化会重新打开面板。
 - 必须联动：[panel.css](../../extension/styles/panel.css)、[sessionState](../../extension/src/shared/sessionState.js)；保持设置、会话、composer 的生命周期。
 - 最近测试：[contentPanelModules](../../test/contentPanelModules.test.js)、[panelPolish](../../test/panelPolish.test.js)、[diagnosticsViewport](../../test/diagnosticsViewport.test.js)。
+
+### 改阅读跟随、最新按钮或复制结论
+
+- 入口：[RunTimelineView.bindLogAutoFollow/scrollLogToBottom](../../extension/src/content/runTimelineView.js)、[RunResultActions](../../extension/src/content/runResultActions.js) 的 `configureCopyButton`。
+- 状态 owner：timeline 管理跟随意图、未读步骤和强制跳转；[RunScrollLayout](../../extension/src/content/runScrollLayout.js) 保存重绘前的阅读锚点。复制读取渲染后的结论文字，不复制运行日志或原始 Markdown。
+- 必须联动：流式输出、折叠、重绘、字体与宽度变化、Clipboard API/回退和操作失败提示。细节见[界面与加载](ui-and-loading.md)。
+- 最近测试：[p2UiRegression](../../test/p2UiRegression.test.js) 含滚动、布局和锚点场景；复制还需覆盖空结论、权限拒绝及 Clipboard API 不可用。
 
 ### 加设置项、调整设置分类或作用域
 
@@ -45,6 +52,7 @@
 - 入口：[DiagnosticsPanel](../../extension/src/content/diagnosticsPanel.js)、[DiagnosticsController.runAllDiagnostics](../../extension/src/content/diagnosticsController.js)。
 - 状态 owner：各检查读取 Native/Page/镜像状态；[DiagnosticsExport](../../extension/src/content/diagnosticsExport.js) 构造脱敏导出和 smoke 摘要。
 - 必须联动：[compatibility](../../extension/src/shared/compatibility.js)、[auditRecords](../../extension/src/shared/auditRecords.js)、[failureReasons](../../extension/src/shared/failureReasons.js)；导出字段不得泄露正文、附件或 secret。
+- 关闭结果只设置展示屏障，不取消原检查；再次开始检查会重置该屏障，不能把它当作请求 generation 保护。
 - 最近测试：[diagnosticsHealth](../../test/diagnosticsHealth.test.js)、[diagnosticsMenu](../../test/diagnosticsMenu.test.js)、[diagnosticsViewport](../../test/diagnosticsViewport.test.js)。
 
 ## 模型、选区与附件
@@ -56,6 +64,7 @@
 - 入口：[ModelPicker.loadModelOptions](../../extension/src/content/modelPicker.js)、[ProjectProviderSelection](../../extension/src/content/projectProviderSelection.js)。
 - 状态 owner：[models](../../extension/src/shared/models.js) 规范化能力；[ProviderSettingsCoordinator](../../extension/src/content/providerSettingsCoordinator.js) 协调配置；项目选择与已提交运行快照分别保存。
 - 必须联动：[modelPickerSupport](../../extension/src/content/modelPickerSupport.js)、[providerRuntime.resolveProviderModels](../../native-host/src/providerRuntime.js)、[runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js)；保留 generation、providerId、providerRevision 迟到响应守卫。
+- 快捷入口还需检查 [ProviderProfiles](../../extension/src/shared/providerProfiles.js) 与 dialog 的协议/地址/认证联动；Speed 最终参数由 [codexArgs.buildCodexSpeedArgs](../../native-host/src/codexArgs.js) 生成。Native 默认 Provider 与当前项目选择是不同状态，清密钥/改端点后的文案不能单独证明已切换。
 - 若问题涉及已排队任务实际使用哪个配置，沿 `RunExecutionSnapshot.resolveForExecution` → `RunInputQueue.claimNext` → `RunQueueScheduler.scheduleOne` 检查暂停分支，再核对 Native `providerRuntime.resolveRunProvider/resolveRunProviderForRun`；模型目录加载不能代替执行校验。
 - 最近测试：[modelSelectionRecovery](../../test/modelSelectionRecovery.test.js)、[providerSessionBinding](../../test/providerSessionBinding.test.js)、[models](../../test/models.test.js)。
 
@@ -64,6 +73,7 @@
 - 入口：[ComposerPanel.create](../../extension/src/content/composerPanel.js)、[SelectionContextView.attach](../../extension/src/content/selectionContextView.js)、runtime 的 `safeRunTask`。
 - 状态 owner：[sessionState](../../extension/src/shared/sessionState.js) 保存草稿；[selectionContext](../../extension/src/shared/selectionContext.js) 规范化选区；发送时进入 execution snapshot。
 - 必须联动：[pageBridge.getSelectionContext](../../extension/src/pageBridge.js)、[Native selectionScope](../../native-host/src/selectionScope.js)、[runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js)。当前仅 Ask/Auto，默认 Ask；旧 `confirm` 归一化为 Ask。
+- Edit Selection 准入比较整份文档摘要；任一收集改动越出允许范围时，整组改动会被阻止，不能把单个合法补丁视为一定会单独写入。
 - 最近测试：[p0ProductExperience](../../test/p0ProductExperience.test.js)、[sentSelectionChip](../../test/sentSelectionChip.test.js)、[runExecutionSnapshot](../../test/runExecutionSnapshot.test.js)。
 
 ### 改 @文件上下文、粘贴/拖放附件或附件限额
@@ -71,6 +81,7 @@
 - 入口：[ContextTray](../../extension/src/content/contextTray.js)、[ComposerAttachments.createComposerAttachmentController](../../extension/src/content/composerAttachments.js)。
 - 状态 owner：会话保存 focused files；附件控制器管理当次输入文件、异步读取和去重；运行快照保留提交时信息。
 - 必须联动：[contentRuntime](../../extension/src/content/contentRuntime.js) 注入的限额、[turnAttachments](../../native-host/src/turnAttachments.js)、[nativeQuotas](../../native-host/src/nativeQuotas.js)、[runInputQueue](../../extension/src/shared/runInputQueue.js) 与附件持久化裁剪。
+- 普通 `@path` 文字与 focus 列表独立；批量附件的部分读入与末尾渲染也分别处理。排查缺附件需核对内部数组、可见 tray 和最终运行参数。
 - 最近测试：[contextTray](../../test/contextTray.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js)、[runInputQueue](../../test/runInputQueue.test.js)。
 
 ### 改编译日志引用或编译错误修复入口
@@ -98,6 +109,13 @@
 - 必须联动：[scopedPersistenceCoordinator](../../extension/src/content/scopedPersistenceCoordinator.js)、[storageSessionClaims](../../extension/src/shared/storageSessionClaims.js)、[sessionState](../../extension/src/shared/sessionState.js)、Native [codexThreadFork](../../native-host/src/codexThreadFork.js)。详细链路见[运行状态与恢复](run-state-and-recovery.md)。
 - 最近测试：[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)、[crossTabRuntimeRegression](../../test/crossTabRuntimeRegression.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)、[sessionForkController](../../test/sessionForkController.test.js)。
 
+### 改新建、重命名、最后会话或清空历史
+
+- 入口：[SessionManager](../../extension/src/content/sessionManager.js) 的 `startNewSession/switchSession/commitSessionRename/deleteSessionWithConfirm`；[PanelMaintenance.clearAllHistoryWithConfirm](../../extension/src/content/panelMaintenance.js) 是另一种清理入口。
+- 状态 owner：`SessionState` 负责空会话复用、标题来源、容量及删除后替代会话；共享库、站点辅助库和 Native 历史各有清理范围。
+- 必须联动：当前可达的 PanelRenderer/SessionPanel callbacks、持久化墓碑、内存 `session/task`、提示文案；清库成功不能推定内存也已清空。详见[会话生命周期](run-state-and-recovery.md#session-lifecycle)和[清空历史状态](run-state-and-recovery.md#clear-history-state)。
+- 最近测试：[sessionState](../../test/sessionState.test.js)、[sessionManagement](../../test/sessionManagement.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)；实际清理还需检查状态归一化和保存结果。
+
 ### 改项目主页、最近项目或会话列表
 
 - 入口：[RecentProjects](../../extension/src/content/recentProjects.js)、[SessionPanel](../../extension/src/content/sessionPanel.js)；runtime 处理 SPA route 切换。
@@ -114,6 +132,7 @@
 - 入口：[snapshotRouter](../../extension/src/page/snapshotRouter.js)、[overleafProjectSnapshot](../../extension/src/page/overleafProjectSnapshot.js)、[OtWarmMirror](../../extension/src/content/otWarmMirror.js)。
 - 状态 owner：Page 提供读取证据；[mirrorWorkspace](../../native-host/src/mirrorWorkspace.js) 管理本地文件与 baseline；[mirrorHealth](../../extension/src/content/mirrorHealth.js) 投影镜像可用性。
 - 必须联动：[otWarmMirrorController](../../extension/src/content/otWarmMirrorController.js)、[shared/otText](../../extension/src/shared/otText.js)、[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 的 mirror 方法、快照完整性和空字符串语义。
+- ZIP 前快启入口为 `resolveWarmRunStart`；OT producer 的非空 overlays 与 Native validator 的拒绝条件存在冲突，需同时定位 `mirror_stale` 回退，详见写回章节。
 - 最近测试：[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)、[otWarmMirrorIntegration](../../test/otWarmMirrorIntegration.test.js)、[mirrorHealth](../../test/mirrorHealth.test.js)。
 
 ### 改 Auto 编辑、保存确认、编译或失败重试
@@ -128,6 +147,7 @@
 - 入口：runtime 的 run 操作回调、[trackedChangesLifecycle](../../extension/src/page/trackedChangesLifecycle.js)、[AssetTransferBroker](../../extension/src/content/assetTransferBroker.js)。
 - 状态 owner：[undoOperations](../../extension/src/shared/undoOperations.js) 与 run checkpoint 保存撤销证据；页面 receipt 和 settlement 记录部分完成结果。
 - 支持范围：Auto 重命名按 create/delete 拆分，二进制删除、生成 PDF 与资产扩展名另有过滤；原有文件删除的恢复不能套用“编辑＋新建”的 Undo 路线，详见[文件操作与撤销限制](auto-edit-undo.md)。
+- 二进制覆盖走 uploader 独立链，当前未携带旧版本基线比较；新载荷完整性和上传后核验不能单独证明覆盖前远端未变化。
 - 必须联动：[treeOperations](../../extension/src/page/treeOperations.js)、[nativeAssetTransfer](../../native-host/src/nativeAssetTransfer.js)、[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 和镜像失效处理。详细链路见[Auto 编辑与 Undo](auto-edit-undo.md)。
 - 最近测试：[writebackRouterAccept](../../test/writebackRouterAccept.test.js)、[createdFileUndo](../../test/createdFileUndo.test.js)、[ordinaryUndoRouting](../../test/ordinaryUndoRouting.test.js)、[binaryUploadUndoRoundTrip](../../test/binaryUploadUndoRoundTrip.test.js)。
 

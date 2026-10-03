@@ -62,7 +62,17 @@ runtime 对重复初始化设有标记；发现旧 panel 已在 DOM、runtime �
 | `settingsSlot` | [SettingsPanel.create](../../extension/src/content/settingsPanel.js) | 设置 coordinator、全局偏好及对应领域 owner |
 | `sessionSlot` | [SessionPanel](../../extension/src/content/sessionPanel.js) | SessionManager、共享会话状态与当前活动会话 |
 | `composerSlot` | [ComposerPanel.create](../../extension/src/content/composerPanel.js) | runtime 的提交、取消、模型、上下文、附件 callbacks |
+| 时间线滚动与“最新”按钮 | [RunTimelineView](../../extension/src/content/runTimelineView.js)、[RunScrollLayout](../../extension/src/content/runScrollLayout.js) | 前者管理跟随意图与未读步骤，后者在布局变化和重绘后恢复阅读位置 |
 | 项目列表 dashboard | [RecentProjects](../../extension/src/content/recentProjects.js) | 账号作用域会话摘要和 SPA route，不应先闪现项目 composer |
+
+侧边入口的启用偏好由 `PanelRenderer.setLauncherVisible/initializeLauncherVisibility` 独立读写扩展 `chrome.storage.local['codex-overleaf:launcher-visible']`，并监听 storage 变化；它不经过会话持久化或 GlobalPreferencesController。
+`isLauncherVisible` 返回入口是否启用；实际显示还要求面板关闭。入口点击经 runtime `ensurePanelOpen` 打开面板，关闭按钮经 `closePanel` 调用 `setVisible`，开合状态保存在 DOM 的 `is-open` class 中。
+runtime `init` 在加载状态后调用 `ensurePanelOpen`，因此页面刷新会重新打开面板；关闭入口偏好只影响面板关闭后的按钮显示。[popupInstallGuidance](../../test/popupInstallGuidance.test.js) 验证 Popup 的开关消息不改变面板开合，[p1BrowserRegressions](../../test/p1BrowserRegressions.test.js) 检查实际显隐条件；刷新组合行为另需浏览器验收。
+
+`RunTimelineView.bindLogAutoFollow` 从 wheel、touch、pointer 和键盘事件捕获阅读意图，`logAutoFollow` 决定新输出是否继续滚到底部；`scrollLogToBottom` 合并同一帧的滚动请求，并在绘制时复核意图。
+“最新”按钮由 `ensureJumpToLatestButton` 创建，点击后调用 `scrollLogToBottom({ force: true })`，重新启用跟随并清空未读步骤数。计数来自离开底部后的离散步骤，原行上的 streaming 增量不会逐块累加。
+阅读锚点类似书签：[RunScrollLayout.captureAnchor/snapshot/restore](../../extension/src/content/runScrollLayout.js) 保存可见段落相对容器的偏移，重绘后按运行 ID 与段落索引重绑节点；缺少对应节点时回退到保存的滚动偏移。`renderRunHistory` 仅在 `preserveScroll:true` 且已退出跟随时采用此恢复路径，其他重绘默认强制滚到底部。
+[p2UiRegression](../../test/p2UiRegression.test.js) 使用伪 scroller、帧队列和 observer 检查跟随意图、布局收缩与锚点恢复；长流输出、折叠重排、宽度变化和真实滚轮交互仍需浏览器验证。
 
 [SettingsWorkbench.mount](../../extension/src/content/settingsWorkbench.js) 把现有设置 group DOM 移入原生 `<dialog>`，分类由 `CATEGORIES/GROUP_PAGES` 控制，显示范围由 `PROJECT_GROUPS` 等决定。
 移动保留已有节点、监听器和草稿；新增控件仍应在 SettingsPanel 中定义读写接口。新增导航按钮不自动建立持久化字段。
@@ -74,6 +84,8 @@ Provider 通过 `revealProviders` 嵌入工作台；相关编辑器由 [Provider
 
 ### 历史查看、清理与结果动作
 
+新建、切换、重命名和单会话删除经 PanelRenderer/SessionPanel 的 runtime callbacks 进入 `SessionManager`。空会话复用、容量确认、手动标题与最后会话重置见[会话生命周期](run-state-and-recovery.md#session-lifecycle)。
+
 [PanelMaintenance.openChangeHistory](../../extension/src/content/panelMaintenance.js) 打开设置历史卡，交给 [ChangeHistoryView.load](../../extension/src/content/changeHistoryView.js) 读取 auditLogs 和 sessions。
 后者捕获账号、项目、容器与请求 generation，异步返回后复核；超时或读取失败显示错误及重试入口，不能把失败投影成“没有历史”。历史行通过 runtime 的 `jumpToHistoryRun` 跳转到所属会话与运行。
 
@@ -84,12 +96,14 @@ Provider 通过 `revealProviders` 嵌入工作台；相关编辑器由 [Provider
 | legacy 存储实现 | [StorageDb.clearAllStores](../../extension/src/shared/storageDb.js) 在当前站点 IndexedDB 事务中清空 `STORES` | 与后台共享账号会话库是不同存储边界；控件位于项目设置过滤器也不会缩小此范围 |
 | dashboard 的逐项目清理 | [ProjectSessionCleanup.clearProjectSessions](../../extension/src/content/projectSessionCleanup.js) 按 projectId 查询、按已解析账号过滤，检查近期 running 记录，再确认并写墓碑、删除会话及请求 Native 历史清理 | 会话删除数和 Native 历史清理失败分别统计；剩余记录仍可显示并重试。账号缺失时过滤条件有放行分支，不能从此函数单独推定始终账号隔离 |
 
-这些动作清理插件历史与恢复材料，Overleaf 文件写入、撤销属于其他入口；清理前应分别核对账号共享库、站点辅助库及 Native 历史的范围。
+清空后的内存归一化还有独立限制：该入口未同时清除旧 `state.session/task`，旧活动会话可被重建；共享墓碑又可能拒绝其再次保存，而 UI 仍显示清理完成。内存重现与持久库是否写入分别判断，详见[清空历史后的状态](run-state-and-recovery.md#clear-history-state)。
+这些动作面向插件历史与恢复材料，Overleaf 文件写入、撤销属于其他入口；清理前应分别核对账号共享库、站点辅助库及 Native 历史的范围。
 [p0ProductExperience](../../test/p0ProductExperience.test.js) 的清空历史用例和 [dashboardSessions](../../test/dashboardSessions.test.js) 的逐项目清理用例主要检查源码调用结构，不能替代实际持久删除、部分失败与跨标签交互验收。
 
 结果卡按钮由 [RunTimelineView.renderRunCard](../../extension/src/content/runTimelineView.js) 装配 [RunResultActions.configureResultActions](../../extension/src/content/runResultActions.js)。
 其中 `configureForkButton` 在记录有 turnId、非 running、非 forkSnapshot 且具有 callback 时启用，再调用 [SessionForkController.forkRunFromNode](../../extension/src/content/sessionForkController.js)。
 分叉从所选节点复制历史并建立新 Native thread；来源线程优先级、撤销材料剥离、保存失败补偿及持久化字段缺口见[会话分叉与恢复材料隔离](run-state-and-recovery.md#61-会话分叉与恢复材料隔离)。
+Native 分叉等待后的回调缺少当前作用域复核，旧 `previousState` 可能覆盖等待期间的新视图；导航与异步返回的限制见[分叉等待与视图切换](run-state-and-recovery.md#fork-async-state)。
 [sessionForkController](../../test/sessionForkController.test.js) 使用真实 controller 与 SessionState，Native 和保存通过依赖替身提供；不能由该测试推定按钮、Native fork 与刷新恢复已联合通过。
 
 ## 3. 配置作用域：按写入路径判断
@@ -151,8 +165,17 @@ Save and use 可经 `providerSwitchApproved:true` 跳过该确认，删除当前
 [SelectionContext.normalize](../../extension/src/shared/selectionContext.js) 校验项目相对路径、非空文本、范围、文档 hash；上限 `MAX_TEXT=20000` 按 JavaScript 字符串长度计算。
 范围满足 \(0\le from<to\) 与 \(to-from=|text|\)，并携带 `documentHash`，用于说明选区来自哪个文档版本。
 `reference` 模式附加参考内容；`edit` 模式显示“仅此处”，runtime 的 `setSelection` 同时把会话模式设为 Auto。实际局部修改限制还依赖 [selectionScope](../../native-host/src/selectionScope.js)，标签本身不提供执行保证。
+Native 的 `prepareSelectionScope` 在 edit 模式读取镜像中的整份文件，要求其 SHA-256 等于 `documentHash`，且 `before.slice(from, to)` 等于选区文本。整份文档摘要像版本指纹，即使变化发生在选区之外，也会以 `selected_context_unresolved` 拒绝本次选区编辑并要求重选。
+`filterSelectionChanges` 要求每项均为同一路径的文本 write、`previousContent` 等于基线，并保留选区前缀与后缀；可接受结果满足 \(after=prefix+replacement+suffix\)。该函数使用 `items.every` 整组判定，任一项越界会令 `changes` 为空，并将整组映射为 `selection_scope_violation`，合法项也不会单独保留。
+验证选区执行约束时，应覆盖“选区外发生变化但选区文字相同”、前后缀变化、跨文件修改，以及合法项与越界项混合返回；[sentSelectionChip](../../test/sentSelectionChip.test.js) 的历史 chip 验证不能替代 Native 范围校验。
 发送后的 `renderSent` 从 run execution snapshot 渲染 chip；草稿移除选区不应删除历史 chip。页面选区探测还检查编辑器焦点、连接状态和 probe generation。
-[ContextTray](../../extension/src/content/contextTray.js) 管理 focused files、文件列表和预加载；`@` 文件上下文与二进制附件各有持久化和消费路径。
+
+### 文件重点与任务中的 @ 文字
+
+[ContextTray](../../extension/src/content/contextTray.js) 管理 focused files、文件列表和预加载；`getActiveFocusFiles` 读取活动会话的 `focusFiles`，chip 与提交快照均以该列表为依据。`@` 文件上下文与二进制附件各有持久化和消费路径。
+runtime 的 `applyAtFileSelection` 在菜单选择文件后同时插入 `@path` 文字，并调用 `selectFocusFile` 更新列表。手工输入或删除 `@path` 只改变任务文字，不会自动增删 focus；从 chip 移除文件同样不会清理任务文字。
+`selectFocusFile` 用 `.slice(-5)` 保留最近五项；通过 @ 菜单加入第六个不同文件时，最早的 focus 被替换，runtime 显示提示，原有 @ 文字仍可留在任务中。排查发送上下文应同时检查任务文字、focus 列表及执行快照，不能从文字中的文件名推断结构化 focus。
+[contextTray](../../test/contextTray.test.js) 定位列表和 chip 的选择／移除路径；组合验证应覆盖手输、删字、删 chip、第六项替换及提交快照的实际字段。
 
 ### 编译日志上下文与修复草稿
 
@@ -166,6 +189,8 @@ runtime 的 `renderAtFileMenu` 提供 `@compile-log`；`runTask` 在首次模型
 
 [ComposerAttachments.createComposerAttachmentController](../../extension/src/content/composerAttachments.js) 接收 paste/drop/file input，先去重和预约预算，再等待 FileReader 与图片预览。
 `pendingAttachmentKeys` 防止同一文件并发重复读取；预算计入已完成字节和 pending bytes，`finally` 释放预约，避免同时导入绕过总额判断。
+`addFiles` 按顺序处理一批文件。校验或读取抛错会提前退出整次调用，后续文件不再读取；此前已经 push 到内部数组的附件仍可被 `getAttachmentsForRun` 取出，但循环后的 `renderComposerAttachments` 被跳过，tray 可能尚未显示这些附件。数量上限的 `break` 与总预算不足的 `continue` 会继续到末尾重绘，须与抛错路径分别判断。
+批量导入验证应包含“有效文件 → 空文件或读取失败 → 有效文件”，同时检查错误提示、内部待发送列表、tray 和后续文件读取次数；单文件成功或 pending 去重不能证明批次失败后已全部回滚。
 普通 composer 的配置来自 runtime：\(n\le8\)、每件 \(b_i\le12\,\mathrm{MiB}\)、\(\sum b_i\le32\,\mathrm{MiB}\)。空附件被拒绝；该规则与合法空项目文件的语义不同。
 [NativeQuotas](../../native-host/src/nativeQuotas.js) 普通附件保留单件/数量约束，聚合限制为 96 MiB；不能用 Native 更宽上限推断 UI 接受范围。写作风格参考采用另组 quotas。
 `getAttachmentsForRun` 包含本次发送内容；`createRunAttachmentSnapshots` 只保留名称、类型、大小与受限预览，避免把完整附件作为历史卡片内容复制。
@@ -191,6 +216,13 @@ runtime 的 `loadStoredStateForProject` 正常返回与 compact fallback 返回�
 DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHunks.js) 支持的交互 hunk 决策和 `renderDiffReview`。按该源码基线的静态调用关系，`renderDiffReview` 无生产外部调用；`createDiffReviewElement` 仍可作为未注入回执 renderer 时的只读回退。模块被打包和独立测试存在，不能证明交互式逐块审阅属于当前可达用户流程。
 [agentTranscript](../../test/agentTranscript.test.js) 检查事件映射；[subagentActivityView](../../test/subagentActivityView.test.js) 在伪 DOM 中装配共享活动 renderer；[writtenChangesView](../../test/writtenChangesView.test.js) 覆盖回执 helper 并用源码断言检查 runtime 注入；[reviewHunks](../../test/reviewHunks.test.js) 检查纯决策模型。它们各自覆盖局部边界，真实长流、滚动和写后展示仍待验收。
 
+### 复制结论
+
+[RunResultActions.configureResultActions](../../extension/src/content/runResultActions.js) 把结果动作放入完成报告，再配置复制按钮、分叉和完成时间。
+`configureCopyButton` 在配置时读取 `.run-completion-report .run-final-answer` 的 `innerText/textContent`；复制内容是渲染后的结论文字，不包括活动日志，也不保证原始 Markdown 或公式 TeX 保真。
+`writeClipboardText` 优先使用 `navigator.clipboard.writeText`，仅在 API 不可用时创建临时 textarea 并调用 `execCommand('copy')`。已存在的 Clipboard API 拒绝时由按钮显示失败提示，不继续执行该回退。
+验证应覆盖空结论禁用、复制成功/拒绝、API 缺失和结果重新渲染；浏览器剪贴板权限及格式需单独验证。
+
 ### 富文本、公式与引用
 
 ```text
@@ -214,6 +246,8 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 ## 7. 诊断与 Popup 的真实入口
 
 [DiagnosticsController.runAllDiagnostics](../../extension/src/content/diagnosticsController.js) 依次收集 Native、页面、快照和 OT 检查，并按最差 health 汇总；DiagnosticsPanel 负责菜单、loading 与结果 DOM。
+[DiagnosticsPanel.closeResult](../../extension/src/content/diagnosticsPanel.js) 隐藏结果并设置 `resultDismissed`，`showResult` 在该布尔屏障为真时忽略结果；关闭按钮、Escape 和外部点击均可进入此路径。关闭没有取消底层检查，全检仍可继续并更新 health。
+下一次 `showLoading` 会清除 `resultDismissed`；该状态未绑定请求 ID 或 generation，不能据此保证新检查启动后会忽略旧检查的迟到结果。[diagnosticsViewport](../../test/diagnosticsViewport.test.js) 覆盖“关闭 → 原结果返回”与重新 loading 的局部状态；还需覆盖“关闭 → 另起检查 → 旧结果返回”的交错次序。
 [DiagnosticsExport.exportDiagnosticsBundle](../../extension/src/content/diagnosticsExport.js) 取近期运行、audit、mirror、Native 摘要；异步采集后复核 projectId，再交给 [AuditRecords.buildDiagnosticBundle](../../extension/src/shared/auditRecords.js)。
 AuditRecords 构造摘要字段并使用 secret-like 文本处理。维护约束是避免正文、完整附件或凭据进入诊断；新增字段须沿采集、摘要和导出链检查，已有字段的处理不能作为其他出口的无泄漏保证。
 [Direct popup HTML](../../extension/popup.html) 和 [Managed popup HTML](../../extension/bootstrap/popup.html) 共用 [src/popup.js](../../extension/src/popup.js)；后者通过 runtime 路径加载可替换代码和 CSS。
@@ -228,6 +262,7 @@ launcher 开关先读 `get-panel-state`，按需发 `toggle-launcher`，再读�
 | 新 content controller | source import → registry 依赖 → 必要时 legacy adapter → runtime callbacks/getters → bundle | [contentModuleRegistry](../../test/contentModuleRegistry.test.js)、[contentRuntimeInitialization](../../test/contentRuntimeInitialization.test.js)、[contentBuildIdentity](../../test/contentBuildIdentity.test.js) |
 | 新 MAIN 方法 | 实现 → RPC catalog → WAR → PageBridgeClient 顺序 → dispatcher/capability → 消费者 | [pageBridgeClient](../../test/pageBridgeClient.test.js)、[pageRpcContract](../../test/pageRpcContract.test.js)、[manifest](../../test/manifest.test.js) |
 | 设置项或布局 | 字段 owner → SettingsPanel read/load → coordinator → Workbench 映射 → i18n/CSS | [globalPreferences](../../test/globalPreferences.test.js)、[contentPanelModules](../../test/contentPanelModules.test.js)、[providerModalLifecycle](../../test/providerModalLifecycle.test.js)、[diagnosticsViewport](../../test/diagnosticsViewport.test.js) |
+| 时间线滚动、最新按钮或重绘位置 | RunTimelineView 跟随意图／帧调度 → RunScrollLayout 阅读锚点 → history 重绘选项／CSS | [p2UiRegression](../../test/p2UiRegression.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js) |
 | 历史查看或清理 | PanelMaintenance / ChangeHistoryView → shared/legacy 存储范围 → ProjectSessionCleanup / Native → 重绘 | [p0ProductExperience](../../test/p0ProductExperience.test.js)、[dashboardSessions](../../test/dashboardSessions.test.js)、[storageDb](../../test/storageDb.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js) |
 | 草稿、编辑重发或排队回填 | textarea / RunTimelineView → PanelMaintenance → runtime / RunController → 会话或队列 owner | [runControllerContent](../../test/runControllerContent.test.js)、[runInputQueueSnapshotRegression](../../test/runInputQueueSnapshotRegression.test.js)、[runQueueSchedulerDurability](../../test/runQueueSchedulerDurability.test.js) |
 | 结果卡分叉 | RunResultActions → SessionForkController → [Native thread fork](../../native-host/src/codexThreadFork.js) → 记录复制 / 保存 / 补偿 | [sessionForkController](../../test/sessionForkController.test.js)、[sessionState](../../test/sessionState.test.js)、[storageDb](../../test/storageDb.test.js)；刷新字段保留另见运行状态页 |

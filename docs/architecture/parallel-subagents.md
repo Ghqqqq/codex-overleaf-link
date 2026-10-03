@@ -32,6 +32,11 @@
 技能目录由 [localSkills](../../native-host/src/localSkills.js) 管理，面板打开时的目录预取在 `contentRuntime.primeCodexOverleafSkillsCatalog`。
 运行参数与 UI 技能启用读取应同时核对，避免只修改面板列表却未影响实际 gate。
 
+**首次目录预取的时序边界。** [contentRuntime](../../extension/src/content/contentRuntime.js) 在首次构建面板时以 fire-and-forget 方式启动预取，任务提交不等待该 Promise。
+若 `state.codexOverleafSkills` 仍为空，`getEnabledCodexOverleafSkillIds()` 返回 `[]`，`buildCodexRunParams()` 将其交给 Native，使该次运行的 broker 关闭；目录随后返回不会为已启动的运行补建 broker。
+预取成功填充目录后，后续提交会重新读取启用 ID；预取失败或目录仍为空时，可打开 Skills，由 [projectSettingsCoordinator.openSkillsView](../../extension/src/content/projectSettingsCoordinator.js) 调用 [localSkillsPanel.refreshLocalSkills](../../extension/src/content/localSkillsPanel.js) 刷新，待目录包含已启用的 `parallel-subagents` 后重新提交。
+[目录预取测试](../../test/parallelSubagents.test.js) 中的 `panel open primes the skills catalog so the broker gate works without visiting Skills` 只检查预取函数和调用存在，未覆盖请求尚未返回时的提交及后续恢复。
+
 worker 通过 Native Host 创建 sibling runner；父任务和 worker 都传入同一 `mirror.workspacePath`。
 worker 使用新的 thread，`session: null`、`threadId: ''`；继承当前运行的 model、reasoning、speed、mode、provider 和写作风格上下文。
 `applyWorkerSkillStrip` 在 worker app-server 内禁用 fan-out 技能，限制递归派发。
@@ -43,6 +48,11 @@ worker 使用新的 thread，`session: null`、`threadId: ''`；继承当前运�
 **当前实现的限制。** 每个 worker 的 `cwd` 指向共享镜像，未为每项 job 创建独立项目副本。
 `buildCodexSettings` 按运行模式选择 `read-only` 或 `workspace-write`；`job.files` 通过提示词、调度互斥和事后证据管理。
 技能中的文件限制不能直接解释成操作系统对每个 worker 单独设置的路径 ACL。
+
+**Ask 模式的投递边界。** broker gate 未排除 Ask，但 [codexSessionRunner](../../native-host/src/codexSessionRunner.js) 的 `buildCodexSettings()` 为普通 Ask 任务指定 `read-only` 与 `approvalPolicy: never`，`buildThreadStartParams/buildThreadResumeParams` 将沙箱设置交给 app-server；父任务与 worker 没有 job 目录的单独写入例外。
+Native Host 仍可创建队列并发布 `broker.json` 的 `ready`，而 [parallel-subagents 技能](../../native-host/src/skills/parallel-subagents/SKILL.md) 要求模型写入 job JSON 后才能派发；host 就绪不能单独证明模型有权投递。
+该配置与文件投递要求存在冲突，实际可用性和拒绝表现仍需结合平台及 app-server 的沙箱执行验证，不能据此推定所有实机 Ask 任务都会失败。
+Codex 原生 collab 路线不通过这个文件队列，相关发现与状态证据按第 7 节单独核对。
 
 **技能环境的共享边界。** [codexHome](../../native-host/src/codexHome.js) 的 `getPluginCodexHome()` 默认让各项目和 runner 共用插件 `CODEX_HOME`。
 `runCodexAppServerProcess()` 为父任务、worker 和风格生成分别调用 `buildCodexHomeEnv()`；`composePluginSkillsDirectory()` 每次先删除 `skills`，再按本次开关重建。
@@ -208,6 +218,7 @@ worker `completed` 只表示 runner Promise 正常返回；受上一节终态映
 | 改动 | 主 owner 与必要联动 | 最窄命令 |
 |---|---|---|
 | 启动 gate、继承、禁递归 | codexSessionRunner、localSkills、技能正文、面板技能目录 | `node scripts/run-tests.mjs test/parallelSubagents.test.js` |
+| 首次目录预取与 Ask 投递边界 | contentRuntime、projectSettingsCoordinator、localSkillsPanel；runner gate、thread 参数与文件队列 | `node scripts/run-tests.mjs test/parallelSubagents.test.js test/codexSessionRunner.test.js`；现有预取装配和线程参数测试不能替代延迟目录响应、恢复提交及真实沙箱投递验证 |
 | 共享技能目录与交错准备 | codexHome、codexSessionRunner、writingStyleRuntime、项目锁；installer 映射 | `node scripts/run-tests.mjs test/codexHome.test.js test/codexSessionRunner.test.js`；还需覆盖活跃路径及安装持久性的交错准备场景 |
 | 并发、同文件串行、预算、取消 | subagentBroker、runner、codexSessionTiming、镜像 dirty | `node scripts/run-tests.mjs test/subagentBroker.test.js` |
 | 文件归属、quarantine、adoption | subagentWorkspace、subagentWorkspacePath、broker、最终 syncChanges 过滤 | `node scripts/run-tests.mjs test/subagentBroker.test.js test/parallelSubagents.test.js` |
@@ -229,5 +240,7 @@ worker `completed` 只表示 runner Promise 正常返回；受上一节终态映
 6. **worker 失败终态后的部分文件隔离。** 追踪 `turn.status=failed` 结束帧是否引发 runner rejection；缺少独立 error/abort 时，当前成功返回路径仍可令 broker 标为 completed。
 7. **历史临时读取失败后的恢复。** 同一 child 的 `readDisabled` 会阻止后续补读；分别检查已保存活动、实时通知与缺失历史，不能由只读视图重新打开推定原生历史重试。
 8. **活跃 worker 期间重建技能目录。** 另一个项目或风格生成会按自身开关准备共享 home；核对父任务与 worker 已发现的路径能否继续读取，以及并行 installer 的目标是否仍为持久技能根。文件路径检查与 app-server 缓存行为分别取证。
+9. **目录预取尚未返回时提交。** 从空技能目录开始，延迟 `skills.list` 响应，检查该次参数中的启用 ID 与 broker gate；再分别覆盖预取成功、预取失败后打开 Skills 刷新并重新提交，确认恢复作用于后续运行。
+10. **Ask 中的 ready 与实际投递。** 分别核对 broker 创建、父 thread 的只读配置、模型写 job 的结果及 worker 是否启动；使用隔离项目验证实际沙箱行为，并把原生 collab 事件与文件 broker 结果分开记录。
 
 **集成验证范围。** 同文件长队列与 admission 预算的实际时长、忽略 abort 的 worker 与 drain/停止确认的交接、波次内跨所有权路径写入，以及真实 app-server 版本的子线程历史字段均需集成验证。拒绝回执路径、活动计数、协议失败终态与暂时性历史错误应分别覆盖；源码中的限制与真实运行后果须保持区分。

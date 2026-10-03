@@ -92,9 +92,9 @@ Provider 执行选择可表示为 \(P=(providerId,providerRevision,modelId,reaso
 | 新建/保存 `upsertProvider` | 新增或递增 | 递增 | 校验 expectedRevision；重算诊断指纹 |
 | Use 已存 Custom `activateProvider` | 递增 | 递增 | 保存披露，更新 Native activeProviderId |
 | Use Built-in | Built-in 保持 0 | 递增 | 切换 Native 默认项 |
-| Clear API key | 递增 | 递增 | 清除诊断，活动项可退回 Built-in |
+| Clear API key | 递增 | 递增 | 清除诊断；若为 Native 默认项则回退 Built-in，项目选择另见第 4 节 |
 | 成功记录匹配模型诊断 | 保持 | 递增 | 更新协议、响应模式与验证时间 |
-| 删除 | 记录移除 | 递增 | 删除专用凭据，活动项可退回 Built-in |
+| 删除 | 记录移除 | 递增 | 删除专用凭据；Native 默认项可回退 Built-in，项目配置缺失后另走选择回退 |
 
 `recordProviderDiagnostic` 只在 profile revision、已保存 model ID、connectionFingerprint 均匹配时记录。
 未保存的模型可以测试成功，但该诊断不会因此被写入旧 profile；表单随后 Save 可携带匹配诊断。
@@ -119,6 +119,19 @@ Provider 执行选择可表示为 \(P=(providerId,providerRevision,modelId,reaso
 这类似先给子配置填满默认值，再向父配置查找空位；默认值的生成位置决定继承是否还会发生。
 [providerReliability.test.js](../../test/providerReliability.test.js) 有默认上下文及直接构造模型目录的断言，但这两项不能证明 Provider 与模型配置冲突时的整条传播；测试装配范围见第 9 节。
 
+Speed 从 `ModelPicker` 经 `persistPanelInputs` 和运行快照进入 `params.speedTier`；Custom 目录当前只提供 standard。
+正式执行由 [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) 的 `normalizeSpeedTier/buildCodexAppServerArgs` 调用 [codexArgs.js](../../native-host/src/codexArgs.js) 的 `buildCodexSpeedArgs`：fast 生成 `--enable fast_mode -c service_tier="fast"`，其他输入归一为 standard 并生成 `--disable fast_mode`。
+该映射说明传给 Codex 的进程参数；参数存在不能证明远端支持该档位、实际采用该档位或适用某种费用规则。
+
+### 3.4 快捷预设与协议切换
+
+[providerProfiles.js](../../extension/src/shared/providerProfiles.js) 的 `PROVIDER_CONNECTIONS/PROVIDER_PRESETS` 定义快捷入口，`buildPresetDraft` 生成尚未保存的草稿，不直接改变活动服务。
+Kimi、GLM 和 DeepSeek 快捷入口默认采用 Anthropic Messages；端点、协议、authMode 和 reasoningAdapter 按预设填写，API key 与 model ID 仍需单独配置。
+[ProviderSettingsDialog.syncPresetProtocol](../../extension/src/content/providerSettingsDialog.js) 仅在 `fullEndpoint=false`、当前 URL 匹配已知预设且目标协议有对应地址时切换 URL。
+authMode 与 reasoningAdapter 只有在仍等于旧预设值时才跟随新协议更新，以保留手动覆盖；自定义地址、完整端点和没有对应地址的协议不获得这一联动。
+`handleInput` 检测到直接修改 baseUrl 或上述联动改变 URL 时，会取消端点披露勾选并刷新披露文字及操作按钮。
+仅改变协议且地址未变时不走该披露复位分支；`updatePresetConnectionHint` 可提示预设地址与协议不匹配，但提示不代替 Native 的配置校验。
+
 ## 4. Save、Test 与 Use
 
 Save 调用 `codex.providers.upsert`，可在未测试时保存；普通 Save 不等价于把当前项目切换到该服务。
@@ -126,7 +139,14 @@ Save & Use 同一次 upsert 请求带 activate，并要求当前项目和端点�
 Use 针对已保存且可激活的配置；`prepareProviderActivation` 先要求当前项目，必要时确认项目服务切换，再加载模型目录；准备成功后调用 Native activate。
 Native 成功后 `notifyChanged/reconcileProviderSelection` 更新项目、会话默认值和模型控件；requireProjection 路径失败时显示失败，不能提前宣布 UI 已切换。
 同 ID revision 变化会使当前项目重新绑定，并清除旧 Codex thread 绑定；已有执行快照保留原值。
-清除或删除服务时的 Built-in 回退属于配置管理策略，运行中认证失败不触发同类自动改投。
+
+**Current behavior / 两处选择状态。** Native `activeProviderId` 是默认项，项目 `providerId/providerRevision` 是后续运行明确提交的选择。
+[providerStore.js](../../native-host/src/providerStore.js) 的 `clearProviderSecretUnlocked` 清除当前 Native 默认服务的密钥时，将默认项改为 Built-in，但保留该 Custom profile 并递增 revision。
+`upsertProviderUnlocked` 在修改当前默认服务端点后普通 Save 时，也会清空旧披露并将 Native 默认项回退 Built-in；Save & Use 另行保存新披露。
+[ProviderSettingsCoordinator.reconcileProviderSelection](../../extension/src/content/providerSettingsCoordinator.js) 优先保留仍存在的项目配置，不因 Native 默认项变化直接换服务；目录投影成功后，清密钥和上述普通 Save 均可使项目继续绑定原 Custom ID 的新 revision。
+因此 `clearProviderSecret/saveProvider` 状态栏中的 Built-in 已启用文案不足以证明当前项目已切换；应核对 `getRunSelection` 和实际提交的 `providerSelection`。
+端点修改后保留的 Custom 选择会在下一次 `resolveRunProvider` 中因缺少新披露被拒绝为 `provider_disclosure_required`；清密钥后也不能据文案推定新任务会改投 Built-in。
+删除配置则使项目所选 ID 不再存在，协调器另走 Built-in 目录加载与项目提交；投影失败仍需保留其失败边界。运行中认证失败不触发自动改投。
 
 Test 使用当前草稿和 secretMutation，可测尚未保存的连接；专用密钥无需先写入正式 secrets 文件。
 测试入口为 [codexProviderTest.js](../../native-host/src/codexProviderTest.js) 的 `runProviderConnectionTest`。
@@ -311,6 +331,7 @@ HTTP 成功状态与模型协议成功状态属于两层判断；仅检查前者
 | Save/Use、项目绑定 | dialog、coordinator、ProjectProviderSelection、store | `node --test test/providerSessionBinding.test.js test/projectProviderRevision.test.js`；同 ID revision、目录预加载、投影失败 |
 | secret/profile/schema | providerProfile、providerStore、浏览器 Profiles 和表单 | `node --test test/providerReliability.test.js`；字段校验、专用凭据、revision、披露和存储恢复 |
 | 内建/自定义发现 | codexModels、ProviderRuntime、ModelPicker | `node --test test/codexModels.test.js test/modelSelectionRecovery.test.js`；cache 优先级、不可用模型与 fallback |
+| Speed 参数映射 | ModelPicker、运行快照、codexSessionRunner、codexArgs | `node --test test/codexArgs.test.js test/codexSessionRunner.test.js`；standard/fast 的 exec 与 app-server 参数构造 |
 | Chat 转换/reasoning | chatBridgeRequest/Response、providerReasoning、launch | `node --test test/providerReliability.test.js`；工具命名空间、finish_reason、可选字段和认证路由 |
 | Anthropic 转换/续传 | anthropicBridgeRequest/Response、MessagesBridge | `node --test test/anthropicBridge.test.js`；工具往返、签名、限额续传与 cache usage |
 | 队列执行配置 | RunExecutionSnapshot、Native resolver、Provider catalog | `node --test test/runExecutionSnapshot.test.js test/providerReliability.test.js`；提交快照固定与消费时 revision 守卫 |
@@ -324,7 +345,10 @@ Response passthrough、真实 bridge HTTP 中断及 profile→launch→最终 wi
 | [anthropicBridge.test.js](../../test/anthropicBridge.test.js) | 直接调用请求/响应及续传 helper，流场景使用 Readable 与响应 sink；URL/header 断言未经历真实 HTTP 重定向、DNS 或认证传播。 |
 | [providerSessionBinding.test.js](../../test/providerSessionBinding.test.js)、[projectProviderRevision.test.js](../../test/projectProviderRevision.test.js) | 使用 FakeBroadcastChannel、替换的目录/Native 返回或内存项目状态，验证投影和 revision 分支；不能证明实际浏览器持久化与 Native 事务共同完成。 |
 | [modelSelectionRecovery.test.js](../../test/modelSelectionRecovery.test.js) | VM 中的选择控件和替换的 sendBackgroundNative 返回验证模型恢复与迟到结果守卫；未连接真实 Provider。 |
+| [codexArgs.test.js](../../test/codexArgs.test.js)、[codexSessionRunner.test.js](../../test/codexSessionRunner.test.js) 的 Speed 参数用例 | 直接调用 exec/app-server 参数构造器，断言 fast_mode 与 service_tier；不验证服务端档位支持、实际使用或费用。 |
 
+清密钥、改端点后普通 Save 的验证需同时检查 Native 默认项、项目选择、下一轮提交及状态文案；Store 或单独投影测试不能替代这四项组合。
+快捷预设维护需覆盖协议切换、手动覆盖的 authMode/reasoningAdapter、fullEndpoint、自定义 URL 与披露复位，分别检查最终草稿和 Native 保存结果。
 现有测试缺少“准备协议桥期间取消，随后进入测试 spawn”的覆盖，也缺少三桥 HTTP 重定向目的地与 DNS 地址变化的完整调用链用例。
 这些场景应采用合成凭据与受控端点验证，分别断言目标地址、正文/header 传播、能力取值、最终 wire 预算及取消后的进程启动/退出。
 上述请求/响应 helper 测试还不足以证明整桥 fallback 的 lineage 隔离、JSON 消费期间的逐块 idle 续期，以及 HTTP 200 协议错误到 Codex 事件和 journal 的凭据清洗。

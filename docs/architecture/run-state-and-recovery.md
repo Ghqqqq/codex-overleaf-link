@@ -173,6 +173,40 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 `finishRunView` 尝试在终态展示前刷新排队保存，但调用存在错误捕获；“任何存储失败下均能即时重载同样终态”仍需单独验证。
 **维护目标**：新增强持久化操作应选择明确失败可见的保存入口，不应仅调用延迟保存后给出成功保证。
 
+<a id="session-lifecycle"></a>
+
+### 4.4 会话创建、切换与删除
+
+面板新建按钮由 [PanelRenderer](../../extension/src/content/panelRenderer.js) 绑定，列表选择、重命名和删除由 [SessionPanel](../../extension/src/content/sessionPanel.js) 绑定；[contentRuntime](../../extension/src/content/contentRuntime.js) 将 callbacks 接到 [SessionManager](../../extension/src/content/sessionManager.js)。后者修改内存状态，再调用 `saveState`；归一化和活动会话投影由 [SessionState](../../extension/src/shared/sessionState.js) 提供。
+这里的空会话按 `isDisplayableSession` 判断：任务、运行、历史及真实标题均为空；名称为空并不足以判定整个会话为空。
+
+| 操作与入口 | 当前状态变化与边界 |
+| --- | --- |
+| 新建：`startNewSession` | 先读取面板草稿；活动会话为空且空闲时复用原会话并聚焦输入框。需要新建时继承模式、Provider、模型、推理、速度和 Track 选择，切为活动会话后同步 Provider 并保存。 |
+| 容量：`startNewSession`、`normalizeSessions` | 新建入口在当前数组已有 20 个会话时请求容量确认；确认后追加并取末尾 20 个。归一化也有 `slice(-20)`。这是该入口及内存数组的行为，不能推广为所有创建入口均有确认，也不能替代持久化压缩预算。 |
+| 切换：`switchSession` | 保存原会话的面板输入，调用 `setActiveSession`，重绘、同步 Provider 并保存。新建或切换前发现活动会话有 running 记录时先提示；已经建立的运行保留原归属，建立前的等待窗口见 3.1。 |
+| 重命名：`commitSessionRename` | 合并空白并去除首尾空格；非空且不同于本地化占位标题及自动推导标题的值标记为 `titleSource: manual`，其余回到 `auto`。手动标题与自动标题的来源需要随保存保留。 |
+| 删除空会话：`deleteSessionWithConfirm` | 运行中会话拒绝删除；空会话跳过破坏性确认。唯一空会话直接返回；还有其他会话时删除并携带 `deletedSessionIds` 保存，不请求 Native 线程清理。 |
+| 删除有内容会话：`deleteSessionWithConfirm`、`deleteSession` | 确认后删除并携带墓碑保存；删除最后一个会话时使用重置文案并创建新的空会话，否则活动会话被删时选择剩余最近会话。保存调用返回后才请求 `codex.history.clearPlugin` 清理目标线程，Native 失败单独提示，不恢复已删除会话；普通保存的确认强度见 4.3。 |
+
+`titleSource` 表示标题由用户固定还是随内容推导；墓碑表示删除决定，防止旧保存重新创建记录。这两个字段分别约束标题更新和历史恢复。
+[sessionManagement.test.js](../../test/sessionManagement.test.js) 包含空会话归一化行为与新建、删除、重命名的源码路由断言；[sessionState.test.js](../../test/sessionState.test.js) 检查状态 helper；[sessionTombstones.test.js](../../test/sessionTombstones.test.js) 检查删除标记。它们不能替代确认弹窗、真实存储失败和跨标签删除的组合验证。dashboard 逐项目清理另由 [ProjectSessionCleanup](../../extension/src/content/projectSessionCleanup.js) 处理，范围见[界面与加载](ui-and-loading.md#历史查看清理与结果动作)。
+
+<a id="clear-history-state"></a>
+
+### 4.5 清空历史后的内存与持久副本
+
+设置入口 [PanelMaintenance.clearAllHistoryWithConfirm](../../extension/src/content/panelMaintenance.js) 检查本页 `currentRunView`、取得确认，再调用 `StorageDb.clearAllStores` 和项目名称缓存清理。共享账号会话、站点辅助库及 Native 历史的范围见[界面与加载](ui-and-loading.md#历史查看清理与结果动作)；这个设置入口未调用 Native 历史清理。
+
+**当前内存恢复缺口。** 清库后传给 `normalizePanelState` 的对象仅覆盖 `sessions: []`、`runs: []` 和空 `activeSessionId`，仍保留旧 `state.session` 与 `state.task`。
+[SessionState.normalizeSessions](../../extension/src/shared/sessionState.js) 在显式会话数组为空时回退到 `input.session`；`normalizeSession` 又可通过 `recoverRunsFromHistory` 将旧摘要恢复为 `recovered_*` 运行。因此旧活动会话 ID、历史摘要、Native 线程引用和草稿可重新进入内存，并传给随后的 `saveState`。详细运行及 Undo 材料是否仍存在需另看字段，不能把摘要恢复等同完整运行恢复。
+
+真实 controller 与 normalizer 配合内存保存替身，可复现上述内存重建；这项证据不证明共享数据库中的已删除记录复活。
+[backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js) 的 `writeMany` 检查清理标记及会话墓碑，可用 `shared_session_deleted` 拒绝旧记录再次写入。runtime 的普通 `saveState` 捕获此类错误后仍可能写紧凑 fallback、显示存储提示并正常返回，随后清理 handler 继续重绘并显示 cleared toast。
+因此应分别核对清库结果、当前内存投影、保存拒绝和提示文案；仅看到成功提示无法证明这些层次已一致。
+
+验证入口为 [p0ProductExperience.test.js](../../test/p0ProductExperience.test.js) 的清空历史路由断言、[sessionState.test.js](../../test/sessionState.test.js) 的归一化 helper，以及 [sessionTombstones.test.js](../../test/sessionTombstones.test.js) 的迁移墓碑并发保存。后者使用 `chrome.storage.local` 替身，未装配后台共享 IndexedDB 的清理标记与拒绝写入路径。清理链验证需要串联 handler、旧 `session/history/task`、真实保存错误处理和重载读取；现有源码断言不能证明该组合已覆盖。
+
 ## 5. 刷新恢复、旁观页与导航
 
 ### 5.1 共享历史中的运行 owner
@@ -238,6 +272,14 @@ legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；�
 `copyRunSnapshot` 标记 `forkSnapshot`、记录来源并剥离附件、应用及 Undo 材料、Native 请求和队列绑定；后续 SessionState 归一化还排除该快照的重试恢复材料。
 控制器随后等待普通 `saveState`；若调用抛错，则恢复先前 state，并尝试 `codex.history.clearPlugin` 清理新线程。普通保存仍受第 4.3 节 fallback 和错误处理限定，不能据 Promise 返回推定分叉记录已完整持久化。
 
+<a id="fork-async-state"></a>
+
+#### 分叉等待与视图切换
+
+`forkRunFromNode` 在发送 Native 请求前捕获 `previousState`；返回后直接以它为底稿追加分叉会话并 `setState`。当前 [contentRuntime](../../extension/src/content/contentRuntime.js) 的 controller 装配未提供账号、项目或 view generation 检查，controller 也未重新读取当前状态进行合并；保存异常时的 `setState(previousState)` 同样使用旧快照。
+因此 Native 等待期间发生会话编辑或视图状态替换，迟到结果可覆盖后来状态。内存替身可复现“请求期间换入 B 状态，返回后提交 A 的旧状态及分叉”；真实 SPA 切换后的保存归属、数据库结果及可见表现仍需沿 runtime 与 scoped persistence 联合验证，不能从内存复现直接推定跨项目数据已经落盘。
+[sessionForkController.test.js](../../test/sessionForkController.test.js) 提供真实 controller 的模拟 Native/保存装配；验证此边界需延迟 Native 响应，在等待中替换 state，并分别检查成功及保存失败补偿分支。该生命周期问题与下述分叉字段裁剪独立。
+
 **已知 schema 差异**：`SessionState.compactRunForStorage` 保留 `forkSnapshot/forkSourceRunId`，但主保存经过 `ScopedPersistencePanelState.persistPanelState → StorageDb.buildSessionRecord`，其 run 压缩白名单未保留这两个字段，会话白名单也未保留 `forkedFromSessionId/forkedFromRunId`。
 `RunResultActions.configureForkButton` 与 Timeline 的 Undo/Accept 展示依赖 `forkSnapshot`。因此内存中的分叉限制不能直接推广为共享库重载后的相同投影；当前只确认字段裁剪及消费者依赖，未复现真实按钮行为或证明动作材料被恢复。
 [sessionForkController.test.js](../../test/sessionForkController.test.js) 覆盖复制剥离、线程来源优先级及来源线程经两类投影后的保留；它使用模拟 Native 与保存函数，现有往返断言未检查上述分叉标记。后续修改应分别核对控制器、两套 schema、历史来源及按钮消费者。
@@ -256,7 +298,7 @@ legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；�
 | 旧终态修复 | SessionState 两类恢复 helper、runtime hydration、StorageDb | `node --test test/settledRunRecovery.test.js test/recordedRunFailureRecovery.test.js` | 识别已持久终态证据，同时保留真正活跃运行；不依赖 ownerLost |
 | 导航后结算 | detached coordinator、PostNavigationSettlementPersistence | `node --test test/postNavigationSettlementPersistence.test.js test/postNavigationSettlementWiring.test.js` | 只写原账号/项目/session/run，内层失败向外传播 |
 | Undo 重载能力 | StorageRunActions、SettlementFacts、RunResultActions、timeline | `node --test test/reviewingUndoPersistence.test.js test/runTimelineUndoAvailability.test.js` | 材料可保存，重载按钮只展示实际可执行能力 |
-| 会话分叉 | SessionForkController、SessionState/StorageDb schema、结果按钮 | `node --test test/sessionForkController.test.js` | 来源线程及材料剥离有定义；分叉标记经过主存储后的保留缺口需另补用例 |
+| 会话分叉 | SessionForkController、SessionState/StorageDb schema、结果按钮 | `node --test test/sessionForkController.test.js` | 来源线程及材料剥离有定义；等待期间状态替换、失败补偿及分叉标记经过主存储后的保留缺口需另补用例 |
 
 上述队列测试替换保存和启动依赖；scoped transaction 测试使用内存 adapter；导航后结算行为测试替换 coordinator/StorageDb，wiring 测试检查源码；Undo 材料测试直接调用压缩 helper，Timeline 测试使用模拟按钮。它们适合定位各层契约，不能替代真实端口、IndexedDB、DOM 及跨页时序的组合验证。
 

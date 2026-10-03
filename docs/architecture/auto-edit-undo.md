@@ -71,15 +71,21 @@ content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言
 
 ## 3. 快照进入镜像时的关键分岔
 
-**当前实现。** `contentRuntime.getRunProjectSnapshot` 优先请求完整 ZIP，包含二进制，禁止为读取而导航编辑器。
-无法得到完整结果时，再尝试不导航的页面状态读取。
+**当前实现。** `contentRuntime.runTask` 先调用 [otWarmMirror.resolveWarmRunStart](../../extension/src/content/otWarmMirror.js)，尝试普通镜像或 OT 聚焦文件快启，并读取当前编辑器覆盖层（overlay）。
+快启未选中时，`contentRuntime.getRunProjectSnapshot` 优先请求完整 ZIP，包含二进制，禁止为读取而导航编辑器；无法得到完整结果时，再尝试不导航的页面状态读取。
+取得快照后，`contentRuntime.resolveWarmMirrorReuse` 还会根据快照完整性、聚焦文件覆盖和镜像健康状态判断能否复用。
 [snapshotRouter](../../extension/src/page/snapshotRouter.js) 决定 ZIP、活动编辑器覆盖层和页面文件记录如何合并。
 [overleafProjectSnapshot](../../extension/src/page/overleafProjectSnapshot.js) 承担快照桥及缓存相关装配。
 
 - 完整快照：`mirrorWorkspace.syncOverleafToMirror` 可移除镜像内已从项目消失的文件，并更新完整基线。
 - 部分快照：只覆盖已读取路径，合并旧基线；不能用“本次未读到”推导服务器文件已删除。
-- Warm mirror：复用判断在 `contentRuntime.resolveWarmMirrorReuse`；实时同步另见 [otWarmMirror](../../extension/src/content/otWarmMirror.js) 与 [otWarmMirrorController](../../extension/src/content/otWarmMirrorController.js)。
+- Warm mirror：普通快启检查整体镜像健康与当前 overlay；OT 快启另由 [otWarmMirrorController.canUseOtWarmStart](../../extension/src/content/otWarmMirrorController.js) 检查聚焦文件的新鲜度。观察事件经 `otWarmMirror` 的队列送入 Native `mirror.patchFiles`；局部更新不能单独证明完整项目已同步。
 - 保存核查：`serverOnly: true` 明确要求服务器来源；编辑器覆盖层不能用于证明服务器已保存。
+
+**已知限制：OT 快启参数冲突。** `resolveWarmRunStart` 要求非空 `fileOverlays` 才返回成功；[runController.buildCodexRunParams](../../extension/src/content/runController.js) 同时保留这些 overlays 和 `otWarmStart` 标记。
+[taskRunnerRuntime.validateOtFocusedWarmMirrorReuse](../../native-host/src/taskRunnerRuntime.js) 明确拒绝携带非空 overlays 的 OT 复用请求，调用方将该拒绝映射为 `mirror_stale`。
+因此当前这条 OT 快启链会进入 `contentRuntime.runTask` 的快照重读与 `prepareMirrorStaleRetry` 回退，后者可继续使用完整快照或合格的聚焦部分快照；该冲突不表示所有运行均失败，也不取消普通镜像复用或 OT 观察事件同步能力。
+[otWarmMirrorIntegration.test.js](../../test/otWarmMirrorIntegration.test.js) 验证快启返回当前 overlays，[taskRunner.test.js](../../test/taskRunner.test.js) 分别验证 Native 拒绝新鲜或陈旧 OT 镜像上的 overlays；这些局部测试没有共同证明浏览器快启到 Native 接纳的完整链路。
 
 **目标契约。** 缺失内容、已知空字符串 `""`、已知非空内容应保持可区分。
 快照覆盖规则理应让成功读取的空编辑器内容覆盖旧 ZIP 内容。
@@ -127,6 +133,9 @@ page 的 `applyTextPatches` 校验 `expected` 并按起点降序应用，以免�
 
 **当前实现。** [textFileCreator](../../extension/src/page/textFileCreator.js) 的 `beginCreateBatch`、`finishCreateBatch` 合并唯一新建路径的服务器预检与最终读取。
 同一路径重复操作保留顺序验证语义。
+`createTextFileWithDom` 支持根文件和嵌套路径，上传前逐级创建缺失父目录并选择准确目录；二进制 DOM 上传通过 `prepareUploadParent` 的 `createMissing: true` 分支复用这套目录准备能力。
+[undoOperations.buildCreatedFileUndoCheckpoint](../../extension/src/shared/undoOperations.js) 只保存新建文件的删除证明，没有为这些父目录生成目录 Undo 凭据。因此上传失败或新建文件撤销后，已创建的父目录可能保留。
+相关目录选择与创建行为见 [textFileCreator.test.js](../../test/textFileCreator.test.js)；文件撤销成功不能用来推定父目录也被回收。
 底层 creator 在显式传入 `allowExistingMatches` 时，可把服务器已有相同内容识别为幂等结果；不同内容不能通过 create 重试覆盖。
 当前 Auto 的显式 Retry sync 经 `contentRuntime.retryRunWriteback → writebackOrchestrator.applySyncChangesToOverleaf → assetTransferBroker.applyOperations` 将 `retryCreates: true` 送入 Page RPC。
 [writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 的 `apply` 重建 router 参数时遗漏该字段，[pageBridge](../../extension/src/pageBridge.js) 注入的 `applyOperations` wrapper 也未补入；下游 router 依赖该字段设置 `allowExistingMatches`。
@@ -141,6 +150,11 @@ uploader 按声明大小、分块顺序和 SHA-256 检查载荷；依次尝试 D
 broker 在 commit 结果不确定时查询 `binaryUploadStatus`；仍不确定则保留 `changedDocument` 与 `receiptUnconfirmed`，阻断后续操作。
 已 begin、尚未尝试 commit 的失败会请求 abort；commit 开始后 abort 不撤销已提交上传。Native asset token 在该操作的 `finally` 中请求释放，状态查询本身不重新上传。
 文本新建和二进制新建均可能获得创建撤销证明，但已有二进制覆盖不能直接按“撤销新建”删除。
+
+**已知限制：二进制覆盖前的基线保护。** `assetTransferBroker.applyBinaryOperation` 向 uploader 传递待上传内容的 SHA-256、大小、路径及 `overwrite` 标记，没有传入旧二进制内容或旧哈希。
+`writebackRouter.checkBinaryAssetFreshness` 虽然包含远端旧内容与运行基线的比较，但上述生产上传主链不经过该函数；uploader 的载荷与上传后取证也未补做覆盖前的基线比较。
+载荷哈希检查证明 $H(N)=h_N$，其中 $N$ 是待上传字节；保护后来修改还需要覆盖前的条件 $H(C_{before})=H(B)$，其中 $B$ 是原运行基线。当前主链没有后一项证据，不能把新载荷完整性或上传后确认当作旧文件未被他人改动的证明。
+[binaryAssetUploader.test.js](../../test/binaryAssetUploader.test.js) 的远端字节、路径身份及项目切换用例检查上传后取证；并发修改旧二进制后再覆盖的生产链仍需专项验证，不能据静态缺口直接声称已发生真实远端误覆盖。
 
 ### 4.3 Auto 文件操作与资产类型的支持范围
 
@@ -337,8 +351,10 @@ Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirror
 | 文本差异转操作错误 | `writebackController.buildSyncApplyOperations`；patch 输入与基线 | `node --test test/writebackController.test.js` |
 | Auto 重命名、二进制删除或资产类型被过滤 | `mirrorWorkspace.collectMirrorChangesDetailed`、路径类型规则、controller 转换及 orchestrator 独立删除确认 | `node --test test/mirrorWorkspace.test.js test/writebackController.test.js`；另验文本重命名拒绝删除、二进制重命名及 GIF/WebP |
 | 活动文件/ZIP/空内容不一致 | snapshotRouter、projectFiles、快照缓存、mirrorWorkspace | `node --test test/pageBridgeSnapshotCache.test.js test/staleGuard.test.js` |
+| OT 快启进入快照重读回退 | `resolveWarmRunStart`、`runController.buildCodexRunParams`、Native `validateOtFocusedWarmMirrorReuse`、runtime 的 mirror_stale 回退 | `node --test test/otWarmMirrorIntegration.test.js test/taskRunner.test.js`；需另补快启结果经参数构造进入 Native 校验的组合场景 |
 | 原请求超时但文件已变化 | broker 查询原执行 receipt、逐项结果与尾部阻断 | `node --test test/writebackReceiptRecovery.test.js` |
 | 显式 Retry sync 创建已有文件 | creator 局部幂等、retryCreates 跨 journal 传递；现有测试缺少生产链专项用例 | `node --test test/textFileCreator.test.js test/writebackEditRetry.test.js`，仅覆盖局部能力与恢复意图 |
+| 嵌套路径创建与父目录保留 | textFileCreator 的目录准备、上传、文件创建证明；当前没有目录 Undo 凭据 | `node --test test/textFileCreator.test.js test/createdFileUndo.test.js`；目录回收不能由文件删除验证推定 |
 | 保存待确认或刷新后核查 | writebackController、writebackIntent、sessionState | `node --test test/writebackSaveCheck.test.js` |
 | 普通 Undo 错撤用户历史 | contentRuntime 路由、提交 Track、trackedChangesLifecycle、ownership | `node --test test/ordinaryUndoRouting.test.js` |
 | 新建文件撤销或混合进度 | undoOperations、contentRuntime、router、textFileCreator、持久化 | `node --test test/createdFileUndo.test.js test/mixedUndoReceipt.test.js` |
@@ -346,7 +362,7 @@ Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirror
 | Undo 超时、尾部未确认或重复删除 | contentRuntime.callPageBridge 的 broker 包装、deadlineAt、client/journal/router/creator | `node --test test/undoDeadlineRouting.test.js test/undoReceiptDeadline.test.js` |
 | 撤销后下一轮恢复旧内容 | orchestrator 镜像屏障、mirrorWorkspace、运行入口 | `node --test test/undoMirrorInvalidation.test.js` |
 | 取消后丢失部分结果 | cancellation sequence、router、broker、Page RPC、checkpoint 时序 | `node --test test/writebackCancellationFlow.test.js test/writebackReceiptRecovery.test.js`；router 局部测试不能替代真实 Page RPC 取消到 content checkpoint 的整链场景 |
-| 二进制位置/回执/撤销 | broker、binaryAssetUploader 独立回执、textFileCreator、Native asset | `node --test test/binaryAssetUploader.test.js test/binaryUploadUndoRoundTrip.test.js` |
+| 二进制位置/回执/撤销或覆盖前基线检查 | broker、binaryAssetUploader 独立回执、textFileCreator、Native asset；router 的旧内容比较不在生产上传主链 | `node --test test/binaryAssetUploader.test.js test/binaryUploadUndoRoundTrip.test.js`；另验旧二进制并发修改后的覆盖保护 |
 | 生产 Native Accept 归属或验证失败 | pageBridge 原生适配器、trackedChangesLifecycle、ownership、settlement | `node --test test/pageBridgeStaleGuard.test.js test/writebackSettlementContract.test.js` |
 | legacy Accept replay、模式切换或恢复 | trackedChangesLifecycle、trackedChangeReplay；勿推广为生产原生路径 | `node --test test/writebackRouterAccept.test.js` |
 | 编译状态投影异常 | orchestrator、compileBridge、compileAdapter | `node --test test/compileAdapter.test.js` |
