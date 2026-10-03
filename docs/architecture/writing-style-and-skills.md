@@ -90,6 +90,9 @@ PDF File 在 content 内存编码为 Base64；项目快照编码为 JSON 附件�
 
 `projectDocument()` 选择主 TeX，递归展开 `input/include`，过滤导言、注释和参考文献，并记录源路径及行号。
 该过程采用启发式抽取，不执行完整 TeX 编译；缺失 include 和越界路径会失败。
+当前引用路径按引用文件所在目录拼接：`path.posix.join(path.posix.dirname(name), match[1].trim())`，规范化后先查原路径，再补 `.tex`。
+例如 `main.tex` 引用 `sections/methods.tex`，后者含 `\input{common}`，提取器会查找 `sections/common.tex`；即使项目根已有 `common.tex`，也不会回退到该文件。
+这限定了提取算法与项目目录布局的兼容范围；完整快照不保证提取成功，宏包或实际编译入口采用的路径规则也不能由该算法推定。
 PDF 经 [writingStylePdfWorker](../../native-host/src/writingStylePdfWorker.js) 的 PDF.js worker 提取文字、记录页码；没有 OCR。
 `prepareSources()` 过滤部分页眉页脚，检查可读性并按正文哈希去重，再把带编号语料写入 staging。
 
@@ -214,13 +217,18 @@ Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元�
 `preparePluginCodexHome()` 默认维护插件专用 home，复制部分认证/配置，并移除继承的全局 AGENTS、rules、memories 及顶层 personality 配置；显式配置与用户 home 同路径时会提前返回，不能推广默认隔离结论。
 开关决定用户 skills、plugins、superpowers 等继承；`vendor_imports` 有单独规则，不能将关闭本地技能描述为目录完全空白。
 `composePluginSkillsDirectory()` 先组合本地技能，再组合插件技能；同名插件技能覆盖组合目录中的本地入口。
+默认插件 home 由 `getPluginCodexHome()` 选定，各项目和 runner 共用同一目录。`runCodexAppServerProcess()` 每次启动均调用 `buildCodexHomeEnv()`；正常组合路径先删除 `$CODEX_HOME/skills`，再按本次开关重建。
+因此技能目录并非运行快照：另一个项目、worker 或风格生成准备环境时，可能影响活跃任务已发现的技能路径。风格生成的两个技能开关均关闭，重建后先前组合目录中的路径可消失；原技能源文件仍可能保留。
+[taskRunnerRuntime.acquireProjectLock()](../../native-host/src/taskRunnerRuntime.js) 仅按项目加进程内锁，没有为共享 home 提供跨项目互斥。worker 继承技能开关也不意味着拥有独立技能目录；app-server 缓存如何影响后续发现和读取仍需集成验证。
 普通 runner 将选定项目技能作为 prompt 内容传递，并向底层执行器传 `projectLocalSkills: null`；home 的项目技能物化能力另有调用条件。
 主开关及单技能启用 map 由 [projectSettingsCoordinator](../../extension/src/content/projectSettingsCoordinator.js) 与 [globalPreferences](../../extension/src/shared/globalPreferences.js) 协作保存。
 `loadSelectedCodexOverleafSkill()` 按主开关及 enabled IDs 检查显式调用；未提供 enabled IDs 的兼容请求默认允许所有项。
 `composePluginSkillsDirectory()` 不按该 ID 列表筛选整个注册目录；单技能开关的效力不能直接推广为全目录不可发现。
 
 `skill-installer` 是特殊调用：工作目录改为插件技能根、沙箱为 workspace-write、`approvalPolicy: never`，拒绝附件和选区，并返回空项目 sync changes。
-该轮 `$CODEX_HOME/skills` 映射至持久插件技能目录；风格生成使用独立 staging，不走这条安装路径。
+准备 installer 时，`$CODEX_HOME/skills` 映射至持久插件技能目录；风格生成使用独立 staging，不走这条安装路径。
+该映射仍受共享 home 重建影响：另一个普通运行可以删除符号链接并重建组合目录。若尚在运行的 installer 随后按 `$CODEX_HOME/skills/<id>` 写入新技能，内容可能只落在组合目录，未进入持久插件技能根，并在下次组合时被删除。
+installer 的工作目录与 `$CODEX_HOME/skills` 的实际解析目标须分别核对；应验证交错启动后的安装落点、后续列举和再次准备后的保留情况。
 收到 app-server `commandExecution/requestApproval` 时，`decideSkillInstallerCommandApproval()` 委托 [commandApproval.evaluateSkillCommand](../../native-host/src/commandApproval.js) 判断。
 该审批规则认可限定根内的只读检查及合规 HTTPS git clone，拒绝危险参数、额外 shell 操作和嵌套符号链接逃逸；不能据此声称所有安装命令均经过审批，也不因此信任所有 HTTPS 内容。
 app-server 的 file-change approval 请求在 installer 轮次拒绝；该分支和底层 workspace-write 权限须分别理解。
@@ -232,11 +240,12 @@ installer 完成由模型运行结果汇总，当前路径未统一核验是否�
 | --- | --- | --- |
 | 参考选择、状态和预览 | `writingStyleSettings`；content 组合、Settings 挂载和 epoch | [p2UiRegression](../../test/p2UiRegression.test.js)，仅相关 UI 协调覆盖 |
 | 项目读取与取消 | `referenceProjects`；snapshot router、page dispatcher、RPC 及加载清单 | [pageRpcContract](../../test/pageRpcContract.test.js)、[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js) |
+| TeX 引用路径与正文提取 | `writingStyleRuntime.projectDocument/prepareSources/build` | 需增加嵌套引用、根目录与子目录同名文件、扩展名补全及越界路径的合成验证；实际编译路径语义另行验证 |
 | PDF/附件限额 | `REFERENCE_LIMITS`；`nativeQuotas`、worker、source preparation | [writingStyleLimits](../../test/writingStyleLimits.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js) |
 | 表达画像和证据要求 | builder Skill；`writingStyleProfile`、`writingStyleEvidence`、bundle renderer | 需增加针对 JSON 修复、证据匹配和发布失败的行为验证 |
 | 版本捕获和队列恢复 | `capture/forRun`；execution snapshot codec、storage compaction、runner | [runExecutionSnapshot](../../test/runExecutionSnapshot.test.js)、[releaseBoundaryHelpers](../../test/releaseBoundaryHelpers.test.js) |
 | 配置保存与异常资产恢复 | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) 的 `get/set/build/saveConfig/writeJson/safeBundleText`；[writingStyleSettings](../../extension/src/content/writingStyleSettings.js) 的 `toggle/ensureLoaded`、[contentRuntime](../../extension/src/content/contentRuntime.js) 的 `runTask` | [writingStyleLimits](../../test/writingStyleLimits.test.js) 仅覆盖输入配额与编码预算；[p2UiRegression](../../test/p2UiRegression.test.js) 的风格依赖为同步刷新 stub。需增加关闭保存后读取失败、索引超限、初始化清理及跨进程竞争的合成故障验证 |
-| 普通技能安装和开关 | `localSkills`、`codexHome`；panel、偏好、runner、command approval | [localSkills](../../test/localSkills.test.js)、[codexHome](../../test/codexHome.test.js)、[contentPanelModules](../../test/contentPanelModules.test.js)、[codexSessionRunner](../../test/codexSessionRunner.test.js) |
+| 普通技能安装和开关 | `localSkills`、`codexHome`；panel、偏好、runner、command approval | [localSkills](../../test/localSkills.test.js)、[codexHome](../../test/codexHome.test.js)、[contentPanelModules](../../test/contentPanelModules.test.js)、[codexSessionRunner](../../test/codexSessionRunner.test.js)；共享 home 还需覆盖不同项目、worker、风格生成和 installer 交错准备后的路径稳定性与安装持久性 |
 
 现有定义覆盖配额、RPC、快照、技能库与安装命令等契约；部分集成 harness 也加载参考模块。
 profile/evidence/build 的专项验证需覆盖 JSON 修复、引用匹配、资产发布及失败恢复，不能仅由配额或 UI 协调用例推导完整生成行为。
@@ -246,9 +255,10 @@ profile/evidence/build 的专项验证需覆盖 JSON 修复、引用匹配、资
 
 - 调换参考 PDF 后执行排队任务：`dirty` 草稿与已发布版本各有生命周期，应验证排队任务仍沿用提交引用。
 - 生成中关闭 Settings 或切换项目：epoch 只阻止旧 UI 响应；Native 已开始的任务需要明确取消及停止证据。
-- 完整读取选定项目目录：提取仍受主文件、include、采样和可读性边界约束，需检查来源 metadata 的 truncated。
+- 完整读取选定项目目录：提取仍受主文件、include 路径解析、采样和可读性边界约束，需检查实际引用目标及来源 metadata 的 truncated。
 - 生成章节例句：validator 拒绝章节 guidance，证据只支持表达特征；验证需确认目标事实和结构继续受当前请求约束。
 - 更新源码内官方 Skill：`ensureCodexOverleafSkillInstalled()` 保留已存在的正常文件，需分别检查首次补装与既有安装的内容。
+- 不同任务交错准备技能环境：核对活跃任务已发现路径是否仍可读取、installer 映射是否仍指向持久根，以及再次准备后新技能是否可发现。
 
 `Target contract`：保留旧运行对旧版本的可解析引用；任何清理策略都需先定义队列、历史和活动运行的引用寿命。
 `Target contract`：新增资料类型须声明读取身份、字节/编码预算、抽取方式、出站、持久化、取消和清理条件。

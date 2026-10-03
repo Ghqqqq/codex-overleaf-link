@@ -142,6 +142,24 @@ broker 在 commit 结果不确定时查询 `binaryUploadStatus`；仍不确定�
 已 begin、尚未尝试 commit 的失败会请求 abort；commit 开始后 abort 不撤销已提交上传。Native asset token 在该操作的 `finally` 中请求释放，状态查询本身不重新上传。
 文本新建和二进制新建均可能获得创建撤销证明，但已有二进制覆盖不能直接按“撤销新建”删除。
 
+### 4.3 Auto 文件操作与资产类型的支持范围
+
+**当前实现。** Auto 的操作类型先由 [mirrorWorkspace.collectMirrorChangesDetailed](../../native-host/src/mirrorWorkspace.js) 生成，再由 `writebackController.buildSyncApplyOperations` 转换。
+下游 router 支持 `rename/move` 接口，不能据此推定镜像差异会生成同类操作。
+
+| 本地变化 | Auto 主链的处理 | 边界与维护入口 |
+|---|---|---|
+| 支持的新建文本 | `write` 转为 `create` | 新路径按 `isTextMirrorPath` 判断；已有文本基线另走现有文件分支，不能把新路径扩展名规则套到全部已有文件 |
+| 支持的文本重命名或移动 | 新路径生成 `create`，旧路径生成 `delete` | 两项分别执行和结算，删除有独立确认；`applySyncChangesToOverleaf` 中拒绝删除只移除 `delete`，新路径仍可创建；没有整次重命名的原子保证 |
+| 新建或替换受支持二进制 | `binary-create` 或 `overwrite-binary` | `isSupportedBinaryAssetPath` 接受 PDF、PNG、JPG/JPEG、SVG，另受 `MAX_BINARY_FILE_BYTES` 和生成产物过滤约束 |
+| 删除已有二进制 | 放入 `unsupportedChanges`，原因 `binary_delete_unsupported` | 不生成普通删除操作；不影响有创建证明的新建文件 Undo 删除路线 |
+| 二进制重命名或移动 | 支持的新路径可生成 `binary-create`，旧路径报告 `binary_delete_unsupported` | 新路径上传仍需确认；该请求不删除远端旧文件 |
+| 新建 GIF、WebP 等未支持资产 | 放入 `unsupportedChanges`，原因 `unsupported_non_text_file` | 无法仅凭“图片”这一类别推定可写回；核对文本与二进制两套路径规则 |
+| 被识别为构建产物的 PDF | 放入 `unsupportedChanges`，原因 `generated_artifact` | `isGeneratedArtifactPath` 过滤根目录中与基线同名 `.tex` 对应的 PDF，以及根 `main.pdf`、`output.pdf`；未命中其他生成产物规则的嵌套 PDF 与其他根 PDF 继续按资产规则判断 |
+
+这些分类发生在 Page RPC 之前；broker、router 和保存核查只处理进入写回计划的操作，不能补回已被列为不支持的旧路径删除。
+重命名排查需分别查看源路径与目标路径结果，以及实际产生的创建、删除恢复凭据。
+
 ## 5. 两类 receipt 与保存、编译、镜像的分工
 
 **当前实现。** receipt 可类比“回执”，但不同回执证明的事件不同。这里区分执行回执与服务器内容回执；文本和二进制的执行回执另有各自的 owner。
@@ -228,7 +246,7 @@ Track-on 的恢复使用捕获的 refs、原生 ownership 和前后像。
 `waitForActiveEditorCheckpoint` 对能证明的前后缀变化支持受限重基，冲突或归属不明时应跳过并保留恢复信息。
 它不提供任意协作编辑的通用三方合并保证。
 
-### 6.2 修改已有文本＋新增文件的混合 Undo
+### 6.2 文件创建、删除与混合 Undo
 
 **当前实现。** `buildCreatedFileUndoCheckpoint` 为该运行新建路径生成 `undoCreatedFile` 证明，保留文本 post-image 或二进制 SHA-256。
 `undoRunTrackedChanges` 先恢复已有文本；需要分段持久化的生命周期记录会先保存已确认的文本进度。
@@ -245,6 +263,19 @@ Track-on 的恢复使用捕获的 refs、原生 ownership 和前后像。
 新建删除进入 `writebackRouter.applyCreatedFileUndo`，重新核验原项目、取消序号、内容/哈希和服务器删除结果。
 文件在写入后被用户改动时，删除证明失效，不能直接删除。
 `UndoOperations.advanceUndoCheckpoint` 随已验证进度收缩剩余恢复账本，避免下次重做已完成部分。
+
+**已知限制：删除原有文本。** `buildUndoOperations` 能用已保存的原始文本为 `delete` 生成 `create` 逆操作；该能力仍取决于 `recordUndoFromApply` 是否保留凭据，以及 `undoRun` 的实际路由。
+
+| 运行组合 | 当前恢复路线与边界 |
+|---|---|
+| Track-off，仅删除已有文本，原文已进入 checkpoint，且没有文本恢复分支条件 | 保留 `create` 逆操作，可进入 `applyOperations(no-trace-undo)`；仍需通过项目身份、路径存在性、创建和读回验证 |
+| Track-on，仅删除已有文本，没有其他 refs 或恢复材料 | `recordUndoFromApply` 仅把 `buildCreatedFileUndoCheckpoint` 的结果写入 `undoOperations`；原有文件删除不属于该创建证明，前后像推导也没有删除后的路径，因此无可用 Undo checkpoint，`getRunUndoCount` 为 0 |
+| 编辑已有文本＋删除另一原有文本，Track-off | 虽有删除对应的 `create` 逆操作，`hasTrackedEditorUndo` 仍使 `undoRun` 进入 `undoRunTrackedChanges`；该分支只另行派发带 `undoCreatedFile` 的操作，不派发这个 `create`。传给页面的前像包含被删路径、后像缺少该路径，原生守卫返回 `native_untracked_undo_checkpoint_unavailable` |
+| 编辑已有文本＋删除另一原有文本，Track-on 且有可归属 refs | 文本恢复分支会检查前后像涉及的路径；被删文件无法打开时返回 `native_review_file_unavailable`，该分支也没有重建被删文件的派发步骤 |
+
+前后像分别表示运行前与运行后的内容，像两张带路径标签的对照照片；文件删除后缺少对应后像，与已读到空字符串的文件具有不同含义。
+这里应联查 [trackedChangeCaptureController.buildPostFiles](../../extension/src/content/trackedChangeCaptureController.js)、[writebackSettlement.selectExpectedFilesForTrackedUndo](../../extension/src/shared/writebackSettlement.js) 与 `trackedChangesLifecycle.prepareNativeReview`。
+上述混合删除限制不能由“编辑＋新增文件”的恢复验证推导为已解决；Track-off 的直接逆操作路线仍需单独保留与验证。
 
 ### 6.3 Accept 与 Undo 的共同结算
 
@@ -304,12 +335,14 @@ Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirror
 |---|---|---|
 | 展示 diff 截断或执行补丁粒度错误 | codexSessionRunner 的两类输出、diffEngine、textPatch；展示 hunks 与执行 patches 分别核对 | `node --test test/diffEngine.test.js test/textPatch.test.js` |
 | 文本差异转操作错误 | `writebackController.buildSyncApplyOperations`；patch 输入与基线 | `node --test test/writebackController.test.js` |
+| Auto 重命名、二进制删除或资产类型被过滤 | `mirrorWorkspace.collectMirrorChangesDetailed`、路径类型规则、controller 转换及 orchestrator 独立删除确认 | `node --test test/mirrorWorkspace.test.js test/writebackController.test.js`；另验文本重命名拒绝删除、二进制重命名及 GIF/WebP |
 | 活动文件/ZIP/空内容不一致 | snapshotRouter、projectFiles、快照缓存、mirrorWorkspace | `node --test test/pageBridgeSnapshotCache.test.js test/staleGuard.test.js` |
 | 原请求超时但文件已变化 | broker 查询原执行 receipt、逐项结果与尾部阻断 | `node --test test/writebackReceiptRecovery.test.js` |
 | 显式 Retry sync 创建已有文件 | creator 局部幂等、retryCreates 跨 journal 传递；现有测试缺少生产链专项用例 | `node --test test/textFileCreator.test.js test/writebackEditRetry.test.js`，仅覆盖局部能力与恢复意图 |
 | 保存待确认或刷新后核查 | writebackController、writebackIntent、sessionState | `node --test test/writebackSaveCheck.test.js` |
 | 普通 Undo 错撤用户历史 | contentRuntime 路由、提交 Track、trackedChangesLifecycle、ownership | `node --test test/ordinaryUndoRouting.test.js` |
 | 新建文件撤销或混合进度 | undoOperations、contentRuntime、router、textFileCreator、持久化 | `node --test test/createdFileUndo.test.js test/mixedUndoReceipt.test.js` |
+| 已有文本删除后的 Undo 或编辑＋删除混合恢复 | `recordUndoFromApply`、`undoRun`、`buildPostFiles`、`prepareNativeReview`；分别核对 Track 与前后像路径集合 | `node --test test/undoOperations.test.js test/ordinaryUndoRouting.test.js test/createdFileUndo.test.js`，仅作局部入口；删除组合需单独验证 |
 | Undo 超时、尾部未确认或重复删除 | contentRuntime.callPageBridge 的 broker 包装、deadlineAt、client/journal/router/creator | `node --test test/undoDeadlineRouting.test.js test/undoReceiptDeadline.test.js` |
 | 撤销后下一轮恢复旧内容 | orchestrator 镜像屏障、mirrorWorkspace、运行入口 | `node --test test/undoMirrorInvalidation.test.js` |
 | 取消后丢失部分结果 | cancellation sequence、router、broker、Page RPC、checkpoint 时序 | `node --test test/writebackCancellationFlow.test.js test/writebackReceiptRecovery.test.js`；router 局部测试不能替代真实 Page RPC 取消到 content checkpoint 的整链场景 |
@@ -324,6 +357,8 @@ Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirror
 `undoDeadlineRouting` 覆盖生产 wrapper 的提取函数及各层期限传递，`undoReceiptDeadline` 使用真实 client/broker/journal 和虚拟时钟，页面 mutation 为注入函数。
 `writebackReceiptRecovery` 检查部分模式参数转发，未覆盖 `retryCreates` 穿过真实 journal 的专项场景；创建重试还需核对同内容与异内容的完整传递链。
 `undoMirrorInvalidation` 的相关 harness 将 settlement 替换为成功 stub，无法证明混合 Undo 的中间持久化失败仍会使镜像失效。
+`mirrorWorkspace` 覆盖已有二进制删除上报、支持资产及生成 PDF 过滤；不能据此推定 Auto 重命名与拒绝删除的完整交互已经覆盖。
+`undoOperations` 验证删除对应的 `create` 逆操作生成；`ordinaryUndoRouting` 与 `createdFileUndo` 的文本或新建混合场景不能替代 Track-on 仅删除、Track-off 编辑＋删除和 Track-on 编辑＋删除的运行记录到页面恢复链验证。
 这些范围各自提供定位依据；真实服务端协议、DOM、取消与立即刷新仍需相应执行证据。
 
 进一步缩小单个场景，可使用已经存在的测试名称，例如：

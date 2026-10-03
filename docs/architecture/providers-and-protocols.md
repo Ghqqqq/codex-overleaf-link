@@ -226,10 +226,21 @@ Anthropic `buildAnthropicHistoryContinuation` 仅对 max_output_tokens 且没有
 带签名 thinking 保留结构，未签名片段的有限尾部放入继续提示；其他 incomplete reason 不由该函数自动续传。
 这些 history 均随桥存活；关闭桥、进程退出或记录淘汰后，不能依赖其完成跨启动恢复。
 
+**Known gap / 同桥续传身份**：[Chat](../../native-host/src/chatCompletionsBridge.js) 和 [Anthropic](../../native-host/src/anthropicMessagesBridge.js) 的 `handleRequest` 在 `previous_response_id` 缺失或未命中 history 时，直接采用整座桥最近的 `continuationState.anchorMessages`；保存的 `continuationState.responseId` 未用于匹配来源。
+例如同一桥内 A 请求留下部分分析，随后 B 请求引用另一未知 response ID，B 的上游 messages 仍会带入 A 的续传材料；Anthropic 的锚点还包含 A 的原始 messages。
+因此按 response ID 保存 history，不提供 fallback 分支的 lineage 隔离保证；lineage 指一条响应由哪些先前响应接续而来。
+上层 [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) 的 `runCodexAppServerSession` 每次调用都会准备桥，并在 finally 关闭它，限制了锚点的存活范围。
+该缺口限定于同一桥内的请求组合，不能推广成跨插件 run 串线；真实 Codex 是否生成上述组合仍需调用链验证。
+
 ### 7.2 中断不等同自动重发
 
 [providerStreamLifecycle.js](../../native-host/src/providerStreamLifecycle.js) 管理 idle/total 计时和 AbortController。
-客户端连接关闭触发上游 abort；收到流量 touch 会重置 idle，total 不随流量延长。
+客户端连接关闭触发上游 abort；流消费入口调用 `touch` 才会重置 idle，total 不随流量延长。
+**Current behavior 限定**：三桥的 SSE 消费接入了逐块活动回调，JSON 消费则直接等待 `.json()`，正文块到达期间未调用 `touch`。
+对应入口为 [Chat](../../native-host/src/chatCompletionsBridge.js) 和 [Anthropic](../../native-host/src/anthropicMessagesBridge.js) 的 `handleRequest` JSON 分支，以及 [Responses](../../native-host/src/responsesPassthroughBridge.js) 的非流式 JSON 分支；Chat 的 `Codex stream=true → launch buffered → 上游 JSON` 也经过该路径。
+在正常配置的 120 秒 idle 下，若响应头后第 35、70、105 秒仍有 JSON 正文字节到达，但正文尚未结束，第 120 秒仍会中止请求，距最近流量仅 15 秒。
+该阶段的 idle 实际约束从收到响应头到完整 JSON 读完的时间，不能统一解释为网络持续静默；更长的 HTTP total 或 Codex watchdog 不会推迟已触发的 idle 中止。
+
 Chat/Anthropic 的异常恢复分支要求已有可恢复文本或 reasoning，且尚未出现任何工具调用，才可能生成 incomplete。
 该 guard 不覆盖所有提前结束：缺少协议终止标记的正常 EOF 仍可能在 `completeStream` 中把工具项标为 completed；Anthropic 的 `canonicalArguments` 还可能将残缺 JSON 归一为 `{}`。
 因此不能宣称整条协议链统一拒绝半段工具调用；最近工具调用测试提供终止原因，正常 EOF 与残缺参数组合仍需专项验证，下游是否实际执行也未确认。
@@ -282,6 +293,12 @@ guard 允许 cache key 等例外；`sanitizeProfile` 会复制允许的 headers/
 
 [providerRedaction.js](../../native-host/src/providerRedaction.js) 的 `sanitizeProviderMessage` 支持精确替换已知 API key，并清洗部分 bearer/key/token 模式。
 桥错误和测试错误有传入精确 secret 的调用点，通用错误包装未必持有完整秘密集合，不能推导所有文本均安全。
+**Known gap / HTTP 200 内的协议失败**：[responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js) 的 `handleRequest` 仅在 `!upstream.ok` 时进入带 `launch.apiKey` 的 `forwardUpstreamError` 清洗。
+HTTP 200 内的 `response.failed` SSE 经 `forwardResponsesSse` 原字节转发，非流式 JSON 的 `status: failed` 也经 `sendJson` 原样返回；若其 `error.message` 回显专用 API key，该值可随错误载荷到达 Codex。
+HTTP 成功状态与模型协议成功状态属于两层判断；仅检查前者会漏掉上述失败出口。
+下游 [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) 的 `handleMessage` 可把 app-server 错误 params 发为运行事件，[background.js](../../extension/src/background.js) 的 `sanitizeJournalString` 仅按部分凭据形状清洗，均未接收该上游 key 做精确匹配。
+桥出口保留回显值不能证明真实 Codex 已将它写入日志或历史；Codex 的具体错误投影及最终持久化仍需使用合成凭据验证。
+
 [debugLog.js](../../native-host/src/debugLog.js) 主要截断字段和摘要 content/files，未提供通用凭据清洗；三桥当前日志选择计数、状态和元数据。
 后台 journal 的模式清洗也不等于任意秘密检测；维护目标是从生产者阻止原密钥或任意配置 dump 进入日志、事件和诊断。
 
@@ -310,6 +327,8 @@ Response passthrough、真实 bridge HTTP 中断及 profile→launch→最终 wi
 
 现有测试缺少“准备协议桥期间取消，随后进入测试 spawn”的覆盖，也缺少三桥 HTTP 重定向目的地与 DNS 地址变化的完整调用链用例。
 这些场景应采用合成凭据与受控端点验证，分别断言目标地址、正文/header 传播、能力取值、最终 wire 预算及取消后的进程启动/退出。
+上述请求/响应 helper 测试还不足以证明整桥 fallback 的 lineage 隔离、JSON 消费期间的逐块 idle 续期，以及 HTTP 200 协议错误到 Codex 事件和 journal 的凭据清洗。
+对应验证应进入三桥 `handleRequest`：同一桥依次发送 A 部分响应与 B 未知 response ID；用分块 JSON 和可控时钟核对 `touch`；以合成 key 构造 HTTP 200 的 SSE/JSON 失败载荷，并单独检查桥出口与下游错误投影。
 
 ## 10. 边界场景与验证要点
 

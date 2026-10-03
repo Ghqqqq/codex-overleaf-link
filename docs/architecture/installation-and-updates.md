@@ -27,6 +27,7 @@ V_{installed}=V_{native}=V_{extension}=V_{runtime}.
 \]
 
 先检查活动事务和安装一致性，再区分 `aligned`、`reload_required`、`repair_required`；字段缺失返回 `unknown`。
+活动更新也包括`authorized`或`bound`授权；四个版本相等且Native报告`installedAligned: true`时，残留授权仍会使该投影返回`transaction_active`，版本对齐不能证明授权已结算。
 版本相等只能证明该检查所用的身份一致，无法证明所有功能都正常；同版本不同内容还需摘要或具体行为证据。
 
 ## 2. Direct 与 Managed 的加载入口
@@ -179,7 +180,12 @@ Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入�
 Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已apply的事务，恢复来源文件并对失败目标设置24小时cooldown。
 `supersedeObsoleteJournal()`仅在安装对齐且active版本同时严格高于journal的source和target版本时淘汰旧journal；同target版本重装不满足该条件。
 `installManagedNativeVersion()`保留`native/updates`，完整扩展重装则建立新树。静态恢复反例是旧journal停在`applying`后重装同target：后续`update.status`仍可进入`recoverAndReadStatus()`的`rollbackFiles()`分支，重写source指针及旧manifest，而新扩展树可能已无旧runtime槽。
-该静态恢复路径的实际结果需要故障演练确认；重装不能直接作为账本已清理的证据，应核对journal、指针、manifest与实际runtime内容。[updateManager.test.js](../../test/updateManager.test.js)的supersede用例覆盖严格更高版本和保留旧回滚，同target重装链仍需专门演练。
+该静态恢复路径的实际结果需要故障演练确认；重装不能直接作为账本已清理的证据，应核对journal、指针、manifest与实际runtime内容。
+
+严格更高版本重装也有授权和恢复边界：`supersedeObsoleteJournal()`只将旧journal写为`superseded`并清理staging，未调用`settleAuthorization()`；`recoverAndReadStatus()`随后跳过原`applying`分支的授权结算，`currentStatus()`仍返回残留授权。
+旧`bound`授权会使`inspectInstalledRuntime()`保持`transaction_active`；后续`checkForUpdate()`优先进入`readAuthorizedCandidate()`，旧候选即使签名有效，也会因授权source与当前版本不符或target版本不再高于当前版本而返回`update_consent_mismatch`。
+浏览器协调器的`reconcileExpiredPhase()`没有将`superseded`视为恢复完成的分支；旧恢复意图仍在时可保留`failed`、`recoveryPending: true`和`update_recovery_pending`，`settleTerminalConsent()`也会因恢复待定而保留浏览器授权意图。
+[updateManager.test.js](../../test/updateManager.test.js)的supersede用例覆盖严格更高版本和保留旧回滚，未断言授权结算及协调器恢复完成。验证应分别覆盖同target重装，以及严格更高版本重装后journal、Native授权、四版本投影和浏览器恢复意图的组合。
 阶段期限在`PHASE_TIMEOUTS`统一声明，具体网络/页面探测还有更短预算；超时值不能混用为同一个总耗时保证。
 
 ## 8. 信任链与网络重试
@@ -208,6 +214,8 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 固定Bootstrap、扩展权限/资源公开形状、Native固定launcher等无法通过runtime-only包任意替换。
 签名有效但Bootstrap协议不同的候选可展示`manual_install_required`及签名说明；staging/apply仍拒绝该候选。
 `checkForUpdate()`另有RC晋升例外：已安装标记为`prerelease`且最新stable具有相同数字版本时，返回`prerelease_promotion_requires_manual_update`、`available: false`，需要手动重装，不能按数字版本相等认定stable内容已经加载。
+该Native识别结果尚未映射到当前重装UI：`backgroundUpdateCoordinator.checkOnly()`只将`manual_install_required`且目标版本严格更高的结果转入重装状态，RC同数字版本原因落入`idle`分支并清空`code`；`updateConsent.deriveViewModel()`也要求目标版本高于运行版本才显示重装提示及复制安装命令入口。
+因此RC晋升的验证需分别检查Native返回原因与协调器、面板的实际呈现；当前同数字版本分支不会提供对应重装提示，不能将Native识别成功视为用户已收到操作指引。
 当前2.5.0迁移说明见根 [README](../../README.md#quick-start)；完成磁盘重装后仍需核验扩展重载与页面刷新。
 
 [verify-update-boundary.mjs](../../scripts/verify-update-boundary.mjs)核对受保护路径的已提交、暂存、未暂存和未跟踪变化。

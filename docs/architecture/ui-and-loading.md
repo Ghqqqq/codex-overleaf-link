@@ -115,13 +115,14 @@ Provider 通过 `revealProviders` 嵌入工作台；相关编辑器由 [Provider
 ```text
 textarea input → persistPanelInputs → readPanelInputs → updateActiveSession → debounce save
 提交 → safeRunTask
-  ├─ 无当前运行：runTask 捕获输入 → startRunView → clearTaskComposer
+  ├─ 无当前运行：runTask 等待旧镜像 → 捕获输入 → 准备 Provider/风格 → startRunView → clearTaskComposer
   └─ 有当前运行：queueComposerInput → RunQueueScheduler coordinator → pendingInputs
 结果卡 Edit & resend → refillComposerForRetry → prepareRetryReplacement → 会话草稿
 ```
 
 [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `syncComposerSendAvailability` 在运行中且无文字时呈现取消，有文字时呈现排队发送；`safeRunTask` 将活动运行期间的提交交给队列协调器。
-`runTask` 在 Provider/风格异步加载前捕获输入，建立 run 后还等待 audit 草稿等步骤，才调用 `clearTaskComposer` 清文字、选区、技能调用及附件；该顺序不能推广为任意提交等待期间的新输入都会保留。
+`runTask` 在前次 `pendingMirror` 等待结束后、Provider/风格异步加载前捕获输入。准备期间仅复核账号和项目，`startRunView` 采用届时的活动会话；点击发送不等于会话归属已经固定。
+建立 run 后还等待 audit 草稿等步骤，才调用 `clearTaskComposer` 清文字、选区、技能调用及附件；该顺序不能推广为任意提交等待期间的新输入都会保留。等待窗口与运行建立后的身份规则见[运行状态与恢复](run-state-and-recovery.md)。
 [PendingInputView.pullBack](../../extension/src/content/pendingInputView.js) 只回填 queued 项，已有非空草稿时提示并返回；实际移除队列项与持久化由回调完成，UI 回填动作本身不提供事务提交证明。队列准入、推进和保存边界见[运行状态与恢复](run-state-and-recovery.md)。
 
 [RunTimelineView.configureEditButton](../../extension/src/content/runTimelineView.js) 对 cancelled/rejected 且通过 `canEditRun` 的记录提供编辑重发，当前存在运行时禁用该按钮。
@@ -152,6 +153,14 @@ Save and use 可经 `providerSwitchApproved:true` 跳过该确认，删除当前
 `reference` 模式附加参考内容；`edit` 模式显示“仅此处”，runtime 的 `setSelection` 同时把会话模式设为 Auto。实际局部修改限制还依赖 [selectionScope](../../native-host/src/selectionScope.js)，标签本身不提供执行保证。
 发送后的 `renderSent` 从 run execution snapshot 渲染 chip；草稿移除选区不应删除历史 chip。页面选区探测还检查编辑器焦点、连接状态和 probe generation。
 [ContextTray](../../extension/src/content/contextTray.js) 管理 focused files、文件列表和预加载；`@` 文件上下文与二进制附件各有持久化和消费路径。
+
+### 编译日志上下文与修复草稿
+
+runtime 的 `renderAtFileMenu` 提供 `@compile-log`；`runTask` 在首次模型派发前识别该标记，再通过 [WritebackOrchestrator.resolveCompileLogContext](../../extension/src/content/writebackOrchestrator.js) 请求页面 `getCompileLog`，附带运行项目身份。
+[CompileBridge.getCompileLog](../../extension/src/page/compileBridge.js) 根据缓存时间和源文件编辑戳判断新鲜度；当前调用传 `triggerIfStale:true`，过期或无可用记录时可调用 `triggerCompile`。该日志刷新路径未检查 Ask/Auto 或 Auto Compile 开关，因此不能把“Ask 不写回”理解为显式请求日志时绝不会触发编译。
+页面缓存和时间戳由 `CompileBridge.create` 拥有。可用日志、错误、警告及新鲜度经 [RunController.buildCodexRunParams](../../extension/src/content/runController.js) 进入 [codexPromptAssembly](../../native-host/src/codexPromptAssembly.js)；日志不可用时记录 `selected_context_unresolved`，普通运行仍可继续派发。
+[RunTimelineView.renderCompletionReport](../../extension/src/content/runTimelineView.js) 内的 `appendCompileFix` 将捕获错误与 `@compile-log` 组成草稿，调用 `PanelMaintenance.refillComposerForRetry(null, text)`。点击“修复编译错误”仅回填，实际执行仍需下一次提交。
+修改该能力须联动日志新鲜度、Page RPC 身份、保存等待、输入参数及提示组装；相关定义为 [compileAdapter.test.js](../../test/compileAdapter.test.js)、[runControllerContent.test.js](../../test/runControllerContent.test.js)、[codexPromptAssembly.test.js](../../test/codexPromptAssembly.test.js)。页面请求与缓存测试使用模拟对象，不能替代真实 Overleaf 编译验收。
 
 ### 多附件异步、预算与恢复
 

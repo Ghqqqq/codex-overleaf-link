@@ -73,6 +73,13 @@
 - 必须联动：[contentRuntime](../../extension/src/content/contentRuntime.js) 注入的限额、[turnAttachments](../../native-host/src/turnAttachments.js)、[nativeQuotas](../../native-host/src/nativeQuotas.js)、[runInputQueue](../../extension/src/shared/runInputQueue.js) 与附件持久化裁剪。
 - 最近测试：[contextTray](../../test/contextTray.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js)、[runInputQueue](../../test/runInputQueue.test.js)。
 
+### 改编译日志引用或编译错误修复入口
+
+- 入口：runtime `renderAtFileMenu/runTask` 解析 `@compile-log`，以及 [RunTimelineView](../../extension/src/content/runTimelineView.js) 的 `appendCompileFix` 回填草稿。
+- 状态 owner：[CompileBridge](../../extension/src/page/compileBridge.js) 管理页面缓存及编辑时间戳；[WritebackOrchestrator.resolveCompileLogContext](../../extension/src/content/writebackOrchestrator.js) 协调日志获取。
+- 必须联动：`getCompileLog` 的刷新和身份策略、[RunController](../../extension/src/content/runController.js) 参数、[codexPromptAssembly](../../native-host/src/codexPromptAssembly.js) 及失败继续行为。显式日志请求与写后自动编译是两条入口，详见[界面与加载](ui-and-loading.md)。
+- 最近测试：[compileAdapter](../../test/compileAdapter.test.js)、[runControllerContent](../../test/runControllerContent.test.js)、[codexPromptAssembly](../../test/codexPromptAssembly.test.js)。
+
 ## 运行、队列与共享会话
 
 编辑重发和运行中草稿的 UI 路线另见[界面与加载](ui-and-loading.md)，主入口为 `RunTimelineView.configureEditButton`、`PanelMaintenance.refillComposerForRetry`、runtime `prepareRetryReplacement/persistPanelInputs`。已提交快照、当前草稿和排队项的字段及寿命分别核对。
@@ -120,6 +127,7 @@
 
 - 入口：runtime 的 run 操作回调、[trackedChangesLifecycle](../../extension/src/page/trackedChangesLifecycle.js)、[AssetTransferBroker](../../extension/src/content/assetTransferBroker.js)。
 - 状态 owner：[undoOperations](../../extension/src/shared/undoOperations.js) 与 run checkpoint 保存撤销证据；页面 receipt 和 settlement 记录部分完成结果。
+- 支持范围：Auto 重命名按 create/delete 拆分，二进制删除、生成 PDF 与资产扩展名另有过滤；原有文件删除的恢复不能套用“编辑＋新建”的 Undo 路线，详见[文件操作与撤销限制](auto-edit-undo.md)。
 - 必须联动：[treeOperations](../../extension/src/page/treeOperations.js)、[nativeAssetTransfer](../../native-host/src/nativeAssetTransfer.js)、[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 和镜像失效处理。详细链路见[Auto 编辑与 Undo](auto-edit-undo.md)。
 - 最近测试：[writebackRouterAccept](../../test/writebackRouterAccept.test.js)、[createdFileUndo](../../test/createdFileUndo.test.js)、[ordinaryUndoRouting](../../test/ordinaryUndoRouting.test.js)、[binaryUploadUndoRoundTrip](../../test/binaryUploadUndoRoundTrip.test.js)。
 

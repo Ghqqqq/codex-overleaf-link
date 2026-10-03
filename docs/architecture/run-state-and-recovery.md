@@ -14,8 +14,8 @@ Auto 写入和 Undo 的页面操作链见 [Auto 编辑与撤销](auto-edit-undo.
 | 概念 | 含义与保存位置 | 修改时的约束 |
 |---|---|---|
 | `accountScopeId` | 派生的账号作用域；活动运行句柄捕获为 `runAccountScopeId`，持久会话记录保存 `accountScopeId` | 缺少身份时，涉及账号隔离的持久化拒绝提交 |
-| `projectId` / `runProjectId` | 当前页面项目 / 提交时捕获的运行项目 | 页面切换后，后者继续指向原项目 |
-| `sessionId` | 插件对话容器，包含草稿、历史、runs、pendingInputs | 切换可见会话不改变已有 run 的归属 |
+| `projectId` / `runProjectId` | 当前页面项目 / `startRunView` 建立记录时捕获的运行项目 | 建立记录后的页面切换不改变后者；此前的等待与复核见 3.1 |
+| `sessionId` | 插件对话容器，包含草稿、历史、runs、pendingInputs；`startRunView` 使用届时的活动会话 | 切换可见会话不改变已有 run 的归属；建立记录前未按提交时会话锁定 |
 | `runId` / `recordId` | 一次插件任务的记录身份 | 重试、队列提升和恢复需要明确记录边界 |
 | `requestId` / `nativeRequestId` | 一次 Native RPC 请求身份 | 关联消息路由、取消和后台 journal |
 | Native `threadId` | Codex 或服务端对话线程 | 可供后续轮次续接，不等同插件 session |
@@ -37,7 +37,7 @@ generation 类似取号单上的批次：同一个项目重新加载后，旧批
 | 会话与运行内存状态 | `contentRuntime`，归一化规则由 `SessionState` 提供 | 会话列表、运行卡片、持久化快照 |
 | 当前运行的编排句柄 | `currentRunView` | 包含原身份、DOM 引用及 Native 绑定；DOM 文案只作投影 |
 | 排队输入 | `RunInputQueue` 的值与 `RunQueueScheduler` 的调度 | composer 队列卡、claim 元数据、会话记录 |
-| 提交时执行选择 | `RunExecutionSnapshot` | run record、队列 payload、Native providerSelection |
+| 已捕获执行选择 | `RunExecutionSnapshot` | run record、队列 payload、Native providerSelection；白名单固定范围与捕获时机见 3.1 |
 | Native 执行与项目锁 | Native task runner；content 保存绑定信息 | Native 完成后，页面写回仍可能继续 |
 | 写回证据与后续操作 | `WritebackSettlement`、`SettlementFacts` | 运行报告、Accept/Undo、重试能力 |
 | 共享历史的持久副本 | 后台共享库及 scoped persistence 协调 | 活页内存、最近项目与被动刷新均为消费方 |
@@ -51,14 +51,18 @@ generation 类似取号单上的批次：同一个项目重新加载后，旧批
 ```mermaid
 flowchart TD
   A[点击发送 safeRunTask] --> B{存在 currentRunView?}
-  B -->|否| C[runTask 捕获执行快照]
-  B -->|是| Q[enqueue 保存待执行输入]
+  B -->|否| M[runTask 等待前次 pendingMirror]
+  B -->|是| Q[enqueue 捕获执行快照并保存待执行输入]
   Q --> R[scheduleOne 校验并 claim]
   R --> S[claim 保存调用返回 可能前置早退]
-  S --> C
-  C --> V[startRunView 固定身份]
-  V --> P[remove 保存调用返回后移除内存项]
-  P --> N[预检与快照后 codex.run]
+  S --> M
+  M --> C[读取任务与其他当前输入]
+  C --> L[等待 Provider 普通输入还等待写作风格]
+  L --> I[复核账号与项目 构造或解析执行快照]
+  I --> V[startRunView 按当前活动会话建立归属]
+  V -->|队列任务| P[remove 保存调用返回后移除内存项]
+  V -->|普通任务| N[预检与项目快照后 codex.run]
+  P --> N
   N --> W[结果处理与写回结算]
   W --> T[finishRunView 与清理 owner]
   T --> U{结算允许继续且会话仍可启动?}
@@ -72,9 +76,13 @@ flowchart TD
 
 ### 3.1 执行快照
 
-`runTask` 先保存提交时的面板字段、附件、选区和指令，再等待 Provider、写作风格等异步准备。
-准备完成后重新核对账号和项目，构造或解析 `executionSnapshot`。
-队列任务从原 payload 恢复快照，快照白名单内的字段不重新取当前控件值。
+`runTask` 首先等待前次写回尚未结束的 `pendingMirror`；这段等待发生在读取任务、面板字段及捕获账号/项目之前。
+等待结束后，普通任务读取届时的 composer 文本，并捕获面板字段、附件、选区、指令和技能加载设置，再等待 Provider 与写作风格准备。风格快照在准备完成后捕获。
+队列任务使用原 `queuedInput.text`，并从原 payload 恢复执行快照，快照白名单内的字段不重新取当前控件值。
+准备完成后的 scope 守卫只复核账号和项目，未捕获或比较提交时的 `activeSessionId`；随后 `startRunView` 通过 `updateActiveSession` 将记录写入届时的活动会话。
+因此镜像等待期间修改草稿或切换会话会影响普通任务随后读取的输入；Provider/风格等待期间切换会话，则可使先前捕获的任务归入后来活动的会话。
+[SessionManager.switchSession](../../extension/src/content/sessionManager.js) 依据已有 running 记录判断是否提示，这段准备期间尚未建立 run，不能依赖该提示固定归属。
+一旦 `startRunView` 建立记录并捕获运行归属，后续切换可见会话不迁移该运行；这一保证与建立记录前的窗口应分别维护。
 普通运行随后还会检查写入能力、准备完整或受限项目快照，再通过 `buildCodexRunParams` 形成 Native 参数。
 
 当前快照的执行字段为 mode、Provider ID/revision、model、reasoning、speed、自动编译、Track、focusFiles、选区和写作风格，另含 schemaVersion、capturedAt、source 等元数据。
@@ -89,6 +97,7 @@ Native 还会在 [providerRuntime.js](../../native-host/src/providerRuntime.js) 
 [projectProviderSelection.js](../../extension/src/content/projectProviderSelection.js) 的 `commit` 更新未来默认值与会话线程绑定，保留已有队列及运行历史。
 **维护目标**：新增运行选项同时检查 capture、queue payload、clone、持久化压缩和 Native 消费端，避免某一条路径丢失字段。
 若扩大“提交后固定”的范围，应将上述额外输入纳入同一链路并补验证。[runExecutionSnapshot.test.js](../../test/runExecutionSnapshot.test.js) 覆盖快照字段；[runInputQueueSnapshotRegression.test.js](../../test/runInputQueueSnapshotRegression.test.js) 覆盖队列压缩，其启动检查采用源码字符串断言，不能证明全部输入已冻结。
+提交生命周期验证还需串联 `safeRunTask/runTask/startRunView` 与 `SessionManager.switchSession`，分别覆盖镜像等待期间改变草稿、Provider/风格等待期间切换会话，以及运行建立后切换会话仍保留原归属。
 
 ### 3.2 队列状态与 claim
 
@@ -102,6 +111,9 @@ Native 还会在 [providerRuntime.js](../../native-host/src/providerRuntime.js) 
 普通并发保存还需保留等待期间新增的其他输入，相关回归定义位于 [runQueueSchedulerDurability.test.js](../../test/runQueueSchedulerDurability.test.js)。
 
 即时指导由 `createCoordinator.guide` 发送 `codex.steer`，绑定 request、project、thread 与 `expectedTurnId`。
+该入口把队列 `item.text` 直接发送，未调用普通 `runTask` 的 `runSensitivePreflight`。
+Native 的 [taskRunnerRuntime.handleCodexSteer](../../native-host/src/taskRunnerRuntime.js) 检查活动绑定、传入的预期 thread/turn、非空文本与长度，再经 [codexSessionRunner.publishActiveTurnControl](../../native-host/src/codexSessionRunner.js) 的 control 发送 `turn/steer`；这两层均未补做敏感扫描。
+同一条排队文字作为下一项普通任务执行、或用作当前轮次的即时指导，经过的预检入口不同；首次任务的扫描结果不能覆盖后来追加的指导。材料与入口范围见[上下文与治理](context-and-governance.md#3-扫描实际覆盖的材料)。
 指导成功后移除队列项并写入所属 run 的指导事件；发送结果不明时进入 `steer_delivery_unknown` 暂停状态。
 指导投影入口为 [runGuidanceController.js](../../extension/src/content/runGuidanceController.js)，应同时检查队列卡、活动 transcript 和最终输入摘要的去重。
 
@@ -236,8 +248,9 @@ legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；�
 
 | 改动 | 主改入口与联动消费者 | 最窄命令 | 检查条件 |
 |---|---|---|---|
-| 提交配置 | RunExecutionSnapshot、runtime capture、queue codec、Provider 默认值 | `node --test test/runExecutionSnapshot.test.js test/projectProviderSelection.test.js test/runQueueSchedulerArchitecture.test.js` | 快照白名单 tuple 不随设置漂移，revision 冲突保留输入并暂停；提升时读取的额外输入见 3.1；Native 二次校验另见 providerSessionBinding/providerReliability 测试 |
+| 提交配置 | RunExecutionSnapshot、runtime capture、queue codec、Provider 默认值 | `node --test test/runExecutionSnapshot.test.js test/projectProviderSelection.test.js test/runQueueSchedulerArchitecture.test.js` | 已捕获快照白名单 tuple 不随设置漂移，revision 冲突保留输入并暂停；3.1 的提交等待与会话切换需补组合验证；Native 二次校验另见 providerSessionBinding/providerReliability 测试 |
 | 队列提升 | RunInputQueue、RunQueueScheduler、scoped queue policy | `node --test test/runQueueSchedulerArchitecture.test.js test/runQueueSchedulerDurability.test.js` | 检查 claim 保存调用顺序与拒绝分支；事务前早退例外另见 4.3，不能推定全部失败均保留队列 |
+| 即时指导的输入边界 | Coordinator.guide、Native handleCodexSteer/control、SensitiveScan | `node --test test/sensitiveScan.test.js test/runQueueSchedulerDurability.test.js` | 分别定位检测器与队列保存行为；指导链需另行覆盖可检出文字、身份失配和发送结果不明，现有局部测试不能证明指导经过扫描 |
 | 作用域提交 | coordinator、transaction、browser adapter、SessionPersistence | `node --test test/scopedPersistenceTransaction.test.js test/sessionPersistenceAccountIsolation.test.js` | stale view、CAS、fence/receipt、账号隔离与恢复 |
 | journal 恢复 | normalizeLoadedPanelState、ActiveTurnControl、shared history | `node --test test/crossTabRuntimeRegression.test.js test/activeTurnControl.test.js` | 共享 journal 回放要求 ownerLost 并暂停队列；已有终态修复另走下行 |
 | 旧终态修复 | SessionState 两类恢复 helper、runtime hydration、StorageDb | `node --test test/settledRunRecovery.test.js test/recordedRunFailureRecovery.test.js` | 识别已持久终态证据，同时保留真正活跃运行；不依赖 ownerLost |

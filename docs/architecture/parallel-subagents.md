@@ -44,6 +44,12 @@ worker 使用新的 thread，`session: null`、`threadId: ''`；继承当前运�
 `buildCodexSettings` 按运行模式选择 `read-only` 或 `workspace-write`；`job.files` 通过提示词、调度互斥和事后证据管理。
 技能中的文件限制不能直接解释成操作系统对每个 worker 单独设置的路径 ACL。
 
+**技能环境的共享边界。** [codexHome](../../native-host/src/codexHome.js) 的 `getPluginCodexHome()` 默认让各项目和 runner 共用插件 `CODEX_HOME`。
+`runCodexAppServerProcess()` 为父任务、worker 和风格生成分别调用 `buildCodexHomeEnv()`；`composePluginSkillsDirectory()` 每次先删除 `skills`，再按本次开关重建。
+继承技能开关没有产生独立目录，另一个任务的环境准备可能改变活跃任务已发现路径的可读性；关闭两类技能的风格生成也走这条共享准备链。
+`taskRunnerRuntime.acquireProjectLock()` 只按项目加锁，不保护共享 home。installer 的持久目录映射被普通运行替换后，新安装内容还可能落入下次重建会删除的组合目录，详见[普通技能安装、继承与作用域](writing-style-and-skills.md#普通技能安装继承与作用域)。
+路径变化、app-server 的技能缓存及后续读取行为需要分别验证，不能由每个 worker 使用新 thread 推定技能环境隔离。
+
 ## 3. job 文件协议与权威状态
 
 **当前实现。** `broker.start` 清除上一轮队列目录，创建新的控制文件和 scratch 区。
@@ -202,6 +208,7 @@ worker `completed` 只表示 runner Promise 正常返回；受上一节终态映
 | 改动 | 主 owner 与必要联动 | 最窄命令 |
 |---|---|---|
 | 启动 gate、继承、禁递归 | codexSessionRunner、localSkills、技能正文、面板技能目录 | `node scripts/run-tests.mjs test/parallelSubagents.test.js` |
+| 共享技能目录与交错准备 | codexHome、codexSessionRunner、writingStyleRuntime、项目锁；installer 映射 | `node scripts/run-tests.mjs test/codexHome.test.js test/codexSessionRunner.test.js`；还需覆盖活跃路径及安装持久性的交错准备场景 |
 | 并发、同文件串行、预算、取消 | subagentBroker、runner、codexSessionTiming、镜像 dirty | `node scripts/run-tests.mjs test/subagentBroker.test.js` |
 | 文件归属、quarantine、adoption | subagentWorkspace、subagentWorkspacePath、broker、最终 syncChanges 过滤 | `node scripts/run-tests.mjs test/subagentBroker.test.js test/parallelSubagents.test.js` |
 | 原生发现、历史与终态 | subagentTelemetry、runner eventScope、subagentActivityModel | `node scripts/run-tests.mjs test/subagentTelemetry.test.js` |
@@ -221,5 +228,6 @@ worker `completed` 只表示 runner Promise 正常返回；受上一节终态映
 5. **磁盘 activeWorkers 为 0 时整合文件。** 该计数没有随每次 worker 启动刷新；核对内存 running、波次与 token，避免把非实时字段当成空闲证明。
 6. **worker 失败终态后的部分文件隔离。** 追踪 `turn.status=failed` 结束帧是否引发 runner rejection；缺少独立 error/abort 时，当前成功返回路径仍可令 broker 标为 completed。
 7. **历史临时读取失败后的恢复。** 同一 child 的 `readDisabled` 会阻止后续补读；分别检查已保存活动、实时通知与缺失历史，不能由只读视图重新打开推定原生历史重试。
+8. **活跃 worker 期间重建技能目录。** 另一个项目或风格生成会按自身开关准备共享 home；核对父任务与 worker 已发现的路径能否继续读取，以及并行 installer 的目标是否仍为持久技能根。文件路径检查与 app-server 缓存行为分别取证。
 
 **集成验证范围。** 同文件长队列与 admission 预算的实际时长、忽略 abort 的 worker 与 drain/停止确认的交接、波次内跨所有权路径写入，以及真实 app-server 版本的子线程历史字段均需集成验证。拒绝回执路径、活动计数、协议失败终态与暂时性历史错误应分别覆盖；源码中的限制与真实运行后果须保持区分。

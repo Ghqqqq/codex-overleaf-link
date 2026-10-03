@@ -65,7 +65,7 @@ sequenceDiagram
     participant N as Native Host
     participant A as Codex app-server
     UI->>C: 提交任务和当前选择
-    C->>C: 捕获执行快照及运行归属
+    C->>C: 等待准备并建立运行记录与归属
     C->>P: 检查页面并读取项目
     C->>B: codex.run
     B->>N: 带请求身份的 Native 消息
@@ -76,12 +76,22 @@ sequenceDiagram
     B-->>C: 对应运行的结果
     C->>P: 检查目标并应用允许的操作
     P-->>C: 应用结果和可获得的证据
-    C->>C: 保存核验及结算
-    C->>N: 确认镜像或标记失效
-    C-->>UI: 各项结果及恢复动作
+    C->>C: 保存核验及恢复材料记录
+    par 镜像后台任务
+        C->>N: 发起镜像确认 刷新或失效处理
+        N-->>C: 返回结果并按运行归属回填
+    and 可选编译及运行收尾
+        opt 已写入可编译文件且允许自动编译
+            C->>P: 编译并等待结果
+            P-->>C: 编译结果
+        end
+        C->>C: 应用运行结算与 finishRunView
+        C-->>UI: 各项结果及恢复动作
+    end
 ```
 
-图中压缩了重试、队列、编译及后台镜像刷新。准确顺序与失败分支见[Auto 修改与撤销](auto-edit-undo.md)。Native 返回结果后，浏览器仍可能处理保存、镜像和生命周期；一个层次的结束不能直接决定其他层的结果。
+图中省略了重试和队列分支。准确顺序与失败分支见[Auto 修改与撤销](auto-edit-undo.md)。`pendingMirrorRefresh` 发起后不阻塞运行报告，其结果经 [RunSettlementPersistence.settleMirrorRefresh](../../extension/src/content/runSettlementPersistence.js) 按目标记录及项目条件回填，可能早于或晚于运行收尾。
+点击提交与 `startRunView` 固定归属之间存在镜像、Provider 和风格准备窗口，详见[运行状态与恢复](run-state-and-recovery.md)。Native 返回结果后，浏览器仍可能处理保存、镜像和生命周期；一个层次的结束不能直接决定其他层的结果。
 
 Ask 和 Auto 是当前 UI 模式，默认 Ask。Ask 路径抑制向 Overleaf 写回；Auto 仍经过身份、路径、基线及必要确认。Track 决定修订相关路径，Auto compile 决定写后编译，两者与模式分别捕获。定义入口为 [sessionState.js](../../extension/src/shared/sessionState.js)、[composerPanel.js](../../extension/src/content/composerPanel.js) 和 [runExecutionSnapshot.js](../../extension/src/shared/runExecutionSnapshot.js)。
 

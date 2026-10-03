@@ -45,7 +45,8 @@ runtime 在 `runTask` 的首次 `sendTrackedCodexRun` 前调用 `runSensitivePre
 
 | 材料或分支 | 当前扫描入口 | 需要保留的限定 |
 | --- | --- | --- |
-| 输入任务文本 | `scanSensitiveInputs({task,...})` | 只覆盖检测器能够识别的文字形态 |
+| 普通运行的输入任务文本 | `runTask → runSensitivePreflight → scanSensitiveInputs({task,...})` | 只覆盖该入口和检测器能够识别的文字形态 |
+| 运行中即时指导 | `RunQueueScheduler.createCoordinator().guide → codex.steer → turn/steer` | 不经过普通运行预检；Native 检查绑定、轮次、非空和长度，没有补调用 SensitiveScan |
 | 项目文本快照 | `scanSensitiveProjectFiles` | 只扫描本次传入且满足文本判断的文件 |
 | 已有本地镜像 | [scanMirrorSensitiveFiles](../../native-host/src/mirrorSensitiveScan.js) 经 `mirror.scanSensitive` | 扩展名白名单、单文件大小和返回数量限制 |
 | 自定义指令、技能、编译日志 | 后续由 [codexPromptAssembly](../../native-host/src/codexPromptAssembly.js) 组装 | 未作为完整 prompt 进入本次预检；某些材料有独立处理，不能合并推定为已扫描 |
@@ -57,6 +58,9 @@ runtime 在 `runTask` 的首次 `sendTrackedCodexRun` 前调用 `runSensitivePre
 Native 扫描普通目录和文件；文本扩展名由 `isSensitiveScanTextPath` 定义，另支持 `.latexmkrc`。单文件大于 512 KiB 记入 `skippedFiles`，结果最多保留 100 项发现。
 浏览器 `scanNativeMirrorSensitiveFindings` 当前只消费 `result.findings`，未将 `skippedFiles` 转成阻断或完整性警告。因此零发现不能证明全部镜像均已扫描；例如超限文本或白名单外文件仍需单独判断。
 Native 扫描请求失败会生成 `mirror-sensitive-scan-unavailable` 发现，按命中规则处理；扫描主动关闭则直接继续。扫描模块缺失且未复用镜像的兼容分支也会返回未阻止，不能把该路径描述成统一 fail-closed。
+
+即时指导的派发入口在 [runQueueScheduler.js](../../extension/src/content/runQueueScheduler.js) 的 `guide`；[taskRunnerRuntime.handleCodexSteer](../../native-host/src/taskRunnerRuntime.js) 验证活动请求及预期 thread/turn 后，把文本交给 runner 的 `control.steer`。
+这条身份检查不能代替内容扫描。修改扫描策略时，应分别检查首次运行、队列提升和即时指导，不能只修改 `runSensitivePreflight` 就宣称全部模型输入已覆盖。
 
 ### 命中后的行为与重试边界
 
