@@ -22,7 +22,8 @@ export const PUBLIC_ARCHITECTURE_GUIDE_PATHS = Object.freeze([
   'docs/architecture/ui-and-loading.md',
   'docs/architecture/installation-and-updates.md',
   'docs/architecture/context-and-governance.md',
-  'docs/architecture/protocols-and-trust.md'
+  'docs/architecture/protocols-and-trust.md',
+  'docs/architecture/change-workflow.md'
 ]);
 const publicArchitectureGuidePaths = new Set(PUBLIC_ARCHITECTURE_GUIDE_PATHS);
 export const FORBIDDEN_TRACKED_PATH_PATTERNS = [

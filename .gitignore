@@ -16,6 +16,7 @@
 !/docs/architecture/installation-and-updates.md
 !/docs/architecture/context-and-governance.md
 !/docs/architecture/protocols-and-trust.md
+!/docs/architecture/change-workflow.md
 native-host/bin/
 node_modules/
 dist/
