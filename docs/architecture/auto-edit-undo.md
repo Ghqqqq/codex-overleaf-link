@@ -142,9 +142,9 @@ Page 先通过 [staleGuard.prepareOperationPatches](../../extension/src/shared/s
 `writebackRouter.applyEditOperation` 将同一套编辑器补丁用于实际派发、读回预期和 Track 捕获；批内另用 `sourceContent` 推进源坐标基线，避免第二个同文件操作误用编辑器表示。`verified:true` 表明读回符合本次基于当前内容构造的目标，服务器保存和其他并发边界仍分别取证。
 [textPatchLineEndings.test.js](../../test/textPatchLineEndings.test.js) 覆盖四种 LF/CRLF 组合、插入/替换、多补丁、相邻换行、UTF-16 代理对和协作者范围；[pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js) 串联真实模块的写回、Track、连续操作及回执后的 Undo。编辑器 I/O 采用替身，真实 Overleaf 的 ZIP、编辑器与保存行为仍需浏览器验收。
 
-**已知限制。** `staleGuard.checkOperationFreshness` 遇到空白基线时直接通过检查。
-该结论限定为此函数分支；实际写入还经过身份、编辑器和操作验证。
-此处保留“所有有效空基线应参与并发比较”的目标契约，浏览器中的最终影响仍待验证。
+**已知限制。** `staleGuard.checkOperationFreshness` 遇到空串或纯空白基线时直接通过检查。后续若采用 `replaceAll`，Page 身份与编辑器验证通过后可将后来内容整文替换，读回仍会符合这次替换目标；`verified:true` 不提供旧内容未变化的证据。
+[writebackController.buildSyncApplyOperations](../../extension/src/content/writebackController.js) 在缺少可用 patches 且无法由 previousContent 生成补丁时提供此兜底。当前 [mirrorWorkspace.collectMirrorChangesDetailed](../../native-host/src/mirrorWorkspace.js) 的文本差异携带 previousContent，[codexSessionRunner](../../native-host/src/codexSessionRunner.js) 再生成 patches；常规补丁路线还经过 expected 校验。空基线插入补丁可以保留后来文字，冲突替换补丁也可被拒绝，不能把整文兜底的反例推广到全部空文件写回。
+维护目标是让有效空基线参与新鲜度判断，同时保留合法空文件编辑和已有补丁保护。真实浏览器中的保存竞速与远端后果仍需独立验收。
 
 ### 4.2 新增文本与二进制
 
@@ -305,7 +305,7 @@ Track 的 `selectExpectedFilesForTrackedUndo` 保留 `WritebackSettlement` 对�
 | 运行组合 | 当前恢复路线与边界 |
 |---|---|
 | Track-off，仅删除已有文本，原文已进入 checkpoint，且没有文本恢复分支条件 | 保留 `create` 逆操作，可进入 `applyOperations(no-trace-undo)`；仍需通过项目身份、路径存在性、创建和读回验证 |
-| Track-on，仅删除已有文本，没有其他 refs 或恢复材料 | `recordUndoFromApply` 仅把 `buildCreatedFileUndoCheckpoint` 的结果写入 `undoOperations`；原有文件删除不属于该创建证明，前后像推导也没有删除后的路径，因此无可用 Undo checkpoint，`getRunUndoCount` 为 0 |
+| Track-on，仅删除已有文本，没有其他 refs 或恢复材料 | `recordUndoFromApply` 仅把 `buildCreatedFileUndoCheckpoint` 的结果写入 `undoOperations`；原有文件删除不属于该创建证明，前后像推导也没有删除后的路径；原文仍可保存在 `undoExpectedFiles`，但缺少可达的重建步骤，`getRunUndoCount` 为 0 |
 | 编辑已有文本＋删除另一原有文本，Track-off | 虽有删除对应的 `create` 逆操作，`hasTrackedEditorUndo` 仍使 `undoRun` 进入 `undoRunTrackedChanges`；该分支只另行派发带 `undoCreatedFile` 的操作，不派发这个 `create`。传给页面的前像包含被删路径、后像缺少该路径，原生守卫返回 `native_untracked_undo_checkpoint_unavailable` |
 | 编辑已有文本＋删除另一原有文本，Track-on 且有可归属 refs | 文本恢复分支会检查前后像涉及的路径；被删文件无法打开时返回 `native_review_file_unavailable`，该分支也没有重建被删文件的派发步骤 |
 
