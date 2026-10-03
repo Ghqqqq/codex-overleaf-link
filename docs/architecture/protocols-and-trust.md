@@ -1,6 +1,6 @@
 # 消息协议、准入与信任边界
 
-适用产品版本：`2.5.0`；源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。
+初始参考产品版本：`2.5.0`；初始参考源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。正文随当前仓库维护。
 执行环境见[系统总览](system-overview.md)，修改入口见[功能索引](feature-map.md)；本页集中说明消息进入各环境前检查什么、这些检查能证明什么。
 
 **Current behavior** 表示可沿所列 owner 核对的源码行为；**Target contract** 表示维护约束；**Known gap / 验证范围** 表示当前检查的例外或尚需集成验证的条件。
@@ -57,8 +57,8 @@ Page 响应没有独立秘密：client 检查同窗、同源、消息标签、�
 幂等表示重复执行应收敛到同一结果，例如开关设置；它与“请求只发送一次”属于不同性质。
 文本写回回执由 [writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 管理，二进制 staging、commit 和 status 由 [binaryAssetUploader](../../extension/src/page/binaryAssetUploader.js) 管理。
 回执生命周期、部分结果、保存证据和恢复动作仍按具体 handler 解释，见[Auto 修改与撤销](auto-edit-undo.md)。
-`content_abort` 取消 client 等待；页面 `cancelActiveWrite` 另行推进取消序号，具体写入循环在检查点停止。
-取消等待、操作已停止、部分写入可恢复分别取证；相关时序与回执查询限制见写回专题。
+`content_abort` 控制 client 的派发前拒绝与活动等待取消；页面 `cancelActiveWrite` 另行推进取消序号，具体写入循环在检查点停止。`binaryUploadBegin` 同样受派发前取消检查。
+`getWritebackReceipt` 与 `binaryUploadStatus` 为需要项目身份、`cancellation:none` 的只读收尾查询，取消后仍可查询原请求结果，单次 RPC 超时继续有效；文本的显式 deadline 与二进制独立轮询截止点分别维护。broker 将前批已确认结果与未派发尾部分别返回，二进制 begin 成功后的失败，或 begin 已派发且等待被取消，在 commit 未实际派发时按原 transferId 清理暂存；明确拒绝的重复 begin 保留既有 stage；相关时序、部分结果与持久化边界见写回专题。
 
 ## 3. 后台消息族的发送者准入
 
@@ -89,6 +89,7 @@ Chrome runtime 消息由多个 listener 消费，各自拥有准入函数。当�
 [taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) 的 `bridge.ping` 报告 Native 版本、协议、能力和环境；capabilities 取自共享常量，不能视作逐项业务实测结果。
 
 Content 的 [NativeCompatibilityController.ensureForMethod](../../extension/src/content/nativeCompatibilityController.js) 先 ping，再用传入的 `gatedMethods` 集合决定是否阻止目标方法。
+该方法接受可选的 `{assertCurrent}`：普通运行与 skill-installer 共用的 `sendTrackedCodexRun` 传入原运行句柄、AbortSignal 和账号/项目校验。controller 在 `bridge.ping` 返回后、兼容评估及 blocked 通知前执行回调，sender 在 gate 返回后再次执行，再消费通过或拒绝结果；旧运行的迟到响应不能向后继运行派发请求或追加兼容失败。其他通用 `sendNative/sendBackgroundNative` 调用保持各自取消语义，未统一获得这一运行身份回调。
 集合定义在 [contentRuntime.NATIVE_COMPATIBILITY_GATED_METHODS](../../extension/src/content/contentRuntime.js)；只有集合内方法会附加兼容性 evidence，并执行对应派发前取消检查。
 其中 `mirror.invalidate` 豁免该取消检查，用于保留 Undo 后的镜像失效处理；不能从豁免推定其他操作可在取消后继续。
 后台 [getNativeCompatibilityBlock](../../extension/src/background.js) 再检查请求 evidence；它不会为普通请求重新执行独立 ping。
@@ -139,7 +140,7 @@ loopback 约束监听地址，token 约束请求持有的口令；二者都不�
 
 | 修改范围 | 必须联动 | 最近验证入口及范围 |
 | --- | --- | --- |
-| Page 方法或握手 | client、capability guard、contract、dispatcher、Page 加载清单与消费者 | [pageRpcContract](../../test/pageRpcContract.test.js)、[pageBridgeClient](../../test/pageBridgeClient.test.js)、[pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js)：目录、模拟消息和局部页面守卫 |
+| Page 方法或握手 | client、capability guard、contract、dispatcher、Page 加载清单与消费者 | [pageRpcContract](../../test/pageRpcContract.test.js)、[pageBridgeClient](../../test/pageBridgeClient.test.js)、[pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js)、[writebackCancellationRecovery](../../test/writebackCancellationRecovery.test.js)、[assetTransferCancellation](../../test/assetTransferCancellation.test.js)：目录、模拟消息、Page 局部守卫和取消后回执收束 |
 | 后台消息准入 | 对应 listener、sender helper、manifest 注入、站点及 frame 范围 | [backgroundNativeError](../../test/backgroundNativeError.test.js)、[globalPreferences](../../test/globalPreferences.test.js)：worker VM 或存储 mock；不能代替 Chrome 投递验证 |
 | Native 兼容 gate | runtime 集合、controller、后台集合、共享分类、Native ping 与调用者 | [nativeCompatibilityController](../../test/nativeCompatibilityController.test.js)、[nativeCompatibilityRunDispatch](../../test/nativeCompatibilityRunDispatch.test.js)、[compatibility](../../test/compatibility.test.js)：须区分集合注入测试与生产集合完整性 |
 | Provider 本地边界 | prepared launch、三桥 token/地址验证、关闭与取消 | [providerReliability](../../test/providerReliability.test.js)；具体依赖替换和网络范围需按用例核对 |

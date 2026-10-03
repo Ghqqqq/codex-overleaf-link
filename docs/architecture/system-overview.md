@@ -1,6 +1,6 @@
 # 系统结构与状态归属
 
-本页说明 Codex Overleaf Link 的执行环境、代码加载、主调用链和领域术语。适用产品版本为 `2.5.0`，源码基线为 `2073ae74747431aab8d529803d4e9f8197262388`。
+本页说明 Codex Overleaf Link 的执行环境、代码加载、主调用链和领域术语。初始参考产品版本为 `2.5.0`，初始参考源码基线为 `2073ae74747431aab8d529803d4e9f8197262388`；正文随当前仓库维护。
 
 ## 执行环境
 
@@ -93,7 +93,7 @@ sequenceDiagram
 ```
 
 图中省略了重试和队列分支。准确顺序与失败分支见[Auto 修改与撤销](auto-edit-undo.md)。`pendingMirrorRefresh` 发起后不阻塞运行报告，其结果经 [RunSettlementPersistence.settleMirrorRefresh](../../extension/src/content/runSettlementPersistence.js) 按目标记录及项目条件回填，可能早于或晚于运行收尾。
-点击提交与 `startRunView` 固定归属之间存在镜像、Provider 和风格准备窗口，详见[运行状态与恢复](run-state-and-recovery.md)。Native 返回结果后，浏览器仍可能处理保存、镜像和生命周期；一个层次的结束不能直接决定其他层的结果。
+`runTask` 在首次异步等待前捕获提交会话、线程与提示词会话投影，准备完成后由 `startRunView` 按该归属建立运行；草稿清理另行检查输入是否仍匹配，详见[运行状态与恢复](run-state-and-recovery.md)。Native 返回结果后，浏览器仍可能处理保存、镜像和生命周期；一个层次的结束不能直接决定其他层的结果。
 
 Ask 和 Auto 是当前 UI 模式，默认 Ask。Ask 路径抑制向 Overleaf 写回；Auto 仍经过身份、路径、基线及必要确认。Track 决定修订相关路径，Auto compile 决定写后编译，两者与模式分别捕获。定义入口为 [sessionState.js](../../extension/src/shared/sessionState.js)、[composerPanel.js](../../extension/src/content/composerPanel.js) 和 [runExecutionSnapshot.js](../../extension/src/shared/runExecutionSnapshot.js)。
 
@@ -129,7 +129,7 @@ I_{view}=(accountScopeId,projectId,generation).
 | 会话持久化 | [scopedPersistenceTransaction](../../extension/src/shared/scopedPersistenceTransaction.js) 协调作用域；[SharedSessionBridge](../../extension/src/shared/sharedSessionBridge.js) 和 [backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js) 承担共享路径 | 页面状态、最近项目列表、旧站点数据库迁移来源 |
 | Overleaf 文档内容 | 页面桥读取编辑器或服务器内容；保存强度由具体证据决定 | 本地快照、镜像、UI 提示 |
 | 镜像及差异基线 | [mirrorWorkspace](../../native-host/src/mirrorWorkspace.js) | 浏览器写回计划与镜像健康提示 |
-| Native 进程及项目锁 | [taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js)、[codexSessionTiming](../../native-host/src/codexSessionTiming.js) | 运行卡片、后台运行 journal |
+| Native 进程及项目锁 | [taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js)、[nativeRunLifecycle](../../native-host/src/nativeRunLifecycle.js)、[codexSessionTiming](../../native-host/src/codexSessionTiming.js) | 运行卡片、后台运行 journal；transport 断连登记独立于 RPC ID |
 | Custom Provider 配置及凭据 | [providerStore](../../native-host/src/providerStore.js)、[providerRuntime](../../native-host/src/providerRuntime.js) | 浏览器脱敏目录、执行快照中的身份引用 |
 | Built-in 的 Codex 配置 | 由运行所用 Codex home 配置及 Codex 解释；[codexProviderLaunch](../../native-host/src/codexProviderLaunch.js) 不创建 Custom Provider override | Provider 身份与选择投影使用 Built-in / revision 0，执行快照的 `providerRevision` 归一为空字符串；这些身份不覆盖继承的 `model_provider/model_providers` 配置或其真实出站目标，见[Provider 与协议](providers-and-protocols.md) |
 | 风格资产及版本 | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) | 参考草稿、运行捕获的版本与哈希 |
@@ -141,7 +141,7 @@ I_{view}=(accountScopeId,projectId,generation).
 
 ## 生命周期和数据边界
 
-取消横跨页面写入、Native 执行和本地异步工作。停止请求已收到、进程退出已确认分别取证。[processStopBarrier.js](../../native-host/src/processStopBarrier.js) 对退出未确认的项目保留屏障；其持久恢复与平台条件不能推广成所有成功或取消路径的统一保证。
+取消横跨页面写入、Native 执行和本地异步工作。停止请求已收到、进程退出已确认分别取证。[processStopBarrier.js](../../native-host/src/processStopBarrier.js) 对退出未确认的项目保留屏障；其持久恢复与平台条件不能推广成所有独立执行入口或取消回执的统一保证。
 
 子代理 broker 使用共享镜像，通过文件所有权调度与哈希证据约束输出；未完成输出还涉及隔离与采纳，见[并行子代理](parallel-subagents.md)。风格生成创建按账号和项目隔离的版本资产，后续任务捕获具体版本，见[写作风格与技能](writing-style-and-skills.md)。
 

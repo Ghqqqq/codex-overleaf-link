@@ -293,7 +293,7 @@
       toolbar = null;
     }
 
-    return { attach, capture, clear, render, start, destroy };
+    return { attach, capture, clear, render, start, destroy, getRevision: () => generation };
   }
 
   return { create, buildChip, renderSent };

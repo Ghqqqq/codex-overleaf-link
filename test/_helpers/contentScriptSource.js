@@ -19,6 +19,7 @@ const CONTENT_SOURCE_PATHS = [
   path.join(SHARED_DIR, 'compileAdapter.js'),
   path.join(CONTENT_DIR, 'writebackPlan.js'),
   path.join(CONTENT_DIR, 'runResultActions.js'),
+  path.join(CONTENT_DIR, 'sensitivePreflight.js'),
   path.join(CONTENT_DIR, 'markdownText.js'),
   path.join(CONTENT_DIR, 'diagnosticsController.js'),
   path.join(CONTENT_DIR, 'runTimelineView.js'),

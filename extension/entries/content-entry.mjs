@@ -64,6 +64,7 @@ import '../src/content/writtenChangesView.js';
 import '../src/content/contextTray.js';
 import '../src/content/localSkillsPanel.js';
 import '../src/content/runController.js';
+import '../src/content/sensitivePreflight.js';
 import '../src/content/mirrorHealth.js';
 import '../src/content/otWarmMirrorController.js';
 import '../src/content/composerAttachments.js';

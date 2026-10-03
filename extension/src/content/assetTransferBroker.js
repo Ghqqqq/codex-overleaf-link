@@ -17,11 +17,12 @@
       const deadlineAt = Number.isFinite(input.deadlineAt) && input.deadlineAt > 0 ? input.deadlineAt : null;
       const invalidDeadline = input.deadlineAt !== undefined && deadlineAt === null;
       const expired = () => invalidDeadline || (deadlineAt !== null && now() >= deadlineAt);
-      let textBatch = [], blocked = false;
+      let textBatch = [], blocked = false, cancelled = false;
       function skipUndispatched(operations) {
         const result = normalizeTextResult({ ok: false,
-          code: blocked ? 'writeback_tail_not_started' : 'writeback_deadline_exceeded',
-          error: blocked ? 'An earlier writeback is unconfirmed. This operation was not dispatched.'
+          code: cancelled ? 'codex_cancelled' : blocked ? 'writeback_tail_not_started' : 'writeback_deadline_exceeded',
+          error: cancelled ? 'The run was cancelled. This operation was not dispatched.'
+            : blocked ? 'An earlier writeback is unconfirmed. This operation was not dispatched.'
             : invalidDeadline ? 'The writeback deadline is invalid. This operation was not dispatched.'
               : 'The writeback deadline has elapsed. This operation was not dispatched.',
           changedDocument: false }, operations);
@@ -32,8 +33,9 @@
         if (!textBatch.length) return;
         const operations = textBatch;
         textBatch = [];
-        if (blocked || expired()) { skipUndispatched(operations); return; }
-        const response = await callPageBridge('applyOperations', {
+        if (blocked || cancelled || expired()) { skipUndispatched(operations); return; }
+        let response;
+        try { response = await callPageBridge('applyOperations', {
           operations,
           baseFiles: input.baseFiles || [],
           reviewingPolicy: input.reviewingPolicy || '',
@@ -42,16 +44,25 @@
           requireEditing: input.requireEditing === true,
           retryCreates: input.retryCreates === true,
           runProjectId: input.runProjectId || ''
-        });
-        const recovered = response?.code === 'page_bridge_timeout' && response.requestId
+        }); } catch (error) {
+          if (error?.code !== 'codex_cancelled' && error?.cancelled !== true) throw error;
+          cancelled = true;
+          // A later cancelled batch must not discard earlier write/Undo evidence.
+          if (!error.requestId && !results.length) throw error;
+          response = { ok: false, code: 'codex_cancelled', error: error.message,
+            requestId: error.requestId, changedDocument: error.changedDocument !== false };
+        }
+        const recovered = ['page_bridge_timeout', 'codex_cancelled'].includes(response?.code) && response.requestId
           ? await recoverTextReceipt(response, operations, input.runProjectId || '', deadlineAt)
           : response;
         const result = normalizeTextResult(recovered, operations);
+        if (response?.code === 'codex_cancelled' && response.changedDocument === false) result.receiptUnconfirmed = false;
         results.push(result);
+        cancelled ||= hasCancellation(result);
         blocked = result.receiptUnconfirmed === true;
       }
       for (const operation of Array.isArray(input.operations) ? input.operations : []) {
-        if (blocked || expired()) {
+        if (blocked || cancelled || expired()) {
           skipUndispatched([operation]);
           continue;
         }
@@ -60,12 +71,13 @@
           continue;
         }
         await flushTextBatch();
-        if (blocked || expired()) {
+        if (blocked || cancelled || expired()) {
           skipUndispatched([operation]);
           continue;
         }
         const binaryResult = await applyBinaryOperation(operation, input);
         results.push(binaryResult);
+        cancelled ||= hasCancellation(binaryResult);
         blocked = binaryResult.receiptUnconfirmed === true;
       }
       await flushTextBatch();
@@ -84,14 +96,16 @@
           receipt = await callPageBridge('getWritebackReceipt', { requestId: timeout.requestId, runProjectId,
             ...(deadlineAt !== null ? { deadlineAt } : {}) });
         } catch (error) {
-          if (error?.code === 'codex_cancelled' || error?.cancelled === true) throw error;
+          if (error?.code === 'codex_cancelled' || error?.cancelled === true) {
+            recoveryError = error.message || 'Receipt settlement was cancelled.'; break;
+          }
           recoveryError = error?.message || String(error);
           if (!isTransientReceiptFailure(error)) break;
           transportFailed = true;
         }
         if (!transportFailed) {
           if (receipt?.code === 'codex_cancelled' || receipt?.cancelled === true) {
-            throw responseError(receipt, 'codex_cancelled');
+            recoveryError = receipt.error || 'Receipt settlement was cancelled.'; break;
           }
           if (receipt?.ok !== true) {
             recoveryError = receipt?.error?.message || receipt?.error || receipt?.reason
@@ -130,8 +144,9 @@
       const transferId = `asset_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
       const assetRef = operation.assetRef || null;
       const safeOperation = sanitizeOperation(operation);
-      let pageBegun = false, commitAttempted = false;
+      let beginAttempted = false, pageBegun = false, commitAttempted = false;
       try {
+        beginAttempted = true;
         const begin = await callPageBridge('binaryUploadBegin', {
           transferId,
           path: operation.path,
@@ -164,6 +179,8 @@
         if (!committed?.ok) throw responseError(committed, committed?.code || 'binary_upload_failed');
         return { ok: true, applied: [{ operation: safeOperation, result: committed }], skipped: [] };
       } catch (error) {
+        // A commit rejected before dispatch still leaves staged bytes to clean up.
+        if (error.requestDispatched === false) commitAttempted = false;
         let changedDocument = error?.changedDocument === true
           || (commitAttempted && error?.changedDocument !== false);
         if (commitAttempted && changedDocument) {
@@ -176,6 +193,7 @@
               || receipt.runProjectId !== input.runProjectId) break;
             if (receipt.result?.ok === true) {
               return { ok: true, applied: [{ operation: safeOperation, result: receipt.result }], skipped: [],
+                cancelled: error.code === 'codex_cancelled' || error.cancelled === true,
                 receiptRecovery: { transferId, recovered: true, initialError: error.message } };
             }
             if (receipt.state === 'completed' && receipt.changedDocument === false) {
@@ -186,7 +204,8 @@
             await delay(Math.min(500, Math.max(1, deadline - now())));
           } while (now() <= deadline);
         }
-        if (pageBegun && !commitAttempted) {
+        const uncertainBegin = beginAttempted && error.code === 'codex_cancelled' && error.requestDispatched !== false;
+        if (!commitAttempted && (pageBegun || uncertainBegin)) {
           await callPageBridge('binaryUploadAbort', { transferId, runProjectId: input.runProjectId || '' }).catch(() => null);
         }
         const code = error.code || 'binary_upload_failed';
@@ -320,6 +339,11 @@
       };
     }
     return safe;
+  }
+
+  function hasCancellation(result) {
+    return result?.cancelled === true || result?.code === 'codex_cancelled'
+      || result?.skipped?.some(entry => entry.result?.code === 'codex_cancelled');
   }
 
   function isTransientReceiptFailure(value) {

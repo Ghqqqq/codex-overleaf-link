@@ -4,7 +4,7 @@ const test = require('node:test');
 const PageBridgeClient = require('../extension/src/content/pageBridgeClient');
 const PageRpcContract = require('../extension/src/shared/pageRpcContract');
 
-test('page bridge client keeps document mutations single-attempt and cancellable', async () => {
+test('page bridge client rejects cancelled document mutations before dispatch', async () => {
   const listeners = new Set();
   const posted = [];
   const windowRef = {
@@ -33,8 +33,7 @@ test('page bridge client keeps document mutations single-attempt and cancellable
     ),
     error => error?.code === 'codex_cancelled'
   );
-  assert.equal(posted.length, 1);
-  assert.equal(posted[0].method, 'applyOperations');
+  assert.equal(posted.length, 0);
   assert.equal(listeners.size, 0);
 });
 

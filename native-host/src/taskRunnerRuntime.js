@@ -36,6 +36,7 @@ const {
 const { version: PACKAGE_VERSION } = require('../../package.json');
 
 const processStopBarrier = require('./processStopBarrier');
+const runLifecycle = require('./nativeRunLifecycle');
 const activeProjectLocks = new Map();
 const activeRunControllers = new Map();
 const activeRunEntries = new Map();
@@ -236,6 +237,7 @@ async function handleCodexRun(request, env, emit) {
     return errorResponse(request.id, 'project_locked', `Project ${projectKey} is currently in use by codex.run`);
   }
   const abortController = new AbortController();
+  const lifetime = runLifecycle.register({ controller: abortController, projectKey, rootDir: env.CODEX_OVERLEAF_MIRROR_ROOT });
   const activeEntry = {
     id: request.id || '',
     projectKey,
@@ -264,6 +266,7 @@ async function handleCodexRun(request, env, emit) {
       return providerErrorResponse(request.id, error);
     }
 
+    abortController.signal.throwIfAborted();
     if (params.useExistingMirror) {
       const { getMirrorStatus, applyFileOverlays } = require('./mirrorWorkspace');
       const rootDir = env.CODEX_OVERLEAF_MIRROR_ROOT;
@@ -306,6 +309,7 @@ async function handleCodexRun(request, env, emit) {
       rootDir: env.CODEX_OVERLEAF_MIRROR_ROOT,
       providerLaunch: providerResolution.providerLaunch,
       onStopUnconfirmed: error => processStopBarrier.record(projectKey, env.CODEX_OVERLEAF_MIRROR_ROOT, error),
+      onProcessStarted: lifetime.trackProcess,
       onControlReady: control => {
         activeEntry.control = control;
       },
@@ -356,6 +360,7 @@ async function handleCodexRun(request, env, emit) {
       activeRunByProject.delete(projectKey);
     }
     releaseProjectLock(projectKey, lockToken);
+    lifetime.complete();
   }
 }
 
@@ -1308,19 +1313,10 @@ function getActiveNativeWorkState() {
   };
 }
 
-function abortAllActiveOperations(reason = 'Native messaging transport disconnected.') {
-  const error = new Error(String(reason || 'Native messaging transport disconnected.'));
-  error.code = 'native_transport_closed';
-  for (const controller of activeRunControllers.values()) {
-    if (controller && !controller.signal?.aborted) {
-      controller.abort(error);
-    }
-  }
-}
-
 module.exports = {
   NATIVE_REQUEST_QUOTAS,
-  abortAllActiveOperations,
+  abortAllActiveOperations: runLifecycle.abortAllActiveOperations,
+  quarantineActiveOperations: runLifecycle.quarantineActiveOperations,
   buildDefaultTaskResult,
   getActiveNativeWorkState,
   handleRequest,

@@ -118,3 +118,14 @@ test('selection and binary receipt reads stay bound to the explicit project', ()
   }
   assert.equal(Contract.getMethod('binaryUploadCommit').retryClass, 'no_retry');
 });
+
+test('write receipt settlement survives cancellation while preserving read identity and bounded timeouts', () => {
+  for (const name of ['getWritebackReceipt', 'binaryUploadStatus']) {
+    const method = Contract.getMethod(name);
+    assert.equal(method.mutation, 'read');
+    assert.equal(method.projectIdentity, 'required');
+    assert.equal(method.cancellation, 'none');
+    assert.equal(Contract.resolveTimeoutMs(name), 8000);
+  }
+  assert.equal(Contract.isCancellable('binaryUploadBegin'), true);
+});

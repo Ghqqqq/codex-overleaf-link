@@ -73,6 +73,7 @@
     'ScopedPersistenceCoordinator',
     'ScopedPersistenceTransaction',
     'SensitiveScan',
+    'SensitivePreflight',
     'SessionManager',
     'SessionForkController',
     'SessionPanel',

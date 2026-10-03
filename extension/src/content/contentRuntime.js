@@ -940,6 +940,7 @@
   let storageKey = LEGACY_STORAGE_KEY;
   let globalPreferencesController = null;
   let currentRunView = null;
+  let runSubmissionPending = false;
   let pendingRetryReplacement = null;
   let runQueueScheduler = null;
   let runInputCoordinator = null;
@@ -1685,15 +1686,7 @@
   function resetContextProject() { return contextTrayController.resetContextProject(); }
 
   async function runTask(options = {}) {
-    // Barrier on a still-flying background mirror refresh from the previous
-    // turn (v1.7.5) BEFORE startRunView creates the new run view: the mirror's
-    // wrap-up events must land in the run that produced them, not the new
-    // one, and mirror.sync landing mid-run would swap the local baseline
-    // under Codex.
-    const pendingMirror = getPendingMirrorRefresh?.();
-    if (pendingMirror) {
-      await pendingMirror.catch(() => {});
-    }
+    // Capture the click before any preparation can yield to another draft/session.
     readPanelInputs();
     const queuedInput = options.queuedInput || null;
     const task = String(queuedInput?.text || state.task || '').trim();
@@ -1701,6 +1694,11 @@
       appendLog(tx('Enter a task first.', '请先输入任务。'));
       return;
     }
+    const submittedSessionId = state.activeSessionId;
+    const submittedSession = runController.captureSessionContext(state);
+    const submittedThreadId = getActiveSession(state)?.codexThreadId || '';
+    const submittedDraft = state.task;
+    const submittedRetryReplacement = pendingRetryReplacement;
     const submittedWritingStyleScope = { accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId() };
     const submittedPanelState = {
       mode: state.mode,
@@ -1717,12 +1715,20 @@
     const submittedSkillLoadingSettings = getSkillLoadingSettings();
     const submittedAttachments = getComposerAttachmentsForRun();
     const submittedSkillInvocation = getComposerSkillInvocationForRun();
+    const submittedSelectionRevision = selectionContextView.getRevision?.();
+    // Keep the previous mirror's completion events on its own run.
+    const pendingMirror = getPendingMirrorRefresh?.();
+    if (pendingMirror) await pendingMirror.catch(() => {});
     await providerSettingsCoordinator.ensureLoaded();
     if (!queuedInput) await writingStyleSettings.ensureLoaded(true);
     if (submittedWritingStyleScope.accountScopeId !== cachedAccountScopeId
       || submittedWritingStyleScope.projectId !== getCurrentProjectId()) {
       throw new Error(tx('The active project changed before submission. Submit the task again.',
         '提交前活动项目已改变，请重新提交任务。'));
+    }
+    if (!findSessionById(submittedSessionId) || currentRunView) {
+      throw new Error(tx('The submitted session changed before submission. Submit the task again.',
+        '提交所属会话已改变，请重新提交任务。'));
     }
     submittedPanelState.writingStyle = queuedInput ? null : writingStyleSettings.capture();
     const executionSnapshot = queuedInput
@@ -1735,9 +1741,9 @@
     const submittedMode = executionSnapshot.mode;
     const submittedRequireReviewing = executionSnapshot.requireReviewing === true;
     const replaceRunId = queuedInput ? '' : runController.resolveRetryReplacement({
-      candidate: pendingRetryReplacement,
-      activeSessionId: state.activeSessionId,
-      runs: state.runs,
+      candidate: submittedRetryReplacement,
+      activeSessionId: submittedSessionId,
+      runs: findSessionById(submittedSessionId)?.runs,
       projectRunSettlement: run => WritebackSettlement.projectRunSettlement(run)
     });
 
@@ -1745,6 +1751,9 @@
     runCancellationController = new AbortController();
     setRunning(true);
     currentRunView = startRunView({
+      sessionId: submittedSessionId,
+      sessionContext: submittedSession,
+      codexThreadId: submittedThreadId,
       task,
       mode: submittedMode,
       model: executionSnapshot.model,
@@ -1756,7 +1765,7 @@
       queueItemId: queuedInput?.id || '',
       replaceRunId
     });
-    if (!queuedInput) pendingRetryReplacement = null;
+    if (!queuedInput && pendingRetryReplacement === submittedRetryReplacement) pendingRetryReplacement = null;
     const runSessionId = currentRunView.sessionId;
     let runAuditDraft = null;
     try {
@@ -1770,11 +1779,22 @@
         focusFiles: executionSnapshot.focusFiles,
         executionSnapshot
       }));
+      if (submittedWritingStyleScope.accountScopeId !== cachedAccountScopeId
+        || submittedWritingStyleScope.projectId !== getCurrentProjectId()) {
+        throw Object.assign(createRunCancellationError(), {
+          message: 'The active project or account changed before dispatch.'
+        });
+      }
       announceCrossTabRunStart();
       // Binary attachments belong to this submitted turn. The run record has
       // already captured their snapshots, so clear them from the composer
       // together with the submitted text. Persistent @context remains intact.
-      clearTaskComposer({ keepAttachments: false });
+      if (!queuedInput) clearTaskComposer({ keepAttachments: false, submission: {
+        ...submittedWritingStyleScope,
+        sessionId: submittedSessionId, task: submittedDraft, attachments: submittedAttachments,
+        skillInvocation: submittedSkillInvocation, selectionContext: submittedPanelState.selectionContext,
+        selectionRevision: submittedSelectionRevision
+      } });
       syncComposerSendAvailability(true);
       appendRunEvent({
         title: submittedSkillInvocation?.id === 'skill-installer'
@@ -1928,8 +1948,7 @@
         }
       }
 
-      const activeSession = findSessionById(runSessionId) || getActiveSession(state);
-      const codexThreadId = activeSession?.codexThreadId || '';
+      const codexThreadId = submittedThreadId;
 
       // Resolve @compile-log if mentioned in task
       let compileLogContext = null;
@@ -1964,7 +1983,7 @@
         }
       }
 
-      const sensitiveFindings = await awaitRunStep(runSensitivePreflight({
+      let sensitiveFindings = await awaitRunStep(runSensitivePreflight({
         task,
         project,
         rules: getGovernanceRulesForCurrentProject(),
@@ -2022,6 +2041,25 @@
         fileOverlays = null;
         otWarmStart = false;
         restrictToFocusFiles = staleRetry.restrictToFocusFiles;
+        const retryFindings = await awaitRunStep(runSensitivePreflight({
+          task, project, rules: getGovernanceRulesForCurrentProject(), useExistingMirror: false
+        }));
+        if (retryFindings.blocked) {
+          await finalizeAuditRecord(runAuditDraft, {
+            resultStatus: 'blocked_sensitive', sensitiveFindings: retryFindings.findings,
+            blockedFiles: retryFindings.findings.map(finding => ({
+              path: finding.path || finding.source || 'task', reason: finding.detectorId || 'sensitive'
+            }))
+          });
+          await finishRunView(tx('Blocked: sensitive content review required', '已阻止：需要处理敏感内容'), 'failed');
+          return;
+        }
+        if (retryFindings.findings.length) {
+          sensitiveFindings = {
+            blocked: false, findings: [...sensitiveFindings.findings, ...retryFindings.findings]
+          };
+          runAuditDraft = await updateAuditSensitiveFindings(runAuditDraft, sensitiveFindings.findings);
+        }
         response = await awaitRunStep(sendTrackedCodexRun(buildCodexRunParams({
             task,
             project,
@@ -2430,8 +2468,7 @@
       title: tx('Starting the Codex skill installer.', '正在启动 Codex skill installer。'),
       status: 'running'
     });
-    const activeSession = findSessionById(runSessionId) || getActiveSession(state);
-    const codexThreadId = activeSession?.codexThreadId || '';
+    const codexThreadId = currentRunView?.codexThreadId || '';
     const params = {
       projectId: getCurrentProjectId(),
       mode: submittedMode,
@@ -2439,7 +2476,10 @@
       model: executionSnapshot.model,
       reasoningEffort: executionSnapshot.reasoningEffort,
       speedTier: executionSnapshot.speedTier,
-      session: state.session,
+      session: currentRunView?.sessionContext,
+      clientRunId: currentRunView?.recordId || '',
+      clientSessionId: runSessionId,
+      accountScopeId: currentRunView?.runAccountScopeId || '',
       threadId: codexThreadId || undefined,
       customInstructions: submittedCustomInstructions || undefined,
       loadCodexLocalSkills: submittedSkillLoadingSettings?.loadCodexLocalSkills !== false,
@@ -2450,10 +2490,7 @@
       skipMirrorSync: true
     };
 
-    const response = await sendNative({
-      method: 'codex.run',
-      params
-    });
+    const response = await sendTrackedCodexRun(params);
 
     if (!response.ok) {
       if (runCancellationRequested || isRunCancellationError(response.error)) {
@@ -2653,15 +2690,18 @@
     if (currentRunView) {
       return queueComposerInput();
     }
+    if (runSubmissionPending) return;
+    runSubmissionPending = true;
     runTask().catch(error => {
-      setRunning(false);
-      nativeChannel.clearActiveRequest();
-      stopRunElapsedTick();
-      currentRunView = null;
-      runCancellationController = null;
+      if (!currentRunView) {
+        setRunning(false);
+        nativeChannel.clearActiveRequest();
+        stopRunElapsedTick();
+        runCancellationController = null;
+      }
       console.error('[codex-overleaf] failed to start task', error);
       appendPlainLog(tx(`Could not start Codex task: ${error.message}`, `无法启动 Codex 任务：${error.message}`));
-    });
+    }).finally(() => { runSubmissionPending = false; });
   }
 
   const runGuidanceController = Modules.RunGuidanceController.create({
@@ -2971,7 +3011,9 @@
     submittedMode
   } = {}) {
     const executionSnapshot = currentRunView?.executionSnapshot || captureCurrentExecutionSnapshot();
-    const submittedState = RunExecutionSnapshot.applyToState(state, executionSnapshot);
+    const submittedState = RunExecutionSnapshot.applyToState({
+      ...state, session: currentRunView?.sessionContext || state.session
+    }, executionSnapshot);
     const params = runController.buildCodexRunParams({
       currentProjectId: getCurrentProjectId(),
       state: submittedState,
@@ -3009,11 +3051,23 @@
   }
 
   async function sendTrackedCodexRun(params) {
-    const compatibilityGate = await nativeCompatibilityController.ensureForMethod('codex.run');
+    const owner = currentRunView;
+    const signal = runCancellationController?.signal;
+    const assertCurrent = () => {
+      if (signal?.aborted || (owner && owner !== currentRunView)) throw createRunCancellationError();
+      throwIfRunCancellationRequested();
+      if (owner && (owner.runProjectId !== getCurrentProjectId()
+        || owner.runAccountScopeId !== cachedAccountScopeId)) {
+        throw Object.assign(createRunCancellationError(), {
+          message: 'The active project or account changed before dispatch.'
+        });
+      }
+    };
+    const compatibilityGate = await nativeCompatibilityController.ensureForMethod('codex.run', { assertCurrent });
+    assertCurrent();
     if (!compatibilityGate.ok) {
       return compatibilityGate.response;
     }
-    throwIfRunCancellationRequested();
     const tracked = nativeChannel.sendNativeTracked(nativeCompatibilityController.attachEvidence({
       method: 'codex.run',
       params
@@ -3044,6 +3098,7 @@
     const projectKey = getCurrentProjectId();
     const recovery = await activeTurnControl.recoverJournals({
       projectKey,
+      accountScopeId: cachedAccountScopeId,
       requireOwnerLost: Modules.StorageDb.sharedSessionsEnabled?.() === true,
       normalizeInterruptedRun: record => Object.assign(record, Modules.SessionState.normalizeRuns([record], {
         restoreRunningRuns: true,
@@ -3091,7 +3146,7 @@
       maxEvents: MAX_RUN_EVENTS
     });
     if (recovery.changed) {
-      await saveState();
+      if (await saveState({ recoveryRuns: recovery.recoveredRuns }) !== true) return;
       for (const requestId of recovery.acknowledgeIds) {
         await activeTurnControl.acknowledge(requestId).catch(() => false);
       }
@@ -3173,121 +3228,10 @@
   }
 
   async function runSensitivePreflight(options) {
-    options = options || {};
-    const { task, project, rules, useExistingMirror = false } = options;
-    const normalizedRules = normalizeGovernanceRules(rules);
-    if (normalizedRules.sensitiveCheckEnabled === false) {
-      return { blocked: false, findings: [] };
-    }
-    if (!SensitiveScan?.scanSensitiveInputs && !useExistingMirror) {
-      return { blocked: false, findings: [] };
-    }
-    let findings = SensitiveScan?.scanSensitiveInputs
-      ? SensitiveScan.scanSensitiveInputs({
-        task,
-        files: (project?.files || []).filter(isTextSnapshotFile)
-      })
-      : [];
-    if (useExistingMirror) {
-      findings = dedupeSensitiveFindings([
-        ...findings,
-        ...await scanNativeMirrorSensitiveFindings()
-      ]);
-    }
-    if (!findings.length) {
-      return { blocked: false, findings: [] };
-    }
-    appendRunEvent({
-      title: tx(
-        `Sensitive content check found ${findings.length} item(s).`,
-        `敏感内容检查发现 ${findings.length} 项。`
-      ),
-      status: 'failed',
-      detail: findings.slice(0, 8).map(finding => ({
-        [tr('detailFile')]: finding.path || finding.source || 'task',
-        [tr('detailReason')]: finding.detectorId,
-        [tx('Preview', '预览')]: finding.preview || '[REDACTED]'
-      }))
-    });
-    if (normalizedRules.sensitiveConfirmAllowed === true) {
-      const approved = await showPluginConfirm({
-        title: tr('sensitiveConfirmTitle'),
-        message: formatSensitiveConfirmMessage(findings),
-        confirmLabel: tr('sensitiveConfirmRun'),
-        cancelLabel: tr('confirmDefaultCancel'),
-        destructive: true
-      });
-      return { blocked: !approved, findings };
-    }
-    appendCompletionReport({
-      conclusion: tx(
-        'This run was blocked before Codex received project context because sensitive content was detected.',
-        '检测到敏感内容，本轮已在向 Codex 发送项目上下文前阻止。'
-      ),
-      status: 'blocked',
-      operations: [],
-      applyResults: [],
-      nextStep: tx(
-        'Remove the sensitive content, narrow @context, or enable explicit sensitive confirmation in Project Settings.',
-        '请移除敏感内容、缩小 @context，或在项目设置里允许敏感内容显式确认。'
-      )
-    });
-    return { blocked: true, findings };
-  }
-
-  function formatSensitiveConfirmMessage(findings = []) {
-    const visible = findings.slice(0, 8).map(finding => {
-      const path = finding.path || finding.source || 'task';
-      return `${path}: ${finding.detectorId || 'sensitive'} (${finding.preview || '[REDACTED]'})`;
-    });
-    return [
-      tr('sensitiveConfirmMessage'),
-      '',
-      ...visible,
-      findings.length > visible.length ? tx(`${findings.length - visible.length} more finding(s).`, `另有 ${findings.length - visible.length} 项。`) : ''
-    ].filter(Boolean).join('\n');
-  }
-
-  async function scanNativeMirrorSensitiveFindings() {
-    try {
-      const response = await sendBackgroundNative({
-        method: 'mirror.scanSensitive',
-        params: { projectId: getCurrentProjectId() }
-      });
-      if (response?.ok) {
-        return Array.isArray(response.result?.findings) ? response.result.findings : [];
-      }
-      return [{
-        detectorId: 'mirror-sensitive-scan-unavailable',
-        source: 'local-mirror',
-        preview: response?.error?.message || 'Could not scan the local mirror before Codex runs.'
-      }];
-    } catch (error) {
-      return [{
-        detectorId: 'mirror-sensitive-scan-unavailable',
-        source: 'local-mirror',
-        preview: error?.message || 'Could not scan the local mirror before Codex runs.'
-      }];
-    }
-  }
-
-  function dedupeSensitiveFindings(findings = []) {
-    const seen = new Set();
-    const deduped = [];
-    for (const finding of findings || []) {
-      const key = [
-        finding?.detectorId || '',
-        finding?.source || '',
-        finding?.path || '',
-        finding?.preview || ''
-      ].join('\u0000');
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      deduped.push(finding);
-    }
-    return deduped;
+    return Modules.SensitivePreflight.create({
+      SensitiveScan, normalizeGovernanceRules, isTextSnapshotFile, sendBackgroundNative,
+      getCurrentProjectId, appendRunEvent, appendCompletionReport, showPluginConfirm, tr, tx
+    }).run(options);
   }
 
   function appendRunCancelledReport() {
@@ -5457,7 +5401,7 @@
         state: stateSnapshot,
         compactState: compactStateSnapshot,
         projectId,
-        deletedSessionIds: options?.deletedSessionIds, reviewRunIds: options?.reviewRunIds,
+        deletedSessionIds: options?.deletedSessionIds, reviewRunIds: options?.reviewRunIds, recoveryRuns: options?.recoveryRuns,
         Migration,
         StorageDb,
         SessionPersistence: Modules.SessionPersistence,
@@ -5485,7 +5429,7 @@
           persistScopedState
         );
         if (!committed.ok && (
-          options?.reviewRunIds?.length || options?.queueMutation
+          options?.reviewRunIds?.length || options?.recoveryRuns?.length || options?.queueMutation
           || options?.queueMutations?.length
           || committed.reason !== 'stale_view'
         )) {
@@ -5493,8 +5437,10 @@
             code: committed.reason
           });
         }
+        if (options?.recoveryRuns?.length) return true;
       }
     } catch (error) {
+      if (error?.code === 'recovery_scope_changed') return;
       if (
         error?.code === 'account_scope_unavailable' &&
         !options?.reviewRunIds?.length && !options?.queueMutation &&
@@ -5827,8 +5773,24 @@
     }
   }
 
-  function clearTaskComposer({ keepAttachments = false } = {}) {
+  function clearTaskComposer({ keepAttachments = false, submission = null } = {}) {
     const taskInput = panel?.querySelector('[data-task]');
+    if (submission) {
+      if (submission.projectId !== getCurrentProjectId()
+        || submission.accountScopeId !== cachedAccountScopeId) return;
+      if (findSessionById(submission.sessionId)?.task !== submission.task) return;
+      if (state.activeSessionId !== submission.sessionId) {
+        updateSessionById(submission.sessionId, { task: '' });
+        saveStateSoon();
+        return;
+      }
+      if (composerAttachmentController.getAttachmentByteUsage?.().pending > 0
+        || selectionContextView.getRevision?.() !== submission.selectionRevision) return;
+      if (!runController.isSubmittedComposerUnchanged(submission, {
+        task: taskInput?.value, attachments: getComposerAttachmentsForRun(),
+        skillInvocation: getComposerSkillInvocationForRun(), selectionContext: selectionContextView.capture()
+      })) return;
+    }
     if (taskInput) {
       taskInput.value = '';
     }
@@ -5959,6 +5921,9 @@
   }
 
   function startRunView({
+    sessionId = state.activeSessionId,
+    sessionContext = runController.captureSessionContext(state),
+    codexThreadId = '',
     task,
     mode,
     model,
@@ -5999,41 +5964,39 @@
       executionSnapshot: executionSnapshot
         ? RunExecutionSnapshot.cloneSnapshot(executionSnapshot)
         : undefined,
-      // Welcome-panel + write-guard:
-      // Immutable per-run capture of the project this run was submitted
-      // against. Every writeback / accept / undo dispatch attaches this id
-      // to its page-bridge params so the page-side guard can verify the run
-      // is still acting on the same project before mutating the editor. No
-      // language-level enforcement — the field is treated as immutable by
-      // convention and never reassigned anywhere downstream.
+      // Writeback/Accept/Undo carry this immutable project identity to Page.
       runProjectId: getCurrentProjectId() || '',
       runAccountScopeId: cachedAccountScopeId || ''
     };
-    const active = getActiveSession(state);
+    const active = findSessionById(sessionId);
     const titlePatch = active?.titleSource !== 'manual'
       ? {
         title: deriveSessionTitle([], task),
         titleSource: 'auto'
       }
       : {};
-    state = updateActiveSession(state, {
-      runs: runController.replaceRunForRetry(state.runs, replaceRunId, record),
+    updateSessionById(sessionId, {
+      runs: runController.replaceRunForRetry(active?.runs, replaceRunId, record),
       ...titlePatch
     });
     saveStateSoon(replaceRunId ? 0 : 120);
 
     const log = panel.querySelector('[data-log]');
-    removeEmptyRunsMessage(log);
-    if (replaceRunId) log.querySelector(`[data-run-id="${cssEscape(replaceRunId)}"]`)?.remove();
     const root = renderRunCard(record);
-    log.append(root);
-    scrollLogToBottom({ force: true });
+    if (state.activeSessionId === sessionId) {
+      removeEmptyRunsMessage(log);
+      if (replaceRunId) log.querySelector(`[data-run-id="${cssEscape(replaceRunId)}"]`)?.remove();
+      log.append(root);
+      scrollLogToBottom({ force: true });
+    }
     startRunElapsedTick();
     renderSessionList();
     applySessionLabel();
 
     return {
-      sessionId: state.activeSessionId,
+      sessionId,
+      sessionContext,
+      codexThreadId,
       recordId: record.id,
       // Mirror the immutable runProjectId on the view so writeback /
       // accept / undo dispatches don't need to re-look up the record.
@@ -6748,9 +6711,10 @@
         : trackedUndo ? formatTrackedChangeFiles(run.undoTrackedChanges) : formatTrackedUndoFiles(run) }
     });
 
+    let result;
     try {
       const trackedUndoPostFilesAtDispatch = buildTrackedUndoPostFiles(textRun);
-      let result = hasTextUndo ? await callPageBridge('rejectTrackedChanges', {
+      result = hasTextUndo ? await callPageBridge('rejectTrackedChanges', {
         trackedChanges: textRun.undoTrackedChanges || [], deadlineAt,
         expectedFiles: textRun.undoExpectedFiles || [],
         postFiles: trackedUndoPostFilesAtDispatch,
@@ -6783,7 +6747,6 @@
         }
         result = Modules.UndoOperations.mergeFileUndoResult(result, createdResult, fileUndoOperations);
       }
-      writebackOrchestrator.invalidateMirrorAfterUndo(runId, getRunProjectIdForWriteback(run), result);
       appendRunRecordEvent(runId, {
         title: fileUndoOperations.length ? tr('undoResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }) : trackedUndo
           ? tr('undoTrackedResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 })
@@ -6811,6 +6774,8 @@
       }
       applyLegacyUndoSettlement(runId, result.skipped?.length ? 'partial' : 'applied', result);
     } finally {
+      // Known Page changes require invalidation even when a durable checkpoint fails.
+      if (result) writebackOrchestrator.invalidateMirrorAfterUndo(runId, getRunProjectIdForWriteback(run), result);
       if (lifecycleReject) {
         trackedChangeInFlight.delete(runId);
         refreshRunCardControls(runId);

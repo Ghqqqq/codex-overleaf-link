@@ -94,6 +94,7 @@
       const journals = await listJournals(projectKey).catch(() => []);
       let changed = false;
       const acknowledgeIds = [];
+      const recoveredRuns = [];
       for (const journal of journals) {
         if (!journal?.terminal && !journal?.ownerLost) {
           continue;
@@ -104,7 +105,8 @@
           continue;
         }
         const session = options.findSession?.(journal.sessionId);
-        if (!session) {
+        if (!session || (session.projectId && session.projectId !== projectKey)
+          || (options.accountScopeId && session.accountScopeId && session.accountScopeId !== options.accountScopeId)) {
           continue;
         }
         let record = (session.runs || []).find(run => run.id === journal.clientRunId);
@@ -117,6 +119,8 @@
         if (!record) {
           continue;
         }
+        if (record.runProjectId && record.runProjectId !== projectKey) continue;
+        if (!record.runProjectId) record.runProjectId = projectKey;
         if (record.status === 'running') {
           options.normalizeInterruptedRun?.(record);
         }
@@ -163,8 +167,10 @@
         options.pauseSessionQueue?.(session, 'page_reload');
         changed = true;
         acknowledgeIds.push(journal.requestId);
+        recoveredRuns.push({ sessionId: session.id, runId: record.id,
+          projectId: projectKey, accountScopeId: options.accountScopeId });
       }
-      return { changed, acknowledgeIds };
+      return { changed, acknowledgeIds, recoveredRuns };
     }
 
     function destroy() {

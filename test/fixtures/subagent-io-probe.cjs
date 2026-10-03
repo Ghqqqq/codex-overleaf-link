@@ -85,7 +85,7 @@ function installActualIndexHandlers() {
       buildNativeRuntimeEnv: () => ({}), summarizeNativeEnvironment: () => ({ isolatedProbe: true })
     };
     if (name === './taskRunner') return { handleRequest() { throw new Error('unused request dispatcher'); } };
-    if (name === './taskRunnerRuntime') return { abortAllActiveOperations() {}, getActiveNativeWorkState: () => ({}) };
+    if (name === './taskRunnerRuntime') return { abortAllActiveOperations() {}, quarantineActiveOperations: () => [], getActiveNativeWorkState: () => ({}) };
     if (name === './updateManager') return { isUpdateMethod: () => false, handleUpdateRequest() { throw new Error('unused updater'); } };
     return indexRequire(name);
   };

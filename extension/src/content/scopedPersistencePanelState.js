@@ -51,6 +51,28 @@
     });
   }
 
+  function verifyRecoveredRuns(recoveredRuns, proposed, written) {
+    for (var target of recoveredRuns || []) {
+      var expectedSession = proposed.find(session => session.id === target.sessionId);
+      var storedSession = (written || []).find(session => session.id === target.sessionId
+        && session.projectId === expectedSession?.projectId
+        && session.accountScopeId === expectedSession?.accountScopeId);
+      var expected = expectedSession?.runs?.find(run => run.id === target.runId);
+      var stored = storedSession?.runs?.find(run => run.id === target.runId);
+      var retained = expected && stored
+        && expected.runProjectId === target.projectId && stored.runProjectId === target.projectId
+        && Number(stored.nativeEventSeq || 0) >= Number(expected.nativeEventSeq || 0)
+        && stored.codexThreadId === expected.codexThreadId
+        && stored.codexTurnId === expected.codexTurnId
+        && JSON.stringify(stored.interruptedDraft) === JSON.stringify(expected.interruptedDraft)
+        && (expected.events || []).every(event => (stored.events || [])
+          .some(saved => JSON.stringify(saved) === JSON.stringify(event)));
+      if (!retained) throw Object.assign(new Error('Recovered run was not durably saved; its replay journal is retained.'), {
+        code: 'recovery_state_not_persisted'
+      });
+    }
+  }
+
   async function persistPanelState(input) {
     var state = cloneSnapshot(input.state || {});
     var compactState = cloneSnapshot(input.compactState || {});
@@ -69,6 +91,12 @@
     if (scope.projectId !== projectId) {
       throw Object.assign(new Error('Scoped persistence project changed before commit.'), {
         code: 'stale_view'
+      });
+    }
+    if ((input.recoveryRuns || []).some(target => target.projectId !== projectId
+      || target.accountScopeId !== accountScopeId)) {
+      throw Object.assign(new Error('Journal recovery scope changed before persistence.'), {
+        code: 'recovery_scope_changed'
       });
     }
     var reviewRuns = (input.reviewRunIds || []).map(id =>
@@ -148,6 +176,7 @@
     if (!reviewRuns.every(reviewRun => (written || []).some(session => (session.runs || []).some(run =>
       run.id === reviewRun.id && run.trackedChangeStatus === reviewRun.trackedChangeStatus
     )))) throw reviewPersistenceError();
+    verifyRecoveredRuns(input.recoveryRuns, sessionRecords, written);
   }
 
   return Object.freeze({ persistPanelState: persistPanelState, applyReviewTransition: applyReviewTransition });

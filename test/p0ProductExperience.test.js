@@ -1246,7 +1246,7 @@ test('send waits for in-flight mirror prefetch before starting codex run', () =>
   const helperBody = contentScript.match(/async function settleMirrorPrefetchBeforeRun\(\) \{[\s\S]*?\n  function/)?.[0] || '';
 
   assert.match(runTaskBody, /await awaitRunStep\(settleMirrorPrefetchBeforeRun\(\)\)/);
-  assert.ok(runTaskBody.indexOf('await awaitRunStep(settleMirrorPrefetchBeforeRun())') < runTaskBody.indexOf("method: 'codex.run'"));
+  assert.ok(runTaskBody.indexOf('await awaitRunStep(settleMirrorPrefetchBeforeRun())') < runTaskBody.indexOf('sendTrackedCodexRun(buildCodexRunParams({'));
   assert.match(helperBody, /mirrorPrefetchState\.timer/);
   assert.match(helperBody, /window\.clearTimeout\(mirrorPrefetchState\.timer\)/);
   assert.match(helperBody, /mirrorPrefetchState\.inFlight/);
@@ -1444,7 +1444,7 @@ test('composer clears the submitted task as soon as Codex accepts the run', () =
   assert.match(runTaskBody, /currentRunView = startRunView\(/);
   // Submitted binary attachments are captured by the run record and then
   // cleared with the text so they cannot leak into the next turn.
-  assert.match(runTaskBody, /clearTaskComposer\(\{ keepAttachments: false \}\)/);
+  assert.match(runTaskBody, /clearTaskComposer\(\{ keepAttachments: false, submission:/);
   assert.match(contentScript, /function clearTaskComposer\(/);
   const clearBody = extractFromContentScript('clearTaskComposer');
   assert.match(clearBody, /if \(!keepAttachments\)/,
@@ -1734,7 +1734,7 @@ test('running Codex tasks do not block switching to another session for reading 
 
   assert.doesNotMatch(switchBody, /Finish the current Codex task before switching sessions/);
   assert.doesNotMatch(switchBody, /if \(currentRunView\)/);
-  assert.match(contentScript, /sessionId:\s*state\.activeSessionId/);
+  assert.match(extractFromContentScript('startRunView'), /sessionId = state\.activeSessionId/);
   assert.match(contentScript, /findRunRecord\(currentRunView\.recordId,\s*currentRunView\.sessionId\)/);
 });
 
@@ -1833,7 +1833,7 @@ test('session titles auto-name once and can be manually renamed inline', () => {
     path.join(__dirname, '../extension/src/content/sessionManager.js'),
     'utf8'
   );
-  const startRunBody = contentScript.match(/function startRunView\([^)]*\) \{[\s\S]*?\n  async function finishRunView/)?.[0] || '';
+  const startRunBody = extractFromContentScript('startRunView');
 
   assert.match(startRunBody, /active\?\.titleSource !== 'manual'/);
   assert.match(startRunBody, /deriveSessionTitle/);

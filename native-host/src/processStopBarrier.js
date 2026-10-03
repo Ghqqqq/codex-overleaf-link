@@ -13,16 +13,23 @@ function location(projectId, rootDir) {
 }
 
 function load(file) {
-  if (pending.has(file)) return pending.get(file);
   let records = [];
   try {
     if (fs.statSync(file).size > 65536) throw new Error('Oversized stop barrier');
     const value = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (!Array.isArray(value) || value.length > 64) throw new Error('Invalid stop barrier');
-    records = value;
+    records = value.map(record => record && typeof record === 'object' ? record : { unknown: true });
   } catch (error) {
     if (error.code !== 'ENOENT') records = [{ unknown: true }];
   }
+  // Other Hosts can publish a barrier while this Host is already alive. Keep
+  // in-memory callbacks and failed writes, but never cache an empty disk read.
+  const key = ({ isStopped, ...record }) => JSON.stringify(record);
+  const merged = new Map(records.map(record => [key(record), record]));
+  for (const record of pending.get(file) || []) {
+    if (typeof record.isStopped === 'function' || record.persistenceFailed) merged.set(key(record), record);
+  }
+  records = Array.from(merged.values());
   pending.set(file, records);
   return records;
 }
@@ -53,13 +60,17 @@ function stopped(record) {
 function record(projectId, rootDir, error) {
   const file = location(projectId, rootDir);
   const records = load(file);
-  records.push({
+  const entry = {
     processId: error.processId, processGroup: error.processGroup === true,
     platform: process.platform, createdAt: new Date().toISOString(),
     isStopped: error.isStopped
-  });
+  };
+  records.push(entry);
   try { persist(file, records); }
-  catch (failure) { error.stopBarrierPersistenceError = failure.message; }
+  catch (failure) {
+    Object.defineProperty(entry, 'persistenceFailed', { value: true });
+    error.stopBarrierPersistenceError = failure.message;
+  }
 }
 
 function isBlocked(projectId, rootDir) {
@@ -77,4 +88,3 @@ function isBlocked(projectId, rootDir) {
 }
 
 module.exports = { record, isBlocked };
-

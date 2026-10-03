@@ -284,28 +284,37 @@ test('no-trace Undo still requires the real Journal editor preparation guard', a
   assert.ok(result.skipped.every(entry => entry.result.code === 'editing_not_confirmed'));
 });
 
-test('cancelling a real receipt RPC rejects Undo and never starts another dispatch', async t => {
-  const h = harness(t, { durations: [60000], dropReceiptReply: true });
-  const outcome = startUndo(h).then(result => ({ result }), error => ({ error }));
+test('cancellation leaves receipt settlement active but the original Undo deadline remains binding', async t => {
+  const h = harness(t, { durations: [60000], dropApplyReply: true, dropReceiptReply: true });
+  let settled = false;
+  const outcome = startUndo(h).then(result => { settled = true; return result; });
   await h.advance(45000);
   assert.equal(lookupCalls(h).length, 1);
   h.client.cancelActiveRequests();
-  const settled = await outcome;
-  assert.equal(settled.error?.code, 'codex_cancelled');
-  assert.equal(settled.result, undefined);
-  await h.advance(20000);
-  assert.equal(lookupCalls(h).length, 1);
+  await drain();
+  assert.equal(settled, false, 'already dispatched writes retain their bounded settlement window');
+  await h.advance(45000);
+  const result = await outcome;
+  assert.equal(result.receiptUnconfirmed, true);
+  assert.equal(result.code, 'page_bridge_timeout');
+  assert.equal(result.applied.length, 0, 'lost receipts cannot manufacture write evidence');
+  assert.equal(result.skipped.length, deletes.length);
+  assert.ok(h.calls.every(call => call.at < START + 90000));
   assertSingleDispatch(h);
 });
 
-test('a cancellation result from the receipt boundary is also terminal', async t => {
-  const h = harness(t, { dropApplyReply: true, onReceipt: () => ({
+test('a cancelled receipt boundary returns partial evidence and uncertainty without discarding it', async t => {
+  const h = harness(t, { durations: [0, 60000], dropApplyReply: true, onReceipt: ({ index }) => index === 1 ? undefined : ({
     ok: false, code: 'codex_cancelled', error: 'Cancelled'
   }) });
-  const outcome = startUndo(h).then(result => ({ result }), error => ({ error }));
-  await h.advance(45000);
-  assert.equal((await outcome).error?.code, 'codex_cancelled');
-  assert.equal(lookupCalls(h).length, 1);
+  const outcome = startUndo(h);
+  await h.advance(45500);
+  const result = await outcome;
+  assert.equal(result.receiptUnconfirmed, true);
+  assert.equal(result.recoveryError, 'Cancelled');
+  assert.equal(result.applied.length, 1);
+  assert.equal(result.skipped.length, 2);
+  assert.equal(lookupCalls(h).length, 2);
   assertSingleDispatch(h);
 });
 

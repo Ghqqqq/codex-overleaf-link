@@ -41,20 +41,25 @@ function rejectPendingRequests(pending, error) {
   pending.clear();
 }
 
-async function stopCodexAppServer(child, {
-  interrupt, reason, processGroup = false, platform = process.platform,
-  interruptTimeoutMs = 1500, terminateTimeoutMs = 500, forceTimeoutMs = 1500,
-  kill = process.kill.bind(process), taskkill = defaultTaskkill
-} = {}) {
+function createProcessStopIdentity(child, { processGroup = false, platform = process.platform, kill = process.kill.bind(process) } = {}) {
   const pid = Number(child?.pid);
-  if (!Number.isInteger(pid) || pid <= 0) return;
   const grouped = processGroup && platform !== 'win32';
   const exited = () => child.exitCode != null || child.signalCode != null;
   const groupGone = () => {
     if (!grouped) return true;
     try { kill(-pid, 0); return false; } catch (error) { return error?.code === 'ESRCH'; }
   };
-  const stopped = () => exited() && groupGone();
+  return { processId: pid, processGroup: grouped, isStopped: () => exited() && groupGone() };
+}
+
+async function stopCodexAppServer(child, {
+  interrupt, reason, processGroup = false, platform = process.platform,
+  interruptTimeoutMs = 1500, terminateTimeoutMs = 500, forceTimeoutMs = 1500,
+  kill = process.kill.bind(process), taskkill = defaultTaskkill
+} = {}) {
+  const { processId: pid, processGroup: grouped, isStopped: stopped } = createProcessStopIdentity(child, { processGroup, platform, kill });
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  const exited = () => child.exitCode != null || child.signalCode != null;
   const waitForStop = async timeoutMs => {
     const deadline = Date.now() + timeoutMs;
     while (!stopped() && Date.now() < deadline) {
@@ -106,6 +111,7 @@ function defaultTaskkill(pid, timeout) {
 }
 
 module.exports = {
+  createProcessStopIdentity,
   createCodexIdleWatchdog,
   createOptionalTimeout,
   getAbortReason,

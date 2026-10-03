@@ -32,7 +32,7 @@
       );
     }
 
-    async function ensureForMethod(method) {
+    async function ensureForMethod(method, { assertCurrent } = {}) {
       const metadata = options.getExtensionCompatibilityMetadata?.() || {};
       const params = Compatibility?.buildBridgePingParams
         ? Compatibility.buildBridgePingParams(metadata)
@@ -41,6 +41,8 @@
         method: 'bridge.ping',
         params
       });
+      // A retired run must not publish even a compatibility failure into a successor.
+      assertCurrent?.();
       const compatibility = Compatibility?.evaluateNativeCompatibility
         ? Compatibility.evaluateNativeCompatibility(response, metadata)
         : options.fallbackNativeCompatibility(response);

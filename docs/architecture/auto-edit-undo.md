@@ -3,7 +3,7 @@
 本页提供从一次 Auto 文本修改到写回、保存确认、撤销及刷新恢复的源码路线。
 适用于定位“改动写到了哪里”“保存依据是什么”“撤销为何跳过”“刷新后为何丢失按钮”等问题。
 
-初始源码基线：`main@2073ae74747431aab8d529803d4e9f8197262388`；初始参考包版本 `2.5.0`。当前行为随本仓库实现维护。
+初始参考源码基线：`main@2073ae74747431aab8d529803d4e9f8197262388`；初始参考包版本 `2.5.0`。当前行为随本仓库实现维护。
 总入口见 [架构目录](README.md)，其他功能见 [功能定位图](feature-map.md)。
 
 ## 1. 首先分清四份内容与两种身份
@@ -121,7 +121,7 @@ content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言
 6. 返回后立即 `appendApplyResult`、`recordUndoFromApply`；随后才等待保存核查、镜像和编译。
 
 该顺序有实际意义：broker 已返回逐项结果后，进入保存等待前可记录已知写入部分的 Undo checkpoint。
-它不能保证 broker 返回前的取消也已捕获页面实际修改；回执查询取消导致抛出的边界见第 7 节。
+broker 对已派发操作在取消后继续查询只读回执，保留可确认的前批结果；未确认结果及恢复材料的边界见第 7 节。
 `recordUndoFromApply` 位于较大的 contentRuntime 中；只阅读 orchestrator 会漏掉恢复账本如何建立。
 
 ### 4.1 编辑已有文本
@@ -164,7 +164,7 @@ Page router 与 snapshot 闭包通过共享 [pageRpcContract.REVISION](../../ext
 `pageBridge` 的 `binaryUploadBegin/Append/Commit/Status/Abort` handler 直接调用 uploader，上传过程不经过文本 `writebackReceiptJournal` 或 `writebackRouter.applyOperationsCore`。
 uploader 按声明大小、分块顺序和 SHA-256 检查载荷；依次尝试 DOM、multipart、legacy manager，可能已提交后即停止切换运输方式，并核对原尝试的路径与远端内容证据。
 broker 在 commit 结果不确定时查询 `binaryUploadStatus`；仍不确定则保留 `changedDocument` 与 `receiptUnconfirmed`，阻断后续操作。
-已 begin、尚未尝试 commit 的失败会请求 abort；commit 开始后 abort 不撤销已提交上传。Native asset token 在该操作的 `finally` 中请求释放，状态查询本身不重新上传。
+begin 成功后的失败，或 begin 已派发且等待被取消，在 commit 尚未实际派发时会请求 abort；commit 已派发后 abort 不撤销已提交上传。Native asset token 在该操作的 `finally` 中请求释放，状态查询本身不重新上传。
 文本新建和二进制新建均可能获得创建撤销证明，但已有二进制覆盖不能直接按“撤销新建”删除。
 
 **已知限制：二进制覆盖前的基线保护。** `assetTransferBroker.applyBinaryOperation` 向 uploader 传递待上传内容的 SHA-256、大小、路径及 `overwrite` 标记，没有传入旧二进制内容或旧哈希。
@@ -247,10 +247,11 @@ undoRun(runId)
   ├─ 存在 tracked refs / 可用前后像 / 指定创建恢复状态
   │    └─ undoRunTrackedChanges
   │         ├─ rejectTrackedChanges RPC：恢复已有文本
-  │         └─ applyOperations RPC：删除有证明的新建文件／重建有原文的已删旧文件
+  │         ├─ applyOperations RPC：删除有证明的新建文件／重建有原文的已删旧文件
+  │         └─ 验证与推进账本；finally 按已知 Page 结果登记镜像失效
   └─ 其余可用逆操作
        └─ buildNoTraceUndoRestore → applyOperations(no-trace-undo)
-抵达正常结果处理分支 → 镜像失效处理 → 验证证据 → 推进或保留恢复账本
+无留痕逆操作取得结果 → 镜像失效处理 → 验证证据 → 推进或保留恢复账本
 ```
 
 ### 6.1 普通文本与 Track 文本共用部分运输路线
@@ -286,9 +287,8 @@ Track 的 `selectExpectedFilesForTrackedUndo` 保留 `WritebackSettlement` 对�
 **当前实现。** `buildCreatedFileUndoCheckpoint` 为该运行新建路径生成 `undoCreatedFile` 证明，保留文本 post-image 或二进制 SHA-256。
 `undoRunTrackedChanges` 先恢复仍存在的已有文本，再处理文件结构操作：撤销新建或重建原有删除。需要分段持久化的生命周期记录会先保存已确认的文本进度。
 文本仍未解决或进度无法保存时，后续文件结构操作不派发；新建文件和已删除文件保持该阶段的状态，恢复材料留给后续尝试。
-中间 `applyTrackedChangeSettlement` 保存失败可直接抛出；该点早于 `invalidateMirrorAfterUndo`，会绕过后续镜像失效调用。
-[scopedPersistencePanelState](../../extension/src/content/scopedPersistencePanelState.js) 在该保存失败时恢复材料、标记 `needs_review` 并继续抛错，控制流可直接进入 finally。
-因此“文件保留、恢复材料保留”不能同时证明镜像已失效。若旧镜像仍满足健康和年龄门槛，普通 `resolveWarmRunStart` 可采用当前活动文件及 focus 的覆盖层后复用；撤销过的文件仍在覆盖层中时可被修正，切到另一活动文件且未覆盖该路径时，旧字节仍可能留在复用工作区。缺覆盖层、镜像过期及普通完整快照同步各有保护，不能把此条件扩展为每次 Undo 失败后的运行都读取旧内容。
+中间 `applyTrackedChangeSettlement` 保存失败时，[scopedPersistencePanelState](../../extension/src/content/scopedPersistencePanelState.js) 恢复材料、标记 `needs_review` 并继续抛错。`undoRunTrackedChanges` 将已取得的 Page 结果保留在 try 外，在 finally、释放 review 操作锁之前调用 `invalidateMirrorAfterUndo`；正常完成和持久化失败共用这一出口。
+失效依据仍是 Page 返回的已应用操作或 `changedDocument`；请求直接抛错且没有结果时不虚构撤销证据。文件阶段已返回时采用合并结果；中间保存失败则只处理已知文本结果，并保留未派发的文件操作。失效任务登记到 `pendingMirrorRefresh`，下一次运行等待该任务后重新判断镜像可用性。Native 失效失败和页面结果缺失仍需单独处理，不能由 finally 已执行推定镜像一定不可复用。
 
 这里的生命周期分类由 [runTimelineView.js](../../extension/src/content/runTimelineView.js) 的 `isTrackedChangeLifecycleRun` 判断 `trackedChangeStatus` 或 refs。
 普通 Track-off、无该状态或 refs 的混合记录，即使调用 `undoRunTrackedChanges`，完成后仍可走 `applyLegacyUndoSettlement → saveStateSoon`。
@@ -335,11 +335,10 @@ page 的实际分流在 `trackedChangesLifecycle.prepareNativeReview` 与 `accep
 
 **当前实现。** page cancellation sequence 在 `cancelActiveWrite` 时递增，router 在操作边界检查。
 router 可以返回已发生修改的逐项结果并跳过未开始项；content 获得这些结果后再结算与记录 checkpoint。
-当前 `assetTransferBroker.recoverTextReceipt` 遇 `codex_cancelled` 直接抛出；取消标志已置位时，[pageBridgeClient](../../extension/src/content/pageBridgeClient.js) 会使新发起的可取消回执查询进入拒绝路径。[pageRpcContract](../../extension/src/shared/pageRpcContract.js) 将 apply 与 receipt 读取均标为可取消。
-client 另提供 `cancelActiveRequests` 拒绝活动请求，但该基线的 `cancelActiveRun` 未调用该入口，不能把接口能力当作用户取消时必然发生的步骤。
-`Client.send` 对已取消的可取消请求安排拒绝微任务，但仍会派发 postMessage；拒绝后清理对应监听。因此 Page 保存了完成回执、甚至已经应答，也不等同于 Content 已取得可交给 orchestrator 的结果。
-因此 apply 已发生、响应超时、随后取消的组合，可能在结果到达 orchestrator 之前中断，不能声称所有已写入部分都已形成持久 Undo。
-这里需区分 Page 回执、Content Undo 记录与实际存储。原文、Page 回执或本地基线仍可能存在，缺少插件 Undo 凭据不能推导为原文永久丢失。真实 Chrome 跨 world 时序、服务器保存和重载恢复仍需独立验收；跨文本/二进制批次和 Track 捕获也须另查前批结果是否随异常保留。
+[pageRpcContract](../../extension/src/shared/pageRpcContract.js) 将 `getWritebackReceipt` 与 `binaryUploadStatus` 定义为需要项目身份、取消后仍可等待的只读查询；单次 RPC 超时继续生效。文本回执有轮询截止点，显式 `deadlineAt` 还会收紧查询等待；未给显式期限时，最后一次 RPC 仍可能超过轮询截止点。二进制状态沿独立的 30 秒轮询截止点加单次 RPC 等待，未接入文本的 `deadlineAt`。查询只取回原请求或 transfer 的结果，不重放写入。
+[pageBridgeClient](../../extension/src/content/pageBridgeClient.js) 在派发前检查可取消请求；已取消时直接拒绝并标记 `requestDispatched:false/changedDocument:false`。已发出的 `applyOperations` 被 `cancelActiveRequests` 拒绝时附带原 requestId，broker 可据此取回已发生的部分结果；用户 `cancelActiveRun` 的 Page 路径仍是推进取消序号，该接口能力不能推定为每次点击取消都会立即拒绝所有客户端等待。
+[assetTransferBroker](../../extension/src/content/assetTransferBroker.js) 在文本超时或带原请求身份的取消后执行 `recoverTextReceipt`；后批取消保留前批 `applied` 与 Track refs，并停止派发余下文本和二进制项。二进制 commit 结果不确定时通过原 transferId 查询状态；begin 成功后的失败，或 begin 已派发且等待被取消，在 commit 尚未实际派发时使用同一 transferId 清理暂存；明确拒绝的重复 begin 不删除既有 stage。commit 收到成功回执时保留已应用结果，在途取消信号仍阻止尾部派发；派发前取消不会创建新的 Page stage。
+成功取得的逐项结果进入 orchestrator 原有 `recordUndoFromApply`，随后才进行可取消的保存核查。回执超时、Page 重载或无法确认原操作时仍保留未确认语义及尾部阻断，不能宣称全部写入都形成了持久 Undo。Page 回执、Content checkpoint 与实际存储各有寿命；真实 Chrome 跨 world 时序、服务器保存和存储重载仍需独立验收。
 
 **当前实现。** `contentRuntime.stageWritebackRecovery`、`settleWritebackRecovery` 管理 `retryWriteback` 与 `saveCheck`。
 [writebackIntent](../../extension/src/shared/writebackIntent.js) 对请求记录设置 100 操作、300 KiB 上限；[sessionState](../../extension/src/shared/sessionState.js) 执行恢复字段筛选。
@@ -354,8 +353,8 @@ client 另提供 `cancelActiveRequests` 拒绝活动请求，但该基线的 `ca
 `content/writebackRecovery.js` 另定义通用 prepare/reconcile 模块；该模块未纳入上述 Auto 主调用链。
 定位当前行为应从上述实际调用及 [run-state-and-recovery](run-state-and-recovery.md) 出发，不能凭模块文件名推定默认恢复流程。
 
-Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirrorAfterUndo` 调用原项目的 `mirror.invalidate`，并在仍处同项目时清快照缓存。
-前述混合 Undo 中间持久化抛错可能尚未抵达该调用，不能概括为所有异常都会使镜像失效。
+`writebackOrchestrator.invalidateMirrorAfterUndo` 按已知 Page 修改结果调用原项目的 `mirror.invalidate`，并在仍处同项目时清快照缓存。
+混合 Undo 由 finally 统一调用，覆盖中间持久化失败；无 Page 结果的异常仍缺少已修改证据。
 失效任务挂入 `pendingMirrorRefresh`，下一轮等待屏障后重新评估镜像。
 失效失败会记录警告；“编辑器撤销完成”不自动证明本地基线已处理完成。
 
@@ -384,8 +383,8 @@ Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirror
 | 新建文件撤销或混合进度 | undoOperations、contentRuntime、router、textFileCreator、持久化 | `node --test test/createdFileUndo.test.js test/mixedUndoReceipt.test.js` |
 | 已有文本删除后的 Undo 或编辑＋删除混合恢复 | `recordUndoFromApply`、`UndoOperations.prepareRunUndo/textUndoRun/advanceUndoCheckpoint`、`undoRun`、Page guard；分别核对文本与文件恢复 | `node --test test/deletedFileUndo.test.js test/undoOperations.test.js test/ordinaryUndoRouting.test.js test/createdFileUndo.test.js`；两种 Track、冲突、历史材料、部分恢复及重载 |
 | Undo 超时、尾部未确认或重复删除 | contentRuntime.callPageBridge 的 broker 包装、deadlineAt、client/journal/router/creator | `node --test test/undoDeadlineRouting.test.js test/undoReceiptDeadline.test.js` |
-| 撤销后下一轮恢复旧内容 | orchestrator 镜像屏障、mirrorWorkspace、运行入口 | `node --test test/undoMirrorInvalidation.test.js` |
-| 取消后丢失部分结果 | cancellation sequence、router、broker、Page RPC、checkpoint 时序 | `node --test test/writebackCancellationFlow.test.js test/writebackReceiptRecovery.test.js`；router 局部测试不能替代真实 Page RPC 取消到 content checkpoint 的整链场景 |
+| 撤销后下一轮恢复旧内容 | orchestrator 镜像屏障、mirrorWorkspace、运行入口 | `node --test test/undoMirrorInvalidation.test.js test/undoPersistenceFailure.test.js` |
+| 取消后丢失部分结果 | cancellation sequence、router、broker、Page RPC、checkpoint 时序 | `node --test test/writebackCancellationRecovery.test.js test/assetTransferCancellation.test.js test/writebackReceiptRecovery.test.js`；检查原请求回执、前批结果、尾部停止与 checkpoint |
 | 二进制位置/回执/撤销或覆盖前基线检查 | broker、binaryAssetUploader 独立回执、textFileCreator、Native asset；router 的旧内容比较不在生产上传主链 | `node --test test/binaryAssetUploader.test.js test/binaryUploadUndoRoundTrip.test.js`；另验旧二进制并发修改后的覆盖保护 |
 | 生产 Native Accept 归属或验证失败 | pageBridge 原生适配器、trackedChangesLifecycle、ownership、settlement | `node --test test/pageBridgeStaleGuard.test.js test/writebackSettlementContract.test.js` |
 | legacy Accept replay、模式切换或恢复 | trackedChangesLifecycle、trackedChangeReplay；勿推广为生产原生路径 | `node --test test/writebackRouterAccept.test.js` |
@@ -396,7 +395,8 @@ Undo 抵达正常结果处理分支后，`writebackOrchestrator.invalidateMirror
 `binaryUploadUndoRoundTrip` 组合真实 broker、uploader、Native 分块和 ZIP 模块；其 Page RPC 直接路由 uploader 方法，Undo 直接调用 creator 删除，不能据此推定运行账本与刷新按钮全链覆盖。
 `undoDeadlineRouting` 覆盖生产 wrapper 的提取函数及各层期限传递，`undoReceiptDeadline` 使用真实 client/broker/journal 和虚拟时钟，页面 mutation 为注入函数。
 `writebackReceiptRecovery` 检查部分模式参数转发，未覆盖 `retryCreates` 穿过真实 journal 的专项场景；创建重试还需核对同内容与异内容的完整传递链。
-`undoMirrorInvalidation` 的相关 harness 将 settlement 替换为成功 stub，无法证明混合 Undo 的中间持久化失败仍会使镜像失效。
+`undoMirrorInvalidation` 的相关 harness 将 settlement 替换为成功 stub；`undoPersistenceFailure` 串联 runtime、Page Undo、review transition 与 orchestrator，在保存回调注入异常，检查失效登记、下一次 Undo 等待屏障，以及冲突/抛错不虚构结果。编辑器、保存与 Native I/O 使用替身。
+`writebackCancellationRecovery` 串联 client、journal、Page router/editor、orchestrator、Undo 和 StorageDb 投影；`assetTransferCancellation` 检查混合批次、二进制状态、项目拒绝和 Page stage 清理。网络、真实编辑器及 IndexedDB 重载仍在替换边界之外。
 `mirrorWorkspace` 覆盖已有二进制删除上报、支持资产及生成 PDF 过滤；不能据此推定 Auto 重命名与拒绝删除的完整交互已经覆盖。
 `deletedFileUndo` 从正向记录进入删除恢复与重载重试；`ordinaryUndoRouting` 和 `createdFileUndo` 继续覆盖普通文本与新建组合。这些模块组合验证不能替代真实 Overleaf 文件树、服务器保存与浏览器重载验收。
 这些范围各自提供定位依据；真实服务端协议、DOM、取消与立即刷新仍需相应执行证据。

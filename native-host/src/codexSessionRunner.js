@@ -31,6 +31,7 @@ const { applyProviderEnvironment, buildProviderConfigArgs, prepareProviderLaunch
 const { buildReadProgressRules, createReadProgressController, createRunEventScope } = require('./readProgressGuard');
 const {
   createCodexIdleWatchdog,
+  createProcessStopIdentity,
   createOptionalTimeout,
   getAbortReason,
   parseOptionalPositiveInteger,
@@ -43,13 +44,13 @@ const PARALLEL_SUBAGENTS_SKILL_ID = 'parallel-subagents';
 
 const { materializeTurnAttachments } = require('./turnAttachments');
 
-async function runCodexSession({ params = {}, env = process.env, emit = () => {}, rootDir, executeCodex, providerLaunch, signal, onControlReady, onStopUnconfirmed } = {}) {
+async function runCodexSession({ params = {}, env = process.env, emit = () => {}, rootDir, executeCodex, providerLaunch, signal, onControlReady, onStopUnconfirmed, onProcessStarted } = {}) {
   throwIfAborted(signal);
   if (params.writingStyleBuild) {
     return WritingStyleRuntime.build({
       params, env, signal, providerLaunch, onControlReady, onStopUnconfirmed,
       execute: createRecoveringStyleRunner({
-        execute: executeCodex || runCodexAppServerSession,
+        execute: input => (executeCodex || runCodexAppServerSession)({ ...input, onProcessStarted }),
         env, emit, locale: params.locale
       })
     });
@@ -116,7 +117,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
   const execute = executeCodex || runCodexAppServerSession;
   let unconfirmedStopError = null;
   const runner = async input => {
-    try { return await execute(input); }
+    try { return await execute({ ...input, onProcessStarted }); }
     catch (error) {
       if (error?.code === 'codex_process_stop_unconfirmed') {
         unconfirmedStopError = error;
@@ -824,6 +825,8 @@ function runCodexAppServerProcess(input) {
       fail(new Error(stderr || `codex app-server exited before turn completed with code ${code}`));
     });
 
+    try { input.onProcessStarted?.(createProcessStopIdentity(child, { processGroup: process.platform !== 'win32' })); }
+    catch (error) { fail(error); return; }
     start().catch(fail);
 
     async function start() {
@@ -1086,17 +1089,23 @@ function runCodexAppServerProcess(input) {
       if (settled || stopping) {
         return;
       }
-      settled = true;
+      stopping = true;
       const turnEndedError = new Error('Codex turn ended before the pending app-server request completed.');
       turnEndedError.code = 'codex_turn_ended';
       rejectPendingRequests(pending, turnEndedError);
       cleanup();
-      child.kill('SIGTERM');
-      resolve({
+      const result = {
         assistantMessage: buildFinalAssistantMessage(assistantMessages, assistantMessageOrder, {
           turnCompleted: turn.status === undefined || turn.status === 'completed'
         }),
         threadId: activeThreadId
+      };
+      return stopCodexAppServer(child, { processGroup: process.platform !== 'win32' }).then(() => {
+        settled = true;
+        resolve(result);
+      }, error => {
+        settled = true;
+        reject(error);
       });
     }
 

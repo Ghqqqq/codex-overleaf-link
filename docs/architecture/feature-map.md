@@ -1,6 +1,6 @@
 # 功能修改导航
 
-初始参考产品版本：`2.5.0`；初始源码基线：`2073ae7`。本索引随当前仓库维护，任务执行与同步要求见[开发与修复 SOP](change-workflow.md)。
+初始参考产品版本：`2.5.0`；初始参考源码基线：`2073ae7`。本索引随当前仓库维护，任务执行与同步要求见[开发与修复 SOP](change-workflow.md)。
 本页记录当前实现的入口、状态 owner、必要联动和最近测试。owner 指拥有状态或行为决策权的模块；UI 通常只展示该状态的投影。
 下列测试提供对应行为的验证入口；实际 Chrome/Overleaf 交互还需按改动选择浏览器场景。
 
@@ -105,16 +105,16 @@
 ### 改提交、取消、队列或运行中追加指导
 
 - 入口：runtime 的 `safeRunTask`、[RunQueueScheduler.createCoordinator](../../extension/src/content/runQueueScheduler.js)、[ActiveTurnControl](../../extension/src/content/activeTurnControl.js)。
-- 状态 owner：[runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js) 固定执行输入；[runInputQueue](../../extension/src/shared/runInputQueue.js) 管理队列；[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 管理活跃 Native 工作。
+- 状态 owner：runtime 在首次 await 前捕获提交身份与会话投影，[RunController.captureSessionContext](../../extension/src/content/runController.js) 提供深拷贝；[runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js) 固定白名单配置，[runInputQueue](../../extension/src/shared/runInputQueue.js) 管理队列；[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 与 [nativeRunLifecycle](../../native-host/src/nativeRunLifecycle.js) 分别管理 RPC 活动索引和断连收尾。
 - 必须联动：[runGuidanceController](../../extension/src/content/runGuidanceController.js)、[scopedPersistenceTransaction](../../extension/src/shared/scopedPersistenceTransaction.js)、[nativeRequestIdentity](../../extension/src/shared/nativeRequestIdentity.js)。详细链路见[运行状态与恢复](run-state-and-recovery.md)。
-- 最近测试：[runInputQueueSnapshotRegression](../../test/runInputQueueSnapshotRegression.test.js)、[runQueueSchedulerDurability](../../test/runQueueSchedulerDurability.test.js)、[activeTurnControl](../../test/activeTurnControl.test.js)、[nativeDispatchCancellation](../../test/nativeDispatchCancellation.test.js)。
+- 最近测试：[runSubmissionOwnership](../../test/runSubmissionOwnership.test.js)、[runInputQueueSnapshotRegression](../../test/runInputQueueSnapshotRegression.test.js)、[runQueueSchedulerDurability](../../test/runQueueSchedulerDurability.test.js)、[activeTurnControl](../../test/activeTurnControl.test.js)、[nativeDispatchCancellation](../../test/nativeDispatchCancellation.test.js)。
 
 ### 改刷新恢复、跨标签同步、删除会话或分叉
 
 - 入口：[SessionManager](../../extension/src/content/sessionManager.js)、[SessionForkController](../../extension/src/content/sessionForkController.js)、[SharedSessionViewSync.install](../../extension/src/content/sharedSessionViewSync.js)。
 - 状态 owner：[backgroundSharedSessions.createService](../../extension/src/backgroundSharedSessions.js) 管理共享持久存储；[ScopedPersistenceTransaction](../../extension/src/shared/scopedPersistenceTransaction.js) 管理作用域提交；content 保留当前视图。
 - 必须联动：[scopedPersistenceCoordinator](../../extension/src/content/scopedPersistenceCoordinator.js)、[storageSessionClaims](../../extension/src/shared/storageSessionClaims.js)、[sessionState](../../extension/src/shared/sessionState.js)、Native [codexThreadFork](../../native-host/src/codexThreadFork.js)。详细链路见[运行状态与恢复](run-state-and-recovery.md)。
-- 最近测试：[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)、[crossTabRuntimeRegression](../../test/crossTabRuntimeRegression.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)、[sessionForkController](../../test/sessionForkController.test.js)、[sessionForkConcurrency](../../test/sessionForkConcurrency.test.js)。
+- 最近测试：[runJournalRecoveryDurability](../../test/runJournalRecoveryDurability.test.js)、[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)、[crossTabRuntimeRegression](../../test/crossTabRuntimeRegression.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)、[sessionForkController](../../test/sessionForkController.test.js)、[sessionForkConcurrency](../../test/sessionForkConcurrency.test.js)。
 
 ### 改新建、重命名、最后会话或清空历史
 
@@ -154,7 +154,7 @@
 - 入口：[WritebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js)、[writebackRouter](../../extension/src/page/writebackRouter.js)。
 - 状态 owner：[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 汇总结果；[saveState](../../extension/src/page/saveState.js) 观察保存；[writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 保存页面操作回执。
 - 必须联动：[staleGuard](../../extension/src/shared/staleGuard.js)、[writebackController](../../extension/src/content/writebackController.js)、[compileBridge](../../extension/src/page/compileBridge.js)、[runSettlementPersistence](../../extension/src/content/runSettlementPersistence.js)。详细链路见[Auto 编辑与 Undo](auto-edit-undo.md)。 空基线与整文兜底的行为入口见 [emptyContentWriteback](../../test/emptyContentWriteback.test.js)；Page 闭包变化同时核对共享 revision 和重新注入。
-- 最近测试：[writebackSaveCheck](../../test/writebackSaveCheck.test.js)、[writebackSettlementContract](../../test/writebackSettlementContract.test.js)、[writebackReceiptRecovery](../../test/writebackReceiptRecovery.test.js)、[writebackCancellationFlow](../../test/writebackCancellationFlow.test.js)。
+- 最近测试：[writebackCancellationRecovery](../../test/writebackCancellationRecovery.test.js)、[assetTransferCancellation](../../test/assetTransferCancellation.test.js)、[writebackSaveCheck](../../test/writebackSaveCheck.test.js)、[writebackSettlementContract](../../test/writebackSettlementContract.test.js)、[writebackReceiptRecovery](../../test/writebackReceiptRecovery.test.js)、[writebackCancellationFlow](../../test/writebackCancellationFlow.test.js)。
 
 ### 改 Accept、Undo、新建/删除文件或二进制资产
 
@@ -163,7 +163,7 @@
 - 支持范围：Auto 重命名按 create/delete 拆分，二进制删除、生成 PDF 与资产扩展名另有过滤；删除恢复由 UndoOperations 分离文本 review 与文件重建，历史补齐需要保留原文及已应用删除证据，详见[文件操作与撤销](auto-edit-undo.md)。
 - 二进制覆盖走 uploader 独立链，当前未携带旧版本基线比较；新载荷完整性和上传后核验不能单独证明覆盖前远端未变化。
 - 必须联动：[treeOperations](../../extension/src/page/treeOperations.js)、[nativeAssetTransfer](../../native-host/src/nativeAssetTransfer.js)、[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 和镜像失效处理。详细链路见[Auto 编辑与 Undo](auto-edit-undo.md)。
-- 最近测试：[writebackRouterAccept](../../test/writebackRouterAccept.test.js)、[createdFileUndo](../../test/createdFileUndo.test.js)、[deletedFileUndo](../../test/deletedFileUndo.test.js)、[ordinaryUndoRouting](../../test/ordinaryUndoRouting.test.js)、[binaryUploadUndoRoundTrip](../../test/binaryUploadUndoRoundTrip.test.js)。
+- 最近测试：[undoPersistenceFailure](../../test/undoPersistenceFailure.test.js)、[writebackRouterAccept](../../test/writebackRouterAccept.test.js)、[createdFileUndo](../../test/createdFileUndo.test.js)、[deletedFileUndo](../../test/deletedFileUndo.test.js)、[ordinaryUndoRouting](../../test/ordinaryUndoRouting.test.js)、[binaryUploadUndoRoundTrip](../../test/binaryUploadUndoRoundTrip.test.js)。
 
 ## Native、Provider、子代理与写作风格
 
@@ -183,6 +183,13 @@
 - 必须联动：[NativeChannel](../../extension/src/content/nativeChannel.js)、[nativeTransportEnvelope](../../native-host/src/nativeTransportEnvelope.js)、[nativeQuotas](../../native-host/src/nativeQuotas.js)、[providerBridgeRoutes](../../native-host/src/providerBridgeRoutes.js)、双方 compatibility、secret 脱敏与取消路径。
 - 最近测试：[nativeMessaging](../../test/nativeMessaging.test.js)、[streamEvents](../../test/streamEvents.test.js)、[providerReliability](../../test/providerReliability.test.js)、[providerStoreCapacity](../../test/providerStoreCapacity.test.js)、[responsesProtocolRedaction](../../test/responsesProtocolRedaction.test.js)、[providerToolCompletion](../../test/providerToolCompletion.test.js)、[codexTerminalStatus](../../test/codexTerminalStatus.test.js)、[nativeTransportEnvelope](../../test/nativeTransportEnvelope.test.js)。
 
+### 改进程退出、断连隔离或正常完成时机
+
+- 入口：[codexSessionRunner.runCodexAppServerProcess](../../native-host/src/codexSessionRunner.js) 的 `succeed/fail`、[index.handleNativeDisconnect](../../native-host/src/index.js)。
+- 状态 owner：[nativeRunLifecycle](../../native-host/src/nativeRunLifecycle.js) 的 `register` 返回 `trackProcess/complete`，由 taskRunnerRuntime 登记并在释放锁后结束；`abortAllActiveOperations/quarantineActiveOperations` 经 runtime 导出供 index 使用。[codexSessionTiming](../../native-host/src/codexSessionTiming.js) 提供退出证据，[processStopBarrier](../../native-host/src/processStopBarrier.js) 管理跨 Host 准入屏障。
+- 必须联动：父任务、worker、风格执行的 `onProcessStarted`、已关闭 transport 的派发拒绝、无 RPC ID 的登记、正常停止及持久化失败；范围与平台限制见[Native 执行](native-execution.md)。
+- 最近测试：[codexProcessSettlement](../../test/codexProcessSettlement.test.js)、[nativeDisconnectSettlement](../../test/nativeDisconnectSettlement.test.js)、[nativeRunLifecycle](../../test/nativeRunLifecycle.test.js)、[readProgressGuard](../../test/readProgressGuard.test.js)。
+
 ### 改并行子代理、文件归属或子对话展示
 
 - 入口：[subagentBroker.createSubagentBroker](../../native-host/src/subagentBroker.js)、[subagentActivityView](../../extension/src/content/subagentActivityView.js)。
@@ -201,10 +208,10 @@
 
 领域说明：[上下文与治理](context-and-governance.md)。
 
-- 入口：runtime `runSensitivePreflight`、[SensitiveScan](../../extension/src/shared/sensitiveScan.js)、[mirrorSensitiveScan](../../native-host/src/mirrorSensitiveScan.js)；写回时走 [WritebackPlan](../../extension/src/content/writebackPlan.js) 与 [GovernanceRules](../../extension/src/shared/governanceRules.js)。
+- 入口：runtime `runSensitivePreflight` → [SensitivePreflight.create().run](../../extension/src/content/sensitivePreflight.js)，组合 [SensitiveScan](../../extension/src/shared/sensitiveScan.js)、[mirrorSensitiveScan](../../native-host/src/mirrorSensitiveScan.js)；写回时走 [WritebackPlan](../../extension/src/content/writebackPlan.js) 与 [GovernanceRules](../../extension/src/shared/governanceRules.js)。
 - 状态 owner：[ProjectSettingsCoordinator](../../extension/src/content/projectSettingsCoordinator.js) 保存项目规则；扫描发现、跳过项和审计摘要有各自的消费范围。
 - 必须联动：首次与业务重试的实际输入、[codexPromptAssembly](../../native-host/src/codexPromptAssembly.js)、写入类型及来源/目标路径、[AuditRecords](../../extension/src/shared/auditRecords.js)。规则不等同模型本地文件权限，零发现不等同全部材料已扫描。
-- 最近测试：[sensitiveScan](../../test/sensitiveScan.test.js)、[governanceRules](../../test/governanceRules.test.js)、[taskRunner](../../test/taskRunner.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js)。
+- 最近测试：[runRetrySensitivePreflight](../../test/runRetrySensitivePreflight.test.js)、[sensitiveScan](../../test/sensitiveScan.test.js)、[governanceRules](../../test/governanceRules.test.js)、[taskRunner](../../test/taskRunner.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js)。
 
 ## 安装、更新与发布
 
@@ -239,6 +246,8 @@ Content 源模块采用以下顺序；源码入口与浏览器注入清单承担
 3. 由 [build-content-bundle](../../scripts/build-content-bundle.mjs) 生成 bundle 与 metadata；不手改生成文件。该操作会写入产物。
 4. [direct manifest](../../extension/manifest.json) 与 [runtime manifest](../../extension/runtime-manifest.json) 当前各列一个 content bundle；新增普通 content 模块不向两处追加源脚本。
 5. 验证定义位于 [contentModuleRegistry](../../test/contentModuleRegistry.test.js)、[contentScriptLoadOrder](../../test/contentScriptLoadOrder.test.js)、[contentBuildIdentity](../../test/contentBuildIdentity.test.js) 和 [module graph 检查](../../scripts/check-content-module-graph.mjs)。
+
+当前 `SensitivePreflight` 经 content-entry import 与 legacyGlobalRegistry 暴露给 runtime，构造依赖由 runtime 注入；只移动 Content 预检职责，无新增 Page 资源。Native 的 `nativeRunLifecycle` 通过 CommonJS require 接入 taskRunnerRuntime，再向 index 导出 shutdown API，独立于浏览器 bundle。新增 helper 应沿各自执行环境接入并核对实际消费者。
 
 Page-world 能力采用独立清单：实现 → RPC contract → 资源公开 → 顺序注入 → dispatcher → 验证。
 

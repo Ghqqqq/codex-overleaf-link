@@ -84,7 +84,7 @@
         }
         const timeoutMs = Math.min(requestTimeoutMs, remainingMs);
         const cancellable = policy.cancellation === 'content_abort';
-        let settled = false;
+        let settled = false, dispatched = false;
         let timeout = null;
         function cleanup() {
           if (timeout !== null) windowRef.clearTimeout(timeout);
@@ -107,8 +107,13 @@
           const error = new Error('Codex run was cancelled by the user');
           error.code = 'codex_cancelled';
           error.cancelled = true;
+          error.requestDispatched = dispatched;
+          error.changedDocument = dispatched && Contract.getMethod(method)?.mutation === 'document';
+          if (dispatched && method === 'applyOperations') { error.requestId = id; error.rpcMethod = method; }
           rejectOnce(error);
         }
+        // Cancellation stops new requests; receipt settlement has its own non-cancellable policy.
+        if (cancellable && options.isCancellationRequested?.()) { cancelRequest(); return; }
         timeout = windowRef.setTimeout(() => {
           resolveOnce({ ok: false, error: 'Page bridge timed out',
             ...(method === 'applyOperations' ? { code: 'page_bridge_timeout', rpcMethod: method, requestId: id } : {}) });
@@ -126,11 +131,11 @@
         }
         if (cancellable) {
           activeCancellationHandlers.set(id, cancelRequest);
-          if (options.isCancellationRequested?.()) windowRef.queueMicrotask(cancelRequest);
         }
         windowRef.addEventListener('message', onMessage);
         // Every low-level request remains one attempt. Higher layers must opt
         // into replay so a document mutation is never duplicated implicitly.
+        dispatched = true;
         windowRef.postMessage({
           source: 'codex-overleaf/content',
           id,

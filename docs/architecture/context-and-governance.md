@@ -1,12 +1,12 @@
 # 上下文扫描与写入治理
 
-本页说明哪些任务材料进入敏感扫描、项目路径规则何时生效，以及扫描与写回权限如何分工。适用产品版本为 `2.5.0`，源码基线为 `2073ae74747431aab8d529803d4e9f8197262388`。
+本页说明哪些任务材料进入敏感扫描、项目路径规则何时生效，以及扫描与写回权限如何分工。初始参考产品版本为 `2.5.0`，初始参考源码基线为 `2073ae74747431aab8d529803d4e9f8197262388`；正文随当前仓库维护。
 
 ## 1. 三种机制各自约束什么
 
 | 机制 | 权威定义及入口 | 范围 |
 | --- | --- | --- |
-| 敏感内容检测 | [SensitiveScan.scanSensitiveInputs](../../extension/src/shared/sensitiveScan.js)、runtime 的 `runSensitivePreflight` | 发现特定凭据形态，决定本次入口是否继续发送上下文 |
+| 敏感内容检测 | [SensitiveScan.scanSensitiveInputs](../../extension/src/shared/sensitiveScan.js)、[SensitivePreflight.create().run](../../extension/src/content/sensitivePreflight.js)、runtime 的 `runSensitivePreflight` | 发现特定凭据形态，决定本次入口是否继续发送上下文 |
 | 项目写入治理 | [GovernanceRules.evaluateGovernedOperations](../../extension/src/shared/governanceRules.js)、[WritebackPlan](../../extension/src/content/writebackPlan.js) | 按项目相对路径允许或阻止待写回操作 |
 | 执行权限和身份 | Native 的 sandbox/工作目录、Page RPC 的项目与 capability 检查 | 各自约束本地执行及页面操作，不能由路径规则或扫描结果替代 |
 
@@ -34,9 +34,9 @@ flowchart TD
     W --> B[阻止项进入 skipped 和审计]
 ```
 
-普通项目任务在 `runTask` 的首次 `sendTrackedCodexRun` 前调用 `runSensitivePreflight`；实际写回在 [writebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js) 内调用治理检查。
+普通项目任务在 `runTask` 的首次 `sendTrackedCodexRun` 前及 `mirror_stale` 重读快照后的重发前调用 `runSensitivePreflight`。该 runtime wrapper 委派 [SensitivePreflight](../../extension/src/content/sensitivePreflight.js) 的 `create(dependencies).run(options)`：依赖由组合根显式注入，模块统一处理扫描、镜像查询、去重、确认与发现展示；`options` 包含 task、project、rules、useExistingMirror。该 Content 模块由 content-entry import 和 legacyGlobalRegistry 暴露，不增加 Page RPC。实际写回在 [writebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js) 内调用治理检查。
 两个位置都读取当前项目规则。规则不在 `RunExecutionSnapshot` 的字段白名单内，因此已排队任务不能据执行快照推定整套规则也已冻结；修改规则作用域或时序时需联动两个入口。
-显式 `skill-installer` 调用更早进入 `runSkillInstallerTask`，随后经 `sendNative` 发送 `codex.run`，未经过上述预检。项目扫描与敏感确认设置不能据此推定覆盖安装任务的 task/customInstructions。安装模式不向项目回写，工作目录、沙箱及附件限制见[写作风格与技能](writing-style-and-skills.md#普通技能安装继承与作用域)。
+显式 `skill-installer` 调用更早进入 `runSkillInstallerTask`，随后经 `sendTrackedCodexRun` 发送 `codex.run`，未经过上述预检。项目扫描与敏感确认设置不能据此推定覆盖安装任务的 task/customInstructions。安装模式不向项目回写，工作目录、沙箱及附件限制见[写作风格与技能](writing-style-and-skills.md#普通技能安装继承与作用域)。
 
 ## 3. 扫描实际覆盖的材料
 
@@ -58,7 +58,7 @@ flowchart TD
 ### 镜像扫描与未扫描内容
 
 Native 扫描普通目录和文件；文本扩展名由 `isSensitiveScanTextPath` 定义，另支持 `.latexmkrc`。单文件大于 512 KiB 记入 `skippedFiles`，结果最多保留 100 项发现。
-浏览器 `scanNativeMirrorSensitiveFindings` 当前只消费 `result.findings`，未将 `skippedFiles` 转成阻断或完整性警告。因此零发现不能证明全部镜像均已扫描；例如超限文本或白名单外文件仍需单独判断。
+浏览器 `SensitivePreflight` 内部的 `scanNativeMirrorSensitiveFindings` 当前只消费 `result.findings`，未将 `skippedFiles` 转成阻断或完整性警告。因此零发现不能证明全部镜像均已扫描；例如超限文本或白名单外文件仍需单独判断。
 Native 扫描请求失败会生成 `mirror-sensitive-scan-unavailable` 发现，按命中规则处理；扫描主动关闭则直接继续。扫描模块缺失且未复用镜像的兼容分支也会返回未阻止，不能把该路径描述成统一 fail-closed。
 
 即时指导的派发入口在 [runQueueScheduler.js](../../extension/src/content/runQueueScheduler.js) 的 `guide`；[taskRunnerRuntime.handleCodexSteer](../../native-host/src/taskRunnerRuntime.js) 验证活动请求及预期 thread/turn 后，把文本交给 runner 的 `control.steer`。
@@ -66,8 +66,8 @@ Native 扫描请求失败会生成 `mirror-sensitive-scan-unavailable` 发现，
 
 ### 命中后的行为与重试边界
 
-敏感检查开启且 `sensitiveConfirmAllowed=false` 时，发现命中后在首次 Native 运行前停止；开启该字段后展示确认，结果决定是否继续。允许继续保留发现记录，不自动删除原始上下文中的匹配内容。
-`mirror_stale` 的业务恢复会重新读取快照，经 [prepareMirrorStaleRetry](../../extension/src/content/otWarmMirror.js) 的完整或聚焦部分可用性判定后再次派发；合格的部分快照会限制到 focus files。当前 `runTask` 分支未再次调用 `runSensitivePreflight`。敏感检查开启时，若首次预检通过后，新快照包含检测器可识别的内容，首次阻止/确认策略不会自动再次执行，新内容仍可进入第二次 Native 请求参数。聚焦范围和快照可用性检查不代替内容检查；原扫描结果不能作为新快照已扫描的证明。实际 Provider/模型接收及其后果仍需独立验收。
+敏感检查开启且 `sensitiveConfirmAllowed=false` 时，发现命中后阻止对应 Native 派发；开启该字段后展示确认，结果决定是否继续。允许继续保留发现记录，不自动删除原始上下文中的匹配内容。
+`mirror_stale` 的业务恢复重新读取快照，经 [prepareMirrorStaleRetry](../../extension/src/content/otWarmMirror.js) 的完整或聚焦部分可用性判定后，先对原 task 与新 project 输入再次调用预检，`useExistingMirror:false`；合格的部分快照仍限制到 focus files。新检查命中时按当前规则阻止或再次确认，拒绝后结束该运行，批准后的新发现并入审计；没有命中或主动关闭扫描时继续构造第二次 Native 参数。快照范围、内容检测及派发前账号/项目复核分别执行，首次预检结论不会代替新快照检查。实际 Provider/模型接收及其后果仍需独立验收。
 
 ## 4. 路径治理如何判断
 
@@ -101,7 +101,7 @@ runtime 的 `createAuditDraftForRun/updateAuditSensitiveFindings/finalizeAuditRe
 | --- | --- | --- |
 | 新增检测器、预览或去重 | shared SensitiveScan、Native 镜像复用、审计预览 | [sensitiveScan.test.js](../../test/sensitiveScan.test.js) 直接测试正则及预览，不覆盖全部出站材料 |
 | 改镜像白名单、大小或失败处理 | mirrorSensitiveScan、Native dispatcher、runtime 消费者 | [taskRunner.test.js](../../test/taskRunner.test.js) 含镜像扫描请求；浏览器完整性提示另需接入验证 |
-| 命中确认与数据流 | runSensitivePreflight、首次/恢复派发、prompt 组装 | [p0ProductExperience.test.js](../../test/p0ProductExperience.test.js) 含片段及源码断言，不能自动证明新快照重试重新扫描 |
+| 命中确认与数据流 | SensitivePreflight、runtime 首次/恢复派发、prompt 组装、审计 | [runRetrySensitivePreflight.test.js](../../test/runRetrySensitivePreflight.test.js) 串联 runtime、真实检测器、warm-mirror guard 和审计投影，检查阻止/批准/拒绝/关闭及第二次派发参数；Page、Native 和持久化 I/O 使用替身 |
 | 只读与可写路径规则 | GovernanceRules、WritebackPlan、orchestrator、错误展示和审计 | [governanceRules.test.js](../../test/governanceRules.test.js) 的路径和优先级行为；[writebackOrchestratorInitialization.test.js](../../test/writebackOrchestratorInitialization.test.js) 的装配 |
 | 新增诊断或历史字段 | auditRecords、storageDb、diagnosticsExport、历史视图 | [auditRecords.test.js](../../test/auditRecords.test.js) 的摘要与处理规则；真实导出另行验证 |
 

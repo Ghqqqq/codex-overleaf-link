@@ -9,6 +9,17 @@
 
   const DEFAULT_EXPECTED_MIRROR_FRESHNESS_MS = 5 * 60 * 1000;
 
+  function captureSessionContext(state = {}) {
+    // This is the prompt projection, not the mutable visible-session alias.
+    const session = state.session;
+    return session ? JSON.parse(JSON.stringify(session)) : null;
+  }
+
+  function isSubmittedComposerUnchanged(submitted, current) {
+    return ['task', 'attachments', 'skillInvocation', 'selectionContext'].every(key =>
+      JSON.stringify(submitted[key] ?? null) === JSON.stringify(current[key] ?? null));
+  }
+
   function buildCodexRunParams({
     currentProjectId,
     state = {},
@@ -266,6 +277,8 @@
   }
 
   return {
+    captureSessionContext,
+    isSubmittedComposerUnchanged,
     buildCodexRunParams,
     canUseFocusedPartialSnapshot,
     shouldRestrictWritebackToFocus,

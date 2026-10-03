@@ -4,7 +4,7 @@
 const { decodeInputFrames, encodeOutputFrame } = require('./nativeTransportEnvelope');
 const { logDebug } = require('./debugLog');
 const { handleRequest } = require('./taskRunner');
-const { abortAllActiveOperations, getActiveNativeWorkState } = require('./taskRunnerRuntime');
+const { abortAllActiveOperations, quarantineActiveOperations, getActiveNativeWorkState } = require('./taskRunnerRuntime');
 const { handleUpdateRequest, isUpdateMethod } = require('./updateManager');
 const { buildNativeRuntimeEnv, summarizeNativeEnvironment } = require('./nativeEnvironment');
 
@@ -41,6 +41,7 @@ process.stdin.on('data', chunk => {
 });
 
 async function handleDecodedMessage(message) {
+  if (nativeDisconnectHandled) return;
   try {
     logDebug('request.received', summarizeRequest(message));
     const response = isUpdateMethod(message?.method)
@@ -145,10 +146,20 @@ function handleNativeDisconnect(source, error) {
     code: error?.code,
     message: error?.message
   });
-  abortAllActiveOperations('Native messaging transport disconnected.');
   process.exitCode = 0;
-  const exitTimer = setTimeout(() => process.exit(0), 1500);
-  exitTimer.unref?.();
+  // Publish protection before stopping: another Host may reconnect while the
+  // old owned process is still inside its interrupt/termination budget.
+  quarantineActiveOperations();
+  const exitTimer = setTimeout(() => {
+    const failures = quarantineActiveOperations();
+    logDebug('native_transport.shutdown_deadline', { persistenceFailures: failures });
+    process.exit(failures.length ? 1 : 0);
+  }, 5000);
+  // Keep the prior grace for other entry points while owned Codex runs drain.
+  Promise.all([
+    abortAllActiveOperations('Native messaging transport disconnected.'),
+    new Promise(resolve => setTimeout(resolve, 1500))
+  ]).then(() => { clearTimeout(exitTimer); process.exit(0); });
 }
 
 function summarizeRequest(message) {

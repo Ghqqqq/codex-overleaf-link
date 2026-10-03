@@ -3,7 +3,7 @@
 本页解释主任务如何派发 broker worker、处理共享镜像中的文件变化，以及如何展示 Codex 原生子线程。
 适用于调整并发数、同文件任务、超时、失败产物接管、子对话或刷新后的子任务状态。
 
-- 初始参考产品版本：`2.5.0`；初始源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。当前行为随本仓库实现维护。
+- 初始参考产品版本：`2.5.0`；初始参考源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。当前行为随本仓库实现维护。
 - `当前实现` 表示源码中的调用与状态读写；`目标契约` 表示维护约束；`待验证` 表示测试覆盖或运行保证尚有缺口。
 - 全局入口见 [架构目录](README.md)、[功能导航](feature-map.md)；最终同步见 [Auto 编辑与 Undo](auto-edit-undo.md)。
 
@@ -174,7 +174,7 @@ broker 按 timeout、abort 或 `codex_cancelled`、普通失败分类，failed/t
 **当前实现。** `processAdoptions` 仅在 broker 未关闭、未取消、无活动 worker 且 token 有效时处理请求。
 请求须同时具备当前 `token`、`reviewed: true`、原 `jobId`、所属 `path` 和当前最终字节 `sha256`。
 `endWave` 在该波 worker runner Promise 已结算、`running` 清空后发布 token，新波次开始会清空 token；接管结果写入 `adoption-results`。
-Promise 完成不证明 OS 进程已退出：runner 正常 `succeed` 发 SIGTERM 后即可 resolve。退出证据与可能的迟到写入需另外核对，见[Native 执行](native-execution.md)的成功及停止路径。
+生产 app-server runner 正常 `succeed` 在 `stopCodexAppServer` 确认停止后才 resolve；无法确认停止时拒绝结果并记录停止屏障。broker 的有界等待、自定义执行替身与独立执行入口仍不能单独证明 OS 进程退出；进程证据与平台限制见[Native 执行](native-execution.md)的成功及停止路径。
 `adoptionHash` 还核对真实路径位于 workspace、普通文件及大小上限。
 之后字节再次变化会让 `blockedPaths` 重新阻止该文件，须重新审阅并提交新摘要。
 `reviewed: true` 是主任务的显式声明；代码不能代替审阅内容质量。
@@ -186,7 +186,7 @@ Promise 完成不证明 OS 进程已退出：runner 正常 `succeed` 发 SIGTERM
 对应变更从 `syncChanges` 移入 `unsupportedChanges`，原因分别为 `subagent_unauthorized_edit`、`subagent_unfinished_output`。
 content 的 `applySyncChangesToOverleaf` 展示阻止项；允许项仍经过同一套写回、保存及 Undo 规则。
 
-worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 completed 或旧协议缺少 status，且 error 为 null/undefined。该终态仍无法单独证明子进程已经退出，或文件已被 Overleaf 接受和保存。
+worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 completed 或旧协议缺少 status，且 error 为 null/undefined。单独收到 app-server 的 `turn/completed` 通知仍不能证明子进程已经退出；worker 完成也不证明文件已被 Overleaf 接受和保存。
 接管成功只解除对应隔离资格，之后仍受选区、focus、文件类型、治理和写回检查约束。
 父取消在差异交付前检查 abort；dirty mirror 使后续运行重新评估并重建所需内容。
 

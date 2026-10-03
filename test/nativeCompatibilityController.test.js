@@ -79,3 +79,19 @@ test('native compatibility controller attaches evidence only to gated methods', 
   assert.equal(sent[0].params.nativeCompatibility, compatibility);
   assert.equal(sent[1].params.nativeCompatibility, undefined);
 });
+
+test('current tracked request still receives compatibility rejection and its notification', async () => {
+  const events = []; let guardCalls = 0;
+  const controller = NativeCompatibilityController.create({
+    nativeChannel: { sendBackgroundNative: async () => ({ ok: true }) },
+    gatedMethods: new Set(['codex.run']),
+    fallbackNativeCompatibility: () => ({ status: 'native_too_old' }),
+    getNativeCompatibilityClassification: value => value.status,
+    getCurrentRunView: () => ({ recordId: 'live-run' }),
+    appendRunEvent: event => events.push(event), tr: key => key, tx: value => value
+  });
+  const gate = await controller.ensureForMethod('codex.run', { assertCurrent: () => { guardCalls++; } });
+  assert.equal(guardCalls, 1); assert.equal(gate.ok, false);
+  assert.equal(gate.response.error.code, 'native_update_required');
+  assert.equal(events.length, 1); assert.equal(events[0].title, 'nativeCompatibilityBlockedNativeTooOld');
+});

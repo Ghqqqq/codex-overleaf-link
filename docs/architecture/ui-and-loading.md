@@ -1,6 +1,6 @@
 # 界面、加载与输入上下文
 
-初始源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。当前行为随本仓库实现维护。
+初始参考源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。当前行为随本仓库实现维护。
 本页介绍[系统总览](system-overview.md)与[功能索引](feature-map.md)中的界面领域。完整运行归属见[运行状态与恢复](run-state-and-recovery.md)，写入证据见[Auto 编辑与撤销](auto-edit-undo.md)。
 源码行为、局部测试覆盖和浏览器交互验收分别说明；测试入口用于定位相应验证范围。
 
@@ -131,20 +131,20 @@ Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并
 ```text
 textarea input → persistPanelInputs → readPanelInputs → updateActiveSession → debounce save
 提交 → safeRunTask
-  ├─ 无当前运行：runTask 等待旧镜像 → 捕获输入 → 准备 Provider/风格 → startRunView → audit 等待 → clearTaskComposer
+  ├─ 无当前运行：runTask 捕获输入与归属 → 等待旧镜像 → 准备 Provider/风格 → startRunView → audit 等待与身份复核 → 条件清理输入
   └─ 有当前运行：queueComposerInput → RunQueueScheduler coordinator → pendingInputs
 结果卡 Edit & resend → refillComposerForRetry → prepareRetryReplacement → 会话草稿
 ```
 
 [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `syncComposerSendAvailability` 在运行中且无文字时呈现取消，有文字时呈现排队发送；`safeRunTask` 将活动运行期间的提交交给队列协调器。
-`runTask` 在前次 `pendingMirror` 等待结束后、Provider/风格异步加载前捕获输入。准备期间仅复核账号和项目，`startRunView` 采用届时的活动会话；点击发送不等于会话归属已经固定。
-建立 run 后还等待 audit 草稿等步骤，才调用 `clearTaskComposer` 清文字、选区、技能调用及附件；该函数作用于届时的活动会话，确认切换后的新草稿也可能被清空。显式运行/线程身份保持还不足以保证提示词历史一致，`params.session` 仍有读取当前会话的路径；等待窗口、参数构造与 Native 消费见[运行状态与恢复](run-state-and-recovery.md#31-执行快照)。
+`runTask` 在首次 await 前捕获输入、提交会话、提示词会话投影和线程，再等待 `pendingMirror`、Provider 与风格准备；风格快照仍在加载后获取。`startRunView` 按捕获的 sessionId 建立记录；`safeRunTask` 用准备期标志防止重复启动。
+建立 run 后等待 audit 草稿，再复核账号项目并条件清理已提交输入。原会话草稿或当前文字、附件、技能、选区已变化时保留新输入；在途附件和 `SelectionContextView.getRevision` 的代次变化也阻止清理。切换会话后只可能清理仍匹配的原会话 task，当前 composer 保留；队列提升跳过此清理。普通与 skill-installer 参数消费已捕获的会话投影，详见[运行状态与恢复](run-state-and-recovery.md#31-执行快照)。
 [PendingInputView.pullBack](../../extension/src/content/pendingInputView.js) 只回填 queued 项，已有非空草稿时提示并返回；实际移除队列项与持久化由回调完成，UI 回填动作本身不提供事务提交证明。队列准入、推进和保存边界见[运行状态与恢复](run-state-and-recovery.md)。
 
 [RunTimelineView.configureEditButton](../../extension/src/content/runTimelineView.js) 对 cancelled/rejected 且通过 `canEditRun` 的记录提供编辑重发，当前存在运行时禁用该按钮。
 [PanelMaintenance.refillComposerForRetry](../../extension/src/content/panelMaintenance.js) 回填任务并调用 runtime 的 `prepareRetryReplacement`：符合资格的 cancelled/rejected 记录在无当前运行时回到草稿，并从列表移除原卡，恢复其模式、focused files 和选区；其他符合替换条件的失败重试会记录 `pendingRetryReplacement`，在新 run 创建时解析替换。
 资格规则由 [RunController.isRetryReplacementEligible/resolveRetryReplacement](../../extension/src/content/runController.js) 根据写入与恢复材料判断；附件不会随任务文字自动恢复，UI 会提示重新添加。
-[runControllerContent](../../test/runControllerContent.test.js) 覆盖资格、会话归属与替换 helper；[p0ProductExperience](../../test/p0ProductExperience.test.js) 另有恢复按钮路由断言。运行中输入、异步提交、队列回填及刷新仍需组合用例，不能只运行纯 helper 就宣称草稿全生命周期通过。
+[runControllerContent](../../test/runControllerContent.test.js) 覆盖资格、会话归属与替换 helper；[p0ProductExperience](../../test/p0ProductExperience.test.js) 另有恢复按钮路由断言。[runSubmissionOwnership](../../test/runSubmissionOwnership.test.js) 另组合 runtime、真实 SessionManager、参数和 prompt 构造，覆盖异步提交期间的会话/草稿/作用域变化；队列回填、真实 UI 与刷新仍需对应环境验证。
 
 ## 4. 模型目录：请求返回顺序与用户选择分开处理
 

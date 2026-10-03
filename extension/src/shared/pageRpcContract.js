@@ -5,7 +5,7 @@
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this), function () {
   'use strict';
 
-  var REVISION = '2026-10-03-empty-content-v35';
+  var REVISION = '2026-10-04-receipt-settlement-v36';
   var METHODS = freezeCatalog({
     initializeCapability: entry('bridge.initialize', 'control', 'none', 'default', false, 'none'),
     probe: entry('bridge.probe', 'read', 'none', 'default', false, 'safe'),
@@ -20,12 +20,13 @@
     ensureReviewing: entry('reviewing.enable', 'page_state', 'optional', 'default', true, 'idempotent'),
     ensureEditing: entry('reviewing.disable', 'page_state', 'optional', 'default', true, 'idempotent'),
     applyOperations: entry('document.write', 'document', 'required', 'writeback', true, 'no_retry'),
-    getWritebackReceipt: entry('writeback.receipt', 'read', 'required', 'default', true, 'safe'),
+    // Receipts settle already-dispatched writes after cancellation; their RPC deadlines still apply.
+    getWritebackReceipt: entry('writeback.receipt', 'read', 'required', 'default', false, 'safe'),
     getSelectionContext: entry('editor.selection', 'read', 'required', 'default', true, 'safe'),
-    binaryUploadBegin: entry('asset.stage', 'cache', 'required', 'default', false, 'no_retry'),
+    binaryUploadBegin: entry('asset.stage', 'cache', 'required', 'default', true, 'no_retry'),
     binaryUploadAppend: entry('asset.stage', 'cache', 'none', 'writeback', true, 'no_retry'),
     binaryUploadCommit: entry('asset.write', 'document', 'required', 'writeback', true, 'no_retry'),
-    binaryUploadStatus: entry('asset.receipt', 'read', 'required', 'default', true, 'safe'),
+    binaryUploadStatus: entry('asset.receipt', 'read', 'required', 'default', false, 'safe'),
     binaryUploadAbort: entry('asset.stage', 'cache', 'none', 'default', false, 'idempotent'),
     jumpToPosition: entry('editor.navigate', 'navigation', 'required', 'default', false, 'idempotent'),
     reconcileTrackedChangeCapture: entry('tracked_changes.read', 'read', 'required', 'default', false, 'safe'),
