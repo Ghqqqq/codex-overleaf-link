@@ -176,6 +176,8 @@ Chat 且响应模式 Auto 时先 streaming；只有工具不兼容或流式工�
 因此 Built-in 的连接配置还受继承的 Codex 配置影响，插件的 Custom 端点披露及 profile revision 校验不覆盖这条来源。修改用户配置不会因此更新插件的 Built-in revision，固定的执行快照也不记录该配置的内容哈希。
 审计经 [contentRuntime.createAuditDraftForRun](../../extension/src/content/contentRuntime.js) 调用 [ProviderSettingsCoordinator.getProviderSnapshot](../../extension/src/content/providerSettingsCoordinator.js)，读取浏览器目录中的 Built-in 身份，端点为空；该记录不能作为继承配置实际网络目的地的证明。实际 Codex 版本的配置解析、认证选择及最终服务端点仍需独立验证，保留连接字段本身不证明已发送任何内容。配置过滤的 TOML 形式限制另见[技能继承与作用域](writing-style-and-skills.md#普通技能安装继承与作用域)。
 
+**认证副本的生命周期。** 用户 home 与插件 home 分离时，`preparePluginCodexHome()` 只复制本次仍为普通文件的来源；先前已复制的 `auth.json` 在来源消失后不会被同步删除。源 `config.toml` 缺失有单独清理分支，`clearPluginCodexHistory()` 也只删除历史目录，均不能推广到认证副本。来源文件移除与插件副本删除是两个事件；旧副本是否仍可认证、实际采用哪个身份或服务端是否已撤销凭据，仍需结合具体 Codex 与认证服务验证。
+
 **Custom 的 prepared launch。**
 `providerModelCatalog.prepareProviderModelCatalog` 写临时 `models.json`，定义 shell_command、上下文窗口、reasoning 和输入模态等 Codex 可见能力。
 目录文件使用 0600，prepared close 删除临时目录；配置值进入目录不能解释为服务商能力已被检测。
@@ -307,6 +309,9 @@ Anthropic 对特定 HTTP 400 最多修正一次并重新 fetch；普通错误无
 `commitProviderState` 先写恢复事务，再写 secrets/public，最后清理事务；启动读取时调用 `recoverInterruptedTransaction` 完成判定或恢复旧副本。
 这提供配套版本恢复，不能理解为秘密仅会出现在一个文件，也不能直接视为加密存储。
 目录请求 0700、原子写入临时文件请求 0600；chmod 失败被容忍，Windows/具体文件系统有效权限仍需验收。
+
+**Known gap / Store 容量。** [providerStore.readJson](../../native-host/src/providerStore.js) 对 public、secrets 和 transaction 文件设置 1 MiB 读取上限；`commitProviderState/atomicWriteJson` 未在提交前检查相同上限。[providerProfile.normalizeStringRecord](../../native-host/src/providerProfile.js) 的 customHeaders/queryParams 没有总体字节上限，累计 profiles 也无存储总量限制。因此通过当前 normalizer 的配置可被写入，事务文件删除后，后续读取再返回 `provider_store_corrupt`。
+列表、删除与 Built-in 运行解析均先读取整个 Store，因而也可能受阻；Save 返回错误不能证明磁盘仍保留旧配置。维护该边界需核对临界容量、保存失败后的可读性和事务恢复文件大小，先用临时目录与合成内容验证。
 
 `normalizeBaseUrl` 拒绝 URL 用户名/密码、query、fragment，要求 HTTPS 或允许的 loopback HTTP。
 **网络目的地限定**：上述 URL 校验和 `resolveRunProvider` 的披露比较均作用于配置值；三桥没有固定 DNS 解析地址，也没有逐跳重定向目的地校验。

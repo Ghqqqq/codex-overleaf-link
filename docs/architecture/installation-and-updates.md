@@ -41,6 +41,7 @@ V_{installed}=V_{native}=V_{extension}=V_{runtime}.
 Managed 的 `registerManagedRuntime()`读取 [runtime-manifest.json](../../extension/runtime-manifest.json)，动态注册 JS/CSS，见 [bootstrap/background.js](../../extension/bootstrap/background.js)。
 页面主世界资源仍由 `PAGE_WORLD_SCRIPTS`及资源公开清单决定，新增 page 能力不能仅修改 content bundle。
 runtime manifest 可扩展 Overleaf 站点范围，但实际注册受已授予 host permission 约束；可选权限的申请另由 UI 发起。
+当前 manifest 仅列 `overleaf.com`、`www.overleaf.com` 和 `cn.overleaf.com`。增加其他 Overleaf 子域时，[Popup.offerNewSites](../../extension/src/popup.js) 可申请新增 host 权限，Bootstrap 可扩大动态注入范围；完整能力还需同步后台 Native sender、[SharedSessionBridge.enabled](../../extension/src/shared/sharedSessionBridge.js)、后台共享历史准入、更新协调器及安全点枚举的固定主机集合。授权和注入成功不能单独证明新站点可以运行、共享历史或参与更新保护。
 
 当前 npm CLI 的 `install-managed`分派到 [scripts/install-managed.mjs](../../scripts/install-managed.mjs) 的 `installManaged()`，再调用 `installManagedDistribution()`。
 CLI 命令解析位于 [bin/codex-overleaf-link.mjs](../../bin/codex-overleaf-link.mjs)；`doctor`输出预期注册位置、可选运行根参数、bridge ping与工具发现信息，其注册验证范围见下一节。
@@ -170,6 +171,7 @@ Native `applyStagedUpdate()`再次检查本地 gate、管理布局、事务及�
 当前 idle探针接受`verified_saved`或`verified_quiet`，要求30秒无相关编辑活动、保存判断稳定3秒；quiet证据弱于服务器内容核验。
 “所有标签页”在实现中指匹配支持站点、可用且未被discard/unload的编辑器标签页；项目列表、丢弃页与未授权站点有不同处理。
 应答失败、超时或保存未知会产生 blocker；不能把 tab探针不可达直接解释为空闲。
+**整体枚举失败的例外。** 后台 `verifyManagedUpdateSafety` 将 `tabs.query` 的拒绝回退为空列表；Native 空闲且后台没有 pending 执行时，该分支可返回 `ok:true`，实际尚未取得编辑器标签页清单。主协调器首次枚举错误会失败，但后台二次核验采用另一条路径；维护安全点时应分别覆盖单页探针失败、整体枚举失败及两次核验之间的状态变化。
 
 Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入口从 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js) 的`getActiveNativeWorkState()`提供这两个计数。
 它没有扫描所有操作系统进程，也没有在该 gate 中直接枚举持久化`processStopBarrier`记录。
@@ -200,9 +202,10 @@ Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入�
 Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已apply的事务，恢复来源文件并对失败目标设置24小时cooldown。
 冷却期会影响“检查更新”和“重试”的实际含义：`checkForUpdate()`进入非304的新版本分支后，对仍在冷却的目标返回`available: false`、`reason: cooldown`及目标版本。更早的授权候选与304缓存分支有独立提前返回，不能把冷却判断推广到所有检查路径。
 [backgroundUpdateCoordinator.js](../../extension/src/backgroundUpdateCoordinator.js)的`checkOnly()`将 cooldown 结果转为`idle`并清空`code`、`message`，未保留冷却原因；[updateConsent.js](../../extension/src/shared/updateConsent.js)也不会为该状态提供安装动作。
-真实更新窗口由 [bootstrap/update.html](../../extension/bootstrap/update.html) 加载 [bootstrap/update.js](../../extension/bootstrap/update.js)，`presentationFor` 将 idle 映射为默认 `Stable updates / Ready`。[popup.js](../../extension/src/popup.js) 中旧 `getUpdateCopy/renderUpdateSection` 不在当前 Popup 调用链，`scheduleConsentUpdateUi` 实际移除更新区，不能据旧 helper 文案判断用户当前看到“已是最新版”。
+当前可达更新 UI 位于 Overleaf 面板：[contentRuntime](../../extension/src/content/contentRuntime.js) 装配 [UpdateNotice.mount](../../extension/src/content/updateNotice.js)，提示条与设置页的检查、更新、取消及重载按钮调用 `consent-update` 消息。idle 时提示条按 `view.showPanel` 隐藏，设置页保留当前版本、自动检查说明及“检查更新”入口。
+[popup.js](../../extension/src/popup.js) 启动时的 `scheduleConsentUpdateUi` 移除旧更新区；`getUpdateCopy/renderUpdateSection` 和旧 `openUpdateCenter` 不在当前已装配操作链。[bootstrap/update.html](../../extension/bootstrap/update.html) 及其 `presentationFor` 属于保留资产，不能作为现行面板文案的证据。
 该路径的实际限制是冷却原因丢失、没有对应安装动作；idle 不能单独证明当前安装已达到最新目标版本。
-`Target contract`：无新版本与失败目标暂缓重试应保留各自原因；冷却提示应说明目标及可重试条件。[updateCenter.test.js](../../test/updateCenter.test.js)覆盖恢复终态，[updateConsent.test.js](../../test/updateConsent.test.js)覆盖视图规则，仍需验证“回滚→冷却期内手动检查→冷却到期后检查”完整路径中的Native原因、协调器状态、弹窗文案与按钮。
+`Target contract`：无新版本与失败目标暂缓重试应保留各自原因；冷却提示应说明目标及可重试条件。[updateCenter.test.js](../../test/updateCenter.test.js)覆盖恢复终态与当前页操作装配，[updateConsent.test.js](../../test/updateConsent.test.js)覆盖视图规则，仍需验证“回滚→冷却期内手动检查→冷却到期后检查”完整路径中的 Native 原因、协调器状态、面板文案与按钮。
 
 `supersedeObsoleteJournal()`仅在安装对齐且active版本同时严格高于journal的source和target版本时淘汰旧journal；同target版本重装不满足该条件。
 `installManagedNativeVersion()`保留`native/updates`，完整扩展重装则建立新树。静态恢复反例是旧journal停在`applying`后重装同target：后续`update.status`仍可进入`recoverAndReadStatus()`的`rollbackFiles()`分支，重写source指针及旧manifest，而新扩展树可能已无旧runtime槽。
@@ -210,7 +213,8 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 
 严格更高版本重装也有授权和恢复边界：`supersedeObsoleteJournal()`只将旧journal写为`superseded`并清理staging，未调用`settleAuthorization()`；`recoverAndReadStatus()`随后跳过原`applying`分支的授权结算，`currentStatus()`仍返回残留授权。
 旧`bound`授权会使`inspectInstalledRuntime()`保持`transaction_active`；后续`checkForUpdate()`优先进入`readAuthorizedCandidate()`，旧候选即使签名有效，也会因授权source与当前版本不符或target版本不再高于当前版本而返回`update_consent_mismatch`。
-浏览器协调器的`reconcileExpiredPhase()`没有将`superseded`视为恢复完成的分支；旧恢复意图仍在时可保留`failed`、`recoveryPending: true`和`update_recovery_pending`，`settleTerminalConsent()`也会因恢复待定而保留浏览器授权意图。
+浏览器存在两条恢复写入路径：[backgroundUpdateCoordinator.reconcileExpiredPhase](../../extension/src/backgroundUpdateCoordinator.js) 未将 `superseded` 归为恢复完成，单独执行时可保留 `failed/recoveryPending`；托管 [background.reconcileManagedUpdateTransaction](../../extension/src/background.js) 在启动后定时执行，遇到 `superseded` 会删除浏览器授权与待刷新标签记录，并写入 idle。
+两条路径异步更新同一状态，没有共同的事务结算或代次屏障；后台清理后，迟到的协调器仍可能写回恢复待定。实际 Chrome 启动顺序需组合验证，不能由其中一条路径推定最终 UI。浏览器清理也不删除 Native `authorization.json`，前述 bound 授权残留及运行身份投影仍需独立处理。
 [updateManager.test.js](../../test/updateManager.test.js)的supersede用例覆盖严格更高版本和保留旧回滚，未断言授权结算及协调器恢复完成。验证应分别覆盖同target重装，以及严格更高版本重装后journal、Native授权、四版本投影和浏览器恢复意图的组合。
 阶段期限在`PHASE_TIMEOUTS`统一声明，具体网络/页面探测还有更短预算；超时值不能混用为同一个总耗时保证。
 
@@ -241,7 +245,7 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 `checkForUpdate()`首次下载并验证签名manifest后，若Bootstrap协议不同，会返回`manual_install_required`及其中的说明；staging/apply仍拒绝该候选。
 
 普通`candidate.json`保存原始manifest与签名，304分支会调用`verifySignedReleaseManifest()`重新验证。手动提示的`manual-candidate.json`只保存派生字段；304分支的`readManualCandidate()`检查重装原因、目标版本高于当前版本及所需协议不同，未保存或重新验证签名，也未将缓存ETag与本次请求匹配，`checkedAt`不参与有效期判断。
-因此缓存恢复的说明依赖本地派生数据，首次联网验签的保证不能推广到每次304恢复。[backgroundUpdateCoordinator.js](../../extension/src/backgroundUpdateCoordinator.js)的`checkOnly()`将该结果的目标和`manualInstall.reason`写入浏览器更新状态；[updateNotice.js](../../extension/src/content/updateNotice.js)的`manualUpdateCommand()`和[bootstrap/update.js](../../extension/bootstrap/update.js)据目标版本生成重装命令并展示说明。
+因此缓存恢复的说明依赖本地派生数据，首次联网验签的保证不能推广到每次304恢复。[backgroundUpdateCoordinator.js](../../extension/src/backgroundUpdateCoordinator.js) 的 `checkOnly()` 将目标和 `manualInstall.reason` 写入浏览器更新状态；当前面板由 [updateNotice.js](../../extension/src/content/updateNotice.js) 的 `manualUpdateCommand/manualReasonText` 生成重装命令和原因说明。
 该缓存用于手动操作提示；`stageCandidate()`仍从`candidate.json`读取原始manifest与签名，执行验签、协议及下载字节校验。手动提示缓存的验证缺口不能作为staging签名校验被绕过的证据。
 [updateManualInstall.test.js](../../test/updateManualInstall.test.js)覆盖首次签名候选、后续304保留提示及重装后的版本判断；缓存内容损坏、ETag不匹配、检查时间过旧与UI目标命令的组合需另行覆盖。
 

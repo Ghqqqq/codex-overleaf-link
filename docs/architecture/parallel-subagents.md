@@ -153,6 +153,9 @@ runner 捕获 `codex_process_stop_unconfirmed` 后阻止正常结果继续同步
 [subagentBroker.test.js](../../test/subagentBroker.test.js) 的 drain 与 queued cancellation 用例使用可写临时目录及假 worker，未注入回执写入失败，也未贯通 task runner 的锁释放。
 验证应同时保留 running 和 queued 项，在 queued 回执写入处注入错误，检查活动信号、轮询清理、worker deadline 与外层运行登记；普通 drain 成功不能证明异常收尾也已完成。
 
+**worker 完成回执的异常边界。** `startWorker` 的成功回调调用 `finishWorker` 写回执；写入失败会进入 catch，再按 `timeout/cancelled/failed` 分类调用 `finishWorker`，未超时且未取消时为 failed。若第二次写入仍失败，worker Promise 保持 rejection，finally 又将它从 `running` 删除。父任务尚未进入 `stop` 时，该拒绝没有统一消费路径；[Native index](../../native-host/src/index.js) 的全局 `unhandledRejection` 处理会退出 host。
+这条链与 queued 取消回执失败具有不同触发条件。维护时应分别注入两处 I/O 失败，检查 Promise 消费、轮询清理和运行登记；局部 broker 反例不能证明真实 Codex 子进程已经停止或镜像后果已经确定。
+
 ## 5. 波次哈希、归属与隔离输出
 
 **当前实现。** 第一项 worker 开始时 `beginWave` 记录项目哈希；直到当前 running 清空才 `endWave`。

@@ -153,7 +153,7 @@ Native `handleCodexCancel` 命中 controller 后调用 abort，并返回 `{cance
 
 无活动 controller 时，`force:true` 仅在项目未被 stop barrier 阻断、且内存锁存在时删除锁；它不执行额外 OS kill。
 “没有登记 controller”不能证明工作已经结束：上述无真值 ID 的运行可继续执行，而 force 分支释放其锁；使用同一项目锁的镜像操作也有独立寿命。锁 token 仅防止旧 finally 删除新锁，不能终止仍在进行的操作。
-`Known gap`：`forceCancelStuckTaskForCurrentProject` 读取 `cancelled/lockReleased` 来生成文案，但正常后台取消通道只返回 `sent`。
+`Known gap`：`forceCancelStuckTaskForCurrentProject` 读取 `cancelled/lockReleased` 生成日志，但正常后台取消通道只返回 `sent`；[RunTimelineView](../../extension/src/content/runTimelineView.js) 的恢复按钮又仅按 `result.ok` 显示“已释放”。同一请求可出现“没有发现卡住任务”的日志与“已释放”的按钮状态。
 因此该按钮的文字与调用成功均不足以证明 Native 已释放锁，需核对原运行终态、后续准入及实际进程证据。
 
 ### 失败/取消的有界停止
@@ -254,6 +254,7 @@ Base64 字节数约为 \(4\lceil n/3\rceil\)，外面还有 JSON 与 diff/patch�
 
 日志由 [debugLog.js](../../native-host/src/debugLog.js) 的 `sanitize` 截断字段、压缩部分 content/files；这不构成通用凭据识别器。
 `index` 的摘要与运行错误路径还会记录 error message/stack；`Target contract` 禁止敏感凭据进入日志，但各新异常路径仍须单独审阅。
+`debugLog.logDebug` 向选定目录的 `native-host.log` 持续追加，没有文件总字节上限、按时间淘汰或自动轮转。`sanitize` 只截断部分字符串、裁剪部分数组，整条 JSON 记录也没有统一字节上限。写入异常被捕获以免阻断 Native 消息处理；磁盘容量排查需同时核对单条载荷与累计日志的保留策略。
 
 ## 8. 修改联动与最近测试
 

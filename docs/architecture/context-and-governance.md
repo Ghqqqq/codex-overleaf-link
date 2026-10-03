@@ -34,8 +34,9 @@ flowchart TD
     W --> B[阻止项进入 skipped 和审计]
 ```
 
-runtime 在 `runTask` 的首次 `sendTrackedCodexRun` 前调用 `runSensitivePreflight`；实际写回在 [writebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js) 内调用治理检查。
+普通项目任务在 `runTask` 的首次 `sendTrackedCodexRun` 前调用 `runSensitivePreflight`；实际写回在 [writebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js) 内调用治理检查。
 两个位置都读取当前项目规则。规则不在 `RunExecutionSnapshot` 的字段白名单内，因此已排队任务不能据执行快照推定整套规则也已冻结；修改规则作用域或时序时需联动两个入口。
+显式 `skill-installer` 调用更早进入 `runSkillInstallerTask`，随后经 `sendNative` 发送 `codex.run`，未经过上述预检。项目扫描与敏感确认设置不能据此推定覆盖安装任务的 task/customInstructions。安装模式不向项目回写，工作目录、沙箱及附件限制见[写作风格与技能](writing-style-and-skills.md#普通技能安装继承与作用域)。
 
 ## 3. 扫描实际覆盖的材料
 
@@ -47,6 +48,7 @@ runtime 在 `runTask` 的首次 `sendTrackedCodexRun` 前调用 `runSensitivePre
 | --- | --- | --- |
 | 普通运行的输入任务文本 | `runTask → runSensitivePreflight → scanSensitiveInputs({task,...})` | 只覆盖该入口和检测器能够识别的文字形态 |
 | 运行中即时指导 | `RunQueueScheduler.createCoordinator().guide → codex.steer → turn/steer` | 不经过普通运行预检；Native 检查绑定、轮次、非空和长度，没有补调用 SensitiveScan |
+| 显式 skill-installer 任务 | `runTask → runSkillInstallerTask → codex.run` 的早分支 | task/customInstructions 未经过普通项目敏感预检；该模式的文件操作与沙箱约束独立 |
 | 项目文本快照 | `scanSensitiveProjectFiles` | 只扫描本次传入且满足文本判断的文件 |
 | 已有本地镜像 | [scanMirrorSensitiveFiles](../../native-host/src/mirrorSensitiveScan.js) 经 `mirror.scanSensitive` | 扩展名白名单、单文件大小和返回数量限制 |
 | 自定义指令、技能、编译日志 | 后续由 [codexPromptAssembly](../../native-host/src/codexPromptAssembly.js) 组装 | 未作为完整 prompt 进入本次预检；某些材料有独立处理，不能合并推定为已扫描 |

@@ -73,8 +73,8 @@ sequenceDiagram
 项目目录通过同域 `/project` 的已登录请求获取，排除回收站，保留归档项目。
 `parseCatalog()` 检测不完整目录；失败不回退为近期记录列表。
 `readProject()` 经 `snapshotRouter.fetchProjectZipSnapshot()` 获取指定参考项目的已保存内容，不切换编辑器。
-读取只保留 TeX 文件；跳过 TeX、缺内容、数量超限或字节超限均导致失败。
-`referenceTextComplete: true` 表示这条参考通道的 TeX 完整性声明，与普通项目快照能力须分别理解。
+读取只保留提取器返回的 TeX 文件；其中缺内容、数量超限、字节超限，或 `skipped` 明确报告 TeX 被跳过时，参考读取失败。
+`referenceTextComplete: true` 是对这些返回材料的完整性声明，未重新核对 ZIP 原始目录；[ZIP 字面文件名与路径身份](auto-edit-undo.md#zip-path-identity)的静默丢弃或合并限制也影响这条通道。例如 ZIP 同时含正常 `main.tex` 与 `100%.tex` 时，后者可能被省略而仍返回完整标志。真实 Overleaf 的文件名接纳与后续影响仍需验证。
 
 PDF File 在 content 内存编码为 Base64；项目快照编码为 JSON 附件，随后与来源描述关联。
 来源描述仅用 `attachmentId` 引用附件；Native 再检查项目 ID、时间戳、文件路径和完整性标记。
@@ -221,6 +221,17 @@ Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元�
 因此语义等价的 `"personality" = ...`、`"notify" = ...`、`["mcp_servers".example]` 可保留；顶层 dotted key `mcp_servers.example.command = ...` 和 inline table `mcp_servers = { example = { command = "..." } }` 也不经过 section 过滤。配置含义相同，字符串形状不同，当前过滤结果即可不同。
 保留文本随后写入插件 home，普通父运行、worker 和关闭技能的风格生成均可经过这条准备链。关闭本地技能时，[codexSessionRunner](../../native-host/src/codexSessionRunner.js) 的 `buildCodexAppServerArgs()` 追加 `--disable plugins`，`applyCodexSkillIsolation()` 只操作 `skills/list` 与 `skills/config/write`；这些局部措施不能证明遗留 MCP 或 notify 配置已被清除。
 上述边界说明配置过滤及传播；具体 Codex 版本是否接受这些字段、实际发现 MCP 或执行 notify，仍需独立验证，不能据保留文本推定已发生网络请求或资料泄漏。[codexHome.test.js](../../test/codexHome.test.js) 的现有隔离用例覆盖裸键、普通 section 及多行 personality；维护过滤器时还需核对等价 quoted、dotted、inline 写法及生成配置的可解析性。
+
+**Known gap / 多行值。** 该过滤器删除匹配 `notify =` 的单行，未跟踪后续多行数组。例如以下合法 TOML 在过滤后仅剩数组元素和闭合括号，无法继续按 TOML 解析：
+
+```toml
+notify = [
+  "echo",
+  "synthetic"
+]
+```
+
+此分支要求关闭本地技能，并且用户 home 与插件 home 分离；普通运行、worker 和风格生成均可进入相应准备链。生成配置的可解析性可独立验证，具体 Codex 的报错展示仍需集成验证。过滤器回归应同时检查应删除字段、应保留字段和整体语法。
 
 `composePluginSkillsDirectory()` 先组合本地技能，再组合插件技能；同名插件技能覆盖组合目录中的本地入口。
 默认插件 home 由 `getPluginCodexHome()` 选定，各项目和 runner 共用同一目录。`runCodexAppServerProcess()` 每次启动均调用 `buildCodexHomeEnv()`；正常组合路径先删除 `$CODEX_HOME/skills`，再按本次开关重建。

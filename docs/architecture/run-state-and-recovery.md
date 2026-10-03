@@ -115,6 +115,7 @@ Native 还会在 [providerRuntime.js](../../native-host/src/providerRuntime.js) 
 Native 的 [taskRunnerRuntime.handleCodexSteer](../../native-host/src/taskRunnerRuntime.js) 检查活动绑定、传入的预期 thread/turn、非空文本与长度，再经 [codexSessionRunner.publishActiveTurnControl](../../native-host/src/codexSessionRunner.js) 的 control 发送 `turn/steer`；这两层均未补做敏感扫描。
 同一条排队文字作为下一项普通任务执行、或用作当前轮次的即时指导，经过的预检入口不同；首次任务的扫描结果不能覆盖后来追加的指导。材料与入口范围见[上下文与治理](context-and-governance.md#3-扫描实际覆盖的材料)。
 指导成功后移除队列项并写入所属 run 的指导事件；发送结果不明时进入 `steer_delivery_unknown` 暂停状态。
+**发送前保存失败。** `createCoordinator.guide` 先将条目标为 `steering`，再在 `try` 外等待 transition 保存；该保存拒绝时尚未调用 `sendSteer`，条目也未回到 `queued/paused`。外层按钮 handler 只提示错误，[PendingInputView](../../extension/src/content/pendingInputView.js) 禁用 steering 项的编辑与移除，`scheduleOne` 又只领取 queued 项。当前 handler 没有恢复这次已知未发送的失败；后续 `pauseAll` 或重载能否解除状态需按各自路径判断，不能用发送后的 `steer_delivery_unknown` 概括。
 指导投影入口为 [runGuidanceController.js](../../extension/src/content/runGuidanceController.js)，应同时检查队列卡、活动 transcript 和最终输入摘要的去重。
 
 ### 3.3 取消与继续条件

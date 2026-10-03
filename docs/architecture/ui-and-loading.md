@@ -177,6 +177,9 @@ runtime 的 `applyAtFileSelection` 在菜单选择文件后同时插入 `@path` 
 `selectFocusFile` 用 `.slice(-5)` 保留最近五项；通过 @ 菜单加入第六个不同文件时，最早的 focus 被替换，runtime 显示提示，原有 @ 文字仍可留在任务中。排查发送上下文应同时检查任务文字、focus 列表及执行快照，不能从文字中的文件名推断结构化 focus。
 [contextTray](../../test/contextTray.test.js) 定位列表和 chip 的选择／移除路径；组合验证应覆盖手输、删字、删 chip、第六项替换及提交快照的实际字段。
 
+文件目录由 `ContextTray.loadContextFiles` 发起：`requestContextFiles` 先以 `preferExact:false` 调用 `getProjectFileList`，返回空列表或不可用列表响应时再请求 `exactOnly:true` 的精确列表；首次调用直接抛错则由 `loadContextFiles` 显示读取失败。可用树列表先显示，随后由 `enhanceContextFilesFromExactSnapshot` 尝试精确增强；增强失败保留树列表并标 partial。
+精确请求使用 `includeContent:false/includeBinaryFiles:true`，目录准确不等于正文已读取或 Native 镜像已同步。`scheduleContextPrefetch` 根据全局 `preloadProjectContext`、页面可见性和项目身份延迟安排目录读取；`resetContextProject` 清缓存、递增 `contextLoadId` 并重新安排预加载。
+
 ### 编译日志上下文与修复草稿
 
 runtime 的 `renderAtFileMenu` 提供 `@compile-log`；`runTask` 在首次模型派发前识别该标记，再通过 [WritebackOrchestrator.resolveCompileLogContext](../../extension/src/content/writebackOrchestrator.js) 请求页面 `getCompileLog`，附带运行项目身份。
@@ -191,7 +194,8 @@ runtime 的 `renderAtFileMenu` 提供 `@compile-log`；`runTask` 在首次模型
 `pendingAttachmentKeys` 防止同一文件并发重复读取；预算计入已完成字节和 pending bytes，`finally` 释放预约，避免同时导入绕过总额判断。
 `addFiles` 按顺序处理一批文件。校验或读取抛错会提前退出整次调用，后续文件不再读取；此前已经 push 到内部数组的附件仍可被 `getAttachmentsForRun` 取出，但循环后的 `renderComposerAttachments` 被跳过，tray 可能尚未显示这些附件。数量上限的 `break` 与总预算不足的 `continue` 会继续到末尾重绘，须与抛错路径分别判断。
 批量导入验证应包含“有效文件 → 空文件或读取失败 → 有效文件”，同时检查错误提示、内部待发送列表、tray 和后续文件读取次数；单文件成功或 pending 去重不能证明批次失败后已全部回滚。
-普通 composer 的配置来自 runtime：\(n\le8\)、每件 \(b_i\le12\,\mathrm{MiB}\)、\(\sum b_i\le32\,\mathrm{MiB}\)。空附件被拒绝；该规则与合法空项目文件的语义不同。
+普通 composer 的准入配置来自 runtime：\(n\le8\)、每件 \(b_i\le12\,\mathrm{MiB}\)、\(\sum b_i\le32\,\mathrm{MiB}\)。空附件被拒绝；该规则与合法空项目文件的语义不同。
+**清空与在途读取的数量边界。** `clear` 清空附件及 pending keys，未撤销读取或设置代次屏障；旧读取完成后仍可 push。先由并发 `addFiles` 调用启动 8 个在途读取，clear 后再启动 8 个新读取，全部完成可出现 16 件待发附件。一次批量调用内部顺序 await，不能将上述场景误写成单批同时读取 8 件。总字节预约未同时清零，该反例不证明字节总额也可绕过；Native 仍独立校验发送配额。
 [NativeQuotas](../../native-host/src/nativeQuotas.js) 普通附件保留单件/数量约束，聚合限制为 96 MiB；不能用 Native 更宽上限推断 UI 接受范围。写作风格参考采用另组 quotas。
 `getAttachmentsForRun` 包含本次发送内容；`createRunAttachmentSnapshots` 只保留名称、类型、大小与受限预览，避免把完整附件作为历史卡片内容复制。
 `serializePersistableAttachments/restorePersistedAttachments` 提供序列化与回填 helper：最多三件，单件 `contentBase64.length <= 1,048,576`；此单位为 Base64 字符。
@@ -202,7 +206,7 @@ runtime 的 `loadStoredStateForProject` 正常返回与 compact fallback 返回�
 [sessionState](../../test/sessionState.test.js) 中名为“composer attachments persist across refresh”的用例只调用 normalize/compact，未穿过真实存储及 hydration；刷新恢复验证需要覆盖 `saveState → persistPanelState → loadStoredStateForProject → restorePersistedAttachments`。此项与第 9 节的清空/迟到读取竞态分别处理。
 
 `runTask` 在异步 Provider/风格加载前捕获已完成附件，创建 run 后清空 composer；队列协调器拒绝带附件的排队输入，见 [RunQueueScheduler](../../extension/src/content/runQueueScheduler.js)。
-当前 controller 也有尚待验证的清空/迟到读取边界，见第 9 节；不能由去重测试推广出完整生命周期保证。
+清空后迟到读取的实际交互影响仍需浏览器验收，见第 9 节；不能由去重测试推广出完整生命周期保证。
 
 ## 6. Markdown、公式和链接的呈现链
 

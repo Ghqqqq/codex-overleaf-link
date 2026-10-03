@@ -210,6 +210,19 @@
 
 领域说明：[安装与更新](installation-and-updates.md)。
 
+### 改支持的 Overleaf 站点或授权提示
+
+- 入口：[runtime-manifest.matches](../../extension/runtime-manifest.json)、[Popup.offerNewSites](../../extension/src/popup.js)、[Bootstrap.registerManagedRuntime](../../extension/bootstrap/background.js) 与 `grantedMatches`；当前支持三个 Overleaf 主机，详见安装专题。
+- 必须联动：Direct 的 content scripts/host permissions、Managed 的 optional host permissions/WAR、后台 Native 和共享历史 sender 准入、[SharedSessionBridge.enabled](../../extension/src/shared/sharedSessionBridge.js)，以及更新协调器与后台安全点的 host 集合。
+- 最近测试：[updateManualInstall](../../test/updateManualInstall.test.js)、[manifest](../../test/manifest.test.js) 与协议专题列出的准入测试；新增站点需串联授权、注入、Native 请求、共享历史和 idle probe，单独加载成功不足以证明完整支持。
+
+### 改更新提示、检查、取消或重载按钮
+
+- 入口：[UpdateNotice.mount](../../extension/src/content/updateNotice.js) 的 `runUpdateAction/handleSettingsAction`，控件由 [SettingsPanel](../../extension/src/content/settingsPanel.js) 定义；当前操作在 Overleaf 面板内完成。
+- 状态 owner：[BackgroundUpdateCoordinator](../../extension/src/backgroundUpdateCoordinator.js)、[UpdateConsent](../../extension/src/shared/updateConsent.js) 和 [ManagedUpdateProjection](../../extension/src/shared/managedUpdateProjection.js) 分别协调流程、动作及阶段语义；`background.reconcileManagedUpdateTransaction` 另有恢复写入路径。
+- 必须联动：取消 generation、恢复待定、重装命令、四版本加载投影及恢复写入顺序；旧 `bootstrap/update.html` 不承担现行面板入口。
+- 最近测试：[updateCenter](../../test/updateCenter.test.js)、[updateConsent](../../test/updateConsent.test.js)、[updateRevocationIntent](../../test/updateRevocationIntent.test.js)、[updateRuntimeRecovery](../../test/updateRuntimeRecovery.test.js)。
+
 ### 改安装、doctor、托管更新或发布包
 
 - 入口：[CLI](../../bin/codex-overleaf-link.mjs)、[install-managed](../../scripts/install-managed.mjs)、[bootstrap/background](../../extension/bootstrap/background.js)、[release workflow](../../.github/workflows/release.yml)。
