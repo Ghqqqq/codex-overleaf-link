@@ -93,8 +93,9 @@ content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言
 
 **已知限制：配额跳过与全量镜像清理。** 请求包含二进制且读取内容时（`includeBinaryFiles` 且 `includeContent !== false`），`extractFilesFromZip` 对超过单文件或项目二进制预算的资产加入 `skipped`，并从 `files` 中省略该路径；限额由该模块的 `MAX_BINARY_FILE_BYTES/MAX_BINARY_TOTAL_BYTES` 决定，`buildProjectSnapshot/buildZipOnlyProjectSnapshot` 仍可返回完整标志。仅列文件清单的 `includeContent:false` 路径不执行这一预算裁剪。
 [contentRuntime.getProjectSnapshotWarnings](../../extension/src/content/contentRuntime.js) 将这些 skipped 项归为非阻断警告。[mirrorWorkspace.syncOverleafToMirror](../../native-host/src/mirrorWorkspace.js) 的全量分支只根据规范化后的文件集合清理，没有按快照 `skipped` 保留旧路径；随后重建基线、更新 `lastFullSyncAt` 并清除 `dirty`。
-因此本地合成链中，原先已同步的小资产在下一份 ZIP 因体积增长而超限时，其旧镜像文件和基线记录会被移除，尽管 ZIP 中仍有该资产。此结论涉及本地内容及基线，不提供远端删除或实际编译后果的证据。
-完整文件清单、完整内容读取与允许删除缺失路径应分别判断；新鲜度时间戳也不能单独证明所有资产已读取。[mirrorWorkspace.test.js](../../test/mirrorWorkspace.test.js) 的超限资产用例覆盖输入过滤，维护时还需与 ZIP 提取串联，检查已有资产、总预算跳过和全量清理后的基线。
+Native 准入还有独立的 [nativeQuotas.validateNativeRequestQuotas](../../native-host/src/nativeQuotas.js)：`codex.run` 和 `mirror.sync` 均检查快照实际携带的二进制总量，限额为 `NATIVE_REQUEST_QUOTAS.maxProjectBinaryBytes`。当前该限额低于 ZIP 的项目二进制预算；正常 ZIP 总预算跳过场景会先被 Native 拒绝，不能据页面的完整标志推定已经进入镜像清理。
+单文件超过 ZIP 限额而被省略时，其余载荷仍可通过 Native 准入；此时全量同步会移除该路径原有的本地镜像文件和基线记录，尽管 ZIP 中仍有该资产。该清理只作用于本地镜像，不执行 Overleaf 远端删除。
+完整文件清单、完整内容读取与允许删除缺失路径应分别判断；新鲜度时间戳也不能单独证明所有资产已读取。[mirrorWorkspace.test.js](../../test/mirrorWorkspace.test.js) 的超限资产用例覆盖输入过滤，维护时还需串联 ZIP 提取、Native 准入与全量清理，分别检查单文件跳过、总量拒绝和已有资产的基线。
 
 **已知限制：OT 快启参数冲突。** `resolveWarmRunStart` 要求非空 `fileOverlays` 才返回成功；[runController.buildCodexRunParams](../../extension/src/content/runController.js) 同时保留这些 overlays 和 `otWarmStart` 标记。
 [taskRunnerRuntime.validateOtFocusedWarmMirrorReuse](../../native-host/src/taskRunnerRuntime.js) 明确拒绝携带非空 overlays 的 OT 复用请求，调用方将该拒绝映射为 `mirror_stale`。

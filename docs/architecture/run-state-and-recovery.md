@@ -86,7 +86,7 @@ flowchart TD
 schema 与入口见 [runExecutionSnapshot.js](../../extension/src/shared/runExecutionSnapshot.js)，内部归一化见 [runExecutionSnapshotCodec.js](../../extension/src/shared/runExecutionSnapshotCodec.js)。
 队列提升调用 `runTask({ queuedInput })` 时，仍会读取当时的 custom instructions、技能加载设置、composer 附件及技能调用，并传给运行参数；`buildCodexRunParams` 还读取当时启用的插件技能 ID。
 这些输入未包含在队列执行快照中。入队入口拒绝附件，也不能据此推定提升时不会读取后来留在 composer 中的附件。
-真实装配见 [contentRuntime.js](../../extension/src/content/contentRuntime.js) 的 `initializeRunQueueScheduler/runTask/buildCodexRunParams`；这是当前字段来源的静态结论，尚未据此复现真实队列误用输入的场景。
+真实装配见 [contentRuntime.js](../../extension/src/content/contentRuntime.js) 的 `initializeRunQueueScheduler/runTask/buildCodexRunParams`。后来留在 composer 的附件可与原排队文字组合进入请求。技能选择还受 `getSlashTrigger` 的运行中守卫限制；已有暂停队列时，空闲界面可先选择技能，再 Resume 原任务。此时若当前技能为 `skill-installer`，`runTask` 会把原排队文字交给 `runSkillInstallerTask`，采用 installer 参数与执行路线。
 Provider revision 标识同一个服务配置的版本；排队后配置被修订或删除，执行校验可报冲突或不可用，避免悄悄换用后来的配置。
 浏览器执行入口是 `RunExecutionSnapshot.resolveForExecution`；`RunInputQueue.claimNext` 消费校验结果，`RunQueueScheduler.scheduleOne` 在冲突时保留输入并暂停。
 Native 还会在 [providerRuntime.js](../../native-host/src/providerRuntime.js) 的 `resolveRunProvider/resolveRunProviderForRun` 重新核验，调用方为 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js)。模型目录查询 `resolveProviderModels` 与实际执行校验分别承担职责。
