@@ -171,7 +171,7 @@ Native 的 [taskRunnerRuntime.handleCodexSteer](../../native-host/src/taskRunner
 
 共享写入使用长连接 port 取得后台锁，账号级 state 锁串行化跨项目清理与写入。
 port 断连后标记 disconnected，受 `ensureLock` 保护的后续请求拒绝接纳；已接纳的事务仍可能完成，锁等待 `inFlight` 清零后释放。
-`meta-write` 使用独立的 token/tabId 判断，当前未复用 disconnected 检查，不能把会话写入守卫推广到全部共享方法；迟到请求的真实可达性与影响仍待验证。
+`meta-write` 使用独立的 token/tabId 判断，当前未复用 disconnected 检查，不能把会话写入守卫推广到全部共享方法。调用方也会拒绝断连后的新锁内请求，锁转交后旧 token 失效；排查须区分请求发送、后台交付及锁仍被 inFlight 保留的时点，不能仅凭服务端分支差异认定新持有者状态已被覆盖。
 后台还校验扩展身份、页面来源、顶层 frame 和锁 token；共享入口不可绕过这些检查降级成站点本地写入。
 传统 adapter 使用 `navigator.locks`；缺少可用跨上下文锁时拒绝持久提交。
 实现入口为 [scopedPersistenceBrowserAdapter.js](../../extension/src/shared/scopedPersistenceBrowserAdapter.js) 的 `createBrowserAdapter`。
@@ -198,7 +198,7 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 `persistPanelState` 使用事务捕获的账号和项目，`SessionPersistence.writeSessions` 再核对所属账号、墓碑和更新版本。
 进入事务后的 queueMutation 或 reviewRunIds 保存失败会向调用者抛出；普通保存存在紧凑 fallback，不能据此宣称完整历史一定耐久。
 日志恢复使用 `saveState({recoveryRuns})` 的显式成功回执：只有作用域提交成功，且 `ScopedPersistencePanelState.persistPanelState` 核对 `SessionPersistence.writeSessions` 返回记录中目标 run 的身份、事件序号、线程/轮次、中断草稿与应保留事件后，才返回 `true`。入口早退、原恢复账号/项目与提交事务作用域不匹配、主库失败和 fallback 都不会提供此回执；目标比较基于实际构造的持久化投影，仍受既有 StorageDb 保留预算约束。
-`saveState` 在项目缺失或运行已导航分离的入口守卫，仅对 reviewRunIds 抛错；queueMutation 仍可正常返回而跳过提交。
+`saveState` 在项目缺失或运行已导航分离的入口守卫，对 requireDurable 或 reviewRunIds 明确抛错；queueMutation 仍可正常返回而跳过提交。
 因此调度器等待保存 Promise 与获得 durable receipt 需要分别判断；入口早退与队列提升的可达时序需要组合验证，尚不能据此断言任务已经丢失或重复执行。
 `finishRunView` 尝试在终态展示前刷新排队保存，但调用存在错误捕获；“任何存储失败下均能即时重载同样终态”仍需单独验证。
 **维护目标**：新增强持久化操作应选择明确失败可见的保存入口，不应仅调用延迟保存后给出成功保证。
@@ -216,6 +216,8 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 | [StorageRunActions.compactRunsForStorage/compactRunActionPayload](../../extension/src/shared/storageRunActions.js) | 启用 `preserveRunActionPayload` 后，最多保留最近2个具备可恢复材料的 run；每 run 的动作材料限2 MiB，超限整组丢弃，可选 captures 不得挤掉已有 Undo 材料 | 主 session 中的 Undo/Accept 恢复能力；保留 run 的显示记录不代表其动作材料仍在 |
 
 **当前容量边界。** compactState 可以只包含短摘要，而主 session 仍保存较长的可见事件文字；主存储负荷因此可能超过4 MiB，却未触发 `onAggressive`。即使回调触发，裁剪也没有经 compactState 传递到主 sessions。配额排查应检查最终 `putRecords` 的数据及共享传输限制，不能把 compactState 大小、激进提示或任一 helper 的预算当作全部 `StorageDb` 写入的硬上限。`StorageValuePruning` 仅删除摘要中的空字段，并保留 `false/0` 等有效值，也不执行容量回收。
+
+共享后台 [backgroundSharedSessions.writeMany](../../extension/src/backgroundSharedSessions.js) 另以 `JSON.stringify(entries).length * 2` 估算批次大小，超过 `MAX_BYTES * 3` 时拒绝并返回 `shared_session_too_large`。该门槛在 IndexedDB 写入前生效，与浏览器磁盘配额分别判断；compactState 未触发激进提示时，主提交仍可触及此传输门槛。
 
 [sessionState.test.js](../../test/sessionState.test.js)、[storageDb.test.js](../../test/storageDb.test.js) 和 [reviewingUndoPersistence.test.js](../../test/reviewingUndoPersistence.test.js) 分别定义压缩或恢复材料行为；[scopedPersistencePanelState.test.js](../../test/scopedPersistencePanelState.test.js) 使用 builder 和 writer 替身检查提交装配。验证容量路径时须串联两份快照、真实 builder、`writeSessions` 和最终写入参数；局部预算断言不能证明真实浏览器配额耗尽后的恢复能力。
 
@@ -276,7 +278,7 @@ owner 丢失后，恢复流程补齐未读取事件、记录 `interruptedDraft`�
 
 [sharedSessionViewSync.js](../../extension/src/content/sharedSessionViewSync.js) 订阅跨页面变化，只在无活动运行、无保存、无本地草稿或未持久修改时刷新。
 刷新前后核对 scope、generation、本地版本与签名。守卫通过后先调用 `adoptSharedSessionBaseline(records)`，再调用 `apply` 归一化 state 并渲染；单独读取 snapshot 不更新 baseline。
-baseline 是下次三路合并的共同底稿。当前 `apply` 抛错后仅通知错误，未回滚已推进的 baseline，因而这两个步骤没有异常原子性保证；真实视图失败后的影响仍待验证。
+baseline 是下次三路合并的共同底稿。正常归一化后先替换内存 state，再进入 `applyStateToPanel`，因此 DOM 渲染异常不等于内存未采用新状态。当前异常处理仅通知错误，未回滚 baseline；若输入框尚未更新便退出，后续普通控件保存经 `readPanelInputs` 读回旧输入，可能用新 baseline 提交旧草稿。归一化赋值前失败与渲染赋值后失败应分别检查，内存、DOM 和合并底稿不能混作同一状态。
 这一区分影响“另一个标签页的历史刷新覆盖了输入”的定位：先查被动刷新守卫，再查保存与三路合并。
 
 ### 5.2 离开项目后的 detached settlement

@@ -95,9 +95,11 @@ Provider 通过 `revealProviders` 嵌入工作台；相关编辑器由 [Provider
 | 清理入口 | 实际 owner 与范围 | 独立结果与限制 |
 | --- | --- | --- |
 | 设置中的清空历史 | `PanelMaintenance.clearAllHistoryWithConfirm` → `StorageDb.clearAllStores`，随后重置项目名称缓存、重建会话状态并保存 | 入口检查当前页面 `currentRunView`，通过 destructive confirm 后执行；该入口未调用 Native `codex.history.clearPlugin` |
-| 共享历史启用时的清空实现 | [SharedSessionBridge.decorate](../../extension/src/shared/sharedSessionBridge.js) 将会话清理交给 `erase('clear-account')`；同时删除当前账号的站点 legacy 会话备份 | 其他账号的 legacy 会话备份保留；辅助 stores 仍调用站点本地 `clearStore`，其范围不能按会话的账号隔离推定 |
+| 共享历史启用时的清空实现 | [SharedSessionBridge.decorate](../../extension/src/shared/sharedSessionBridge.js) 将会话清理交给 `erase('clear-account')`；同时删除当前账号的站点 legacy 会话备份 | 其他账号的 legacy 会话备份保留；辅助 stores 经站点本地 `clearAuxiliaryStores` 在同一事务中清理并推进附件草稿 epoch，其范围不能按会话的账号隔离推定 |
 | legacy 存储实现 | [StorageDb.clearAllStores](../../extension/src/shared/storageDb.js) 在当前站点 IndexedDB 事务中清空 `STORES` | 与后台共享账号会话库是不同存储边界；控件位于项目设置过滤器也不会缩小此范围 |
 | dashboard 的逐项目清理 | [ProjectSessionCleanup.clearProjectSessions](../../extension/src/content/projectSessionCleanup.js) 按 projectId 查询、按已解析账号过滤，检查近期 running 记录，再确认并写墓碑、删除会话及请求 Native 历史清理 | 会话删除数和 Native 历史清理失败分别统计；剩余记录仍可显示并重试。账号缺失时过滤条件有放行分支，不能从此函数单独推定始终账号隔离 |
+
+逐项目清理还需分别核对入口、兼容存储和共享删除。初始账号未知时 dashboard 不显示清理入口；旧按钮点击前账号缺失时，共享查询的 scope capture 也会拒绝请求。确认期间身份变化是另一窗口：已选会话的兼容墓碑和旧 panel blob 可先被处理，随后共享删除按调用时的账号/锁进行检查。因此共享行仍保留时，兼容墓碑也可能使其在后续列表中隐藏；删除计数不能独自证明对应共享行已移除。Native 清理请求的派发与实际结果也需单独判断。
 
 清库后同步清除旧会话兼容镜像、草稿和控制器输入，再创建空白会话；完整成功提示要求新状态获得持久确认。名称缓存清理或保存失败会显示部分完成，旧内存仍保持清空，详见[清空历史后的状态](run-state-and-recovery.md#clear-history-state)。
 
