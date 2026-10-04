@@ -86,9 +86,9 @@ content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言
 
 **已知限制：ZIP 字面文件名与路径身份。** `snapshotRouter.extractFilesFromZip` 将 ZIP 名称按 UTF-8 解码后，交给 [projectFiles.normalizeSafeProjectPath](../../extension/src/shared/projectFiles.js)；后者还会执行最多三轮 `decodeURIComponent`。
 因此字面文件名 `chapter%20one.tex` 与 `chapter one.tex` 可归到同一路径；`mergeSnapshotFiles` 按路径建 Map，后项覆盖前项。`100%.tex` 这类含不完整百分号转义的名称会返回空路径，提取器直接忽略，未加入 `skipped`。
-只要至少一项 ZIP 文件被保留，未限制请求路径的快照仍可返回 `fullProjectSnapshot: true`，该标志没有反映上述碰撞或丢弃。
+只要至少一项 ZIP 文件被保留，未限制请求路径的快照仍可返回 `fullProjectSnapshot: true`；`contentComplete` 同样可能因 skipped 为空而保持 true。这些标志没有反映上述碰撞或丢弃，Native 完整快照准入无法据此识别遗漏，本地镜像及基线可能采用合并后的路径集合。参考项目的 `readProject` 也可能在遗漏字面百分号文件后仍给出 `referenceTextComplete: true`。
 这些结果限定于本地合成 ZIP 与当前模块调用链；真实 Overleaf 对这些文件名的接纳条件、页面寻址及远端写回后果需另行验证。
-维护时需区分 ZIP 字面名称与 URL 编码路径，并保持不同文件身份不可合并的目标契约；路径校验通过不能单独证明规范化前后仍指向同一文件。
+维护时需区分 ZIP 字面名称与 URL 编码路径，并保持不同文件身份不可合并的目标契约；路径校验通过不能单独证明规范化前后仍指向同一文件。URL 参数中的编码分隔符和点段需要按其解码语境检查，ZIP 中字面百分号字符不能自动按同一语义解释。
 相关入口为 [projectFiles.test.js](../../test/projectFiles.test.js) 与 [pageBridgeSnapshotCache.test.js](../../test/pageBridgeSnapshotCache.test.js)；验证需串联原始名称、提取、合并及完整性标记，不能只检查单个路径 helper。
 
 **配额跳过与内容完整性。** 请求包含二进制且读取内容时，`extractFilesFromZip` 对超过单文件或项目二进制预算的资产加入 `capabilities.skipped`，省略对应内容。完整 ZIP 的 `fullProjectSnapshot` 表达路径读取范围，`contentComplete` 单独表达内容是否全部读取；仅列清单的 `includeContent:false` 路径不执行内容预算裁剪。
@@ -153,6 +153,7 @@ Page router 与 snapshot 闭包通过共享 [pageRpcContract.REVISION](../../ext
 同一路径重复操作保留顺序验证语义。
 `createTextFileWithDom` 支持根文件和嵌套路径，上传前逐级创建缺失父目录并选择准确目录；二进制 DOM 上传通过 `prepareUploadParent` 的 `createMissing: true` 分支复用这套目录准备能力。
 [undoOperations.buildCreatedFileUndoCheckpoint](../../extension/src/shared/undoOperations.js) 只保存新建文件的删除证明，没有为这些父目录生成目录 Undo 凭据。因此上传失败或新建文件撤销后，已创建的父目录可能保留。
+目录准备本身就可能改变文件树；此时 `changedDocument: true` 不能单独证明目标文件已上传。应分别核对目录创建、文件提交和服务器保存证据，尤其是上传控件检查或取消在目录创建之后结束的分支。
 相关目录选择与创建行为见 [textFileCreator.test.js](../../test/textFileCreator.test.js)；文件撤销成功不能用来推定父目录也被回收。
 Auto 的显式 Retry sync 经 `contentRuntime.retryRunWriteback → writebackOrchestrator.applySyncChangesToOverleaf → assetTransferBroker.applyOperations` 将 `retryCreates: true` 送入 Page RPC。
 [writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 的 `apply` 按严格布尔值保留该字段，[pageBridge](../../extension/src/pageBridge.js) 的 `applyOperations` wrapper 将选项交给 router；router 在新建批次中据此设置 creator 的 `allowExistingMatches`。
@@ -229,7 +230,7 @@ begin 成功后的失败，或 begin 已派发且等待被取消，在 commit �
 满足时可通过 `mirror.confirmWriteback` 就地更新文本基线，也可完整读取后 `mirror.sync`。
 `tryConfirmMirrorWriteback` 仅对全部为 edit 的已应用条目尝试就地确认，且本次已有确认用快照时直接走同步路线。
 `mirrorWorkspace.confirmWritebackFiles` 检查基线、未读资产、dirty 标志、路径与文本类型后，重新读取并哈希当前磁盘文件；入参只有项目和路径，没有页面 post-image 或预期哈希。
-这条优化依赖“当前镜像仍保存刚刚成功写回的版本”这一前提，其返回值不能独立证明本地内容与页面读回内容相等。排查晚到磁盘修改或基线漂移时，应同时核对该前提、保存证据与同步 fallback。
+这条优化依赖“当前镜像仍保存刚刚成功写回的版本”这一前提，其返回值不能独立证明本地内容与页面读回内容相等。若额外本地写入者在页面确认保存之后、就地确认读取之前改动镜像，当前磁盘字节可被推进为新基线；dirty、未读资产及项目锁守卫不能替代页面 post-image 证明。排查须同时核对该前提、保存证据与同步 fallback；浏览器下一轮的同路径 overlay 仍可能纠正内容，不能由错误基线单独推定下一轮必然误读。
 后台 `pendingMirrorRefresh` 防止下一轮或 Undo 与晚到镜像更新交错。
 
 编译另有条件：启用 Auto Compile、非 Ask、实际写入可编译文件。
@@ -278,6 +279,8 @@ Track 的 `selectExpectedFilesForTrackedUndo` 保留 `WritebackSettlement` 对�
 `undoRun`、`undoRunTrackedChanges` 在确认后生成 `deadlineAt`；混合 Undo 的文本恢复请求与后续创建删除请求携带同一截止时间。
 对 no-trace apply 路线，client 按剩余时间收紧 RPC 等待，broker 将期限继续传给回执查询，journal 在准备前后检查，router 在操作边界检查并将其传入创建删除验证。
 期限到达后，已知部分结果与未确认尾部仍需分别结算；这些检查点不能直接推广为 `rejectTrackedChanges` 内部所有等待均受同一期限约束。
+`prepareNativeReview` 有独立预算，其后的 `restoreExpectedFilesWithNoTraceUndo → applyOperationsWithNoTraceUndo` 未统一消费调用方的总期限；Client 超时也不会自动发送 `cancelActiveWrite`。因此较长的多文件恢复中，外层等待结束后页面仍可能继续执行剩余撤销写入。项目变化、内容冲突和显式取消各有自己的检查，显式取消允许已开始项收尾并阻止后续项，不能视为立即撤回所有在途动作。
+结果消费还存在一个独立缺口：`undoRunTrackedChanges` 的无 refs、无文件结构恢复项且非 lifecycle 的文本恢复分支以 `result.skipped?.length` 选择 partial/applied。Client 返回 `ok:false` 且没有 skipped 数组的超时结果时，该分支仍可进入 `applyLegacyUndoSettlement(..., 'applied', ...)`，提前显示禁用的 Undone；结算中的未知 applied 证据及错误仍可能保留。排查须分别核对按钮、settlement 各字段和页面实际进度，不能把任一终态标志当作全部文件已恢复的证明。
 
 **目标契约与实现守卫。** 后来修改应保留；安全性依靠实际证据判断。
 原生 editor Undo 要求当前内容符合原运行 post-image；创建撤销要求文本内容或二进制哈希仍匹配。

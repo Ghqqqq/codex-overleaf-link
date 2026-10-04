@@ -313,14 +313,16 @@ baseline 是下次三路合并的共同底稿。归一化与渲染失败时保�
 Undo 能力来自可用恢复材料和结算结果，不能只看 completed 或显示过某个按钮。
 关键字段包括 appliedOperations、undoOperations、undoBaseFiles、undoTrackedChanges、undoExpectedFiles；字段应按具体操作路径解释。
 [storageRunActions.js](../../extension/src/shared/storageRunActions.js) 的 `hasReloadableRunActionPayload/compactRunActionPayload` 判定并保留这些材料。
-当前 preserveRunActionPayload 路径最多保留每会话最近两个合格运行，每运行材料上限 2 MiB；超限可丢弃动作 payload。
+当前 preserveRunActionPayload 路径先从待保存运行末尾选择最多两个满足 `hasReloadableRunActionPayload` 形状的候选，再逐候选检查 2 MiB 的 UTF-8 动作材料预算；超限整组丢弃。超限候选仍占本次候选名额，较旧但较小的运行不会补位，因此实际保留数可少于两个。没有动作材料的 Ask 记录不占候选名额。
 可选 trackedChangeCaptures 不能挤掉已满足预算的核心撤销材料；历史文本仍存在不能证明 Undo 材料仍完整。
+`StorageDb` 可在材料裁剪后保留 `trackedChangeStatus: pending`，但 `SessionState.applyTrackedChangeStatus` 在重载时会移去无 refs 的 pending。按钮还要检查实际材料，缺少材料的 Undo/Accept 入口会早退；不能仅凭存储中的 pending 或历史记录仍在推定操作可用。该裁剪影响插件恢复能力，不会直接撤销文稿内容，也不描述 Overleaf 自身的历史恢复范围。
 
 `contentRuntime.undoRun` 先经 `UndoOperations.prepareRunUndo` 补齐有原文及已应用删除证据的旧文件恢复操作，再等待旧 mirror 刷新并选择恢复路径；页面调用始终携带原 runProjectId。文件结构恢复的已验证成功项经 `advanceUndoCheckpoint` 从逆操作和待恢复前像中移除，进度成功持久化后重载只保留未完成项；已被存储预算裁掉的原文不因此恢复。详细链路见[文件创建、删除与混合 Undo](auto-edit-undo.md#62-文件创建删除与混合-undo)及 [deletedFileUndo.test.js](../../test/deletedFileUndo.test.js)。
 tracked Undo/Accept 经过 `applyTrackedChangeSettlement → ScopedPersistenceCoordinator.applyReviewTransition`。
 [scopedPersistencePanelState.js](../../extension/src/content/scopedPersistencePanelState.js) 强制 preserveRunActionPayload 和 reviewRunIds，并验证持久记录中的结果。
 保存失败时恢复先前材料、标记 needs_review 并继续抛错，因为页面操作可能已经发生。部分验证失败生成 `review_state_not_persisted`，底层保存异常也可能原样传播，不能只匹配单一错误码。
 legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；后续修改不能假定它与 tracked review 路径有相同的确认屏障。
+普通 Undo 可在文件已经恢复时只排队保存运行状态；页面在计时器执行前结束，或后续主存储写入失败，均可能使重载后的卡片重新显示可 Undo。正常排队提交成功后才能从主库恢复相同终态。函数名 `undoRunTrackedChanges` 也包含无 refs 的普通文本恢复分支，不能仅据函数名称推定其具有 tracked 持久确认；重新出现按钮不独自证明再次点击会改坏正文。
 
 重载后，SessionState/StorageDb 归一化记录；`SettlementFacts.projectRunSettlement` 提供基础能力，`RunResultActions.projectUndoAvailability` 进一步检查实际材料。
 [runTimelineView.js](../../extension/src/content/runTimelineView.js) 的 `configureUndoButton/configureAcceptButton` 仅消费投影，不应补造恢复身份或修改持久证据。

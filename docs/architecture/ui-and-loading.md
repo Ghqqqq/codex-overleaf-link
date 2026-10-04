@@ -175,8 +175,8 @@ Save and use 可经 `providerSwitchApproved:true` 跳过该确认，删除当前
 [SelectionContext.normalize](../../extension/src/shared/selectionContext.js) 校验项目相对路径、非空文本、范围、文档 hash；上限 `MAX_TEXT=20000` 按 JavaScript 字符串长度计算。
 范围满足 \(0\le from<to\) 与 \(to-from=|text|\)，并携带 `documentHash`，用于说明选区来自哪个文档版本。
 `reference` 模式附加参考内容；`edit` 模式显示“仅此处”，runtime 的 `setSelection` 同时把会话模式设为 Auto。实际局部修改限制还依赖 [selectionScope](../../native-host/src/selectionScope.js)，标签本身不提供执行保证。
-Native 的 `prepareSelectionScope` 在 edit 模式读取镜像中的整份文件，要求其 SHA-256 等于 `documentHash`，且 `before.slice(from, to)` 等于选区文本。整份文档摘要像版本指纹，即使变化发生在选区之外，也会以 `selected_context_unresolved` 拒绝本次选区编辑并要求重选。
-`filterSelectionChanges` 要求每项均为同一路径的文本 write、`previousContent` 等于基线，并保留选区前缀与后缀；可接受结果满足 \(after=prefix+replacement+suffix\)。该函数使用 `items.every` 整组判定，任一项越界会令 `changes` 为空，并将整组映射为 `selection_scope_violation`，合法项也不会单独保留。
+Native 的 `prepareSelectionScope` 在镜像同步或复用准备后、执行器启动前读取 edit 目标整份文件，要求其 SHA-256 等于 `documentHash`，且 `before.slice(from, to)` 等于选区文本。整份文档摘要像版本指纹，选区外变化只要已进入此时的镜像，也会以 `selected_context_unresolved` 拒绝本次选区编辑并要求重选；这个启动检查不证明随后远端协作变化已被检测。
+`filterSelectionChanges` 要求每项均为同一路径的文本 write、`previousContent` 等于基线，并保留选区前缀与后缀；可接受结果满足 \(after=prefix+replacement+suffix\)。该函数使用 `items.every` 整组判定，任一项越界会令 `changes` 为空，并将整组映射为 `selection_scope_violation`，合法项也不会单独保留。该拒绝阻止生成远端写回计划，不会自动还原执行器已修改的本地镜像，后者可继续标为 dirty；reference 模式不启用这组 edit-only 过滤。
 验证选区执行约束时，应覆盖“选区外发生变化但选区文字相同”、前后缀变化、跨文件修改，以及合法项与越界项混合返回；[sentSelectionChip](../../test/sentSelectionChip.test.js) 的历史 chip 验证不能替代 Native 范围校验。
 发送后的 `renderSent` 从 run execution snapshot 渲染 chip；草稿移除选区不应删除历史 chip。页面选区探测还检查编辑器焦点、连接状态和 probe generation。
 
@@ -251,13 +251,14 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 
 **失败归一化与排序的边界。** `FailureReasons.normalizeFailureReason` 校验显式 failure，失败时回退到 legacy code 映射和目录默认值；`WritebackOperationEvidence.normalizeFailure` 直接复制显式 failure，只有原始 code 时采用 `write/error/retryable=false` 等默认值。两者未共享同一归一化契约。例如合成输入 `code: stale_snapshot` 在前者变为 `stale_source_changed/preflight/blocked/retryable=true`，在后者保留 `stale_snapshot/write/error/retryable=false`。这一输入说明 helper 差异，不能推定当前真实页面仍会产生该 legacy 结果。
 
-`selectPrimaryFailure` 按严重度 `blocked > error > warning > info`，再按 `STAGE_TIE_BREAKER_ORDER` 选主因，可记为 \(f^*=\arg\min_f(\operatorname{severityRank}(f),\operatorname{stageRank}(f))\)，相同排序项保留输入顺序。当前 `promoteWritebackSkippedFailure` 只取首个带 code 的显式 failure；首项 warning 与后项 blocked 并存时，report event 与 settlement 可保存不同主因。修改其中一个消费者不能推定另一个已同步。
+`selectPrimaryFailure` 按严重度 `blocked > error > warning > info`，再按 `STAGE_TIE_BREAKER_ORDER` 选主因，可记为 \(f^*=\arg\min_f(\operatorname{severityRank}(f),\operatorname{stageRank}(f))\)，相同排序项保留输入顺序。当前 `promoteWritebackSkippedFailure` 只取首个带 code 的显式 failure；例如编辑器读回失败的 `write_operation_failed/error` 排在新建前 ZIP 读取失败的 `source_zip_unavailable/blocked` 前面时，report 可保存前者，格式化器及 settlement 主因选择后者。反序或单一故障时可能一致，修改其中一个消费者不能推定另一个已同步。
 单条 failure 的 `terminalState: needs_review` 与结算的 `evidence.settled: needs-review` 也须分别核对。`deriveSettledEvidence` 检查主因的 needs_review 或任一文件读回 mismatch；较低优先级的 needs_review 并不必然覆盖较高优先级的 blocked，不能将其概括为对全部 failure 取最严格终态。
 
-**已知缺口：计划操作缺少回执。** `normalizeOperationEvidence` 会为计划中未匹配到结果的操作补 `write_result_missing`，使对应结算需要检查；Summary、AgentTranscript 和 `appendApplyResult` 仍只统计原始 applied/skipped 集合。计划两项、仅返回一项 applied 且 skipped 为空时，结算可为 `applied=partial/settled=needs-review`，报告计数仍为“已写入 1 项，跳过 0 项”。
-[WritebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js) 先 append 报告，再在返回值构造 settlement；[contentRuntime.runTask](../../extension/src/content/contentRuntime.js) 随后调用 [RunSettlementPersistence.applyToCurrentRun](../../extension/src/content/runSettlementPersistence.js)。若上述缺项形状到达普通同项目返回路线，`writebackIncomplete/hasSkippedOperations` 仍可为 false，后续 `finishRunView` 可将 run.status 设为 completed。这个条件分支不能证明真实 RPC 已产生缺项，也不能把补齐结算事实描述成全部 UI 已同步修正。
+**缺项回执的归一化与结算兜底。** 普通 Auto/Retry 文本写回先经过 [AssetTransferBroker.normalizeTextResult](../../extension/src/content/assetTransferBroker.js)，按计划核对返回项并补齐 skipped。执行结果不确定的缺项会带上 `receiptUnconfirmed` 并阻断未派发尾部；明确未派发的取消保留取消语义，运行可为 cancelled。两者均不按完整成功结算，该入口保护必须与末端投影一起检查。
+`normalizeOperationEvidence` 另为未匹配计划补 `write_result_missing`；Summary、AgentTranscript 和 `appendApplyResult` 按传入的 applied/skipped 集合统计。若绕开 Broker 直接交给末端“一项 applied、空 skipped”的孤立结果，结算仍可为 partial/needs-review，而报告计数或 completed 标签不一致。这个兜底差异不构成普通主链已经假成功的证据；新增入口或调整 Broker 时应保持补项与后续消费者的衔接。
 
 **恢复动作的边界。** `RunFailureNotice` 将 `write_timeout/partial_write_needs_review`、possibly-changed 或特定 unknown/needs-review 证据归入写入未确认，优先提供检查文件或展开详情，并覆盖报告的 Write result/Next 显示值。普通恢复 registry 随后只读 report event.failure.code：例如 `provider_rate_limited` 即使 retryable 为真也未进入编辑重发白名单；`write_operation_failed` 的白名单分支未再检查 retryable。当前 settlement 主因改变后，告警可显示新主因，普通按钮仍按原 report event 路由。Accept/Undo 另经实际恢复材料投影，见[运行状态与恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
+工具栏的 Retry sync 还按 `retryWriteback/saveCheck` 提供独立恢复入口；普通 registry 无按钮不等于整张卡没有恢复动作。Edit & resend 只回填 composer，仍需新的显式提交，不会因按钮出现就自动重放原操作。
 
 **活动与页眉的边界。** `RunActivityModel.isDiagnosticNotice` 将未携带显式 failure 且活动 state 非 failed 的普通 warning/configWarning 放入 diagnostics，保留 guardianWarning 等需要留意的事件；`needsUserAttention` 通常不把普通工具失败升级为任务告警，TeX 编译命令失败另有识别规则。页眉 files 统计 completed 本地 edit 活动中的路径，增删行数来自这些活动；compiled 取 completed compile 活动。`classifyRunPresence` 在 `retryingWriteback` 为真时先返回 plain，其余按 run.status 区分 Done 等分类。这些数值描述各自记录的活动，页面 applied/saved/compiled 结算证据仍需另查；裁剪历史还受 `filesClipped` 限定。
 
