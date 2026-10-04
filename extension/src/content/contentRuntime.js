@@ -5844,6 +5844,7 @@
     applySessionLabel();
     renderSessionList();
     renderRunHistory(options);
+    renderPendingInputs();
     getTrackedChangeCaptureController().schedule();
     renderContextSelection();
     renderContextSummary();

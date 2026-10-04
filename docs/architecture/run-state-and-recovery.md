@@ -107,7 +107,7 @@ Native 还会在 [providerRuntime.js](../../native-host/src/providerRuntime.js) 
 提升失败时保留恢复机会、暂停队列并尝试 restore；不能只隐藏卡片后假设所有权已经转移。
 普通并发保存还需保留等待期间新增的其他输入，相关回归定义位于 [runQueueSchedulerDurability.test.js](../../test/runQueueSchedulerDurability.test.js)。
 
-**队列恢复与显示分开完成。** `init` 加载持久会话、建立调度器并恢复 journal，恢复流程把所属会话队列暂停；初始化和恢复完成后的 `applyStateToPanel` 当前未调用 `renderPendingInputs`。新建的队列容器默认隐藏，因此已恢复的暂停队列及 Resume 入口可能暂不可见。composer 输入会经 `handleTaskInput` 触发队列重绘，`setRunning` 等运行状态入口也会触发；无需发送草稿即可重新呈现已有队列。队列不可见不能单独推导为持久记录已删除。视图调用链及会话切换的同类边界见[队列显示与恢复入口](ui-and-loading.md#pending-queue-render)。
+**队列恢复与显示分开完成。** `init` 加载持久会话、建立调度器并恢复 journal，恢复流程把所属会话队列暂停。`applyStateToPanel` 在同步会话和运行历史后调用 `renderPendingInputs`，让初始化、恢复和会话切换立即显示当前会话的队列；暂停项同时呈现 Resume，空队列清除旧卡并隐藏容器。该重绘只更新界面，不保存队列、不解除暂停、不启动任务。composer 输入和运行状态变化也会触发重绘。视图链路见[队列显示与恢复入口](ui-and-loading.md#pending-queue-render)；[pendingQueuePanelRestore.test.js](../../test/pendingQueuePanelRestore.test.js) 组合真实面板同步、coordinator、队列视图与会话切换，DOM及持久化I/O使用替身。
 
 即时指导由 `createCoordinator.guide` 发送 `codex.steer`，绑定 request、project、thread 与 `expectedTurnId`。
 该入口把队列 `item.text` 直接发送，未调用普通 `runTask` 的 `runSensitivePreflight`。

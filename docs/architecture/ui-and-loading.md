@@ -43,7 +43,7 @@ ContentRuntime
 [ContentRuntime.init](../../extension/src/content/contentRuntime.js) 是组合入口，向各 controller 注入 getter/callback；该文件仍包含业务流程，不能将其所有内容都归类为纯装配。
 runtime 对重复初始化设有标记；发现旧 panel 已在 DOM、runtime 尚未登记时，返回 `stale-panel-before-runtime-init`。这条守卫不能证明所有旧页面都已自动恢复。
 异步初始化先加载全局偏好、账号作用域与持久状态，再建立队列、面板和恢复流程；项目列表路由立即挂 dashboard shell，后续填充列表。
-队列数据加载与队列卡重绘使用不同入口；初始化及恢复后的显示缺口见[队列显示与恢复入口](#pending-queue-render)。
+队列数据加载与队列卡重绘使用不同入口，由面板同步衔接；初始化及恢复后的显示路线见[队列显示与恢复入口](#pending-queue-render)。
 
 ### MAIN world 的独立装配
 
@@ -144,9 +144,9 @@ textarea input → persistPanelInputs → readPanelInputs → updateActiveSessio
 
 <a id="pending-queue-render"></a>
 
-**队列显示与恢复入口。** [ComposerPanel](../../extension/src/content/composerPanel.js) 创建的 `data-pending-inputs` 容器默认隐藏；`PendingInputView.render` 在队列非空时显示容器，暂停项同时显示 Queue paused 与 Resume。runtime 的 `renderPendingInputs` 通过队列 coordinator 读取活动会话的 `pendingInputs`。当前 `applyStateToPanel` 未调用该入口，初始化、journal 恢复及会话切换使用这条重绘路线时，队列卡可能仍为空或保留先前会话的投影。
+**队列显示与恢复入口。** [ComposerPanel](../../extension/src/content/composerPanel.js) 创建的 `data-pending-inputs` 容器默认隐藏；`PendingInputView.render` 在队列非空时显示容器，暂停项同时显示 Queue paused 与 Resume。runtime 的 `renderPendingInputs` 通过队列 coordinator 读取活动会话的 `pendingInputs`。`applyStateToPanel` 在会话列表与运行历史同步后调用该入口，覆盖初始化、journal 恢复和会话切换；切到空队列时清除旧卡，切回时重新显示对应会话的队列。
 
-composer 输入触发 `handleTaskInput → renderPendingInputs`，可在不发送任务的情况下显示已恢复的暂停队列；运行状态变化和 turn 绑定也会触发重绘。刷新后暂时看不到队列卡或 Resume，不足以证明队列数据丢失。维护该处应同时核对会话加载、恢复后的暂停状态和 DOM 重绘，保证界面呈现属于当前会话的队列，且重绘本身不会启动任务。
+composer 输入、运行状态变化和 turn 绑定仍会触发重绘。队列 coordinator 未建立或容器尚不存在时，重绘入口安全返回；容器建立后按需创建视图。重绘不调用保存、Resume 或任务调度，也不修改草稿与队列状态。维护该处应同时核对会话加载、恢复后的暂停状态和 DOM 重绘；验证入口为 [pendingQueuePanelRestore.test.js](../../test/pendingQueuePanelRestore.test.js)，真实页面重载和存储环境另行验收。
 
 [RunTimelineView.configureEditButton](../../extension/src/content/runTimelineView.js) 对 cancelled/rejected 且通过 `canEditRun` 的记录提供编辑重发，当前存在运行时禁用该按钮。
 [PanelMaintenance.refillComposerForRetry](../../extension/src/content/panelMaintenance.js) 回填任务并调用 runtime 的 `prepareRetryReplacement`：符合资格的 cancelled/rejected 记录在无当前运行时回到草稿，并从列表移除原卡，恢复其模式、focused files 和选区；其他符合替换条件的失败重试会记录 `pendingRetryReplacement`，在新 run 创建时解析替换。

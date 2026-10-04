@@ -111,10 +111,10 @@
 
 ### 改刷新恢复、跨标签同步、删除会话或分叉
 
-- 入口：[SessionManager](../../extension/src/content/sessionManager.js)、[SessionForkController](../../extension/src/content/sessionForkController.js)、[SharedSessionViewSync.install](../../extension/src/content/sharedSessionViewSync.js)。
+- 入口：[SessionManager](../../extension/src/content/sessionManager.js)、[SessionForkController](../../extension/src/content/sessionForkController.js)、[SharedSessionViewSync.install](../../extension/src/content/sharedSessionViewSync.js)；runtime `applyStateToPanel → renderPendingInputs` 同步恢复或切换后的队列视图。
 - 状态 owner：[backgroundSharedSessions.createService](../../extension/src/backgroundSharedSessions.js) 管理共享持久存储；[ScopedPersistenceTransaction](../../extension/src/shared/scopedPersistenceTransaction.js) 管理作用域提交；content 保留当前视图。
 - 必须联动：[scopedPersistenceCoordinator](../../extension/src/content/scopedPersistenceCoordinator.js)、[storageSessionClaims](../../extension/src/shared/storageSessionClaims.js)、[sessionState](../../extension/src/shared/sessionState.js)、Native [codexThreadFork](../../native-host/src/codexThreadFork.js)。详细链路见[运行状态与恢复](run-state-and-recovery.md)。
-- 最近测试：[runJournalRecoveryDurability](../../test/runJournalRecoveryDurability.test.js)、[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)、[crossTabRuntimeRegression](../../test/crossTabRuntimeRegression.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)、[sessionForkController](../../test/sessionForkController.test.js)、[sessionForkConcurrency](../../test/sessionForkConcurrency.test.js)。
+- 最近测试：[pendingQueuePanelRestore](../../test/pendingQueuePanelRestore.test.js)、[runJournalRecoveryDurability](../../test/runJournalRecoveryDurability.test.js)、[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)、[crossTabRuntimeRegression](../../test/crossTabRuntimeRegression.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)、[sessionForkController](../../test/sessionForkController.test.js)、[sessionForkConcurrency](../../test/sessionForkConcurrency.test.js)。
 
 ### 改新建、重命名、最后会话或清空历史
 
