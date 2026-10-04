@@ -37,10 +37,12 @@ async function syncOverleafToMirror({ projectId, project, rootDir }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const normalized = normalizeProjectFilesDetailed(project?.files || []);
   const files = normalized.files;
-  const skippedFiles = normalized.skippedFiles;
-  const nextPaths = new Set(files.map(file => file.path));
   const previous = readBaseline(mirror.baselinePath);
   const fullProjectSnapshot = project?.capabilities?.fullProjectSnapshot !== false;
+  const skippedFiles = resolveUnreadSnapshotFiles(project, normalized, previous, fullProjectSnapshot);
+  const unreadPaths = new Set(skippedFiles.map(file => file.path));
+  const nextPaths = new Set([...files.map(file => file.path), ...unreadPaths]);
+  const completeContents = fullProjectSnapshot && !unreadPaths.size;
 
   const mirrorRoot = path.dirname(mirror.projectRoot);
   assertSafeMirrorPathBeforeCreate(mirror.workspacePath, mirrorRoot);
@@ -82,20 +84,21 @@ async function syncOverleafToMirror({ projectId, project, rootDir }) {
 
   const now = new Date().toISOString();
   const nextBaselineFiles = fullProjectSnapshot
-    ? files.map(file => buildBaselineFile(file))
+    ? [...files.map(file => buildBaselineFile(file)), ...(previous.files || []).filter(file => unreadPaths.has(file.path))]
     : mergePartialBaselineFiles(previous.files || [], files);
 
   writeBaseline(mirror.baselinePath, {
     ...previous,
     projectKey: mirror.projectKey,
-    capturedAt: fullProjectSnapshot ? now : (previous.capturedAt || ''),
-    lastFullSyncAt: fullProjectSnapshot ? now : previous.lastFullSyncAt,
-    lastPartialSyncAt: fullProjectSnapshot ? previous.lastPartialSyncAt : now,
+    capturedAt: completeContents ? now : (previous.capturedAt || ''),
+    lastFullSyncAt: completeContents ? now : previous.lastFullSyncAt,
+    lastPartialSyncAt: completeContents ? previous.lastPartialSyncAt : now,
     lastSyncSource: fullProjectSnapshot ? (project?.capabilities?.method || 'snapshot') : previous.lastSyncSource,
     lastFileCount: files.length,
-    dirty: fullProjectSnapshot ? false : previous.dirty === true,
-    dirtyReason: fullProjectSnapshot ? '' : previous.dirtyReason || '',
-    dirtyAt: fullProjectSnapshot ? '' : previous.dirtyAt || '',
+    dirty: unreadPaths.size > 0 || (!completeContents && previous.dirty === true),
+    dirtyReason: unreadPaths.size ? 'snapshot_content_unavailable' : completeContents ? '' : previous.dirtyReason || '',
+    dirtyAt: unreadPaths.size ? now : completeContents ? '' : previous.dirtyAt || '',
+    unreadFiles: skippedFiles,
     files: nextBaselineFiles
   });
 
@@ -104,8 +107,28 @@ async function syncOverleafToMirror({ projectId, project, rootDir }) {
     fileCount: files.length,
     writtenCount,
     skippedFiles,
+    contentComplete: completeContents,
     partialSnapshot: !fullProjectSnapshot
   };
+}
+
+// A ZIP skip establishes that a path exists, without establishing its current
+// bytes. Keep its last known bytes/baseline, but never promote them to fresh.
+function resolveUnreadSnapshotFiles(project, normalized, previous, fullProjectSnapshot) {
+  const filesByPath = new Map();
+  const candidates = [
+    ...(fullProjectSnapshot ? [] : previous.unreadFiles || []),
+    ...(Array.isArray(project?.capabilities?.skipped) ? project.capabilities.skipped : []),
+    ...normalized.skippedFiles
+  ];
+  for (const file of candidates) {
+    if (!['binary_file_too_large', 'binary_project_too_large'].includes(file?.reason) || typeof file.path !== 'string') continue;
+    const filePath = normalizeRelativePath(file.path);
+    filesByPath.set(filePath, { path: filePath, kind: 'binary', reason: file.reason,
+      ...(Number.isFinite(Number(file.size)) && Number(file.size) >= 0 ? { size: Number(file.size) } : {}) });
+  }
+  for (const file of normalized.files) filesByPath.delete(file.path);
+  return Array.from(filesByPath.values());
 }
 
 async function collectMirrorChanges({ projectId, rootDir }) {
@@ -116,6 +139,7 @@ async function collectMirrorChangesDetailed({ projectId, rootDir }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const baseline = readBaseline(mirror.baselinePath);
   const baselineByPath = new Map((baseline.files || []).map(file => [file.path, file]));
+  const unreadPaths = new Set((baseline.unreadFiles || []).map(file => file.path));
   const currentPaths = listWorkspaceFiles(mirror.workspacePath);
   const currentByPath = new Map();
   const unsupportedChanges = [];
@@ -124,6 +148,14 @@ async function collectMirrorChangesDetailed({ projectId, rootDir }) {
     const previous = baselineByPath.get(filePath);
     const target = resolveWorkspacePath(mirror.workspacePath, filePath);
     const stat = fs.statSync(target);
+    if (unreadPaths.has(filePath)) {
+      if (!previous || !workspaceFileMatchesBaseline(target, previous)) {
+        unsupportedChanges.push({ type: 'unsupported-local-file', path: filePath,
+          reason: 'snapshot_content_unavailable', size: stat.size, previousExists: true,
+          previousKind: previous?.kind || 'binary' });
+      }
+      continue;
+    }
     if (isGeneratedArtifactPath(filePath, baselineByPath)) {
       if (!previous || !workspaceFileMatchesBaseline(target, previous)) {
         unsupportedChanges.push({
@@ -225,6 +257,13 @@ async function collectMirrorChangesDetailed({ projectId, rootDir }) {
   }
 
   for (const [filePath, previous] of baselineByPath) {
+    if (unreadPaths.has(filePath)) {
+      if (!currentPaths.includes(filePath)) {
+        unsupportedChanges.push({ type: 'unsupported-local-file', path: filePath,
+          reason: 'snapshot_content_unavailable', previousExists: true, previousKind: previous.kind });
+      }
+      continue;
+    }
     if (previous.kind === 'binary') {
       if (!currentByPath.has(filePath) && !currentPaths.includes(filePath)) {
         unsupportedChanges.push({
@@ -622,6 +661,7 @@ function hashBytes(bytes) {
 function getMirrorStatus(projectId, options = {}) {
   const mirror = getProjectMirror(projectId, options);
   const baseline = readBaseline(mirror.baselinePath);
+  const unreadContents = (baseline.unreadFiles || []).length > 0;
   if (!baseline.lastFullSyncAt) {
     return {
       exists: false,
@@ -633,13 +673,13 @@ function getMirrorStatus(projectId, options = {}) {
       lastPartialSyncAt: baseline.lastPartialSyncAt || '',
       lastSyncSource: baseline.lastSyncSource || '',
       lastFileCount: Number.isFinite(Number(baseline.lastFileCount)) ? Number(baseline.lastFileCount) : (baseline.files || []).length,
-      dirty: baseline.dirty === true,
-      dirtyReason: baseline.dirtyReason || '',
+      dirty: unreadContents || baseline.dirty === true,
+      dirtyReason: unreadContents ? 'snapshot_content_unavailable' : baseline.dirtyReason || '',
       workspacePath: mirror.workspacePath,
       ...buildOtStatusFields(baseline, false)
     };
   }
-  if (baseline.dirty === true) {
+  if (unreadContents || baseline.dirty === true) {
     return {
       exists: false,
       projectKey: mirror.projectKey,
@@ -651,7 +691,7 @@ function getMirrorStatus(projectId, options = {}) {
       lastSyncSource: baseline.lastSyncSource || '',
       lastFileCount: Number.isFinite(Number(baseline.lastFileCount)) ? Number(baseline.lastFileCount) : (baseline.files || []).length,
       dirty: true,
-      dirtyReason: baseline.dirtyReason || 'dirty_mirror',
+      dirtyReason: unreadContents ? 'snapshot_content_unavailable' : baseline.dirtyReason || 'dirty_mirror',
       workspacePath: mirror.workspacePath,
       ...buildOtStatusFields(baseline, false)
     };
@@ -767,12 +807,14 @@ async function applyFileOverlays({ projectId, overlays, rootDir }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const baseline = readBaseline(mirror.baselinePath);
   const filesByPath = new Map((baseline.files || []).map(f => [f.path, f]));
+  const unreadPaths = new Set((baseline.unreadFiles || []).map(file => file.path));
 
   for (const overlay of overlays || []) {
     if (!overlay?.path || typeof overlay.content !== 'string') {
       continue;
     }
     const normalizedPath = normalizeRelativePath(overlay.path);
+    if (unreadPaths.has(normalizedPath)) continue;
     const target = resolveWorkspacePath(mirror.workspacePath, normalizedPath);
     assertSafeWorkspaceTarget(mirror.workspacePath, target, normalizedPath);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -802,6 +844,9 @@ async function applyFileOverlays({ projectId, overlays, rootDir }) {
 async function confirmWritebackFiles({ projectId, paths, rootDir }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const baseline = readBaseline(mirror.baselinePath);
+  if ((baseline.unreadFiles || []).length) {
+    return { ok: false, reason: 'snapshot_content_unavailable' };
+  }
   if (!baseline.lastFullSyncAt) {
     return { ok: false, reason: 'no_baseline' };
   }
@@ -854,6 +899,7 @@ async function confirmWritebackFiles({ projectId, paths, rootDir }) {
 async function patchMirrorFiles({ projectId, files, rootDir, source = 'ot' }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const baseline = readBaseline(mirror.baselinePath);
+  const unreadContents = (baseline.unreadFiles || []).length > 0;
   const baselineByPath = new Map((baseline.files || []).map(file => [file.path, file]));
   const patchedFilesByPath = new Map();
   const appliedFiles = [];
@@ -895,7 +941,7 @@ async function patchMirrorFiles({ projectId, files, rootDir, source = 'ot' }) {
     const nextHash = hashText(patch.nextContent);
     if (patch.baseHash !== baselineFile.hash) {
       if (nextHash === baselineFile.hash) {
-        if (baseline.dirty === true) {
+        if (unreadContents || baseline.dirty === true) {
           skippedFiles.push({ path: normalized.path, reason: 'dirty_mirror' });
           lastOtErrorCode = 'dirty_mirror';
           continue;
@@ -922,7 +968,7 @@ async function patchMirrorFiles({ projectId, files, rootDir, source = 'ot' }) {
       lastOtErrorCode = 'base_hash_mismatch';
       continue;
     }
-    if (baseline.dirty === true) {
+    if (unreadContents || baseline.dirty === true) {
       skippedFiles.push({ path: normalized.path, reason: 'dirty_mirror' });
       lastOtErrorCode = 'dirty_mirror';
       continue;

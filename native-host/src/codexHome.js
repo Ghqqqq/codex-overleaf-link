@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { splitTomlStatements } = require('./tomlStatements');
 const {
   getHomeDir,
   getNativeHostPlatform
@@ -177,70 +178,40 @@ function copyUserCodexFile(source, target, fileName, options = {}) {
   fs.writeFileSync(target, content, 'utf8');
 }
 
-// Removes the top-level `personality` key (Codex's built-in "personality"
-// feature) so the plugin Codex home never inherits the user's global
-// personalization. Only the top-level key is removed — a `personality` key
-// inside a [section] is a different key and is preserved. Handles single-line
-// values and both multi-line string forms (""" basic and ''' literal). All
-// other lines pass through unchanged, aside from line endings being normalized to LF.
+// Remove the complete top-level personality assignment. Statement boundaries
+// keep keys/table headers inside multiline strings from becoming filter input.
+// Bare keys and their ordinary quoted forms are supported; table-scoped fields
+// remain distinct. Other source text is preserved, with CRLF normalized to LF.
 function stripPersonalizationFromCodexConfig(content) {
-  const lines = String(content || '').split(/\r?\n/);
   const output = [];
   let beforeFirstSection = true;
-  let closingDelimiter = '';
-
-  for (const line of lines) {
-    if (closingDelimiter) {
-      if (line.includes(closingDelimiter)) {
-        closingDelimiter = '';
-      }
-      // Drop every line of the multi-line value, including the one that closes it.
-      continue;
-    }
-    if (parseTomlSectionName(line)) {
+  for (const statement of splitTomlStatements(content)) {
+    if (statement.trimStart().startsWith('[')) {
       beforeFirstSection = false;
-      output.push(line);
-      continue;
     }
-    if (beforeFirstSection) {
-      const match = line.match(/^\s*personality\s*=\s*(.*)$/);
-      if (match) {
-        const value = match[1];
-        const opener = value.startsWith('"""') ? '"""'
-          : value.startsWith("'''") ? "'''"
-            : '';
-        if (opener && value.indexOf(opener, opener.length) === -1) {
-          closingDelimiter = opener;
-        }
-        continue;
-      }
-    }
-    output.push(line);
+    if (beforeFirstSection && /^[ \t]*(?:personality|"personality"|'personality')[ \t]*=/.test(statement)) continue;
+    output.push(statement);
   }
-
-  return output.join('\n');
+  return output.join('');
 }
 
 function sanitizeCodexConfigForLocalSkillIsolation(content) {
   const output = [];
   let skippedSection = false;
+  let beforeFirstSection = true;
 
-  for (const line of String(content || '').split(/\r?\n/)) {
-    const sectionName = parseTomlSectionName(line);
-    if (sectionName) {
-      skippedSection = isLocalSkillConfigSection(sectionName);
-      if (!skippedSection) {
-        output.push(line);
-      }
+  for (const statement of splitTomlStatements(content)) {
+    if (statement.trimStart().startsWith('[')) {
+      beforeFirstSection = false;
+      skippedSection = isLocalSkillConfigSection(parseTomlSectionName(statement.trimEnd()));
+    }
+    if (skippedSection || (beforeFirstSection && /^[ \t]*(?:notify|"notify"|'notify')[ \t]*=/.test(statement))) {
       continue;
     }
-    if (skippedSection || /^\s*notify\s*=/.test(line)) {
-      continue;
-    }
-    output.push(line);
+    output.push(statement);
   }
 
-  return `${output.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
+  return output.join('');
 }
 
 function parseTomlSectionName(line) {

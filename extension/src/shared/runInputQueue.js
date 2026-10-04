@@ -11,6 +11,7 @@
   const MAX_TEXT_CHARS = 12000;
   const MAX_QUEUE_BYTES = 128 * 1024;
   const MAX_PERSISTED_QUEUE_BYTES = 512 * 1024;
+  const MAX_CUSTOM_INSTRUCTIONS_CHARS = 12000;
   const ACTIVE_STATUSES = new Set(['claimed', 'executing', 'steering']);
   const VALID_STATUSES = new Set(['queued', 'paused', ...ACTIVE_STATUSES]);
 
@@ -41,7 +42,7 @@
         claimToken: status === 'claimed' || status === 'executing' ? String(raw.claimToken || '') : '',
         pauseReason: status === 'paused' ? String(raw.pauseReason || '') : '',
         executionSnapshot: RunExecutionSnapshot.cloneSnapshot(executionSnapshot),
-        payload: RunExecutionSnapshot.toQueuePayload(executionSnapshot)
+        payload: buildPayload(executionSnapshot, raw.payload?.submissionContext)
       });
       if (normalized.length >= MAX_ITEMS) {
         break;
@@ -79,7 +80,7 @@
       claimToken: '',
       pauseReason: input.status === 'paused' ? String(input.pauseReason || '') : '',
       executionSnapshot: RunExecutionSnapshot.cloneSnapshot(executionSnapshot),
-      payload: RunExecutionSnapshot.toQueuePayload(executionSnapshot)
+      payload: buildPayload(executionSnapshot, input.payload?.submissionContext)
     };
     const next = [...queue, item];
     if (estimateLegacyBytes(next) > MAX_QUEUE_BYTES || estimateBytes(next) > MAX_PERSISTED_QUEUE_BYTES) {
@@ -137,7 +138,7 @@
       item = {
         ...item,
         executionSnapshot: RunExecutionSnapshot.cloneSnapshot(snapshot),
-        payload: RunExecutionSnapshot.toQueuePayload(snapshot)
+        payload: buildPayload(snapshot, item.payload?.submissionContext)
       };
     } catch (error) {
       return {
@@ -199,6 +200,41 @@
     );
   }
 
+  // Queue inputs persist only these submitted extras. Attachments stay unsupported,
+  // and older items must not acquire a later draft's one-turn context on promotion.
+  function normalizeSubmissionContext(value = {}, helpers = {}) {
+    const input = value && typeof value === 'object' ? value : {};
+    const normalizeText = (value, maxChars) => {
+      const text = typeof value === 'string' ? value : '';
+      return String(helpers.normalizeDisplay ? helpers.normalizeDisplay(text, maxChars) : text).slice(0, maxChars);
+    };
+    const safeId = value => typeof value === 'string'
+      && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(value) && !value.includes('..');
+    const rawSkill = input.skillInvocation;
+    const skillInvocation = safeId(rawSkill?.id)
+      && (rawSkill.id === 'skill-installer' || rawSkill.scope === 'codex-overleaf')
+      ? { id: rawSkill.id, title: normalizeText(rawSkill.title || rawSkill.id, 80),
+          ...(rawSkill.id === 'skill-installer' ? {} : { scope: 'codex-overleaf' }) }
+      : null;
+    return {
+      customInstructions: normalizeText(input.customInstructions, MAX_CUSTOM_INSTRUCTIONS_CHARS),
+      skillLoadingSettings: {
+        loadCodexLocalSkills: input.skillLoadingSettings?.loadCodexLocalSkills === true,
+        loadCodexOverleafSkills: input.skillLoadingSettings?.loadCodexOverleafSkills === true
+      },
+      skillInvocation,
+      enabledCodexOverleafSkillIds: [...new Set((Array.isArray(input.enabledCodexOverleafSkillIds)
+        ? input.enabledCodexOverleafSkillIds : []).filter(safeId))]
+    };
+  }
+
+  function buildPayload(snapshot, submissionContext, helpers) {
+    const payload = RunExecutionSnapshot.toQueuePayload(snapshot);
+    // Keep legacy absence compact; safe defaults are applied only at execution.
+    if (submissionContext == null) return payload;
+    return { ...payload, submissionContext: normalizeSubmissionContext(submissionContext, helpers) };
+  }
+
   function normalizeTimestamp(value) {
     return typeof value === 'string' && value ? value : new Date().toISOString();
   }
@@ -237,7 +273,8 @@
               speedTier: item.payload.speedTier,
               autoRecompile: item.payload.autoRecompile,
               requireReviewing: item.payload.requireReviewing,
-              focusFiles: item.payload.focusFiles
+              focusFiles: item.payload.focusFiles,
+              submissionContext: item.payload.submissionContext
             }
           : {}
       };
@@ -269,7 +306,7 @@
           claimToken: normalizeField(item?.claimToken, 160),
           pauseReason: normalizeField(item?.pauseReason, 160),
           executionSnapshot: compactSnapshot,
-          payload: RunExecutionSnapshot.toQueuePayload(compactSnapshot)
+          payload: buildPayload(compactSnapshot, payload.submissionContext, { normalizeDisplay })
         };
       })
       .filter(item => item.id && item.text);
@@ -292,6 +329,7 @@
     markExecuting,
     markSteering,
     normalizeQueue,
+    normalizeSubmissionContext,
     pauseAll,
     remove,
     resumeAll,

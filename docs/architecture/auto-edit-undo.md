@@ -77,7 +77,7 @@ content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言
 [snapshotRouter](../../extension/src/page/snapshotRouter.js) 决定 ZIP、活动编辑器覆盖层和页面文件记录如何合并。
 [overleafProjectSnapshot](../../extension/src/page/overleafProjectSnapshot.js) 承担快照桥及缓存相关装配。
 
-- 完整快照：`mirrorWorkspace.syncOverleafToMirror` 根据 `fullProjectSnapshot` 进入全量替换分支，删除规范化输入中没有的镜像文件，并重建基线。只有输入路径集合完整且文件身份保持一致时，缺失路径才能代表项目中已删除的文件；当前 ZIP 路径处理与二进制配额存在下述例外。
+- 完整快照：`mirrorWorkspace.syncOverleafToMirror` 根据 `fullProjectSnapshot` 进入全量替换分支，删除规范化输入及已知未读路径集合中没有的镜像文件，更新成功读取文件的基线并保留未读资产的旧基线。只有路径集合完整且文件身份保持一致时，缺失路径才能代表项目中已删除的文件；ZIP 路径身份边界见下文。
 - 部分快照：只覆盖已读取路径，合并旧基线；不能用“本次未读到”推导服务器文件已删除。
 - Warm mirror：普通快启检查整体镜像健康与当前 overlay；OT 快启另由 [otWarmMirrorController.canUseOtWarmStart](../../extension/src/content/otWarmMirrorController.js) 检查聚焦文件的新鲜度。观察事件经 `otWarmMirror` 的队列送入 Native `mirror.patchFiles`；局部更新不能单独证明完整项目已同步。
 - 保存核查：`serverOnly: true` 明确要求服务器来源；编辑器覆盖层不能用于证明服务器已保存。
@@ -91,11 +91,12 @@ content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言
 维护时需区分 ZIP 字面名称与 URL 编码路径，并保持不同文件身份不可合并的目标契约；路径校验通过不能单独证明规范化前后仍指向同一文件。
 相关入口为 [projectFiles.test.js](../../test/projectFiles.test.js) 与 [pageBridgeSnapshotCache.test.js](../../test/pageBridgeSnapshotCache.test.js)；验证需串联原始名称、提取、合并及完整性标记，不能只检查单个路径 helper。
 
-**已知限制：配额跳过与全量镜像清理。** 请求包含二进制且读取内容时（`includeBinaryFiles` 且 `includeContent !== false`），`extractFilesFromZip` 对超过单文件或项目二进制预算的资产加入 `skipped`，并从 `files` 中省略该路径；限额由该模块的 `MAX_BINARY_FILE_BYTES/MAX_BINARY_TOTAL_BYTES` 决定，`buildProjectSnapshot/buildZipOnlyProjectSnapshot` 仍可返回完整标志。仅列文件清单的 `includeContent:false` 路径不执行这一预算裁剪。
-[contentRuntime.getProjectSnapshotWarnings](../../extension/src/content/contentRuntime.js) 将这些 skipped 项归为非阻断警告。[mirrorWorkspace.syncOverleafToMirror](../../native-host/src/mirrorWorkspace.js) 的全量分支只根据规范化后的文件集合清理，没有按快照 `skipped` 保留旧路径；随后重建基线、更新 `lastFullSyncAt` 并清除 `dirty`。
-Native 准入还有独立的 [nativeQuotas.validateNativeRequestQuotas](../../native-host/src/nativeQuotas.js)：`codex.run` 和 `mirror.sync` 均检查快照实际携带的二进制总量，限额为 `NATIVE_REQUEST_QUOTAS.maxProjectBinaryBytes`。当前该限额低于 ZIP 的项目二进制预算；正常 ZIP 总预算跳过场景会先被 Native 拒绝，不能据页面的完整标志推定已经进入镜像清理。
-单文件超过 ZIP 限额而被省略时，其余载荷仍可通过 Native 准入；此时全量同步会移除该路径原有的本地镜像文件和基线记录，尽管 ZIP 中仍有该资产。该清理只作用于本地镜像，不执行 Overleaf 远端删除。
-完整文件清单、完整内容读取与允许删除缺失路径应分别判断；新鲜度时间戳也不能单独证明所有资产已读取。[mirrorWorkspace.test.js](../../test/mirrorWorkspace.test.js) 的超限资产用例覆盖输入过滤，维护时还需串联 ZIP 提取、Native 准入与全量清理，分别检查单文件跳过、总量拒绝和已有资产的基线。
+**配额跳过与内容完整性。** 请求包含二进制且读取内容时，`extractFilesFromZip` 对超过单文件或项目二进制预算的资产加入 `capabilities.skipped`，省略对应内容。完整 ZIP 的 `fullProjectSnapshot` 表达路径读取范围，`contentComplete` 单独表达内容是否全部读取；仅列清单的 `includeContent:false` 路径不执行内容预算裁剪。
+[mirrorWorkspace.resolveUnreadSnapshotFiles](../../native-host/src/mirrorWorkspace.js) 合并 ZIP 和 Native 规范化器的二进制预算跳过项，将其路径纳入存在集合，保留已有本地文件及旧基线，并写入 `unreadFiles`。未读资产不获得新的新鲜度：镜像保持 dirty，不推进 `lastFullSyncAt`，warm reuse、写回后就地确认及 OT patch 都有独立的未读检查。部分刷新保留该状态；后续完整读取该文件可解除，完整清单确认远端已删除时才移除旧副本。
+[collectMirrorChangesDetailed](../../native-host/src/mirrorWorkspace.js) 对未读路径的本地新建、修改或删除返回 `snapshot_content_unavailable`，不产生可写回操作；overlay 也不能把其旧内容更新为当前基线。[codexPromptAssembly](../../native-host/src/codexPromptAssembly.js) 列出未读路径并说明保留副本可能过时，普通可读文件仍可继续处理。该机制保护这些路径，不提供跨路径复制的内容来源追踪。
+Native 准入仍独立检查快照实际携带的二进制总量，见 [nativeQuotas.validateNativeRequestQuotas](../../native-host/src/nativeQuotas.js)。其总量限额低于 ZIP 的项目预算，普通总预算跳过场景会在镜像写入前被拒绝，旧镜像保持；单文件跳过后的其余载荷可准入并按上述未读规则处理。
+[contentRuntime.getProjectSnapshotWarnings](../../extension/src/content/contentRuntime.js) 继续将这些跳过项呈现为非阻断警告。文本写回成功后，若镜像仍有未读资产，异步刷新可转为失效状态，`mirrored` 不宣称完成；本次文本的 applied/saved 证据与整体镜像完整性分别判断。
+[snapshotSkippedAssets.test.js](../../test/snapshotSkippedAssets.test.js) 串联真实 ZIP、Native 准入、临时镜像及 Content 结算，覆盖边界、原资源保留、后续完整读取/真实删除、部分刷新、非法路径及确认/OT/overlay 防线。Page 写入、保存和外部 I/O 使用替身，真实浏览器与远端后果仍需单独验收。
 
 **已知限制：OT 快启参数冲突。** `resolveWarmRunStart` 要求非空 `fileOverlays` 才返回成功；[runController.buildCodexRunParams](../../extension/src/content/runController.js) 同时保留这些 overlays 和 `otWarmStart` 标记。
 [taskRunnerRuntime.validateOtFocusedWarmMirrorReuse](../../native-host/src/taskRunnerRuntime.js) 明确拒绝携带非空 overlays 的 OT 复用请求，调用方将该拒绝映射为 `mirror_stale`。
@@ -153,12 +154,12 @@ Page router 与 snapshot 闭包通过共享 [pageRpcContract.REVISION](../../ext
 `createTextFileWithDom` 支持根文件和嵌套路径，上传前逐级创建缺失父目录并选择准确目录；二进制 DOM 上传通过 `prepareUploadParent` 的 `createMissing: true` 分支复用这套目录准备能力。
 [undoOperations.buildCreatedFileUndoCheckpoint](../../extension/src/shared/undoOperations.js) 只保存新建文件的删除证明，没有为这些父目录生成目录 Undo 凭据。因此上传失败或新建文件撤销后，已创建的父目录可能保留。
 相关目录选择与创建行为见 [textFileCreator.test.js](../../test/textFileCreator.test.js)；文件撤销成功不能用来推定父目录也被回收。
-底层 creator 在显式传入 `allowExistingMatches` 时，可把服务器已有相同内容识别为幂等结果；不同内容不能通过 create 重试覆盖。
-当前 Auto 的显式 Retry sync 经 `contentRuntime.retryRunWriteback → writebackOrchestrator.applySyncChangesToOverleaf → assetTransferBroker.applyOperations` 将 `retryCreates: true` 送入 Page RPC。
-[writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 的 `apply` 重建 router 参数时遗漏该字段，[pageBridge](../../extension/src/pageBridge.js) 注入的 `applyOperations` wrapper 也未补入；下游 router 依赖该字段设置 `allowExistingMatches`。
-因此底层能力尚不能作为真实 Retry sync 已贯通的保证；已有路径守卫仍可能拒绝创建，不能据此推断已发生重复创建。
-原 `requestId` 的 receipt 查询和重复派发取回原结果有独立机制；显式重试的参数缺口不表示该机制失效。
-`recordUndoFromApply` 过滤 `idempotent: true` 的条目，避免把预先存在的文件误记成该运行可删除的新建文件。
+Auto 的显式 Retry sync 经 `contentRuntime.retryRunWriteback → writebackOrchestrator.applySyncChangesToOverleaf → assetTransferBroker.applyOperations` 将 `retryCreates: true` 送入 Page RPC。
+[writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 的 `apply` 按严格布尔值保留该字段，[pageBridge](../../extension/src/pageBridge.js) 的 `applyOperations` wrapper 将选项交给 router；router 在新建批次中据此设置 creator 的 `allowExistingMatches`。
+批次服务器预检读到完全相同的文本（包括空字符串）时，creator 返回 `idempotent: true`、`changedDocument: false` 的已验证结果，不再次上传。幂等表示重复确认得到相同结果且不新增文件修改；目标缺失时仍进入正常创建，不同内容的已有目标仍拒绝覆盖。
+这使“已上传、首次读回未确认”的新建文件可在服务器读取恢复后通过显式重试确认；读取仍不可用时不能凭路径已存在认定成功。
+原 `requestId` 的 receipt 查询及同一请求重复派发取回原结果有独立机制；显式 Retry sync 使用新的派发执行上述内容检查。
+`recordUndoFromApply` 过滤 `idempotent: true` 的条目，保留已有 Undo 证据，并避免把此次仅确认的文件新增为该运行可删除的新建文件；实际创建成功仍记录新建文件的 Undo 凭据。
 
 二进制经 broker 的 `applyBinaryOperation` 执行 begin/append/commit；大资源可通过 Native asset token 分块读取。
 联动 owner 为 [nativeAssetTransfer](../../native-host/src/nativeAssetTransfer.js) 与 [binaryAssetUploader](../../extension/src/page/binaryAssetUploader.js)。
@@ -227,7 +228,7 @@ begin 成功后的失败，或 begin 已派发且等待被取消，在 commit �
 **当前实现。** 镜像刷新以 `verified_saved` 为门槛；不满足时调用失效处理。
 满足时可通过 `mirror.confirmWriteback` 就地更新文本基线，也可完整读取后 `mirror.sync`。
 `tryConfirmMirrorWriteback` 仅对全部为 edit 的已应用条目尝试就地确认，且本次已有确认用快照时直接走同步路线。
-`mirrorWorkspace.confirmWritebackFiles` 检查基线、dirty 标志、路径与文本类型后，重新读取并哈希当前磁盘文件；入参只有项目和路径，没有页面 post-image 或预期哈希。
+`mirrorWorkspace.confirmWritebackFiles` 检查基线、未读资产、dirty 标志、路径与文本类型后，重新读取并哈希当前磁盘文件；入参只有项目和路径，没有页面 post-image 或预期哈希。
 这条优化依赖“当前镜像仍保存刚刚成功写回的版本”这一前提，其返回值不能独立证明本地内容与页面读回内容相等。排查晚到磁盘修改或基线漂移时，应同时核对该前提、保存证据与同步 fallback。
 后台 `pendingMirrorRefresh` 防止下一轮或 Undo 与晚到镜像更新交错。
 
@@ -345,7 +346,7 @@ router 可以返回已发生修改的逐项结果并跳过未开始项；content
 [writebackIntent](../../extension/src/shared/writebackIntent.js) 对请求记录设置 100 操作、300 KiB 上限；[sessionState](../../extension/src/shared/sessionState.js) 执行恢复字段筛选。
 只读保存核查保存摘要与身份，通过 `confirmSaveCheck` 重新读取服务器，不重新上传文件。
 重试写入则由 `retryRunWriteback` 进入写回链，两者应在指南和 UI 中保持语义区分。
-原请求 receipt 查询可以取回原结果，显式 Retry sync 则创建新的派发；后者的创建幂等参数目前有上述跨层传递缺口。
+原请求 receipt 查询可以取回原结果，显式 Retry sync 则创建新的派发；新建重试按第 4.2 节的服务器精确内容检查确认已有文件或创建缺失文件。已存在同内容的幂等确认不重复上传，也不新增 Undo 删除凭据；不同内容保持拒绝，项目和运行归属检查仍适用。
 
 **已确认的配置例外。** 首次 `runTask` 写回显式传入 `executionSnapshot.autoRecompile`，而 `retryRunWriteback` 只传 `mode: 'auto'`、恢复意图的 `requireReviewing` 等字段，遗漏自动编译设置。
 因此 `autoRecompileAfterWriteback` 在重试中回退到当前 `state.autoRecompile`。例如原运行关闭自动编译、随后面板开启，重试成功写入可编译文件后可进入自动编译分支；相反切换也可阻止编译。
@@ -373,11 +374,11 @@ router 可以返回已发生修改的逐项结果并跳过未开始项；content
 | 文本差异转操作错误 | `writebackController.buildSyncApplyOperations`；patch 输入与基线 | `node --test test/writebackController.test.js` |
 | Auto 重命名、二进制删除或资产类型被过滤 | `mirrorWorkspace.collectMirrorChangesDetailed`、路径类型规则、controller 转换及 orchestrator 独立删除确认 | `node --test test/mirrorWorkspace.test.js test/writebackController.test.js`；另验文本重命名拒绝删除、二进制重命名及 GIF/WebP |
 | 活动文件/ZIP/空内容不一致 | snapshotRouter、projectFiles、快照缓存、mirrorWorkspace | `node --test test/pageBridgeSnapshotCache.test.js test/staleGuard.test.js` |
-| ZIP 路径碰撞、丢弃或资产配额影响完整性 | `extractFilesFromZip`、`normalizeSafeProjectPath`、`mergeSnapshotFiles`、快照标志及 Native 全量清理 | [projectFiles](../../test/projectFiles.test.js)、[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)；需串联百分号字面名称、超限已有资产与基线更新 |
+| ZIP 路径碰撞、丢弃或资产配额影响完整性 | `extractFilesFromZip`、`normalizeSafeProjectPath`、`mergeSnapshotFiles`、快照标志及 Native 全量清理 | [projectFiles](../../test/projectFiles.test.js)、[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)、[snapshotSkippedAssets](../../test/snapshotSkippedAssets.test.js)；百分号字面名称的身份边界仍需另验 |
 | CRLF/LF 坐标转换及撤销 | textPatch 原始偏移、staleGuard.prepareOperationPatches、router 实际补丁、settlement verifiedContent、UndoOperations 双映像 | [textPatchLineEndings](../../test/textPatchLineEndings.test.js)、[undoOperations](../../test/undoOperations.test.js)、[pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js)；比较最终文本、保留内容与实际回执后的撤销结果 |
 | OT 快启进入快照重读回退 | `resolveWarmRunStart`、`runController.buildCodexRunParams`、Native `validateOtFocusedWarmMirrorReuse`、runtime 的 mirror_stale 回退 | `node --test test/otWarmMirrorIntegration.test.js test/taskRunner.test.js`；需另补快启结果经参数构造进入 Native 校验的组合场景 |
 | 原请求超时但文件已变化 | broker 查询原执行 receipt、逐项结果与尾部阻断 | `node --test test/writebackReceiptRecovery.test.js` |
-| 显式 Retry sync 创建已有文件 | creator 局部幂等、retryCreates 跨 journal 传递；现有测试缺少生产链专项用例 | `node --test test/textFileCreator.test.js test/writebackEditRetry.test.js`，仅覆盖局部能力与恢复意图 |
+| 显式 Retry sync 确认已有文件或创建缺失文件 | runtime 恢复意图、orchestrator/broker/journal 参数、router/creator 精确内容检查及 Undo 所有权 | `node --test test/retryCreatedFile.test.js test/textFileCreator.test.js test/writebackEditRetry.test.js`；模块组合覆盖新建未确认后恢复、同内容/空内容幂等、异内容拒绝、原请求去重及归属检查，DOM 与外部 I/O 使用替身 |
 | 嵌套路径创建与父目录保留 | textFileCreator 的目录准备、上传、文件创建证明；当前没有目录 Undo 凭据 | `node --test test/textFileCreator.test.js test/createdFileUndo.test.js`；目录回收不能由文件删除验证推定 |
 | 保存待确认或刷新后核查 | writebackController、writebackIntent、sessionState | `node --test test/writebackSaveCheck.test.js` |
 | 普通 Undo 错撤用户历史 | contentRuntime 路由、提交 Track、trackedChangesLifecycle、ownership | `node --test test/ordinaryUndoRouting.test.js` |
@@ -395,7 +396,7 @@ router 可以返回已发生修改的逐项结果并跳过未开始项；content
 `pageBridgeStaleGuard` 含 Native ID Accept 与保留后来文本的场景，但 fetch、编辑器与留痕账本为模拟对象。
 `binaryUploadUndoRoundTrip` 组合真实 broker、uploader、Native 分块和 ZIP 模块；其 Page RPC 直接路由 uploader 方法，Undo 直接调用 creator 删除，不能据此推定运行账本与刷新按钮全链覆盖。
 `undoDeadlineRouting` 覆盖生产 wrapper 的提取函数及各层期限传递，`undoReceiptDeadline` 使用真实 client/broker/journal 和虚拟时钟，页面 mutation 为注入函数。
-`writebackReceiptRecovery` 检查部分模式参数转发，未覆盖 `retryCreates` 穿过真实 journal 的专项场景；创建重试还需核对同内容与异内容的完整传递链。
+`writebackReceiptRecovery` 检查模式参数、原请求回执恢复和去重；[retryCreatedFile](../../test/retryCreatedFile.test.js) 通过公开 [retryCreateHarness](../../test/_helpers/retryCreateHarness.js) 串联真实 runtime Retry/recovery/Undo 函数、orchestrator、broker、journal、Page wrapper、router 和 creator，覆盖 `retryCreates` 完整传递、同内容与空内容确认、异内容拒绝及 Undo 证据保留。其合成 DOM、上传与 ZIP 夹具和 [textFileCreator](../../test/textFileCreator.test.js) 共用；UI、Native 与持久化 I/O 使用替身，不能由此推定真实 Chrome 传输、服务器上传或 IndexedDB 落盘已验收。
 `undoMirrorInvalidation` 的相关 harness 将 settlement 替换为成功 stub；`undoPersistenceFailure` 串联 runtime、Page Undo、review transition 与 orchestrator，在保存回调注入异常，检查失效登记、下一次 Undo 等待屏障，以及冲突/抛错不虚构结果。编辑器、保存与 Native I/O 使用替身。
 `writebackCancellationRecovery` 串联 client、journal、Page router/editor、orchestrator、Undo 和 StorageDb 投影；`assetTransferCancellation` 检查混合批次、二进制状态、项目拒绝和 Page stage 清理。网络、真实编辑器及 IndexedDB 重载仍在替换边界之外。
 `mirrorWorkspace` 覆盖已有二进制删除上报、支持资产及生成 PDF 过滤；不能据此推定 Auto 重命名与拒绝删除的完整交互已经覆盖。

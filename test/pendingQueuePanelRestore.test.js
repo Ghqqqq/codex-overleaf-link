@@ -92,7 +92,7 @@ function harness(initialState = pausedState()) {
     getThemePreference: () => 'dark',
     modelSelectHasOption: () => true,
     getRenderedModelEntries: () => [],
-    composerAttachmentsRestoredOnce: false,
+    getComposerDraftPersistence: () => ({ hydrate() {} }),
     composerAttachmentController: {},
     getTrackedChangeCaptureController: () => ({ schedule: noop }),
     PANEL_DEFAULT_WIDTH: 380,

@@ -41,7 +41,7 @@
 | Content 加载 | 源码纳入由 `extension/entries/content-entry.mjs` 管理，模块依赖通过 registry 或组合根显式传入；两份 manifest 注入生成 bundle。不要手改生成文件。 |
 | Page world | 核对 `pageBridgeClient.PAGE_WORLD_SCRIPTS`、资源公开清单、托管 allowlist、dispatcher、`pageRpcContract` 与测试。 |
 | 身份 | 写操作必须核对捕获的项目及运行归属；身份缺失或不匹配时应停止。现有 page-state RPC 的例外见写回章节及 `pageRpcContract`。 |
-| 队列 | 已提交执行快照白名单中的字段固定；指令、技能、附件及治理等其他输入的实际捕获时机须读运行状态页，不能把白名单保证推广到全部上下文。 |
+| 队列 | 执行快照与 submissionContext 分别固定配置和入队指令/技能；排队附件不受支持，提升时不得从后来草稿读取附件或单次技能。旧项兼容、容量和其他输入捕获时机见运行状态页，不能推广为全部项目内容冻结。 |
 | 空文件 | `""` 是合法内容；缺失、未读取和空白必须区分。有效空基线参与新鲜度检查；空编辑器覆盖层需有成功读取证据，见写回章节。 |
 | 成功证据 | applied、readback、saved、mirrored、compiled、settled 分别表达；部分失败和保存未知不能合并成完全成功。 |
 | 秘密数据 | 禁止凭据进入浏览器持久状态、运行事件 journal、诊断及日志。本地专用凭据与恢复事务存储按 `providerStore` 的权限及生命周期管理。 |

@@ -76,3 +76,19 @@ test('starting a queued run validates its snapshot without rewriting future defa
   assert.match(implementation, /resolveForExecution/);
   assert.doesNotMatch(implementation, /applyToState|updateActiveSession|applyStateToPanel/);
 });
+
+test('legacy queues near the original byte limit retain every item without synthetic extra context', () => {
+  const items = Array.from({ length: Queue.MAX_ITEMS }, (_, index) => ({
+    id: `legacy-${index}`, clientUserMessageId: `legacy-${index}`, text: 'x'.repeat(5949),
+    status: 'queued', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+    sourceRunId: '', linkedRunId: '', claimToken: '', pauseReason: '',
+    payload: { mode: 'ask', providerId: 'builtin', providerRevision: '', model: 'gpt-5.6',
+      reasoningEffort: 'high', speedTier: 'standard', autoRecompile: false, requireReviewing: false,
+      focusFiles: ['main.tex'] }
+  }));
+  assert.ok(Queue.estimateBytes(items) < Queue.MAX_QUEUE_BYTES);
+  const normalized = Queue.normalizeQueue(items);
+  assert.equal(normalized.length, items.length, 'safe execution defaults must not evict existing legacy inputs');
+  assert.equal(Queue.normalizeQueue(Queue.compactForStorage(normalized)).length, items.length);
+  assert.deepEqual(normalized.map(item => item.id), items.map(item => item.id));
+});

@@ -89,6 +89,7 @@
           reviewingPolicy: params.reviewingPolicy || '',
           requireReviewing: params.requireReviewing === true,
           requireEditing: params.requireEditing === true,
+          retryCreates: params.retryCreates === true,
           runProjectId: projectId,
           ...(params.deadlineAt == null ? {} : { deadlineAt: params.deadlineAt }),
           onOperationResult

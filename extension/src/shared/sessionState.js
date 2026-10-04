@@ -1721,6 +1721,7 @@
     recoverRecordedRunFailure,
     recoverSettledRunningRun,
     normalizeProjectReferenceFiles,
+    normalizeComposerAttachmentsForPersistence,
     normalizeSelectionContext: SelectionContext.normalize,
     prepareStateForStorage,
     estimateJsonBytes,

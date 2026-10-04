@@ -31,8 +31,7 @@ function buildCodexTurnPrompt(options = {}) {
     '',
     'Current Overleaf workspace:',
     `- Project: ${context.projectKey || context.projectId || 'unknown'}`,
-    '- The local workspace was synced from Overleaf immediately before this turn.',
-    '- If the recent session history conflicts with the files in the workspace, trust the files.',
+    ...formatWorkspaceSnapshotContext(context.unreadFiles),
     ...(isSkillInstallerInvocation(context.skillInvocation) ? [] : ['', formatOverleafWorkspaceRules()]),
     '',
     'Project location citation rules:',
@@ -131,6 +130,7 @@ function normalizePromptOptions(options = {}) {
     projectKey: mirror.projectKey || options.projectKey || params.projectId || params.project?.id || params.project?.projectId,
     projectId: options.projectId || params.projectId || params.project?.id || params.project?.projectId,
     workspacePath: mirror.workspacePath || options.workspacePath || '',
+    unreadFiles: Array.isArray(mirror.skippedFiles) ? mirror.skippedFiles : [],
     userTask: String(options.task !== undefined ? options.task : params.task || '').trim(),
     mode: options.mode || params.mode || 'auto',
     customInstructions: options.customInstructions !== undefined ? options.customInstructions : params.customInstructions,
@@ -152,6 +152,19 @@ function normalizePromptOptions(options = {}) {
     compileLogFresh: compileContext.fresh !== undefined ? compileContext.fresh : params.compileLogFresh,
     compileLogCompiledAt: compileContext.compiledAt !== undefined ? compileContext.compiledAt : params.compileLogCompiledAt
   };
+}
+
+function formatWorkspaceSnapshotContext(unreadFiles) {
+  if (!unreadFiles.length) return [
+    '- The local workspace was synced from Overleaf immediately before this turn.',
+    '- If the recent session history conflicts with the files in the workspace, trust the files.'
+  ];
+  return [
+    '- The readable project files were synced from Overleaf before this turn.',
+    '- The following assets were not read because of the binary size limits. A retained local copy may be stale; a missing local copy does not mean the asset was deleted from Overleaf.',
+    '- Do not rely on these assets as current evidence or edit them. Their local changes cannot be written back until their current Overleaf content is read. Other readable files remain available for this task.',
+    ...unreadFiles.map(file => `- Unavailable current content: ${JSON.stringify(file.path)} (${file.reason}).`)
+  ];
 }
 
 function normalizeLoadedSkills(skills = []) {

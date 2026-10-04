@@ -6,6 +6,7 @@
     const tx = typeof options.tx === 'function' ? options.tx : (en) => en;
     const tr = typeof options.tr === 'function' ? options.tr : (key) => key;
     const appendPlainLog = typeof options.appendPlainLog === 'function' ? options.appendPlainLog : () => {};
+    const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
     const limits = options.limits || {};
     const maxAttachments = Number(limits.maxAttachments) || 8;
     const maxAttachmentBytes = Number(limits.maxAttachmentBytes) || 12 * 1024 * 1024;
@@ -61,60 +62,65 @@
 
     async function addFiles(files) {
       const generation = attachmentGeneration;
-      for (const file of Array.from(files || [])) {
-        if (generation !== attachmentGeneration) return;
-        const dedupeKey = buildAttachmentDedupeKey(file);
-        if (isDuplicateAttachmentFile(dedupeKey)) {
-          continue;
-        }
-        if (attachments.length + pendingAttachmentKeys.size >= maxAttachments) {
-          appendPlainLog(tx(
-            `Attachment limit reached (${maxAttachments}).`,
-            `附件数量已达上限（${maxAttachments} 个）。`
-          ));
-          break;
-        }
-        validateAttachmentFile(file);
-        const fileSize = Number(file.size) || 0;
-        if (!canReserveAttachmentBytes(fileSize)) {
-          appendPlainLog(tx(
-            `Attachment total limit reached (${formatFileSize(maxAttachmentTotalBytes)}). Remove attachments or use smaller files.`,
-            `附件总大小已达上限（${formatFileSize(maxAttachmentTotalBytes)}）。请移除部分附件或使用更小的文件。`
-          ));
-          continue;
-        }
-        pendingAttachmentKeys.add(dedupeKey);
-        pendingAttachmentBytes += fileSize;
-        try {
-          const dataUrl = await readFileAsDataUrl(file);
+      try {
+        for (const file of Array.from(files || [])) {
           if (generation !== attachmentGeneration) return;
-          const preview = await buildAttachmentPreviewData(file, dataUrl);
-          if (generation !== attachmentGeneration) return;
-          const attachment = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-            name: normalizeAttachmentName(file.name),
-            mimeType: String(file.type || ''),
-            size: Number(file.size) || 0,
-            kind: preview.kind,
-            previewDataUrl: preview.previewDataUrl,
-            contentBase64: extractBase64FromDataUrl(dataUrl),
-            dedupeKey
-          };
-          if (!attachments.some(existing => buildAttachmentDedupeKey(existing) === dedupeKey)) {
-            attachments.push(attachment);
+          const dedupeKey = buildAttachmentDedupeKey(file);
+          if (isDuplicateAttachmentFile(dedupeKey)) {
+            continue;
           }
-        } catch (error) {
-          if (generation !== attachmentGeneration) return;
-          throw error;
-        } finally {
-          // Cleared work no longer owns reservations in the current composer.
-          if (generation === attachmentGeneration) {
-            pendingAttachmentBytes = Math.max(0, pendingAttachmentBytes - fileSize);
-            pendingAttachmentKeys.delete(dedupeKey);
+          if (attachments.length + pendingAttachmentKeys.size >= maxAttachments) {
+            appendPlainLog(tx(
+              `Attachment limit reached (${maxAttachments}).`,
+              `附件数量已达上限（${maxAttachments} 个）。`
+            ));
+            break;
+          }
+          validateAttachmentFile(file);
+          const fileSize = Number(file.size) || 0;
+          if (!canReserveAttachmentBytes(fileSize)) {
+            appendPlainLog(tx(
+              `Attachment total limit reached (${formatFileSize(maxAttachmentTotalBytes)}). Remove attachments or use smaller files.`,
+              `附件总大小已达上限（${formatFileSize(maxAttachmentTotalBytes)}）。请移除部分附件或使用更小的文件。`
+            ));
+            continue;
+          }
+          pendingAttachmentKeys.add(dedupeKey);
+          pendingAttachmentBytes += fileSize;
+          try {
+            const dataUrl = await readFileAsDataUrl(file);
+            if (generation !== attachmentGeneration) return;
+            const preview = await buildAttachmentPreviewData(file, dataUrl);
+            if (generation !== attachmentGeneration) return;
+            const attachment = {
+              id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              name: normalizeAttachmentName(file.name),
+              mimeType: String(file.type || ''),
+              size: Number(file.size) || 0,
+              kind: preview.kind,
+              previewDataUrl: preview.previewDataUrl,
+              contentBase64: extractBase64FromDataUrl(dataUrl),
+              dedupeKey
+            };
+            if (!attachments.some(existing => buildAttachmentDedupeKey(existing) === dedupeKey)) {
+              attachments.push(attachment);
+              onChange();
+            }
+          } catch (error) {
+            if (generation !== attachmentGeneration) return;
+            throw error;
+          } finally {
+            // Cleared work no longer owns reservations in the current composer.
+            if (generation === attachmentGeneration) {
+              pendingAttachmentBytes = Math.max(0, pendingAttachmentBytes - fileSize);
+              pendingAttachmentKeys.delete(dedupeKey);
+            }
           }
         }
+      } finally {
+        // A partial batch may have accepted files before validation or reading failed.
+        if (generation === attachmentGeneration) renderComposerAttachments();
       }
-      renderComposerAttachments();
     }
 
     function getAttachmentsForRun() {
@@ -155,17 +161,20 @@
       });
     }
 
-    function clear() {
+    function clear(options = {}) {
       attachmentGeneration += 1;
       attachments = [];
       pendingAttachmentKeys.clear();
       pendingAttachmentBytes = 0;
       renderComposerAttachments();
+      if (options.notify !== false) onChange();
     }
 
     function removeAttachment(id) {
+      const previousLength = attachments.length;
       attachments = attachments.filter(attachment => attachment.id !== id);
       renderComposerAttachments();
+      if (attachments.length !== previousLength) onChange();
     }
 
     function isDuplicateAttachmentFile(dedupeKey) {

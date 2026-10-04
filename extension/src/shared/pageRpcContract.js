@@ -5,7 +5,7 @@
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this), function () {
   'use strict';
 
-  var REVISION = '2026-10-04-receipt-settlement-v36';
+  var REVISION = '2026-10-04-create-retry-and-snapshot-v37';
   var METHODS = freezeCatalog({
     initializeCapability: entry('bridge.initialize', 'control', 'none', 'default', false, 'none'),
     probe: entry('bridge.probe', 'read', 'none', 'default', false, 'safe'),

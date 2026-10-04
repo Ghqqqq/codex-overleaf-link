@@ -814,7 +814,7 @@ test('composer slash menu offers Codex Overleaf skill installation and installed
   assert.match(contentScript, /async function runSkillInstallerTask/);
   assert.match(selectBody, /activateSkillInstallerComposerContext\(\)/);
   assert.match(selectBody, /activateCodexOverleafSkillComposerContext/);
-  assert.match(runTaskBody, /const submittedSkillInvocation = getComposerSkillInvocationForRun\(\)/);
+  assert.match(runTaskBody, /const submittedSkillInvocation = queuedContext \? queuedContext\.skillInvocation : getComposerSkillInvocationForRun\(\)/);
   assert.match(runTaskBody, /submittedSkillInvocation\?\.id === 'skill-installer'[\s\S]*runSkillInstallerTask/);
   assert.match(runTaskBody, /try\s*\{[\s\S]*?if \(submittedSkillInvocation\?\.id === 'skill-installer'\)[\s\S]*runSkillInstallerTask/);
   assert.match(runTaskBody, /finally\s*\{[\s\S]*setRunning\(false\)[\s\S]*nativeChannel\.clearActiveRequest\(\)/);
@@ -839,7 +839,7 @@ test('task runs use sensitive preflight, skill toggles, governance gating, binar
   assert.match(contentScript, /Modules\.SensitiveScan/);
   assert.match(contentScript, /Modules\.AuditRecords/);
   assert.doesNotMatch(runTaskBody, /submittedSelectedSkillIds/);
-  assert.match(runTaskBody, /const submittedSkillLoadingSettings = getSkillLoadingSettings\(\)/);
+  assert.match(runTaskBody, /const submittedSkillLoadingSettings = queuedContext \? queuedContext\.skillLoadingSettings : getSkillLoadingSettings\(\)/);
   assert.match(runTaskBody, /createAuditDraftForRun/);
   assert.match(runTaskBody, /runSensitivePreflight\(\{\s*task,\s*project/);
   assert.match(runTaskBody, /runSensitivePreflight\(\{[\s\S]*useExistingMirror/);
@@ -888,7 +888,7 @@ test('composer supports pasted or dropped turn attachments without Overleaf asse
   assert.match(attachmentScript, /createComposerAttachmentController/);
   assert.match(contentScript, /function addComposerAttachmentFiles/);
   assert.match(contentScript, /function renderComposerAttachments/);
-  assert.match(runTaskBody, /const submittedAttachments = getComposerAttachmentsForRun\(\)/);
+  assert.match(runTaskBody, /const submittedAttachments = queuedInput \? \[\] : getComposerAttachmentsForRun\(\)/);
   assert.match(runTaskBody, /attachments:\s*submittedAttachments/);
   assert.match(clearBody, /composerAttachmentController\.clear\(\)/);
   assert.doesNotMatch(contentScript, /User-selected asset upload/);
@@ -2703,7 +2703,7 @@ test('runTask freezes submitted custom instructions for initial and retry codex 
   const contentScript = getContentScriptSource();
   const runTaskBody = contentScript.match(/async function runTask\([^)]*\) \{[\s\S]*?\n  function buildCodexRunParams/)?.[0] || '';
   const submittedPanelStateIndex = runTaskBody.indexOf('const submittedPanelState = {');
-  const submittedCustomInstructionsIndex = runTaskBody.indexOf('const submittedCustomInstructions = getCustomInstructionsForCurrentProject()');
+  const submittedCustomInstructionsIndex = runTaskBody.indexOf('const submittedCustomInstructions = queuedContext ? queuedContext.customInstructions : getCustomInstructionsForCurrentProject()');
   const taskIndex = runTaskBody.indexOf('const task = String(');
   const ensureProviderIndex = runTaskBody.indexOf('await providerSettingsCoordinator.ensureLoaded()');
   const submittedModeIndex = runTaskBody.indexOf('const submittedMode = executionSnapshot.mode');
@@ -4156,6 +4156,7 @@ test('saveState merges latest lightweight prefs before saving project-scoped set
       }
     };
     function getScopedPersistenceCoordinator() { return persistenceCoordinator; }
+    function getComposerDraftPersistence() { return { save: async () => {} }; }
     function notifyAggressiveCompactionOnce() {}
     ${extractFromContentScript( 'readLiveRunViewForSaveStateGuard')}
     ${extractFromContentScript( 'saveState')}
@@ -5650,7 +5651,13 @@ test('clear-all-history re-renders the panel explicitly instead of relying on st
   assert.match(body, /clearAllStores/);
   // v1.8.0 phase 8: the handler lives in panelMaintenance.js and goes
   // through the injected getState/setState accessors.
-  assert.match(body, /setState\(normalizePanelState\(\{ \.\.\.getState\(\), sessions: \[\], runs: \[\], activeSessionId: '' \}\)\)/);
+  assert.match(body, /session: null, sessions: \[\], runs: \[\], activeSessionId: ''/,
+    'must clear the compatibility mirror as well as the explicit session list');
+  assert.match(body, /task: '', focusFiles: \[\], selectionContext: null, composerAttachments: \[\]/,
+    'must clear task inputs that could otherwise survive or be restored');
+  assert.match(body, /setState\(clearedState\)/);
+  assert.match(body, /clearHistoryComposer\?\.\(\)/, 'must clear composer-owned transient input');
+  assert.match(body, /saveState\(\{ requireDurable: true \}\)/, 'must request an explicit durable result');
   assert.match(body, /applyStateToPanel\(\)/, 'must re-render the emptied panel');
   assert.doesNotMatch(body, /await startNewSession\(\)/,
     'must not route through startNewSession (its reuse guard skips the re-render)');

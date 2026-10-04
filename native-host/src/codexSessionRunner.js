@@ -82,10 +82,14 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
     });
     throwIfAborted(signal);
 
-    emitCodexEvent(emit, 'overleaf.sync.completed', 'Overleaf project synced to local workspace', {
+    emitCodexEvent(emit, 'overleaf.sync.completed', mirror.skippedFiles?.length
+      ? 'Readable Overleaf files synced; some asset contents are unavailable'
+      : 'Overleaf project synced to local workspace', {
       projectId: mirror.projectKey,
       workspacePath: mirror.workspacePath,
-      fileCount: mirror.fileCount
+      fileCount: mirror.fileCount,
+      contentComplete: mirror.contentComplete !== false,
+      skippedFiles: mirror.skippedFiles || []
     }, 'completed');
   }
 

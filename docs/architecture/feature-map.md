@@ -86,10 +86,10 @@
 ### 改 @文件上下文、粘贴/拖放附件或附件限额
 
 - 入口：[ContextTray](../../extension/src/content/contextTray.js)、[ComposerAttachments.createComposerAttachmentController](../../extension/src/content/composerAttachments.js)。
-- 状态 owner：会话保存 focused files；附件控制器管理当次输入文件、异步读取和去重；运行快照保留提交时信息。
+- 状态 owner：会话保存 focused files；附件控制器管理当次输入文件、异步读取和去重，[ComposerAttachmentDraft](../../extension/src/shared/composerAttachmentDraft.js) 管理账号/项目草稿及清理版本；运行快照保留提交时信息。
 - 必须联动：[contentRuntime](../../extension/src/content/contentRuntime.js) 注入的限额、[turnAttachments](../../native-host/src/turnAttachments.js)、[nativeQuotas](../../native-host/src/nativeQuotas.js)、[runInputQueue](../../extension/src/shared/runInputQueue.js) 与附件持久化裁剪。
 - 普通 `@path` 文字与 focus 列表独立；批量附件的部分读入与末尾渲染也分别处理。排查缺附件需核对内部数组、可见 tray 和最终运行参数。
-- 最近测试：[contextTray](../../test/contextTray.test.js)、[composerAttachmentsConcurrency](../../test/composerAttachmentsConcurrency.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js)、[runInputQueue](../../test/runInputQueue.test.js)。
+- 最近测试：[contextTray](../../test/contextTray.test.js)、[composerAttachmentsConcurrency](../../test/composerAttachmentsConcurrency.test.js)、[composerAttachmentsBatch](../../test/composerAttachmentsBatch.test.js)、[composerAttachmentPersistence](../../test/composerAttachmentPersistence.test.js)、[composerAttachmentDraft](../../test/composerAttachmentDraft.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js)、[runInputQueue](../../test/runInputQueue.test.js)。
 
 ### 改编译日志引用或编译错误修复入口
 
@@ -107,7 +107,7 @@
 - 入口：runtime 的 `safeRunTask`、[RunQueueScheduler.createCoordinator](../../extension/src/content/runQueueScheduler.js)、[ActiveTurnControl](../../extension/src/content/activeTurnControl.js)。
 - 状态 owner：runtime 在首次 await 前捕获提交身份与会话投影，[RunController.captureSessionContext](../../extension/src/content/runController.js) 提供深拷贝；[runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js) 固定白名单配置，[runInputQueue](../../extension/src/shared/runInputQueue.js) 管理队列；[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 与 [nativeRunLifecycle](../../native-host/src/nativeRunLifecycle.js) 分别管理 RPC 活动索引和断连收尾。
 - 必须联动：[runGuidanceController](../../extension/src/content/runGuidanceController.js)、[scopedPersistenceTransaction](../../extension/src/shared/scopedPersistenceTransaction.js)、[nativeRequestIdentity](../../extension/src/shared/nativeRequestIdentity.js)。详细链路见[运行状态与恢复](run-state-and-recovery.md)。
-- 最近测试：[runSubmissionOwnership](../../test/runSubmissionOwnership.test.js)、[runInputQueueSnapshotRegression](../../test/runInputQueueSnapshotRegression.test.js)、[runQueueSchedulerDurability](../../test/runQueueSchedulerDurability.test.js)、[activeTurnControl](../../test/activeTurnControl.test.js)、[nativeDispatchCancellation](../../test/nativeDispatchCancellation.test.js)。
+- 最近测试：[runSubmissionOwnership](../../test/runSubmissionOwnership.test.js)、[queueSubmissionContext](../../test/queueSubmissionContext.test.js)、[runInputQueueSnapshotRegression](../../test/runInputQueueSnapshotRegression.test.js)、[runQueueSchedulerDurability](../../test/runQueueSchedulerDurability.test.js)、[activeTurnControl](../../test/activeTurnControl.test.js)、[nativeDispatchCancellation](../../test/nativeDispatchCancellation.test.js)。
 
 ### 改刷新恢复、跨标签同步、删除会话或分叉
 
@@ -120,8 +120,8 @@
 
 - 入口：[SessionManager](../../extension/src/content/sessionManager.js) 的 `startNewSession/switchSession/commitSessionRename/deleteSessionWithConfirm`；[PanelMaintenance.clearAllHistoryWithConfirm](../../extension/src/content/panelMaintenance.js) 是另一种清理入口。
 - 状态 owner：`SessionState` 负责空会话复用、标题来源、容量及删除后替代会话；共享库、站点辅助库和 Native 历史各有清理范围。
-- 必须联动：当前可达的 PanelRenderer/SessionPanel callbacks、持久化墓碑、内存 `session/task`、提示文案；清库成功不能推定内存也已清空。详见[会话生命周期](run-state-and-recovery.md#session-lifecycle)和[清空历史状态](run-state-and-recovery.md#clear-history-state)。
-- 最近测试：[sessionState](../../test/sessionState.test.js)、[sessionManagement](../../test/sessionManagement.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)；实际清理还需检查状态归一化和保存结果。
+- 必须联动：当前可达的 PanelRenderer/SessionPanel callbacks、持久化墓碑、`clearHistoryComposer`、完整内存重置与严格保存回执；辅助失败不能恢复已删除的旧内存。详见[会话生命周期](run-state-and-recovery.md#session-lifecycle)和[清空历史状态](run-state-and-recovery.md#clear-history-state)。
+- 最近测试：[clearHistoryReset](../../test/clearHistoryReset.test.js)、[saveStateDurability](../../test/saveStateDurability.test.js)、[sessionState](../../test/sessionState.test.js)、[sessionManagement](../../test/sessionManagement.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)；实际清理还需检查状态归一化和保存结果。
 
 ### 改迁移、存储配额、保留规则或账号隔离
 
@@ -147,14 +147,14 @@
 - 状态 owner：Page 提供读取证据；[mirrorWorkspace](../../native-host/src/mirrorWorkspace.js) 管理本地文件与 baseline；[mirrorHealth](../../extension/src/content/mirrorHealth.js) 投影镜像可用性。
 - 必须联动：[otWarmMirrorController](../../extension/src/content/otWarmMirrorController.js)、[shared/otText](../../extension/src/shared/otText.js)、[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 的 mirror 方法、快照完整性和空字符串语义。
 - ZIP 前快启入口为 `resolveWarmRunStart`；OT producer 的非空 overlays 与 Native validator 的拒绝条件存在冲突，需同时定位 `mirror_stale` 回退，详见写回章节。
-- 最近测试：[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[snapshotEmptyContent](../../test/snapshotEmptyContent.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)、[otWarmMirrorIntegration](../../test/otWarmMirrorIntegration.test.js)、[mirrorHealth](../../test/mirrorHealth.test.js)。
+- 最近测试：[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[snapshotEmptyContent](../../test/snapshotEmptyContent.test.js)、[snapshotSkippedAssets](../../test/snapshotSkippedAssets.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)、[otWarmMirrorIntegration](../../test/otWarmMirrorIntegration.test.js)、[mirrorHealth](../../test/mirrorHealth.test.js)。
 
 ### 改 Auto 编辑、保存确认、编译或失败重试
 
 - 入口：[WritebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js)、[writebackRouter](../../extension/src/page/writebackRouter.js)。
 - 状态 owner：[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 汇总结果；[saveState](../../extension/src/page/saveState.js) 观察保存；[writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 保存页面操作回执。
 - 必须联动：[staleGuard](../../extension/src/shared/staleGuard.js)、[writebackController](../../extension/src/content/writebackController.js)、[compileBridge](../../extension/src/page/compileBridge.js)、[runSettlementPersistence](../../extension/src/content/runSettlementPersistence.js)。详细链路见[Auto 编辑与 Undo](auto-edit-undo.md)。 空基线与整文兜底的行为入口见 [emptyContentWriteback](../../test/emptyContentWriteback.test.js)；Page 闭包变化同时核对共享 revision 和重新注入。
-- 最近测试：[writebackCancellationRecovery](../../test/writebackCancellationRecovery.test.js)、[assetTransferCancellation](../../test/assetTransferCancellation.test.js)、[writebackSaveCheck](../../test/writebackSaveCheck.test.js)、[writebackSettlementContract](../../test/writebackSettlementContract.test.js)、[writebackReceiptRecovery](../../test/writebackReceiptRecovery.test.js)、[writebackCancellationFlow](../../test/writebackCancellationFlow.test.js)。
+- 最近测试：[writebackCancellationRecovery](../../test/writebackCancellationRecovery.test.js)、[assetTransferCancellation](../../test/assetTransferCancellation.test.js)、[writebackSaveCheck](../../test/writebackSaveCheck.test.js)、[writebackSettlementContract](../../test/writebackSettlementContract.test.js)、[writebackReceiptRecovery](../../test/writebackReceiptRecovery.test.js)、[retryCreatedFile](../../test/retryCreatedFile.test.js)、[writebackCancellationFlow](../../test/writebackCancellationFlow.test.js)。
 
 ### 改 Accept、Undo、新建/删除文件或二进制资产
 
@@ -201,8 +201,8 @@
 
 - 入口：[WritingStyleSettings](../../extension/src/content/writingStyleSettings.js)、[writingStyleRuntime.build/get/set/forRun](../../native-host/src/writingStyleRuntime.js)、[LocalSkillsPanel](../../extension/src/content/localSkillsPanel.js)。
 - 状态 owner：Native 风格配置带 revision 和版本 bundle；[writingStyleProfile](../../native-host/src/writingStyleProfile.js) 校验生成结构；[localSkills](../../native-host/src/localSkills.js) 管理本地技能。
-- 必须联动：[referenceProjects](../../extension/src/page/referenceProjects.js)、[writingStyleEvidence](../../native-host/src/writingStyleEvidence.js)、[runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js)、[codexPromptAssembly](../../native-host/src/codexPromptAssembly.js)，以及全局 skill 开关。
-- 最近测试：[writingStyleLimits](../../test/writingStyleLimits.test.js)、[localSkills](../../test/localSkills.test.js)、[runExecutionSnapshot](../../test/runExecutionSnapshot.test.js)。
+- 必须联动：[referenceProjects](../../extension/src/page/referenceProjects.js)、[writingStyleEvidence](../../native-host/src/writingStyleEvidence.js)、[runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js)、[codexPromptAssembly](../../native-host/src/codexPromptAssembly.js)，以及全局 skill 开关；配置继承需核对 [codexHome](../../native-host/src/codexHome.js) 与 [tomlStatements](../../native-host/src/tomlStatements.js) 的完整语句过滤及等价写法边界。
+- 最近测试：[writingStyleLimits](../../test/writingStyleLimits.test.js)、[localSkills](../../test/localSkills.test.js)、[runExecutionSnapshot](../../test/runExecutionSnapshot.test.js)、[codexHome](../../test/codexHome.test.js)、[codexConfigIsolation](../../test/codexConfigIsolation.test.js)。
 
 ## 上下文扫描与写入治理
 

@@ -217,21 +217,13 @@ Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元�
 `preparePluginCodexHome()` 默认维护插件专用 home，复制部分认证/配置，并移除继承的全局 AGENTS、rules、memories；复制 `config.toml` 时还过滤可识别写法的顶层 personality。显式配置与用户 home 同路径时会提前返回，不能推广默认隔离结论。
 开关决定用户 skills、plugins、superpowers 等继承；`vendor_imports` 有单独规则，不能将关闭本地技能描述为目录完全空白。
 
-**Known gap / TOML 过滤形式。** [codexHome.js](../../native-host/src/codexHome.js) 的 `copyUserCodexFile()` 依次调用 `stripPersonalizationFromCodexConfig()`，并在关闭本地技能时调用 `sanitizeCodexConfigForLocalSkillIsolation()`。这些函数逐行匹配文本，未按 TOML 语义解析：前者识别首个 section 前的裸键 `personality = ...`；后者识别裸键 `notify = ...`，以及 `skills/plugins/mcp_servers/marketplaces` 的裸 section 前缀。
-因此语义等价的 `"personality" = ...`、`"notify" = ...`、`["mcp_servers".example]` 可保留；顶层 dotted key `mcp_servers.example.command = ...` 和 inline table `mcp_servers = { example = { command = "..." } }` 也不经过 section 过滤。配置含义相同，字符串形状不同，当前过滤结果即可不同。
+**Current behavior / TOML 语句过滤。** [codexHome.js](../../native-host/src/codexHome.js) 的 `copyUserCodexFile()` 依次调用 `stripPersonalizationFromCodexConfig()`，并在关闭本地技能时调用 `sanitizeCodexConfigForLocalSkillIsolation()`。两者通过 [tomlStatements.splitTomlStatements()](../../native-host/src/tomlStatements.js) 获取完整逻辑语句，跟踪数组、inline table、注释、普通/多行 basic 与 literal 字符串及转义边界；字符串中的键名或 section 文本不会作为新配置处理。
+首个真实 section 前的 `personality` 始终过滤，`notify` 在关闭本地技能时过滤；裸键及普通单/双引号包围的同名键均删除完整赋值，包括多行数组。保留 section 中的同名字段维持原义，普通模型/Provider 配置、未删除值的正文与空白保持，CRLF 规范化为 LF。本地技能隔离还过滤 `skills/plugins/mcp_servers/marketplaces` 的可识别裸 section 前缀。
+扫描遇到未闭合字符串/容器或错配括号时中止配置准备，不覆盖目标 `config.toml` 的既有内容；该保证限于配置文件，不能推广为整个 home 准备过程具有事务性。扫描器负责词法边界，未执行完整 TOML 语法或 Codex 配置 schema 校验。
+
+**Known gap / 等价配置形式。** 字段和 section 的筛选仍按可识别文本形式完成，未将全部等价 TOML 写法归一化。包含 Unicode 转义的等价键、`["mcp_servers".example]` 等 quoted section、含分隔空白的 dotted section，仍可能保留；顶层 dotted key `mcp_servers.example.command = ...` 和 inline table `mcp_servers = { example = { command = "..." } }` 也不经过 section 过滤。配置含义相同，字符串形状不同，当前过滤结果即可不同。
 保留文本随后写入插件 home，普通父运行、worker 和关闭技能的风格生成均可经过这条准备链。关闭本地技能时，[codexSessionRunner](../../native-host/src/codexSessionRunner.js) 的 `buildCodexAppServerArgs()` 追加 `--disable plugins`，`applyCodexSkillIsolation()` 只操作 `skills/list` 与 `skills/config/write`；这些局部措施不能证明遗留 MCP 或 notify 配置已被清除。
-上述边界说明配置过滤及传播；具体 Codex 版本是否接受这些字段、实际发现 MCP 或执行 notify，仍需独立验证，不能据保留文本推定已发生网络请求或资料泄漏。[codexHome.test.js](../../test/codexHome.test.js) 的现有隔离用例覆盖裸键、普通 section 及多行 personality；维护过滤器时还需核对等价 quoted、dotted、inline 写法及生成配置的可解析性。
-
-**Known gap / 多行值。** 该过滤器删除匹配 `notify =` 的单行，未跟踪后续多行数组。例如以下合法 TOML 在过滤后仅剩数组元素和闭合括号，无法继续按 TOML 解析：
-
-```toml
-notify = [
-  "echo",
-  "synthetic"
-]
-```
-
-此分支要求关闭本地技能，并且用户 home 与插件 home 分离；普通运行、worker 和风格生成均可进入相应准备链。生成配置的可解析性可独立验证，具体 Codex 的报错展示仍需集成验证。过滤器回归应同时检查应删除字段、应保留字段和整体语法。
+上述边界说明配置过滤及传播；具体 Codex 版本是否接受这些字段、实际发现 MCP 或执行 notify，仍需独立验证，不能据保留文本推定已发生网络请求或资料泄漏。[codexHome.test.js](../../test/codexHome.test.js) 覆盖配置继承、普通 section、多行 personality 和同 home 分支；[codexConfigIsolation.test.js](../../test/codexConfigIsolation.test.js) 串联实际 home 准备，检查完整值删除、引号/注释/容器边界、保留文本、开关和结构错误时旧配置保留。过滤器维护仍须核对未支持的等价写法及生成配置的整体可解析性；局部准备测试不覆盖真实 Codex 的配置 schema 或错误展示。
 
 `composePluginSkillsDirectory()` 先组合本地技能，再组合插件技能；同名插件技能覆盖组合目录中的本地入口。
 默认插件 home 由 `getPluginCodexHome()` 选定，各项目和 runner 共用同一目录。`runCodexAppServerProcess()` 每次启动均调用 `buildCodexHomeEnv()`；正常组合路径先删除 `$CODEX_HOME/skills`，再按本次开关重建。
@@ -267,6 +259,7 @@ installer 完成由模型运行结果汇总，当前路径未统一核验是否�
 | 版本捕获和队列恢复 | `capture/forRun`；execution snapshot codec、storage compaction、runner | [runExecutionSnapshot](../../test/runExecutionSnapshot.test.js)、[releaseBoundaryHelpers](../../test/releaseBoundaryHelpers.test.js) |
 | 配置保存与异常资产恢复 | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) 的 `get/set/build/saveConfig/writeJson/safeBundleText`；[writingStyleSettings](../../extension/src/content/writingStyleSettings.js) 的 `toggle/ensureLoaded`、[contentRuntime](../../extension/src/content/contentRuntime.js) 的 `runTask` | [writingStyleLimits](../../test/writingStyleLimits.test.js) 仅覆盖输入配额与编码预算；[p2UiRegression](../../test/p2UiRegression.test.js) 的风格依赖为同步刷新 stub。需增加关闭保存后读取失败、索引超限、初始化清理及跨进程竞争的合成故障验证 |
 | 普通技能安装和开关 | `localSkills`、`codexHome`；panel、偏好、runner、command approval | [localSkills](../../test/localSkills.test.js)、[codexHome](../../test/codexHome.test.js)、[contentPanelModules](../../test/contentPanelModules.test.js)、[codexSessionRunner](../../test/codexSessionRunner.test.js)；共享 home 还需覆盖不同项目、worker、风格生成和 installer 交错准备后的路径稳定性与安装持久性 |
+| Codex 配置继承与过滤 | `codexHome.copyUserCodexFile/stripPersonalizationFromCodexConfig/sanitizeCodexConfigForLocalSkillIsolation`；[tomlStatements.splitTomlStatements](../../native-host/src/tomlStatements.js) 负责语句边界，runner 传入技能开关 | [codexConfigIsolation](../../test/codexConfigIsolation.test.js)、[codexHome](../../test/codexHome.test.js)；核对完整值删除、未选字段/文本保留、结构错误时旧配置保持、同 home 分支与等价写法范围 |
 | 删除当前选中的技能 | `LocalSkillsPanel.removeCodexOverleafSkill`、`contentRuntime.normalizeComposerSkillInvocation/clearComposerSkillInvocation/getEnabledCodexOverleafSkillIds`、Native 显式调用过滤 | [contentPanelModules](../../test/contentPanelModules.test.js) 的删除用例令 `getComposerSkillInvocation()` 返回 null，未覆盖生产 `{ id, title, scope }` 形状。需将真实 controller、生产 normalizer 与隔离技能库串联，分别验证磁盘删除、列表刷新、Composer 标签清理和再次提交的 disabled/ignored 结果；浏览器按钮呈现与点击另行验收 |
 
 现有定义覆盖配额、RPC、快照、技能库与安装命令等契约；部分集成 harness 也加载参考模块。

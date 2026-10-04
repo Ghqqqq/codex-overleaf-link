@@ -24,6 +24,7 @@
     'ChangeHistoryView',
     'Compatibility',
     'ComposerAttachments',
+    'ComposerAttachmentDraft',
     'ComposerPanel',
     'ContentRuntime',
     'ContextTray',

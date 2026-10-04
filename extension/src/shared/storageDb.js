@@ -1,7 +1,7 @@
 (function initStorageDb(root, factory) {
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(require('./storageRunActions'), require('./runInputQueue'),
-      require('./settlementFacts'), require('./storageSessionClaims'), require('./sessionState'), require('./runActivityModel'), require('./sharedSessionBridge'), require('./subagentActivityModel'), require('./storageValuePruning'));
+      require('./settlementFacts'), require('./storageSessionClaims'), require('./sessionState'), require('./runActivityModel'), require('./sharedSessionBridge'), require('./subagentActivityModel'), require('./storageValuePruning'), require('./composerAttachmentDraft'));
   } else {
     root.CodexOverleafModuleRegistry.define('StorageDb', [
       'StorageRunActions',
@@ -12,10 +12,11 @@
       'RunActivityModel',
       'SharedSessionBridge',
       'SubagentActivityModel',
-      'StorageValuePruning'
+      'StorageValuePruning',
+      'ComposerAttachmentDraft'
     ], factory);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue, SettlementFacts, StorageSessionClaims, SessionState, RunActivityModel, SharedSessionBridge, SubagentActivityModel, StorageValuePruning) {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue, SettlementFacts, StorageSessionClaims, SessionState, RunActivityModel, SharedSessionBridge, SubagentActivityModel, StorageValuePruning, ComposerAttachmentDraft) {
   'use strict';
   const { removeEmptySummaryFields, removeEmptyFields } = StorageValuePruning;
   if (!StorageRunActions?.compactRunsForStorage || !StorageRunActions?.compactRunActionPayload || !StorageRunActions?.compactProviderSnapshot || !StorageRunActions?.compactRunExecutionSnapshot || !StorageRunActions?.compactStructuredEventValue || !StorageRunActions?.hashString || !RunInputQueue?.compactForStorage || !SettlementFacts?.compactSettlementFacts || !StorageSessionClaims?.createSessionClaimer) {
@@ -140,6 +141,7 @@
     });
   }
   var claimSessionsForAccount = StorageSessionClaims.createSessionClaimer(openDb, function () { return IDBKeyRange; });
+  var composerDraftStore = ComposerAttachmentDraft.createStore(openDb);
 
   function putRecord(storeName, record) {
     return openDb().then(function (db) {
@@ -237,17 +239,7 @@
   }
 
   function clearAllStores() {
-    return openDb().then(function (db) {
-      var storeNames = Object.keys(STORES);
-      return new Promise(function (resolve, reject) {
-        var tx = db.transaction(storeNames, 'readwrite');
-        for (var i = 0; i < storeNames.length; i++) {
-          tx.objectStore(storeNames[i]).clear();
-        }
-        tx.oncomplete = function () { resolve(); };
-        tx.onerror = function (event) { reject(event.target.error); };
-      });
-    });
+    return composerDraftStore.clear(Object.keys(STORES));
   }
 
   // --- Record builders ---
@@ -1309,6 +1301,9 @@
     deleteByIndex: deleteByIndex,
     clearStore: clearStore,
     clearAllStores: clearAllStores,
+    clearAuxiliaryStores: function () { return composerDraftStore.clear(Object.keys(STORES).filter(name => name !== 'sessions')); },
+    readComposerAttachmentDraft: composerDraftStore.read,
+    writeComposerAttachmentDraft: composerDraftStore.write,
     buildSessionRecord: buildSessionRecord,
     mergeSessionReviewState: StorageRunActions.mergeSessionReviewState,
     buildTurnRecord: buildTurnRecord,

@@ -383,6 +383,11 @@
     openCustomInstructionsSettings: () => openCustomInstructionsSettings(),
     onHistoryRowJump: record => jumpToHistoryRun(record),
     resetProjectNameCache: () => recentProjects.resetProjectNameCache(),
+    clearHistoryComposer: () => {
+      pendingRetryReplacement = null;
+      clearTaskComposer();
+      persistComposerAttachmentsToState();
+    },
     getPanel: () => panel,
     getState: () => state,
     setState: next => { state = next; },
@@ -848,6 +853,7 @@
     tr,
     tx,
     appendPlainLog,
+    onChange: () => getComposerDraftPersistence().changed(),
     limits: {
       maxAttachmentBytes: MAX_COMPOSER_ATTACHMENT_BYTES,
       maxAttachmentTotalBytes: MAX_COMPOSER_ATTACHMENT_TOTAL_BYTES,
@@ -1711,10 +1717,13 @@
       focusFiles: getActiveFocusFiles(),
       selectionContext: selectionContextView.capture()
     };
-    const submittedCustomInstructions = getCustomInstructionsForCurrentProject();
-    const submittedSkillLoadingSettings = getSkillLoadingSettings();
-    const submittedAttachments = getComposerAttachmentsForRun();
-    const submittedSkillInvocation = getComposerSkillInvocationForRun();
+    const queuedContext = queuedInput
+      ? RunInputQueue.normalizeSubmissionContext(queuedInput.payload?.submissionContext) : null;
+    const submittedCustomInstructions = queuedContext ? queuedContext.customInstructions : getCustomInstructionsForCurrentProject();
+    const submittedSkillLoadingSettings = queuedContext ? queuedContext.skillLoadingSettings : getSkillLoadingSettings();
+    const submittedAttachments = queuedInput ? [] : getComposerAttachmentsForRun();
+    const submittedSkillInvocation = queuedContext ? queuedContext.skillInvocation : getComposerSkillInvocationForRun();
+    const submittedEnabledSkillIds = queuedContext ? queuedContext.enabledCodexOverleafSkillIds : getEnabledCodexOverleafSkillIds();
     const submittedSelectionRevision = selectionContextView.getRevision?.();
     // Keep the previous mirror's completion events on its own run.
     const pendingMirror = getPendingMirrorRefresh?.();
@@ -2020,6 +2029,7 @@
           compileLogContext,
           customInstructions: submittedCustomInstructions,
           skillLoadingSettings: submittedSkillLoadingSettings,
+          enabledCodexOverleafSkillIds: submittedEnabledSkillIds,
           attachments: submittedAttachments,
           skillInvocation: submittedSkillInvocation,
           submittedMode
@@ -2072,6 +2082,7 @@
             compileLogContext,
             customInstructions: submittedCustomInstructions,
             skillLoadingSettings: submittedSkillLoadingSettings,
+            enabledCodexOverleafSkillIds: submittedEnabledSkillIds,
             attachments: submittedAttachments,
             skillInvocation: submittedSkillInvocation,
             submittedMode
@@ -2103,6 +2114,7 @@
               compileLogContext,
               customInstructions: submittedCustomInstructions,
               skillLoadingSettings: submittedSkillLoadingSettings,
+              enabledCodexOverleafSkillIds: submittedEnabledSkillIds,
               attachments: submittedAttachments,
               skillInvocation: submittedSkillInvocation,
               submittedMode
@@ -2719,7 +2731,15 @@
       readInputs: readPanelInputs,
       getTask: () => panel?.querySelector('[data-task]')?.value || '',
       hasAttachments: () => getComposerAttachmentsForRun().length > 0,
-      capturePayload: () => RunExecutionSnapshot.toQueuePayload(captureCurrentExecutionSnapshot()),
+      capturePayload: () => ({
+        ...RunExecutionSnapshot.toQueuePayload(captureCurrentExecutionSnapshot()),
+        submissionContext: RunInputQueue.normalizeSubmissionContext({
+          customInstructions: getCustomInstructionsForCurrentProject(),
+          skillLoadingSettings: getSkillLoadingSettings(),
+          skillInvocation: getComposerSkillInvocationForRun(),
+          enabledCodexOverleafSkillIds: getEnabledCodexOverleafSkillIds()
+        })
+      }),
       prepareClaim: () => providerSettingsCoordinator.ensureLoaded(),
       resolveExecutionSnapshot: snapshot => RunExecutionSnapshot.resolveForExecution(snapshot, {
         catalog: providerSettingsCoordinator.getCatalog()
@@ -3006,6 +3026,7 @@
     compileLogContext,
     customInstructions,
     skillLoadingSettings,
+    enabledCodexOverleafSkillIds,
     attachments,
     skillInvocation,
     submittedMode
@@ -3033,7 +3054,8 @@
           ? getSkillLoadingSettings()
           : { loadCodexLocalSkills: true, loadCodexOverleafSkills: true })
         : skillLoadingSettings,
-      enabledCodexOverleafSkillIds: getEnabledCodexOverleafSkillIds(),
+      enabledCodexOverleafSkillIds: enabledCodexOverleafSkillIds === undefined
+        ? getEnabledCodexOverleafSkillIds() : enabledCodexOverleafSkillIds,
       attachments,
       skillInvocation,
       compileLogContext,
@@ -4113,6 +4135,7 @@
   function leaveActiveProject(newId) {
     const prevId = activeProjectId;
     activeProjectId = newId; // null for non-project URLs (spec §5.7.1)
+    getComposerDraftPersistence().syncScope();
     if (!prevId || prevId === newId) {
       return;
     }
@@ -4153,6 +4176,7 @@
     // project derivation: account menu is global chrome and should be
     // readable on per-project URLs too).
     await refreshAccountScopeId();
+    getComposerDraftPersistence().syncScope();
     if (generation !== spaRouteGeneration || pathname !== window.location.pathname) {
       return;
     }
@@ -5247,8 +5271,10 @@
         legacyKey,
         accountScopeId
       );
+      const composerAttachments = await loadComposerAttachmentsForProject(accountScopeId, projectId);
 
       return {
+        composerAttachments,
         model: prefs.model || '', providerId: prefs.providerId || 'builtin',
         reasoningEffort: prefs.reasoningEffort || '',
         speedTier: prefs.speedTier || '',
@@ -5345,30 +5371,16 @@
     try {
       const StorageDb = Modules.StorageDb;
       const Migration = Modules.StorageMigration;
-      // Welcome-panel + write-guard:
-      // post-navigation persistence gate. The normal URL-derived projectId
-      // belongs to the route the user is *currently looking at*. When a run
-      // is in flight on a different project (mid-run SPA navigation), saving
-      // under that URL-derived id would pollute another project's Recent-
-      // projects entry and surface bogus disabled rows. Two safety lanes:
-      //   1. `options.projectIdOverride` lets a caller that legitimately
-      //      needs to persist to a non-active project supply the projectId
-      //      explicitly (the only such caller today is the post-navigation
-      //      settlement path in `persistPostNavigationRunStatus`, which goes
-      //      directly through StorageDb — but the override is in place so
-      //      future callers do not have to monkey-patch around saveState).
-      //   2. When no override is set AND a navigation-divergent run is in
-      //      flight (currentRunView.runProjectId !== URL-derived id), log a
-      //      warning and skip persistence. The settlement path owns that
-      //      run's persistence; routing through saveState would write to the
-      //      WRONG projectId record.
+      // Settlement owns a run after navigation away from its project. Ordinary
+      // view saves must not write that run into the current route's project.
+      // An explicit override is reserved for callers that own a detached scope.
       const projectIdOverride = options && typeof options.projectIdOverride === 'string'
         ? options.projectIdOverride
         : '';
       const urlProjectId = getCurrentProjectId();
       const projectId = projectIdOverride || urlProjectId;
       if (!projectId) {
-        if (options?.reviewRunIds?.length) throw new Error('Review persistence lost its project.'); return;
+        if (options?.requireDurable || options?.reviewRunIds?.length) throw new Error('Persistence lost its project.'); return;
       }
       // Read currentRunView through a defensive accessor so historical test
       // harnesses that inline `saveState` without re-declaring the module-
@@ -5380,7 +5392,7 @@
           'Skipped saveState: run is in flight on a different project than the current URL; settlement owns persistence.',
           '已跳过 saveState：本次运行所属项目与当前 URL 不一致，写回由 settlement 负责。'
         ));
-        if (options?.reviewRunIds?.length) throw new Error('Review persistence project changed.'); return;
+        if (options?.requireDurable || options?.reviewRunIds?.length) throw new Error('Persistence project changed.'); return;
       }
       const compactState = prepareStateForStorage(state, { onAggressive: notifyAggressiveCompactionOnce });
       compactState.autoRecompile = state.autoRecompile;
@@ -5397,7 +5409,8 @@
         ? structuredClone(compactState)
         : JSON.parse(JSON.stringify(compactState));
 
-      const persistScopedState = persistenceContext => Modules.ScopedPersistenceCoordinator.persistPanelState({
+      const persistScopedState = async persistenceContext => {
+        await Modules.ScopedPersistenceCoordinator.persistPanelState({
         state: stateSnapshot,
         compactState: compactStateSnapshot,
         projectId,
@@ -5409,7 +5422,9 @@
         normalizeGovernanceRulesByProject,
         normalizeCustomInstructionsByProject,
         persistenceContext
-      });
+        });
+        await getComposerDraftPersistence().save({ accountScopeId: persistenceContext.scope.accountScopeId, projectId });
+      };
 
       const persistenceCoordinator = getScopedPersistenceCoordinator();
       if (!persistenceCoordinator) {
@@ -5429,7 +5444,7 @@
           persistScopedState
         );
         if (!committed.ok && (
-          options?.reviewRunIds?.length || options?.recoveryRuns?.length || options?.queueMutation
+          options?.requireDurable || options?.reviewRunIds?.length || options?.recoveryRuns?.length || options?.queueMutation
           || options?.queueMutations?.length
           || committed.reason !== 'stale_view'
         )) {
@@ -5437,9 +5452,10 @@
             code: committed.reason
           });
         }
-        if (options?.recoveryRuns?.length) return true;
+        if (options?.requireDurable || options?.recoveryRuns?.length) return true;
       }
     } catch (error) {
+      if (options?.requireDurable) throw error;
       if (error?.code === 'recovery_scope_changed') return;
       if (
         error?.code === 'account_scope_unavailable' &&
@@ -5477,12 +5493,12 @@
     }
   }
 
-
   function prepareCompactFallbackState(inputState) {
     const compact = prepareStateForStorage(inputState);
     return {
       ...compact,
       __codexOverleafCompactFallback: true,
+      composerAttachments: [],
       task: '',
       session: null,
       sessions: [],
@@ -5763,9 +5779,34 @@
     return speedSelect?.value || state?.speedTier || 'standard';
   }
 
-
-  let composerAttachmentsRestoredOnce = false;
+  let composerDraftPersistence = null;
   let lastRunActivityBumpMs = 0;
+
+  function getComposerDraftPersistence() {
+    if (!composerDraftPersistence) composerDraftPersistence = Modules.ComposerAttachmentDraft.createController({
+      getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId() }),
+      getAttachments: () => composerAttachmentController.serializePersistableAttachments(),
+      setAttachments: value => { state.composerAttachments = value; },
+      clear: () => composerAttachmentController.clear({ notify: false }),
+      restore: value => composerAttachmentController.restorePersistedAttachments(value),
+      read: scope => Modules.StorageDb.readComposerAttachmentDraft(scope),
+      write: (scope, value) => Modules.StorageDb.writeComposerAttachmentDraft(scope, value),
+      scheduleSave: () => saveStateSoon()
+    });
+    return composerDraftPersistence;
+  }
+
+  async function loadComposerAttachmentsForProject(accountScopeId, projectId) {
+    if (!accountScopeId || !projectId) return [];
+    try {
+      return await getComposerDraftPersistence().load({ accountScopeId, projectId });
+    } catch (error) {
+      if (error?.code === 'stale_hydration' || error?.code === 'account_scope_unavailable') throw error;
+      appendPlainLog(tx('Saved attachments could not be restored. Reattach the files before sending.',
+        '已保存的附件无法恢复，请在发送前重新添加文件。'));
+      return [];
+    }
+  }
 
   function persistComposerAttachmentsToState() {
     if (typeof composerAttachmentController?.serializePersistableAttachments === 'function') {
@@ -5848,17 +5889,7 @@
     getTrackedChangeCaptureController().schedule();
     renderContextSelection();
     renderContextSummary();
-    // v1.8.0 C4: refresh recovery — small attachments persisted in state are
-    // restored into the (empty) tray ONCE per page load, before the render
-    // below. Re-running the gate on later renders would resurrect files the
-    // user explicitly removed (fleet P2).
-    if (!composerAttachmentsRestoredOnce
-      && Array.isArray(state.composerAttachments) && state.composerAttachments.length
-      && !composerAttachmentController.getAttachmentsForRun?.().length
-      && typeof composerAttachmentController.restorePersistedAttachments === 'function') {
-      composerAttachmentController.restorePersistedAttachments(state.composerAttachments);
-    }
-    composerAttachmentsRestoredOnce = true;
+    getComposerDraftPersistence().hydrate(state.composerAttachments);
     renderComposerAttachments();
     renderComposerSkillInvocation();
     applyLocaleToPanel();

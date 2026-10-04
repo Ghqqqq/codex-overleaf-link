@@ -24,6 +24,7 @@
       openCustomInstructionsSettings,
       onHistoryRowJump,
       resetProjectNameCache,
+      clearHistoryComposer,
       getPanel,
       getState,
       setState,
@@ -110,27 +111,54 @@
     if (!confirmed) {
       return;
     }
+    if (getCurrentRunView()) {
+      showPluginToast(tx('A run started while confirmation was open. Finish or cancel it before clearing history.', '确认期间有任务开始运行，请先完成或取消任务后再清理历史。'));
+      return;
+    }
+    let historyClearedAt;
     try {
-      await StorageDb?.clearAllStores?.();
+      await StorageDb.clearAllStores();
+      historyClearedAt = Date.now();
       historyView.invalidate();
-      // v1.8.1: the dashboard's project-name cache lives in
-      // chrome.storage.local, outside the IndexedDB stores — clear it too so
-      // no (potentially sensitive) project titles outlive the wipe.
-      await resetProjectNameCache?.();
     } catch (error) {
       showPluginToast(tx(`Could not clear history: ${error.message}`, `清空历史失败：${error.message}`));
       return;
     }
-    // Reset the in-getPanel() getState() to match the emptied store and re-render
-    // EXPLICITLY. startNewSession() is unusable here: its empty-session reuse
-    // guard matches the fresh session that normalization mints and returns
-    // before applyStateToPanel(), leaving the deleted cards on screen.
-    setState(normalizePanelState({ ...getState(), sessions: [], runs: [], activeSessionId: '' }));
-    await saveState();
+    const cleanupErrors = [];
+    try {
+      // Project names live outside the history store. Failure here must not
+      // leave deleted history in memory for a later autosave to replay.
+      await resetProjectNameCache?.();
+    } catch (error) {
+      cleanupErrors.push(error.message);
+    }
+    // Clear the compatibility mirror as well as the session list; otherwise
+    // normalization can reconstruct old summary runs and the Native thread.
+    const clearedState = normalizePanelState({
+      ...getState(), session: null, sessions: [], runs: [], activeSessionId: '',
+      task: '', focusFiles: [], selectionContext: null, composerAttachments: []
+    });
+    const freshSession = clearedState.sessions[0];
+    // The shared store rejects createdAt <= its clear marker. A new session
+    // in the same millisecond needs the next tick, at most 1 ms ahead of now.
+    freshSession.createdAt = freshSession.updatedAt = new Date(Math.max(Date.now(), historyClearedAt + 1)).toISOString();
+    setState(clearedState);
+    try {
+      clearHistoryComposer?.();
+      if (await saveState({ requireDurable: true }) !== true) {
+        throw new Error(tx('The blank session save was not confirmed.', '空白会话的保存结果尚未确认。'));
+      }
+    } catch (error) {
+      cleanupErrors.push(error.message);
+    }
+    // The store has already been cleared, including when the fresh-session
+    // save fails. Always remove old cards and draft inputs from the panel.
     applyStateToPanel();
     refreshStorageUsageSummary();
     void renderAuditHistoryPanel();
-    showPluginToast(tx('Local history cleared. Overleaf files are unchanged.', '本地历史已清理，Overleaf 文件保持不变。'));
+    showPluginToast(cleanupErrors.length
+      ? tx(`Saved history was removed, but cleanup or blank-session saving needs attention: ${cleanupErrors.join('; ')}`, `已删除保存的历史，但清理或空白会话保存仍有问题：${cleanupErrors.join('；')}`)
+      : tx('Local history cleared. Overleaf files are unchanged.', '本地历史已清理，Overleaf 文件保持不变。'));
     getPanel()?.querySelector('[data-task]')?.focus();
   }
 

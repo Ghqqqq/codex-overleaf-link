@@ -227,6 +227,11 @@
       ? changeOrReason
       : { reason: changeOrReason };
     const reason = change.reason;
+    if (reason === 'snapshot_content_unavailable') {
+      return isEnglish
+        ? 'Current Overleaf content was not read; local changes were withheld until the file can be refreshed.'
+        : '未读取该文件当前的 Overleaf 内容；刷新取得内容前，本地改动不会写回。';
+    }
     if (reason === 'selection_scope_violation') {
       return isEnglish
         ? 'The local changes exceeded the captured selection. No changes from this task were written back.'

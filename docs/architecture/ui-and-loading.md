@@ -99,9 +99,7 @@ Provider 通过 `revealProviders` 嵌入工作台；相关编辑器由 [Provider
 | legacy 存储实现 | [StorageDb.clearAllStores](../../extension/src/shared/storageDb.js) 在当前站点 IndexedDB 事务中清空 `STORES` | 与后台共享账号会话库是不同存储边界；控件位于项目设置过滤器也不会缩小此范围 |
 | dashboard 的逐项目清理 | [ProjectSessionCleanup.clearProjectSessions](../../extension/src/content/projectSessionCleanup.js) 按 projectId 查询、按已解析账号过滤，检查近期 running 记录，再确认并写墓碑、删除会话及请求 Native 历史清理 | 会话删除数和 Native 历史清理失败分别统计；剩余记录仍可显示并重试。账号缺失时过滤条件有放行分支，不能从此函数单独推定始终账号隔离 |
 
-清空后的内存归一化还有独立限制：该入口未同时清除旧 `state.session/task`，旧活动会话可被重建；共享墓碑又可能拒绝其再次保存，而 UI 仍显示清理完成。内存重现与持久库是否写入分别判断，详见[清空历史后的状态](run-state-and-recovery.md#clear-history-state)。
-这些动作面向插件历史与恢复材料，Overleaf 文件写入、撤销属于其他入口；清理前应分别核对账号共享库、站点辅助库及 Native 历史的范围。
-[p0ProductExperience](../../test/p0ProductExperience.test.js) 的清空历史用例和 [dashboardSessions](../../test/dashboardSessions.test.js) 的逐项目清理用例主要检查源码调用结构，不能替代实际持久删除、部分失败与跨标签交互验收。
+清库后同步清除旧会话兼容镜像、草稿和控制器输入，再创建空白会话；完整成功提示要求新状态获得持久确认。名称缓存清理或保存失败会显示部分完成，旧内存仍保持清空，详见[清空历史后的状态](run-state-and-recovery.md#clear-history-state)。
 
 结果卡按钮由 [RunTimelineView.renderRunCard](../../extension/src/content/runTimelineView.js) 装配 [RunResultActions.configureResultActions](../../extension/src/content/runResultActions.js)。
 其中 `configureForkButton` 在记录有 turnId、非 running、非 forkSnapshot 且具有 callback 时启用，再调用 [SessionForkController.forkRunFromNode](../../extension/src/content/sessionForkController.js)。
@@ -117,7 +115,7 @@ Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并
 | 当前项目 | [ProjectSettingsCoordinator](../../extension/src/content/projectSettingsCoordinator.js)：custom instructions、governance；OT 按 project map 保存 | 对应项目后续提交读取这些值 |
 | 项目 Provider 选择 | [ProjectProviderSelection.commit](../../extension/src/content/projectProviderSelection.js) | 更新项目及各会话未来默认选择；Provider/revision 变化会重置未来线程绑定，保留已有 runs/pendingInputs |
 | 活动会话 | [SessionState](../../extension/src/shared/sessionState.js)：task、mode、requireReviewing、focusFiles、selectionContext 等 | `readPanelInputs/updateActiveSession` 更新当前会话；Track 的实际写入属于此路径 |
-| 面板/项目状态字段 | runtime 的 `state.autoRecompile`、panelWidth、composerAttachments | 查 read/persist/load 路径，不能仅按控件位置推断全局或逐会话保存 |
+| 面板/项目状态字段 | runtime 的 `state.autoRecompile`、panelWidth；附件草稿由 `ComposerAttachmentDraft` 按账号/项目保存 | 查 read/persist/load 路径；附件使用站点 artifacts，不属于共享会话或全局 prefs |
 | 已提交运行 | [RunExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js) | 捕获模式、模型、Provider revision、Track/compile、选区等；后续控件变化不应重解释该快照 |
 
 `persistPanelInputs` 先交给全局 controller；识别到全局字段就返回该 patch Promise。普通 task 输入走 debounce 保存，明确控件变更继续读取并持久化。
@@ -201,19 +199,22 @@ runtime 的 `renderAtFileMenu` 提供 `@compile-log`；`runTask` 在首次模型
 
 [ComposerAttachments.createComposerAttachmentController](../../extension/src/content/composerAttachments.js) 接收 paste/drop/file input，先去重和预约预算，再等待 FileReader 与图片预览。
 `pendingAttachmentKeys` 防止同一文件并发重复读取；预算计入当前 composer 代次内的已完成字节和 pending bytes，只有同代 `finally` 能释放该预约，避免旧读取扣除新批次预算或移除同文件的新预约。
-`addFiles` 按顺序处理一批文件。校验或读取抛错会提前退出整次调用，后续文件不再读取；此前已经 push 到内部数组的附件仍可被 `getAttachmentsForRun` 取出，但循环后的 `renderComposerAttachments` 被跳过，tray 可能尚未显示这些附件。数量上限的 `break` 与总预算不足的 `continue` 会继续到末尾重绘，须与抛错路径分别判断。
-批量导入验证应包含“有效文件 → 空文件或读取失败 → 有效文件”，同时检查错误提示、内部待发送列表、tray 和后续文件读取次数；单文件成功或 pending 去重不能证明批次失败后已全部回滚。
+`addFiles` 按顺序处理一批文件。校验或读取抛错会停止后续文件并由原入口提示失败，已接受的前缀保留。整批结束的 `finally` 只在当前代次重绘，因此成功、部分接受后失败、数量上限与总预算不足等分支的内部列表和 tray 保持一致；被清空的旧批次不会重绘新输入。
+[composerAttachmentsBatch.test.js](../../test/composerAttachmentsBatch.test.js) 覆盖“有效文件 → 空文件/过大/读取失败 → 有效文件”、重试及旧代完成，同时检查错误、可见列表、停止读取和运行参数；失败不代表整批回滚。
+
 普通 composer 的准入配置来自 runtime：\(n\le8\)、每件 \(b_i\le12\,\mathrm{MiB}\)、\(\sum b_i\le32\,\mathrm{MiB}\)。空附件被拒绝；该规则与合法空项目文件的语义不同。
 **清空与在途读取。** 每次 `addFiles` 捕获 `attachmentGeneration`，在批次循环、FileReader 完成及预览完成后复核；`clear` 递增代次，清空附件、预约 keys 和 bytes，新批次可立即准入。旧读取结果、旧批次剩余文件及旧代错误失效，不能重入待发输入；旧 `finally` 不改变新代预约。底层 FileReader/Image 未强制 abort，允许完成后丢弃结果，因此当前预算约束有效 composer 内容与预约，不提供全部历史在途 I/O 的统一内存上限。
 [composerAttachmentsConcurrency.test.js](../../test/composerAttachmentsConcurrency.test.js) 使用完整控制器与可控读取/预览，覆盖清空、同文件重新导入、两批交错、旧错误及数量/字节约束；真实浏览器事件与发送仍需单独验收。
 [NativeQuotas](../../native-host/src/nativeQuotas.js) 普通附件保留单件/数量约束，聚合限制为 96 MiB；不能用 Native 更宽上限推断 UI 接受范围。写作风格参考采用另组 quotas。
 `getAttachmentsForRun` 包含本次发送内容；`createRunAttachmentSnapshots` 只保留名称、类型、大小与受限预览，避免把完整附件作为历史卡片内容复制。
 `serializePersistableAttachments/restorePersistedAttachments` 提供序列化与回填 helper：最多三件，单件 `contentBase64.length <= 1,048,576`；此单位为 Base64 字符。
-Base64 长度约为 \(4\lceil B/3\rceil\)，因此该字符阈值不能当作原始文件 1 MiB 限额。runtime 的 `applyStateToPanel` 设有每页仅一次的回填门槛，避免已有状态中的附件在移除后再次出现。
+Base64 长度约为 \(4\lceil B/3\rceil\)，因此该字符阈值不能当作原始文件 1 MiB 限额。超出恢复限额的附件仍可参与当前提交，但不保存为刷新草稿。
 
-**当前持久链缺口。** `persistComposerAttachmentsToState` 写入顶层 `state.composerAttachments`，[SessionState.prepareStateForStorage](../../extension/src/shared/sessionState.js) 也保留该字段；但 [ScopedPersistencePanelState.persistPanelState](../../extension/src/content/scopedPersistencePanelState.js) 实际写入的 [StorageDb.extractLightweightPrefs/buildSessionRecord](../../extension/src/shared/storageDb.js) 均未包含它。
-runtime 的 `loadStoredStateForProject` 正常返回与 compact fallback 返回也不回填该字段，因此上述 helper 与一次性门槛不能证明当前刷新恢复已贯通。
-[sessionState](../../test/sessionState.test.js) 中名为“composer attachments persist across refresh”的用例只调用 normalize/compact，未穿过真实存储及 hydration；刷新恢复验证需要覆盖 `saveState → persistPanelState → loadStoredStateForProject → restorePersistedAttachments`。此项与第 9 节的清空/迟到读取竞态分别处理。
+**附件草稿持久化。** [ComposerAttachmentDraft](../../extension/src/shared/composerAttachmentDraft.js) 管理独立的账号/项目草稿，使用当前站点 IndexedDB 的 `artifacts` store；完整附件不进入全局 prefs、共享会话记录或 compact fallback。它维持项目 composer 归属，切换同项目会话不会自动改变附件；www 与 cn 的跨源共享会话不包含这份站点附件草稿。
+`ComposerAttachments` 的 add/remove/clear 经 `onChange` 更新内存并安排保存。runtime `saveState` 在已捕获作用域事务内调用 `getComposerDraftPersistence().save`，仅写有实际变更的附件；`loadStoredStateForProject → loadComposerAttachmentDraft → applyStateToPanel` 在账号/项目作用域内恢复。附件读取的普通 I/O 失败只提示附件不可用，不丢弃已经读取的会话历史；身份或加载代次失配仍拒绝结果。
+`syncScope` 在项目或账号改变时清空控制器并使旧 FileReader 失效；作用域代次和读取序号阻止旧异步结果覆盖新草稿。`hydrate` 每个作用域只初始化一次，本地已发生的添加、移除或清空优先于迟到恢复。
+草稿写入在同一 IndexedDB 事务中比较 revision 与清理 epoch，匹配后才能提交；冲突会拒绝旧写入并提示恢复方式。清空历史原子清理辅助 stores 并推进 epoch；尚未取得初始版本的编辑还检查首次变更时间，失败重试不能借新读到的版本复活清理前附件。该机制提供并发写入保护，不自动把另一标签页的附件实时投影到当前界面。
+[composerAttachmentPersistence.test.js](../../test/composerAttachmentPersistence.test.js) 串联实际保存、加载及控制器回填；[composerAttachmentDraft.test.js](../../test/composerAttachmentDraft.test.js) 覆盖作用域、事务、清理、并发和迟到结果。测试使用存储/DOM 替身，真实 IndexedDB 与 Chrome 刷新仍需单独验收。
 
 `runTask` 在异步 Provider/风格加载前捕获已完成附件，创建 run 后清空 composer；队列协调器拒绝带附件的排队输入，见 [RunQueueScheduler](../../extension/src/content/runQueueScheduler.js)。
 提交只捕获当时已完成的附件，不等待在途读取；清空后旧代读取失效。完整提交交互与真实浏览器发送仍需验收，见第 9 节。

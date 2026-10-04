@@ -44,6 +44,7 @@ import '../src/shared/storageKeys.js';
 import '../src/shared/storageRunActions.js';
 import '../src/shared/storageSessionClaims.js';
 import '../src/shared/storageValuePruning.js';
+import '../src/shared/composerAttachmentDraft.js';
 import '../src/shared/storageDb.js';
 import '../src/shared/storageMigration.js';
 import '../src/shared/compileAdapter.js';

@@ -84,17 +84,17 @@ flowchart TD
 
 当前快照的执行字段为 mode、Provider ID/revision、model、reasoning、speed、自动编译、Track、focusFiles、选区和写作风格，另含 schemaVersion、capturedAt、source 等元数据。
 schema 与入口见 [runExecutionSnapshot.js](../../extension/src/shared/runExecutionSnapshot.js)，内部归一化见 [runExecutionSnapshotCodec.js](../../extension/src/shared/runExecutionSnapshotCodec.js)。
-队列提升调用 `runTask({ queuedInput })` 时，仍会读取当时的 custom instructions、技能加载设置、composer 附件及技能调用，并传给运行参数；`buildCodexRunParams` 还读取当时启用的插件技能 ID。
-这些输入未包含在队列执行快照中。入队入口拒绝附件，也不能据此推定提升时不会读取后来留在 composer 中的附件。
-真实装配见 [contentRuntime.js](../../extension/src/content/contentRuntime.js) 的 `initializeRunQueueScheduler/runTask/buildCodexRunParams`。后来留在 composer 的附件可与原排队文字组合进入请求。技能选择还受 `getSlashTrigger` 的运行中守卫限制；已有暂停队列时，空闲界面可先选择技能，再 Resume 原任务。此时若当前技能为 `skill-installer`，`runTask` 会把原排队文字交给 `runSkillInstallerTask`，采用 installer 参数与执行路线。
+[RunInputQueue](../../extension/src/shared/runInputQueue.js) 在新任务入队时另存 `payload.submissionContext`：项目指令、技能加载开关、单次技能调用和已启用插件技能 ID。该白名单经 normalize、claim 与持久化压缩保留，文字在持久化时经过既有脱敏；字段与正文一起计入队列容量预算。项目文件仍在任务执行时读取。
+队列提升调用 `runTask({ queuedInput })` 时只消费排队项捕获的额外上下文，附件固定为空；入队入口继续拒绝带附件输入。因此后来 composer 的附件或技能不会被旧任务采用，也不会把原任务转入后来选择的 installer 分支。普通提交在首次 await 前捕获启用技能 ID，与指令及技能开关一起供首次请求和重试使用。
+旧队列缺少 `submissionContext` 时在存储中保留缺失形式，避免默认对象增加字节后裁掉接近容量上限的旧项；执行时采用空指令、无单次技能、关闭额外技能加载和空启用列表，不从后来草稿补值。真实装配见 [contentRuntime.js](../../extension/src/content/contentRuntime.js) 的 `initializeRunQueueScheduler/runTask/buildCodexRunParams`。
 Provider revision 标识同一个服务配置的版本；排队后配置被修订或删除，执行校验可报冲突或不可用，避免悄悄换用后来的配置。
 浏览器执行入口是 `RunExecutionSnapshot.resolveForExecution`；`RunInputQueue.claimNext` 消费校验结果，`RunQueueScheduler.scheduleOne` 在冲突时保留输入并暂停。
 Native 还会在 [providerRuntime.js](../../native-host/src/providerRuntime.js) 的 `resolveRunProvider/resolveRunProviderForRun` 重新核验，调用方为 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js)。模型目录查询 `resolveProviderModels` 与实际执行校验分别承担职责。
 快照固定配置身份和选择，不保存完整旧 Provider 配置或凭据。原 Provider 被修改或删除时，旧任务可能被拒绝；不能承诺它始终可按旧配置启动。
 [projectProviderSelection.js](../../extension/src/content/projectProviderSelection.js) 的 `commit` 更新未来默认值与会话线程绑定，保留已有队列及运行历史。
 **维护目标**：新增运行选项同时检查 capture、queue payload、clone、持久化压缩和 Native 消费端，避免某一条路径丢失字段。
-若扩大“提交后固定”的范围，应将上述额外输入纳入同一链路并补验证。[runExecutionSnapshot.test.js](../../test/runExecutionSnapshot.test.js) 覆盖快照字段；[runInputQueueSnapshotRegression.test.js](../../test/runInputQueueSnapshotRegression.test.js) 覆盖队列压缩，其启动检查采用源码字符串断言，不能证明全部输入已冻结。
-[runSubmissionOwnership.test.js](../../test/runSubmissionOwnership.test.js) 串联实际 runtime 函数、SessionManager、参数构造和 Native prompt，覆盖镜像/Provider/风格/audit 等待中的会话切换、草稿保留及派发身份；I/O 与 DOM 使用替身，真实浏览器交互仍需验收。
+若扩大“提交后固定”的范围，应将新字段纳入对应快照或 submissionContext，并补齐全链验证。[runExecutionSnapshot.test.js](../../test/runExecutionSnapshot.test.js) 覆盖快照字段；[runInputQueueSnapshotRegression.test.js](../../test/runInputQueueSnapshotRegression.test.js) 覆盖队列压缩，其启动检查采用源码字符串断言，不能证明全部输入已冻结。
+[queueSubmissionContext.test.js](../../test/queueSubmissionContext.test.js) 覆盖排队输入、暂停恢复、持久化白名单、旧队列预算与后来草稿隔离；[runSubmissionOwnership.test.js](../../test/runSubmissionOwnership.test.js) 串联实际 runtime 函数、SessionManager、参数构造和 Native prompt，覆盖镜像/Provider/风格/audit 等待中的会话切换、草稿保留及派发身份；I/O 与 DOM 使用替身，真实浏览器交互仍需验收。
 
 ### 3.2 队列状态与 claim
 
@@ -147,10 +147,11 @@ Native 的 [taskRunnerRuntime.handleCodexSteer](../../native-host/src/taskRunner
 | 对象与实际 key | 写入、读取权威 | 保留与清理边界 |
 | --- | --- | --- |
 | 扩展 IndexedDB `codex-overleaf-shared-sessions` v1：`sessions`、`tombstones`、`migrations` | [backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js) 的 `writeMany/list/erase`；session 和墓碑按账号/会话，迁移按账号/origin | 删除保留墓碑；清空账号还写 `origin:'*'` 的 `clearedAt`，阻止旧导入及旧会话恢复。当前未设置这些记录的自动 TTL |
-| 站点 IndexedDB `codex-overleaf` v3：`sessions`、`auditLogs`、`turns/events/artifacts` | [StorageDb.STORES/openDb](../../extension/src/shared/storageDb.js)；共享 decorator 只替换 sessions 路由，站点 sessions 可作为旧备份 | 共享清空删除当前账号的旧 session 备份，并清空当前站点全部辅助 stores；单会话删除未级联清理 audit。后三个 store 有 schema/builders，当前生产调用链未使用其 turn/artifact builders 或 event buffer |
+| 站点 IndexedDB `codex-overleaf` v3：`sessions`、`auditLogs`、`turns/events/artifacts` | [StorageDb.STORES/openDb](../../extension/src/shared/storageDb.js)；共享 decorator 只替换 sessions 路由，站点 sessions 可作为旧备份 | 共享清空删除当前账号的旧 session 备份，并清空当前站点全部辅助 stores；单会话删除未级联清理 audit。turns/events 的历史拆分链尚未使用其 builders/event buffer；artifacts 另保存独立附件草稿及清理 epoch |
 | `codexOverleafPrefs` | [StorageMigration](../../extension/src/shared/storageMigration.js) 的 `loadPrefs/savePrefs`；`PROJECT_SCOPED_PREF_MAPS` 列出的五类映射使用 `account:…:project:…`，其余字段仍在全局对象内 | 旧无账号项目偏好由首次访问账号认领；`storageSchemaVersion` 是全局字段。它与共享库 migrations 的完成标记独立 |
+| 站点 `artifacts` 的 `composer-attachment-draft:` 前缀记录 | [ComposerAttachmentDraft](../../extension/src/shared/composerAttachmentDraft.js) 使用完整账号/项目元组，记录再次校验身份；revision/epoch 在同一事务比较与写入 | 小附件按既有限额保存；与共享 session 分离，跨源不共享。清理辅助库原子推进 epoch，旧自动保存不能恢复清理前附件，详见[附件恢复](ui-and-loading.md#多附件异步预算与恢复) |
 | `codexOverleafGlobalPrefsV1` | [GlobalPreferences.createStore](../../extension/src/shared/globalPreferences.js) 的 schema/revision；初次读取从旧 prefs 复制允许字段 | 后续字段 patch 递增 revision；旧会话 autosave 不拥有这份全局偏好，详见[配置作用域](ui-and-loading.md#3-配置作用域按写入路径判断) |
-| `codexOverleafPanelState:project:<id>` 旧 blob；其后加 `:account:<encoded-id>` 的 fallback | [StorageKeys.getProjectStorageKey](../../extension/src/shared/storageKeys.js)、runtime `buildScopedFallbackStorageKey/loadStoredStateForProject` | 旧 blob 仅在对应迁移分支完成后移除；fallback 必须匹配账号，`prepareCompactFallbackState` 清空 task、sessions、runs，不能恢复完整历史 |
+| `codexOverleafPanelState:project:<id>` 旧 blob；其后加 `:account:<encoded-id>` 的 fallback | [StorageKeys.getProjectStorageKey](../../extension/src/shared/storageKeys.js)、runtime `buildScopedFallbackStorageKey/loadStoredStateForProject` | 旧 blob 仅在对应迁移分支完成后移除；fallback 必须匹配账号，`prepareCompactFallbackState` 清空 task、sessions、runs 和附件，不能恢复完整历史或替代附件草稿 store |
 | `codex-overleaf-scoped-persistence-v1:<account>:<project>` | [ScopedPersistenceBrowserAdapter](../../extension/src/shared/scopedPersistenceBrowserAdapter.js)、后台 `meta-read/meta-write` | 保存 fence/receipt、queue claims 和墓碑；[QueuePolicy](../../extension/src/shared/scopedPersistenceQueuePolicy.js) 在冲突判断中将超过60秒的 claim 视为过期，移除队列项时保留最多500个 queue 墓碑；事务合并 session 墓碑时保留200个 |
 | `codexOverleafSessionTombstones` 与 `codexOverleafSessionTombstone:v2:<project>:<session>` | `StorageMigration.collectSessionTombstones/addSessionTombstones`、[SessionPersistence.writeSessions](../../extension/src/content/sessionPersistence.js) | 兼容墓碑按项目组织，未编码账号；合并读取视图每项目最多100个删除 ID，v2 条目按删除时间裁剪。裁剪未重写旧聚合 key，不能将100视为两种物理副本的总上限；与后台账号墓碑、scoped meta 墓碑分别维护 |
 | `chrome.storage.session` 中 `codex-overleaf:run-journal:<requestId>` | [background](../../extension/src/background.js) 的 `queueJournalWrite/listRunJournals/acknowledgeRunJournal` | `trimRunJournal` 按300事件及512 KiB估算预算淘汰事件，读取最近16个可恢复项；ack 删除，内存超过16项时清理已终止或失主记录。该存储区域与持久 local/IndexedDB 寿命不同 |
@@ -243,14 +244,10 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 
 设置入口 [PanelMaintenance.clearAllHistoryWithConfirm](../../extension/src/content/panelMaintenance.js) 检查本页 `currentRunView`、取得确认，再调用 `StorageDb.clearAllStores` 和项目名称缓存清理。共享账号会话、站点辅助库及 Native 历史的范围见[界面与加载](ui-and-loading.md#历史查看清理与结果动作)；这个设置入口未调用 Native 历史清理。
 
-**当前内存恢复缺口。** 清库后传给 `normalizePanelState` 的对象仅覆盖 `sessions: []`、`runs: []` 和空 `activeSessionId`，仍保留旧 `state.session` 与 `state.task`。
-[SessionState.normalizeSessions](../../extension/src/shared/sessionState.js) 在显式会话数组为空时回退到 `input.session`；`normalizeSession` 又可通过 `recoverRunsFromHistory` 将旧摘要恢复为 `recovered_*` 运行。因此旧活动会话 ID、历史摘要、Native 线程引用和草稿可重新进入内存，并传给随后的 `saveState`。详细运行及 Undo 材料是否仍存在需另看字段，不能把摘要恢复等同完整运行恢复。
-
-真实 controller 与 normalizer 配合内存保存替身，可复现上述内存重建；这项证据不证明共享数据库中的已删除记录复活。
-[backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js) 的 `writeMany` 检查清理标记及会话墓碑，可用 `shared_session_deleted` 拒绝旧记录再次写入。runtime 的普通 `saveState` 捕获此类错误后仍可能写紧凑 fallback、显示存储提示并正常返回，随后清理 handler 继续重绘并显示 cleared toast。
-因此应分别核对清库结果、当前内存投影、保存拒绝和提示文案；仅看到成功提示无法证明这些层次已一致。
-
-验证入口为 [p0ProductExperience.test.js](../../test/p0ProductExperience.test.js) 的清空历史路由断言、[sessionState.test.js](../../test/sessionState.test.js) 的归一化 helper，以及 [sessionTombstones.test.js](../../test/sessionTombstones.test.js) 的迁移墓碑并发保存。后者使用 `chrome.storage.local` 替身，未装配后台共享 IndexedDB 的清理标记与拒绝写入路径。清理链验证需要串联 handler、旧 `session/history/task`、真实保存错误处理和重载读取；现有源码断言不能证明该组合已覆盖。
+清库成功后，入口显式清除 `state.session` 兼容镜像、sessions/runs、旧活动 ID、task、focus、选区和附件，然后经 `normalizePanelState` 生成空白会话；不会再从旧摘要恢复 `recovered_*` 运行。新会话时间晚于清库完成时点，避免同毫秒创建被共享清理标记拒绝。
+组合根的 `clearHistoryComposer` 同时清除控制器里的附件、技能、选区和待编辑重发来源，并更新空附件状态。清库成功后的名称缓存清理或新会话保存失败，不恢复已经删除的旧内存；面板仍重绘为空，并明确提示辅助清理或空白会话保存尚未完成。清库本身失败时保留原状态。
+保存使用 `saveState({ requireDurable: true })`：缺项目、归属改变、stale view 或写入失败均拒绝，只有作用域事务提交成功才返回 true；普通 autosave 的紧凑 fallback 不作为该操作的成功证明。确认窗口关闭后还会再次检查当前运行，避免确认期间开始任务后继续清库。
+[clearHistoryReset.test.js](../../test/clearHistoryReset.test.js) 串联真实 controller 与会话归一化，覆盖清理、取消、部分失败和同毫秒边界；[saveStateDurability.test.js](../../test/saveStateDurability.test.js) 检查严格提交与普通 autosave 的差异。存储 I/O 与 UI 使用替身，真实跨标签共享数据库及浏览器交互仍需单独验收。
 
 ## 5. 刷新恢复、旁观页与导航
 

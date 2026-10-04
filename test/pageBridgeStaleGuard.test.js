@@ -163,7 +163,7 @@ for (const [baseEnding, editorEnding] of [['\r\n', '\n'], ['\n', '\r\n']]) {
 test('page bridge revision rebuilds the router for current content freshness guards', async () => {
   const bridge = createPageBridgeHarness({ activePath: 'main.tex', reviewingOk: false, files: { 'main.tex': 'a\nbc' } });
   assert.equal(bridge.reinject(), false, 'same revision keeps the existing handler');
-  assert.equal(bridge.reinject('2026-10-03-text-patch-line-endings-v34'), true, 'previous revision rebuilds the handler at the same product version');
+  assert.equal(bridge.reinject('2026-10-04-receipt-settlement-v36'), true, 'previous revision rebuilds the handler at the same product version');
   const base = 'a\r\nbc', target = 'a\r\nbXc';
   const result = await bridge.call('applyOperations', { requireEditing: true,
     baseFiles: [{ path: 'main.tex', content: base }],

@@ -256,6 +256,7 @@
         files,
         capabilities: {
           fullProjectSnapshot: params.restrictToRequestedPathsOnly === true ? false : true,
+          contentComplete: !(zipSnapshot.skipped || []).length,
           requestedPathsComplete,
           method: 'overleaf-zip',
           skipped: zipSnapshot.skipped || [],
@@ -459,6 +460,7 @@
         files,
         capabilities: {
           fullProjectSnapshot: params.restrictToRequestedPathsOnly === true ? false : true,
+          contentComplete: !(zipSnapshot.skipped || []).length,
           requestedPathsComplete,
           method: 'overleaf-zip',
           skipped: zipSnapshot.skipped || [],

@@ -243,7 +243,7 @@
         for (const record of await api.getAllSessions()) {
           if (record.accountScopeId === value.accountScopeId) await api.deleteRecord('sessions', record.id);
         }
-        for (const store of Object.keys(api.STORES)) if (store !== 'sessions') await api.clearStore(store);
+        await api.clearAuxiliaryStores();
         baselines.clear();
       });
       route('listRecentProjectsAcrossAccount', async options => {
