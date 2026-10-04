@@ -37,9 +37,21 @@ async function nativeMove(t, kind, restrictToFocusFiles = false) {
   return { h, before, response };
 }
 function contentPipeline(h, approve) {
-  Object.assign(h.window, { CodexOverleafWriteGuard: Guard, CodexOverleafStaleGuard: Stale });
+  Object.assign(h.window, { CodexOverleafWriteGuard: Guard, CodexOverleafStaleGuard: Stale, CodexOverleafProjectFiles: Files });
+  let activePath = h.operation.path;
+  Object.assign(h.treeOperations, {
+    projectPathExists: path => h.files.has(path), getActiveFilePath: () => activePath,
+    async openFileByPath(path) { activePath = path; return { ok: h.files.has(path) }; },
+    async waitForActiveEditorText() { return { ok: true, text: h.files.get(activePath)?.bytes.toString() || '' }; },
+    findFileTreeManager: () => ({
+      async createDoc(path, content) { h.files.set(path, { path, id: 'created-' + path, type: 'doc', bytes: Buffer.from(content) }); },
+      async deleteDoc(path) { h.files.delete(path); }
+    })
+  });
   const router = Router.create({ window: h.window, treeOperations: h.treeOperations, moveFile: h.mover.moveFile,
-    normalizeSafeProjectPath: Files.normalizeSafeProjectPath,
+    normalizeSafeProjectPath: Files.normalizeSafeProjectPath, readActiveEditorText: () => h.files.get(activePath)?.bytes.toString() || '',
+    getActiveEditorIdentity: () => activePath, activeEditorIdentityChanged: () => true,
+    delay: async () => {}, writebackOpenSettleMs: 0,
     ensureEditing: async () => ({ ok: true }), ensureReviewing: async () => ({ ok: true }) });
   const pageApply = vm.runInNewContext('(' + extractFunction(fs.readFileSync(path.join(__dirname, '../extension/src/pageBridge.js'), 'utf8'), 'applyOperations') + ')', { writebackRouter: router });
   const journal = Journal.create({ getProjectId: () => h.state.projectId, prepareEditor: async () => ({ ok: true }), applyOperations: pageApply });
@@ -82,33 +94,49 @@ function contentPipeline(h, approve) {
   }, undo: () => broker.applyOperations({ ...checkpoint, operations: checkpoint.undoOperations,
     baseFiles: checkpoint.undoBaseFiles, runProjectId: h.state.projectId, requireEditing: true }) };
 }
-for (const kind of ['text', 'binary']) for (const approve of [true, false]) {
-  test(`Native mirror to confirmation, Page receipt and inverse move: ${kind}, approve=${approve}`, async t => {
-    const { h, before, response } = await nativeMove(t, kind);
-    assert.equal(response.syncChanges.length, 1); assert.equal(response.syncChanges[0].type, 'move');
-    const original = h.files.get(h.operation.path); const pipeline = contentPipeline(h, approve);
-    const result = await pipeline.apply(response, before); assert.equal(pipeline.prompts.length, 1);
-    if (!approve) {
-      assert.equal(h.state.posts.length, 0); assert.equal(pipeline.calls.includes('applyOperations'), false);
-      assert.equal(h.files.get(h.operation.path), original); assert.equal(h.files.has(h.operation.to), false);
-      assert.equal(result.hasSkippedOperations, true);
-      assert.equal(pipeline.reports.at(-1).status, 'failed');
-      assert.equal(pipeline.reports.at(-1).failure.code, 'file_plan_confirmation_rejected');
-      assert.equal(result.settlement.facts.documentEffect, 'unchanged');
-      return;
-    }
-    assert.equal(result.applied.applied.length, 1, JSON.stringify(result)); assert.equal(h.files.get(h.operation.to), original);
-    assert.equal(pipeline.reports.at(-1).saveVerification.state, 'verified_saved');
-    const check = await Controller.buildSaveCheck(result.applied, before, { projectId: h.state.projectId });
-    assert.ok(check); assert.equal(check.files.find(file => file.path === h.operation.path).absent, true);
-    assert.equal(check.files.find(file => file.path === h.operation.to).sha256, response.syncChanges[0].moveProof.sha256);
-    const undone = await pipeline.undo(); assert.equal(undone.ok, true, JSON.stringify(undone));
-    assert.equal(h.files.get(h.operation.path), original); assert.equal(h.files.has(h.operation.to), false);
-    assert.equal(original.comments[0].id, 'comment-original'); assert.equal(original.reviewing[0].id, 'review-original');
-  });
-}
-test('a focus-restricted Native run cannot move its source outside the captured focus set', async t => {
-  const { response } = await nativeMove(t, 'text', true);
-  assert.deepEqual(response.syncChanges, []);
-  assert.equal(response.unsupportedChanges[0].reason, 'out_of_focus_partial_snapshot');
+for (const approve of [true, false]) test('Native text relocation keeps original create/delete confirmation behavior, approve delete=' + approve, async t => {
+  const { h, before, response } = await nativeMove(t, 'text');
+  assert.deepEqual(response.syncChanges.map(change => change.type), ['write', 'delete']);
+  const original = h.files.get(h.operation.path); const pipeline = contentPipeline(h, approve);
+  const result = await pipeline.apply(response, before);
+  assert.equal(pipeline.prompts.length, 1); assert.equal(pipeline.prompts[0].title, 'deleteFilePromptTitle');
+  assert.equal(h.files.get(h.operation.to).bytes.toString(), original.bytes.toString());
+  assert.equal(h.files.has(h.operation.path), !approve);
+  assert.equal(h.state.posts.length, 0, 'metadata move endpoint is unavailable to fresh sync');
+  if (approve) {
+    assert.equal(result.applied.applied.length, 2, JSON.stringify(result));
+    assert.equal(result.hasSkippedOperations, false);
+  } else {
+    assert.equal(result.applied.applied.length, 1); assert.equal(result.applied.skipped[0].result.code, 'delete_confirmation_rejected');
+    assert.equal(result.hasSkippedOperations, true);
+  }
+});
+test('Native binary relocation retains original asset confirmation and blocked deletion', async t => {
+  const { h, before, response } = await nativeMove(t, 'binary');
+  assert.equal(response.syncChanges[0].type, 'binary-create');
+  assert.equal(response.unsupportedChanges[0].reason, 'binary_delete_unsupported');
+  const pipeline = contentPipeline(h, false); const result = await pipeline.apply(response, before);
+  assert.equal(pipeline.prompts.length, 1); assert.equal(pipeline.prompts[0].title, 'binaryAssetConfirmTitle');
+  assert.equal(pipeline.calls.includes('applyOperations'), false); assert.equal(h.state.posts.length, 0);
+  assert.equal(h.files.has(h.operation.path), true); assert.equal(h.files.has(h.operation.to), false);
+  assert.equal(result.hasSkippedOperations, true); assert.equal(pipeline.reports.at(-1).status, 'failed');
+});
+test('a forward move arriving from an older Native build is rejected before mutation', async () => {
+  const h = fixture(), before = await h.snapshotRouter.fetchProjectZipSnapshot();
+  const pipeline = contentPipeline(h, true);
+  const result = await pipeline.apply({ syncChanges: [h.operation], unsupportedChanges: [] }, before);
+  assert.equal(result.hasSkippedOperations, true); assert.equal(h.state.posts.length, 0);
+  assert.equal(pipeline.calls.includes('applyOperations'), false); assert.equal(pipeline.prompts.length, 0);
+  assert.equal(h.files.has(h.operation.path), true); assert.equal(h.files.has(h.operation.to), false);
+  assert.equal(pipeline.reports.at(-1).status, 'failed');
+});
+
+test('ordinary text creation uses the existing write path without a new confirmation', async () => {
+  const h = fixture(), before = await h.snapshotRouter.fetchProjectZipSnapshot();
+  const pipeline = contentPipeline(h, false);
+  const result = await pipeline.apply({ syncChanges: [{ type: 'write', path: 'created.tex', content: 'Created text', previousExists: false }], unsupportedChanges: [] }, before);
+  assert.equal(pipeline.prompts.length, 0); assert.equal(result.applied.applied.length, 1);
+  assert.equal(h.files.get('created.tex').bytes.toString(), 'Created text');
+  assert.equal(h.files.get('old.tex').bytes.toString(), 'original contents\n');
+  assert.equal(h.state.posts.length, 0);
 });

@@ -391,6 +391,7 @@
     }
     const result = await applyOperationsCore(operations, {
       ...options,
+      noTraceUndo: false,
       trackReviewingChanges
     });
     return reviewingPolicy
@@ -545,7 +546,7 @@
       } else if (['binary-create', 'overwrite-binary'].includes(operation.type)) {
         result = await applyBinaryAssetOperation(operation, { baseFileLookup, baseBinaryFileLookup });
       } else if (['create', 'rename', 'move', 'delete'].includes(operation.type)) {
-        result = await applyFileTreeOperation(operation, { baseFileLookup, runProjectId, deadlineAt: options.deadlineAt, reviewGuard: options.reviewGuard,
+        result = await applyFileTreeOperation(operation, { baseFileLookup, runProjectId, deadlineAt: options.deadlineAt, reviewGuard: options.reviewGuard, noTraceUndo: options.noTraceUndo === true,
           createBatch: createBatch?.targets.has(operation.path) ? createBatch : null,
           retryCreates: options.retryCreates === true });
       } else {
@@ -1390,9 +1391,11 @@
     const initialProjectId = treeOperations.getProjectId?.();
     const initialCancellationSequence = readWriteCancellationSequence();
     if (operation.type === 'move' && operation.moveProof) {
+      if (options.noTraceUndo !== true) return { ok: false, code: 'file_tree_controls_unavailable', changedDocument: false,
+        reason: 'Native file moves are available only to undo a previously recorded move.' };
       if (typeof deps.moveFile !== 'function') return { ok: false, code: 'file_move_unavailable', changedDocument: false,
         reason: 'Verified native file moves are unavailable. Reload the extension and Overleaf.' };
-      const result = await deps.moveFile(operation, { runProjectId: options.runProjectId, deadlineAt: options.deadlineAt,
+      const result = await deps.moveFile(operation, { noTraceUndo: true, runProjectId: options.runProjectId, deadlineAt: options.deadlineAt,
         isCurrent: () => treeOperations.getProjectId?.() === initialProjectId
           && readWriteCancellationSequence() === initialCancellationSequence && !options.reviewGuard?.() });
       if (result.ok) recordFileTreeOperationSuccess(operation, options.baseFileLookup);

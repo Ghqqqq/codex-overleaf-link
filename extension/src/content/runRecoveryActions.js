@@ -6,8 +6,7 @@
 
   function create(deps = {}) {
     const { tx, failureNotice, refillComposerForRetry, openProjectFileForFailure, showNativeSetupGuidance,
-      openStorageSettings, forceCancelStuckTaskForCurrentProject, getCurrentRunView, trackedChangeInFlight,
-      openManualReviewFile, verifyManualReview, getCurrentProjectId, getAccountScopeId, checkCreatedDirectories } = deps;
+      openStorageSettings, forceCancelStuckTaskForCurrentProject } = deps;
     const document = deps.document || globalThis.document;
     const window = deps.window || globalThis.window;
 
@@ -55,8 +54,6 @@
   }
 
   function appendRecoveryActionForFailure(report, event, run) {
-    const context = failureNotice?.getRecoveryContext?.(report);
-    if (appendManualReviewActions(context?.target || report, run, context?.failure || event?.failure)) return;
     const recovery = failureNotice?.prepareRecovery(report, { openFile: openProjectFileForFailure });
     const failure = recovery?.failure || event?.failure;
     const failureCode = failure?.code || '';
@@ -140,80 +137,7 @@
     report.append(button);
   }
 
-  function appendManualReviewActions(target, run, failure) {
-    if (!run || run.forkSnapshot || run.undoStatus === 'applied'
-      || ['accepted', 'rejected'].includes(run.trackedChangeStatus)) return false;
-    const safePath = value => typeof value === 'string' && value && !value.startsWith('/')
-      && !/^[A-Za-z]:/.test(value) && !value.replace(/\\/g, '/').split('/').includes('..');
-    const proof = run.manualReviewProof;
-    const hasProof = proof?.v === 1 && Array.isArray(proof.files) && proof.files.length > 0;
-    const paths = hasProof ? [...new Set(proof.files.map(file => file?.path).filter(safePath))]
-      : failure?.code === 'tracked_changes_remain' && ['pending', 'needs_review'].includes(run.trackedChangeStatus)
-        && safePath(failure.file) ? [failure.file] : [];
-    if (!hasProof && !paths.length) return false;
-    const busy = () => Boolean(getCurrentRunView?.()) || trackedChangeInFlight?.has(run.id) === true;
-    const append = (kind, label, callback) => {
-      const button = buildRecoveryButton('manual-review-' + kind, label,
-        tx('Uses this run\'s original project and only reads or opens the review target.', '绑定本轮原项目，仅打开或只读核验审阅目标。'));
-      button.dataset.manualReviewAction = kind;
-      button.disabled = busy();
-      button.addEventListener('click', async event => {
-        event.stopPropagation();
-        if (busy()) return;
-        button.disabled = true;
-        try { await callback(); }
-        catch (_error) { /* The scope-bound runtime action owns feedback. */ }
-        finally { button.disabled = busy(); }
-      });
-      target.append(button);
-    };
-    if (typeof openManualReviewFile === 'function') for (const file of paths) {
-      append('open', tx(`Open ${file} for review`, `打开待核查文件：${file}`), () => openManualReviewFile(run.id, file));
-    }
-    if (hasProof && paths.length && typeof verifyManualReview === 'function') {
-      append('verify', tx('Recheck review outcome', '重新核验审阅结果'), () => verifyManualReview(run.id));
-    }
-    // Never fall through to an action using the current project's generic
-    // callback. Runtime callbacks above revalidate the proof and original run.
-    return true;
-  }
-
-  function renderDirectoryCleanup(root, run) {
-    const target = root.querySelector('[data-run-directory-cleanup]');
-    if (!target) return;
-    target.replaceChildren(); target.hidden = true;
-    const pending = run?.pendingDirectoryCleanup;
-    const current = () => pending?.v === 1 && typeof pending.projectId === 'string' && pending.projectId
-      && typeof pending.accountScopeId === 'string' && pending.accountScopeId && pending.runId === run?.id
-      && pending.projectId === getCurrentProjectId?.() && pending.accountScopeId === getAccountScopeId?.();
-    if (!run || run.forkSnapshot || !current() || !Array.isArray(pending.directories)) return;
-    const paths = [...new Set(pending.directories.filter(item => item?.projectId === pending.projectId
-      && typeof item.path === 'string' && item.path && !item.path.startsWith('/') && !/^[A-Za-z]:/.test(item.path)
-      && !item.path.replace(/\\/g, '/').split('/').includes('..')).map(item => item.path))];
-    if (!paths.length) return;
-    target.hidden = false; target.setAttribute('role', 'note');
-    const message = document.createElement('p');
-    message.textContent = tx('Folders remain for manual review. Checking only reads their status.', '文件夹仍待人工检查。检查只读取状态，不会删除文件夹。');
-    const list = document.createElement('ul');
-    for (const path of paths) { const item = document.createElement('li'); item.textContent = path; list.append(item); }
-    target.append(message, list);
-    if (typeof checkCreatedDirectories !== 'function') return;
-    const busy = () => Boolean(getCurrentRunView?.()) || trackedChangeInFlight?.has(run.id) === true;
-    const button = buildRecoveryButton('directory-cleanup-check', tx('Check remaining folders', '检查剩余目录'),
-      tx('Read folder status in this run\'s original project. No folder will be deleted.', '只读核查本轮原项目中的目录状态，不会删除目录。'));
-    button.setAttribute('data-run-directories-check', ''); button.disabled = busy();
-    button.addEventListener('click', async event => {
-      event.stopPropagation();
-      if (!current() || busy()) return;
-      button.disabled = true;
-      try { await checkCreatedDirectories(run.id); }
-      catch (_error) { /* The scope-bound runtime check owns feedback. */ }
-      finally { button.disabled = busy() || !current(); }
-    });
-    target.append(button);
-  }
-
-    return { buildRecoveryButton, appendRecoveryActionForFailure, renderDirectoryCleanup };
+    return { buildRecoveryButton, appendRecoveryActionForFailure };
   }
   return { create };
 });

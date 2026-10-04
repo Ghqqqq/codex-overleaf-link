@@ -69,8 +69,10 @@ function fixture(options = {}) {
     normalizeSafeProjectPath: Files.normalizeSafeProjectPath, delay: async () => {},
     textFileCreator: { findFolderNode: path => treeOperations.findFileTreeNode(path), prepareUploadParent: options.prepareUploadParent,
       cleanupCreatedDirectories: options.cleanupCreatedDirectories } });
-  const operation = { type: 'move', path: source, to: target, moveProof: { v: 1, kind, sha256: sha(content) } };
+  // Simulates the persisted inverse of a previously successful same-entity move.
+  const operation = { type: 'move', path: source, to: target, moveProof: { v: 1, kind, sha256: sha(content),
+    sourceEntityId: 'entity-source', targetEntityId: 'entity-source' } };
   return { state, files, folders, operation, mover, treeOperations, snapshotRouter, window,
-    move: op => mover.moveFile(op || operation, { isCurrent: () => state.current, runProjectId: 'project-move', deadlineAt: options.deadlineAt }) };
+    move: op => mover.moveFile(op || operation, { noTraceUndo: true, isCurrent: () => state.current, runProjectId: 'project-move', deadlineAt: options.deadlineAt }) };
 }
 module.exports = { fixture, sha };

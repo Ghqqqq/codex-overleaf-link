@@ -71,7 +71,7 @@ test('governance-only rejection remains visible in the completion report', async
       : '',
     summarizeOperationForAudit: () => ({ path: operation.path }),
     buildAuditSummaryFromApply: input => input,
-    writebackSettlement: { settle: input => input }
+    writebackSettlement: require('../extension/src/shared/writebackSettlement')
   });
 
   const outcome = await orchestrator.applySyncChangesToOverleaf(
@@ -81,6 +81,7 @@ test('governance-only rejection remains visible in the completion report', async
   );
 
   assert.equal(outcome.hasSkippedOperations, true);
+  assert.equal(completionReport.status, 'failed');
   assert.equal(completionReport.applyResults.length, 1);
   assert.deepEqual(completionReport.applyResults[0].skipped, [skippedEntry]);
   assert.equal(completionReport.unchangedReason, skippedEntry.result.reason);

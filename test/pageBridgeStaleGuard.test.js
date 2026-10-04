@@ -3258,9 +3258,7 @@ function createPageBridgeHarness({
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/referenceProjects.js'), 'utf8'), context, { filename: 'referenceProjects.js' });
   vm.runInContext(trackedChangeCaptureSource, context, { filename: 'trackedChangeCapture.js' });
   context.CodexOverleafProjectFiles = context.window.CodexOverleafProjectFiles;
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/shared/manualReviewProof.js'), 'utf8'), context, { filename: 'manualReviewProof.js' });
   context.window.CodexOverleafManualReviewProof = context.CodexOverleafManualReviewProof;
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/manualReviewRecovery.js'), 'utf8'), context, { filename: 'manualReviewRecovery.js' });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/reviewContext.js'), 'utf8'), context, { filename: 'reviewContext.js' });
   vm.runInContext(trackedChangesLifecycleSource, context, { filename: 'trackedChangesLifecycle.js' });
   vm.runInContext(writebackRouterSource, context, { filename: 'writebackRouter.js' });
@@ -3980,7 +3978,7 @@ test('pageBridge exposes cancelActiveWrite as a dispatch method backed by a sequ
   const contract = require('../extension/src/shared/pageRpcContract.js');
   assert.equal(contract.getMethod('cancelActiveWrite').capability, 'write.cancel',
     'page RPC contract must expose cancelActiveWrite');
-  assert.match(pageBridgeSrc, /cancelActiveWrite\(\)/,
+  assert.match(pageBridgeSrc, /cancelActiveWrite\([^)]*\)\s*\{/,
     'pageBridge handler map must implement cancelActiveWrite');
   assert.match(pageBridgeSrc, /writeCancellationSequence\s*\+=\s*1/,
     'cancelActiveWrite must increment the sequence counter');

@@ -12,7 +12,6 @@ const Journal = req('extension/src/page/writebackReceiptJournal');
 const Broker = req('extension/src/content/assetTransferBroker');
 const Controller = req('extension/src/content/writebackController');
 const Plan = req('extension/src/content/writebackPlan');
-const Verification = req('extension/src/content/writebackVerificationController');
 const Storage = req('extension/src/shared/storageDb');
 const ProjectFiles = req('extension/src/shared/projectFiles');
 const Governance = req('extension/src/shared/governanceRules');
@@ -130,11 +129,11 @@ function createFlow(options = {}) {
     }, { preserveRunActionPayload: true }));
     return true;
   };
-  c.spaRouteGeneration = 0; c.writebackVerificationController = null; c.directoryCleanupRecovery = null;
+  c.spaRouteGeneration = 0; c.directoryCleanupRecovery = null;
   Object.assign(c.Modules, { SessionState: Session, UndoOperations: Undo, WritebackIntent: Intent, RunActivityModel: Activity,
-    WritebackVerificationController: Verification, DirectoryCleanupRecovery: req('extension/src/content/directoryCleanupRecovery'),
+    DirectoryCleanupRecovery: req('extension/src/content/directoryCleanupRecovery'),
     StorageDb: { ...Storage, getRecord: async (_store, id) => clone(durableRows.get(id)) } });
-  for (const name of ['appendRunEvent', 'appendCompletionReport', 'recoveryOwner', 'getWritebackVerificationController', 'getDirectoryCleanupRecovery', 'stageWritebackRecovery',
+  for (const name of ['appendRunEvent', 'appendCompletionReport', 'recoveryOwner', 'getDirectoryCleanupRecovery', 'stageWritebackRecovery',
     'settleWritebackRecovery', 'retryRunWriteback', 'recordUndoFromApply', 'prepareRetryReplacement']) {
     vm.runInContext(extractFunction(runtime, name), c, { filename: 'runtime#' + name });
   }
@@ -167,6 +166,7 @@ function createFlow(options = {}) {
     stageWritebackRecovery: (...args) => c.stageWritebackRecovery(...args), settleWritebackRecovery: (...args) => c.settleWritebackRecovery(...args),
     assetTransferBroker: broker, callPageBridge, sendBackgroundNative: native, writebackController: Controller, writebackSettlement: Settlement,
     compileAdapter: Compile, buildSyncApplyOperations: Controller.buildSyncApplyOperations,
+    formatOperationFiles: operations => operations.map(operation => operation.path).join(', '),
     getAppliedOperationPaths: Controller.getAppliedOperationPaths, getAppliedSyncChanges: Controller.getAppliedSyncChanges,
     getSkippedEntries: skippedEntries, hasApplyResultEntries: value => appliedEntries(value).length + skippedEntries(value).length > 0,
     hasSkippedApplyOperations: values => values.some(value => skippedEntries(value).length),

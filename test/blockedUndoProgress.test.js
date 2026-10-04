@@ -81,6 +81,9 @@ function harness(options = {}) {
       writes.push({ records: clone(records), options: clone(writeOptions) });
       if (options.beforeWrite) await options.beforeWrite();
       if (options.storageError) throw new Error('IDB transaction aborted');
+      if (options.omitDirectory) records = records.map(record => ({ ...record, runs: record.runs.map(run => {
+        const copy = { ...run }; delete copy.pendingDirectoryCleanup; return copy;
+      }) }));
       for (const record of records) {
         assert.equal(record.accountScopeId, scope.accountScopeId);
         assert.equal(record.projectId, scope.projectId);
@@ -285,4 +288,41 @@ for (const [name, kind, pureText] of [['Accept', 'accept', false], ['text-only R
 }
 test('content runtime remains within its 8000-line ownership budget', () => {
   assert.ok(source.trimEnd().split('\n').length <= 8000);
+});
+
+for (const mode of ['capacity', 'omitted-directory-readback']) {
+  test('passive directory ' + mode + ' cannot block verified file Undo settlement', async () => {
+    const dirs = Array.from({ length: mode === 'capacity' ? 101 : 1 }, (_, index) => ({
+      v: 1, projectId: scope.projectId, path: Array(index + 1).fill('qa').join('/'),
+      nativeFolderId: 'folder-' + index, ownershipConfirmed: false, observedAfterCreate: true
+    }));
+    const target = dirs.at(-1).path + '/created.tex';
+    const operation = { type: 'delete', path: target, undoCreatedFile: { v: 1, kind: 'text', createdDirectories: dirs } };
+    const run = { ...pendingRun(), appliedOperations: [{ type: 'create', path: target, content: 'new' }],
+      undoOperations: [operation], undoBaseFiles: [{ path: target, content: 'new' }],
+      undoExpectedFiles: [], undoTrackedChanges: [] };
+    const h = harness({ run, omitDirectory: mode === 'omitted-directory-readback' });
+    const result = { ok: true, applied: [{ operation, result: { ok: true, verified: true,
+      verification: 'overleaf-zip', directoryCleanup: { ok: false, remaining: dirs } } }], skipped: [] };
+    await h.apply(result);
+    assert.equal(h.calls.length, 1, 'only the original core transition writes durably');
+    assert.equal(h.calls[0].requireDurable, true);
+    assert.equal(h.reload().trackedChangeStatus, 'rejected');
+    assert.equal(h.reload().undoOperations.length, 0);
+    assert.equal(h.reload().pendingDirectoryCleanup, undefined);
+  });
+}
+
+test('core persistence failure still rejects a verified file Undo with passive directory observations', async () => {
+  const target = 'qa/created.tex';
+  const dirs = [{ v: 1, projectId: scope.projectId, path: 'qa', nativeFolderId: 'folder', ownershipConfirmed: false, observedAfterCreate: true }];
+  const operation = { type: 'delete', path: target, undoCreatedFile: { v: 1, kind: 'text', createdDirectories: dirs } };
+  const run = { ...pendingRun(), appliedOperations: [{ type: 'create', path: target, content: 'new' }],
+    undoOperations: [operation], undoBaseFiles: [{ path: target, content: 'new' }], undoExpectedFiles: [], undoTrackedChanges: [] };
+  const h = harness({ run, storageError: true }), before = recovery(h.run);
+  await assert.rejects(h.apply({ ok: true, applied: [{ operation, result: { ok: true, verified: true,
+    verification: 'overleaf-zip', directoryCleanup: { ok: false, remaining: dirs } } }], skipped: [] }), /IDB transaction aborted/);
+  assert.equal(h.run.trackedChangeStatus, 'needs_review');
+  assert.deepEqual(recovery(h.run), before);
+  assert.notEqual(h.reload().trackedChangeStatus, 'rejected');
 });

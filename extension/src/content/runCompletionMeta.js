@@ -39,7 +39,18 @@
     if (!Array.isArray(meta) || !run) return meta;
     const undone = run.undoStatus === 'applied' || run.trackedChangeStatus === 'rejected';
     const rows = (undone ? meta.filter(row => row?.key !== 'saveState') : meta)
-      .filter(row => row?.key !== 'recoveryRetention');
+      .filter(row => row?.key !== 'recoveryRetention' && row?.key !== 'directoryObservation');
+    const pending = run.pendingDirectoryCleanup;
+    if (!run.forkSnapshot && pending?.v === 1 && pending.runId === run.id
+      && pending.projectId === run.runProjectId && pending.projectId === options.projectId
+      && pending.accountScopeId && pending.accountScopeId === options.accountScopeId) {
+      const paths = [...new Set((Array.isArray(pending.directories) ? pending.directories : []).filter(item => item?.projectId === pending.projectId
+        && typeof item.path === 'string' && item.path && !/^[\\/]|^[A-Za-z]:|[\u0000-\u001f\u007f]/.test(item.path)
+        && !item.path.replace(/\\/g, '/').split('/').some(part => !part || part === '.' || part === '..')).map(item => item.path))];
+      if (paths.length) rows.push({ key: 'directoryObservation', label: tx('Folders', '文件夹'),
+        value: tx('The run recorded these folders at completion; their current status has not been rechecked: ',
+          '本轮结束时记录了以下文件夹，当前状态尚未重新核验：') + paths.join(', ') });
+    }
     const retentionOmitted = hasOmittedRecoveryRetention(run);
     const inFlight = trackedChangeInFlight?.get(run.id);
     const tracked = isTrackedChangeLifecycleRun(run);
@@ -70,15 +81,15 @@
     if (retentionOmitted) {
       const budget = ['run-budget', 'session-budget'].includes(run.recoveryRetention.reason);
       const directory = run.recoveryRetention.directoryCleanup === true ? tx(
-        'Folder review data was not retained. After reload, inspect remaining folders manually in Overleaf.',
-        '目录核查材料未保留，刷新后请在 Overleaf 中人工检查剩余目录。') : '';
+        'Recorded folder observations were not retained; their current status is unknown.',
+        '文件夹历史观测记录未保留，当前状态未核验。') : '';
       const recovery = budget
         ? tx('Persistent recovery data was not retained: local recovery budget exceeded. After reload, use Overleaf history to recover.',
           '持久恢复材料未保留：超过本地恢复预算，刷新后请使用 Overleaf 历史恢复。')
         : tx('Persistent recovery data was not retained. After reload, use Overleaf history to recover.',
           '持久恢复材料未保留，刷新后请使用 Overleaf 历史恢复。');
       projected.push({ key: 'recoveryRetention', label: tx('Recovery data', '恢复材料'),
-        value: directory && (undone || run.trackedChangeStatus === 'accepted')
+        value: directory && (run.recoveryRetention.coreRetained === true || undone || run.trackedChangeStatus === 'accepted')
           ? directory : [recovery, directory].filter(Boolean).join(' ') });
     }
     return projected;
@@ -141,7 +152,9 @@
               : failed || retentionOmitted ? '' : tx('Nothing to undo', '无可撤销写入');
     if (undo) facts.push({ key: 'undo', text: undo });
     if (retentionOmitted) facts.push({ key: 'recoveryRetention', tone: 'warn',
-      text: tx('Recovery data not retained after reload', '刷新后恢复材料未保留') });
+      text: run.recoveryRetention.coreRetained === true
+        ? tx('Folder observations not retained after reload', '刷新后文件夹观测记录未保留')
+        : tx('Recovery data not retained after reload', '刷新后恢复材料未保留') });
     if (savePending) facts.push({ key: 'save', tone: 'warn', text: tx('Save pending', '保存待确认') });
     const attention = failed || skipped > 0 || retentionOmitted;
     const warnKeys = new Set([...(failed || skipped > 0 ? ['writeResult', 'nextStep'] : []),

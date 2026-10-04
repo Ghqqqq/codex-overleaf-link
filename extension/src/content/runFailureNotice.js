@@ -1,14 +1,40 @@
 (function initRunFailureNotice(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('../shared/failureReasons'));
   } else {
-    root.CodexOverleafModuleRegistry.define('RunFailureNotice', [], factory);
+    root.CodexOverleafModuleRegistry.define('RunFailureNotice', ['FailureReasons'], factory);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function runFailureNoticeFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function runFailureNoticeFactory(FailureReasons) {
   'use strict';
 
   const REVIEW_CODES = new Set(['write_timeout', 'partial_write_needs_review']);
   const CANCEL_CODES = new Set(['cancelled', 'user_cancelled', 'codex_cancelled']);
+  const SNAPSHOT_UNDO_CODES = new Set(['snapshot_undo_current_mismatch', 'snapshot_undo_open_failed', 'snapshot_undo_unavailable']);
+  const LOCALIZED_FAILURE_CODES = new Set([...SNAPSHOT_UNDO_CODES, 'file_tree_controls_unavailable']);
+
+  // These exact Page templates survived old settlement compaction after the
+  // original machine code was dropped. This compatibility view is never used
+  // for recovery permissions, classification or persistence.
+  function snapshotUndoDisplayFailure(failure) {
+    if (failure?.code !== 'unknown_legacy_failure'
+      || LOCALIZED_FAILURE_CODES.has(failure?.evidence?.originalCode)) return failure;
+    const message = String(failure.userMessage || '');
+    if (message === 'The saved checkpoint is unavailable for this undo.') {
+      return { ...failure, code: 'snapshot_undo_unavailable' };
+    }
+    const templates = [
+      ['snapshot_undo_current_mismatch', /^(.+) 当前内容或文档身份与本轮撤销检查点不一致；Codex 保留恢复材料并停止撤销。$/],
+      ['snapshot_undo_current_mismatch', /^(.+) 当前内容已经不是本轮写入后的内容；为避免覆盖你的后续修改，Codex 不执行快照撤销。$/],
+      ['snapshot_undo_open_failed', /^无法打开 (.+) 来执行快照撤销。$/]
+    ];
+    for (const [code, pattern] of templates) {
+      const match = pattern.exec(message);
+      if (match && safeProjectPath(match[1]) === match[1]) {
+        return { ...failure, code, file: failure.file || match[1] };
+      }
+    }
+    return failure;
+  }
 
   // Old attempts remain in the stored audit trail; a resolved undo must not
   // advertise them as a current failure in the transcript or its summary.
@@ -49,9 +75,20 @@
       heading.textContent = tr(unconfirmed ? 'runFeedbackUnconfirmedTitle'
         : partial ? 'runFeedbackPartialTitle' : 'runFeedbackFailedTitle');
       const message = documentRef.createElement('p');
-      const detail = typeof failure?.userMessage === 'string' ? failure.userMessage : '';
       const file = safeProjectPath(failure?.file);
-      message.textContent = sanitizeText([file, detail].filter(Boolean).join(': ').slice(0, 1000))
+      // Persisted messages may have been produced in another language. Render
+      // known machine codes through the current panel locale at display time;
+      // unknown diagnostics retain their original text and evidence.
+      const displayFailure = snapshotUndoDisplayFailure(failure);
+      const displayFile = safeProjectPath(displayFailure?.file);
+      const localizedCode = LOCALIZED_FAILURE_CODES.has(displayFailure?.code)
+        || (displayFailure?.code === 'unknown_legacy_failure' && LOCALIZED_FAILURE_CODES.has(displayFailure?.evidence?.originalCode));
+      const localized = localizedCode && FailureReasons?.localizeFailureReason?.({ ...displayFailure, file: displayFile }, undefined, key => {
+        const value = tr(key);
+        return value && value !== key ? value : undefined;
+      });
+      const detail = localized?.userMessage || (typeof failure?.userMessage === 'string' ? failure.userMessage : '');
+      message.textContent = sanitizeText([displayFile, detail].filter(Boolean).join(': ').slice(0, 1000))
         || tr('runFeedbackGeneric');
       notice.append(heading, message);
       if (unconfirmed) {

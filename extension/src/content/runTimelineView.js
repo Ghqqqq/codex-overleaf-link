@@ -45,10 +45,6 @@
       refillComposerForRetry,
       canEditRun,
       retryWriteback,
-      checkWriteback,
-      openManualReviewFile,
-      verifyManualReview,
-      checkCreatedDirectories,
       showNativeSetupGuidance,
       openProjectFileForFailure,
       openStorageSettings,
@@ -78,12 +74,11 @@
     onLayoutChange: scroller => logAutoFollow ? scrollLogToBottom() : updateJumpToLatestButton(scroller)
   });
   const failureNotice = RunFailureNotice?.create({ tr, projectRunSettlement, sanitizeText: sanitizeAssistantVisibleText });
-  const { buildRecoveryButton, appendRecoveryActionForFailure, renderDirectoryCleanup } = RunRecoveryActions.create({
+  const { buildRecoveryButton, appendRecoveryActionForFailure } = RunRecoveryActions.create({
     document: typeof document === 'undefined' ? undefined : document,
     window: typeof window === 'undefined' ? undefined : window,
     tx, failureNotice, refillComposerForRetry, openProjectFileForFailure, showNativeSetupGuidance,
-    openStorageSettings, forceCancelStuckTaskForCurrentProject, getCurrentRunView, trackedChangeInFlight,
-    openManualReviewFile, verifyManualReview, getCurrentProjectId, getAccountScopeId, checkCreatedDirectories
+    openStorageSettings, forceCancelStuckTaskForCurrentProject
   });
   const presence = RunPresence?.create({ tx, getLocale, formatElapsed });
   const displayRun = run => RunFailureNotice?.projectResolvedUndo?.(run) || run;
@@ -396,9 +391,7 @@
           <button type="button" data-run-undo hidden title="Undo this run's writes to Overleaf">Undo</button>
           <button type="button" class="run-copy-action run-edit-action" data-run-edit hidden></button>
           <button type="button" class="run-copy-action run-sync-action" data-run-sync-retry hidden></button>
-          <button type="button" class="run-final-answer__recovery-action" data-run-sync-check hidden></button>
         </div>
-        <section class="run-feedback" data-run-directory-cleanup hidden></section>
         <details class="run-process" data-run-process>
           <summary data-run-process-summary>
             <span class="run-status" data-run-status></span>
@@ -604,7 +597,8 @@
   // The result presenter owns parsing and current lifecycle metadata.
   const splitFlatCompletionReport = text => RunResultActions.splitFlatCompletionReport(text, tx);
   const projectCompletionMeta = (meta, run) => RunResultActions.projectCompletionMeta(meta, run, {
-    tx, trackedChangeInFlight, isTrackedChangeLifecycleRun, projectRunSettlement
+    tx, trackedChangeInFlight, isTrackedChangeLifecycleRun, projectRunSettlement,
+    projectId: getCurrentProjectId?.(), accountScopeId: getAccountScopeId?.()
   });
 
   // The user's own open/closed choice per run survives card re-renders.
@@ -809,8 +803,6 @@
   }
 
   function configureWritebackButton(root, run, options = {}) {
-    renderDirectoryCleanup(root, run);
-    configureWritebackCheckButton(root, run, options);
     const existing = root.querySelector('[data-run-sync-retry]');
     if (!existing) return;
     const button = existing.cloneNode(true);
@@ -826,31 +818,6 @@
     button.setAttribute('aria-label', button.title);
     button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.5 7A7 7 0 0 0 4 5L2 7m0-4v4h4M3.5 13A7 7 0 0 0 16 15l2-2m0 4v-4h-4"/></svg>';
     button.addEventListener('click', event => { event.stopPropagation(); if (!getCurrentRunView?.()) void retryWriteback(run.id); });
-  }
-
-  function configureWritebackCheckButton(root, run, options = {}) {
-    const existing = root.querySelector('[data-run-sync-check]');
-    if (!existing) return;
-    const button = existing.cloneNode(true);
-    existing.replaceWith(button);
-    const check = run?.writebackCheck;
-    const available = !run?.forkSnapshot && check?.v === 1 && check.purpose === 'writeback-revalidation'
-      && Array.isArray(check.files) && check.files.length > 0 && typeof checkWriteback === 'function';
-    button.hidden = !available;
-    if (!available) return;
-    const busy = () => Boolean(getCurrentRunView?.());
-    button.disabled = typeof options.running === 'boolean' ? options.running : busy();
-    button.textContent = tx('Check writeback content', '核查写入内容');
-    button.title = tx('Read the current project contents without repeating writes or changing Undo ownership.', '只读取当前项目内容，不重复写入或改变撤销归属。');
-    button.setAttribute('aria-label', button.textContent);
-    button.addEventListener('click', async event => {
-      event.stopPropagation();
-      if (busy()) return;
-      button.disabled = true;
-      try { await checkWriteback(run.id); }
-      catch (_error) { /* The runtime check owns error feedback and scope validation. */ }
-      finally { button.disabled = busy(); }
-    });
   }
 
   function configureUndoButton(root, run) {
@@ -885,7 +852,6 @@
       ? tr('undoAppliedTitle')
       : (run.partialWriteback ? tr('undoPartialRunTitle') : tr('undoRunTitle'));
     if (run.undoRecoveryUnavailable) button.title = tx('Undo recovery checks are unavailable. Reload this page after the connection recovers.', '撤销恢复检查暂不可用，请在连接恢复后重新加载此页面。');
-    if (run.undoRecoveryCheckRequired) { button.textContent = tx('Check Undo recovery', '检查撤销恢复'); button.title = button.textContent; }
     button.addEventListener('click', event => {
       event.stopPropagation();
       undoRun(run.id);

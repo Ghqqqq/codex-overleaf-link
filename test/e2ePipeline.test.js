@@ -213,9 +213,7 @@ function createMinimalPageBridgeHarness({ activePath, files }) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/referenceProjects.js'), 'utf8'), context, { filename: 'referenceProjects.js' });
   vm.runInContext(trackedChangeCaptureSource, context, { filename: 'trackedChangeCapture.js' });
   context.CodexOverleafProjectFiles = context.window.CodexOverleafProjectFiles;
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/shared/manualReviewProof.js'), 'utf8'), context, { filename: 'manualReviewProof.js' });
   context.window.CodexOverleafManualReviewProof = context.CodexOverleafManualReviewProof;
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/manualReviewRecovery.js'), 'utf8'), context, { filename: 'manualReviewRecovery.js' });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/reviewContext.js'), 'utf8'), context, { filename: 'reviewContext.js' });
   vm.runInContext(trackedChangesLifecycleSource, context, { filename: 'trackedChangesLifecycle.js' });
   vm.runInContext(writebackRouterSource, context, { filename: 'writebackRouter.js' });

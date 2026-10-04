@@ -59,18 +59,47 @@ test('binary move verified projection keeps binary bytes instead of turning the 
   assert.equal(next.files[0].kind, 'binary'); assert.equal(next.files[0].contentBase64, 'Ymlu');
   assert.equal(next.files[0].content, undefined);
 });
-test('Router dispatches proved move to the production FileMover and verified inverse returns the original file', async () => {
-  const h = fixture();
+for (const kind of ['text', 'binary']) test('stored historical ' + kind + ' move remains reversible through the current Undo router', async () => {
+  const source = kind === 'text' ? 'new.tex' : 'new.png', target = kind === 'text' ? 'old.tex' : 'old.png';
+  const h = fixture({ kind, source, target });
+  const original = h.files.get(source);
   Object.assign(h.window, { CodexOverleafWriteGuard: Guard, CodexOverleafStaleGuard: Stale });
   const router = Router.create({ window: h.window, treeOperations: h.treeOperations,
     moveFile: h.mover.moveFile, normalizeSafeProjectPath: Files.normalizeSafeProjectPath,
-    ensureEditing: async () => ({ ok: true }), ensureReviewing: async () => ({ ok: true }) });
-  const applied = await router.applyOperations([h.operation], { runProjectId: h.state.projectId, requireEditing: true });
-  assert.equal(applied.ok, true, JSON.stringify(applied));
-  const verified = Settlement.attachVerifiedContentToOperation(h.operation, applied.applied[0].result);
-  const checkpoint = Undo.buildUndoCheckpoint({ files: [{ path: 'old.tex', content: 'original contents\n' }] }, [verified]);
-  const result = await router.applyOperations(checkpoint.undoOperations, { runProjectId: h.state.projectId, requireEditing: true });
-  assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(h.files.get('old.tex').id, 'entity-source');
+    ensureEditing: async () => ({ ok: true }), ensureReviewing: async () => ({ ok: true }),
+    isEditingConfirmedForNoTraceUndo: () => true, delay: async () => {} });
+  const recorded = { ...h.operation, path: target, to: source };
+  const checkpoint = Undo.buildUndoCheckpoint({ files: kind === 'text' ? [{ path: target, content: 'original contents\n' }] : [] }, [recorded]);
+  const stored = Storage.buildSessionRecord({ id: 's', projectId: h.state.projectId, accountScopeId: 'a', runs: [{ id: 'r',
+    runProjectId: h.state.projectId, appliedOperations: [recorded], ...checkpoint, status: 'completed' }] }, { preserveRunActionPayload: true });
+  const restored = Session.normalizeRuns(stored.runs)[0];
+  const result = await router.applyOperations(restored.undoOperations, { runProjectId: h.state.projectId, reviewingPolicy: 'no-trace-undo' });
+  assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(h.files.get(target), original);
+  assert.equal(h.files.has(source), false); assert.equal(original.comments[0].id, 'comment-original');
+  const repeated = await router.applyOperations(restored.undoOperations, { runProjectId: h.state.projectId, reviewingPolicy: 'no-trace-undo' });
+  assert.equal(repeated.ok, true, JSON.stringify(repeated)); assert.equal(h.state.posts.length, 1);
+});
+test('fresh proof moves cannot use the historical consumer or spoof its internal Undo option', async () => {
+  const h = fixture();
+  Object.assign(h.window, { CodexOverleafWriteGuard: Guard });
+  const router = Router.create({ window: h.window, treeOperations: h.treeOperations,
+    moveFile: h.mover.moveFile, normalizeSafeProjectPath: Files.normalizeSafeProjectPath,
+    ensureEditing: async () => ({ ok: true }) });
+  for (const noTraceUndo of [false, true]) {
+    const result = await router.applyOperations([h.operation], { runProjectId: h.state.projectId, requireEditing: true, noTraceUndo });
+    assert.equal(result.ok, false); assert.equal(result.skipped[0].result.code, 'file_tree_controls_unavailable');
+  }
+  assert.equal(h.state.posts.length, 0); assert.equal(h.state.snapshots, 0);
+});
+for (const type of ['rename', 'move']) test('pre-B02 generic ' + type + ' remains available without metadata proof', async () => {
+  const files = new Set(['old.tex']);
+  const manager = { async renameEntity(from, to) { files.delete(from); files.add(to); },
+    async moveEntity(from, to) { files.delete(from); files.add(to); } };
+  const router = Router.create({ window: {}, normalizeSafeProjectPath: Files.normalizeSafeProjectPath,
+    treeOperations: { getProjectId: () => 'p', projectPathExists: path => files.has(path), findFileTreeManager: () => manager },
+    delay: async () => {} });
+  const result = await router.applyOperations([{ type, path: 'old.tex', to: 'new.tex' }], { runProjectId: 'p' });
+  assert.equal(result.ok, true, JSON.stringify(result)); assert.deepEqual([...files], ['new.tex']);
 });
 test('an incomplete move retains its location evidence in the persisted report failure', async () => {
   const h = fixture({ target: 'dest/new.tex', unknownStep: 1 }); const result = await h.move();

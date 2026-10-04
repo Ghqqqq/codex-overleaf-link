@@ -27,7 +27,6 @@ if (!globalThis.CodexOverleafStorageRunActions) {
   const storageDependencies = [
     ['CodexOverleafModuleRegistry', 'content/moduleRegistryKernel.js'],
     ['CodexOverleafProjectFiles', 'shared/projectFiles.js'],
-    ['CodexOverleafManualReviewProof', 'shared/manualReviewProof.js'],
     ['CodexOverleafDirectoryCleanupProof', 'shared/directoryCleanupProof.js'],
     ['CodexOverleafUndoOperations', 'shared/undoOperations.js'],
     ['CodexOverleafSelectionContext', 'shared/selectionContext.js'],

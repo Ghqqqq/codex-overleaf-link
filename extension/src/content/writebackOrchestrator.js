@@ -53,7 +53,6 @@
   let buildReviewingBlockedApplyResult;
   let ensureReviewingBeforeWrite;
   let confirmBinaryOperations;
-  let confirmWholeFilePlan;
   let compileAdapter;
   let filterSyncChangesByOperations;
   let writebackController;
@@ -184,9 +183,17 @@
       };
     }
     let operations = buildSyncApplyOperations(syncChanges, project);
-    const requestedOperations = operations;
     let visibleSyncChanges = syncChanges || [];
-    let additionalSkippedEntries = [];
+    // A previous Native build can still report inferred metadata moves.
+    // Forward sync never promotes them to a new file or a new capability.
+    let additionalSkippedEntries = operations.filter(operation => operation.type === 'move').map(operation => ({
+      operation,
+      result: { ok: false, code: 'file_tree_controls_unavailable', changedDocument: false,
+        reason: tx('Automatic file moves are unavailable. Handle the path change in Overleaf before retrying.',
+          '暂不支持自动移动文件，请先在 Overleaf 中处理路径变化后再重试。') }
+    }));
+    operations = operations.filter(operation => operation.type !== 'move');
+    if (additionalSkippedEntries.length) visibleSyncChanges = filterSyncChangesByOperations(syncChanges, operations);
     let skippedFilesForAudit = additionalSkippedEntries;
     let appliedFilesForAudit = [];
     const pathSafety = partitionUnsafeProjectPathOperations(operations);
@@ -211,13 +218,20 @@
       visibleSyncChanges = filterSyncChangesByOperations(syncChanges, operations);
     }
     if (!operations.length) {
+      const blockedSettlement = buildSettlement({
+        operations: buildSyncApplyOperations(syncChanges, project),
+        applyResult: { ok: additionalSkippedEntries.length === 0, applied: [], skipped: additionalSkippedEntries }
+      });
+      const blockedFailure = blockedSettlement
+        ? writebackSettlement.projectRunSettlement({ settlement: blockedSettlement.facts }).primaryFailure : undefined;
       appendRunEvent({
         title: tx('Codex did not produce file changes that need to sync back to Overleaf.', 'Codex 没有产生需要同步回 Overleaf 的文件改动。'),
         status: 'completed'
       });
       appendCompletionReport({
         conclusion: assistantMessage || tx('Codex finished locally. There are no changes to sync back to Overleaf.', 'Codex 已完成本地处理，没有需要同步回 Overleaf 的改动。'),
-        status: runMode === 'ask' ? tr('modeAsk') : 'completed',
+        status: additionalSkippedEntries.length ? 'failed' : runMode === 'ask' ? tr('modeAsk') : 'completed',
+        failure: blockedFailure,
         operations: [],
         applyResults: additionalSkippedEntries.length ? [{ ok: false, applied: [], skipped: additionalSkippedEntries }] : [],
         unchangedReason: additionalSkippedEntries.find(item => item?.result?.reason)?.result.reason
@@ -228,14 +242,7 @@
       return {
         summaryLine: assistantMessage || tx('No changes to sync', '没有需要同步的改动'),
         hasSkippedOperations: additionalSkippedEntries.length > 0,
-        settlement: buildSettlement({
-          operations: buildSyncApplyOperations(syncChanges, project),
-          applyResult: {
-            ok: additionalSkippedEntries.length === 0,
-            applied: [],
-            skipped: additionalSkippedEntries
-          }
-        }),
+        settlement: blockedSettlement,
         audit: buildAuditSummaryFromApply({
           operations: buildSyncApplyOperations(syncChanges, project),
           applyResults: additionalSkippedEntries.length ? [{ ok: false, applied: [], skipped: additionalSkippedEntries }] : [],
@@ -245,11 +252,7 @@
       };
     }
 
-    const wholePlan = requestedOperations.some(op => op.type === 'move')
-      || requestedOperations.some(op => op.type === 'delete') && requestedOperations.some(op => ['create', 'binary-create'].includes(op.type));
-    const filePlan = wholePlan ? await confirmWholeFilePlan(operations, { originalOperations: requestedOperations }) : null;
-    if (filePlan) { operations = filePlan.operations; additionalSkippedEntries.push(...filePlan.skipped); }
-    const deleteOperations = filePlan ? [] : operations.filter(operation => operation.type === 'delete');
+    const deleteOperations = operations.filter(operation => operation.type === 'delete');
     if (deleteOperations.length) {
       const approved = await showPluginConfirm({
         title: tr('deleteFilePromptTitle'),
@@ -277,7 +280,7 @@
         status: 'running'
       });
     }
-    const binaryDecision = filePlan ? { operations, skipped: [] } : await confirmBinaryOperations(operations);
+    const binaryDecision = await confirmBinaryOperations(operations);
     operations = binaryDecision.operations;
     additionalSkippedEntries.push(...binaryDecision.skipped);
 
@@ -891,7 +894,6 @@
       buildReviewingBlockedApplyResult,
       ensureReviewingBeforeWrite,
       confirmBinaryOperations,
-      confirmWholeFilePlan,
       filterSyncChangesByOperations,
       writebackController,
       RUN_SNAPSHOT_ZIP_TIMEOUT_MS,

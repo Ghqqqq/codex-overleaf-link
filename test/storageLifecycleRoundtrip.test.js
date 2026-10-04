@@ -14,7 +14,6 @@ const UndoOperations=require(path.join(repo,'extension/src/shared/undoOperations
 const CaptureController=require(path.join(repo,'extension/src/content/trackedChangeCaptureController'));
 const StorageKeys=require(path.join(repo,'extension/src/shared/storageKeys'));
 const ReviewController=require(path.join(repo,'extension/src/content/runReviewController'));
-const RecoveryActions=require(path.join(repo,'extension/src/content/runRecoveryActions'));
 const {extractFunction}=require(path.join(repo,'test/_helpers/extractFunction'));
 const runtime=source('extension/src/content/contentRuntime.js');
 const timelineSource=source('extension/src/content/runTimelineView.js');
@@ -83,9 +82,8 @@ function actionView(run,forkHandler=async()=>{}) {
     configureLifecycleUndoButton:()=>{throw new Error('stripped_fork_must_not_be_lifecycle');},
     wireAcceptInlineConfirm:()=>{throw new Error('stripped_fork_must_not_accept');},root,run};
   vm.createContext(ctx);
-  ctx.renderDirectoryCleanup=RecoveryActions.create({tx:en=>en}).renderDirectoryCleanup;
   vm.runInContext(extractFunction(resultActionsSource,'configureForkButton'),ctx);
-  for(const name of ['isTrackedChangeLifecycleRun','configureEditButton','configureWritebackCheckButton','configureWritebackButton','configureUndoButton','configureAcceptButton'])
+  for(const name of ['isTrackedChangeLifecycleRun','configureEditButton','configureWritebackButton','configureUndoButton','configureAcceptButton'])
     vm.runInContext(extractFunction(timelineSource,name),ctx);
   ctx.configureForkButton(root,run);ctx.configureEditButton(root,run);ctx.configureWritebackButton(root,run);
   ctx.configureUndoButton(root,run);ctx.configureAcceptButton(root,run);

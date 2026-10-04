@@ -291,10 +291,9 @@ async function collectMirrorChangesDetailed({ projectId, rootDir }) {
     }
   }
 
-  const relocated = combineVerifiedFileMoves(changes, unsupportedChanges, baselineByPath);
   const budgeted = enforceNativeResponsePayloadBudget({
-    changes: relocated.changes,
-    unsupportedChanges: relocated.unsupportedChanges,
+    changes,
+    unsupportedChanges,
     mirror
   });
 
@@ -302,44 +301,6 @@ async function collectMirrorChangesDetailed({ projectId, rootDir }) {
     changes: budgeted.changes.sort(compareSyncChanges),
     unsupportedChanges: budgeted.unsupportedChanges.sort((left, right) => left.path.localeCompare(right.path))
   };
-}
-
-// The filesystem diff has no rename event. Only an unambiguous, byte-identical
-// removed source/new destination pair can be represented as a single move.
-// Content is read afresh by the Page move handler under this baseline hash.
-function combineVerifiedFileMoves(changes, unsupportedChanges, baselineByPath) {
-  const sources = new Map(), destinations = new Map();
-  const add = (map, key, value) => map.set(key, [...(map.get(key) || []), value]);
-  for (const change of changes) {
-    const previous = baselineByPath.get(change.path);
-    if (change.type === 'delete' && previous && previous.kind !== 'binary') {
-      add(sources, 'text:' + hashText(previous.content || ''), change);
-    } else if (!previous && change.type === 'write') {
-      add(destinations, 'text:' + hashText(change.content || ''), change);
-    } else if (!previous && change.type === 'binary-create') {
-      add(destinations, 'binary:' + change.sha256, change);
-    }
-  }
-  for (const change of unsupportedChanges) {
-    const previous = baselineByPath.get(change.path);
-    if (change.reason === 'binary_delete_unsupported' && previous?.kind === 'binary'
-      && isSupportedBinaryAssetPath(change.path) && /^[a-f0-9]{64}$/i.test(previous.hash || '')) {
-      add(sources, 'binary:' + previous.hash, change);
-    }
-  }
-  const consumed = new Set(), moves = [];
-  for (const [key, removed] of sources) {
-    const added = destinations.get(key);
-    if (removed.length !== 1 || added?.length !== 1) continue;
-    const source = removed[0], destination = added[0];
-    const [kind, sha256] = key.split(':');
-    consumed.add(source); consumed.add(destination);
-    moves.push({ type: 'move', path: source.path, to: destination.path,
-      moveProof: { v: 1, kind, sha256 }, previousExists: true, previousKind: kind,
-      size: kind === 'binary' ? destination.size : Buffer.byteLength(destination.content || '', 'utf8') });
-  }
-  return { changes: [...changes.filter(change => !consumed.has(change)), ...moves],
-    unsupportedChanges: unsupportedChanges.filter(change => !consumed.has(change)) };
 }
 
 function enforceNativeResponsePayloadBudget({ changes, unsupportedChanges, mirror }) {

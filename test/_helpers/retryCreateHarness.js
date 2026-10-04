@@ -22,7 +22,6 @@ const WritebackIntent = req('extension/src/shared/writebackIntent.js');
 const SessionState = req('extension/src/shared/sessionState.js');
 const StaleGuard = req('extension/src/shared/staleGuard.js');
 const WriteGuard = req('extension/src/page/writeGuard.js');
-const Verification = req('extension/src/content/writebackVerificationController.js');
 const Storage = req('extension/src/shared/storageDb.js');
 const runtimeSource = read('extension/src/content/contentRuntime.js');
 const pageSource = read('extension/src/pageBridge.js');
@@ -76,8 +75,8 @@ function createHarness({ existing, pending = true, zipOptions = {}, content = '%
   const session = { id: owner.sessionId, runs: [record] }, state = { mode: 'auto', requireReviewing: false, autoRecompile: false };
   const durableRows = new Map();
   const runtime = vm.createContext({ Modules: { WritebackIntent, SessionState, UndoOperations: Undo,
-      WritebackVerificationController: Verification, StorageDb: { ...Storage, getRecord: async (_store, id) => clone(durableRows.get(id)) } }, WritebackSettlement: Settlement,
-    spaRouteGeneration: 0, writebackVerificationController: null, updateIdleClient: null,
+      StorageDb: { ...Storage, getRecord: async (_store, id) => clone(durableRows.get(id)) } }, WritebackSettlement: Settlement,
+    spaRouteGeneration: 0, updateIdleClient: null,
     crypto, AbortController, TextEncoder, Date, console, state, currentRunView: null,
     trackedChangeInFlight: new Set(), cachedAccountScopeId: owner.accountScopeId,
     runCancellationRequested: false, runCancellationController: null,
@@ -97,7 +96,7 @@ function createHarness({ existing, pending = true, zipOptions = {}, content = '%
       return true;
     }, saveStateSoon: noop,
     finishRunView: async (label, status) => { record.status = status; finishes.push({ label, status }); } });
-  for (const name of ['recoveryOwner', 'getWritebackVerificationController', 'stageWritebackRecovery', 'settleWritebackRecovery', 'retryRunWriteback', 'recordUndoFromApply']) {
+  for (const name of ['recoveryOwner', 'stageWritebackRecovery', 'settleWritebackRecovery', 'retryRunWriteback', 'recordUndoFromApply']) {
     vm.runInContext(extractFunction(runtimeSource, name), runtime, { filename: 'contentRuntime.js#' + name });
   }
   const plan = Plan.create({ tx, tr, normalizeSafeProjectPath: ProjectFiles.normalizeSafeProjectPath,
@@ -126,6 +125,7 @@ function createHarness({ existing, pending = true, zipOptions = {}, content = '%
     return orchestrator.applySyncChangesToOverleaf(...args);
   };
   return { op, f, fixtureOptions, runtime, record, trace, applications, finishes, toasts, persisted,
+    readStoredRun() { return clone(durableRows.get(session.id)?.runs.find(run => run.id === record.id)); },
     async duplicateOriginalRequest() { return journal.apply(lastDispatch); },
     async retry() { await runtime.retryRunWriteback(record.id); await orchestrator.getPendingMirrorRefresh(); assert.deepEqual(toasts, []); return applications.at(-1); },
     async direct(retryCreates) { return router.applyOperations([clone(op)], { runProjectId: owner.projectId, retryCreates, baseFiles: [], requireEditing: true }); },

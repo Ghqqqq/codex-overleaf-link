@@ -124,7 +124,6 @@ const ReviewSessionState = require('../extension/src/shared/sessionState');
 const ReviewStorageDb = require('../extension/src/shared/storageDb');
 const ReviewFailureReasons = require('../extension/src/shared/failureReasons');
 const ReviewController = require('../extension/src/content/runReviewController');
-const ManualReviewProof = require('../extension/src/shared/manualReviewProof');
 const DirectoryRecovery = require('../extension/src/content/directoryCleanupRecovery');
 const reviewTimelineSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/runTimelineView.js'), 'utf8');
 const reviewActionSource = [
@@ -145,8 +144,8 @@ function createReviewPersistenceHarness(options = {}) {
   // Start at the live post-write boundary; reload the durable result through the real codecs below.
   const session = { id: 'review-session', title: 'QA', runs: [run] };
   const state = { activeSessionId: session.id, sessions: [session], runs: session.runs };
-  return new Function('state', 'WritebackSettlement', 'StorageDb', 'FailureReasons', 'options', 'PanelState', 'UndoOperations', 'ReviewController', 'ManualReviewProof', 'DirectoryRecovery', `
-    const Modules = { ScopedPersistenceCoordinator: PanelState, UndoOperations, ManualReviewProof };
+  return new Function('state', 'WritebackSettlement', 'StorageDb', 'FailureReasons', 'options', 'PanelState', 'UndoOperations', 'ReviewController', 'DirectoryRecovery', `
+    const Modules = { ScopedPersistenceCoordinator: PanelState, UndoOperations };
     const directoryRecovery = DirectoryRecovery.create({});
     const getDirectoryCleanupRecovery = () => directoryRecovery;
     const record = state.runs[0];
@@ -226,7 +225,7 @@ function createReviewPersistenceHarness(options = {}) {
       start: kind => kind === 'accept' ? acceptRun(record.id) : undoRunTrackedChanges(record.id, record) };
 `)(state, ReviewSettlement, ReviewStorageDb, ReviewFailureReasons, options,
     require('../extension/src/content/scopedPersistencePanelState'), require('../extension/src/shared/undoOperations'), ReviewController,
-    ManualReviewProof, DirectoryRecovery);
+    DirectoryRecovery);
 }
 
 for (const kind of ['accept', 'reject']) {

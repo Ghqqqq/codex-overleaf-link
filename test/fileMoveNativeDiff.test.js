@@ -17,27 +17,30 @@ async function setup(t, files) {
     collect: () => Mirror.collectMirrorChangesDetailed({ projectId: 'move-test', rootDir }) };
 }
 for (const content of ['exact\r\ncontent\n', '']) {
-  test('unique same-content text relocation becomes one proved move, including empty text', async t => {
+  test('same-content text relocation retains separate create/delete, including empty text', async t => {
     const h = await setup(t, [{ path: 'old.tex', content }]);
     fs.mkdirSync(path.join(h.workspace, 'sections'));
     fs.renameSync(path.join(h.workspace, 'old.tex'), path.join(h.workspace, 'sections/new.tex'));
     const result = await h.collect();
-    assert.deepEqual(result.unsupportedChanges, []); assert.equal(result.changes.length, 1);
-    assert.deepEqual(result.changes[0], { type: 'move', path: 'old.tex', to: 'sections/new.tex',
-      moveProof: { v: 1, kind: 'text', sha256: hash(content) }, previousExists: true, previousKind: 'text',
-      size: Buffer.byteLength(content) });
+    assert.deepEqual(result.unsupportedChanges, []); assert.equal(result.changes.length, 2);
+    assert.deepEqual(result.changes, [
+      { type: 'write', path: 'sections/new.tex', content, previousContent: '', previousExists: false },
+      { type: 'delete', path: 'old.tex', previousContent: content, previousExists: true }
+    ]);
   });
 }
-test('unique binary relocation becomes one move and does not allocate a Native upload token', async t => {
+test('binary relocation retains new upload plus unsupported source deletion', async t => {
   const bytes = Buffer.from('binary source content');
   const h = await setup(t, [{ path: 'old.png', kind: 'binary', contentBase64: bytes.toString('base64') }]);
   fs.renameSync(path.join(h.workspace, 'old.png'), path.join(h.workspace, 'new.png'));
   const result = await h.collect();
-  assert.equal(result.changes.length, 1); assert.deepEqual(result.unsupportedChanges, []);
-  assert.equal(result.changes[0].type, 'move'); assert.equal(result.changes[0].moveProof.kind, 'binary');
-  assert.equal(result.changes[0].moveProof.sha256, hash(bytes));
+  assert.equal(result.changes.length, 1);
+  assert.equal(result.changes[0].type, 'binary-create'); assert.equal(result.changes[0].path, 'new.png');
+  assert.equal(result.changes[0].sha256, hash(bytes));
+  assert.equal(result.unsupportedChanges[0].reason, 'binary_delete_unsupported');
+  assert.equal(result.unsupportedChanges[0].path, 'old.png');
   const prepared = Assets.prepareBinaryAssetChanges({ projectId: 'move-test', rootDir: h.rootDir, changes: result.changes });
-  assert.deepEqual(prepared.changes, result.changes); assert.equal(prepared.changes[0].assetRef, undefined);
+  assert.equal(prepared.changes[0].type, 'binary-create'); assert.ok(prepared.changes[0].assetRef);
 });
 test('ambiguous equal-content sources are not arbitrarily paired', async t => {
   const h = await setup(t, [{ path: 'a.tex', content: 'same' }, { path: 'b.tex', content: 'same' }]);
@@ -55,4 +58,11 @@ test('different new content and standalone binary deletion retain existing opera
   assert.equal(result.changes.some(change => change.type === 'move'), false);
   assert.equal(result.unsupportedChanges.find(change => change.path === 'old.png').reason, 'binary_delete_unsupported');
   assert.equal(result.changes.length, 2);
+});
+
+for (const source of ['literal%2F.tex', 'space name.tex']) test('literal relocation paths stay distinct: ' + source, async t => {
+  const h = await setup(t, [{ path: source, content: 'same' }]);
+  fs.renameSync(path.join(h.workspace, source), path.join(h.workspace, 'literal%20new.tex'));
+  const result = await h.collect();
+  assert.deepEqual(result.changes.map(change => [change.type, change.path]), [['write', 'literal%20new.tex'], ['delete', source]]);
 });

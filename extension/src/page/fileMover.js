@@ -59,10 +59,16 @@
       return typeof value === 'string' && value.length > 0 && value.length <= 4096 && !/[\0\r\n]/.test(value) ? value : '';
     }
 
+    // Compatibility consumer for identity-bound moves recorded by older builds.
+    // New mirror diffs never produce metadata moves.
     async function moveFile(operation, options = {}) {
       const source = normalizePath?.(operation?.path), target = normalizePath?.(operation?.to);
       const proof = operation?.moveProof;
       const projectId = options.runProjectId;
+      const entity = value => typeof value === 'string' && value.length > 0 && value.length <= 160 && !/[\0\r\n]/.test(value);
+      if (options.noTraceUndo !== true || !entity(proof?.sourceEntityId) || !entity(proof?.targetEntityId)
+        || proof.sourceEntityId !== proof.targetEntityId) return { ok: false, code: 'file_tree_controls_unavailable', changedDocument: false,
+        reason: 'A recorded same-entity move is required before its location can be restored.' };
       const deadline = Math.min(Date.now() + 90000, Number.isFinite(options.deadlineAt) ? options.deadlineAt : Infinity);
       const createdDirectories = [], completed = [];
       let entityId = '', entityType = '', attempted = false, currentPath = source;

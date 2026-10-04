@@ -107,3 +107,19 @@ for (const identity of ['account', 'generation']) test('a changed ' + identity +
     assert.equal(JSON.stringify(h.context.state), captured, 'late completion must not rewrite a changed identity');
   } finally { gate.resolve(); h.close(); }
 });
+
+
+test('actual core Undo writer still fails durably with passive directory facts present', async () => {
+  const h = await createPersistenceFixture();
+  try {
+    h.run.pendingDirectoryCleanup = { v: 1, ...h.scope, sessionId: 'qa-session', runId: h.run.id,
+      directories: [{ v: 1, projectId: h.scope.projectId, path: 'qa', nativeFolderId: 'folder', ownershipConfirmed: false, observedAfterCreate: true }] };
+    h.memory.failWrites = true;
+    await assert.rejects(h.undo(), /Synthetic IDB transaction failed/);
+    assert.equal(h.docs.get('main.tex').content, 'before\n');
+    assert.equal(h.run.undoStatus, 'partial');
+    assert.ok(h.run.undoExpectedFiles.length || h.run.undoOperations.length);
+    assert.equal(h.run.pendingDirectoryCleanup.directories[0].path, 'qa');
+    assert.notEqual((await h.load()).run.undoStatus, 'applied');
+  } finally { h.close(); }
+});

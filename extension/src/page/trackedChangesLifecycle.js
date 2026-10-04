@@ -1,10 +1,10 @@
 (function initCodexOverleafTrackedChangesLifecycle(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./trackedChangeReplay'), require('./manualReviewRecovery'), require('./reviewContext'));
+    module.exports = factory(require('./trackedChangeReplay'), require('./reviewContext'));
   } else {
-    root.CodexOverleafTrackedChangesLifecycle = factory(root.CodexOverleafTrackedChangeReplay, root.CodexOverleafManualReviewRecovery, root.CodexOverleafReviewContext);
+    root.CodexOverleafTrackedChangesLifecycle = factory(root.CodexOverleafTrackedChangeReplay, root.CodexOverleafReviewContext);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function trackedChangesLifecycleFactory(Replay, ManualRecovery, ReviewContext) {
+})(typeof window !== 'undefined' ? window : globalThis, function trackedChangesLifecycleFactory(Replay, ReviewContext) {
   'use strict';
 
   function create(deps = {}) {
@@ -48,9 +48,6 @@
       verifyActiveEditorText,
       collectElements,
     } = deps;
-    const manualReview = ManualRecovery?.create({ ...deps, prepareTrackedChangeCapture: (...args) => prepareTrackedChangeCapture(...args),
-      getProjectId: deps.getProjectId || (() => /\/project\/([^/?#]+)/.exec(window?.location?.pathname || '')?.[1]),
-      assertCurrent: params => deps.reviewGuard?.() || checkWritebackRunProjectId(params) });
     const { buildAcceptReplayOperations, rebaseCheckpointPair, prepareSnapshotUndoCheckpoints, buildSnapshotUndoResult } = Replay.create({
       normalizeSafeProjectPath, applyTextPatches
     });
@@ -70,14 +67,15 @@
     } }] };
   }
 
-  async function waitForNativeReview(path, refs, untracked = false) {
+  async function waitForNativeReview(path, refs, untracked = false, checkpointReady = () => true) {
     const prepare = () => untracked ? prepareUntrackedUndo(path) : prepareTrackedChangeReview(path, refs);
     for (let attempt = 0; attempt < 16; attempt++) {
       const scope = prepare();
-      if (scope.ok) return scope;
+      if (scope.ok && checkpointReady(scope)) return scope;
       await delay(150);
     }
-    return prepare();
+    const scope = prepare();
+    return scope.ok && !checkpointReady(scope) ? { ...scope, ok: false } : scope;
   }
 
   async function prepareNativeReview(params, allowUntrackedUndo = false) {
@@ -232,11 +230,7 @@
     // History-OT uses snapshot-range operations, not the classic ID endpoint.
     // An unsupported engine must never fall through to text undo/replay.
     const unsupported = plan.files.find(file => !file.scope.acceptByIdSupported);
-    if (unsupported) {
-      const manualReviewProof = await manualReview?.build(params, plan);
-      return { ...nativeReviewBlocked(unsupported.path, 'native_accept_protocol_unsupported'),
-        ...(manualReviewProof ? { manualReviewProof } : {}) };
-    }
+    if (unsupported) return nativeReviewBlocked(unsupported.path, 'native_accept_protocol_unsupported');
     for (const file of plan.files) {
       const path = file.path;
       if (Date.now() >= plan.deadline || checkWritebackRunProjectId(params))
@@ -333,8 +327,8 @@
       });
       if (restored.applied.some(entry => entry.result?.changedDocument !== false)) compileBridge.markSourceEdited();
       return { ...restored, ok: restored.attempted && restored.ok,
-        skipped: restored.attempted ? restored.skipped : [{ trackedChange: null, result: {
-          ok: false, code: restored.code || 'snapshot_undo_unavailable',
+        skipped: restored.attempted ? restored.skipped : [{ trackedChange: { path: restored.file || '' }, result: {
+          ok: false, file: restored.file || '', code: restored.code || 'snapshot_undo_unavailable',
           reason: restored.reason || 'The saved checkpoint is unavailable for this undo.'
         } }] };
     }
@@ -521,8 +515,7 @@
     // guard uses.
     const writeGuardBlock = checkWritebackRunProjectId(params);
     if (writeGuardBlock) return writeGuardBlock;
-    if (params.verifyManualReview === true) return manualReview
-      ? manualReview.verify(params) : nativeReviewBlocked('', 'manual_review_proof_unavailable');
+    if (params.verifyManualReview === true) return nativeReviewBlocked('', 'native_accept_protocol_unsupported');
     const nativeReview = await prepareNativeReview(params);
     if (nativeReview) return nativeReview.ok ? acceptNativeReview(params, nativeReview) : nativeReview;
     const expectedFiles = Array.isArray(params.expectedFiles) ? params.expectedFiles : [];
@@ -1161,14 +1154,13 @@
     // it grants no native review, file creation or move ownership.
     const untrackedByPath = new Map((options.untrackedPlan?.files || []).map(file => [file.path, file]));
     const alreadyRestored = new Set();
-    const mismatch = path => ({ ok: false, changedDocument: false, code: 'snapshot_undo_current_mismatch',
+    const mismatch = path => ({ ok: false, file: path, changedDocument: false, code: 'snapshot_undo_current_mismatch',
       reason: `${path} 当前内容或文档身份与本轮撤销检查点不一致；Codex 保留恢复材料并停止撤销。` });
     async function verifyAlreadyRestored(path) {
       if (getActiveFilePath() !== path && !(await openFileByPath(path)).ok) return false;
-      const scope = prepareUntrackedUndo(path);
-      return scope.ok === true && Boolean(scope.nativeDocId)
+      return (await waitForNativeReview(path, [], true, scope => Boolean(scope.nativeDocId)
         && scope.nativeDocId === untrackedByPath.get(path)?.nativeDocId
-        && getActiveFilePath() === path && readActiveEditorText() === expectedByPath.get(path);
+        && getActiveFilePath() === path && readActiveEditorText() === expectedByPath.get(path))).ok === true;
     }
     if (!paths.length) {
       return {
@@ -1190,7 +1182,7 @@
             attempted: false,
             applied: [],
             skipped: [],
-            code: 'snapshot_undo_open_failed',
+            code: 'snapshot_undo_open_failed', file: path,
             reason: `无法打开 ${path} 来执行快照撤销。`
           };
         }
@@ -1210,7 +1202,7 @@
           skipped: [],
           rebasedExpectedFiles: [],
           rebasedPostFiles: [],
-          code: 'snapshot_undo_current_mismatch',
+          code: 'snapshot_undo_current_mismatch', file: path,
           reason: `${path} 当前内容已经不是本轮写入后的内容；为避免覆盖你的后续修改，Codex 不执行快照撤销。`
         };
       }

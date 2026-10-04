@@ -14,7 +14,6 @@ const FailureReasons = require(path.join(root, 'extension/src/shared/failureReas
 const ResultActions = require(path.join(root, 'extension/src/content/runResultActions'));
 const Sessions = require(path.join(root, 'extension/src/content/sessionPersistence'));
 const State = require(path.join(root, 'extension/src/shared/sessionState'));
-const Proof = require(path.join(root, 'extension/src/shared/manualReviewProof'));
 const ReviewController = require(path.join(root, 'extension/src/content/runReviewController'));
 const PageRpcContract = require(path.join(root, 'extension/src/shared/pageRpcContract'));
 const runtime = fs.readFileSync(path.join(root, 'extension/src/content/contentRuntime.js'), 'utf8');
@@ -54,7 +53,7 @@ function acceptController(page, params) {
   const migration = { loadPrefs: async () => ({}), savePrefs: async () => {},
     loadSessionTombstones: async () => ({}), getDeletedSessionIds: () => [] };
   const capture = CaptureController.create({ buildExpectedFilesAfterOperations: Undo.buildExpectedFilesAfterOperations });
-  const context = vm.createContext({ state, Modules: { ScopedPersistenceCoordinator: Scope, UndoOperations: Undo, ManualReviewProof: Proof },
+  const context = vm.createContext({ state, Modules: { ScopedPersistenceCoordinator: Scope, UndoOperations: Undo },
     WritebackSettlement: Settlement, FailureReasons, trackedChangeInFlight: new Map(), tr, tx: en => en, notify() {},
     getCurrentProjectId: () => page.state.projectId, getAccountScopeId: () => 'account-one', getRouteGeneration: () => 0,
     findRunRecord: () => run, refreshRunCardControls() {},
@@ -75,7 +74,7 @@ function acceptController(page, params) {
   vm.runInContext(extractFunction(timeline, 'isTrackedChangeLifecycleRun'), context);
   let controller;
   context.getRunReviewController = () => controller || (controller = ReviewController.create({ ...context, getState: () => state }));
-  for (const name of ['acceptRun','openManualReviewFile','verifyManualReview','getRunProjectIdForWriteback','buildContentFailure','applyTrackedChangeSettlement']) {
+  for (const name of ['acceptRun','getRunProjectIdForWriteback','buildContentFailure','applyTrackedChangeSettlement']) {
     vm.runInContext(extractFunction(runtime, name), context);
   }
   return { get run() { return run; }, events, saved, context, storage,
@@ -83,6 +82,6 @@ function acceptController(page, params) {
       state = context.state = { ...state, sessions: [plain(saved.at(-1))] };
       run = Session.normalizeRuns(state.sessions[0].runs, { restoreRunningRuns: true })[0];
       state.sessions[0].runs = [run]; state.runs = [run]; },
-    verify: () => context.verifyManualReview(run.id), open: path => context.openManualReviewFile(run.id, path), accept: () => context.acceptRun(run.id), buttons: () => buttons(run) };
+    accept: () => context.acceptRun(run.id), buttons: () => buttons(run) };
 }
 module.exports = { root, plain, runtime, timeline, Settlement, Scope, Undo, Db, tr, buttons, acceptController };

@@ -82,6 +82,42 @@ async function ordinaryFixture(t, options = {}) {
   return { page, content, responses, undo: () => page.timer.settle(content.undo()) };
 }
 
+for (const navigationDelays of [{ text: 450, ledger: 750 }, { text: 750, ledger: 450 }, { text: 750, ledger: 750 }]) {
+  test('production tree navigation waits for distinct path/text/ledger readiness: ' + JSON.stringify(navigationDelays), async t => {
+    const nestedPath = 'codex-smoke-20261004/nested.tex';
+    const input = [{ ...files[0], path: nestedPath }, files[1]];
+    const h = await ordinaryFixture(t, { navigationDelays, files: input });
+    h.page.docs.get(nestedPath).content = files[0].before;
+    await h.undo();
+    assert.equal(h.content.run.undoStatus, 'applied', JSON.stringify(h.responses));
+    assert.deepEqual(h.page.state.writes.map(write => write.path), ['main.tex']);
+    assert.equal(h.page.docs.get(nestedPath).content, files[0].before);
+    assert.equal(h.page.docs.get('main.tex').content, files[1].before);
+    assert.equal((await h.content.load()).buttons.undo.disabled, true);
+  });
+}
+
+for (const interruptedBy of ['cancel', 'deadline', 'unavailable-ledger']) {
+  test('readiness wait keeps its checkpoint and stops on ' + interruptedBy, async t => {
+    let h;
+    h = await ordinaryFixture(t, { navigationDelays: { text: 450, ledger: 750 },
+      onOpen({ path, docs }) {
+        if (path !== 'nested.tex') return;
+        if (interruptedBy === 'cancel') h.page.timer.setTimeout(() => h.page.context.bumpWriteCancellationSequence(), 20);
+        if (interruptedBy === 'unavailable-ledger') docs.get(path).id = '';
+      } });
+    h.page.docs.get('nested.tex').content = files[0].before;
+    if (interruptedBy === 'deadline') h.content.context.getPageBridgeTimeoutMs = () => 1000;
+    const started = h.page.timer.now;
+    await h.undo();
+    assert.equal(h.content.run.undoStatus, 'partial');
+    assert.equal(h.page.state.writes.length, 0);
+    assert.equal((await h.content.load()).run.undoExpectedFiles.length, 2);
+    assert.ok(h.page.timer.now - started < 10000, 'readiness retries must remain bounded');
+    assert.equal(h.page.docs.get('main.tex').content, files[1].content);
+  });
+}
+
 test('all files already restored settle durably without writes or native history calls', async t => {
   const h = await ordinaryFixture(t);
   for (const file of files) h.page.docs.get(file.path).content = file.before;
@@ -116,6 +152,8 @@ for (const current of ['user replaced the file\n', '% baseline\r\n']) test('a di
   assert.equal(h.page.docs.get('nested.tex').content, current);
   assert.equal(h.page.docs.get('main.tex').content, files[1].content);
   assert.equal((await h.content.load()).run.undoExpectedFiles.length, 2);
+  assert.equal(h.responses[0].skipped[0].trackedChange.path, 'nested.tex');
+  assert.equal(h.responses[0].skipped[0].result.file, 'nested.tex');
 });
 
 for (const change of ['content', 'docId', 'native-refs', 'project']) test('preflight ' + change + ' drift cannot turn an observed preimage into recovery authority', async t => {

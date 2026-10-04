@@ -74,7 +74,7 @@ test('actual Undo writer/reader/button preserves a live peer, quarantines a lost
     assert.equal(observer.run().undoStatus,'running');assert.equal(observer.button().disabled,true);
     await assert.rejects(observer.controller.undoRun('r'),{code:'review_busy'});
     await assert.rejects(observer.controller.acceptRun('r'),{code:'review_busy'});
-    await assert.rejects(observer.controller.verifyManualReview('r'),{code:'review_busy'});
+    assert.equal(observer.controller.verifyManualReview,undefined);
     assert.equal(observer.counts().dispatches,0);
     owner.client.disconnect(); await drain(); assert.equal(owner.counts().cancels,1);
     await observer.controller.recoverInterruptedUndoStatuses(); assert.equal(observer.button().disabled,true);
@@ -208,10 +208,10 @@ test('legacy running Undo requires explicit old-page and file inspection before 
   input.runs[0].undoStatus='running';delete input.runs[0].undoOwnerProtocol;
   n.db.seed('sessions',{accountScopeId:input.accountScopeId,projectId:input.projectId,id:input.id,record:input,revision:1});
   try{
-    const observer=await harness(n,1,input,{confirm:async options=>{if(options.title==='Check Undo recovery'){checks++;return checked;}return true;}});
+    const observer=await harness(n,1,input,{confirm:async options=>{checks++;assert.equal(options.title,'undoNoTraceTitle');assert.match(options.message,/close or reload every older project page/);return checked;}});
     await observer.controller.recoverInterruptedUndoStatuses();
-    assert.equal(observer.run().undoStatus,'running');assert.equal(observer.button().disabled,false);assert.equal(observer.button().textContent,'Check Undo recovery');
-    await observer.controller.undoRun('r');assert.equal(checks,1);assert.equal(observer.counts().dispatches,0);assert.equal(stored(n).runs[0].undoStatus,'running');
+    assert.equal(observer.run().undoStatus,'running');assert.equal(observer.button().disabled,false);assert.equal(observer.button().textContent,'undoRun');
+    await observer.controller.undoRun('r');assert.equal(checks,1);assert.equal(observer.counts().dispatches,0);assert.equal(observer.run().undoStatus,'running');assert.equal(observer.button().disabled,false);assert.equal(stored(n).runs[0].undoStatus,'running');
     checked=true;await observer.controller.undoRun('r');assert.equal(checks,2);assert.equal(observer.counts().writes,1);
     assert.equal(stored(n).runs[0].undoOwnerProtocol,1);assert.equal(stored(n).runs[0].undoStatus,'applied');
   }finally{n.close();}

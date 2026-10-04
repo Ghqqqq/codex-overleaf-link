@@ -24,33 +24,22 @@ function harness(options = {}) {
   const state = { activeSessionId: owner.sessionId, sessions: [{ id: owner.sessionId, runs: [run] }] };
   const scope = { projectId: owner.projectId, accountScopeId: owner.accountScopeId, generation: 1 };
   const target = { recordId: owner.runId, sessionId: owner.sessionId, runProjectId: owner.projectId, runAccountScopeId: owner.accountScopeId };
-  const io = { stored: null, persists: 0, calls: [], notifications: [], current: null };
-  const page = pageFixture({ folders: ['qa'], snapshotMetadata: options.snapshotMetadata }); page.folders.set('qa', directory.nativeFolderId);
-  // The object-method declaration is adapted mechanically to extract its
-  // unchanged production body; only the transport itself is replaced.
-  const pageBridgeSource = fs.readFileSync(path.join(__dirname, '../extension/src/pageBridge.js'), 'utf8')
-    .replace('    checkCreatedDirectories(params) {', '    function checkCreatedDirectories(params) {');
-  const pageCheck = vm.runInNewContext('(' + extractFunction(pageBridgeSource, 'checkCreatedDirectories') + ')', {
-    textFileCreator: page.creator, getProjectId: () => page.state.project, readWriteCancellationSequence: () => io.pageSequence || 0
-  });
+  const io = { stored: null, coreWrites: 0, phases: [], omissions: [] };
   const controller = Recovery.create({
     getProjectId: () => scope.projectId, getAccountScopeId: () => scope.accountScopeId, getRouteGeneration: () => scope.generation,
-    getState: () => state, getCurrentRun: () => io.current, findRunRecord: (id, session) => id === run.id && session === owner.sessionId ? run : null,
-    async persist(params) {
-      io.persists++; assert.equal(params.requireDurable, true); assert.equal(params.preserveRunActionPayload, true);
-      if (options.failPersist) throw new Error('synthetic persistence failure');
-      io.stored = Storage.buildSessionRecord({ id: owner.sessionId, projectId: owner.projectId, accountScopeId: owner.accountScopeId, runs: [run] }, { preserveRunActionPayload: true });
-      options.afterPersist?.({ run, scope, io });
-    },
-    readSession: async () => io.stored,
-    async callPageBridge(method, params) {
-      io.calls.push({ method, params }); assert.equal(method, 'checkCreatedDirectories'); assert.equal(params.runProjectId, owner.projectId);
-      options.beforePageResult?.({ run, scope, state, io });
-      if (options.pageResult) return options.pageResult;
-      return pageCheck(params);
-    },
-    notify: (...args) => io.notifications.push(args), refresh() {}, tx: (_en, zh) => zh
+    findRunRecord: (id, session) => id === run.id && session === owner.sessionId ? run : null,
+    onOmitted: (...args) => io.omissions.push(args),
+    refresh() {}
   });
+  // Model the existing caller's later core writer explicitly. Capturing directory
+  // metadata must never invoke an additional writer or readback barrier itself.
+  async function coreWrite() {
+    io.coreWrites++;
+    io.phases.push('core-write');
+    if (options.failCoreWrite) throw Object.assign(new Error('synthetic core writer failure'), { code: 'fixture_core_writer_failed' });
+    io.stored = Storage.buildSessionRecord({ id: owner.sessionId, projectId: owner.projectId,
+      accountScopeId: owner.accountScopeId, runs: [run] }, { preserveRunActionPayload: true });
+  }
   const context = vm.createContext({ state, Modules: { DirectoryCleanupRecovery: Recovery },
     currentRunView: target, getDirectoryCleanupRecovery: () => controller,
     getAppliedEntries: result => result.applied || [], getSkippedEntries: result => result.skipped || [],
@@ -62,8 +51,14 @@ function harness(options = {}) {
     refreshRunCardControls() {}, appendRunEvent() {}, tr: value => value, formatOperationType: value => value });
   const runtime = fs.readFileSync(path.join(__dirname, '../extension/src/content/contentRuntime.js'), 'utf8');
   vm.runInContext(extractFunction(runtime, 'recordUndoFromApply'), context);
-  return { run, state, scope, target, io, page, controller,
-    record: result => context.recordUndoFromApply({ id: owner.projectId, files: [] }, result),
+  return { run, state, scope, target, io, controller,
+    coreWrite,
+    async record(result) {
+      io.phases.push('record-undo');
+      await context.recordUndoFromApply({ id: owner.projectId, files: [] }, result);
+      io.phases.push('recorded');
+      await coreWrite();
+    },
     restore: () => Session.normalizeRuns(JSON.parse(JSON.stringify(io.stored.runs)), { restoreRunningRuns: true })[0] };
 }
 
@@ -81,82 +76,40 @@ for (const code of ['file_tree_operation_unverified', 'codex_cancelled']) {
   test('real runtime zero-applied ' + code + ' persists directory recovery without inventing file Undo', async () => {
     const h = harness(); await h.record(failed(code));
     assert.deepEqual(h.run.pendingDirectoryCleanup, wrapper()); assert.deepEqual(h.run.undoOperations, []);
-    assert.equal(h.io.persists, 1);
+    assert.equal(h.io.coreWrites, 1);
     assert.deepEqual(h.restore().pendingDirectoryCleanup, wrapper());
   });
 }
-test('successful creation evidence alone does not create a premature cleanup notice', () => {
+test('successful creation evidence alone does not create premature cleanup recovery', () => {
   const h = harness();
   const capture = h.controller.capture(h.target, { applied: [{ operation: { path: 'qa/leaf.tex' }, result: { ok: true, createdDirectories: [directory] } }] });
   assert.equal(capture, null); assert.equal(h.run.pendingDirectoryCleanup, undefined);
 });
-test('reload retains the independent notice after file Undo/Accept terminal state', async () => {
+test('reload retains directory evidence after file Undo/Accept terminal state', async () => {
   for (const terminal of [{ undoStatus: 'applied' }, { trackedChangeStatus: 'accepted' }]) {
     const h = harness(); Object.assign(h.run, terminal);
-    const capture = h.controller.capture(h.target, failed()); await h.controller.persist(capture);
+    await h.record(failed());
     assert.deepEqual(h.restore().pendingDirectoryCleanup, wrapper());
   }
-});
-test('read-only check retains present empty folders and clears only observed manual removal', async () => {
-  const h = harness(); await h.controller.persist(h.controller.capture(h.target, failed()));
-  const first = await h.controller.check(owner.runId);
-  assert.equal(first.ok, false); assert.equal(first.deletedByCheck, false); assert.equal(h.page.folders.has('qa'), true);
-  assert.deepEqual(h.run.pendingDirectoryCleanup, wrapper()); assert.deepEqual(h.page.removed, []);
-  h.page.folders.delete('qa');
-  const second = await h.controller.check(owner.runId);
-  assert.equal(second.ok, true); assert.equal(h.run.pendingDirectoryCleanup, undefined);
-  assert.equal(h.restore().pendingDirectoryCleanup, undefined); assert.deepEqual(h.page.removed, []);
-});
-for (const kind of ['account', 'project', 'session', 'active-run']) {
-  test('scope change during check cannot clear directory recovery: ' + kind, async () => {
-    const h = harness({ beforePageResult({ scope, state, io }) {
-      if (kind === 'account') scope.accountScopeId = 'account-B';
-      if (kind === 'project') scope.projectId = 'other-project';
-      if (kind === 'session') state.activeSessionId = 'other-session';
-      if (kind === 'active-run') io.current = { recordId: 'other-run' };
-    } });
-    await h.controller.persist(h.controller.capture(h.target, failed())); h.page.folders.delete('qa');
-    await assert.rejects(h.controller.check(owner.runId), /changed/);
-    assert.deepEqual(h.run.pendingDirectoryCleanup, wrapper());
-  });
-}
-test('missing read evidence cannot be treated as cleanup completion', async () => {
-  const h = harness({ pageResult: { ok: true, remaining: [], removed: [] } });
-  await h.controller.persist(h.controller.capture(h.target, failed()));
-  await assert.rejects(h.controller.check(owner.runId), /omitted/); assert.deepEqual(h.run.pendingDirectoryCleanup, wrapper());
-});
-test('failed durable save restores the pending check record and never emits completion', async () => {
-  const options = {}, h = harness(options); await h.controller.persist(h.controller.capture(h.target, failed()));
-  h.page.folders.delete('qa'); options.failPersist = true;
-  await assert.rejects(h.controller.check(owner.runId), /persistence failure/);
-  assert.deepEqual(h.run.pendingDirectoryCleanup, wrapper()); assert.equal(h.io.notifications.length, 0);
 });
 test('collector ignores unrelated paths and keeps non-applied binary directory metadata', () => {
   const input = failed(); input.skipped[0].operation.type = 'binary-create'; input.skipped[0].result.createdDirectories.push({ ...directory, path: 'unrelated' });
   assert.deepEqual(Recovery.collect(input), [directory]);
 });
-test('directory metadata rejection cannot skip the real file Undo checkpoint', async () => {
+test('directory capacity omission keeps earlier evidence and cannot block the real file Undo checkpoint', async () => {
   const h = harness();
+  h.run.pendingDirectoryCleanup = wrapper();
   const paths = Array.from({ length: 101 }, (_, index) => Array(index + 1).fill('a').join('/'));
   const result = failed(); result.skipped[0].operation.path = paths.at(-1) + '/leaf.tex';
   result.skipped[0].result.createdDirectories = paths.map(value => ({ ...directory, path: value }));
   result.applied.push({ operation: { type: 'create', path: 'extra.tex', content: 'new' }, result: { ok: true } });
-  await assert.rejects(h.record(result), /bounded storage format/);
+  await h.record(result);
   assert.equal(h.run.undoOperations.some(item => item.path === 'extra.tex'), true);
-});
-test('different account rejects checks before any project data request', async () => {
-  const h = harness(); await h.controller.persist(h.controller.capture(h.target, failed()));
-  h.scope.accountScopeId = 'account-B';
-  await assert.rejects(h.controller.check(owner.runId), /another project or account/);
-  assert.equal(h.io.calls.length, 0); assert.deepEqual(h.run.pendingDirectoryCleanup, wrapper());
-});
-
-test('real Page handler rejects a different project without clearing content recovery', async () => {
-  const h = harness(); await h.controller.persist(h.controller.capture(h.target, failed()));
-  h.page.state.project = 'another-page-project'; h.page.folders.delete('qa');
-  const result = await h.controller.check(owner.runId);
-  assert.equal(result.ok, false); assert.deepEqual(h.run.pendingDirectoryCleanup, wrapper());
-  assert.deepEqual(h.page.removed, []);
+  assert.equal(h.restore().undoOperations.some(item => item.path === 'extra.tex'), true);
+  assert.deepEqual(h.run.pendingDirectoryCleanup, wrapper());
+  assert.deepEqual(h.restore().pendingDirectoryCleanup, wrapper());
+  assert.equal(h.io.omissions.length, 1);
+  assert.deepEqual(h.io.phases, ['record-undo', 'recorded', 'core-write']);
 });
 test('failed forward move persists only source or destination ancestor directories through runtime and storage', async () => {
   const h = harness(), input = failed();
@@ -165,13 +118,14 @@ test('failed forward move persists only source or destination ancestor directori
   await h.record(input);
   assert.deepEqual(h.run.pendingDirectoryCleanup, wrapper());
   assert.deepEqual(h.restore().pendingDirectoryCleanup, wrapper());
-  assert.equal(h.io.persists, 1); assert.deepEqual(h.run.undoOperations, []);
+  assert.equal(h.io.coreWrites, 1); assert.deepEqual(h.run.undoOperations, []);
 });
-test('successful inverse move retains source-side directory leftovers for readonly cleanup', async () => {
+test('successful inverse move retains source-side directory recovery evidence', async () => {
   const h = harness();
   const input = { ok: true, applied: [{ operation: { type: 'move', path: 'qa/leaf.tex', to: 'old/source.tex' },
     result: { ok: true, verified: true, directoryCleanup: { ok: false, remaining: [directory] } } }], skipped: [] };
-  await h.controller.persist(h.controller.capture(h.target, input));
+  h.controller.capture(h.target, input);
+  await h.coreWrite();
   assert.deepEqual(h.restore().pendingDirectoryCleanup, wrapper());
   assert.deepEqual(h.run.undoOperations, []);
 });
@@ -188,11 +142,60 @@ test('move destination paths must be normalized before authorizing their parent 
   }
 });
 
-test('incomplete ZIP identity cannot clear a missing-directory recovery notice or announce completion', async () => {
-  const h = harness({ snapshotMetadata: { pathIdentityComplete: false } });
-  await h.controller.persist(h.controller.capture(h.target, failed())); h.page.folders.delete('qa');
-  const result = await h.controller.check(owner.runId);
-  assert.equal(result.ok, false); assert.deepEqual(h.run.pendingDirectoryCleanup, wrapper());
-  assert.deepEqual(h.restore().pendingDirectoryCleanup, wrapper()); assert.deepEqual(h.page.removed, []);
-  assert.equal(h.io.notifications.some(([message]) => message.includes('目录收尾检查完成')), false);
+
+test('directory recovery exposes only passive capture and keeps old evidence through the core writer', async () => {
+  const h = harness();
+  assert.deepEqual(Object.keys(h.controller), ['capture']);
+  assert.equal(h.controller.persist, undefined);
+  assert.equal(h.controller.check, undefined);
+  h.run.pendingDirectoryCleanup = wrapper();
+  assert.equal(h.controller.capture(h.target, { ok: true, applied: [], skipped: [] }), null);
+  assert.equal(h.io.coreWrites, 0);
+  await h.coreWrite();
+  assert.deepEqual(h.restore().pendingDirectoryCleanup, wrapper());
+});
+
+for (const kind of ['account', 'project', 'session', 'fork', 'record-project', 'missing-account']) {
+  test('foreign or unowned capture changes no existing recovery record: ' + kind, () => {
+    const h = harness();
+    h.run.pendingDirectoryCleanup = wrapper();
+    if (kind === 'account') h.target.runAccountScopeId = 'account-B';
+    if (kind === 'project') h.target.runProjectId = 'other-project';
+    if (kind === 'session') h.target.sessionId = 'other-session';
+    if (kind === 'fork') h.run.forkSnapshot = true;
+    if (kind === 'record-project') h.run.runProjectId = 'other-project';
+    if (kind === 'missing-account') h.scope.accountScopeId = '';
+    const before = JSON.stringify(h.run);
+    assert.equal(h.controller.capture(h.target, failed()), null);
+    assert.equal(JSON.stringify(h.run), before);
+    assert.equal(h.io.coreWrites, 0);
+    assert.equal(h.io.stored, null);
+  });
+}
+
+test('the original core writer failure still rejects without inventing durable directory evidence', async () => {
+  const h = harness({ failCoreWrite: true });
+  await assert.rejects(h.record(failed()), error => error.code === 'fixture_core_writer_failed');
+  assert.deepEqual(h.run.pendingDirectoryCleanup, wrapper());
+  assert.equal(h.io.stored, null);
+  assert.equal(h.io.coreWrites, 1);
+  assert.deepEqual(h.io.phases, ['record-undo', 'recorded', 'core-write']);
+});
+
+test('binary failure evidence travels through runtime capture and the original core writer', async () => {
+  const h = harness(), result = failed();
+  result.skipped[0].operation.type = 'binary-create';
+  await h.record(result);
+  assert.deepEqual(h.restore().pendingDirectoryCleanup, wrapper());
+  assert.deepEqual(h.restore().undoOperations, []);
+  assert.equal(h.io.coreWrites, 1);
+});
+
+test('incomplete ZIP identity remains unproven at the internal directory cleanup helper', async () => {
+  const f = pageFixture({ snapshotMetadata: { pathIdentityComplete: false } });
+  const result = await f.cleanup([directory]);
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.remaining, [directory]);
+  assert.deepEqual(result.removed, []);
+  assert.deepEqual(f.removed, []);
 });

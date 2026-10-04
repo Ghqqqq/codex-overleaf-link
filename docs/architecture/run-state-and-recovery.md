@@ -313,12 +313,12 @@ baseline 是下次三路合并的共同底稿。归一化与渲染失败时保�
 Undo 能力来自可用恢复材料和结算结果，不能只看 completed 或显示过某个按钮。runtime 的 `undoRun/undoRunTrackedChanges/acceptRun` 为薄入口，实际编排由 [RunReviewController](../../extension/src/content/runReviewController.js) 拥有。
 关键字段包括 appliedOperations、undoOperations、undoBaseFiles、undoTrackedChanges、undoExpectedFiles；字段应按具体操作路径解释。
 [storageRunActions.js](../../extension/src/shared/storageRunActions.js) 的 `hasReloadableRunActionPayload/compactRunActionPayload` 判定并保留这些材料。
-当前 `preserveRunActionPayload` 在主记录保留的最近20个 run 中，由新到旧选择完整核心材料，每会话总量由 `MAX_PERSISTED_ACTION_BYTES_PER_SESSION` 限为16 MiB。超过预算的候选被跳过，较旧的小候选仍可保留；已接受或已撤销的写操作材料、分叉快照和无动作 Ask 不消耗恢复预算；待目录核查的只读记录独立于审阅终态保留。所有核心候选选择后才考虑可选 `trackedChangeCaptures`，因此 captures 不挤掉其他运行的核心材料。
+当前 `preserveRunActionPayload` 在主记录保留的最近20个 run 中，由新到旧选择完整核心材料，每会话总量由 `MAX_PERSISTED_ACTION_BYTES_PER_SESSION` 限为16 MiB。超过预算的候选被跳过，较旧的小候选仍可保留；已接受或已撤销的写操作材料、分叉快照和无动作 Ask 不消耗核心恢复预算。所有核心候选选择后才考虑原有可选 `trackedChangeCaptures`；历史目录观测最后只使用剩余空间，不挤掉原恢复材料或 captures，且可独立于审阅终态保留。
 
-`StorageDb.buildSessionRecord` 先计算实际显示记录开销，再检查动作材料加入后的 UTF-8 与旧 UTF-16 两条准入规则；中文长历史仍保留已有兼容窗口。`compactSessionBatchActions` 还按整批响应上限预留64 KiB，必要时优先活动会话、再按更新时间给其他会话分配恢复空间。它保留显示历史，省略的材料写入 `recoveryRetention: {state: omitted, reason, bytes}`，不会凭省略标记补造操作权限。已有超大历史或旧底稿仍可能使整批提交被拒绝；失败时沿原存储错误流程处理。
+`StorageDb.buildSessionRecord` 先计算实际显示记录开销，再检查动作材料加入后的 UTF-8 与旧 UTF-16 两条准入规则；中文长历史仍保留已有兼容窗口。`compactSessionBatchActions` 还按整批响应上限预留64 KiB，必要时优先活动会话、再按更新时间给其他会话分配恢复空间。跨会话也先分配各会话核心及既有 captures，再按剩余空间加入目录观测；总限额不变。它保留显示历史，省略的材料写入 `recoveryRetention: {state: omitted, reason, bytes}`，不会凭省略标记补造操作权限。已有超大历史或旧底稿仍可能使整批提交被拒绝；失败时沿原存储错误流程处理。
 
-保存成功后，`StorageDb.projectRetentionUpdates` 仅向同账号/项目/路由代次且动作指纹未变的运行投影实际保留结果，必要时清除旧省略标记；不改内存检查点。卡片根据 `recoveryRetention` 提示持久恢复材料未保留，当前页面仍持有的有效材料可继续使用，刷新后的权限由实际恢复字段决定。`directoryCleanup:true` 表示目录核查材料被省略，已接受或已撤销的文本终态仍显示独立目录提示。旧版本已经丢弃的原文无法由新预算重建。
-`SessionState.applyTrackedChangeStatus` 移去既无 refs、也无剩余文件结构 Undo 检查点及有效 `manualReviewProof` 的 pending；主 writer 和 reader 使用同一父作用域清理规则。有效人工审阅证明支持只读收尾，单独存在时不赋予 Undo/Accept 权限。按钮还要检查实际材料，缺少材料的 Undo/Accept 入口会早退；不能仅凭存储中的 pending 或历史记录仍在推定操作可用。该裁剪影响插件恢复能力，不会直接撤销文稿内容，也不描述 Overleaf 自身的历史恢复范围。
+保存成功后，`StorageDb.projectRetentionUpdates` 仅向同账号/项目/路由代次且动作指纹未变的运行投影实际保留结果，必要时清除旧省略标记；不改内存检查点。卡片根据 `recoveryRetention` 提示持久恢复材料未保留，当前页面仍持有的有效材料可继续使用，刷新后的权限由实际恢复字段决定。`directoryCleanup:true` 表示目录观测材料被省略；同时有 `coreRetained:true` 时仅省略目录，不能宣称 Undo 核心材料丢失或把它当作核心缺失而恢复旧内存。真正降级丢弃核心时清除该标记。已接受或已撤销的文本终态仍可在已有详情内显示目录材料保留提示。旧版本已经丢弃的原文无法由新预算重建。
+`SessionState.applyTrackedChangeStatus` 移去既无 refs、也无剩余文件结构 Undo 检查点的 pending；主 writer 和 reader 使用同一父作用域清理规则。旧 `manualReviewProof/writebackCheck` 字段在归一化时丢弃，不再单独保留 pending 或赋予恢复动作；真正的正文、refs、文件逆操作及终态按原规则处理。按钮还要检查实际材料，缺少材料的 Undo/Accept 入口会早退；不能仅凭存储中的 pending 或历史记录仍在推定操作可用。该裁剪影响插件恢复能力，不会直接撤销文稿内容，也不描述 Overleaf 自身的历史恢复范围。
 
 `contentRuntime.undoRun` 先经 `UndoOperations.prepareRunUndo` 补齐有原文及已应用删除证据的旧文件恢复操作，再等待旧 mirror 刷新并选择恢复路径；页面调用始终携带原 runProjectId。文件结构恢复的已验证成功项经 `advanceUndoCheckpoint` 从逆操作和待恢复前像中移除，进度成功持久化后重载只保留未完成项；已被存储预算裁掉的原文不因此恢复。详细链路见[文件创建、删除与混合 Undo](auto-edit-undo.md#62-文件创建删除与混合-undo)及 [deletedFileUndo.test.js](../../test/deletedFileUndo.test.js)。
 tracked Undo/Accept 经过 `applyTrackedChangeSettlement → ScopedPersistenceCoordinator.applyReviewTransition`。
@@ -328,13 +328,13 @@ tracked Undo/Accept 经过 `applyTrackedChangeSettlement → ScopedPersistenceCo
 
 **执行中刷新。** `running` 可能经正常 debounce 保存，因此重载不能仅凭空的页内锁认定旧操作已结束。[RunReviewController.recoverInterruptedUndoStatuses](../../extension/src/content/runReviewController.js) 向共享后台查询原账号/项目/run 的 review owner。有活跃 port 或未到期派发租约时保持 busy，并按期限定时只读重查；新协议且确认无 owner 后只恢复显式重试入口，不自动执行 Undo。查询失败逐记录保留 busy 和检查点，不阻断面板初始化；每个视图最多三次自动失败查询，并提示连接恢复后重新加载。等待返回时核对原账号、项目、路由代次及捕获的 state/活动会话，旧结果不写入替换后的视图。同账号/项目/路由内发生 state replacement 或会话切换时，计时器重新捕获当前视图，旧等待只安排去重的只读重查；恢复 generation 防止旧调用覆盖新计时器，跨账号/项目/路由则丢弃。
 
-新协议在派发前耐久保存 `undoOwnerProtocol:1` 并读回确认，字段经过主存储、摘要及 review merge 保留。旧版 `running` 没有该标记时，缺少新版租约不能证明另一个旧页面已停止；只开放“检查撤销恢复”，用户明确完成旧页关闭/重载和文件检查后，才继续常规 Undo 确认及基线守卫，取消不派发。共享最新的 partial/terminal 进度始终优先；只有首个检查点因预算被省略、尚无 review 进度且原 run、项目、Native序号、线程/turn、启动时间和提交快照一致时，才保留当前页仍完整的内存检查点。owner标记保存失败则停止派发并保留材料。
+新协议在派发前耐久保存 `undoOwnerProtocol:1` 并读回确认，字段经过主存储、摘要及 review merge 保留。旧版 `running` 没有该标记时，缺少新版租约不能证明另一个旧页面已停止；保留原 Undo 入口，并仅在该次原有 Undo 确认中说明旧页关闭/重载和文件检查要求。用户确认后才继续原基线守卫；取消不提前迁移为 partial，也不派发。共享最新的 partial/terminal 进度始终优先；只有首个检查点因预算被省略、尚无 review 进度且原 run、项目、Native序号、线程/turn、启动时间和提交快照一致时，才保留当前页仍完整的内存检查点。owner标记保存失败则停止派发并保留材料。
 
 后台 review owner 独立于短时持久化锁；派发后的不可变 token 租约跨 worker 重启保留，详见[共享审阅归属](protocols-and-trust.md#shared-review-owner)。[undoReloadOwnership.test.js](../../test/undoReloadOwnership.test.js) 串联 controller、真实保存/加载与按钮、共享 bridge/backend，覆盖活跃他页、worker更替、定向取消、legacy迁移及查询失败；端口、数据库及 Page I/O 使用替身。
 
 恢复按钮可用之后，旧检查点仍可能包含已经撤销、但回执未保存的文件。显式普通文本 Undo 重试由 Page 核验完整前像，将已恢复项作为只读确认结果交给原结算和持久化链，只写尚未恢复的项；不会仅凭失去 owner 或内容相等补造其他操作权限。具体身份、留痕及再次核验条件见[文本恢复路线](auto-edit-undo.md#61-普通文本与-track-文本共用部分运输路线)。[partialUndoReceiptRecovery.test.js](../../test/partialUndoReceiptRecovery.test.js) 串联 Controller、实际 Page RPC/Router 和主存储，覆盖首文件恢复后丢失回执、重载及显式续接；页面文件与保存 I/O 使用替身，后台租约沿独立专项验证。
 
-`manualReviewProof` 的原文后像、文件身份与 refs 属于同组恢复材料，只有完整核验后才能持久接受终态。`pendingDirectoryCleanup` 保存带账号/项目/会话/运行身份的目录观测，不声明创建所有权；它在文本已接受或已撤销后仍可支持只读检查，确认目录已消失后才清空，分叉快照不继承这些操作入口。
+`pendingDirectoryCleanup` 保存带账号/项目/会话/运行身份的目录观测，不声明创建所有权；文本已接受或已撤销后仍可保留历史事实，现况不能由旧观测推断。分叉记录不继承这些原运行材料，插件不提供新的目录核查或删除入口。
 
 重载后，SessionState/StorageDb 归一化记录；`SettlementFacts.projectRunSettlement` 提供基础能力，`RunResultActions.projectUndoAvailability` 进一步检查实际材料。
 [runTimelineView.js](../../extension/src/content/runTimelineView.js) 的 `configureUndoButton/configureAcceptButton` 仅消费投影，不应补造恢复身份或修改持久证据。

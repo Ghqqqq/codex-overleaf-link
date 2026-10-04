@@ -288,7 +288,8 @@
         normalizePaths: normalizePathList
       }),
       history: compactHistoryForStorage(input.history),
-      runs: compactRunsForStorage(input.runs, { preserveRunActionPayload: false }),
+      runs: compactRunsForStorage(input.runs, { preserveRunActionPayload: false,
+        deferDirectoryCleanup: options.preserveRunActionPayload === true || options.deferDirectoryCleanup === true }),
       task: normalizeDisplayTextForStorage(input.task, SESSION_STORAGE_LIMITS.taskChars),
       mode: normalizeCurrentMode(input.mode), providerId: typeof input.providerId === 'string' && input.providerId ? input.providerId : 'builtin',
       model: typeof input.model === 'string' ? input.model : '',
@@ -701,7 +702,6 @@
       undoTrackedChanges: actionPayload.undoTrackedChanges,
       undoExpectedFiles: actionPayload.undoExpectedFiles,
       ...(actionPayload.trackedChangeCaptures ? { trackedChangeCaptures: actionPayload.trackedChangeCaptures } : {}),
-      ...(actionPayload.manualReviewProof ? { manualReviewProof: actionPayload.manualReviewProof } : {}),
       ...(actionPayload.pendingDirectoryCleanup ? { pendingDirectoryCleanup: actionPayload.pendingDirectoryCleanup } : {}),
       ...(actionPayload.recoveryRetention ? { recoveryRetention: SessionState.normalizeRecoveryRetention(actionPayload.recoveryRetention) } : {}),
       undoStatus: normalizeDisplayTextForStorage(run.undoStatus, SESSION_STORAGE_LIMITS.statusTextChars),

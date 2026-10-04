@@ -623,17 +623,14 @@
       const deadlineAt = Math.min(now() + 90000, Number.isFinite(options.deadlineAt) ? options.deadlineAt : Infinity);
       const preflightDeadlineAt = deadlineAt - 15000;
       const expected = options.expectedContent;
-      const finishCreatedDeletion = async result => {
+      const finishCreatedDeletion = result => {
         const proofs = operation.undoCreatedFile?.createdDirectories;
         if (options.undoCreatedFile !== true || !Array.isArray(proofs) || !proofs.length) return result;
-        const directoryCleanup = await cleanupCreatedDirectories(proofs, { projectId, isCurrent: options.isCurrent });
-        if (directoryCleanup.ok) return { ...result, directoryCleanup, changedDocument: result.changedDocument || directoryCleanup.changedDocument };
-        const reason = 'The created file was removed. Some created folders remain and need review.';
-        return { ...result, ok: false, fileDeleted: true, code: 'created_directory_cleanup_unconfirmed', reason, directoryCleanup,
-          changedDocument: result.changedDocument || directoryCleanup.changedDocument,
-          failure: { code: 'created_directory_cleanup_unconfirmed', stage: 'cleanup', severity: 'warning', retryable: true,
-            terminalState: 'needs_review', changedDocument: result.changedDocument || directoryCleanup.changedDocument,
-            userMessage: reason, nextAction: 'Retry Undo after the remaining folders are empty and their identity can be checked.' } };
+        // The ZIP-confirmed file deletion completes its Undo checkpoint.
+        // Directory observations are retained separately and grant no deletion authority.
+        return { ...result, fileDeleted: true, directoryCleanup: {
+          ok: false, removed: [], remaining: proofs, changedDocument: false
+        } };
       };
       const binary = operation.undoCreatedFile?.v === 1 && operation.undoCreatedFile.kind === 'binary'
         && options.undoCreatedFile === true && /^[a-f0-9]{64}$/i.test(options.expectedSha256 || '');

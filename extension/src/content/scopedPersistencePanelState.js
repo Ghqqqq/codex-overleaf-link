@@ -184,8 +184,7 @@
       writerId: input.persistenceContext?.writerId || ''
     });
     if (!reviewRuns.every(reviewRun => (written || []).some(session => (session.runs || []).some(run =>
-      run.id === reviewRun.id && (!reviewRun.manualReviewProof || !['pending', 'needs_review'].includes(reviewRun.trackedChangeStatus)
-        || JSON.stringify(run.manualReviewProof) === JSON.stringify(reviewRun.manualReviewProof))
+      run.id === reviewRun.id
       && (!reviewRun.trackedChangeStatus && ['applied', 'partial'].includes(reviewRun.undoStatus)
         ? run.undoStatus === reviewRun.undoStatus && (reviewRun.undoStatus === 'applied'
           || ['undoOperations', 'undoBaseFiles', 'undoExpectedFiles', 'undoTrackedChanges']

@@ -10,6 +10,8 @@
   function buildSyncApplyOperations(syncChanges = [], project = {}) {
     const existingPaths = new Set((project.files || []).map(file => file.path));
     return (syncChanges || []).map(change => {
+      // Keep an old Native move distinct so preflight can reject it safely.
+      // Falling through would turn a move into an empty create operation.
       if (change.type === 'move') {
         return { type: 'move', path: change.path, to: change.to,
           moveProof: change.moveProof && typeof change.moveProof === 'object' ? { ...change.moveProof } : undefined,
@@ -544,75 +546,6 @@
     return files.length ? { ...owner, v: 1, files } : null;
   }
 
-  async function buildPlannedWritebackCheck(operations, project, owner) {
-    const fail = () => { throw Object.assign(new Error('The planned file contents could not be recorded for a read-only check. No write was started.'), { code: 'writeback_plan_unavailable' }); };
-    const validPath = path => typeof path === 'string' && path.length > 0 && path.length <= 1024
-      && !/^[\\/]|^[A-Za-z]:|[\u0000-\u001f\u007f]/.test(path) && !path.replace(/\\/g, '/').split('/').some(part => !part || part === '.' || part === '..');
-    const validHash = hash => typeof hash === 'string' && /^[a-f0-9]{64}$/i.test(hash);
-    if (!Array.isArray(operations) || !operations.length || operations.length > 1000 || project?.id !== owner?.projectId) fail();
-    for (const key of ['id', 'projectId', 'accountScopeId', 'sessionId', 'runId']) {
-      if (typeof owner?.[key] !== 'string' || !owner[key].trim() || owner[key].length > 160 || /[\u0000-\u001f\u007f]/.test(owner[key])) fail();
-    }
-    if (typeof owner.createdAt !== 'string' || owner.createdAt.length > 64 || !Number.isFinite(Date.parse(owner.createdAt))) fail();
-    const files = new Map((project.files || []).filter(file => typeof file.content === 'string').map(file => [file.path, { kind: 'text', content: file.content }]));
-    const touched = new Set();
-    for (const op of operations) {
-      if (!validPath(op?.path) || (op.to !== undefined && !validPath(op.to))) fail();
-      touched.add(op.path);
-      if (op.type === 'create') {
-        if (typeof op.content !== 'string') fail();
-        files.set(op.path, { kind: 'text', content: op.content });
-      } else if (op.type === 'edit') {
-        const before = files.get(op.path);
-        if (before?.kind !== 'text') fail();
-        let content = before.content;
-        if (typeof op.replaceAll === 'string') content = op.replaceAll;
-        else {
-          if (!Array.isArray(op.patches) || op.patches.length > 1000) fail();
-          let previousTo = 0;
-          for (const patch of op.patches) {
-            if (!Number.isSafeInteger(patch.from) || !Number.isSafeInteger(patch.to) || patch.from < previousTo
-              || patch.to < patch.from || patch.to > content.length || typeof patch.expected !== 'string'
-              || typeof patch.insert !== 'string' || content.slice(patch.from, patch.to) !== patch.expected) fail();
-            previousTo = patch.to;
-          }
-          for (const patch of op.patches.slice().reverse()) content = content.slice(0, patch.from) + patch.insert + content.slice(patch.to);
-        }
-        files.set(op.path, { kind: 'text', content });
-      } else if (op.type === 'delete') files.delete(op.path);
-      else if (op.type === 'move' || op.type === 'rename') {
-        if (!validPath(op.to) || op.path === op.to) fail();
-        const before = files.get(op.path);
-        const moved = op.moveProof?.v === 1 && op.moveProof.kind === 'binary' && validHash(op.moveProof.sha256)
-          ? { kind: 'binary', sha256: op.moveProof.sha256.toLowerCase() } : before;
-        if (!moved) fail();
-        files.delete(op.path); files.set(op.to, moved); touched.add(op.to);
-      } else if (op.type === 'binary-create' || op.type === 'overwrite-binary') {
-        const sha256 = op.sha256 || op.assetRef?.sha256 || await binaryDigest(op.contentBase64);
-        if (!validHash(sha256)) fail();
-        files.set(op.path, { kind: 'binary', sha256: sha256.toLowerCase() });
-      } else fail();
-    }
-    if (touched.size > 1000) fail();
-    const expected = [];
-    for (const path of touched) {
-      const file = files.get(path);
-      if (!file) expected.push({ path, absent: true });
-      else {
-        // Planned text follows the Page's logical line-ending equivalence.
-        const sha256 = file.kind === 'text' ? await textDigest(file.content.replace(/\r\n?/g, '\n')) : file.sha256;
-        if (!validHash(sha256)) fail();
-        expected.push({ path, kind: file.kind, sha256 });
-      }
-    }
-    const result = { v: 1, purpose: 'writeback-revalidation' };
-    for (const key of ['id', 'projectId', 'accountScopeId', 'sessionId', 'runId', 'createdAt']) result[key] = owner?.[key];
-    result.files = expected;
-    const bytes = typeof TextEncoder === 'function' ? new TextEncoder().encode(JSON.stringify(result)).length : JSON.stringify(result).length * 2;
-    if (bytes > 256 * 1024) fail();
-    return result;
-  }
-
   async function confirmSaveCheck(check, options) {
     if (!check?.projectId || !Array.isArray(check.files) || !check.files.length
       || check.files.some(file => !file?.path || (file.absent !== true && !/^[a-f0-9]{64}$/i.test(file.sha256 || '')))) {
@@ -646,9 +579,7 @@
         const kind = typeof file.content === 'string' ? 'text'
           : typeof file.contentBase64 === 'string' ? 'binary' : '';
         if (!kind || (expected.kind && expected.kind !== kind)) { matched = false; continue; }
-        const content = kind === 'text' && check.purpose === 'writeback-revalidation'
-          ? file.content.replace(/\r\n?/g, '\n') : file.content;
-        const hash = kind === 'binary' ? await binaryDigest(file.contentBase64) : await textDigest(content);
+        const hash = kind === 'binary' ? await binaryDigest(file.contentBase64) : await textDigest(file.content);
         if (!hash || hash !== expected.sha256.toLowerCase()) matched = false;
       }
       options.assertCurrent();
@@ -662,7 +593,6 @@
     confirmPostWriteSave,
     buildMirrorWritebackConfirmation,
     buildSaveCheck,
-    buildPlannedWritebackCheck,
     confirmSaveCheck,
     buildSavedWritebackExpectations,
     matchSavedWritebackSnapshot,

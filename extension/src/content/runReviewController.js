@@ -57,7 +57,7 @@
           const restored = Modules.SessionState.normalizeRuns([latest], { recoverSettledRuns: true })[0];
           // A budget-omitted first checkpoint may still be complete in its original page.
           // Shared partial/terminal progress always wins over that in-memory copy.
-          const keepCheckpoint = restored.recoveryRetention?.state === 'omitted'
+          const keepCheckpoint = restored.recoveryRetention?.state === 'omitted' && restored.recoveryRetention.coreRetained !== true
             && !restored.undoStatus && !restored.trackedChangeStatus && !run.undoStatus && !run.trackedChangeStatus
             && restored.runProjectId === run.runProjectId && restored.nativeEventSeq === run.nativeEventSeq
             && restored.codexThreadId === run.codexThreadId && restored.codexTurnId === run.codexTurnId
@@ -67,14 +67,7 @@
           for (const key of Object.keys(run)) delete run[key];
           Object.assign(run, restored, checkpoint);
           if (run.undoStatus === 'applied' || ['accepted', 'rejected'].includes(run.trackedChangeStatus)) return;
-          if (run.undoStatus === 'running' && run.undoOwnerProtocol !== 1) {
-            const checked = await showPluginConfirm({ title: tx('Check Undo recovery', '检查撤销恢复'),
-              message: tx('Close or reload every older project page and inspect the current files in Overleaf before continuing. Confirm only after those checks are complete.',
-                '请先关闭或重载全部旧版项目页面，并在 Overleaf 核对当前文件。完成这些检查后才能继续恢复撤销。'),
-              confirmLabel: tx('Checks complete', '已完成检查'), cancelLabel: tr('confirmDefaultCancel'), destructive: true });
-            assertCurrent(); if (!checked) return;
-            run.undoStatus = 'partial';
-          }
+          if (run.undoStatus === 'running' && run.undoOwnerProtocol !== 1) run.undoRecoveryCheckRequired = true;
           return await work();
         } finally { reviewOwners.delete(runId); refreshRunCardControls(runId); }
       }).catch(error => {
@@ -155,7 +148,6 @@
     const withUndoLock = (runId, work) => withSharedReviewOwnership(runId, () => withLocalUndoLock(runId, work));
     const undoRun = runId => withUndoLock(runId, () => executeUndo(runId));
     const acceptRun = runId => withSharedReviewOwnership(runId, () => executeAcceptRun(runId));
-    const verifyManualReview = runId => withSharedReviewOwnership(runId, () => executeVerifyManualReview(runId));
     const undoRunTrackedChanges = (runId, run) => withUndoLock(runId, () => executeTrackedUndo(runId, run));
 
 function undoOwner(run) {
@@ -167,6 +159,14 @@ function undoOwner(run) {
         || JSON.stringify(scope) !== JSON.stringify([getCurrentProjectId?.(), getAccountScopeId?.(), getRouteGeneration?.()]))
         throw Object.assign(new Error('The Undo project, account or session changed.'), { code: 'review_context_changed' });
     };
+  }
+
+  function undoConfirmationTask(run) {
+    const task = truncateRunTitle(run.task);
+    return run.undoStatus === 'running' && run.undoOwnerProtocol !== 1
+      ? task + '\n\n' + tx('Before confirming Undo, close or reload every older project page and inspect the current files in Overleaf. Continue only after those checks are complete.',
+        '确认撤销前，请先关闭或重载全部旧版项目页面，并在 Overleaf 核对当前文件。完成这些检查后再继续。')
+      : task;
   }
 
 async function executeUndo(runId) {
@@ -216,7 +216,7 @@ async function executeUndo(runId) {
     if (undoPaths.length > 1 && typeof showUndoFileSelection === 'function') {
       const selectedPaths = await showUndoFileSelection({
         title: tr('undoFileSelectTitle'),
-        task: truncateRunTitle(run.task),
+        task: undoConfirmationTask(run),
         confirmLabel: tr('undoFileSelectConfirm'),
         cancelLabel: tr('confirmDefaultCancel'),
         selectAllLabel: tr('undoFileSelectAll'),
@@ -231,7 +231,7 @@ async function executeUndo(runId) {
       const approved = await showPluginConfirm({
         title: tr('undoNoTraceTitle'),
         message: [
-          truncateRunTitle(run.task),
+          undoConfirmationTask(run),
           '',
           tr('undoNoTraceMessage', { files: formatOperationFiles(undoOperations) })
         ].join('\n'),
@@ -299,7 +299,7 @@ async function executeTrackedUndo(runId, run) {
     const approved = await showPluginConfirm({
       title: !hasTextUndo ? tr('undoNoTraceTitle') : trackedUndo ? tr('undoTrackedTitle') : tr('undoNativeTitle'),
       message: [
-        truncateRunTitle(run.task),
+        undoConfirmationTask(run),
         '',
         ...(hasTextUndo ? [trackedUndo
           ? tr('undoTrackedMessage', { files: formatTrackedChangeFiles(run.undoTrackedChanges) })
@@ -421,50 +421,6 @@ function reviewOwner(run) {
     assert(); return { ...owner, assert };
   }
 
-  async function openManualReviewFile(runId, path) {
-    const run = findRunRecord(runId);
-    if (!run || run.forkSnapshot || !['pending', 'needs_review'].includes(run.trackedChangeStatus)) return;
-    const owner = reviewOwner(run), proof = Modules.ManualReviewProof.normalize(run.manualReviewProof);
-    const allowed = proof ? proof.accountScopeId === owner.accountScopeId && proof.runProjectId === owner.projectId
-      && proof.files.some(file => file.path === path) : (run.undoTrackedChanges || []).some(ref => ref.path === path);
-    if (!allowed || !Modules.ManualReviewProof.safePath(path)) return;
-    const result = await callPageBridge('jumpToPosition', { path, line: 1, runProjectId: owner.projectId });
-    owner.assert();
-    if (result?.ok !== true) { notify?.(result?.reason || tx('The original review file could not be opened.', '无法打开原始审阅文件。')); return result; }
-    notify?.(tx('Review only this run’s entries in Overleaf, then use “Verify manual review”.',
-      '请在 Overleaf Review 中仅接受本轮记录，再点击“核验手动 Review”。'));
-  }
-
-  async function executeVerifyManualReview(runId) {
-    const run = findRunRecord(runId), proof = Modules.ManualReviewProof.normalize(run?.manualReviewProof);
-    if (!proof || run.forkSnapshot || !['pending', 'needs_review'].includes(run.trackedChangeStatus)
-      || trackedChangeInFlight.has(runId)) return;
-    const owner = reviewOwner(run), signature = JSON.stringify(proof);
-    if (proof.runProjectId !== owner.projectId || proof.accountScopeId !== owner.accountScopeId) return;
-    trackedChangeInFlight.set(runId, 'accept'); refreshRunCardControls(runId);
-    try {
-      const deadlineAt = await prepareUndoDispatch(runId);
-      const result = await callPageBridge('acceptTrackedChanges', { deadlineAt, reviewOwnerToken: reviewOwners.get(runId)?.token, verifyManualReview: true,
-        manualReviewProof: proof, postFiles: buildTrackedUndoPostFiles(run),
-        trackedChanges: run.undoTrackedChanges || [], expectedFiles: run.undoExpectedFiles || [],
-        accountScopeId: owner.accountScopeId, runProjectId: owner.projectId });
-      owner.assert();
-      if (JSON.stringify(Modules.ManualReviewProof.normalize(run.manualReviewProof)) !== signature)
-        throw new Error('The manual review proof changed during verification.');
-      const verified = result?.ok === true && result.verified === true && result.proofId === proof.id;
-      if (!verified) {
-        notify?.(result?.skipped?.[0]?.result?.reason || tx('Manual review could not be verified. Recovery evidence is retained.',
-          '尚未核验手动 Review，恢复记录已保留。'));
-        return result;
-      }
-      await applyTrackedChangeSettlement(runId, 'accept', result, { assertCurrent: owner.assert });
-      owner.assert();
-      notify?.(tx('Manual review is verified. This run’s tracked changes are accepted.', '已核验手动 Review，本轮留痕已接受。'));
-      return result;
-    } catch (error) { notify?.(error.message); throw error; }
-    finally { trackedChangeInFlight.delete(runId); refreshRunCardControls(runId); }
-  }
-
 async function executeAcceptRun(runId) {
     const run = findRunRecord(runId);
     if (!run || !isTrackedChangeLifecycleRun(run)) {
@@ -503,10 +459,6 @@ async function executeAcceptRun(runId) {
         runProjectId: owner.projectId, accountScopeId: owner.accountScopeId
       });
       owner.assert();
-      const manualProof = Modules.ManualReviewProof.normalize(result.manualReviewProof);
-      if (manualProof?.runProjectId === owner.projectId && manualProof.accountScopeId === owner.accountScopeId) {
-        run.manualReviewProof = manualProof;
-      }
       appendAcceptDiagnosticEvents(runId, Array.isArray(result.diagnostics) ? result.diagnostics : []);
       appendRunRecordEvent(runId, {
         title: tr('runAcceptTrackedResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
@@ -540,8 +492,6 @@ async function executeAcceptRun(runId) {
       });
       await applyTrackedChangeSettlement(runId, 'accept', result, { assertCurrent: owner.assert });
       owner.assert();
-      if (manualProof) notify?.(tx('Automatic acceptance is unavailable for this editor. Open the original file, accept only this run’s entries in Overleaf Review, then verify manual review.',
-        '当前编辑器不支持本轮自动接受。请打开原文件，在 Overleaf Review 中仅接受本轮记录，再点击核验手动 Review。'));
     } catch (error) { notify?.(error.message); throw error; }
     finally {
       trackedChangeInFlight.delete(runId);
@@ -587,7 +537,7 @@ async function applyLegacyUndoSettlement(runId, undoStatus, result) {
       legacyUndo: true, persist: flushQueuedSaveState, assertCurrent });
     refreshRunCardControls(runId);
   }
-    return { recoverInterruptedUndoStatuses, undoRun, undoRunTrackedChanges, acceptRun, applyLegacyUndoSettlement, openManualReviewFile, verifyManualReview };
+    return { recoverInterruptedUndoStatuses, undoRun, undoRunTrackedChanges, acceptRun, applyLegacyUndoSettlement };
   }
   return { create };
 });

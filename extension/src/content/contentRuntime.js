@@ -463,12 +463,8 @@
     refillComposerForRetry,
     canEditRun: run => runController.isRetryReplacementEligible(run, WritebackSettlement.projectRunSettlement(run)),
     retryWriteback: retryRunWriteback,
-    checkWriteback: checkRunWriteback,
-    checkCreatedDirectories,
     getCurrentProjectId,
     getAccountScopeId: () => cachedAccountScopeId,
-    openManualReviewFile,
-    verifyManualReview,
     showNativeSetupGuidance: () => showNativeUpdateGuidanceModal({}),
     openProjectFileForFailure,
     openStorageSettings,
@@ -634,7 +630,7 @@
   const assetTransferBroker = Modules.AssetTransferBroker.create({ callPageBridge, sendBackgroundNative });
   const { partitionUnsafeProjectPathOperations, normalizeOperationProjectPaths, getInvalidOperationProjectPath,
     evaluateGovernedOperations, buildGovernanceSkippedApplyResult, filterSyncChangesByOperations, mergeApplyResultSkipped,
-    confirmBinaryOperations, confirmWholeFilePlan, buildAuditSummaryFromApply, summarizeOperationForAudit } = Modules.WritebackPlan.create({
+    confirmBinaryOperations, buildAuditSummaryFromApply, summarizeOperationForAudit } = Modules.WritebackPlan.create({
     tx, tr, normalizeSafeProjectPath, GovernanceRules, getGovernanceRulesForCurrentProject,
     showPluginConfirm, formatOperationFiles, getAppliedEntries, getSkippedEntries
   });
@@ -675,7 +671,6 @@
     buildReviewingBlockedApplyResult,
     ensureReviewingBeforeWrite,
     confirmBinaryOperations,
-    confirmWholeFilePlan,
     filterSyncChangesByOperations,
     writebackController,
     assetTransferBroker,
@@ -6659,9 +6654,6 @@
     return getRunReviewController().acceptRun(runId);
   }
 
-  async function openManualReviewFile(runId, path) { return getRunReviewController().openManualReviewFile(runId, path); }
-  async function verifyManualReview(runId) { return getRunReviewController().verifyManualReview(runId); }
-
   function getRunProjectIdForWriteback(run) {
     return typeof run?.runProjectId === 'string' && run.runProjectId
       ? run.runProjectId
@@ -6686,7 +6678,7 @@
       result,
       failureReasons: FailureReasons
     });
-    if (settlement.decision === 'blocked' && !record?.manualReviewProof
+    if (settlement.decision === 'blocked'
       && !(kind === 'reject' && (run !== record || record?.undoOperations?.some(Modules.UndoOperations.isFileUndoOperation)))) {
       return;
     }
@@ -6728,36 +6720,36 @@
   let directoryCleanupRecovery = null;
   function getDirectoryCleanupRecovery() {
     return directoryCleanupRecovery || (directoryCleanupRecovery = Modules.DirectoryCleanupRecovery.create({
-      getState: () => state, getCurrentRun: () => currentRunView, getProjectId: getCurrentProjectId,
-      getAccountScopeId: () => cachedAccountScopeId, getRouteGeneration: () => spaRouteGeneration, findRunRecord,
-      readSession: id => Modules.StorageDb.getRecord('sessions', id), persist: flushQueuedSaveState,
-      callPageBridge, canCheck: () => !trackedChangeInFlight.size && !updateIdleClient?.isApplying?.(),
-      refresh: refreshRunCardControls, tx, notify: message => showPluginToast(message, { sticky: true })
+      getProjectId: getCurrentProjectId, getAccountScopeId: () => cachedAccountScopeId,
+      getRouteGeneration: () => spaRouteGeneration, findRunRecord, refresh: refreshRunCardControls,
+      onOmitted: (runId, code) => appendRunRecordEvent(runId, { kind: 'technical', status: 'warning',
+        title: tx('Some folder observations exceeded the storage limit; existing observations were kept.',
+          '部分文件夹观测记录超过存储上限，已有记录已保留。'), detail: { code } })
     }));
   }
-  async function checkCreatedDirectories(runId) {
-    try { return await getDirectoryCleanupRecovery().check(runId); }
-    catch (error) { showPluginToast(error.message, { status: 'warning', sticky: true }); }
-  }
-
-  let writebackVerificationController = null;
-  function getWritebackVerificationController() {
-    if (!writebackVerificationController) writebackVerificationController = Modules.WritebackVerificationController.create({
-      getState: () => state, getCurrentRun: () => currentRunView, getProjectId: getCurrentProjectId,
-      getAccountScopeId: () => cachedAccountScopeId, getRouteGeneration: () => spaRouteGeneration, findRunRecord,
-      readSession: id => Modules.StorageDb.getRecord('sessions', id), persist: flushQueuedSaveState, callPageBridge,
-      canCheck: () => !trackedChangeInFlight.size && !updateIdleClient?.isApplying?.(),
-      refresh: () => renderRunHistory({ preserveScroll: true }), tx, randomUUID: () => crypto.randomUUID(),
-      notify: message => showPluginToast(message, { sticky: true })
-    });
-    return writebackVerificationController;
-  }
-  async function stageWritebackRecovery(operations, target, requireReviewing, project) {
-    return getWritebackVerificationController().stage({ operations, target, requireReviewing, project });
-  }
-  async function checkRunWriteback(runId) {
-    try { return await getWritebackVerificationController().check(runId); }
-    catch (error) { showPluginToast(tx(`Could not check current content: ${error.message}`, `无法核验当前内容：${error.message}`), { status: 'warning', sticky: true }); }
+  async function stageWritebackRecovery(operations, target, requireReviewing) {
+    const owner = recoveryOwner(target), generation = spaRouteGeneration, view = currentRunView;
+    const assertCurrent = () => {
+      const record = findRunRecord(target.recordId, target.sessionId);
+      if (owner.projectId !== getCurrentProjectId() || owner.accountScopeId !== cachedAccountScopeId
+        || generation !== spaRouteGeneration || view !== currentRunView || !view
+        || view.recordId !== owner.runId || view.sessionId !== owner.sessionId
+        || (target.runAccountScopeId && target.runAccountScopeId !== owner.accountScopeId)
+        || !record || record.forkSnapshot || record.runProjectId !== owner.projectId) {
+        throw new Error('The project, account or writeback run changed before dispatch.');
+      }
+      return record;
+    };
+    const record = assertCurrent();
+    const creates = operations.filter(op => op.type === 'create' && typeof op.content === 'string');
+    record.retryRequireReviewing = requireReviewing === true;
+    if (!creates.length) return;
+    const candidate = Modules.WritebackIntent.normalize({ ...owner, id: crypto.randomUUID(),
+      operations: creates, baseFiles: [], requireReviewing });
+    const safe = Modules.SessionState.pickWritebackRecovery({ ...record, retryWriteback: candidate }).retryWriteback;
+    if (safe) record.retryWriteback = safe; else delete record.retryWriteback;
+    await flushQueuedSaveState();
+    assertCurrent();
   }
 
   async function settleWritebackRecovery(applied, project, verification, target) {
@@ -6961,10 +6953,7 @@
 
   async function recordUndoFromApply(project, applyResult) {
     const directoryRecovery = Modules.DirectoryCleanupRecovery ? getDirectoryCleanupRecovery() : null;
-    let directoryCapture, directoryCaptureError;
-    try { directoryCapture = directoryRecovery?.capture(currentRunView, applyResult); }
-    catch (error) { directoryCaptureError = error; }
-    try {
+    directoryRecovery?.capture(currentRunView, applyResult);
     const appliedEntries = getAppliedEntries(applyResult).filter(entry => entry.result?.idempotent !== true);
     if (!currentRunView?.recordId || !appliedEntries.length) {
       return;
@@ -7082,10 +7071,6 @@
         [tr('detailReason')]: operation.reason
       }))
     });
-    } finally {
-      if (directoryCapture) await directoryRecovery.persist(directoryCapture);
-      if (directoryCaptureError) throw directoryCaptureError;
-    }
   }
 
   function normalizeApplyTrackedChanges(changes = []) {

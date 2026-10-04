@@ -11,14 +11,13 @@
       require('./runActivityModel'),
       require('./subagentActivityModel'),
       require('./writebackIntent'),
-      require('./manualReviewProof'),
       require('./directoryCleanupProof'),
       require('./undoOperations')
     );
   } else {
     root.CodexOverleafModuleRegistry.define(
       'SessionState',
-      ['I18n', 'SettlementFacts', 'RunInputQueue', 'SelectionContext', 'LineReferences', 'PathRedaction', 'SessionTitle', 'RunActivityModel', 'SubagentActivityModel', 'WritebackIntent', 'ManualReviewProof', 'DirectoryCleanupProof', 'UndoOperations'],
+      ['I18n', 'SettlementFacts', 'RunInputQueue', 'SelectionContext', 'LineReferences', 'PathRedaction', 'SessionTitle', 'RunActivityModel', 'SubagentActivityModel', 'WritebackIntent', 'DirectoryCleanupProof', 'UndoOperations'],
       factory
     );
   }
@@ -33,7 +32,6 @@
   RunActivityModel,
   SubagentActivityModel,
   WritebackIntent,
-  ManualReviewProof,
   DirectoryCleanupProof,
   UndoOperations
 ) {
@@ -654,10 +652,6 @@
     const wrongAccount = proof => Object.prototype.hasOwnProperty.call(session, 'accountScopeId')
       && proof.accountScopeId !== session.accountScopeId;
     const wrongProject = value => Boolean(session.projectId && value !== session.projectId);
-    if (run.writebackCheck && (run.writebackCheck.sessionId !== session.id || wrongAccount(run.writebackCheck)
-      || wrongProject(run.writebackCheck.projectId))) delete run.writebackCheck;
-    if (run.manualReviewProof && (wrongAccount(run.manualReviewProof)
-      || wrongProject(run.manualReviewProof.runProjectId))) delete run.manualReviewProof;
     if (run.pendingDirectoryCleanup && (run.pendingDirectoryCleanup.sessionId !== session.id
       || wrongAccount(run.pendingDirectoryCleanup) || wrongProject(run.pendingDirectoryCleanup.projectId))) delete run.pendingDirectoryCleanup;
     applyTrackedChangeStatus(run, run.trackedChangeStatus);
@@ -667,7 +661,7 @@
     if (value?.state !== 'omitted') return undefined;
     return { state: 'omitted', reason: ['run-budget', 'session-budget', 'fallback', 'invalid'].includes(value.reason)
       ? value.reason : 'invalid', bytes: Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? value.bytes : 0,
-      ...(value.directoryCleanup === true ? { directoryCleanup: true } : {}) };
+      ...(value.directoryCleanup === true ? { directoryCleanup: true, ...(value.coreRetained === true ? { coreRetained: true } : {}) } : {}) };
   }
 
   function normalizeRun(run, options = {}) {
@@ -746,9 +740,6 @@
     const directories = DirectoryCleanupProof.normalize(run.pendingDirectoryCleanup);
     if (directories && directories.runId === normalized.id && directories.projectId === normalized.runProjectId
       && !run.forkSnapshot) normalized.pendingDirectoryCleanup = directories;
-    const manualReview = ManualReviewProof.normalize(run.manualReviewProof);
-    if (manualReview?.runProjectId === normalized.runProjectId && !run.forkSnapshot
-      && run.undoStatus !== 'applied' && !TERMINAL_TRACKED_CHANGE_STATUS.has(run.trackedChangeStatus)) normalized.manualReviewProof = manualReview;
     applyTrackedChangeStatus(normalized, run.trackedChangeStatus);
     Object.assign(normalized, pickWritebackRecovery(run));
 
@@ -778,12 +769,11 @@
     }
 
     // Step 1 — reload reconciliation. A non-terminal status (`pending`) with no
-    // refs can result from an old record or a storage-budget omission. A valid
-    // manual-review proof still supports a read-only reconciliation. Otherwise
-    // drop pending and let actual legacy Undo material decide the action. A terminal status with no refs
+    // refs can result from an old record or a storage-budget omission. Drop
+    // pending and let actual legacy Undo material decide the action. A terminal status with no refs
     // is kept — step 3 already empties terminal payloads and the label stays
     // meaningful.
-    if (!hasRefs && !hasFileUndo && !run.manualReviewProof && status === 'pending') {
+    if (!hasRefs && !hasFileUndo && status === 'pending') {
       status = undefined;
     }
 
@@ -796,7 +786,6 @@
     if (TERMINAL_TRACKED_CHANGE_STATUS.has(status)) {
       run.undoTrackedChanges = [];
       run.undoExpectedFiles = [];
-      delete run.manualReviewProof;
     }
 
     if (status !== undefined) {
@@ -1336,6 +1325,11 @@
       nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,
       queueItemId: normalizeTextField(run.queueItemId, 160)
     };
+    if (compact.recoveryRetention?.coreRetained === true && run.undoStatus !== 'applied'
+      && !TERMINAL_TRACKED_CHANGE_STATUS.has(run.trackedChangeStatus)
+      && ['appliedOperations', 'undoOperations', 'undoTrackedChanges', 'undoExpectedFiles'].some(key => run[key]?.length)) {
+      delete compact.recoveryRetention.coreRetained;
+    }
     if (run.executionSnapshot && typeof run.executionSnapshot === 'object') {
       compact.executionSnapshot = sanitizeAssistantVisibleValue(run.executionSnapshot);
     }
@@ -1743,9 +1737,6 @@
       && !containsSecretLikeText(retry)) result.retryWriteback = retry;
     const check = WritebackIntent.normalizeSaveCheck(run.saveCheck);
     if (check && check.runId === run.id && check.projectId === normalizeProjectPrefKey(run.runProjectId)) result.saveCheck = check;
-    const writebackCheck = WritebackIntent.normalizeWritebackCheck(run.writebackCheck);
-    if (writebackCheck && writebackCheck.runId === run.id
-      && writebackCheck.projectId === normalizeProjectPrefKey(run.runProjectId)) result.writebackCheck = writebackCheck;
     if (typeof run.saveConfirmedAt === 'string' && Number.isFinite(Date.parse(run.saveConfirmedAt))) result.saveConfirmedAt = run.saveConfirmedAt;
     return result;
   }

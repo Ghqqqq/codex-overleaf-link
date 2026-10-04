@@ -222,26 +222,33 @@ const check = id => ({ v: 1, id: 'write-check', purpose: 'writeback-revalidation
   accountScopeId: 'account-one', sessionId: 'retention-session', runId: id, createdAt: '2026-10-04T00:00:00Z',
   files: [{ path: 'main.tex', kind: 'text', sha256: 'b'.repeat(64) }] });
 
-test('read-only manual review and lost-receipt evidence survive the real scoped store without granting mutation authority', async () => {
+test('retired manual review and writeback-check fields are ignored across repeated real scoped storage', async () => {
   const h = createEnvironment();
   try {
     const input = run('read-only', 10, { appliedOperations: [], undoOperations: [], undoBaseFiles: [],
       trackedChangeStatus: 'pending', manualReviewProof: proof(), writebackCheck: check('read-only') });
     const [restored] = await persist(h, [input]);
-    assert.deepEqual(restored.manualReviewProof, input.manualReviewProof);
-    assert.deepEqual(restored.writebackCheck, input.writebackCheck);
-    assert.equal(restored.trackedChangeStatus, 'pending');
+    assert.equal(restored.manualReviewProof, undefined);
+    assert.equal(restored.writebackCheck, undefined);
+    assert.equal(restored.trackedChangeStatus, undefined);
+    assert.equal(restored.recoveryRetention, undefined);
+    const compact = Actions.compactRunActionPayload(input, true);
+    assert.equal(compact.manualReviewProof, undefined);
+    assert.equal(compact.recoveryRetention, undefined);
     assert.equal(Settlement.projectRunSettlement(restored).canUndo, false);
     assert.equal(Settlement.projectRunSettlement(restored).canAccept, false);
     const [again] = await persist(h, [restored]);
-    assert.deepEqual(again.manualReviewProof, input.manualReviewProof);
+    assert.equal(again.manualReviewProof, undefined);
+    assert.equal(again.writebackCheck, undefined);
+    assert.equal(again.trackedChangeStatus, undefined);
   } finally { h.close(); }
 });
 
-test('read-only recovery evidence cannot cross session/account ownership or survive terminal and fork projection', () => {
+test('retired recovery fields are ignored in ordinary, terminal, foreign-scope and fork projections', () => {
   const h = createEnvironment();
   try {
-    const inputs = [run('wrong-session', 10, { writebackCheck: { ...check('wrong-session'), sessionId: 'other-session' } }),
+    const inputs = [run('owned', 10, { manualReviewProof: proof(), writebackCheck: check('owned') }),
+      run('wrong-session', 10, { writebackCheck: { ...check('wrong-session'), sessionId: 'other-session' } }),
       run('wrong-account', 10, { manualReviewProof: { ...proof(), accountScopeId: 'account-two' } }),
       run('finished', 10, { undoStatus: 'applied', manualReviewProof: proof(), writebackCheck: check('finished') }),
       run('fork', 10, { forkSnapshot: true, manualReviewProof: proof(), writebackCheck: check('fork') })];
@@ -258,12 +265,12 @@ test('read-only recovery evidence cannot cross session/account ownership or surv
   } finally { h.close(); }
 });
 
-test('parent project and account rejection also remove an otherwise empty pending manual-review state', () => {
+test('a retired manual-review proof alone keeps no pending state in any parent scope', () => {
   const h = createEnvironment();
   try {
     const original = run('manual', 10, { appliedOperations: [], undoOperations: [], undoBaseFiles: [],
       manualReviewProof: proof(), writebackCheck: check('manual'), trackedChangeStatus: 'pending' });
-    for (const scope of [{ projectId: 'project-b' }, { accountScopeId: 'account-two' }]) {
+    for (const scope of [{}, { projectId: 'project-b' }, { accountScopeId: 'account-two' }]) {
       const input = { ...session([original]), ...scope };
       const stored = h.StorageDb.buildSessionRecord(input, { preserveRunActionPayload: true });
       const restored = SessionState.normalizePanelState({ sessions: [input], activeSessionId: input.id });
@@ -273,5 +280,120 @@ test('parent project and account rejection also remove an otherwise empty pendin
         assert.equal(value.trackedChangeStatus, undefined);
       }
     }
+  } finally { h.close(); }
+});
+
+
+test('retiring proof-only workflows preserves real Undo materials, owner protocol and existing writeback recovery', async () => {
+  const h = createEnvironment();
+  try {
+    const owner = { projectId: 'project-a', accountScopeId: 'account-one', sessionId: 'retention-session',
+      runId: 'legacy-recovery', createdAt: '2026-10-04T00:00:00Z' };
+    const input = run(owner.runId, 10, { undoOwnerProtocol: 1, manualReviewProof: proof(), writebackCheck: check(owner.runId),
+      retryWriteback: { v: 1, id: 'retry', ...owner, operations: [{ type: 'edit', path: 'main.tex', replaceAll: 'after' }],
+        baseFiles: [{ path: 'main.tex', content: 'before' }] },
+      saveCheck: { v: 1, ...owner, files: [{ path: 'main.tex', kind: 'text', sha256: 'b'.repeat(64) }] } });
+    const [restored] = await persist(h, [input]);
+    assert.deepEqual(restored.undoOperations, input.undoOperations);
+    assert.deepEqual(restored.undoBaseFiles, input.undoBaseFiles);
+    assert.equal(restored.undoOwnerProtocol, 1);
+    assert.deepEqual(restored.retryWriteback.operations, input.retryWriteback.operations);
+    assert.deepEqual(restored.saveCheck, input.saveCheck);
+    assert.equal(Settlement.projectRunSettlement(restored).canUndo, true);
+    assert.equal(restored.manualReviewProof, undefined);
+    assert.equal(restored.writebackCheck, undefined);
+  } finally { h.close(); }
+});
+
+function directoryFact(id, path = 'created/nested') {
+  return { v: 1, accountScopeId: 'account-one', projectId: 'project-a', sessionId: 'retention-session', runId: id,
+    directories: [{ v: 1, projectId: 'project-a', path, nativeFolderId: 'folder-' + id,
+      ownershipConfirmed: false, observedAfterCreate: true }] };
+}
+const coreFields = ['appliedOperations', 'undoOperations', 'undoBaseFiles', 'undoTrackedChanges', 'undoExpectedFiles', 'trackedChangeCaptures'];
+const cores = runs => runs.map(run => Object.fromEntries(coreFields.map(key => [key, run[key]])));
+
+test('optional directory history cannot displace the same run or an older run Undo core', () => {
+  const h = createEnvironment();
+  try {
+    const originals = [run('older', 512), run('newer', 512)];
+    const budget = originals.reduce((n, item) => n + Buffer.byteLength(JSON.stringify(Actions.compactRunActionPayload(item, true))), 0);
+    const plain = h.StorageDb.buildSessionRecord(session(originals), { preserveRunActionPayload: true, maxActionPayloadBytes: budget });
+    const withFacts = originals.map(item => ({ ...item, pendingDirectoryCleanup: directoryFact(item.id) }));
+    const saved = h.StorageDb.buildSessionRecord(session(withFacts), { preserveRunActionPayload: true, maxActionPayloadBytes: budget });
+    assert.deepEqual(cores(saved.runs), cores(plain.runs));
+    for (const item of saved.runs) {
+      assert.equal(item.pendingDirectoryCleanup, undefined);
+      assert.equal(item.recoveryRetention.directoryCleanup, true);
+      assert.equal(item.recoveryRetention.coreRetained, true);
+      assert.equal(Settlement.projectRunSettlement(item).canUndo, true);
+    }
+    const reloaded = SessionState.normalizePanelState({ sessions: [saved], activeSessionId: saved.id });
+    const resaved = h.StorageDb.buildSessionRecord(reloaded.sessions[0], { preserveRunActionPayload: true });
+    assert.deepEqual(cores(resaved.runs), cores(saved.runs));
+    assert.ok(resaved.runs.every(item => item.recoveryRetention.coreRetained === true));
+    const fallback = SessionState.prepareStateForStorage(reloaded).sessions[0];
+    assert.ok(fallback.runs.every(item => item.recoveryRetention.directoryCleanup === true));
+    assert.ok(fallback.runs.every(item => item.recoveryRetention.coreRetained !== true));
+  } finally { h.close(); }
+});
+
+test('a terminal directory-only run cannot consume space reserved for active Undo cores', () => {
+  const h = createEnvironment();
+  try {
+    const active = run('active', 512);
+    const budget = Buffer.byteLength(JSON.stringify(Actions.compactRunActionPayload(active, true)));
+    const saved = h.StorageDb.buildSessionRecord(session([active, run('terminal', 10, {
+      undoStatus: 'applied', pendingDirectoryCleanup: directoryFact('terminal')
+    })]), { preserveRunActionPayload: true, maxActionPayloadBytes: budget });
+    assert.deepEqual(saved.runs[0].undoOperations, active.undoOperations);
+    assert.equal(saved.runs[1].undoOperations.length, 0);
+    assert.equal(saved.runs[1].pendingDirectoryCleanup, undefined);
+    assert.equal(saved.runs[1].recoveryRetention.directoryCleanup, true);
+    assert.equal(saved.runs[1].recoveryRetention.coreRetained, true);
+  } finally { h.close(); }
+});
+
+test('cross-session response allocation reserves all existing cores before optional directory history', () => {
+  const h = createEnvironment();
+  try {
+    const make = (id, withDirectory) => h.StorageDb.buildSessionRecord({ ...session([run(id, 2048, withDirectory
+      ? { pendingDirectoryCleanup: { ...directoryFact(id, 'd'.repeat(1800)), sessionId: id } } : {})]), id }, { preserveRunActionPayload: true });
+    const plain = [make('session-a', false), make('session-b', false)];
+    const facts = [make('session-a', true), make('session-b', true)];
+    const budget = Buffer.byteLength(JSON.stringify(plain)) + 512;
+    const transfer = { MAX_RESPONSE_BYTES: budget + 64 * 1024, byteLength: text => Buffer.byteLength(text) };
+    const saved = Actions.compactSessionBatchActions(facts, { activeSessionId: 'session-b' }, h.StorageDb.buildSessionRecord, transfer);
+    assert.deepEqual(saved.map(s => cores(s.runs)), plain.map(s => cores(s.runs)));
+    assert.ok(Buffer.byteLength(JSON.stringify(saved)) <= transfer.MAX_RESPONSE_BYTES);
+    assert.ok(saved.every(s => s.runs[0].recoveryRetention?.directoryCleanup === true));
+  } finally { h.close(); }
+});
+
+
+test('a directory fact crossing the single-run core limit omits only that fact', () => {
+  const limit = 16 * 1024 * 1024;
+  const overhead = Buffer.byteLength(JSON.stringify(Actions.compactRunActionPayload(run('edge', 0), true)));
+  const original = run('edge', Math.floor((limit - overhead) / 3));
+  const core = Actions.compactRunActionPayload(original, true);
+  assert.equal(core.undoOperations.length, 1);
+  const saved = Actions.compactRunActionPayload({ ...original, pendingDirectoryCleanup: directoryFact('edge') }, true);
+  assert.deepEqual(cores([saved]), cores([core]));
+  assert.equal(saved.pendingDirectoryCleanup, undefined);
+  assert.equal(saved.recoveryRetention.coreRetained, true);
+  assert.equal(saved.recoveryRetention.reason, 'run-budget');
+});
+
+test('directory history has lower priority than existing optional capture evidence', () => {
+  const h = createEnvironment();
+  try {
+    const original = run('capture', 100, { trackedChangeCaptures: [{ path: 'main.tex', state: 'observed', text: 'c'.repeat(100) }] });
+    const budget = Buffer.byteLength(JSON.stringify(Actions.compactRunActionPayload(original, true))) + 8;
+    const plain = h.StorageDb.buildSessionRecord(session([original]), { preserveRunActionPayload: true, maxActionPayloadBytes: budget });
+    const saved = h.StorageDb.buildSessionRecord(session([{ ...original, pendingDirectoryCleanup: directoryFact(original.id) }]),
+      { preserveRunActionPayload: true, maxActionPayloadBytes: budget });
+    assert.ok(plain.runs[0].trackedChangeCaptures.length);
+    assert.deepEqual(cores(saved.runs), cores(plain.runs));
+    assert.equal(saved.runs[0].recoveryRetention.coreRetained, true);
   } finally { h.close(); }
 });

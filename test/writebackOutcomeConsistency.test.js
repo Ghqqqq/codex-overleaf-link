@@ -170,7 +170,7 @@ for (const locale of ['en', 'zh']) {
         assert.equal(Boolean(warning), directoryCleanup === true);
         assert.equal(summary.warnKeys.has('recoveryRetention'), directoryCleanup === true);
         assert.equal(summary.open, directoryCleanup === true);
-        if (warning) assert.match(warning.value, locale === 'zh' ? /目录.*人工检查/ : /folder.*manually/i);
+        if (warning) assert.match(warning.value, locale === 'zh' ? /文件夹.*未核验/ : /folder.*unknown/i);
         assert.match(rows.find(row => row.key === 'undo').value, locale === 'zh' ? /已撤销|已接受/ : /undone|accepted/);
         assert.match(summary.facts.find(fact => fact.key === 'undo').text, locale === 'zh' ? /已撤销|已接受/ : /undone|accepted/);
         assert.equal(Settlement.projectRunSettlement(run).canUndo, false);
@@ -212,80 +212,22 @@ test('possible-mutation evidence survives facts compaction and keeps the same re
   assert.equal(facts.evidence.settled, 'needs-review');
 });
 
-test('readonly writeback check is a separate action and never calls Retry sync or model submission', async () => {
+test('retired recovery fields expose no new toolbar or review actions', async () => {
   const f = createFlow({ creatorOptions: { zipUnavailable: true } }), run = await f.run();
-  run.writebackCheck = { v: 1, purpose: 'writeback-revalidation', projectId: 'example', files: [{ path: 'new.tex', absent: true }] };
-  let checks = 0, retries = 0;
-  f.c.retryRunWriteback = () => { retries++; };
-  const ui = renderNotice(f, reportOf(run), run, { checkWriteback: async id => { assert.equal(id, run.id); checks++; } });
-  assert.equal(ui.snapshot().toolbar['sync-check'].hidden, false);
-  assert.equal(ui.snapshot().toolbar['sync-retry'].hidden, false);
-  const before = { model: f.h.io.requests.length, page: f.trace.filter(item => item.kind === 'page').length };
-  await ui.clickCheck(); assert.equal(checks, 1); assert.equal(retries, 0);
-  assert.deepEqual({ model: f.h.io.requests.length, page: f.trace.filter(item => item.kind === 'page').length }, before);
-});
-
-test('readonly check is disabled during a run and hidden for fork snapshots or missing proof', async () => {
-  const f = createFlow(), run = await f.run();
-  const check = { v: 1, purpose: 'writeback-revalidation', files: [{ path: 'one.tex', sha256: 'a'.repeat(64) }] };
-  let calls = 0;
-  f.c.currentRunView = { recordId: run.id };
-  const busy = renderNotice(f, reportOf(run), { ...run, writebackCheck: check }, { checkWriteback: async () => { calls++; } });
-  assert.equal(busy.snapshot().toolbar['sync-check'].disabled, true); await busy.clickCheck(); assert.equal(calls, 0);
-  f.c.currentRunView = null;
-  for (const variant of [{ ...run, writebackCheck: null }, { ...run, forkSnapshot: true, writebackCheck: check }]) {
-    assert.equal(renderNotice(f, reportOf(run), variant, { checkWriteback: async () => { calls++; } }).snapshot().toolbar['sync-check'].hidden, true);
-  }
-});
-
-test('live readonly check remains available after Undo while proof remains without changing terminal ownership', async () => {
-  const f = createFlow(), run = await f.run();
-  run.undoStatus = 'applied'; run.writebackCheck = { v: 1, purpose: 'writeback-revalidation', files: [{ path: 'one.tex', sha256: 'a'.repeat(64) }] };
-  const before = JSON.stringify(run);
-  const ui = renderNotice(f, reportOf(run), run, { checkWriteback: async () => {} });
-  assert.equal(ui.snapshot().toolbar['sync-check'].hidden, false); await ui.clickCheck(); assert.equal(JSON.stringify(run), before);
-});
-
-test('manual review proof exposes only original-run navigation and readonly verification callbacks', async () => {
-  const f = createFlow(), run = await f.run(), calls = [];
-  run.trackedChangeStatus = 'pending';
-  run.manualReviewProof = { v: 1, id: 'proof', runProjectId: 'example', accountScopeId: 'account-one',
-    files: [{ path: 'one.tex', nativeDocId: 'doc-one', postHash: 'a'.repeat(64), targetKeys: ['own'], preservedKeys: ['other'] }] };
+  run.writebackCheck = { v: 1, purpose: 'writeback-revalidation', files: [{ path: 'new.tex', absent: true }] };
+  run.manualReviewProof = { v: 1, files: [{ path: 'new.tex' }] };
+  const calls = [];
   const ui = renderNotice(f, reportOf(run), run, {
-    openManualReviewFile: async (id, file) => calls.push(['open', id, file]),
-    verifyManualReview: async id => calls.push(['verify', id])
+    checkWriteback: async () => calls.push('check'),
+    openManualReviewFile: async () => calls.push('open-review'),
+    verifyManualReview: async () => calls.push('verify-review'),
+    checkCreatedDirectories: async () => calls.push('directories')
   });
-  assert.deepEqual(ui.snapshot().buttons.map(button => button.recoveryFor), ['manual-review-open', 'manual-review-verify']);
-  const before = { model: f.h.io.requests.length, page: f.trace.filter(item => item.kind === 'page').length };
-  await ui.click(0); await ui.click(1);
-  assert.deepEqual(calls, [['open', run.id, 'one.tex'], ['verify', run.id]]);
-  assert.deepEqual(ui.actions, [], 'neither the generic current-project open nor Edit/Retry callback runs');
-  assert.deepEqual({ model: f.h.io.requests.length, page: f.trace.filter(item => item.kind === 'page').length }, before);
-});
-
-test('tracked changes remaining without a proof offer scoped navigation, never a blind verifier', async () => {
-  const f = createFlow(), run = await f.run(), calls = [];
-  const transition = Settlement.settleTrackedChangeLifecycle({ kind: 'accept', run, result: { ok: false,
-    skipped: [{ operation: { type: 'edit', path: 'one.tex' }, result: { ok: false, code: 'tracked_changes_remain', changedDocument: false } }] } });
-  Object.assign(run, Settlement.applySettlementTransition(run, transition));
-  const ui = renderNotice(f, reportOf(run), run, { openManualReviewFile: async (id, file) => calls.push([id, file]),
-    verifyManualReview: async () => { throw new Error('missing proof must not offer verification'); } });
-  assert.deepEqual(ui.snapshot().buttons.map(button => button.recoveryFor), ['manual-review-open']);
-  await ui.click(); assert.deepEqual(calls, [[run.id, 'one.tex']]); assert.deepEqual(ui.actions, []);
-});
-
-test('accepted and forked runs suppress manual-review proof actions; an active run disables them', async () => {
-  const f = createFlow(), run = await f.run();
-  const proof = { v: 1, files: [{ path: 'one.tex' }] };
-  const actions = { openManualReviewFile: async () => { throw new Error('disabled action'); }, verifyManualReview: async () => { throw new Error('disabled action'); } };
-  for (const variant of [{ ...run, trackedChangeStatus: 'accepted', manualReviewProof: proof },
-    { ...run, forkSnapshot: true, manualReviewProof: proof }]) {
-    assert.equal(renderNotice(f, reportOf(run), variant, actions).snapshot().buttons.some(button => button.recoveryFor.startsWith('manual-review')), false);
-  }
-  f.c.currentRunView = { recordId: run.id };
-  const busy = renderNotice(f, reportOf(run), { ...run, trackedChangeStatus: 'pending', manualReviewProof: proof }, actions);
-  await busy.click(0); await busy.click(1); assert.deepEqual(busy.actions, []);
-  f.c.currentRunView = null;
+  assert.equal(ui.snapshot().toolbar['sync-check'].hidden, true);
+  assert.equal(ui.snapshot().toolbar['sync-retry'].hidden, false, 'the pre-existing create retry remains available');
+  assert.equal(ui.snapshot().buttons.some(button => /manual-review|directory-cleanup/.test(button.recoveryFor)), false);
+  await ui.clickCheck(); await ui.clickDirectories();
+  assert.deepEqual(calls, []);
 });
 
 function pendingFolders(run) {
@@ -294,22 +236,22 @@ function pendingFolders(run) {
       ownershipConfirmed: false, observedAfterCreate: true }] };
 }
 
-test('directory recovery remains a readonly action after Undo or Accept', async () => {
-  const f = createFlow(), run = await f.run(), calls = [];
-  run.pendingDirectoryCleanup = pendingFolders(run);
-  const before = { model: f.h.io.requests.length, page: f.trace.filter(item => item.kind === 'page').length };
+test('directory observations stay passive in existing Details after Undo or Accept', async () => {
+  const f = createFlow(), run = await f.run(); run.pendingDirectoryCleanup = pendingFolders(run);
+  const before = JSON.stringify(run);
   for (const terminal of [{ undoStatus: 'applied' }, { trackedChangeStatus: 'accepted' }]) {
-    const ui = renderNotice(f, reportOf(run), { ...run, ...terminal }, { checkCreatedDirectories: async id => calls.push(id) });
-    assert.equal(ui.snapshot().directoryCleanup.hidden, false);
-    assert.match(ui.snapshot().directoryCleanup.text, /new\/nested/);
-    assert.match(ui.snapshot().directoryCleanup.text, /Checking only reads their status/);
-    await ui.clickDirectories();
+    const ui = renderNotice(f, reportOf(run), { ...run, ...terminal });
+    const snapshot = ui.snapshot();
+    assert.equal(snapshot.directoryCleanup.hidden, true, 'no independent recovery card is rendered');
+    assert.match(snapshot.text, /recorded these folders at completion/);
+    assert.match(snapshot.text, /current status has not been rechecked/);
+    assert.match(snapshot.text, /new\/nested/);
+    assert.equal(snapshot.buttons.some(button => /director/.test(button.recoveryFor)), false);
   }
-  assert.deepEqual(calls, [run.id, run.id]);
-  assert.deepEqual({ model: f.h.io.requests.length, page: f.trace.filter(item => item.kind === 'page').length }, before);
+  assert.equal(JSON.stringify(run), before);
 });
 
-test('directory paths are hidden for foreign scope, missing identity, fork, or unsafe paths', async () => {
+test('directory details do not project foreign scope, fork, or unsafe paths', async () => {
   const f = createFlow(), run = await f.run(), pending = pendingFolders(run);
   for (const variant of [
     { ...run, pendingDirectoryCleanup: { ...pending, projectId: 'different-project' } },
@@ -317,66 +259,21 @@ test('directory paths are hidden for foreign scope, missing identity, fork, or u
     { ...run, pendingDirectoryCleanup: { ...pending, runId: 'different-run' } },
     { ...run, forkSnapshot: true, pendingDirectoryCleanup: pending },
     { ...run, pendingDirectoryCleanup: { ...pending, directories: [{ ...pending.directories[0], path: '../other' }] } }
-  ]) assert.equal(renderNotice(f, reportOf(run), variant).snapshot().directoryCleanup.hidden, true);
-  f.c.cachedAccountScopeId = undefined;
-  const missing = { ...run, pendingDirectoryCleanup: { ...pending, accountScopeId: undefined } };
-  assert.equal(renderNotice(f, reportOf(run), missing).snapshot().directoryCleanup.hidden, true);
-});
-
-test('directory checks are disabled while busy and reject a changed scope after rendering', async () => {
-  const f = createFlow(), run = await f.run(); run.pendingDirectoryCleanup = pendingFolders(run);
-  let calls = 0; const options = { checkCreatedDirectories: async () => { calls++; } };
-  f.c.currentRunView = { recordId: run.id };
-  const busy = renderNotice(f, reportOf(run), run, options);
-  assert.equal(busy.snapshot().directoryCleanup.disabled, true); await busy.clickDirectories();
-  f.c.currentRunView = null;
-  const changed = renderNotice(f, reportOf(run), run, options);
-  f.c.cachedAccountScopeId = 'changed-account'; await changed.clickDirectories();
-  assert.equal(calls, 0);
+  ]) assert.doesNotMatch(renderNotice(f, reportOf(run), variant).snapshot().text, /recorded these folders/);
 });
 
 for (const confirm of [false, true]) {
-  test('complete create/delete plan reaches terminal/report/recovery consumers: approve=' + confirm, async () => {
+  test('create/delete changes retain the original separate delete confirmation: approve=' + confirm, async () => {
     const initial = { 'old.tex': 'Original source' };
     const f = createFlow({ initialFiles: initial, confirm,
       syncChanges: [create, { type: 'delete', path: 'old.tex' }] });
-    const run = await f.run(), event = reportOf(run), projection = Settlement.projectRunSettlement(run);
-    if (confirm) {
-      assert.equal(run.status, 'failed', 'real delete I/O refusal keeps a partially applied plan failed');
-      assert.notEqual(projection.primaryFailure.code, 'file_plan_confirmation_rejected');
-      assert.equal(f.f.files.get('new.tex'), create.content);
-      assert.equal(f.f.files.get('old.tex'), initial['old.tex']);
-      assert.equal(run.settlement.documentEffect, 'changed');
-      assert.equal(run.settlement.evidence.applied, 'partial');
-      assert.ok(run.undoOperations.length, 'written sibling retains Undo');
-      return;
-    }
-    assert.equal(run.status, 'failed', 'rejected plan never reports successful execution');
-    assert.equal(event.status, 'failed');
-    assert.equal(event.failure.code, 'file_plan_confirmation_rejected');
-    assert.equal(event.failure.stage, 'preflight');
-    assert.equal(event.failure.severity, 'blocked');
-    assert.equal(event.failure.retryable, false);
-    assert.equal(projection.primaryFailure.code, event.failure.code);
-    const stored = await f.c.Modules.StorageDb.getRecord('sessions', f.c.state.activeSessionId);
-    const storedRun = stored.runs.find(item => item.id === run.id);
-    assert.equal(storedRun.status, 'failed');
-    assert.equal(reportOf(storedRun).status, 'failed');
-    assert.equal(Settlement.projectRunSettlement(storedRun).primaryFailure.code, event.failure.code);
-    assert.equal(run.settlement.documentEffect, 'unchanged');
-    assert.equal(f.trace.some(item => item.kind === 'page' && item.method === 'applyOperations'), false);
+    const run = await f.run(), event = reportOf(run);
+    assert.equal(f.f.files.get('new.tex'), create.content, 'approved create remains independent of a declined delete');
     assert.equal(f.f.files.get('old.tex'), initial['old.tex']);
-    assert.equal(f.f.files.has('new.tex'), false);
-    assert.equal(run.retryWriteback, undefined);
-    assert.equal(run.saveCheck, undefined);
-    assert.deepEqual(run.undoOperations || [], []);
-    const rendered = renderNotice(f, event, run).snapshot();
-    assert.match(rendered.notices[0].text, /complete file plan was cancelled/i);
-    assert.equal(rendered.buttons.length, 0, 'rejection offers no automatic retry action');
-    assert.equal(rendered.toolbar['sync-retry'].hidden, true);
-    const before = f.trace.length;
-    await f.retry();
-    assert.equal(f.trace.length, before, 'rejected plan retains no replay payload');
+    assert.notEqual(event.failure?.code, 'file_plan_confirmation_rejected');
+    assert.ok(run.undoOperations.length, 'written files retain their original Undo');
+    assert.equal(run.writebackCheck, undefined);
+    if (!confirm) assert.ok(f.reportInputs.some(report => report.applyResults?.some(result => result.skipped?.some(entry => entry.operation?.path === 'old.tex' && entry.result?.code === 'delete_confirmation_rejected'))));
   });
 }
 
@@ -388,3 +285,20 @@ test('normal zero-operation model result stays completed without a refusal failu
   assert.equal(Settlement.projectRunSettlement(run).primaryFailure, null);
   assert.equal(f.trace.some(item => item.kind === 'page' && item.method === 'applyOperations'), false);
 });
+
+for (const locale of ['en', 'zh']) {
+  test('directory-only retention omission does not imply lost Undo material: ' + locale, () => {
+    const tx = (en, zh) => locale === 'zh' ? zh : en;
+    const run = { undoOperations: [{ type: 'edit', path: 'main.tex', replaceAll: 'before' }],
+      recoveryRetention: { state: 'omitted', reason: 'session-budget', directoryCleanup: true, coreRetained: true } };
+    const rows = Results.projectCompletionMeta([{ key: 'undo', label: 'Undo', value: '1 undoable' }], run,
+      { tx, isTrackedChangeLifecycleRun: () => false, projectRunSettlement: Settlement.projectRunSettlement });
+    const notice = rows.find(row => row.key === 'recoveryRetention').value;
+    assert.match(notice, locale === 'zh' ? /文件夹历史观测记录未保留/ : /folder observations were not retained/);
+    assert.doesNotMatch(notice, locale === 'zh' ? /持久恢复材料未保留|历史恢复/ : /Persistent recovery data|history to recover/);
+    const summary = Results.summarizeCompletionMeta(rows, run, { tx });
+    assert.match(summary.facts.find(fact => fact.key === 'recoveryRetention').text, locale === 'zh' ? /文件夹观测/ : /Folder observations/);
+    assert.equal(Settlement.projectRunSettlement(run).canUndo, true);
+    assert.match(summary.facts.find(fact => fact.key === 'undo').text, /1/);
+  });
+}

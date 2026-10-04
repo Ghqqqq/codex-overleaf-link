@@ -41,7 +41,7 @@ ContentRuntime
 `SUPPORT_MODULES` 中缺失导出同样进入错误集合，名称中的 support 不能解释为可随意缺失。
 共享模块仍需遵守初始化顺序：[content-entry](../../extension/entries/content-entry.mjs) 在 `UndoOperations` 之前加载 `StaleGuard`，前者使用其补丁坐标映射；`WritebackSettlement` 将 `UndoOperations` 声明为显式 registry 依赖。修改恢复材料时需同时检查 CommonJS 与浏览器两条装配路径。
 [ContentRuntime.init](../../extension/src/content/contentRuntime.js) 是组合入口，向各 controller 注入 getter/callback；该文件仍包含业务流程，不能将其所有内容都归类为纯装配。
-[RunReviewController](../../extension/src/content/runReviewController.js) 拥有 Undo/Accept 操作编排；[WritebackVerificationController](../../extension/src/content/writebackVerificationController.js) 拥有写前摘要与只读内容核验；[DirectoryCleanupRecovery](../../extension/src/content/directoryCleanupRecovery.js) 拥有目录观测的保存与检查。runtime 保留薄入口并注入账号、项目、运行和持久化依赖。结果展示由 [RunCompletionMeta](../../extension/src/content/runCompletionMeta.js) 与 [RunRecoveryActions](../../extension/src/content/runRecoveryActions.js) 分别负责元信息和恢复动作。
+[RunReviewController](../../extension/src/content/runReviewController.js) 拥有 Undo/Accept 操作编排；[DirectoryCleanupRecovery](../../extension/src/content/directoryCleanupRecovery.js) 保存目录观测。原有新建重试和保存确认由 runtime 编排并核对账号、项目、运行及持久化依赖。结果展示由 [RunCompletionMeta](../../extension/src/content/runCompletionMeta.js) 与 [RunRecoveryActions](../../extension/src/content/runRecoveryActions.js) 分别负责元信息和既有恢复动作。
 runtime 对重复初始化设有标记；发现旧 panel 已在 DOM、runtime 尚未登记时，返回 `stale-panel-before-runtime-init`。这条守卫不能证明所有旧页面都已自动恢复。
 异步初始化先加载全局偏好、账号作用域与持久状态，再建立队列、面板和恢复流程；项目列表路由立即挂 dashboard shell，后续填充列表。
 队列数据加载与队列卡重绘使用不同入口，由面板同步衔接；初始化及恢复后的显示路线见[队列显示与恢复入口](#pending-queue-render)。
@@ -124,7 +124,7 @@ Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并
 
 `persistPanelInputs` 先交给全局 controller；识别到全局字段就返回该 patch Promise。普通 task 输入走 debounce 保存，明确控件变更继续读取并持久化。
 全局 controller 将 pending patch 投影到本地视图，再接收递增 revision；失败时移除 pending patch 并报告错误。此结构旨在阻止旧会话 autosave 回滚全局偏好。
-语言存在三条呈现通路：[i18n](../../extension/src/shared/i18n.js) 的 `tr` 键、runtime 的 `tx(en, zh)`、Popup 的 `utx`。修改翻译需同时检查实际消费者。
+语言存在三条呈现通路：[i18n](../../extension/src/shared/i18n.js) 的 `tr` 键、runtime 的 `tx(en, zh)`、Popup 的 `utx`。修改翻译需同时检查实际消费者。已知失败码由 `FailureReasons.localizeFailureReason` 在 Notice 和既有详情渲染时读取当前面板语言，原诊断继续保留。旧记录丢失原始错误码时，`RunFailureNotice.snapshotUndoDisplayFailure` 只对精确匹配的已知 Snapshot Undo 模板生成临时展示描述，不修改原失败分类、持久状态或恢复动作权限；未知诊断保留原文。
 [ThemeController.applyTheme/watchAuto](../../extension/src/content/themeController.js) 负责主题效果；全局存储拥有偏好，CSS 与 dialog/浮动工具栏负责正确继承和显示。
 
 ### 已提交输入、运行中草稿与编辑重发
@@ -250,7 +250,7 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 | 写回事实及其主因 | [WritebackSettlement.settle](../../extension/src/shared/writebackSettlement.js) 经 [WritebackOperationEvidence.normalizeOperationEvidence](../../extension/src/shared/writebackOperationEvidence.js) 收集失败；[SettlementFacts.projectRunSettlement](../../extension/src/shared/settlementFacts.js) 投影持久事实 | `evidence.settled`、failure 的 `terminalState` 和 `run.status` 具有不同含义 |
 | 完成报告与摘要 | [WritebackOrchestrator.promoteWritebackSkippedFailure](../../extension/src/content/writebackOrchestrator.js) 提升显式 failure；[Summary.buildChangeSummaryLine](../../extension/src/shared/summary.js) 与 [AgentTranscript.buildHumanCompletionReport](../../extension/src/shared/agentTranscript.js) 统计原始返回集合；runtime `appendCompletionReport` 保存 report event | 写回 failure 共用主因规则；条目计数消费 Broker 已补齐的结果集合 |
 | 报告中的失败告警 | [RunFailureNotice.append/formatMetaValue](../../extension/src/content/runFailureNotice.js) 优先读当前 settlement 主因，缺少时读 report event.failure | 刷新后重建的告警与报告中保存的原 failure 可能来源不同 |
-| 告警旁的恢复按钮 | [RunRecoveryActions.appendRecoveryActionForFailure](../../extension/src/content/runRecoveryActions.js) 先从 Notice context 处理原运行专用人工 Review，再由 `RunFailureNotice.prepareRecovery` 处理通用写入核查，其余动作按同一当前 failure.code 白名单路由 | `canRetry` 或 `retryable` 为真不保证存在按钮；按钮出现也不单独证明原操作适合自动重放 |
+| 告警旁的恢复按钮 | [RunRecoveryActions.appendRecoveryActionForFailure](../../extension/src/content/runRecoveryActions.js) 先由 `RunFailureNotice.prepareRecovery` 处理原有检查文件/查看详情动作，其余动作按同一当前 failure.code 白名单路由 | `canRetry` 或 `retryable` 为真不保证存在按钮；按钮出现也不单独证明原操作适合自动重放 |
 | 活动告警与运行页眉 | [RunActivityModel.project](../../extension/src/shared/runActivityModel.js) 分类活动；[RunActivitySummary](../../extension/src/content/runActivitySummary.js) 汇总活动事实，调用 [RunPresence](../../extension/src/content/runPresence.js)；timeline `classifyRunPresence` 读取 run.status | 活动 warning 不直接决定运行失败；页眉文件数不能当作页面已写文件数 |
 
 **失败归一化与排序。** 写回相关消费者共用 `FailureReasons.normalizeWritebackFailure`，把旧 code 映射、目录默认值、文件上下文及可能发生修改的证据归一化。`selectPrimaryWritebackFailure` 先选择需要核查写入结果的失败，再按通用严重度和阶段排序：\(f^*=\arg\min_f(\operatorname{reviewRank}(f),\operatorname{severityRank}(f),\operatorname{stageRank}(f))\)。通用严重度仍为 `blocked > error > warning > info`，同等级保留原顺序；未修改非写回场景的通用选择器。
@@ -260,7 +260,7 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 `normalizeOperationEvidence` 另为未匹配计划补 `write_result_missing`；Summary、AgentTranscript 和 `appendApplyResult` 按传入的 applied/skipped 集合统计。若绕开 Broker 直接交给末端“一项 applied、空 skipped”的孤立结果，结算仍可为 partial/needs-review，而报告计数或 completed 标签不一致。这个兜底差异不构成普通主链已经假成功的证据；新增入口或调整 Broker 时应保持补项与后续消费者的衔接。
 
 **恢复动作的边界。** `RunFailureNotice` 将需要核查写入的证据优先展示为检查文件或展开详情；[RunRecoveryActions](../../extension/src/content/runRecoveryActions.js) 从同一个 Notice context 取得当前 failure，再按明确白名单和 callback 提供动作。旧 report event 继续保留历史事实，当前提示及动作不会各自从不同主因派生。`retryable` 本身仍不足以授权自动重放；Edit & resend 只回填 composer，需新的显式提交。
-工具栏 Retry sync 按 `retryWriteback/saveCheck` 提供独立入口；`writebackCheck` 提供服务器内容的只读重新核验，不能补造执行回执或 Undo 所有权。手动 Review 的定位及重新核验也由 RunRecoveryActions 提供，接受终态须经过原文件身份、完整正文和目标/无关 refs 检查。[RunCompletionMeta](../../extension/src/content/runCompletionMeta.js) 负责完成信息和 `recoveryRetention` 提示，区分预算省略与摘要降级；现有内存材料仍可用时不会禁用其 Undo。Accept/Undo 的执行资格仍由实际恢复材料决定，见[运行状态与恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
+工具栏 Retry sync 按 `retryWriteback/saveCheck` 提供原有入口；不存在额外写入内容核查、人工 Review 核验或目录检查按钮。[RunCompletionMeta](../../extension/src/content/runCompletionMeta.js) 负责完成信息和 `recoveryRetention` 提示，区分预算省略与摘要降级；必要目录观测只作为原详情的一行历史说明，不能推断当前状态。现有内存材料仍可用时不会禁用其 Undo。Accept/Undo 的执行资格仍由真实恢复材料决定，旧版恢复说明合入原 Undo 确认，见[运行状态与恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
 
 **活动与页眉的边界。** `RunActivityModel.isDiagnosticNotice` 将未携带显式 failure 且活动 state 非 failed 的普通 warning/configWarning 放入 diagnostics，保留 guardianWarning 等需要留意的事件；`needsUserAttention` 通常不把普通工具失败升级为任务告警，TeX 编译命令失败另有识别规则。页眉 files 统计 completed 本地 edit 活动中的路径，增删行数来自这些活动；compiled 取 completed compile 活动。`classifyRunPresence` 在 `retryingWriteback` 为真时先返回 plain，其余按 run.status 区分 Done 等分类。这些数值描述各自记录的活动，页面 applied/saved/compiled 结算证据仍需另查；裁剪历史还受 `filesClipped` 限定。
 

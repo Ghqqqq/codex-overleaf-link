@@ -1,7 +1,7 @@
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./fileMoveApproval'));
-  else root.CodexOverleafModuleRegistry.define('WritebackPlan', ['FileMoveApproval'], factory);
-})(typeof globalThis !== 'undefined' ? globalThis : window, function (FileMoveApproval) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.CodexOverleafModuleRegistry.define('WritebackPlan', [], factory);
+})(typeof globalThis !== 'undefined' ? globalThis : window, function () {
   'use strict';
 
   // Input validation, user approval, and audit projection precede page mutation.
@@ -225,7 +225,7 @@
     };
   }
 
-    return { confirmWholeFilePlan: (operations, options = {}) => FileMoveApproval.confirm(operations, { tx, showPluginConfirm, ...options }), partitionUnsafeProjectPathOperations, normalizeOperationProjectPaths, getInvalidOperationProjectPath, evaluateGovernedOperations, buildGovernanceSkippedApplyResult, filterSyncChangesByOperations, mergeApplyResultSkipped, confirmBinaryOperations, buildAuditSummaryFromApply, summarizeOperationForAudit };
+    return { partitionUnsafeProjectPathOperations, normalizeOperationProjectPaths, getInvalidOperationProjectPath, evaluateGovernedOperations, buildGovernanceSkippedApplyResult, filterSyncChangesByOperations, mergeApplyResultSkipped, confirmBinaryOperations, buildAuditSummaryFromApply, summarizeOperationForAudit };
   }
   return { create };
 });

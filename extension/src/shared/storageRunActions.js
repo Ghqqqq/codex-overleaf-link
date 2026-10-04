@@ -1,10 +1,10 @@
 (function initStorageRunActions(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./selectionContext'), require('./writebackIntent'), require('./writingStyle'), require('./manualReviewProof'), require('./directoryCleanupProof'));
+    module.exports = factory(require('./selectionContext'), require('./writebackIntent'), require('./writingStyle'), require('./directoryCleanupProof'));
   } else {
-    root.CodexOverleafModuleRegistry.define('StorageRunActions', ['SelectionContext', 'WritebackIntent', 'WritingStyle', 'ManualReviewProof', 'DirectoryCleanupProof'], factory);
+    root.CodexOverleafModuleRegistry.define('StorageRunActions', ['SelectionContext', 'WritebackIntent', 'WritingStyle', 'DirectoryCleanupProof'], factory);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function storageRunActionsFactory(SelectionContext, WritebackIntent, WritingStyle, ManualReviewProof, DirectoryCleanupProof) {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function storageRunActionsFactory(SelectionContext, WritebackIntent, WritingStyle, DirectoryCleanupProof) {
   'use strict';
 
   // Share a bounded budget across the retained history, rather than expiring
@@ -28,13 +28,13 @@
     if (options && options.preserveRunActionPayload === true) {
       for (var index = selectedRuns.length - 1; index >= 0; index -= 1) {
         var run = selectedRuns[index];
-        if (!hasReloadableRunActionPayload(run)) continue;
-        var payload = compactRunActionPayload(run, true, { includeCaptures: false });
+        if (!hasReloadableRunActionPayload(withoutDirectoryFacts(run))) continue;
+        var payload = compactRunActionPayload(run, true, { includeCaptures: false, includeDirectoryCleanup: false });
         if (payload.recoveryRetention?.state === 'omitted') { payloads.set(run.id, payload); continue; }
         var serialized = JSON.stringify(payload);
         var bytes = getUtf8ByteLength(serialized);
         if (!fits(bytes, serialized.length)) {
-          payloads.set(run.id, { ...emptyActionPayload(), recoveryRetention: omitted('session-budget', bytes, Boolean(runDirectoryCleanup(run))) });
+          payloads.set(run.id, { ...emptyActionPayload(), recoveryRetention: omitted('session-budget', bytes) });
           continue;
         }
         remaining -= bytes;
@@ -56,9 +56,20 @@
         }
       }
     }
+    // Passive directory history uses only the space left after all original
+    // recovery payloads and optional captures have been selected.
+    var directoryRemaining = Number.isFinite(options?.maxOptionalDirectoryBytes)
+      ? Math.max(0, options.maxOptionalDirectoryBytes) : Infinity;
     return selectedRuns.map(function (run) {
-      var payload = payloads.get(run.id) || compactRunActionPayload(run, false);
-      return compactRun(run, payloads.has(run.id) && payload.recoveryRetention?.state !== 'omitted', payload);
+      var payload = payloads.get(run.id) || compactRunActionPayload(run, false, { includeDirectoryCleanup: false });
+      if (options?.deferDirectoryCleanup !== true) payload = appendDirectoryFacts(payload, run,
+        options?.preserveRunActionPayload === true, function (bytes, chars) {
+          if (bytes > directoryRemaining || !fits(bytes, chars)) return false;
+          directoryRemaining -= bytes; remaining -= bytes;
+          usedBytes += bytes; usedChars += chars;
+          return true;
+        }, 'session-budget');
+      return compactRun(run, payloads.has(run.id) && !coreWasOmitted(payload), payload);
     });
   }
 
@@ -68,16 +79,32 @@
   function compactSessionBatchActions(records, options = {}, buildSessionRecord, SharedSessionTransfer) {
     var budget = SharedSessionTransfer.MAX_RESPONSE_BYTES - 64 * 1024;
     if (SharedSessionTransfer.byteLength(JSON.stringify(records)) <= budget) return records;
-    var summaries = records.map(record => buildSessionRecord(record, { preserveRunActionPayload: false }));
+    var summaries = records.map(record => buildSessionRecord(record, { preserveRunActionPayload: false, deferDirectoryCleanup: true }));
     var remaining = Math.max(0, budget - SharedSessionTransfer.byteLength(JSON.stringify(summaries)));
     var allocated = new Map();
     var ordered = records.slice().sort((a, b) => Number(b.id === options.activeSessionId) - Number(a.id === options.activeSessionId)
       || (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
     for (var record of ordered) {
       var summary = summaries.find(item => item.id === record.id);
-      var next = buildSessionRecord(record, { preserveRunActionPayload: true, maxActionPayloadBytes: remaining });
+      var next = buildSessionRecord(record, { preserveRunActionPayload: true, maxActionPayloadBytes: remaining, deferDirectoryCleanup: true });
       remaining -= Math.max(0, SharedSessionTransfer.byteLength(JSON.stringify(next)) - SharedSessionTransfer.byteLength(JSON.stringify(summary)));
       allocated.set(record.id, next);
+    }
+    // Do not let an active session's optional directory facts evict another
+    // session's existing Undo core under the shared response bound.
+    for (var record of ordered) {
+      var core = allocated.get(record.id);
+      var sourceRuns = new Map((record.runs || []).map(run => [run.id, run]));
+      var withFacts = { ...core, runs: core.runs.map(run => {
+        var source = sourceRuns.get(run.id), next = { ...run };
+        if (source?.pendingDirectoryCleanup) next.pendingDirectoryCleanup = source.pendingDirectoryCleanup;
+        if (source?.recoveryRetention?.directoryCleanup === true) next.recoveryRetention = {
+          ...(next.recoveryRetention || { ...source.recoveryRetention, coreRetained: true }), directoryCleanup: true };
+        return next;
+      }) };
+      var enriched = buildSessionRecord(withFacts, { preserveRunActionPayload: true, maxOptionalDirectoryBytes: remaining });
+      remaining -= Math.max(0, SharedSessionTransfer.byteLength(JSON.stringify(enriched)) - SharedSessionTransfer.byteLength(JSON.stringify(core)));
+      allocated.set(record.id, enriched);
     }
     return records.map(record => allocated.get(record.id));
   }
@@ -102,8 +129,7 @@
       && Array.isArray(run.undoExpectedFiles) && run.undoExpectedFiles.length > 0
       && Array.isArray(run.appliedOperations) && run.appliedOperations.length > 0;
     var legacyUndo = Array.isArray(run && run.undoOperations) && run.undoOperations.length > 0;
-    var manualReview = ManualReviewProof.normalize(run.manualReviewProof);
-    return trackedLifecycle || reviewingEditorUndo || legacyUndo || Boolean(manualReview && manualReview.runProjectId === run.runProjectId);
+    return trackedLifecycle || reviewingEditorUndo || legacyUndo;
   }
 
   function runDirectoryCleanup(run) {
@@ -111,21 +137,63 @@
     return proof && proof.runId === run.id && proof.projectId === run.runProjectId ? proof : null;
   }
 
-  function omitted(reason, bytes = 0, directoryCleanup = false) {
-    return { state: 'omitted', reason, bytes, ...(directoryCleanup ? { directoryCleanup: true } : {}) };
+  function omitted(reason, bytes = 0) {
+    return { state: 'omitted', reason, bytes };
+  }
+
+  function withoutDirectoryFacts(run) {
+    var core = { ...run };
+    delete core.pendingDirectoryCleanup;
+    if (core.recoveryRetention?.directoryCleanup === true) {
+      if (core.recoveryRetention.coreRetained === true) delete core.recoveryRetention;
+      else {
+        core.recoveryRetention = { ...core.recoveryRetention };
+        delete core.recoveryRetention.directoryCleanup;
+        delete core.recoveryRetention.coreRetained;
+      }
+    }
+    return core;
+  }
+
+  function coreWasOmitted(payload) {
+    return payload.recoveryRetention?.state === 'omitted' && payload.recoveryRetention.coreRetained !== true;
+  }
+
+  function appendDirectoryFacts(payload, run, keep, fits, reason) {
+    if (run?.forkSnapshot === true) return payload;
+    var directory = runDirectoryCleanup(run), previous = run?.recoveryRetention;
+    if (!directory && previous?.directoryCleanup !== true) return payload;
+    if (directory && keep) {
+      var extended = { ...payload, pendingDirectoryCleanup: directory };
+      var before = JSON.stringify(payload), after = JSON.stringify(extended);
+      if (fits(getUtf8ByteLength(after) - getUtf8ByteLength(before), after.length - before.length)) return extended;
+    }
+    // The existing omission marker distinguishes optional history from lost
+    // recovery authority. Never imply that a retained Undo core was discarded.
+    var retention = coreWasOmitted(payload) ? payload.recoveryRetention
+      : omitted(!keep ? 'fallback' : directory ? reason : previous.reason,
+        directory ? getUtf8ByteLength(JSON.stringify(directory)) : previous.bytes);
+    return { ...payload, recoveryRetention: { ...retention, directoryCleanup: true,
+      ...(!coreWasOmitted(payload) ? { coreRetained: true } : {}) } };
   }
 
   function compactRunActionPayload(run, keepActionPayload, options = {}) {
+    var payload = compactCoreActionPayload(withoutDirectoryFacts(run), keepActionPayload, options);
+    if (options.includeDirectoryCleanup === false) return payload;
+    var serialized = JSON.stringify(payload);
+    return appendDirectoryFacts(payload, run, keepActionPayload,
+      bytes => getUtf8ByteLength(serialized) + bytes <= MAX_PERSISTED_ACTION_BYTES_PER_SESSION, 'run-budget');
+  }
+
+  function compactCoreActionPayload(run, keepActionPayload, options = {}) {
     var empty = emptyActionPayload();
     if (!keepActionPayload || !hasReloadableRunActionPayload(run)) {
-      if (hasReloadableRunActionPayload(run)) empty.recoveryRetention = omitted('fallback', 0, Boolean(runDirectoryCleanup(run)));
+      if (hasReloadableRunActionPayload(run)) empty.recoveryRetention = omitted('fallback');
       else if (run?.recoveryRetention?.state === 'omitted' && !run.forkSnapshot
-        && (run.recoveryRetention.directoryCleanup === true
-          || (run.undoStatus !== 'applied' && !['accepted', 'rejected'].includes(run.trackedChangeStatus)))) {
+        && run.undoStatus !== 'applied' && !['accepted', 'rejected'].includes(run.trackedChangeStatus)) {
         empty.recoveryRetention = omitted(
           ['run-budget', 'session-budget', 'fallback', 'invalid'].includes(run.recoveryRetention.reason)
-            ? run.recoveryRetention.reason : 'invalid', Math.max(0, Number(run.recoveryRetention.bytes) || 0),
-          run.recoveryRetention.directoryCleanup === true);
+            ? run.recoveryRetention.reason : 'invalid', Math.max(0, Number(run.recoveryRetention.bytes) || 0));
       }
       return empty;
     }
@@ -138,21 +206,17 @@
       undoExpectedFiles: cloneSerializableArray(run.undoExpectedFiles)
     };
     if (!terminal && Object.keys(payload).some(key => run[key]?.length && !payload[key].length)) {
-      return { ...empty, recoveryRetention: omitted('invalid', 0, Boolean(runDirectoryCleanup(run))) };
+      return { ...empty, recoveryRetention: omitted('invalid') };
     }
-    var manualReview = ManualReviewProof.normalize(run.manualReviewProof);
-    if (!terminal && manualReview && manualReview.runProjectId === run.runProjectId) payload.manualReviewProof = manualReview;
-    var directoryCleanup = runDirectoryCleanup(run);
-    if (directoryCleanup) payload.pendingDirectoryCleanup = directoryCleanup;
     var serialized;
     try {
       serialized = JSON.stringify(payload);
     } catch (_error) {
-      return { ...empty, recoveryRetention: omitted('invalid', 0, Boolean(runDirectoryCleanup(run))) };
+      return { ...empty, recoveryRetention: omitted('invalid') };
     }
     var bytes = getUtf8ByteLength(serialized);
     if (bytes > MAX_PERSISTED_ACTION_BYTES_PER_SESSION) return { ...empty,
-      recoveryRetention: omitted('run-budget', bytes, Boolean(runDirectoryCleanup(run))) };
+      recoveryRetention: omitted('run-budget', bytes) };
     if (options.includeCaptures === false || terminal) return payload;
     const captures = cloneSerializableArray(run.trackedChangeCaptures);
     if (captures.length) {
@@ -261,7 +325,7 @@
     if (!newer && !explicitReview) return incoming;
     var base = newer ? incoming : existing;
     var fields = ['trackedChangeStatus', 'undoStatus', 'undoOwnerProtocol', 'undoTrackedChanges', 'undoExpectedFiles',
-      'undoOperations', 'undoBaseFiles', 'appliedOperations', 'trackedChangeCaptures', 'manualReviewProof', 'recoveryRetention', 'settlement', 'settlementFacts'];
+      'undoOperations', 'undoBaseFiles', 'appliedOperations', 'trackedChangeCaptures', 'recoveryRetention', 'settlement', 'settlementFacts'];
     var changed = false;
     var runs = (base.runs || []).map(function (run) {
       var previous = existingRuns.get(run.id), candidate = incomingRuns.get(run.id);
@@ -308,7 +372,7 @@
       || !Number.isSafeInteger(capturedScope.generation)
       || ['accountScopeId', 'projectId', 'generation'].some(key => capturedScope[key] !== currentScope?.[key])) return [];
     var fields = ['appliedOperations', 'undoOperations', 'undoBaseFiles', 'undoTrackedChanges',
-      'undoExpectedFiles', 'undoStatus', 'trackedChangeStatus', 'manualReviewProof', 'pendingDirectoryCleanup'];
+      'undoExpectedFiles', 'undoStatus', 'trackedChangeStatus', 'pendingDirectoryCleanup'];
     var fingerprint = run => JSON.stringify(fields.map(field => run[field]));
     var updates = [];
     for (var record of written || []) {

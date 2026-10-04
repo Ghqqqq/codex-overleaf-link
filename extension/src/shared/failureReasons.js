@@ -131,10 +131,20 @@
       fallbackUserMessage: 'The complete file plan was cancelled; no part was applied.',
       fallbackNextAction: 'Review the intended changes and start a new run if you want to apply them.'
     },
+    file_tree_controls_unavailable: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'Codex could not safely perform this file operation with the available Overleaf controls.',
+      fallbackNextAction: 'Check the file operation in Overleaf before starting a new task.'
+    },
     delete_confirmation_missing: {
       stage: 'preflight', severity: 'blocked', defaultRetryable: true,
       fallbackUserMessage: 'A destructive delete was not confirmed.',
       fallbackNextAction: 'Confirm the delete explicitly if intended.'
+    },
+    delete_confirmation_rejected: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'The deletion was cancelled and was not applied. Other allowed changes in this run may still proceed.',
+      fallbackNextAction: 'Review the other changes. If deletion is still intended, request it in a new task.'
     },
     binary_write_blocked: {
       stage: 'preflight', severity: 'blocked', defaultRetryable: false,
@@ -244,6 +254,21 @@
     },
 
     // 9.5 Undo
+    snapshot_undo_current_mismatch: {
+      stage: 'undo', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'The current content or document identity does not match this run\'s undo checkpoint. Codex stopped Undo and kept the recovery data.',
+      fallbackNextAction: 'Inspect the file and any later edits before trying Undo again.'
+    },
+    snapshot_undo_open_failed: {
+      stage: 'undo', severity: 'blocked', defaultRetryable: true,
+      fallbackUserMessage: 'Codex could not open the file to restore its saved checkpoint.',
+      fallbackNextAction: 'Open the file in Overleaf, wait for it to load, then retry Undo.'
+    },
+    snapshot_undo_unavailable: {
+      stage: 'undo', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'The saved checkpoint is unavailable for this Undo. Codex kept the remaining recovery data.',
+      fallbackNextAction: 'Inspect the file and the run details before continuing.'
+    },
     undo_preflight_content_drift: {
       stage: 'undo', severity: 'blocked', defaultRetryable: false,
       fallbackUserMessage: "Current content no longer matches this run's written content.",
@@ -590,6 +615,15 @@
     return out;
   }
 
+  // Older builds classified these Page codes as unknown. Their explicit
+  // original code can select display copy without changing stored semantics.
+  function recoverDisplayFailureCode(failure) {
+    const code = failure?.evidence?.originalCode;
+    if (failure?.code !== 'unknown_legacy_failure'
+      || !['snapshot_undo_current_mismatch', 'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'file_tree_controls_unavailable'].includes(code)) return failure;
+    return { ...failure, code };
+  }
+
   // Writeback consumers share catalog normalization, including file context,
   // while retaining the mutation evidence carried by older result envelopes.
   function normalizeWritebackFailure(result, operation) {
@@ -692,6 +726,7 @@
    */
   function localizeFailureReason(failure, locale, i18nLookup) {
     void locale;
+    failure = recoverDisplayFailureCode(failure);
     const lookup = i18nLookup instanceof Function ? i18nLookup : function noopLookup() { return undefined; };
     const code = failure && typeof failure.code === 'string' ? failure.code : '';
     const userTemplate = code ? lookup('failureReason_' + code + '_user') : undefined;

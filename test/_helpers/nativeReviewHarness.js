@@ -17,6 +17,7 @@ const WriteGuard = require(path.join(root, 'extension/src/page/writeGuard'));
 const ProjectFiles = require(path.join(root, 'extension/src/shared/projectFiles'));
 const Journal = require(path.join(root, 'extension/src/page/writebackReceiptJournal'));
 const Save = require(path.join(root, 'extension/src/page/saveState'));
+const Tree = require(path.join(root, 'extension/src/page/treeOperations'));
 const { extractFunction } = require(path.join(root, 'test/_helpers/extractFunction'));
 const pageSource = fs.readFileSync(path.join(root, 'extension/src/pageBridge.js'), 'utf8');
 const plain = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -56,6 +57,7 @@ function createReviewFixture(t, options = {}) {
   const docs = new Map(files.map((file,index) => [file.path, { ...plain(file), id: 'synthetic-doc-' + index }]));
   const state = { projectId: 'project-one', active: files[0].path, reviewing: options.reviewing !== false,
     reads: [], opens: [], writes: [], dispatches: [], fetches: [], events: [], results: [], sourceEdits: 0, cancelCalls: 0 };
+  if (options.navigationDelays) Object.assign(state, { editorActive: files[0].path, ledgerActive: files[0].path });
   const listeners = new Set(), posted = [], views = new Map();
   const document = { querySelector: selector => selector === 'meta[name="ol-csrfToken"]'
     ? { getAttribute: () => '"synthetic-csrf-token"' } : null };
@@ -82,8 +84,9 @@ function createReviewFixture(t, options = {}) {
   };
   for (const [filePath, file] of docs) {
     views.set(filePath, {
-      get state() { return { doc: { toString: () => file.content, get length() { return file.content.length; } },
-        values: [{ ranges: { docId: file.id, changes: file.changes || [], comments: [] }, threads: {} }] }; },
+      get state() { const ledger = docs.get(state.ledgerActive) || file;
+        return { doc: { toString: () => file.content, get length() { return file.content.length; } },
+          values: [{ ranges: { docId: ledger.id, changes: ledger.changes || [], comments: [] }, threads: {} }] }; },
       dispatch(transaction) {
         state.dispatches.push({ at: timer.now, path: filePath, transaction: plain(transaction) });
         for (const change of [...transaction.changes].sort((a,b) => b.from - a.from)) {
@@ -105,8 +108,8 @@ function createReviewFixture(t, options = {}) {
     projectSnapshotBridge: { getProjectSnapshot: async () => ({ id: state.projectId, files: [...docs.values()] }) },
     compileBridge: { markSourceEdited() { state.sourceEdits++; } } });
   for (const name of ['bumpWriteCancellationSequence','readWriteCancellationSequence']) vm.runInContext(extractFunction(pageSource, name), context);
-  const current = () => docs.get(state.active);
-  const tree = { getProjectId: () => state.projectId, getActiveFilePath: () => state.active,
+  const current = () => docs.get(state.editorActive || state.active);
+  let tree = { getProjectId: () => state.projectId, getActiveFilePath: () => state.active,
     projectPathExists: filePath => docs.has(filePath),
     async openFileByPath(filePath, config = {}) {
       if (!docs.has(filePath)) return { ok: false };
@@ -118,8 +121,25 @@ function createReviewFixture(t, options = {}) {
       return { ok: true, method: 'synthetic-bounded-navigation' };
     }
   };
-  const identity = () => views.get(state.active);
+  const identity = () => views.get(state.editorActive || state.active);
   const readText = () => { state.reads.push({ at: timer.now, path: state.active }); return current()?.content; };
+  if (options.navigationDelays) {
+    // Exercise production TreeOperations' manager navigation: selected path
+    // can become ready before the editor document and native ledger settle.
+    document.querySelectorAll = () => [];
+    window._ide.fileTreeManager = { async openDoc(target) {
+      const file = docs.get(target) || [...docs.values()].find(item => item.id === target);
+      if (!file) throw new Error('unknown fixture tree target');
+      const targetPath = file.path;
+      state.active = targetPath; state.opens.push({ at: timer.now, path: targetPath });
+      timer.setTimeout(() => { state.editorActive = targetPath; }, options.navigationDelays.text);
+      timer.setTimeout(() => { state.ledgerActive = targetPath; }, options.navigationDelays.ledger);
+      options.onOpen?.({ path: targetPath, state, docs });
+    } };
+    tree = Tree.create({ window, document, normalizePath: ProjectFiles.normalizeSafeProjectPath,
+      getActiveFilePathFromEditorStore: () => state.active, readActiveEditorText: readText,
+      getActiveEditorIdentity: identity, activeEditorIdentityChanged: previous => previous !== identity() });
+  }
   const router = Router.create({ window, now: () => timer.now, treeOperations: tree, writebackOpenSettleMs: 0,
     normalizeSafeProjectPath: ProjectFiles.normalizeSafeProjectPath,
     getCodeMirrorEditorView: identity, getTrackedChangeDocumentId: filePath => docs.get(filePath)?.id || '',

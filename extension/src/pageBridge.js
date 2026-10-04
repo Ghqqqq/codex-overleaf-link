@@ -249,11 +249,6 @@
     ensureEditing: params => textFileCreator.ensureWriteMode(false, params),
     applyOperations: writebackReceipts.apply,
     getWritebackReceipt: writebackReceipts.get,
-    checkCreatedDirectories(params) {
-      const sequence = readWriteCancellationSequence();
-      return textFileCreator.cleanupCreatedDirectories(params.directories, { projectId: params.runProjectId,
-        isCurrent: () => getProjectId() === params.runProjectId && readWriteCancellationSequence() === sequence });
-    },
     getSelectionContext,
     binaryUploadBegin: params => binaryAssetUploader.begin(params),
     binaryUploadAppend: params => binaryAssetUploader.append(params),

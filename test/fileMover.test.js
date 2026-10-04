@@ -1,9 +1,9 @@
 'use strict';
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { fixture } = require('./_helpers/fileMoveFixture');
+const { fixture, sha } = require('./_helpers/fileMoveFixture');
 for (const kind of ['text', 'binary']) {
-  test(`native ${kind} rename preserves entity identity, bytes, comments and review records`, async () => {
+  test(`historical ${kind} move restoration preserves entity identity, bytes, comments and review records`, async () => {
     const h = fixture({ kind, source: kind === 'text' ? 'old.tex' : 'old.png', target: kind === 'text' ? 'new.tex' : 'new.png' });
     const original = h.files.get(h.operation.path);
     const result = await h.move(); assert.equal(result.ok, true, JSON.stringify(result));
@@ -118,3 +118,15 @@ for (const phase of ['source', 'destination']) {
     assert.equal(controlMutations, 0); assert.equal(h.state.posts.length, 0); assert.equal(h.files.has(h.operation.path), true);
   });
 }
+
+test('metadata consumer rejects forward dispatch and unproved recovery before any I/O', async () => {
+  const h = fixture();
+  const blocked = await h.mover.moveFile(h.operation, { runProjectId: h.state.projectId });
+  assert.equal(blocked.ok, false); assert.equal(blocked.code, 'file_tree_controls_unavailable');
+  for (const moveProof of [{ v: 1, kind: 'text', sha256: sha('original contents\n') },
+    { ...h.operation.moveProof, sourceEntityId: 'other' }, { ...h.operation.moveProof, targetEntityId: '' }]) {
+    const result = await h.move({ ...h.operation, moveProof });
+    assert.equal(result.ok, false); assert.equal(result.changedDocument, false);
+  }
+  assert.equal(h.state.posts.length, 0); assert.equal(h.state.snapshots, 0);
+});

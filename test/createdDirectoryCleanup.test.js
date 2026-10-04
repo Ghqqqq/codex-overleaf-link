@@ -19,11 +19,11 @@ test('folder-only failure preserves empty parents for explicit cleanup and never
   assert.equal(result.directoryCleanup.requiresExplicitCleanup, true);
   assert.doesNotMatch(result.reason, /file was submitted/i);
 });
-test('file Undo verifies file deletion and leaves directory proof for explicit native cleanup', async () => {
+test('file Undo completes its deletion while retaining passive directory observations', async () => {
   const f = fixture(), created = await f.create('qa/sub/leaf.tex');
   assert.equal(created.ok, true);
   const result = await f.undo('qa/sub/leaf.tex', created.createdDirectories);
-  assert.equal(result.ok, false, JSON.stringify(result)); assert.equal(result.fileDeleted, true);
+  assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.fileDeleted, true);
   assert.deepEqual(f.removed, ['qa/sub/leaf.tex']);
   assert.deepEqual(result.directoryCleanup.remaining, created.createdDirectories);
   assert.deepEqual([...f.folders.keys()], ['qa', 'qa/sub']); assert.equal(f.files.get('main.tex'), 'original');
@@ -55,17 +55,15 @@ test('empty directory review never dispatches a destructive menu or delete confi
   f.files.set('qa/later.tex', 'collaborator');
   assert.equal(f.files.has('qa/later.tex'), true); assert.equal(f.folders.has('qa'), true);
 });
-test('failed directory cleanup after file deletion retains the original proof for an idempotent retry', async () => {
+test('a nonempty directory never requires a second file Undo and repeated deletion is idempotent', async () => {
   const f = fixture(), created = await f.create('qa/sub/leaf.tex');
   f.files.set('qa/sub/later.tex', 'collaborator');
   const first = await f.undo('qa/sub/leaf.tex', created.createdDirectories);
-  assert.equal(first.ok, false); assert.equal(first.fileDeleted, true); assert.equal(f.files.has('qa/sub/leaf.tex'), false);
+  assert.equal(first.ok, true); assert.equal(first.fileDeleted, true); assert.equal(f.files.has('qa/sub/leaf.tex'), false);
   assert.deepEqual(first.directoryCleanup.remaining, created.createdDirectories);
-  f.files.delete('qa/sub/later.tex');
-  // Explicit native cleanup is an external user action, outside the plugin.
-  f.folders.delete('qa/sub'); f.folders.delete('qa');
   const second = await f.undo('qa/sub/leaf.tex', created.createdDirectories);
-  assert.equal(second.ok, true, JSON.stringify(second)); assert.equal(f.folders.size, 0);
+  assert.equal(second.ok, true, JSON.stringify(second)); assert.equal(second.idempotent, true);
+  assert.equal(f.folders.size, 2); assert.equal(f.files.get('qa/sub/later.tex'), 'collaborator');
   assert.equal(f.removed.filter(path => path.endsWith('.tex')).length, 1);
 });
 test('unconfirmed creation and cancelled creation retain recovery evidence and accurate wording', async () => {
@@ -148,4 +146,49 @@ test('missing native folder row with remaining server descendants retains recove
   const result = await f.cleanup([proof('qa')]);
   assert.equal(result.ok, false); assert.deepEqual(result.remaining, [proof('qa')]);
   assert.equal(result.removed.length, 0);
+});
+
+for (const kind of ['empty', 'nonempty', 'identity-changed', 'identity-missing']) {
+  test('verified file deletion consumes its Undo checkpoint independently of folder observation: ' + kind, async () => {
+    const Undo = require('../extension/src/shared/undoOperations');
+    const Settlement = require('../extension/src/shared/writebackSettlement');
+    const DirectoryRecovery = require('../extension/src/content/directoryCleanupRecovery');
+    const Storage = require('../extension/src/shared/storageDb');
+    const Session = require('../extension/src/shared/sessionState');
+    const f = fixture(), created = await f.create('qa/sub/leaf.tex');
+    if (kind === 'nonempty') f.files.set('qa/sub/later.tex', 'collaborator');
+    if (kind === 'identity-changed') f.folders.set('qa/sub', 'replacement-directory');
+    if (kind === 'identity-missing') f.folders.set('qa/sub', '');
+    const operation = { type: 'delete', path: 'qa/sub/leaf.tex', undoCreatedFile: { v: 1, kind: 'text', createdDirectories: created.createdDirectories } };
+    const run = { id: 'run-folder', runProjectId: 'example', status: 'completed', task: 'create nested file',
+      undoOperations: [operation], undoBaseFiles: [{ path: operation.path, content: 'generated' }] };
+    const result = await f.undo(operation.path, created.createdDirectories);
+    assert.equal(result.ok, true); assert.equal(result.verified, true); assert.equal(result.failure, undefined);
+    const applied = { ok: true, applied: [{ operation, result }], skipped: [] };
+    DirectoryRecovery.create({ getProjectId: () => 'example', getAccountScopeId: () => 'account', getRouteGeneration: () => 1,
+      findRunRecord: () => run }).capture({ recordId: run.id, sessionId: 'session', runProjectId: 'example' }, applied);
+    const checkpoint = Undo.advanceUndoCheckpoint(run, applied);
+    assert.equal(checkpoint.undoOperations.length, 0);
+    const terminal = Settlement.applySettlementTransition(checkpoint, Settlement.settleLegacyUndo({ run: checkpoint, status: 'applied', result: applied }));
+    assert.equal(terminal.undoStatus, 'applied');
+    const stored = Storage.buildSessionRecord({ id: 'session', accountScopeId: 'account', projectId: 'example', runs: [terminal] }, { preserveRunActionPayload: true });
+    const restored = Session.normalizeRuns(stored.runs, { restoreRunningRuns: true })[0];
+    assert.equal(restored.undoStatus, 'applied'); assert.equal(restored.undoOperations.length, 0);
+    assert.deepEqual(restored.pendingDirectoryCleanup.directories, created.createdDirectories);
+    assert.deepEqual(f.removed, [operation.path]);
+    assert.equal(f.folders.size, 2); assert.equal(f.files.get('main.tex'), 'original');
+  });
+}
+
+test('unverified or drifted file deletion retains its Undo checkpoint regardless of directory observations', async () => {
+  const Undo = require('../extension/src/shared/undoOperations');
+  const f = fixture(), created = await f.create('qa/sub/leaf.tex');
+  f.files.set('qa/sub/leaf.tex', 'later user text');
+  const operation = { type: 'delete', path: 'qa/sub/leaf.tex', undoCreatedFile: { v: 1, kind: 'text', createdDirectories: created.createdDirectories } };
+  const run = { undoOperations: [operation], undoBaseFiles: [{ path: operation.path, content: 'generated' }] };
+  const result = await f.undo(operation.path, created.createdDirectories);
+  assert.equal(result.ok, false); assert.deepEqual(f.removed, []);
+  const applied = { ok: false, applied: [], skipped: [{ operation, result }] };
+  assert.deepEqual(Undo.advanceUndoCheckpoint(run, applied).undoOperations, run.undoOperations);
+  assert.equal(f.files.get(operation.path), 'later user text');
 });

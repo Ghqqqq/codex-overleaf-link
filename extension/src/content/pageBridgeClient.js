@@ -8,7 +8,6 @@
   const PAGE_WORLD_SCRIPTS = Object.freeze([
     ['src/shared/reviewing.js', 'codex-overleaf-reviewing-script'],
     ['src/shared/projectFiles.js', 'codex-overleaf-project-files-script'],
-    ['src/shared/manualReviewProof.js', 'codex-overleaf-manual-review-proof-script', true],
     ['src/shared/compatibility.js', 'codex-overleaf-compatibility-page-script'],
     ['src/shared/pageRpcContract.js', 'codex-overleaf-page-rpc-contract-script', true],
     ['src/shared/staleGuard.js', 'codex-overleaf-stale-guard-script'],
@@ -32,7 +31,6 @@
     ['src/page/trackedChangeOwnership.js', 'codex-overleaf-tracked-change-ownership-script', true],
     ['src/page/trackedChangeCapture.js', 'codex-overleaf-tracked-change-capture-script', true],
     ['src/page/trackedChangeReplay.js', 'codex-overleaf-tracked-change-replay-script', true],
-    ['src/page/manualReviewRecovery.js', 'codex-overleaf-manual-review-recovery-script', true],
     ['src/page/reviewContext.js', 'codex-overleaf-review-context-script', true],
     ['src/page/trackedChangesLifecycle.js', 'codex-overleaf-tracked-changes-lifecycle-script', true],
     ['src/page/writebackRouter.js', 'codex-overleaf-writeback-router-script', true],

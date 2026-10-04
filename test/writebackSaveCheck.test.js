@@ -142,3 +142,10 @@ test('stored save checks reject unknown file kinds', () => {
   check.files[0].kind = 'remote';
   assert.equal(Intent.normalizeSaveCheck(check), null);
 });
+
+test('normal save confirmation retains binary move source absence and destination digest', async () => {
+  const proof = { v: 1, kind: 'binary', sha256: 'b'.repeat(64) };
+  const check = await Controller.buildSaveCheck({ applied: [{ operation: { type: 'move', path: 'old.png', to: 'new.png', moveProof: proof },
+    result: { ok: true, moveProof: proof } }] }, { id: 'p', files: [{ path: 'old.png', kind: 'binary' }] }, owner);
+  assert.deepEqual(check.files, [{ path: 'old.png', absent: true }, { path: 'new.png', sha256: 'b'.repeat(64), kind: 'binary' }]);
+});

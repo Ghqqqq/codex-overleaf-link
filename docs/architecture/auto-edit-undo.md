@@ -157,9 +157,9 @@ Page router 与 snapshot 闭包通过共享 [pageRpcContract.REVISION](../../ext
 同一路径重复操作保留顺序验证语义。
 `createTextFileWithDom` 支持根文件和嵌套路径，上传前逐级创建缺失父目录并选择准确目录；二进制 DOM 上传通过 `prepareUploadParent` 的 `createMissing: true` 分支复用这套目录准备能力。
 [undoOperations.buildCreatedFileUndoCheckpoint](../../extension/src/shared/undoOperations.js) 保存文件删除证明及 `createdDirectories` 观测。目录路径与 nativeFolderId 是创建尝试后的观察，`ownershipConfirmed:false` 明确不将同名出现当作创建所有权。目录准备、文件提交分别由对应状态及 `fileUploadAttempted` 记账；仅目录变化不能被报告为文件已上传，也不能因后来出现同内容文件就推导创建成功。
-[DirectoryCleanupRecovery](../../extension/src/content/directoryCleanupRecovery.js) 在记录 Undo 前收集成功、失败和取消结果中的目录观测，包括零 applied 分支及移动两端的严格父目录。带账号/项目/会话/运行身份的 `pendingDirectoryCleanup` 经主存储提交、读回后保留；[DirectoryCleanupProof](../../extension/src/shared/directoryCleanupProof.js) 限定100个目录、64 KiB，溢出明确失败并保留已有记录。该只读收尾独立于文本 Undo/Accept 终态，分叉不继承。
-“检查剩余目录”通过 `checkCreatedDirectories` 调用 [OwnedDirectoryCleanup](../../extension/src/page/ownedDirectoryCleanup.js)，按组件展开原生目录树并比较实体身份和完整服务器路径证据。`textFileCreator.readServerSnapshot` 拒绝路径身份不完整、未知路径及 ZIP 非法或重复名称的清单，不能用其证明目录不存在；已知路径的资产配额跳过仍参与存在性判断。目录仍存在、非空或身份未知时保留提示；只有证明目录已不在原生树及服务器路径中时才清除记录。该检查不调用目录 Delete；平台未接入原子、非递归的空目录条件删除，用户需在原生界面确认并清理。文件撤销成功不能代表目录已回收。
-相关行为见 [createdDirectoryCleanup.test.js](../../test/createdDirectoryCleanup.test.js)、[directoryCleanupRecovery.test.js](../../test/directoryCleanupRecovery.test.js) 与 [textFileCreator.test.js](../../test/textFileCreator.test.js)。
+[DirectoryCleanupRecovery](../../extension/src/content/directoryCleanupRecovery.js) 在记录 Undo 前收集成功、失败和取消结果中的目录观测，包括零 applied 分支及历史移动恢复。带账号/项目/会话/运行身份的 `pendingDirectoryCleanup` 随既有主存储记录保存；[DirectoryCleanupProof](../../extension/src/shared/directoryCleanupProof.js) 限定100个目录、64 KiB，溢出保留旧观测并在已有技术详情记录省略；目录观测没有独立的强制保存/读回门槛。原文件恢复材料仍沿核心 writer 的身份与耐久检查保存。目录观测不声明创建所有权，也不授权自动删除。
+既有完成详情可显示操作结束时观测到的目录，不能据此断言当前仍存在。插件不提供独立目录核查或清理入口；平台未接入原子、非递归的空目录条件删除，文件撤销成功也不代表目录已经回收。`textFileCreator.readServerSnapshot` 对非法、重复或身份不完整的路径仍拒绝给出不存在的证明，已知资产配额跳过不消除路径存在事实。
+相关保护见 [createdDirectoryCleanup.test.js](../../test/createdDirectoryCleanup.test.js)、[directoryCleanupRecovery.test.js](../../test/directoryCleanupRecovery.test.js) 与 [textFileCreator.test.js](../../test/textFileCreator.test.js)。
 Auto 的显式 Retry sync 经 `contentRuntime.retryRunWriteback → writebackOrchestrator.applySyncChangesToOverleaf → assetTransferBroker.applyOperations` 将 `retryCreates: true` 送入 Page RPC。
 [writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 的 `apply` 按严格布尔值保留该字段，[pageBridge](../../extension/src/pageBridge.js) 的 `applyOperations` wrapper 将选项交给 router；router 在新建批次中据此设置 creator 的 `allowExistingMatches`。
 批次服务器预检读到完全相同的文本（包括空字符串）时，creator 返回 `idempotent: true`、`changedDocument: false` 的已验证结果，不再次上传。幂等表示重复确认得到相同结果且不新增文件修改；目标缺失时仍进入正常创建，不同内容的已有目标仍拒绝覆盖。
@@ -181,22 +181,22 @@ begin 成功后的失败，或 begin 已派发且等待被取消，在 commit �
 
 ### 4.3 Auto 文件操作与资产类型的支持范围
 
-**当前实现。** Auto 的操作类型先由 [mirrorWorkspace.collectMirrorChangesDetailed](../../native-host/src/mirrorWorkspace.js) 生成，再由 `writebackController.buildSyncApplyOperations` 转换。
-`combineVerifiedFileMoves` 将唯一、同类型且 SHA-256 相同的旧路径删除与新路径创建配为一个 `move`；内容同时改变或对应关系有歧义时保留独立变化。前后路径分别经过聚焦范围、治理及子代理归属检查。
+**当前实现。** Auto 的操作类型先由 [mirrorWorkspace.collectMirrorChangesDetailed](../../native-host/src/mirrorWorkspace.js) 生成，再由 `writebackController.buildSyncApplyOperations` 转换。Native 按路径比较文件，不将相同内容的创建与删除自动配成 metadata move。
 
 | 本地变化 | Auto 主链的处理 | 边界与维护入口 |
 |---|---|---|
-| 支持的新建文本 | `write` 转为 `create` | 新路径按 `isTextMirrorPath` 判断；已有文本基线另走现有文件分支，不能把新路径扩展名规则套到全部已有文件 |
-| 可证明配对的文本重命名或移动 | 生成带原内容哈希的单一 `move` | 整份文件计划一起确认；原生 rename/move 保留同一 entityId，跨目录改名可能包含多步，不能承诺原子事务 |
-| 新建或替换受支持二进制 | `binary-create` 或 `overwrite-binary` | `isSupportedBinaryAssetPath` 接受 PDF、PNG、JPG/JPEG、SVG，另受 `MAX_BINARY_FILE_BYTES` 和生成产物过滤约束 |
-| 删除已有二进制 | 放入 `unsupportedChanges`，原因 `binary_delete_unsupported` | 不生成普通删除操作；不影响有创建证明的新建文件 Undo 删除路线 |
-| 可证明配对的二进制重命名或移动 | 生成 `move`，通过原生文件元数据接口移动同一实体 | 要求原哈希、源实体及类型一致，目标/中间路径没有冲突；无法配对的独立二进制删除仍不支持 |
-| 新建 GIF、WebP 等未支持资产 | 放入 `unsupportedChanges`，原因 `unsupported_non_text_file` | 无法仅凭“图片”这一类别推定可写回；核对文本与二进制两套路径规则 |
-| 被识别为构建产物的 PDF | 放入 `unsupportedChanges`，原因 `generated_artifact` | `isGeneratedArtifactPath` 过滤根目录中与基线同名 `.tex` 对应的 PDF，以及根 `main.pdf`、`output.pdf`；未命中其他生成产物规则的嵌套 PDF 与其他根 PDF 继续按资产规则判断 |
+| 支持的新建文本 | `write` 转为 `create` | 新路径按 `isTextMirrorPath` 判断；已有文本基线继续走原分支 |
+| 文本重命名或移动 | 目标创建与来源删除分别处理 | 原有删除确认只决定删除项；内容可以迁移，原实体、评论及留痕身份的保留没有保证，拒绝删除可能留下两份文件 |
+| 新建或替换受支持二进制 | `binary-create` 或 `overwrite-binary`，使用原有资源确认 | 接受 PDF、PNG、JPG/JPEG、SVG，另受大小及生成产物过滤约束 |
+| 删除已有二进制 | 放入 `unsupportedChanges`，原因 `binary_delete_unsupported` | 不生成普通删除操作；有创建证明的新建文件仍可沿 Undo 删除 |
+| 二进制重命名或移动 | 可支持的目标按新资源处理，来源删除保持不支持 | 批准上传可能形成副本，不自动移动原实体 |
+| 新建 GIF、WebP 等未支持资产 | 放入 `unsupportedChanges`，原因 `unsupported_non_text_file` | “图片”类别不等于所有格式均可上传 |
+| 被识别为构建产物的 PDF | 放入 `unsupportedChanges`，原因 `generated_artifact` | 过滤根目录中与基线同名 `.tex` 对应的 PDF，以及根 `main.pdf`、`output.pdf`；其他路径继续按既有规则判断 |
 
-包含 move，或同时包含创建与删除的原计划，由 [FileMoveApproval](../../extension/src/content/fileMoveApproval.js) 展示完整计划及被治理阻止的项，一起批准或取消；取消后不先创建新副本。纯创建保持原流程。该确认不把原本不支持的操作变成可执行项。 整计划取消经 `file_plan_confirmation_rejected` 记录为 `preflight/blocked`，不允许自动重试；零写入的 run 和报告保留 failed，正文明确整份计划已取消。报告携带同一 failure，持久结算保留 unchanged，不创建 Retry sync 或 Undo 材料；批准后发生的部分写入仍保留其实际结果及恢复证明。
-[FileMover](../../extension/src/page/fileMover.js) 在原项目中读取完整服务器路径与源哈希，绑定 entityId/type、父目录及 CSRF 后，调用 Overleaf 原生实体 `/rename`、`/move` 接口。每步检查原身份、路径、目标占用和总期限；成功后核对同一实体已在新路径且内容未变。明确失败且可证明回退安全时补偿；超时或 HTTP 5xx/408 后先重新核对服务器后像；同一实体与内容已确认时可以继续。仍无法核验、身份变化或其他不确定结果会保留已知位置与恢复提示并停止后续项，不盲目补偿或重放。成功 move 的 Undo 交换前后路径并复用同一哈希、实体和路径守卫。
-[fileMovePipeline.test.js](../../test/fileMovePipeline.test.js)、[fileMover.test.js](../../test/fileMover.test.js) 及 [fileMoveApproval.test.js](../../test/fileMoveApproval.test.js) 覆盖正式调用链、身份保持、确认和逆向恢复；平台 API、DOM 与 ZIP I/O 使用替身，真实服务器行为仍需验收。
+创建、删除和资源上传使用既有流程，不提供额外整批文件计划确认。旧 Native 或在途消息仍带 `syncChanges.type=move` 时，Content 明确拒绝并报告，不能将其转为空内容创建或忽略后报告成功。
+
+**已有结构操作与历史恢复兼容。** Page 原有无 `moveProof` 的结构化 rename/move 继续通过 `fileTreeManager` 兼容入口，保留原项目、内容基线和后续验证；缺少可用控件时安全拒绝。已执行的历史 metadata move 若持有原实体及哈希证明，仍可由原 Undo 路线以 `no-trace-undo` 调用 [FileMover](../../extension/src/page/fileMover.js) 做逆向恢复。它核对原项目、源/目标实体、内容、路径和期限；不确定副作用继续停止尾项，不盲目重放。该兼容不重新开放 Auto 正向 metadata move，也不将无证明的旧记录补成可撤销操作。
+[fileMoveNativeDiff.test.js](../../test/fileMoveNativeDiff.test.js)、[fileMovePipeline.test.js](../../test/fileMovePipeline.test.js) 与 [fileMover.test.js](../../test/fileMover.test.js) 覆盖差异生成、拒绝旧正向消息和历史逆向恢复，平台 I/O 使用替身。
 
 ## 5. 两类 receipt 与保存、编译、镜像的分工
 
@@ -274,7 +274,7 @@ Track-off 且有前后像的记录，可通过 `untrackedUndo: true` 进入
 
 **部分完成但回执丢失。** 普通 Track-off 文本 Undo 重试时，完整检查点中的部分文件可能已经等于前像（本轮写入前原文），其余仍等于后像。`restoreExpectedFilesWithNoTraceUndo` 只在 `untrackedUndo` 的原生账本检查通过后识别这种状态：已恢复文件必须逐字等于完整前像，空字符串有效；当前文件路径和本次重试捕获的 `nativeDocId` 必须稳定，原生账本不得含待处理留痕。该项只回传 `verifiedContent`、`idempotent:true` 和 `changedDocument:false`，不再次改写正文，也不调用全局 editor Undo；剩余项继续沿原后像/重基守卫恢复。
 
-已恢复项在其他前检等待后、剩余写入完成后再次核验，完成结算前仍需通过 Page 的保存与内容验证。前检冲突阻止尾项派发；尾项写入后发现已恢复项变化时保留部分结果和该项检查点。全部文件已恢复时可只读完成原检查点结算。普通文本持久材料不绑定首次写入的 `nativeDocId`，这里只保证本次重试期间的实体稳定；内容相等不授予 Track-on 审阅、文件创建/删除或移动权限。链路回归见 [partialUndoReceiptRecovery.test.js](../../test/partialUndoReceiptRecovery.test.js)。
+已恢复项在其他前检等待后、剩余写入完成后再次核验。`TreeOperations.openFileByPath` 成功只保证目标活动路径匹配，CodeMirror 正文和原生账本仍可能稍后就绪；`verifyAlreadyRestored` 复用 `waitForNativeReview` 的有界等待，要求路径、固定的本次重试 `nativeDocId`、无待处理留痕的原生账本和精确前像同时满足。等待继续消费 ReviewContext 的总期限与取消约束，持续不匹配仍拒绝。完成结算前仍需通过 Page 的保存与内容验证。前检冲突阻止尾项派发；尾项写入后发现已恢复项变化时保留部分结果和该项检查点。全部文件已恢复时可只读完成原检查点结算。普通文本持久材料不绑定首次写入的 `nativeDocId`，这里只保证本次重试期间的实体稳定；内容相等不授予 Track-on 审阅、文件创建/删除或移动权限。链路回归见 [partialUndoReceiptRecovery.test.js](../../test/partialUndoReceiptRecovery.test.js)。
 
 Track-on 的恢复使用捕获的 refs、原生 ownership 和前后像。
 `rejectTrackedChanges` 可尝试受前后像保护的 editor Undo、快照恢复或变更节点操作。
@@ -313,7 +313,7 @@ Track 的 `selectExpectedFilesForTrackedUndo` 保留 `WritebackSettlement` 对�
 
 新建删除进入 `writebackRouter.applyCreatedFileUndo`，重新核验原项目、取消序号、内容/哈希和服务器删除结果。
 文件在写入后被用户改动时，删除证明失效，不能直接删除。
-`UndoOperations.advanceUndoCheckpoint` 随已验证进度收缩剩余恢复账本，避免下次重做已完成部分。
+`UndoOperations.advanceUndoCheckpoint` 随已验证进度收缩剩余恢复账本，避免下次重做已完成部分。 文件删除的服务器证明充分时即可完成该文件的 Undo；目录观测单独保留，目录仍存在不会成为文件撤销失败或额外重试的前提。
 
 **删除原有文本的恢复。** [UndoOperations.getFileUndoOperations](../../extension/src/shared/undoOperations.js) 将旧文件重建与新建文件撤销统一为文件操作。已有 `create` 逆操作继续保留；补齐缺失的逆操作时，要求原文字符串保留在 undoExpectedFiles、appliedOperations 有成功删除，且推导后像不再包含该路径，空原文有效。只有后像缺项不足以推断应重建文件，先新建再删除的临时文件也不会因此复活。
 Track-on 记录同样保留这些 `create` 逆操作；历史 Track-on 记录缺少逆操作但仍保留上述证据时，`prepareRunUndo` 可补齐。已裁掉原文或删除证据的历史记录不具备该恢复保证。
@@ -331,7 +331,7 @@ Track-on 记录同样保留这些 `create` 逆操作；历史 Track-on 记录缺
 ### 6.3 Accept 与 Undo 的共同结算
 
 **当前实现。** `contentRuntime.acceptRun` 调用 page 的 `acceptTrackedChanges`，消费原运行 refs、前后像及已应用操作。
-Undo、Accept 及人工审阅核验由 `RunReviewController.withSharedReviewOwnership` 取得同账号/项目/run 的共享 review port。确认框阶段只预留 owner，不消耗执行期限；确认后先取得耐久派发租约的 ACK，再把 token 与截止时间送入 Page。失去 port 时只取消该 token 的 review context，旧 token 不影响后来的任务。正常收尾仅删除自己的租约；刷新后的隔离和旧版记录处理见[执行中恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
+Undo、Accept 由 `RunReviewController.withSharedReviewOwnership` 取得同账号/项目/run 的共享 review port。确认框阶段只预留 owner，不消耗执行期限；确认后先取得耐久派发租约的 ACK，再把 token 与截止时间送入 Page。失去 port 时只取消该 token 的 review context，旧 token 不影响后来的任务。正常收尾仅删除自己的租约；刷新后的隔离和旧版记录处理见[执行中恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
 Accept 需要可归属的留痕记录；`untrackedUndo` 不能赋予接受其他留痕的权限。
 混合运行接受后保留新建文件，并随已验证的生命周期关闭相应恢复状态。
 
@@ -344,8 +344,7 @@ page 的实际分流在 `trackedChangesLifecycle.prepareNativeReview` 与 `accep
 | 与旧留痕合并的原运行插入 | `trackedChangeOwnership.prepareMergedInsertionReview` 核对范围证明；`reviewMergedInsertion` 在稳定 Editing 下同文替换获证的插入区间，消除该部分留痕 | 不把合并父 ID 送入整项 Accept；核对文本和应保留 refs。已尝试写入后保持 Editing，避免待保存操作重新产生留痕；该范围证明也用于对应 Undo |
 | legacy adapter | 尝试 editor Undo 或 checkpoint 恢复，再由 `buildAcceptReplayOperations` 生成无留痕 replay；逐项重确认 Editing | 中途失败可能已经改变内容；成功 replay 后保持 Editing。联动 [trackedChangeReplay](../../extension/src/page/trackedChangeReplay.js)，不能用该分支概括生产 Native Accept |
 
-**无法自动按 ID 接受时的收尾。** Page [manualReviewRecovery](../../extension/src/page/manualReviewRecovery.js) 在安全拒绝自动操作时生成严格 `manualReviewProof`，Content 保存原始后像及证明并读回确认。卡片提供打开原文件及重新核验入口，用户先在 Overleaf 原生 Review 中仅接受本轮变更。`RunReviewController.verifyManualReview` 使用已有 `acceptTrackedChanges` 的 `verifyManualReview:true` 分支，仅导航、读取和核验，不调用 Accept API 或修改正文/编辑模式。
-核验须同时满足原账号、项目、nativeDocId、原 post-image、目标 refs 全部消失、无关 refs 精确保留，以及证明未被并发替换；满足后才持久提交 accepted。缺正文、缺证明、身份或其他留痕变化均保留恢复状态。该入口提供人工操作后的可验证完成路径，未扩展未知 History-OT 接口的自动接受能力。[manualReviewWorkflow.test.js](../../test/manualReviewWorkflow.test.js) 串联实际 producer、持久化、重载与只读 verifier。
+**自动 Accept 的支持限制。** 不支持按 ID 安全接受的 History-OT 等表示继续返回明确失败并保留已有恢复材料，用户可使用 Overleaf 原生 Review。插件不提供“人工接受后再核验为 accepted”的额外流程。旧 `manualReviewProof` 不构成当前 Accept/Undo 权限，存储归一化会丢弃该退休字段，已有真实 refs、正文检查点和终态分别保留。原 Accept 行为及退役请求保护见 [writebackRouterAccept.test.js](../../test/writebackRouterAccept.test.js) 与 [manualReviewWorkflow.test.js](../../test/manualReviewWorkflow.test.js)。
 
 [writebackSettlement](../../extension/src/shared/writebackSettlement.js) 的 `settleTrackedChangeLifecycle`、`attachAcceptNotVerifiedFailure`、`attachUndoNotVerifiedFailure` 判断终态。
 `contentRuntime.applyTrackedChangeSettlement` 通过 [scopedPersistenceCoordinator](../../extension/src/content/scopedPersistenceCoordinator.js) 保存迁移。
@@ -360,7 +359,7 @@ router 可以返回已发生修改的逐项结果并跳过未开始项；content
 [assetTransferBroker](../../extension/src/content/assetTransferBroker.js) 在文本超时或带原请求身份的取消后执行 `recoverTextReceipt`；后批取消保留前批 `applied` 与 Track refs，并停止派发余下文本和二进制项。二进制 commit 结果不确定时通过原 transferId 查询状态；begin 成功后的失败，或 begin 已派发且等待被取消，在 commit 尚未实际派发时使用同一 transferId 清理暂存；明确拒绝的重复 begin 不删除既有 stage。commit 收到成功回执时保留已应用结果，在途取消信号仍阻止尾部派发；派发前取消不会创建新的 Page stage。
 成功取得的逐项结果进入 orchestrator 原有 `recordUndoFromApply`，随后才进行可取消的保存核查。回执超时、Page 重载或无法确认原操作时仍保留未确认语义及尾部阻断，不能宣称全部写入都形成了持久 Undo。Page 回执、Content checkpoint 与实际存储各有寿命；真实 Chrome 跨 world 时序、服务器保存和存储重载仍需独立验收。
 
-**当前实现。** `contentRuntime.stageWritebackRecovery` 是 `WritebackVerificationController.stage` 的薄入口；runtime 的 `settleWritebackRecovery` 根据实际写回及保存结果维护 `retryWriteback/saveCheck`，写前摘要和只读检查由独立 controller 管理。
+**当前实现。** `contentRuntime.stageWritebackRecovery` 为文本新建保存原有 `retryWriteback` 意图，普通编辑不额外写入核查摘要；`settleWritebackRecovery` 根据实际写回及保存结果维护 `retryWriteback/saveCheck`。写前新建意图与写后恢复结算分别核对原账号、项目、会话及运行。
 [writebackIntent](../../extension/src/shared/writebackIntent.js) 对请求记录设置 100 操作、300 KiB 上限；[sessionState](../../extension/src/shared/sessionState.js) 执行恢复字段筛选。
 只读保存核查保存摘要与身份，通过 `confirmSaveCheck` 重新读取服务器，不重新上传文件。
 重试写入则由 `retryRunWriteback` 进入写回链，两者应在指南和 UI 中保持语义区分。
@@ -368,8 +367,7 @@ router 可以返回已发生修改的逐项结果并跳过未开始项；content
 
 **Retry 的配置来源。** 首次运行与显式 `retryRunWriteback` 都采用原执行快照中的 `autoRecompile`；重试在首次等待前捕获该布尔值。旧记录没有有效布尔值时沿用当前设置兼容。Retry sync 不重新启动模型，只重试剩余写回；只读内容核验不执行写回或编译。[writebackOutcomeConsistency.test.js](../../test/writebackOutcomeConsistency.test.js) 覆盖设置双向切换、旧记录和正常保存分支。
 
-**回执丢失后的只读恢复。** [WritebackVerificationController](../../extension/src/content/writebackVerificationController.js) 拥有写前 `stage` 和 `checkRunWriteback` 的执行逻辑，runtime 保留薄入口。`buildPlannedWritebackCheck` 计算计划后像的哈希、类型或缺失状态；`writebackCheck` 只保存项目、账号、会话、运行与这些摘要。写前须经主存储提交并按同作用域读回，失败则停止派发。
-页面重载或执行回执缺失后，“核查写入内容”只读取服务器并记录 `matches/differs/unavailable`。内容相等仅表明当前文档与计划相符，不证明执行归属，也不修改 applied/saved 或补造 Undo、创建所有权和 Track refs。此入口与 `retryWriteback/saveCheck` 分开；有效范围、身份或证明变化时保留未确认状态。[writebackPlannedCheck.test.js](../../test/writebackPlannedCheck.test.js) 与控制器/运行链专项覆盖哈希计划、强保存读回和只读核验。
+**恢复边界。** 页面执行回执有有限寿命，不能保证跨页面刷新保留。恢复以实际保留的 Undo 检查点、原有 Retry sync 和 `saveCheck` 为依据；缺少证据时保留未确认状态，不凭当前内容相等补造执行归属、创建权限或 Undo。插件没有独立“核查写入内容”入口；旧 `writebackCheck` 仅为退休字段，不再生产或授予动作，存储归一化会将其丢弃。
 
 `content/writebackRecovery.js` 另定义通用 prepare/reconcile 模块；该模块未纳入上述 Auto 主调用链。
 定位当前行为应从上述实际调用及 [run-state-and-recovery](run-state-and-recovery.md) 出发，不能凭模块文件名推定默认恢复流程。
@@ -391,14 +389,14 @@ router 可以返回已发生修改的逐项结果并跳过未开始项；content
 |---|---|---|
 | 展示 diff 截断或执行补丁粒度错误 | codexSessionRunner 的两类输出、diffEngine、textPatch；展示 hunks 与执行 patches 分别核对 | `node --test test/diffEngine.test.js test/textPatch.test.js` |
 | 文本差异转操作错误 | `writebackController.buildSyncApplyOperations`；patch 输入与基线 | `node --test test/writebackController.test.js` |
-| Auto 重命名、二进制删除或资产类型被过滤 | `mirrorWorkspace.combineVerifiedFileMoves`、FileMoveApproval、FileMover 与逆向 Undo | `node --test test/fileMoveNativeDiff.test.js test/fileMoveApproval.test.js test/fileMovePipeline.test.js test/fileMover.test.js`；独立二进制删除及未支持格式仍属边界 |
+| Auto 重命名、二进制删除或资产类型被过滤 | `mirrorWorkspace.collectMirrorChangesDetailed`、WritebackController、原有删除/资源确认及历史 FileMover Undo | `node --test test/fileMoveNativeDiff.test.js test/fileMovePipeline.test.js test/fileMover.test.js`；独立二进制删除及未支持格式仍属边界 |
 | 活动文件/ZIP/空内容不一致 | snapshotRouter、projectFiles、快照缓存、mirrorWorkspace | `node --test test/pageBridgeSnapshotCache.test.js test/staleGuard.test.js` |
 | ZIP 路径碰撞、丢弃或资产配额影响完整性 | `extractFilesFromZip`、`normalizeSafeProjectPath`、`mergeSnapshotFiles`、快照标志及 Native 全量清理 | [projectFiles](../../test/projectFiles.test.js)、[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)、[snapshotSkippedAssets](../../test/snapshotSkippedAssets.test.js)；字面文件名及完整链路见 [zipLiteralIdentity](../../test/zipLiteralIdentity.test.js) |
 | CRLF/LF 坐标转换及撤销 | textPatch 原始偏移、staleGuard.prepareOperationPatches、router 实际补丁、settlement verifiedContent、UndoOperations 双映像 | [textPatchLineEndings](../../test/textPatchLineEndings.test.js)、[undoOperations](../../test/undoOperations.test.js)、[pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js)；比较最终文本、保留内容与实际回执后的撤销结果 |
 | OT 快启进入快照重读回退 | `resolveWarmRunStart`、`runController.buildCodexRunParams`、Native `validateOtFocusedWarmMirrorReuse`、runtime 的 mirror_stale 回退 | `node --test test/otWarmMirrorContract.test.js test/otWarmMirrorIntegration.test.js test/taskRunner.test.js`；检查正常快启与失效后的完整回退 |
 | 原请求超时但文件已变化 | broker 查询原执行 receipt、逐项结果与尾部阻断 | `node --test test/writebackReceiptRecovery.test.js` |
 | 显式 Retry sync 确认已有文件或创建缺失文件 | runtime 恢复意图、orchestrator/broker/journal 参数、router/creator 精确内容检查及 Undo 所有权 | `node --test test/retryCreatedFile.test.js test/textFileCreator.test.js test/writebackEditRetry.test.js`；模块组合覆盖新建未确认后恢复、同内容/空内容幂等、异内容拒绝、原请求去重及归属检查，DOM 与外部 I/O 使用替身 |
-| 嵌套路径创建与父目录保留 | textFileCreator 的目录观测、DirectoryCleanupRecovery 的耐久记录与 Page 只读核验 | `node --test test/createdDirectoryCleanup.test.js test/directoryCleanupRecovery.test.js test/textFileSnapshotIdentity.test.js`；目录回收需用户原生操作 |
+| 嵌套路径创建与父目录保留 | textFileCreator 的目录观测、DirectoryCleanupRecovery 的耐久目录观测与证明边界 | `node --test test/createdDirectoryCleanup.test.js test/directoryCleanupRecovery.test.js test/textFileSnapshotIdentity.test.js`；目录回收需用户原生操作 |
 | 保存待确认或刷新后核查 | writebackController、writebackIntent、sessionState | `node --test test/writebackSaveCheck.test.js` |
 | 普通 Undo 错撤用户历史 | contentRuntime 路由、提交 Track、trackedChangesLifecycle、ownership | `node --test test/ordinaryUndoRouting.test.js` |
 | 新建文件撤销或混合进度 | undoOperations、contentRuntime、router、textFileCreator、持久化 | `node --test test/createdFileUndo.test.js test/mixedUndoReceipt.test.js` |

@@ -135,6 +135,8 @@
     const code = result.code || '';
     const filePath = result.reasonParams?.filePath || operation.path || operation.from || operation.to || '';
     const withDebug = reason => appendApplyResultDebug(reason, result);
+    const catalogReason = formatCatalogFailureReason(result, filePath);
+    if (catalogReason) return withDebug(catalogReason);
     if (key === 'missingBaseFile' || code === 'missing_base_file') {
       const target = filePath || tx('this file', '这个文件');
       return withDebug(tx(
@@ -237,9 +239,19 @@
     return parts.join(', ');
   }
 
+  function formatCatalogFailureReason(result, path) {
+    const code = result.failure?.code || result.code;
+    const originalCode = code === 'unknown_legacy_failure' ? result.failure?.evidence?.originalCode : '';
+    if (!['snapshot_undo_current_mismatch', 'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'file_tree_controls_unavailable'].includes(originalCode || code)) return '';
+    const failure = normalizeSkippedFailure({ result, operation: { path: result.file || path } });
+    return failure ? [failure.file, failure.userMessage].filter(Boolean).join(': ') : '';
+  }
+
   function formatBridgeResultReason(result = {}, fallbackPath = '') {
     const code = result.code || '';
-    const path = result.path || fallbackPath || '';
+    const path = result.file || result.path || fallbackPath || '';
+    const catalogReason = formatCatalogFailureReason(result, path);
+    if (catalogReason) return catalogReason;
     if (getLocale() !== 'en') {
       return localizeVisibleReason(result.reason || result.error || result.code || tr('unknownReason'));
     }
