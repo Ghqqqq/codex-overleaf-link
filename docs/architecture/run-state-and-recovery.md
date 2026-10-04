@@ -331,6 +331,9 @@ tracked Undo/Accept 经过 `applyTrackedChangeSettlement → ScopedPersistenceCo
 新协议在派发前耐久保存 `undoOwnerProtocol:1` 并读回确认，字段经过主存储、摘要及 review merge 保留。旧版 `running` 没有该标记时，缺少新版租约不能证明另一个旧页面已停止；只开放“检查撤销恢复”，用户明确完成旧页关闭/重载和文件检查后，才继续常规 Undo 确认及基线守卫，取消不派发。共享最新的 partial/terminal 进度始终优先；只有首个检查点因预算被省略、尚无 review 进度且原 run、项目、Native序号、线程/turn、启动时间和提交快照一致时，才保留当前页仍完整的内存检查点。owner标记保存失败则停止派发并保留材料。
 
 后台 review owner 独立于短时持久化锁；派发后的不可变 token 租约跨 worker 重启保留，详见[共享审阅归属](protocols-and-trust.md#shared-review-owner)。[undoReloadOwnership.test.js](../../test/undoReloadOwnership.test.js) 串联 controller、真实保存/加载与按钮、共享 bridge/backend，覆盖活跃他页、worker更替、定向取消、legacy迁移及查询失败；端口、数据库及 Page I/O 使用替身。
+
+恢复按钮可用之后，旧检查点仍可能包含已经撤销、但回执未保存的文件。显式普通文本 Undo 重试由 Page 核验完整前像，将已恢复项作为只读确认结果交给原结算和持久化链，只写尚未恢复的项；不会仅凭失去 owner 或内容相等补造其他操作权限。具体身份、留痕及再次核验条件见[文本恢复路线](auto-edit-undo.md#61-普通文本与-track-文本共用部分运输路线)。[partialUndoReceiptRecovery.test.js](../../test/partialUndoReceiptRecovery.test.js) 串联 Controller、实际 Page RPC/Router 和主存储，覆盖首文件恢复后丢失回执、重载及显式续接；页面文件与保存 I/O 使用替身，后台租约沿独立专项验证。
+
 `manualReviewProof` 的原文后像、文件身份与 refs 属于同组恢复材料，只有完整核验后才能持久接受终态。`pendingDirectoryCleanup` 保存带账号/项目/会话/运行身份的目录观测，不声明创建所有权；它在文本已接受或已撤销后仍可支持只读检查，确认目录已消失后才清空，分叉快照不继承这些操作入口。
 
 重载后，SessionState/StorageDb 归一化记录；`SettlementFacts.projectRunSettlement` 提供基础能力，`RunResultActions.projectUndoAvailability` 进一步检查实际材料。

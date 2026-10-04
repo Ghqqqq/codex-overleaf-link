@@ -113,6 +113,7 @@ function createReviewFixture(t, options = {}) {
       if (state.active !== filePath || config.force) {
         state.opens.push({ at: timer.now, path: filePath }); await timer.sleep(options.navigationMs || 1);
         state.active = filePath;
+        options.onOpen?.({ path: filePath, state, docs });
       }
       return { ok: true, method: 'synthetic-bounded-navigation' };
     }
@@ -124,8 +125,10 @@ function createReviewFixture(t, options = {}) {
     getCodeMirrorEditorView: identity, getTrackedChangeDocumentId: filePath => docs.get(filePath)?.id || '',
     readWriteCancellationSequence: () => context.readWriteCancellationSequence(),
     readActiveEditorText: readText, getActiveEditorIdentity: identity, activeEditorIdentityChanged: prior => prior !== identity(),
-    replaceActiveEditorText(content) { state.writes.push({ at: timer.now, path: state.active, content }); current().content = content; return { ok: true }; },
-    replaceActiveEditorPatches(patches, content) { state.writes.push({ at: timer.now, path: state.active, content, patches: plain(patches) }); current().content = content; return { ok: true }; },
+    replaceActiveEditorText(content) { state.writes.push({ at: timer.now, path: state.active, content }); current().content = content;
+      options.onWrite?.({ path: state.active, state, docs }); return { ok: true }; },
+    replaceActiveEditorPatches(patches, content) { state.writes.push({ at: timer.now, path: state.active, content, patches: plain(patches) }); current().content = content;
+      options.onWrite?.({ path: state.active, state, docs }); return { ok: true }; },
     getReviewingState: () => ({ reviewing: { ok: state.reviewing }, editorMode: state.reviewing ? 'reviewing' : 'editing', signals: {} }),
     isEditingConfirmedForNoTraceUndo: value => value.reviewing.ok === false,
     isReviewingConfirmedForWrite: value => value.reviewing.ok === true,

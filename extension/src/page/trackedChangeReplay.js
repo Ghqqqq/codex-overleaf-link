@@ -33,26 +33,17 @@
 
       // Preferred: re-apply the run's original forward patches verbatim.
       const originalPatches = patchesByPath.get(path);
-      if (originalPatches && originalPatches.length && patchesApplyCleanly(preContent, originalPatches)) {
-        operations.push({
-          type: 'edit',
-          path,
-          patches: originalPatches,
-          reason: 'Accept tracked edit (replay untracked)'
-        });
-        continue;
-      }
-
       // Fallback: minimal pre->post diff trimmed to a single targeted patch.
-      const diffPatch = buildMinimalDiffPatch(preContent, postContent);
-      if (!diffPatch) {
+      const useOriginal = originalPatches?.length > 0 && applyTextPatches(preContent, originalPatches).ok === true;
+      const patches = useOriginal ? originalPatches : [buildMinimalDiffPatch(preContent, postContent)].filter(Boolean);
+      if (!patches.length) {
         // pre === post: nothing to replay for this file.
         continue;
       }
       operations.push({
         type: 'edit',
         path,
-        patches: [diffPatch],
+        patches,
         reason: 'Accept tracked edit (replay untracked)'
       });
     }
@@ -85,13 +76,6 @@
       patchesByPath.set(path, existing.concat(normalized));
     }
     return patchesByPath;
-  }
-
-  // Confirms a patch set re-applies cleanly against the given (pre-write) text:
-  // every patch range is valid and its `expected` slice matches.
-  function patchesApplyCleanly(text, patches) {
-    const applied = applyTextPatches(text, patches);
-    return applied.ok === true;
   }
 
   // Computes a single targeted {from,to,insert} patch describing the pre->post
@@ -157,7 +141,43 @@
     };
   }
 
-    return { buildAcceptReplayOperations, rebaseCheckpointPair };
+  function prepareSnapshotUndoCheckpoints(expectedFiles, postFiles) {
+    const contentByPath = files => new Map((files || [])
+      .filter(file => file?.path && typeof file.content === 'string')
+      .map(file => [normalizeSafeProjectPath(file.path), file.content])
+      .filter(([path]) => path));
+    const expectedByPath = contentByPath(expectedFiles);
+    const postByPath = contentByPath(postFiles);
+    return { expectedByPath, postByPath,
+      paths: Array.from(expectedByPath.keys()).filter(path => postByPath.has(path)) };
+  }
+
+  // Convert edit receipts back to the review checkpoint contract. Native
+  // identity checks and editor mutations remain owned by the lifecycle.
+  function buildSnapshotUndoResult(result, expectedByPath, postByPath, undoRebaseProofs) {
+    const toTrackedResult = item => ({
+      trackedChange: {
+        key: `snapshot-undo:${item.operation?.path || ''}`,
+        id: '',
+        path: item.operation?.path || '',
+        label: 'No-trace snapshot undo'
+      },
+      result: item.result?.ok !== false && item.result?.verified === true
+        && undoRebaseProofs.has(item.operation?.path)
+        && item.result.verifiedContent === expectedByPath.get(item.operation?.path)
+        ? { ...item.result, undoRebaseProof: undoRebaseProofs.get(item.operation.path) }
+        : item.result
+    });
+    return {
+      attempted: true,
+      applied: (result.applied || []).map(toTrackedResult),
+      skipped: (result.skipped || []).map(toTrackedResult),
+      rebasedExpectedFiles: Array.from(expectedByPath, ([path, content]) => ({ path, content })),
+      rebasedPostFiles: Array.from(postByPath, ([path, content]) => ({ path, content }))
+    };
+  }
+
+    return { buildAcceptReplayOperations, rebaseCheckpointPair, prepareSnapshotUndoCheckpoints, buildSnapshotUndoResult };
   }
 
   return { create };

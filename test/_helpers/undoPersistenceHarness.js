@@ -13,10 +13,10 @@ const Transaction = require(path.join(root, 'extension/src/shared/scopedPersiste
 const Router = require(path.join(root, 'extension/src/page/writebackRouter'));
 const Save = require(path.join(root, 'extension/src/page/saveState'));
 
-async function createPersistenceFixture({ track = false } = {}) {
-  const h = undoHarness({ track, operations: [{ type: 'edit', path: 'main.tex',
+async function createPersistenceFixture({ track = false, files, operations, createRouter } = {}) {
+  const h = undoHarness({ track, files, operations: operations || [{ type: 'edit', path: 'main.tex',
     replaceAll: 'before\n% mixed\n', verifiedContent: 'before\n% mixed\n' }],
-    createRouter: dependencies => Router.create({ ...dependencies,
+    createRouter: dependencies => createRouter ? createRouter(dependencies) : Router.create({ ...dependencies,
       confirmReviewWriteback: (params, result) => Save.confirmReviewWriteback({ params, result,
         getProjectId: dependencies.treeOperations.getProjectId,
         readSnapshot: async () => ({ ok: true, files: (await dependencies.projectSnapshotBridge.getProjectSnapshot()).files

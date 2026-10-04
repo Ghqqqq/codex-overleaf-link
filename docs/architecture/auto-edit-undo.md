@@ -270,6 +270,11 @@ undoRun(runId)
 Track-off 且有前后像的记录，可通过 `untrackedUndo: true` 进入
 [trackedChangesLifecycle](../../extension/src/page/trackedChangesLifecycle.js) 的 `restoreExpectedFilesWithNoTraceUndo`。
 它先检查原生变更归属和 checkpoint，按已保存内容恢复；这一分支不会借用不属于原运行的全局 editor Undo。
+[trackedChangeReplay](../../extension/src/page/trackedChangeReplay.js) 的 `prepareSnapshotUndoCheckpoints/buildSnapshotUndoResult` 负责前后像映射和回执转换；Lifecycle 保留文件导航、原生身份检查及写入编排。
+
+**部分完成但回执丢失。** 普通 Track-off 文本 Undo 重试时，完整检查点中的部分文件可能已经等于前像（本轮写入前原文），其余仍等于后像。`restoreExpectedFilesWithNoTraceUndo` 只在 `untrackedUndo` 的原生账本检查通过后识别这种状态：已恢复文件必须逐字等于完整前像，空字符串有效；当前文件路径和本次重试捕获的 `nativeDocId` 必须稳定，原生账本不得含待处理留痕。该项只回传 `verifiedContent`、`idempotent:true` 和 `changedDocument:false`，不再次改写正文，也不调用全局 editor Undo；剩余项继续沿原后像/重基守卫恢复。
+
+已恢复项在其他前检等待后、剩余写入完成后再次核验，完成结算前仍需通过 Page 的保存与内容验证。前检冲突阻止尾项派发；尾项写入后发现已恢复项变化时保留部分结果和该项检查点。全部文件已恢复时可只读完成原检查点结算。普通文本持久材料不绑定首次写入的 `nativeDocId`，这里只保证本次重试期间的实体稳定；内容相等不授予 Track-on 审阅、文件创建/删除或移动权限。链路回归见 [partialUndoReceiptRecovery.test.js](../../test/partialUndoReceiptRecovery.test.js)。
 
 Track-on 的恢复使用捕获的 refs、原生 ownership 和前后像。
 `rejectTrackedChanges` 可尝试受前后像保护的 editor Undo、快照恢复或变更节点操作。

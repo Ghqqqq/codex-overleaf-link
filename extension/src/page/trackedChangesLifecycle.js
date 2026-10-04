@@ -51,7 +51,7 @@
     const manualReview = ManualRecovery?.create({ ...deps, prepareTrackedChangeCapture: (...args) => prepareTrackedChangeCapture(...args),
       getProjectId: deps.getProjectId || (() => /\/project\/([^/?#]+)/.exec(window?.location?.pathname || '')?.[1]),
       assertCurrent: params => deps.reviewGuard?.() || checkWritebackRunProjectId(params) });
-    const { buildAcceptReplayOperations, rebaseCheckpointPair } = Replay.create({
+    const { buildAcceptReplayOperations, rebaseCheckpointPair, prepareSnapshotUndoCheckpoints, buildSnapshotUndoResult } = Replay.create({
       normalizeSafeProjectPath, applyTextPatches
     });
 
@@ -329,9 +329,9 @@
       // An ordinary write has no owned editor-history entry. Restore its
       // checkpoint directly; global Undo may belong to an earlier user edit.
       const restored = await restoreExpectedFilesWithNoTraceUndo(expectedFiles, postFiles, {
-        runProjectId: params.runProjectId
+        runProjectId: params.runProjectId, untrackedPlan: nativeReview
       });
-      if (restored.applied.length) compileBridge.markSourceEdited();
+      if (restored.applied.some(entry => entry.result?.changedDocument !== false)) compileBridge.markSourceEdited();
       return { ...restored, ok: restored.attempted && restored.ok,
         skipped: restored.attempted ? restored.skipped : [{ trackedChange: null, result: {
           ok: false, code: restored.code || 'snapshot_undo_unavailable',
@@ -1152,18 +1152,24 @@
   }
 
   async function restoreExpectedFilesWithNoTraceUndo(expectedFiles, postFiles, options = {}) {
-    const expectedByPath = new Map((expectedFiles || [])
-      .filter(file => file?.path && typeof file.content === 'string')
-      .map(file => [normalizeSafeProjectPath(file.path), file.content])
-      .filter(([path]) => path));
-    const postByPath = new Map((postFiles || [])
-      .filter(file => file?.path && typeof file.content === 'string')
-      .map(file => [normalizeSafeProjectPath(file.path), file.content])
-      .filter(([path]) => path));
-    const paths = Array.from(expectedByPath.keys()).filter(path => postByPath.has(path));
+    const { expectedByPath, postByPath, paths } = prepareSnapshotUndoCheckpoints(expectedFiles, postFiles);
     const rebasedExpectedByPath = new Map();
     const rebasedPostByPath = new Map();
     const undoRebaseProofs = new Map();
+    // Only the ordinary, native-ledger-checked Undo route may recognize a
+    // lost receipt's exact pre-image. This consumes an existing checkpoint;
+    // it grants no native review, file creation or move ownership.
+    const untrackedByPath = new Map((options.untrackedPlan?.files || []).map(file => [file.path, file]));
+    const alreadyRestored = new Set();
+    const mismatch = path => ({ ok: false, changedDocument: false, code: 'snapshot_undo_current_mismatch',
+      reason: `${path} 当前内容或文档身份与本轮撤销检查点不一致；Codex 保留恢复材料并停止撤销。` });
+    async function verifyAlreadyRestored(path) {
+      if (getActiveFilePath() !== path && !(await openFileByPath(path)).ok) return false;
+      const scope = prepareUntrackedUndo(path);
+      return scope.ok === true && Boolean(scope.nativeDocId)
+        && scope.nativeDocId === untrackedByPath.get(path)?.nativeDocId
+        && getActiveFilePath() === path && readActiveEditorText() === expectedByPath.get(path);
+    }
     if (!paths.length) {
       return {
         ok: false,
@@ -1193,7 +1199,8 @@
         path,
         expectedByPath.get(path),
         postByPath.get(path),
-        1500
+        1500,
+        untrackedByPath.has(path)
       );
       if (!ready.ok) {
         return {
@@ -1207,6 +1214,10 @@
           reason: `${path} 当前内容已经不是本轮写入后的内容；为避免覆盖你的后续修改，Codex 不执行快照撤销。`
         };
       }
+      if (ready.alreadyRestored) {
+        if (!(await verifyAlreadyRestored(path))) return { ...mismatch(path), attempted: false, applied: [], skipped: [] };
+        alreadyRestored.add(path);
+      }
       rebasedExpectedByPath.set(path, ready.expectedContent);
       rebasedPostByPath.set(path, ready.postContent);
       if (ready.prefixLength || ready.suffixLength) {
@@ -1214,55 +1225,49 @@
       }
     }
 
-    const operations = paths.map(path => ({
+    // Re-check observations after other preflight awaits before starting the
+    // unfinished tail. They are checked again after writes before settlement.
+    for (const path of alreadyRestored) {
+      if (!(await verifyAlreadyRestored(path))) return { ...mismatch(path), attempted: false, applied: [], skipped: [] };
+    }
+    const operations = paths.filter(path => !alreadyRestored.has(path)).map(path => ({
       type: 'edit',
       path,
       replaceAll: rebasedExpectedByPath.get(path),
       reason: 'Undo tracked edit'
     }));
-    const result = await applyOperationsWithNoTraceUndo(operations, {
+    const result = operations.length ? await applyOperationsWithNoTraceUndo(operations, {
       baseFiles: paths.map(path => ({
         path,
         content: rebasedPostByPath.get(path)
       })),
       runProjectId: typeof options.runProjectId === 'string' ? options.runProjectId : ''
-    });
-    const toTrackedResult = item => ({
-      trackedChange: {
-        key: `snapshot-undo:${item.operation?.path || ''}`,
-        id: '',
-        path: item.operation?.path || '',
-        label: 'No-trace snapshot undo'
-      },
-      result: item.result?.ok !== false && item.result?.verified === true
-        && undoRebaseProofs.has(item.operation?.path)
-        && item.result.verifiedContent === rebasedExpectedByPath.get(item.operation?.path)
-        ? { ...item.result, undoRebaseProof: undoRebaseProofs.get(item.operation.path) }
-        : item.result
-    });
-    return {
-      ok: !(result.skipped || []).length,
-      attempted: true,
-      applied: (result.applied || []).map(toTrackedResult),
-      skipped: (result.skipped || []).map(toTrackedResult),
-      rebasedExpectedFiles: paths.map(path => ({
-        path,
-        content: rebasedExpectedByPath.get(path)
-      })),
-      rebasedPostFiles: paths.map(path => ({
-        path,
-        content: rebasedPostByPath.get(path)
-      }))
-    };
+    }) : { applied: [], skipped: [] };
+    const converted = buildSnapshotUndoResult(result, rebasedExpectedByPath, rebasedPostByPath, undoRebaseProofs);
+    const applied = deps.createReviewApplied?.() || [];
+    applied.push(...converted.applied);
+    const skipped = converted.skipped;
+    for (const path of alreadyRestored) {
+      const verified = await verifyAlreadyRestored(path);
+      const entry = { trackedChange: { key: `snapshot-undo:${path}`, id: '', path,
+        label: 'Already restored checkpoint' }, result: verified
+        ? { ok: true, verified: true, verifiedContent: expectedByPath.get(path), changedDocument: false, idempotent: true }
+        : mismatch(path) };
+      (verified ? applied : skipped).push(entry);
+    }
+    return { ...converted, ok: !skipped.length, applied, skipped };
   }
 
-  async function waitForActiveEditorCheckpoint(filePath, expectedContent, postContent, timeoutMs) {
+  async function waitForActiveEditorCheckpoint(filePath, expectedContent, postContent, timeoutMs, allowAlreadyRestored = false) {
     const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
     let actual = readActiveEditorText();
     while (Date.now() < deadline) {
       const activeFileMatches = !filePath || getActiveFilePath() === filePath;
       actual = readActiveEditorText();
       if (activeFileMatches) {
+        if (allowAlreadyRestored && actual === expectedContent) {
+          return { ok: true, alreadyRestored: true, expectedContent, postContent, prefixLength: 0, suffixLength: 0 };
+        }
         const rebased = rebaseCheckpointPair(actual, expectedContent, postContent);
         if (rebased.ok) {
           return rebased;
