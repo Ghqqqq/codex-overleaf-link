@@ -34,7 +34,7 @@
     }
     function assertScope(value) { capture(value.projectId, value.accountScopeId); }
     const cacheKey = (value, id) => value.accountScopeId + ':' + id;
-    const lockKey = (kind, value) => kind === 'preferences' ? 'preferences' : 'state:' + value.accountScopeId;
+    const lockKey = (kind, value) => kind === 'review' ? 'review:' + JSON.stringify([value.accountScopeId, value.projectId, value.runId]) : kind === 'preferences' ? 'preferences' : 'state:' + value.accountScopeId;
     async function request(method, value, args = {}) {
       assertScope(value);
       const lock = heldLocks.get(lockKey('state', value));
@@ -51,23 +51,24 @@
 
     // Live ports own the locks. Worker/page termination releases them without
     // allowing a stale client to silently fall back to an origin-local lock.
-    async function acquire(kind, value, work) {
+    async function acquire(kind, value, work, onLost) {
       assertScope(value);
       const key = lockKey(kind, value), port = chromeApi.runtime.connect({ name: LOCK_PORT });
       let timer, heartbeat, released = false, lock = null, rejectGrant;
       const granted = new Promise((resolve, reject) => {
         rejectGrant = reject;
         port.onMessage.addListener(message => {
+          if (message?.type === 'busy') { reject(failure('review_busy', 'Another page is reviewing this run. Wait for it to finish.')); return; }
           if (message?.type !== 'granted' || lock || released) return;
           clearTimeout(timer);
-          lock = { token: message.token, lost: false };
+          lock = { token: message.token, deadlineAt: message.deadlineAt, lost: false };
           heldLocks.set(key, lock);
           resolve();
         });
         port.onDisconnect.addListener(() => {
           // Read lastError to consume the runtime's disconnected-port warning.
           void chromeApi.runtime.lastError;
-          if (lock) lock.lost = true;
+          if (lock) { lock.lost = true; if (!released) onLost?.(lock.token); }
           if (!released) reject(failure('storage_lock_lost', 'The shared history lock disconnected.'));
         });
         timer = environment.setTimeout(() => reject(failure('storage_lock_timeout',
@@ -84,12 +85,27 @@
         port.postMessage({ type: 'acquire', kind, scope: value });
         await granted;
         assertScope(value);
-        const result = await work();
+        const assertOwner = () => { assertScope(value); if (lock.lost) throw failure('storage_lock_lost', 'The shared review owner disconnected.'); };
+        assertOwner.token = lock.token;
+        assertOwner.markDispatched = async () => {
+          assertOwner();
+          const lease = await request('review-dispatched', value, { runId: value.runId, reviewToken: lock.token });
+          assertOwner(); assertOwner.deadlineAt = lease.deadlineAt; return lease.deadlineAt;
+        };
+        const result = await work(assertOwner);
         assertScope(value);
         if (lock.lost) throw failure('storage_lock_lost', 'The shared history lock was lost before completion.');
         return result;
       } finally {
         released = true;
+        if (kind === 'review' && lock && !lock.lost) {
+          await new Promise(resolve => {
+            const done = message => { if (message?.type === 'released') { port.onMessage.removeListener(done); environment.clearTimeout(releaseTimer); resolve(); } };
+            const releaseTimer = environment.setTimeout(resolve, 2000);
+            port.onMessage.addListener(done);
+            try { port.postMessage({ type: 'release-review', token: lock.token }); } catch (_) { resolve(); }
+          });
+        }
         environment.clearTimeout(timer);
         environment.clearInterval(heartbeat);
         if (heldLocks.get(key) === lock) heldLocks.delete(key);
@@ -255,6 +271,11 @@
       });
       Object.assign(wrapped, {
         sharedSessionsEnabled: enabled,
+        withSharedReviewLock: async (input, work) => {
+          const value = { ...capture(input.projectId, input.accountScopeId), runId: input.runId };
+          return acquire('review', value, work, input.onLost);
+        },
+        hasSharedReviewOwner: input => request('review-owner', capture(input.projectId, input.accountScopeId), { runId: input.runId }),
         withSharedLock: withLock,
         readSharedProjectSnapshot: projectId => list(projectId, false),
         adoptSharedSessionBaseline: adopt,

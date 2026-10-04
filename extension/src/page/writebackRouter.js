@@ -359,7 +359,9 @@
 
   async function applyOperations(operations, options = {}) {
     if (options.reviewingPolicy === 'no-trace-undo') {
-      return applyOperationsWithNoTraceUndo(operations, options);
+      const Context = window.CodexOverleafReviewContext || (typeof module === 'object' && module.exports ? require('./reviewContext') : null);
+      return Context.create({ window, now, readWriteCancellationSequence, getProjectId: () => treeOperations.getProjectId?.() }, options).run(
+        (scoped, input) => applyOperationsWithNoTraceUndo(operations, { ...input, reviewGuard: scoped.reviewGuard, reviewAwait: scoped.reviewAwait }));
     }
     const hasOperations = (operations || []).length > 0;
     const trackReviewingChanges = options.requireReviewing === true && hasOperations;
@@ -543,7 +545,7 @@
       } else if (['binary-create', 'overwrite-binary'].includes(operation.type)) {
         result = await applyBinaryAssetOperation(operation, { baseFileLookup, baseBinaryFileLookup });
       } else if (['create', 'rename', 'move', 'delete'].includes(operation.type)) {
-        result = await applyFileTreeOperation(operation, { baseFileLookup, runProjectId, deadlineAt: options.deadlineAt,
+        result = await applyFileTreeOperation(operation, { baseFileLookup, runProjectId, deadlineAt: options.deadlineAt, reviewGuard: options.reviewGuard,
           createBatch: createBatch?.targets.has(operation.path) ? createBatch : null,
           retryCreates: options.retryCreates === true });
       } else {
@@ -1392,7 +1394,7 @@
         reason: 'Verified native file moves are unavailable. Reload the extension and Overleaf.' };
       const result = await deps.moveFile(operation, { runProjectId: options.runProjectId, deadlineAt: options.deadlineAt,
         isCurrent: () => treeOperations.getProjectId?.() === initialProjectId
-          && readWriteCancellationSequence() === initialCancellationSequence });
+          && readWriteCancellationSequence() === initialCancellationSequence && !options.reviewGuard?.() });
       if (result.ok) recordFileTreeOperationSuccess(operation, options.baseFileLookup);
       return result;
     }
@@ -1403,13 +1405,14 @@
       return deps.createTextFile(operation, { batch: options.createBatch,
         allowExistingMatches: options.retryCreates === true,
         isCurrent: () => treeOperations.getProjectId?.() === initialProjectId
-          && readWriteCancellationSequence() === initialCancellationSequence });
+          && readWriteCancellationSequence() === initialCancellationSequence && !options.reviewGuard?.() });
     }
     const freshness = await checkFileTreeOperationFreshness(operation, options.baseFileLookup);
     if (!freshness.ok) {
       return freshness;
     }
 
+    const ownerBlocked = options.reviewGuard?.(); if (ownerBlocked) return ownerBlocked;
     const manager = findFileTreeManager();
     const methodNames = fileTreeMethodNames(operation.type);
 
@@ -1456,7 +1459,7 @@
     const nativeOperation = { create: deps.createTextFile, delete: deps.deleteTextFile }[operation.type];
     if (typeof nativeOperation === 'function' && (operation.type === 'delete' || typeof operation.content === 'string')) {
       const isCurrent = () => Boolean(initialProjectId) && treeOperations.getProjectId?.() === initialProjectId
-        && readWriteCancellationSequence() === initialCancellationSequence;
+        && readWriteCancellationSequence() === initialCancellationSequence && !options.reviewGuard?.();
       const created = await nativeOperation(operation, { isCurrent, expectedContent: options.baseFileLookup?.get(operation.path) });
       if (!created.ok) return created;
       if (!isCurrent() || created.verified !== true || created.verification !== 'overleaf-zip') {
@@ -1480,7 +1483,7 @@
     const text = proof?.v === 1 && proof.kind === 'text' && typeof expected === 'string';
     const binary = proof?.v === 1 && proof.kind === 'binary' && /^[a-f0-9]{64}$/i.test(proof.sha256 || '');
     const isCurrent = () => Boolean(projectId) && projectId === options.runProjectId
-      && treeOperations.getProjectId?.() === projectId && readWriteCancellationSequence() === cancellation;
+      && treeOperations.getProjectId?.() === projectId && readWriteCancellationSequence() === cancellation && !options.reviewGuard?.();
     if (!isCurrent() || (!text && !binary) || typeof deps.deleteTextFile !== 'function') {
       return { ok: false, code: 'undo_operation_failed', changedDocument: false,
         reason: 'Verified created-file deletion is unavailable for this run.' };
@@ -1749,10 +1752,6 @@
   }
 
 
-
-
-
-
   function normalizeTrackedChangeRefs(refs = []) {
     const seen = new Set();
     const normalized = [];
@@ -1917,9 +1916,7 @@
     };
   }
 
-    // Tracked-changes lifecycle — carved to trackedChangesLifecycle.js in
-    // v1.8.0 (structural-debt phase 7, #117). Loaded just before this file
-    // in the manifest's page-script list; the Node test path requires it.
+    // Tracked lifecycle is loaded by the Page script list or required by Node tests.
     const trackedChangesLifecycleModule = (typeof window !== 'undefined' && window.CodexOverleafTrackedChangesLifecycle)
       || (typeof module === 'object' && module.exports ? require('./trackedChangesLifecycle.js') : null)
       || (typeof globalThis !== 'undefined' ? globalThis.CodexOverleafTrackedChangesLifecycle : null);

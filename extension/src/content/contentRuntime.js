@@ -1110,6 +1110,7 @@
     await refreshAccountScopeId();
     storageKey = getProjectStorageKey(LEGACY_STORAGE_KEY, window.location.href);
     state = normalizeLoadedPanelState(await loadStoredState());
+    await getRunReviewController().recoverInterruptedUndoStatuses();
     initializeRunQueueScheduler();
     recoverInterruptedRunJournals()
       .then(() => applyStateToPanel())
@@ -4085,6 +4086,7 @@
       storageKey = getProjectStorageKey(LEGACY_STORAGE_KEY, window.location.href);
       const reloaded = await loadStoredState();
       state = normalizeLoadedPanelState(reloaded);
+      await getRunReviewController().recoverInterruptedUndoStatuses();
       applyStateToPanel();
     } catch (_error) {
       // Reload failures fall back to the in-memory state; the next saveState

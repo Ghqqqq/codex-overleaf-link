@@ -87,6 +87,7 @@
         return applyOperations(params.operations || [], {
           baseFiles: params.baseFiles || null,
           reviewingPolicy: params.reviewingPolicy || '',
+          ...(params.reviewOwnerToken ? { reviewOwnerToken: params.reviewOwnerToken } : {}),
           requireReviewing: params.requireReviewing === true,
           requireEditing: params.requireEditing === true,
           retryCreates: params.retryCreates === true,

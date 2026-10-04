@@ -53,6 +53,12 @@ Page 响应没有独立秘密：client 检查同窗、同源、消息标签、�
 
 ### 回执、重放与取消
 
+<a id="shared-review-owner"></a>
+
+**共享审阅归属。** [SharedSessionBridge](../../extension/src/shared/sharedSessionBridge.js) 与 [backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js) 使用独立 `review` lock-port，并以账号、项目和 run 定位 owner；它不长期持有普通 account 存储锁。`review-owner` 查询只读状态，`review-dispatched` 在 Page 派发前耐久保存 token 专属 deadline 行并返回 ACK，`release-review` 正常结束时仅清理自己的 token。
+确认前只有活跃 port 预留；可能已派发的 token 行在 owner 丢失或 worker 更替后继续隔离到截止时间。每个 token 使用独立不可变键，迟到旧 set/remove 无法覆盖或删除新 owner 的证明；存储写/删 pending 时同实例也保持 in-flight 屏障。读取或下一次取得 owner 时仅回收键、token 与 deadline 严格匹配的已过期行，异常行保持拒绝，清理失败不开放未过期租约。
+既有 Page `cancelActiveWrite` 接受可选 `reviewOwnerToken`，仅失效匹配的 review context，不推进全局取消序号。token 经 runtime、Broker、Journal 和 Router 传递；文本、文件树操作在等待后及实际修改前重查归属与期限。该机制约束后续客户端派发，不能撤回已启动的服务端 HTTP 副作用。相关验证见 [undoReloadOwnership](../../test/undoReloadOwnership.test.js)、[reviewDeadline](../../test/reviewDeadline.test.js) 及[运行恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
+
 `pageRpcContract.resolveDispatchPolicy` 固定 `automaticAttempts: 1`；`safe`、`idempotent` 等标签描述方法策略，client 不据此自动重发。
 幂等表示重复执行应收敛到同一结果，例如开关设置；它与“请求只发送一次”属于不同性质。
 文本写回回执由 [writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 管理，二进制 staging、commit 和 status 由 [binaryAssetUploader](../../extension/src/page/binaryAssetUploader.js) 管理。

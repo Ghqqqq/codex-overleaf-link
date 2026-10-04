@@ -325,6 +325,12 @@ tracked Undo/Accept 经过 `applyTrackedChangeSettlement → ScopedPersistenceCo
 [scopedPersistencePanelState.js](../../extension/src/content/scopedPersistencePanelState.js) 强制 preserveRunActionPayload 和 reviewRunIds，并验证持久记录中的结果。
 保存失败时恢复先前材料、标记 needs_review 并继续抛错，因为页面操作可能已经发生。部分验证失败生成 `review_state_not_persisted`，底层保存异常也可能原样传播，不能只匹配单一错误码。
 普通 Undo 的 `RunReviewController.applyLegacyUndoSettlement` 也等待明确的持久提交，通过 `reviewRunIds` 验证 `undoStatus`；partial 还核对剩余检查点。存储返回前保持操作锁和“正在撤销”，不提前显示 Undone。共享合并保护已持久的 applied，旧页自动保存不能复活已消耗的恢复状态。保存失败时仅补偿仍属同一 state、原记录且未并发变化的暂存字段，保留恢复材料与未完成状态；页面实际已发生的修改不会被该内存补偿自动逆转。
+
+**执行中刷新。** `running` 可能经正常 debounce 保存，因此重载不能仅凭空的页内锁认定旧操作已结束。[RunReviewController.recoverInterruptedUndoStatuses](../../extension/src/content/runReviewController.js) 向共享后台查询原账号/项目/run 的 review owner。有活跃 port 或未到期派发租约时保持 busy，并按期限定时只读重查；新协议且确认无 owner 后只恢复显式重试入口，不自动执行 Undo。查询失败逐记录保留 busy 和检查点，不阻断面板初始化；每个视图最多三次自动失败查询，并提示连接恢复后重新加载。等待返回时核对原账号、项目、路由代次及捕获的 state/活动会话，旧结果不写入替换后的视图。同账号/项目/路由内发生 state replacement 或会话切换时，计时器重新捕获当前视图，旧等待只安排去重的只读重查；恢复 generation 防止旧调用覆盖新计时器，跨账号/项目/路由则丢弃。
+
+新协议在派发前耐久保存 `undoOwnerProtocol:1` 并读回确认，字段经过主存储、摘要及 review merge 保留。旧版 `running` 没有该标记时，缺少新版租约不能证明另一个旧页面已停止；只开放“检查撤销恢复”，用户明确完成旧页关闭/重载和文件检查后，才继续常规 Undo 确认及基线守卫，取消不派发。共享最新的 partial/terminal 进度始终优先；只有首个检查点因预算被省略、尚无 review 进度且原 run、项目、Native序号、线程/turn、启动时间和提交快照一致时，才保留当前页仍完整的内存检查点。owner标记保存失败则停止派发并保留材料。
+
+后台 review owner 独立于短时持久化锁；派发后的不可变 token 租约跨 worker 重启保留，详见[共享审阅归属](protocols-and-trust.md#shared-review-owner)。[undoReloadOwnership.test.js](../../test/undoReloadOwnership.test.js) 串联 controller、真实保存/加载与按钮、共享 bridge/backend，覆盖活跃他页、worker更替、定向取消、legacy迁移及查询失败；端口、数据库及 Page I/O 使用替身。
 `manualReviewProof` 的原文后像、文件身份与 refs 属于同组恢复材料，只有完整核验后才能持久接受终态。`pendingDirectoryCleanup` 保存带账号/项目/会话/运行身份的目录观测，不声明创建所有权；它在文本已接受或已撤销后仍可支持只读检查，确认目录已消失后才清空，分叉快照不继承这些操作入口。
 
 重载后，SessionState/StorageDb 归一化记录；`SettlementFacts.projectRunSettlement` 提供基础能力，`RunResultActions.projectUndoAvailability` 进一步检查实际材料。

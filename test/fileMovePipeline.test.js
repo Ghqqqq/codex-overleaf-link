@@ -91,7 +91,11 @@ for (const kind of ['text', 'binary']) for (const approve of [true, false]) {
     if (!approve) {
       assert.equal(h.state.posts.length, 0); assert.equal(pipeline.calls.includes('applyOperations'), false);
       assert.equal(h.files.get(h.operation.path), original); assert.equal(h.files.has(h.operation.to), false);
-      assert.equal(result.hasSkippedOperations, true); return;
+      assert.equal(result.hasSkippedOperations, true);
+      assert.equal(pipeline.reports.at(-1).status, 'failed');
+      assert.equal(pipeline.reports.at(-1).failure.code, 'file_plan_confirmation_rejected');
+      assert.equal(result.settlement.facts.documentEffect, 'unchanged');
+      return;
     }
     assert.equal(result.applied.applied.length, 1, JSON.stringify(result)); assert.equal(h.files.get(h.operation.to), original);
     assert.equal(pipeline.reports.at(-1).saveVerification.state, 'verified_saved');

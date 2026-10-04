@@ -17,7 +17,124 @@
       formatBridgeResultReason, advanceRunUndoProgress, saveStateSoon, flushQueuedSaveState,
       getState, getCurrentProjectId, getAccountScopeId, getRouteGeneration, notify, tx,
     } = deps;
-    async function withUndoLock(runId, work) {
+    const reviewOwners = new Map();
+    let undoRecoveryTimer = null, undoRecoveryView = null, undoRecoveryGeneration = 0;
+    const undoRecoveryFailures = new Map();
+    async function prepareUndoDispatch(runId) {
+      const owner = reviewOwners.get(runId);
+      if (owner && !owner.deadlineAt) await owner.markDispatched();
+      owner?.();
+      return Math.min(Date.now() + getPageBridgeTimeoutMs('rejectTrackedChanges'), owner?.deadlineAt || Infinity);
+    }
+    async function persistUndoOwnerMarker(runId) {
+      if (Modules.StorageDb?.sharedSessionsEnabled?.() !== true) return;
+      findRunRecord(runId).undoOwnerProtocol = 1;
+      try { await flushQueuedSaveState({ requireDurable: true, reviewRunIds: [runId] }); }
+      catch (cause) { throw Object.assign(new Error('The Undo owner marker could not be durably saved.'), { code: 'review_state_not_persisted', cause }); }
+      reviewOwners.get(runId)?.();
+      const saved = await Modules.StorageDb.getRecord('sessions', getState().activeSessionId);
+      if (saved?.runs?.find(run => run.id === runId)?.undoOwnerProtocol !== 1)
+        throw Object.assign(new Error('The Undo owner marker was not durably retained.'), { code: 'review_state_not_persisted' });
+      reviewOwners.get(runId)?.();
+    }
+    async function withSharedReviewOwnership(runId, work) {
+      const db = Modules.StorageDb;
+      if (db?.sharedSessionsEnabled?.() !== true) return work();
+      const run = findRunRecord(runId);
+      if (!run || trackedChangeInFlight.has(runId)) return;
+      const assertCurrent = undoOwner(run);
+      const sessionId = getState().activeSessionId;
+      return db.withSharedReviewLock({ projectId: getRunProjectIdForWriteback(run), accountScopeId: getAccountScopeId(), runId,
+        onLost: token => { void callPageBridge('cancelActiveWrite', { reviewOwnerToken: token }).catch(() => {}); } }, async assertOwner => {
+        reviewOwners.set(runId, assertOwner);
+        try {
+          assertCurrent();
+          const session = await db.getRecord('sessions', sessionId);
+          assertCurrent();
+          const latest = session?.runs?.find(record => record.id === runId);
+          if (!latest || session.projectId !== getRunProjectIdForWriteback(run) || session.accountScopeId !== getAccountScopeId())
+            throw Object.assign(new Error('The shared Undo run is no longer available in its original scope.'), { code: 'review_context_changed' });
+          const restored = Modules.SessionState.normalizeRuns([latest], { recoverSettledRuns: true })[0];
+          // A budget-omitted first checkpoint may still be complete in its original page.
+          // Shared partial/terminal progress always wins over that in-memory copy.
+          const keepCheckpoint = restored.recoveryRetention?.state === 'omitted'
+            && !restored.undoStatus && !restored.trackedChangeStatus && !run.undoStatus && !run.trackedChangeStatus
+            && restored.runProjectId === run.runProjectId && restored.nativeEventSeq === run.nativeEventSeq
+            && restored.codexThreadId === run.codexThreadId && restored.codexTurnId === run.codexTurnId
+            && restored.startedAt === run.startedAt && JSON.stringify(restored.executionSnapshot) === JSON.stringify(run.executionSnapshot);
+          const checkpoint = keepCheckpoint ? Object.fromEntries(['appliedOperations', 'undoOperations', 'undoBaseFiles', 'undoTrackedChanges', 'undoExpectedFiles', 'trackedChangeCaptures']
+            .filter(key => Object.hasOwn(run, key)).map(key => [key, run[key]])) : {};
+          for (const key of Object.keys(run)) delete run[key];
+          Object.assign(run, restored, checkpoint);
+          if (run.undoStatus === 'applied' || ['accepted', 'rejected'].includes(run.trackedChangeStatus)) return;
+          if (run.undoStatus === 'running' && run.undoOwnerProtocol !== 1) {
+            const checked = await showPluginConfirm({ title: tx('Check Undo recovery', '检查撤销恢复'),
+              message: tx('Close or reload every older project page and inspect the current files in Overleaf before continuing. Confirm only after those checks are complete.',
+                '请先关闭或重载全部旧版项目页面，并在 Overleaf 核对当前文件。完成这些检查后才能继续恢复撤销。'),
+              confirmLabel: tx('Checks complete', '已完成检查'), cancelLabel: tr('confirmDefaultCancel'), destructive: true });
+            assertCurrent(); if (!checked) return;
+            run.undoStatus = 'partial';
+          }
+          return await work();
+        } finally { reviewOwners.delete(runId); refreshRunCardControls(runId); }
+      }).catch(error => {
+        if (error.code === 'review_busy') notify?.(tx('Another page is reviewing this run. Wait for it to finish.', '另一页面正在审阅本轮记录，请等待其完成。'));
+        throw error;
+      });
+    }
+    async function recoverInterruptedUndoStatuses(options = {}) {
+      if (undoRecoveryTimer) { clearTimeout(undoRecoveryTimer); undoRecoveryTimer = null; }
+      const generation = ++undoRecoveryGeneration;
+      const captured = getState(), sessionId = captured.activeSessionId;
+      const scope = JSON.stringify([getCurrentProjectId?.(), getAccountScopeId?.(), getRouteGeneration?.()]);
+      const sameScope = () => JSON.stringify([getCurrentProjectId?.(), getAccountScopeId?.(), getRouteGeneration?.()]) === scope;
+      const current = () => generation === undoRecoveryGeneration && sameScope()
+        && getState() === captured && captured.activeSessionId === sessionId;
+      const schedule = delay => {
+        if (generation !== undoRecoveryGeneration || !sameScope()) return;
+        if (undoRecoveryTimer) clearTimeout(undoRecoveryTimer);
+        undoRecoveryTimer = setTimeout(() => {
+          if (generation === undoRecoveryGeneration && sameScope())
+            void recoverInterruptedUndoStatuses({ automatic: true }).catch(() => {});
+        }, delay);
+        undoRecoveryTimer.unref?.();
+      };
+      if (undoRecoveryView?.state !== captured || undoRecoveryView?.scope !== scope || undoRecoveryView?.sessionId !== sessionId) {
+        undoRecoveryFailures.clear(); undoRecoveryView = { state: captured, scope, sessionId };
+      }
+      if (options.automatic !== true) undoRecoveryFailures.clear();
+      let nextCheck = Infinity;
+      const db = Modules.StorageDb;
+      const runs = Array.from(new Set([...(captured.runs || []), ...(captured.sessions || []).flatMap(session => session.runs || [])]));
+      for (const run of runs) {
+        if (run.undoStatus !== 'running' || (undoRecoveryFailures.get(run.id) || 0) >= 3) continue;
+        if (db?.sharedSessionsEnabled?.() === true) {
+          let owner;
+          try {
+            owner = await db.hasSharedReviewOwner({ projectId: getRunProjectIdForWriteback(run), accountScopeId: getAccountScopeId(), runId: run.id });
+            if (!owner || typeof owner.busy !== 'boolean') throw new Error('Undo recovery ownership is unavailable.');
+          } catch (_error) {
+            if (!current()) { schedule(50); return; }
+            delete run.undoRecoveryCheckRequired; run.undoRecoveryUnavailable = true; refreshRunCardControls(run.id);
+            const attempts = (undoRecoveryFailures.get(run.id) || 0) + 1; undoRecoveryFailures.set(run.id, attempts);
+            if (attempts === 1) notify?.(tx('Undo recovery checks are temporarily unavailable. Other tasks remain available; keep the recovery files and retry after the connection recovers.',
+              '撤销恢复检查暂不可用，其他任务仍可继续。请保留恢复材料，连接恢复后再检查。'));
+            if (attempts < 3) nextCheck = Math.min(nextCheck, 5000 * attempts);
+            continue;
+          }
+          if (!current()) { schedule(50); return; }
+          undoRecoveryFailures.delete(run.id); delete run.undoRecoveryUnavailable;
+          if (!owner.busy && run.undoOwnerProtocol !== 1) {
+            run.undoRecoveryCheckRequired = true; refreshRunCardControls(run.id); continue;
+          }
+          if (owner.busy) { nextCheck = Math.min(nextCheck, owner.deadlineAt > Date.now() ? owner.deadlineAt - Date.now() + 50 : 5000); continue; }
+        }
+        // Recovery only restores an explicit action; Page work is never replayed.
+        delete run.undoRecoveryCheckRequired; run.undoStatus = 'partial'; refreshRunCardControls(run.id);
+      }
+      if (nextCheck !== Infinity) schedule(Math.min(30000, Math.max(50, nextCheck)));
+    }
+    async function withLocalUndoLock(runId, work) {
       const run = findRunRecord(runId);
       if (!run || run.forkSnapshot || run.undoStatus === 'applied' || !getRunUndoCount(run) || trackedChangeInFlight.has(runId)) return;
       const assertOwner = undoOwner(run);
@@ -30,17 +147,22 @@
           appendRunRecordEvent(runId, { title: tr('undoNoTraceTitle'), status: 'failed',
             detail: { [tr('detailReason')]: error.message } });
         }
-        notify?.(error.message);
+        notify?.(error.code === 'review_state_not_persisted' ? tx('Undo recovery ownership could not be saved. No Undo was dispatched; keep this page open and inspect the files before retrying.',
+          '撤销恢复归属未能保存，尚未派发撤销。请保留本页并核对文件后重试。') : error.message);
         throw error;
       } finally { trackedChangeInFlight.delete(runId); refreshRunCardControls(runId); }
     }
+    const withUndoLock = (runId, work) => withSharedReviewOwnership(runId, () => withLocalUndoLock(runId, work));
     const undoRun = runId => withUndoLock(runId, () => executeUndo(runId));
+    const acceptRun = runId => withSharedReviewOwnership(runId, () => executeAcceptRun(runId));
+    const verifyManualReview = runId => withSharedReviewOwnership(runId, () => executeVerifyManualReview(runId));
     const undoRunTrackedChanges = (runId, run) => withUndoLock(runId, () => executeTrackedUndo(runId, run));
 
 function undoOwner(run) {
     const captured = getState(), sessionId = captured.activeSessionId;
     const scope = [getCurrentProjectId?.(), getAccountScopeId?.(), getRouteGeneration?.()];
     return () => {
+      reviewOwners.get(run.id)?.();
       if (getState() !== captured || captured.activeSessionId !== sessionId || findRunRecord(run.id) !== run
         || JSON.stringify(scope) !== JSON.stringify([getCurrentProjectId?.(), getAccountScopeId?.(), getRouteGeneration?.()]))
         throw Object.assign(new Error('The Undo project, account or session changed.'), { code: 'review_context_changed' });
@@ -123,7 +245,7 @@ async function executeUndo(runId) {
     }
 
     assertCurrent();
-    const deadlineAt = Date.now() + getPageBridgeTimeoutMs('rejectTrackedChanges');
+    const deadlineAt = await prepareUndoDispatch(runId);
     setRunUndoStatus(runId, 'running');
     appendRunRecordEvent(runId, {
       title: tr('undoNoTraceStarted'),
@@ -131,8 +253,9 @@ async function executeUndo(runId) {
       detail: { [tr('detailWillUndo')]: formatOperationFiles(selectedOperations) }
     });
 
+      await persistUndoOwnerMarker(runId); assertCurrent();
       const result = await callPageBridge('applyOperations', {
-        operations: selectedOperations, deadlineAt,
+        operations: selectedOperations, deadlineAt, reviewOwnerToken: reviewOwners.get(runId)?.token,
         baseFiles: run.undoBaseFiles || [],
         reviewingPolicy: 'no-trace-undo',
         // Undo remains bound to its original project, including after navigation.
@@ -192,7 +315,7 @@ async function executeTrackedUndo(runId, run) {
     }
 
     assertCurrent();
-    const deadlineAt = Date.now() + getPageBridgeTimeoutMs('rejectTrackedChanges');
+    const deadlineAt = await prepareUndoDispatch(runId);
     // Keep the review lifecycle until every pending part has settled.
     // Its local lock stays active while verified recovery progress is persisted.
     const lifecycleReject = (trackedUndo || fileUndoOperations.length > 0) && isTrackedChangeLifecycleRun(run);
@@ -211,9 +334,10 @@ async function executeTrackedUndo(runId, run) {
 
     let result;
     try {
+      await persistUndoOwnerMarker(runId); assertCurrent();
       const trackedUndoPostFilesAtDispatch = buildTrackedUndoPostFiles(textRun);
       result = hasTextUndo ? await callPageBridge('rejectTrackedChanges', {
-        trackedChanges: textRun.undoTrackedChanges || [], deadlineAt,
+        trackedChanges: textRun.undoTrackedChanges || [], deadlineAt, reviewOwnerToken: reviewOwners.get(runId)?.token,
         expectedFiles: textRun.undoExpectedFiles || [],
         postFiles: trackedUndoPostFilesAtDispatch,
         untrackedUndo: run.executionSnapshot
@@ -236,7 +360,7 @@ async function executeTrackedUndo(runId, run) {
             throw new Error('Text changes remain unresolved; file restoration was kept for the next undo attempt.');
           }
           createdResult = await callPageBridge('applyOperations', {
-            operations: fileUndoOperations, deadlineAt,
+            operations: fileUndoOperations, reviewOwnerToken: reviewOwners.get(runId)?.token, deadlineAt,
             baseFiles: run.undoBaseFiles || [],
             reviewingPolicy: 'no-trace-undo',
             runProjectId: getRunProjectIdForWriteback(run)
@@ -285,6 +409,7 @@ function reviewOwner(run) {
     const owner = { run, state: getState(), sessionId: getState().activeSessionId,
       projectId: getCurrentProjectId(), accountScopeId: getAccountScopeId(), generation: getRouteGeneration() };
     const assert = () => {
+      reviewOwners.get(run.id)?.();
       if (!owner.projectId || !owner.accountScopeId || run.runProjectId !== owner.projectId
         || getCurrentProjectId() !== owner.projectId || getAccountScopeId() !== owner.accountScopeId
         || getRouteGeneration() !== owner.generation || getState() !== owner.state
@@ -310,7 +435,7 @@ function reviewOwner(run) {
       '请在 Overleaf Review 中仅接受本轮记录，再点击“核验手动 Review”。'));
   }
 
-  async function verifyManualReview(runId) {
+  async function executeVerifyManualReview(runId) {
     const run = findRunRecord(runId), proof = Modules.ManualReviewProof.normalize(run?.manualReviewProof);
     if (!proof || run.forkSnapshot || !['pending', 'needs_review'].includes(run.trackedChangeStatus)
       || trackedChangeInFlight.has(runId)) return;
@@ -318,7 +443,8 @@ function reviewOwner(run) {
     if (proof.runProjectId !== owner.projectId || proof.accountScopeId !== owner.accountScopeId) return;
     trackedChangeInFlight.set(runId, 'accept'); refreshRunCardControls(runId);
     try {
-      const result = await callPageBridge('acceptTrackedChanges', { verifyManualReview: true,
+      const deadlineAt = await prepareUndoDispatch(runId);
+      const result = await callPageBridge('acceptTrackedChanges', { deadlineAt, reviewOwnerToken: reviewOwners.get(runId)?.token, verifyManualReview: true,
         manualReviewProof: proof, postFiles: buildTrackedUndoPostFiles(run),
         trackedChanges: run.undoTrackedChanges || [], expectedFiles: run.undoExpectedFiles || [],
         accountScopeId: owner.accountScopeId, runProjectId: owner.projectId });
@@ -339,7 +465,7 @@ function reviewOwner(run) {
     finally { trackedChangeInFlight.delete(runId); refreshRunCardControls(runId); }
   }
 
-async function acceptRun(runId) {
+async function executeAcceptRun(runId) {
     const run = findRunRecord(runId);
     if (!run || !isTrackedChangeLifecycleRun(run)) {
       return;
@@ -368,7 +494,8 @@ async function acceptRun(runId) {
     });
 
     try {
-      const result = await callPageBridge('acceptTrackedChanges', {
+      const deadlineAt = await prepareUndoDispatch(runId);
+      const result = await callPageBridge('acceptTrackedChanges', { deadlineAt, reviewOwnerToken: reviewOwners.get(runId)?.token,
         trackedChanges: run.undoTrackedChanges || [],
         expectedFiles: run.undoExpectedFiles || [],
         postFiles: buildTrackedUndoPostFiles(run),
@@ -460,7 +587,7 @@ async function applyLegacyUndoSettlement(runId, undoStatus, result) {
       legacyUndo: true, persist: flushQueuedSaveState, assertCurrent });
     refreshRunCardControls(runId);
   }
-    return { undoRun, undoRunTrackedChanges, acceptRun, applyLegacyUndoSettlement, openManualReviewFile, verifyManualReview };
+    return { recoverInterruptedUndoStatuses, undoRun, undoRunTrackedChanges, acceptRun, applyLegacyUndoSettlement, openManualReviewFile, verifyManualReview };
   }
   return { create };
 });

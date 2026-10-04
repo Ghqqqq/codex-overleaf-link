@@ -877,13 +877,15 @@
     button.hidden = false;
     const inFlight = trackedChangeInFlight?.get(run.id) === 'reject';
     const applied = run.undoStatus === 'applied' && !inFlight;
-    button.disabled = inFlight || run.undoStatus === 'running' || run.undoStatus === 'applied';
+    button.disabled = inFlight || (run.undoStatus === 'running' && !run.undoRecoveryCheckRequired) || run.undoStatus === 'applied';
     button.textContent = applied
       ? tr('undoApplied')
       : (run.partialWriteback ? tr('undoPartialRun') : tr('undoRun'));
     button.title = applied
       ? tr('undoAppliedTitle')
       : (run.partialWriteback ? tr('undoPartialRunTitle') : tr('undoRunTitle'));
+    if (run.undoRecoveryUnavailable) button.title = tx('Undo recovery checks are unavailable. Reload this page after the connection recovers.', '撤销恢复检查暂不可用，请在连接恢复后重新加载此页面。');
+    if (run.undoRecoveryCheckRequired) { button.textContent = tx('Check Undo recovery', '检查撤销恢复'); button.title = button.textContent; }
     button.addEventListener('click', event => {
       event.stopPropagation();
       undoRun(run.id);

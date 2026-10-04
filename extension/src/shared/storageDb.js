@@ -705,6 +705,7 @@
       ...(actionPayload.pendingDirectoryCleanup ? { pendingDirectoryCleanup: actionPayload.pendingDirectoryCleanup } : {}),
       ...(actionPayload.recoveryRetention ? { recoveryRetention: SessionState.normalizeRecoveryRetention(actionPayload.recoveryRetention) } : {}),
       undoStatus: normalizeDisplayTextForStorage(run.undoStatus, SESSION_STORAGE_LIMITS.statusTextChars),
+      ...(run.undoOwnerProtocol === 1 ? { undoOwnerProtocol: 1 } : {}),
       nativeRequestId: normalizeTextField(run.nativeRequestId, 160),
       codexThreadId: normalizeTextField(run.codexThreadId, 160), codexTurnId: normalizeTextField(run.codexTurnId, 160),
       nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,

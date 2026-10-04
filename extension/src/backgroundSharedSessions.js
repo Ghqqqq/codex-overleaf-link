@@ -7,6 +7,7 @@
   'use strict';
   const MESSAGE = 'codex-overleaf/shared-sessions-v1';
   const LOCK_PORT = 'codex-overleaf/shared-session-lock-v1';
+  const REVIEW_LEASE_PREFIX = 'codex-overleaf-review-lease-v1:';
   const CHANGE_KEY = 'codex-overleaf-shared-sessions-changed-v1';
   const HOSTS = ['overleaf.com', 'www.overleaf.com', 'cn.overleaf.com'];
   const META_PREFIX = 'codex-overleaf-scoped-persistence-v1:';
@@ -21,10 +22,11 @@
     return value;
   }
   function scope(input) {
-    return { accountScopeId: part(input?.accountScopeId), projectId: typeof input?.projectId === 'string' ? input.projectId : '' };
+    return { accountScopeId: part(input?.accountScopeId), projectId: typeof input?.projectId === 'string' ? input.projectId : '', ...(input?.runId ? { runId: part(input.runId) } : {}) };
   }
   function keyFor(kind, value) {
-    return kind === 'preferences' ? 'preferences'
+    return kind === 'review' ? 'review:' + JSON.stringify([value.accountScopeId, part(value.projectId), part(value.runId)])
+      : kind === 'preferences' ? 'preferences'
       : 'state:' + encodeURIComponent(value.accountScopeId);
   }
   function metaKey(value) {
@@ -272,9 +274,41 @@
       }
       await done;
     }
+    const reviewLeaseKey = (key, token) => REVIEW_LEASE_PREFIX + key + ':' + token;
+    async function activeReviewLease(key) {
+      const prefix = REVIEW_LEASE_PREFIX + key + ':', records = await chromeApi.storage.local.get(null);
+      const active = [], expired = [];
+      for (const [id, lease] of Object.entries(records)) {
+        if (!id.startsWith(prefix)) continue;
+        const valid = lease && typeof lease.token === 'string' && lease.token.length > 0 && lease.token.length <= 256
+          && id === reviewLeaseKey(key, lease.token) && Number.isSafeInteger(lease.deadlineAt) && lease.deadlineAt > 0;
+        if (!valid) throw failure('review_lease_invalid', 'Undo ownership storage could not be verified.');
+        if (lease.deadlineAt > Date.now()) active.push(lease); else expired.push(id);
+      }
+      // Immutable token rows can only be removed by their exact expired key.
+      await Promise.all(expired.map(id => chromeApi.storage.local.remove(id).catch(() => {})));
+      return active.sort((a, b) => b.deadlineAt - a.deadlineAt)[0];
+    }
     async function handle(message, sender) {
       const origin = senderOrigin(sender), value = scope(message.scope);
       const method = message.method;
+      if (method === 'review-dispatched') {
+        const key = keyFor('review', { ...value, runId: part(message.runId) }), held = locks.get(key);
+        if (!held || held.disconnected || held.token !== message.reviewToken || held.tabId !== sender.tab.id)
+          throw failure('storage_lock_lost', 'The shared Undo owner was lost before dispatch.');
+        const deadlineAt = held.deadlineAt || (held.deadlineAt = Date.now() + 120000);
+        held.inFlight += 1;
+        try {
+          await chromeApi.storage.local.set({ [reviewLeaseKey(key, held.token)]: { token: held.token, deadlineAt } });
+          if (held.disconnected) throw failure('storage_lock_lost', 'The shared Undo owner disconnected before dispatch.');
+          return { deadlineAt };
+        } finally { held.inFlight -= 1; if (held.disconnected && !held.inFlight) held.release(); }
+      }
+      if (method === 'review-owner') {
+        const key = keyFor('review', { ...value, runId: part(message.runId) });
+        const lease = await activeReviewLease(key);
+        return { busy: locks.has(key) || lease?.deadlineAt > Date.now(), deadlineAt: lease?.deadlineAt || 0 };
+      }
       if (method === 'list') return list(value, typeof message.after === 'string' ? message.after : '');
       if (method === 'get') {
         const record = await readOne('sessions', [value.accountScopeId, part(message.id)]);
@@ -335,12 +369,30 @@
         queues.delete(key);
       }
       port.onMessage.addListener(message => {
+        if (message?.type === 'release-review') {
+          const held = locks.get(heldKey);
+          if (held?.port !== port || held.token !== message.token || !heldKey.startsWith('review:')) return;
+          held.inFlight += 1;
+          void chromeApi.storage.local.remove(reviewLeaseKey(heldKey, held.token)).then(() => {
+            held.inFlight -= 1; held.release(); if (!closed) port.postMessage({ type: 'released' });
+          }, () => { held.inFlight -= 1; port.disconnect(); if (held.disconnected && !held.inFlight) held.release(); });
+          return;
+        }
         if (message?.type === 'ping') { port.postMessage({ type: 'pong' }); return; }
         if (message?.type !== 'acquire' || job) return;
         try {
-          const value = scope(message.scope), kind = message.kind === 'preferences' ? 'preferences' : 'state';
+          const value = scope(message.scope), kind = message.kind === 'review' ? 'review' : message.kind === 'preferences' ? 'preferences' : 'state';
           heldKey = keyFor(kind, value);
-          job = { port, tabId: port.sender.tab.id, closed: () => closed, grant: token => port.postMessage({ type: 'granted', token }) };
+          if (kind === 'review' && locks.has(heldKey)) { port.postMessage({ type: 'busy' }); return; }
+          job = { port, tabId: port.sender.tab.id, closed: () => closed, grant: token => {
+            if (kind !== 'review') { port.postMessage({ type: 'granted', token }); return; }
+            const held = locks.get(heldKey); held.inFlight += 1;
+            void (async () => {
+              const existing = await activeReviewLease(heldKey);
+              if (existing?.deadlineAt > Date.now()) { locks.get(heldKey)?.release(); if (!closed) port.postMessage({ type: 'busy' }); return; }
+              if (!closed) port.postMessage({ type: 'granted', token });
+            })().catch(() => port.disconnect()).finally(() => { held.inFlight -= 1; if (held.disconnected && !held.inFlight) held.release(); });
+          } };
           if (!queues.has(heldKey)) queues.set(heldKey, []);
           queues.get(heldKey).push(job);
           pump(heldKey);

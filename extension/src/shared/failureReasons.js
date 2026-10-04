@@ -126,6 +126,11 @@
       fallbackUserMessage: 'The edit anchor matches multiple locations.',
       fallbackNextAction: 'Narrow the request or select a smaller region.'
     },
+    file_plan_confirmation_rejected: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'The complete file plan was cancelled; no part was applied.',
+      fallbackNextAction: 'Review the intended changes and start a new run if you want to apply them.'
+    },
     delete_confirmation_missing: {
       stage: 'preflight', severity: 'blocked', defaultRetryable: true,
       fallbackUserMessage: 'A destructive delete was not confirmed.',

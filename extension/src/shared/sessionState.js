@@ -718,6 +718,7 @@
       ...(normalizeRecoveryRetention(run.recoveryRetention) && !run.forkSnapshot
         ? { recoveryRetention: normalizeRecoveryRetention(run.recoveryRetention) } : {}),
       undoStatus: sanitizeAssistantVisibleText(run.undoStatus),
+      ...(run.undoOwnerProtocol === 1 ? { undoOwnerProtocol: 1 } : {}),
       nativeRequestId: sanitizeAssistantVisibleText(run.nativeRequestId),
       codexThreadId: sanitizeAssistantVisibleText(run.codexThreadId), codexTurnId: sanitizeAssistantVisibleText(run.codexTurnId),
       forkSnapshot: run.forkSnapshot === true,
@@ -1327,6 +1328,7 @@
         ? { recoveryRetention: normalizeRecoveryRetention(run.recoveryRetention)
           || { state: 'omitted', reason: 'fallback', bytes: 0, ...(run.pendingDirectoryCleanup ? { directoryCleanup: true } : {}) } } : {}),
       undoStatus: summarizeTextForStorage(run.undoStatus, 'undo status'),
+      ...(run.undoOwnerProtocol === 1 ? { undoOwnerProtocol: 1 } : {}),
       nativeRequestId: normalizeTextField(run.nativeRequestId, 160),
       codexThreadId: normalizeTextField(run.codexThreadId, 160), codexTurnId: normalizeTextField(run.codexTurnId, 160),
       forkSnapshot: run.forkSnapshot === true,

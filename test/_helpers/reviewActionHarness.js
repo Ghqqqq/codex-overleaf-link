@@ -16,6 +16,7 @@ const Sessions = require(path.join(root, 'extension/src/content/sessionPersisten
 const State = require(path.join(root, 'extension/src/shared/sessionState'));
 const Proof = require(path.join(root, 'extension/src/shared/manualReviewProof'));
 const ReviewController = require(path.join(root, 'extension/src/content/runReviewController'));
+const PageRpcContract = require(path.join(root, 'extension/src/shared/pageRpcContract'));
 const runtime = fs.readFileSync(path.join(root, 'extension/src/content/contentRuntime.js'), 'utf8');
 const timeline = fs.readFileSync(path.join(root, 'extension/src/content/runTimelineView.js'), 'utf8');
 const tr = (key, values) => I18n.t('en', key, values);
@@ -61,6 +62,7 @@ function acceptController(page, params) {
     formatTrackedChangeFiles: refs => refs.map(ref => ref.path).join(', '),
     formatBridgeResultReason: result => result.reason || result.code || '',
     buildTrackedUndoPostFiles: record => capture.buildPostFiles(record),
+    getPageBridgeTimeoutMs: method => PageRpcContract.resolveTimeoutMs(method),
     callPageBridge: (method, payload) => page.rpc(method, payload),
     async flushQueuedSaveState(options) {
       return Scope.persistPanelState({ state, compactState: State.prepareStateForStorage(state), projectId: params.runProjectId,

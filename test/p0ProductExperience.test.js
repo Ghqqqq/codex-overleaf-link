@@ -3075,9 +3075,10 @@ test('run worlds split: legacy-undo runs never show Accept All and keep the undo
 
 test('acceptRun uses an inline confirm flow before dispatching acceptTrackedChanges', () => {
   const contentScript = getContentScriptSource();
-  const acceptRunBody = extractFunction(getRunReviewSource(), 'acceptRun');
+  const acceptRunBody = extractFunction(getRunReviewSource(), 'executeAcceptRun');
 
   assert.match(contentScript, /async function acceptRun\(runId\)/);
+  assert.match(getRunReviewSource(), /const acceptRun = runId => withSharedReviewOwnership\(runId, \(\) => executeAcceptRun\(runId\)\)/);
   // Inline confirm: the accept only fires through the page bridge.
   assert.match(acceptRunBody, /callPageBridge\('acceptTrackedChanges'/);
   assert.match(acceptRunBody, /trackedChanges:\s*run\.undoTrackedChanges/);
@@ -3100,7 +3101,7 @@ test('acceptRun drives the run through the decisive §7 settlement reducer, with
   assert.doesNotMatch(contentScript, /function applyTerminalTrackedChangeStatus\(/);
   assert.match(contentScript, /function applyTrackedChangeSettlement\(/);
 
-  const acceptRunBody = extractFunction(getRunReviewSource(), 'acceptRun');
+  const acceptRunBody = extractFunction(getRunReviewSource(), 'executeAcceptRun');
   assert.match(acceptRunBody, /applyTrackedChangeSettlement\(runId,\s*'accept',\s*result,\s*\{\s*assertCurrent:\s*owner\.assert\s*\}\)/);
   const settlementBody = contentScript.match(/function applyTrackedChangeSettlement\([\s\S]*?\n  function /)?.[0] || '';
   assert.match(settlementBody, /WritebackSettlement\.settleTrackedChangeLifecycle/);
@@ -3293,7 +3294,7 @@ test('acceptRun settlement: failed or unverified page action remains actionable 
   assert.match(contentScript, /accept_not_verified/);
   // The settlement helper, not the unconditional terminal call, is what
   // acceptRun invokes after the page bridge returns ok.
-  const acceptRunBody = extractFunction(getRunReviewSource(), 'acceptRun');
+  const acceptRunBody = extractFunction(getRunReviewSource(), 'executeAcceptRun');
   assert.match(acceptRunBody, /applyTrackedChangeSettlement\(runId,\s*'accept',\s*result,\s*\{\s*assertCurrent:\s*owner\.assert\s*\}\)/);
   assert.doesNotMatch(acceptRunBody, /applyTerminalTrackedChangeStatus\(runId,\s*'accepted'\)/);
   assert.equal(

@@ -282,13 +282,20 @@
     additionalSkippedEntries.push(...binaryDecision.skipped);
 
     if (!operations.length) {
+      const approvalSettlement = buildSettlement({
+        operations: buildSyncApplyOperations(syncChanges, project),
+        applyResult: { ok: additionalSkippedEntries.length === 0, applied: [], skipped: additionalSkippedEntries }
+      });
+      const approvalFailure = approvalSettlement
+        ? writebackSettlement.projectRunSettlement({ settlement: approvalSettlement.facts }).primaryFailure : undefined;
       appendRunEvent({
         title: tx('No approved file changes remain to sync back to Overleaf.', '没有剩余已确认的文件改动需要同步回 Overleaf。'),
         status: 'completed'
       });
       appendCompletionReport({
         conclusion: assistantMessage || tx('No approved changes were written back to Overleaf.', '没有已确认的改动写回 Overleaf。'),
-        status: runMode === 'ask' ? tr('modeAsk') : 'completed',
+        status: additionalSkippedEntries.length ? 'failed' : runMode === 'ask' ? tr('modeAsk') : 'completed',
+        failure: approvalFailure,
         operations: [],
         applyResults: additionalSkippedEntries.length ? [{ ok: false, applied: [], skipped: additionalSkippedEntries }] : [],
         unchangedReason: additionalSkippedEntries.find(item => item?.result?.reason)?.result.reason
@@ -299,14 +306,7 @@
       return {
         summaryLine: tx('No changes applied', '没有应用改动'),
         hasSkippedOperations: additionalSkippedEntries.length > 0,
-        settlement: buildSettlement({
-          operations: buildSyncApplyOperations(syncChanges, project),
-          applyResult: {
-            ok: additionalSkippedEntries.length === 0,
-            applied: [],
-            skipped: additionalSkippedEntries
-          }
-        }),
+        settlement: approvalSettlement,
         audit: buildAuditSummaryFromApply({
           operations: buildSyncApplyOperations(syncChanges, project),
           applyResults: additionalSkippedEntries.length ? [{ ok: false, applied: [], skipped: additionalSkippedEntries }] : [],

@@ -40,6 +40,7 @@
           operations,
           baseFiles: input.baseFiles || [],
           reviewingPolicy: input.reviewingPolicy || '',
+          ...(input.reviewOwnerToken ? { reviewOwnerToken: input.reviewOwnerToken } : {}),
           ...(deadlineAt !== null ? { deadlineAt } : {}),
           requireReviewing: input.requireReviewing === true,
           requireEditing: input.requireEditing === true,

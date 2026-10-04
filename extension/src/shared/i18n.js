@@ -478,6 +478,8 @@
       // Each entry follows the §9 catalog copy. {file} / {activeFile} interpolate from the failure record.
       failureReason_partial_write_needs_review_user: 'Some operations wrote to Overleaf; others were skipped.',
       failureReason_partial_write_needs_review_next: 'Review the written files; use "Undo written parts" to roll back if needed.',
+      failureReason_file_plan_confirmation_rejected_user: 'The complete file plan was cancelled; no part was applied.',
+      failureReason_file_plan_confirmation_rejected_next: 'Review the intended changes and start a new run if you want to apply them.',
       failureReason_codex_run_cancelled_user: 'The local Codex run was cancelled.',
       failureReason_codex_run_cancelled_next: 'Start a new run when you are ready.',
       failureReason_write_operation_failed_user: 'The editor write call for {file} failed.',
@@ -1080,6 +1082,8 @@
       // FailureReason 高优先级双语文案（设计规格 §15.4）。文案对应 §9 目录的英文 fallback。
       failureReason_partial_write_needs_review_user: '部分操作已写入 Overleaf，其余被跳过。',
       failureReason_partial_write_needs_review_next: '请检查已写入的文件；如需回滚，使用「撤销已写入部分」。',
+      failureReason_file_plan_confirmation_rejected_user: '整份文件计划已取消，未应用任何部分。',
+      failureReason_file_plan_confirmation_rejected_next: '请先审阅预期改动；需要应用时重新发起一轮任务。',
       failureReason_codex_run_cancelled_user: '本地 Codex 任务已取消。',
       failureReason_codex_run_cancelled_next: '准备好后可以重新发起一轮任务。',
       failureReason_write_operation_failed_user: '对 {file} 的编辑器写入调用失败。',

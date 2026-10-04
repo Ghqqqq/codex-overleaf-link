@@ -15,7 +15,7 @@ async function drain(count = 25) { for (let i = 0; i < count; i++) await flush()
 function event() {
   const listeners = new Set();
   return { addListener: f => listeners.add(f), removeListener: f => listeners.delete(f),
-    emit: (...args) => [...listeners].map(f => f(...args)) };
+    emit: (...args) => [...listeners].map(f => f(...args)), clear: () => listeners.clear() };
 }
 
 // Narrow synthetic IndexedDB: async requests, serialized transactions, cursor
@@ -113,6 +113,7 @@ function createNetwork() {
         const selected = keys == null ? Object.keys(local) : Array.isArray(keys) ? keys : [keys];
         return Object.fromEntries(selected.filter(key => Object.hasOwn(local, key)).map(key => [key, plain(local[key])]));
       },
+      async remove(key) { delete local[key]; },
       async set(values) {
         const changes = {};
         for (const [key, value] of Object.entries(values)) { changes[key] = { oldValue: plain(local[key]), newValue: plain(value) }; local[key] = plain(value); }
@@ -179,6 +180,13 @@ function createNetwork() {
       disconnect() { const pair = ports.findLast(p => p.tabId === tabId && !p.closed); assert.ok(pair, 'live port required'); pair.front.disconnect(); } };
   }
   return { db, chromeApi, service, local, messages, ports, client, deliver,
+    restartBackground() {
+      for (const pair of ports) pair.front.disconnect();
+      onMessage.clear(); onConnect.clear();
+      const replacement = serviceContext.module.exports.createService({ chromeApi, indexedDB: db.indexedDB, IDBKeyRange: db.ranges,
+        mergeSessionReviewState: require(path.join(root, 'extension/src/shared/storageRunActions.js')).mergeSessionReviewState });
+      replacement.install(); return replacement;
+    },
     holdMessage(method, tabId) { const item = { method, tabId, used: false, entered: deferred() }; holds.push(item); return item; },
     holdMetaRead() { const item = { used: false, entered: deferred(), release: deferred() }; getGates.push(item); return item; },
     async notifyExternal(projectId = 'project-one') { await chromeApi.storage.local.set({

@@ -194,7 +194,7 @@ begin 成功后的失败，或 begin 已派发且等待被取消，在 commit �
 | 新建 GIF、WebP 等未支持资产 | 放入 `unsupportedChanges`，原因 `unsupported_non_text_file` | 无法仅凭“图片”这一类别推定可写回；核对文本与二进制两套路径规则 |
 | 被识别为构建产物的 PDF | 放入 `unsupportedChanges`，原因 `generated_artifact` | `isGeneratedArtifactPath` 过滤根目录中与基线同名 `.tex` 对应的 PDF，以及根 `main.pdf`、`output.pdf`；未命中其他生成产物规则的嵌套 PDF 与其他根 PDF 继续按资产规则判断 |
 
-包含 move，或同时包含创建与删除的原计划，由 [FileMoveApproval](../../extension/src/content/fileMoveApproval.js) 展示完整计划及被治理阻止的项，一起批准或取消；取消后不先创建新副本。纯创建保持原流程。该确认不把原本不支持的操作变成可执行项。
+包含 move，或同时包含创建与删除的原计划，由 [FileMoveApproval](../../extension/src/content/fileMoveApproval.js) 展示完整计划及被治理阻止的项，一起批准或取消；取消后不先创建新副本。纯创建保持原流程。该确认不把原本不支持的操作变成可执行项。 整计划取消经 `file_plan_confirmation_rejected` 记录为 `preflight/blocked`，不允许自动重试；零写入的 run 和报告保留 failed，正文明确整份计划已取消。报告携带同一 failure，持久结算保留 unchanged，不创建 Retry sync 或 Undo 材料；批准后发生的部分写入仍保留其实际结果及恢复证明。
 [FileMover](../../extension/src/page/fileMover.js) 在原项目中读取完整服务器路径与源哈希，绑定 entityId/type、父目录及 CSRF 后，调用 Overleaf 原生实体 `/rename`、`/move` 接口。每步检查原身份、路径、目标占用和总期限；成功后核对同一实体已在新路径且内容未变。明确失败且可证明回退安全时补偿；超时或 HTTP 5xx/408 后先重新核对服务器后像；同一实体与内容已确认时可以继续。仍无法核验、身份变化或其他不确定结果会保留已知位置与恢复提示并停止后续项，不盲目补偿或重放。成功 move 的 Undo 交换前后路径并复用同一哈希、实体和路径守卫。
 [fileMovePipeline.test.js](../../test/fileMovePipeline.test.js)、[fileMover.test.js](../../test/fileMover.test.js) 及 [fileMoveApproval.test.js](../../test/fileMoveApproval.test.js) 覆盖正式调用链、身份保持、确认和逆向恢复；平台 API、DOM 与 ZIP I/O 使用替身，真实服务器行为仍需验收。
 
@@ -326,6 +326,7 @@ Track-on 记录同样保留这些 `create` 逆操作；历史 Track-on 记录缺
 ### 6.3 Accept 与 Undo 的共同结算
 
 **当前实现。** `contentRuntime.acceptRun` 调用 page 的 `acceptTrackedChanges`，消费原运行 refs、前后像及已应用操作。
+Undo、Accept 及人工审阅核验由 `RunReviewController.withSharedReviewOwnership` 取得同账号/项目/run 的共享 review port。确认框阶段只预留 owner，不消耗执行期限；确认后先取得耐久派发租约的 ACK，再把 token 与截止时间送入 Page。失去 port 时只取消该 token 的 review context，旧 token 不影响后来的任务。正常收尾仅删除自己的租约；刷新后的隔离和旧版记录处理见[执行中恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
 Accept 需要可归属的留痕记录；`untrackedUndo` 不能赋予接受其他留痕的权限。
 混合运行接受后保留新建文件，并随已验证的生命周期关闭相应恢复状态。
 

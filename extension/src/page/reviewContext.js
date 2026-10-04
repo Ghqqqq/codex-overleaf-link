@@ -5,6 +5,13 @@
 })(typeof window !== 'undefined' ? window : globalThis, function () {
   'use strict';
 
+  const cancelledOwners = new Map();
+  function cancelOwner(token) {
+    if (typeof token !== 'string' || !token || token.length > 256) return false;
+    for (const [id, until] of cancelledOwners) if (until <= Date.now()) cancelledOwners.delete(id);
+    cancelledOwners.set(token, Date.now() + 120000); return true;
+  }
+
   // One context per request. The small response reserve lets an expired review
   // return its known partial evidence before the caller's transport timer fires.
   function create(deps, input = {}) {
@@ -23,6 +30,8 @@
         evidence: { originalCode: code, writeStarted: false } } });
     function check() {
       if (stopped) return stopped;
+      if (params.reviewOwnerToken && cancelledOwners.has(params.reviewOwnerToken))
+        return stopped = failure('codex_cancelled', 'The Undo owner disconnected; no further review writes were started.');
       if (!Number.isFinite(limit) || now() >= deadlineAt)
         return stopped = failure('writeback_deadline_exceeded', 'The review time budget expired; no further review writes were started.');
       if (typeof deps.readWriteCancellationSequence === 'function' && deps.readWriteCancellationSequence() !== cancellation)
@@ -100,5 +109,5 @@
     }
     return Object.freeze({ run, check, assert, wait, params, scoped });
   }
-  return Object.freeze({ create });
+  return Object.freeze({ create, cancelOwner });
 });

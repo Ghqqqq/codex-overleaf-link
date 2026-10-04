@@ -228,7 +228,8 @@
 
   const pageRpcHandlers = {
     probe,
-    cancelActiveWrite() {
+    cancelActiveWrite(params = {}) {
+      if (params.reviewOwnerToken) return { ok: true, cancelled: requirePageModule('CodexOverleafReviewContext').cancelOwner(params.reviewOwnerToken) };
       const sequence = bumpWriteCancellationSequence();
       textFileCreator.cancelVerifications();
       snapshotRouter.cancelWritebackReads();

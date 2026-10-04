@@ -334,3 +334,57 @@ test('directory checks are disabled while busy and reject a changed scope after 
   f.c.cachedAccountScopeId = 'changed-account'; await changed.clickDirectories();
   assert.equal(calls, 0);
 });
+
+for (const confirm of [false, true]) {
+  test('complete create/delete plan reaches terminal/report/recovery consumers: approve=' + confirm, async () => {
+    const initial = { 'old.tex': 'Original source' };
+    const f = createFlow({ initialFiles: initial, confirm,
+      syncChanges: [create, { type: 'delete', path: 'old.tex' }] });
+    const run = await f.run(), event = reportOf(run), projection = Settlement.projectRunSettlement(run);
+    if (confirm) {
+      assert.equal(run.status, 'failed', 'real delete I/O refusal keeps a partially applied plan failed');
+      assert.notEqual(projection.primaryFailure.code, 'file_plan_confirmation_rejected');
+      assert.equal(f.f.files.get('new.tex'), create.content);
+      assert.equal(f.f.files.get('old.tex'), initial['old.tex']);
+      assert.equal(run.settlement.documentEffect, 'changed');
+      assert.equal(run.settlement.evidence.applied, 'partial');
+      assert.ok(run.undoOperations.length, 'written sibling retains Undo');
+      return;
+    }
+    assert.equal(run.status, 'failed', 'rejected plan never reports successful execution');
+    assert.equal(event.status, 'failed');
+    assert.equal(event.failure.code, 'file_plan_confirmation_rejected');
+    assert.equal(event.failure.stage, 'preflight');
+    assert.equal(event.failure.severity, 'blocked');
+    assert.equal(event.failure.retryable, false);
+    assert.equal(projection.primaryFailure.code, event.failure.code);
+    const stored = await f.c.Modules.StorageDb.getRecord('sessions', f.c.state.activeSessionId);
+    const storedRun = stored.runs.find(item => item.id === run.id);
+    assert.equal(storedRun.status, 'failed');
+    assert.equal(reportOf(storedRun).status, 'failed');
+    assert.equal(Settlement.projectRunSettlement(storedRun).primaryFailure.code, event.failure.code);
+    assert.equal(run.settlement.documentEffect, 'unchanged');
+    assert.equal(f.trace.some(item => item.kind === 'page' && item.method === 'applyOperations'), false);
+    assert.equal(f.f.files.get('old.tex'), initial['old.tex']);
+    assert.equal(f.f.files.has('new.tex'), false);
+    assert.equal(run.retryWriteback, undefined);
+    assert.equal(run.saveCheck, undefined);
+    assert.deepEqual(run.undoOperations || [], []);
+    const rendered = renderNotice(f, event, run).snapshot();
+    assert.match(rendered.notices[0].text, /complete file plan was cancelled/i);
+    assert.equal(rendered.buttons.length, 0, 'rejection offers no automatic retry action');
+    assert.equal(rendered.toolbar['sync-retry'].hidden, true);
+    const before = f.trace.length;
+    await f.retry();
+    assert.equal(f.trace.length, before, 'rejected plan retains no replay payload');
+  });
+}
+
+test('normal zero-operation model result stays completed without a refusal failure', async () => {
+  const f = createFlow({ syncChanges: [] }), run = await f.run();
+  assert.equal(run.status, 'completed');
+  assert.equal(reportOf(run).status, 'completed');
+  assert.equal(reportOf(run).failure, undefined);
+  assert.equal(Settlement.projectRunSettlement(run).primaryFailure, null);
+  assert.equal(f.trace.some(item => item.kind === 'page' && item.method === 'applyOperations'), false);
+});

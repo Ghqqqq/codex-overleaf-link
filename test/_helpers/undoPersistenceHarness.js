@@ -58,7 +58,7 @@ async function createPersistenceFixture({ track = false } = {}) {
   context.state.activeSessionId = 'qa-session';
   Object.assign(context.state.sessions[0], { accountScopeId: scope.accountScopeId,
     createdAt: '2026-09-28T00:00:00Z', updatedAt: '2026-09-28T00:00:00Z' });
-  Object.assign(context.Modules, { StorageDb: storage, StorageMigration: migration, SessionPersistence: Sessions, ScopedPersistenceCoordinator: Scope });
+  Object.assign(context.Modules, { SessionState: State, StorageDb: storage, StorageMigration: migration, SessionPersistence: Sessions, ScopedPersistenceCoordinator: Scope });
   Object.assign(context, { currentRunView: null, cachedAccountScopeId: scope.accountScopeId,
     storageKey: 'synthetic-legacy-qa-project', getCurrentProjectId: () => h.state.projectId, spaRouteGeneration: 0,
     getAccountScopeId: () => context.cachedAccountScopeId, getRouteGeneration: () => context.spaRouteGeneration,

@@ -260,7 +260,7 @@
     var newer = (Date.parse(incoming.updatedAt) || 0) >= (Date.parse(existing.updatedAt) || 0);
     if (!newer && !explicitReview) return incoming;
     var base = newer ? incoming : existing;
-    var fields = ['trackedChangeStatus', 'undoStatus', 'undoTrackedChanges', 'undoExpectedFiles',
+    var fields = ['trackedChangeStatus', 'undoStatus', 'undoOwnerProtocol', 'undoTrackedChanges', 'undoExpectedFiles',
       'undoOperations', 'undoBaseFiles', 'appliedOperations', 'trackedChangeCaptures', 'manualReviewProof', 'recoveryRetention', 'settlement', 'settlementFacts'];
     var changed = false;
     var runs = (base.runs || []).map(function (run) {
