@@ -6,6 +6,8 @@ const test = require('node:test');
 const SessionState = require('../extension/src/shared/sessionState');
 const StorageDb = require('../extension/src/shared/storageDb');
 const References = require('../extension/src/shared/lineReferences');
+const ComposerDraft = require('../extension/src/shared/composerAttachmentDraft');
+const { createMemoryDraftDb } = require('./_helpers/memoryDraftDb');
 const { extractFunction } = require('./_helpers/extractFunction');
 const runtime = fs.readFileSync(path.join(__dirname, '../extension/src/content/contentRuntime.js'), 'utf8');
 const tray = fs.readFileSync(path.join(__dirname, '../extension/src/content/contextTray.js'), 'utf8');
@@ -15,12 +17,22 @@ test('reference inventory survives record serialization and the actual runtime h
   const session = SessionState.createSession({ projectReferenceFiles: files });
   const record = StorageDb.buildSessionRecord({ ...session, projectId: 'project', accountScopeId: 'account' });
   assert.deepEqual(record.projectReferenceFiles, files);
-  const load = vm.runInNewContext('(' + extractFunction(runtime, 'loadStoredStateForProject') + ')', {
+  const draftStore = ComposerDraft.createStore(createMemoryDraftDb().openDb);
+  const draft = ComposerDraft.createController({ getScope: () => ({ accountScopeId: 'account', projectId: 'project' }),
+    getAttachments: () => [], read: draftStore.read });
+  const sandbox = vm.createContext({
     cachedAccountScopeId: 'account', storageKey: 'legacy', PANEL_DEFAULT_WIDTH: 380,
     getCurrentProjectId: () => 'project', normalizeGovernanceRulesByProject: value => value || {},
+    getComposerDraftPersistence: () => draft, tx: en => en,
+    appendPlainLog: message => { throw new Error(message); },
+    chrome: { storage: { local: { get: async () => ({}) } } },
     Modules: { StorageDb, StorageMigration: { runMigrationIfNeeded: async () => ({ prefs: {}, sessions: [record], activeSessionId: record.id }) } }
   });
-  const restored = SessionState.normalizePanelState(await load('account'));
+  for (const name of ['buildScopedFallbackStorageKey', 'isScopedPersistenceIdentityFailure',
+    'loadComposerAttachmentsForProject', 'loadStoredStateForProject']) {
+    vm.runInContext(extractFunction(runtime, name), sandbox);
+  }
+  const restored = SessionState.normalizePanelState(await sandbox.loadStoredStateForProject('account'));
   assert.deepEqual(restored.session.projectReferenceFiles, files);
   assert.equal(References.resolveProjectReference({ rawPath: 'sections/intro.tex', projectFiles: restored.session.projectReferenceFiles }).path, 'sections/intro.tex');
   assert.equal(References.resolveProjectReference({ rawPath: 'figures/a.png', projectFiles: restored.session.projectReferenceFiles }), null);

@@ -206,6 +206,7 @@ test('migration preserves legacy session display fields and settings', async () 
     buildSessionRecord(input) {
       return { ...input };
     },
+    async claimSessionsForAccount() { return []; },
     putRecords(storeName, records) {
       calls.putRecords.push({ storeName, records });
       return Promise.resolve(records);
@@ -355,6 +356,7 @@ test('migration strips bulky legacy payloads while preserving displayable histor
     buildSessionRecord(input) {
       return StorageDbModule.buildSessionRecord(input);
     },
+    async claimSessionsForAccount() { return []; },
     putRecords(storeName, records) {
       calls.putRecords.push({ storeName, records });
       return Promise.resolve(records);

@@ -25,7 +25,11 @@ function transport() {
     postMessage(message) { sent.push(message); }, queueMicrotask };
   const client = Client.create({ window, now: () => clock, contract: Contract,
     compatibility: { BUILD_TARGET_VERSION: '2.5.0' }, crypto: { randomUUID: () => 'id-' + (++sequence) } });
-  return { client, sent, timers, policy: method => Contract.resolveDispatchPolicy(method),
+  return { client, sent, timers, get listenerCount() { return listeners.size; },
+    policy: method => Contract.resolveDispatchPolicy(method),
+    reply(result) { for (const listener of [...listeners]) listener({ source: window, origin: window.location.origin,
+      data: { source: 'codex-overleaf/page', pageBridgeVersion: '2.5.0', pageBridgeRevision: Contract.REVISION,
+        id: sent.at(-1).id, result } }); },
     expire() { const pending = [...timers.values()]; for (const timer of pending) { clock += timer.ms; timer.fn(); } } };
 }
 
@@ -55,13 +59,43 @@ for (const deadlineAt of [0, 100, NaN, 'invalid']) {
     assert.equal(h.timers.size, 0);
   });
 }
-test('receipt reads are capped by the same deadline and cancellation remains effective', async () => {
+test('receipt settlement survives cancellation but remains capped by the original deadline', async () => {
   const h = transport();
-  const pending = h.client.send('getWritebackReceipt', { deadlineAt: 600 }, h.policy('getWritebackReceipt'));
+  const params = { requestId: 'original-write', runProjectId: 'p', deadlineAt: 600 };
+  let settled = false;
+  const pending = h.client.send('getWritebackReceipt', params, h.policy('getWritebackReceipt'))
+    .then(result => { settled = true; return result; });
+  assert.equal([...h.timers.values()][0].ms, 500);
+  h.client.cancelActiveRequests(); await Promise.resolve();
+  assert.equal(settled, false, 'cancellation must not discard a pending write receipt');
+  assert.equal(h.listenerCount, 1);
+  assert.equal([...h.timers.values()][0].ms, 500, 'cancellation cannot extend the settlement deadline');
+  h.expire();
+  const result = await pending;
+  assert.equal(result.ok, false); assert.equal(result.error, 'Page bridge timed out');
+  assert.equal(h.timers.size, 0); assert.equal(h.listenerCount, 0);
+  const expired = await h.client.send('getWritebackReceipt', params, h.policy('getWritebackReceipt'));
+  assert.equal(expired.code, 'writeback_deadline_exceeded');
+  assert.equal(h.sent.length, 1, 'expired settlement cannot dispatch another receipt read');
+});
+test('a receipt response received after cancellation still settles the original request', async () => {
+  const h = transport();
+  const pending = h.client.send('getWritebackReceipt', { requestId: 'original-write', runProjectId: 'p', deadlineAt: 600 },
+    h.policy('getWritebackReceipt'));
+  h.client.cancelActiveRequests();
+  const receipt = { ok: true, requestId: 'original-write', runProjectId: 'p', state: 'completed',
+    result: { ok: true, applied: [], skipped: [] } };
+  h.reply(receipt);
+  assert.deepEqual(await pending, receipt);
+  assert.equal(h.sent.length, 1); assert.equal(h.timers.size, 0); assert.equal(h.listenerCount, 0);
+});
+for (const method of ['applyOperations', 'getProjectSnapshot']) test(`ordinary ${method} waits remain cancellable before their deadline`, async () => {
+  const h = transport();
+  const pending = h.client.send(method, { deadlineAt: 600 }, h.policy(method));
   assert.equal([...h.timers.values()][0].ms, 500);
   const rejected = assert.rejects(pending, { code: 'codex_cancelled' });
   h.client.cancelActiveRequests(); await rejected;
-  assert.equal(h.timers.size, 0);
+  assert.equal(h.timers.size, 0); assert.equal(h.listenerCount, 0); assert.equal(h.sent.length, 1);
 });
 test('journal preserves the deadline and does not mutate after preparation consumes it', async () => {
   let clock = 0, applies = 0;

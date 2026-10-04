@@ -1,7 +1,7 @@
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.CodexOverleafModuleRegistry.define('SharedSessionBridge', [], factory);
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./sharedSessionTransfer'));
+  else root.CodexOverleafModuleRegistry.define('SharedSessionBridge', ['SharedSessionTransfer'], factory);
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Transfer) {
   'use strict';
   const MESSAGE = 'codex-overleaf/shared-sessions-v1';
   const LOCK_PORT = 'codex-overleaf/shared-session-lock-v1';
@@ -179,7 +179,8 @@
           record: clean(record),
           base: record[BASE] || baselines.get(cacheKey(value, record.id)) || null
         }));
-        const written = await request('put', value, { entries, reviewRunIds: options.reviewRunIds || [] });
+        const transfer = await Transfer.encode(entries);
+        const written = await request(transfer.method, value, { ...transfer.payload, reviewRunIds: options.reviewRunIds || [] });
         // Keep the caller's submitted view as its merge baseline. A merged
         // remote change has not necessarily been applied to the visible UI.
         for (const entry of entries) baselines.set(cacheKey(value, entry.record.id), clean(entry.record));
@@ -192,8 +193,8 @@
       const record = await request('get', value, { id });
       return tag(record, value, !heldLocks.has(lockKey('state', value)));
     }
-    async function erase(method, projectId = '', id) {
-      const value = capture(projectId);
+    async function erase(method, projectId = '', id, accountScopeId) {
+      const value = capture(projectId, accountScopeId);
       return withWrite(value, () => request(method, value, { id }));
     }
     function decorate(api) {
@@ -225,8 +226,9 @@
         store === 'sessions' ? (await put([record]))[0] : api.putRecord(store, record));
       route('putRecords', (store, records, options) =>
         store === 'sessions' ? put(records, options) : api.putRecords(store, records));
-      route('deleteRecord', (store, id) =>
-        store === 'sessions' ? erase('delete', '', id) : api.deleteRecord(store, id));
+      route('deleteRecord', (store, id, expectedScope) =>
+        store === 'sessions' ? erase('delete', expectedScope?.projectId || '', id, expectedScope?.accountScopeId)
+          : api.deleteRecord(store, id));
       route('deleteByIndex', async (store, index, value) => {
         if (store !== 'sessions') return api.deleteByIndex(store, index, value);
         if (index === 'projectId') return erase('clear-project', value);

@@ -8,6 +8,7 @@
   'use strict';
 
   var PREFS_KEY = 'codexOverleafPrefs';
+  var LEGACY_MIGRATION_PREFIX = 'codexOverleafLegacyPanelMigration:';
   var SESSION_TOMBSTONES_KEY = 'codexOverleafSessionTombstones';
   var SESSION_TOMBSTONE_ENTRY_PREFIX = 'codexOverleafSessionTombstone:v2:';
   var MAX_DELETED_SESSION_IDS_PER_PROJECT = 100;
@@ -139,118 +140,77 @@
 
   function runMigrationIfNeeded(projectId, legacyStorageKey, accountScopeId) {
     projectId = normalizeProjectPrefKey(projectId);
-    var normalizedAccountScopeId = normalizeTextField(accountScopeId, PROJECT_PREF_KEY_MAX_CHARS);
-    if (!normalizedAccountScopeId || !projectId) {
-      return Promise.resolve({
-        prefs: normalizePrefs({}),
-        sessions: [],
-        activeSessionId: '',
-        migrated: false,
-        reason: 'account_scope_unavailable'
-      });
-    }
-    return withProjectPreferenceLock(projectId, function () {
-      return chrome.storage.local.get(null).then(function (stored) {
-        var claimed = claimLegacyProjectPreferences(
-          stored[PREFS_KEY] || {},
-          normalizedAccountScopeId,
-          projectId
-        );
-        var storedPrefs = claimed.prefs;
-        var persistClaim = claimed.changed
-          ? chrome.storage.local.set({ [PREFS_KEY]: storedPrefs })
-          : Promise.resolve();
-        return persistClaim.then(function () {
-          var prefs = buildProjectPreferenceView(
-            storedPrefs,
-            normalizedAccountScopeId,
-            projectId
-          );
-          var tombstones = collectSessionTombstones(stored);
-          var deletedSessionIds = getDeletedSessionIds(tombstones, projectId);
-          var schemaVersion = prefs.storageSchemaVersion || 0;
-
-          if (schemaVersion >= StorageDb.TARGET_SCHEMA_VERSION) {
-            var activeSessionByProject = prefs.activeSessionByProject || {};
-            var activeSessionId = activeSessionByProject[projectId] || '';
-            if (typeof StorageDb.claimSessionsForAccount !== 'function') {
-              return Promise.reject(Object.assign(
-                new Error('Atomic legacy-session claiming is unavailable.'),
-                { code: 'scoped_claim_unavailable' }
-              ));
-            }
-            return StorageDb.claimSessionsForAccount(
-              projectId,
-              normalizedAccountScopeId,
-              deletedSessionIds
-            ).then(function (visibleSessions) {
-              var visibleActiveSessionId = visibleSessions.some(function (session) {
-                return session && session.id === activeSessionId;
-              })
-                ? activeSessionId
-                : visibleSessions.length
-                  ? visibleSessions[visibleSessions.length - 1].id
-                  : '';
-              return {
-                prefs: prefs,
-                sessions: visibleSessions,
-                activeSessionId: visibleActiveSessionId,
-                migrated: false
-              };
-            });
-          }
-
-          // Migration v0 → v1
-          var legacyBlob = stored[legacyStorageKey] || {};
-          var legacySessions = Array.isArray(legacyBlob.sessions) ? legacyBlob.sessions : [];
-          var migratedSessions = [];
-
-          for (var i = 0; i < legacySessions.length; i++) {
-            var legacy = legacySessions[i];
-            if (!legacy || !legacy.id) { continue; }
-            if (deletedSessionIds.indexOf(legacy.id) !== -1) { continue; }
-            var record = StorageDb.buildSessionRecord(
-              buildLegacySessionRecordInput(projectId, legacyBlob, legacy, normalizedAccountScopeId)
-            );
-            migratedSessions.push(record);
-          }
-
-          var putPromise = migratedSessions.length
-            ? StorageDb.putRecords('sessions', migratedSessions)
-            : Promise.resolve([]);
-
-          return putPromise.then(function () {
-            var newPrefs = StorageDb.extractLightweightPrefs(legacyBlob, projectId);
-            newPrefs.activeSessionByProject = StorageDb.buildActiveSessionByProject(
-              {},
-              projectId,
-              legacyBlob.activeSessionId || (migratedSessions.length ? migratedSessions[migratedSessions.length - 1].id : '')
-            );
-            var mergedPrefs = mergeScopedProjectPreferences(
-              storedPrefs,
-              newPrefs,
-              normalizedAccountScopeId,
-              projectId
-            );
-            var prefsView = buildProjectPreferenceView(
-              mergedPrefs,
-              normalizedAccountScopeId,
-              projectId
-            );
-
-            return chrome.storage.local.set({ [PREFS_KEY]: mergedPrefs }).then(function () {
-              return chrome.storage.local.remove(legacyStorageKey).catch(function () {});
-            }).then(function () {
-              return {
-                prefs: prefsView,
-                sessions: migratedSessions,
-                activeSessionId: prefsView.activeSessionByProject[projectId] || '',
-                migrated: true
-              };
-            });
-          });
+    var account = normalizeTextField(accountScopeId, PROJECT_PREF_KEY_MAX_CHARS);
+    if (!account || !projectId) return Promise.resolve({ prefs: normalizePrefs({}), sessions: [],
+      activeSessionId: '', migrated: false, reason: 'account_scope_unavailable' });
+    return withProjectPreferenceLock(projectId, async function () {
+      var stored = await chrome.storage.local.get(null);
+      var claimed = claimLegacyProjectPreferences(stored[PREFS_KEY] || {}, account, projectId);
+      var storedPrefs = claimed.prefs;
+      if (claimed.changed) await chrome.storage.local.set({ [PREFS_KEY]: storedPrefs });
+      var prefs = buildProjectPreferenceView(storedPrefs, account, projectId);
+      var deleted = getDeletedSessionIds(collectSessionTombstones(stored), projectId);
+      var markerKey = LEGACY_MIGRATION_PREFIX + encodeURIComponent(String(legacyStorageKey || ''));
+      var marker = stored[markerKey];
+      var legacyBlob = stored[legacyStorageKey];
+      var hasLegacy = Boolean(legacyBlob && typeof legacyBlob === 'object' && !Array.isArray(legacyBlob));
+      var schemaCurrent = (prefs.storageSchemaVersion || 0) >= StorageDb.TARGET_SCHEMA_VERSION;
+      if (marker && (marker.projectId !== projectId || marker.sourceKey !== legacyStorageKey || !marker.accountScopeId)) {
+        throw Object.assign(new Error('The legacy history source has a conflicting migration identity.'), { code: 'legacy_migration_scope_conflict' });
+      }
+      if (typeof StorageDb.claimSessionsForAccount !== 'function') {
+        throw Object.assign(new Error('Atomic legacy-session claiming is unavailable.'), { code: 'scoped_claim_unavailable' });
+      }
+      var visible = await StorageDb.claimSessionsForAccount(projectId, account, deleted);
+      function result(currentPrefs, sessions, migrated) {
+        var wanted = currentPrefs.activeSessionByProject?.[projectId] || '';
+        return { prefs: currentPrefs, sessions: sessions,
+          activeSessionId: sessions.some(session => session.id === wanted) ? wanted : sessions.at(-1)?.id || '',
+          migrated: migrated };
+      }
+      if ((schemaCurrent && !hasLegacy) || marker?.complete || (marker && marker.accountScopeId !== account)) {
+        return result(prefs, visible, false);
+      }
+      legacyBlob = hasLegacy ? legacyBlob : {};
+      var legacySessions = Array.isArray(legacyBlob.sessions) ? legacyBlob.sessions : [];
+      var owners = new Set([legacyBlob.accountScopeId, legacyBlob.__codexOverleafFallbackAccountScopeId,
+        ...legacySessions.map(session => session?.accountScopeId)].filter(value => typeof value === 'string' && value));
+      if ([...owners].some(owner => owner !== account)) return result(prefs, visible, false);
+      // The shared preferences lock serializes this source claim across accounts.
+      // Keep it after a write failure; only its owner can finish the import.
+      if (hasLegacy && !marker) {
+        marker = { sourceKey: legacyStorageKey, projectId: projectId, accountScopeId: account, complete: false };
+        await chrome.storage.local.set({ [markerKey]: marker });
+      }
+      var existingIds = new Set(visible.map(session => session.id));
+      var incoming = legacySessions.filter(session => session?.id && !deleted.includes(session.id) && !existingIds.has(session.id))
+        .map(session => StorageDb.buildSessionRecord(buildLegacySessionRecordInput(projectId, legacyBlob, session, account)));
+      var written = incoming.length ? await StorageDb.putRecords('sessions', incoming) : [];
+      if (incoming.length && (!Array.isArray(written) || incoming.some(session => !written.some(record =>
+        record.id === session.id && record.accountScopeId === account && record.projectId === projectId)))) {
+        throw Object.assign(new Error('Legacy history was not confirmed in the main session store.'), { code: 'legacy_migration_not_persisted' });
+      }
+      var sessions = [...visible, ...written];
+      var newPrefs = StorageDb.extractLightweightPrefs(legacyBlob, projectId);
+      if (schemaCurrent) {
+        // A later project's import must not reset current global preferences.
+        var legacyPrefs = newPrefs;
+        newPrefs = Object.assign({}, legacyPrefs, prefs);
+        PROJECT_SCOPED_PREF_MAPS.forEach(function (name) {
+          newPrefs[name] = Object.assign({}, legacyPrefs[name] || {}, prefs[name] || {});
         });
-      });
+      }
+      var currentActive = prefs.activeSessionByProject?.[projectId];
+      var activeId = sessions.some(session => session.id === currentActive) ? currentActive
+        : legacyBlob.activeSessionId || sessions.at(-1)?.id || '';
+      newPrefs.activeSessionByProject = StorageDb.buildActiveSessionByProject({}, projectId, activeId);
+      var mergedPrefs = mergeScopedProjectPreferences(storedPrefs, newPrefs, account, projectId);
+      await chrome.storage.local.set({ [PREFS_KEY]: mergedPrefs });
+      // Completion is per source and owner, independent of the global schema.
+      // A failed cleanup cannot replay old content or transfer it to another account.
+      if (hasLegacy) await chrome.storage.local.set({ [markerKey]: { ...marker, complete: true } });
+      await chrome.storage.local.remove(legacyStorageKey).catch(function () {});
+      return result(buildProjectPreferenceView(mergedPrefs, account, projectId), sessions, true);
     });
   }
 

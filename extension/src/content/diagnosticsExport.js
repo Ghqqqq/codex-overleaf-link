@@ -136,16 +136,26 @@
       throw new Error('Audit diagnostics helper is unavailable');
     }
     const projectId = getCurrentProjectId();
+    const accountScopeId = deps.getAccountScopeId?.() || '';
+    if (!accountScopeId) throw new Error('Account identity is unavailable; reopen the project before exporting diagnostics.');
     const currentRunView = getCurrentRunView();
     const activeRecord = currentRunView && findRunRecord(currentRunView.recordId, currentRunView.sessionId);
-    const recentRuns = (getState().runs || []).filter(run => run && (!run.runProjectId || run.runProjectId === projectId))
+    const panelState = getState();
+    const sessionScope = panelState.sessions?.find(session => session.id === panelState.activeSessionId)?.accountScopeId;
+    // Older normalized runs lack owner fields; they still rely on the view's
+    // hydration boundary. Explicit ownership, when present, must agree.
+    const matchesAccount = (record, ...owners) => [record?.runAccountScopeId, record?.accountScopeId, ...owners]
+      .filter(Boolean).every(owner => owner === accountScopeId);
+    const recentRuns = (panelState.runs || []).filter(run => run && (!run.runProjectId || run.runProjectId === projectId)
+      && matchesAccount(run, sessionScope, panelState.accountScopeId))
       .slice().reverse().sort((a, b) => (Date.parse(b.startedAt) || 0) - (Date.parse(a.startedAt) || 0)).slice(0, 8);
     const [auditLogs, mirror, nativeDiagnostics] = await Promise.all([
-      getRecentAuditLogsForCurrentProject(),
+      getRecentAuditLogsForCurrentProject({ projectId, accountScopeId }),
       getMirrorFreshness().catch(error => ({ status: 'unavailable', errorCode: error.message })),
       getNativeDiagnosticsSummaryForBundle()
     ]);
     if (getCurrentProjectId() !== projectId) throw new Error('Project changed during diagnostics export; export again.');
+    if (deps.getAccountScopeId?.() !== accountScopeId) throw new Error('Account changed during diagnostics export; export again.');
     const bundle = AuditRecords.buildDiagnosticBundle({
       excludeContent: true,
       compatibility: {
@@ -156,7 +166,8 @@
       nativeEnvironment: nativeDiagnostics.nativeEnvironment,
       mirror,
       auditLogs,
-      run: activeRecord?.runProjectId === projectId ? activeRecord : recentRuns[0] || {},
+      run: activeRecord?.runProjectId === projectId && matchesAccount(activeRecord, currentRunView?.runAccountScopeId)
+        ? activeRecord : recentRuns[0] || {},
       recentRuns,
       governance: getGovernanceRulesForCurrentProject(),
       projectId
@@ -204,12 +215,15 @@
     }
   }
 
-  async function getRecentAuditLogsForCurrentProject(limit = 12) {
+  async function getRecentAuditLogsForCurrentProject(scope, limit = 12) {
     if (!StorageDb?.getAllByIndex) {
       return [];
     }
-    const records = await StorageDb.getAllByIndex('auditLogs', 'projectId', getCurrentProjectId());
+    const records = await StorageDb.getAllByIndex('auditLogs', 'projectId', scope.projectId);
     return (records || [])
+      // Legacy unowned audits remain stored but cannot be assigned to whichever
+      // account happens to export next, even when a session ID looks familiar.
+      .filter(record => record?.projectId === scope.projectId && record.accountScopeId === scope.accountScopeId)
       .slice()
       .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
       .slice(0, limit);

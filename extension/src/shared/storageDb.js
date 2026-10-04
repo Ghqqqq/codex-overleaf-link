@@ -275,6 +275,8 @@
       title: normalizeSessionTitleForStorage(input.title, titleSource),
       titleSource: titleSource,
       codexThreadId: typeof input.codexThreadId === 'string' ? input.codexThreadId : '',
+      forkedFromSessionId: normalizeTextField(input.forkedFromSessionId, 160),
+      forkedFromRunId: normalizeTextField(input.forkedFromRunId, 160),
       status: typeof input.status === 'string' && input.status ? input.status : 'active',
       focusFiles: normalizePathList(input.focusFiles),
       selectionContext: SessionState.normalizeSelectionContext(input.selectionContext),
@@ -409,6 +411,7 @@
     var now = new Date().toISOString();
     return {
       id: input.id || generateId('aud'),
+      accountScopeId: typeof input.accountScopeId === 'string' ? input.accountScopeId : '',
       projectId: typeof input.projectId === 'string' ? input.projectId : '',
       sessionId: typeof input.sessionId === 'string' ? input.sessionId : '',
       turnId: typeof input.turnId === 'string' ? input.turnId : '',
@@ -658,6 +661,8 @@
     var compact = {
       ...SessionState.pickWritebackRecovery(run),
       id: run.id,
+      forkSnapshot: run.forkSnapshot === true,
+      forkSourceRunId: normalizeTextField(run.forkSourceRunId, 160),
       task: normalizeDisplayTextForStorage(run.task || 'untitled task', SESSION_STORAGE_LIMITS.taskChars),
       mode: typeof run.mode === 'string' ? redactSecretLikeText(run.mode) : '', ...StorageRunActions.compactProviderSnapshot(run),
       ...StorageRunActions.compactRunExecutionSnapshot(run, function (text) { return normalizeTextField(text, 4096); }),

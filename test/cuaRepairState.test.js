@@ -7,6 +7,8 @@ const State = require('../extension/src/shared/sessionState');
 const Intent = require('../extension/src/shared/writebackIntent');
 const Settlement = require('../extension/src/shared/writebackSettlement');
 const Results = require('../extension/src/content/runResultActions').create();
+const ComposerDraft = require('../extension/src/shared/composerAttachmentDraft');
+const { createMemoryDraftDb } = require('./_helpers/memoryDraftDb');
 const { extractFromContentScript } = require('./_helpers/contentScriptSource');
 const owner = { projectId: 'project-a', accountScopeId: 'account-a', sessionId: 'session-a', runId: 'run-a' };
 const tx = en => en;
@@ -19,12 +21,22 @@ async function restoreDraft(value) {
   const record = Db.buildSessionRecord({ id: owner.sessionId, projectId: owner.projectId,
     accountScopeId: owner.accountScopeId, task: 'Edited draft', mode: value?.mode === 'edit' ? 'auto' : 'ask',
     selectionContext: value, runs: [] });
+  const draftStore = ComposerDraft.createStore(createMemoryDraftDb().openDb);
+  const draft = ComposerDraft.createController({ getScope: () => owner,
+    getAttachments: () => [], read: draftStore.read });
   const sandbox = { Modules: { StorageDb: Db, StorageMigration: { runMigrationIfNeeded: async () => ({
     prefs: {}, sessions: [record], activeSessionId: record.id }) } },
     getCurrentProjectId: () => owner.projectId, storageKey: 'qa-state', PANEL_DEFAULT_WIDTH: 400,
-    normalizeGovernanceRulesByProject: value => value || {}, cachedAccountScopeId: owner.accountScopeId };
-  const load = vm.runInNewContext('(' + extractFromContentScript('loadStoredStateForProject') + ')', sandbox);
-  return State.normalizePanelState(await load(owner.accountScopeId));
+    normalizeGovernanceRulesByProject: value => value || {}, cachedAccountScopeId: owner.accountScopeId,
+    getComposerDraftPersistence: () => draft, tx,
+    appendPlainLog: message => { throw new Error(message); },
+    chrome: { storage: { local: { get: async () => ({}) } } } };
+  vm.createContext(sandbox);
+  for (const name of ['buildScopedFallbackStorageKey', 'isScopedPersistenceIdentityFailure',
+    'loadComposerAttachmentsForProject', 'loadStoredStateForProject']) {
+    vm.runInContext(extractFromContentScript(name), sandbox);
+  }
+  return State.normalizePanelState(await sandbox.loadStoredStateForProject(owner.accountScopeId));
 }
 
 for (const mode of ['reference', 'edit']) test('actual persisted-session hydration restores ' + mode + ' draft selection', async () => {

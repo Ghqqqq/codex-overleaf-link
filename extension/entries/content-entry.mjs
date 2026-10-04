@@ -27,6 +27,7 @@ import '../src/content/globalPreferencesController.js';
 import '../src/shared/runExecutionSnapshotCodec.js';
 import '../src/shared/runExecutionSnapshot.js';
 import '../src/shared/scopedPersistenceQueuePolicy.js';
+import '../src/shared/sharedSessionTransfer.js';
 import '../src/shared/sharedSessionBridge.js';
 import '../src/content/sharedSessionViewSync.js';
 import '../src/shared/scopedPersistenceBrowserAdapter.js';

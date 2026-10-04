@@ -52,8 +52,8 @@
 - 入口：[DiagnosticsPanel](../../extension/src/content/diagnosticsPanel.js)、[DiagnosticsController.runAllDiagnostics](../../extension/src/content/diagnosticsController.js)。
 - 状态 owner：各检查读取 Native/Page/镜像状态；[DiagnosticsExport](../../extension/src/content/diagnosticsExport.js) 构造脱敏导出和 smoke 摘要。
 - 必须联动：[compatibility](../../extension/src/shared/compatibility.js)、[auditRecords](../../extension/src/shared/auditRecords.js)、[failureReasons](../../extension/src/shared/failureReasons.js)；导出字段不得泄露正文、附件或 secret。
-- 关闭结果只设置展示屏障，不取消原检查；再次开始检查会重置该屏障，不能把它当作请求 generation 保护。
-- 最近测试：[diagnosticsHealth](../../test/diagnosticsHealth.test.js)、[diagnosticsMenu](../../test/diagnosticsMenu.test.js)、[diagnosticsViewport](../../test/diagnosticsViewport.test.js)。
+- 关闭结果只设置展示屏障，不取消原检查；Controller 另以请求代次及账号/项目/路由身份约束迟到结果和全检 health。导出捕获账号/项目并过滤审计，旧字段兼容见[审计和诊断消费](context-and-governance.md#5-审计和诊断消费)。
+- 最近测试：[diagnosticsRequestOwnership](../../test/diagnosticsRequestOwnership.test.js)、[auditAccountIsolation](../../test/auditAccountIsolation.test.js)、[diagnosticsHealth](../../test/diagnosticsHealth.test.js)、[diagnosticsMenu](../../test/diagnosticsMenu.test.js)、[diagnosticsViewport](../../test/diagnosticsViewport.test.js)。
 
 ### 改失败分类、完成报告、恢复按钮或页眉统计
 
@@ -107,14 +107,14 @@
 - 入口：runtime 的 `safeRunTask`、[RunQueueScheduler.createCoordinator](../../extension/src/content/runQueueScheduler.js)、[ActiveTurnControl](../../extension/src/content/activeTurnControl.js)。
 - 状态 owner：runtime 在首次 await 前捕获提交身份与会话投影，[RunController.captureSessionContext](../../extension/src/content/runController.js) 提供深拷贝；[runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js) 固定白名单配置，[runInputQueue](../../extension/src/shared/runInputQueue.js) 管理队列；[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 与 [nativeRunLifecycle](../../native-host/src/nativeRunLifecycle.js) 分别管理 RPC 活动索引和断连收尾。
 - 必须联动：[runGuidanceController](../../extension/src/content/runGuidanceController.js)、[scopedPersistenceTransaction](../../extension/src/shared/scopedPersistenceTransaction.js)、[nativeRequestIdentity](../../extension/src/shared/nativeRequestIdentity.js)。详细链路见[运行状态与恢复](run-state-and-recovery.md)。
-- 最近测试：[runSubmissionOwnership](../../test/runSubmissionOwnership.test.js)、[queueSubmissionContext](../../test/queueSubmissionContext.test.js)、[runInputQueueSnapshotRegression](../../test/runInputQueueSnapshotRegression.test.js)、[runQueueSchedulerDurability](../../test/runQueueSchedulerDurability.test.js)、[activeTurnControl](../../test/activeTurnControl.test.js)、[nativeDispatchCancellation](../../test/nativeDispatchCancellation.test.js)。
+- 最近测试：[runSubmissionOwnership](../../test/runSubmissionOwnership.test.js)、[queueSubmissionContext](../../test/queueSubmissionContext.test.js)、[runInputQueueSnapshotRegression](../../test/runInputQueueSnapshotRegression.test.js)、[runQueueSchedulerDurability](../../test/runQueueSchedulerDurability.test.js)、[guidePersistenceRecovery](../../test/guidePersistenceRecovery.test.js)、[activeTurnControl](../../test/activeTurnControl.test.js)、[nativeDispatchCancellation](../../test/nativeDispatchCancellation.test.js)。
 
 ### 改刷新恢复、跨标签同步、删除会话或分叉
 
 - 入口：[SessionManager](../../extension/src/content/sessionManager.js)、[SessionForkController](../../extension/src/content/sessionForkController.js)、[SharedSessionViewSync.install](../../extension/src/content/sharedSessionViewSync.js)；runtime `applyStateToPanel → renderPendingInputs` 同步恢复或切换后的队列视图。
 - 状态 owner：[backgroundSharedSessions.createService](../../extension/src/backgroundSharedSessions.js) 管理共享持久存储；[ScopedPersistenceTransaction](../../extension/src/shared/scopedPersistenceTransaction.js) 管理作用域提交；content 保留当前视图。
 - 必须联动：[scopedPersistenceCoordinator](../../extension/src/content/scopedPersistenceCoordinator.js)、[storageSessionClaims](../../extension/src/shared/storageSessionClaims.js)、[sessionState](../../extension/src/shared/sessionState.js)、Native [codexThreadFork](../../native-host/src/codexThreadFork.js)。详细链路见[运行状态与恢复](run-state-and-recovery.md)。
-- 最近测试：[pendingQueuePanelRestore](../../test/pendingQueuePanelRestore.test.js)、[runJournalRecoveryDurability](../../test/runJournalRecoveryDurability.test.js)、[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)、[crossTabRuntimeRegression](../../test/crossTabRuntimeRegression.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)、[sessionForkController](../../test/sessionForkController.test.js)、[sessionForkConcurrency](../../test/sessionForkConcurrency.test.js)。
+- 最近测试：[pendingQueuePanelRestore](../../test/pendingQueuePanelRestore.test.js)、[sharedSessionRefreshRecovery](../../test/sharedSessionRefreshRecovery.test.js)、[backgroundJournalLifecycle](../../test/backgroundJournalLifecycle.test.js)、[runJournalRecoveryDurability](../../test/runJournalRecoveryDurability.test.js)、[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)、[crossTabRuntimeRegression](../../test/crossTabRuntimeRegression.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)、[sessionForkController](../../test/sessionForkController.test.js)、[sessionForkConcurrency](../../test/sessionForkConcurrency.test.js)。
 
 ### 改新建、重命名、最后会话或清空历史
 
@@ -125,17 +125,17 @@
 
 ### 改迁移、存储配额、保留规则或账号隔离
 
-- 入口：[StorageMigration](../../extension/src/shared/storageMigration.js)、[StorageKeys](../../extension/src/shared/storageKeys.js)、[StorageDb](../../extension/src/shared/storageDb.js)、[backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js)。
+- 入口：[StorageMigration](../../extension/src/shared/storageMigration.js)、[StorageKeys](../../extension/src/shared/storageKeys.js)、[StorageDb](../../extension/src/shared/storageDb.js)、[SharedSessionTransfer](../../extension/src/shared/sharedSessionTransfer.js)、[backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js)。
 - 状态 owner：共享 sessions、站点 audit、全局 prefs、兼容 blob 及后台 journal 分别维护版本和清理；详见[数据生命周期](run-state-and-recovery.md#storage-lifecycle)。
 - 必须联动：runtime `loadStoredStateForProject/saveState`、[storageValuePruning](../../extension/src/shared/storageValuePruning.js)、[SessionPersistence](../../extension/src/content/sessionPersistence.js)、[ChangeHistoryModel](../../extension/src/shared/changeHistoryModel.js) 与诊断导出。存储压缩应检查[实际写入消费者](run-state-and-recovery.md#storage-compaction)，迁移标记和输出条数不能独自证明历史已迁移或磁盘占用有界。
-- 最近测试：[storageMigration](../../test/storageMigration.test.js)、[storageMigrationAccountIsolation](../../test/storageMigrationAccountIsolation.test.js)、[storageDb](../../test/storageDb.test.js)、[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)；后台重建另查[journal 生命周期](native-execution.md#journal-lifecycle)。
+- 最近测试：[storageLifecycleRoundtrip](../../test/storageLifecycleRoundtrip.test.js)、[sharedSessionTransfer](../../test/sharedSessionTransfer.test.js)、[storageMigration](../../test/storageMigration.test.js)、[storageMigrationAccountIsolation](../../test/storageMigrationAccountIsolation.test.js)、[storageDb](../../test/storageDb.test.js)、[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)；后台重建另查[journal 生命周期](native-execution.md#journal-lifecycle)。
 
 ### 改项目主页、最近项目或会话列表
 
 - 入口：[RecentProjects](../../extension/src/content/recentProjects.js)、[SessionPanel](../../extension/src/content/sessionPanel.js)；runtime 处理 SPA route 切换。
 - 状态 owner：共享会话存储提供记录，recent projects 生成账号作用域的展示投影。
 - 必须联动：[sharedSessionBridge](../../extension/src/shared/sharedSessionBridge.js)、[sessionTitle](../../extension/src/shared/sessionTitle.js)、[projectSessionCleanup](../../extension/src/content/projectSessionCleanup.js)；投影应服从账号隔离与删除结果。
-- 最近测试：[dashboardSessions](../../test/dashboardSessions.test.js)、[sessionManagement](../../test/sessionManagement.test.js)、[sessionPersistenceAccountIsolation](../../test/sessionPersistenceAccountIsolation.test.js)。
+- 最近测试：[projectCleanupAccountIsolation](../../test/projectCleanupAccountIsolation.test.js)、[dashboardSessions](../../test/dashboardSessions.test.js)、[sessionManagement](../../test/sessionManagement.test.js)、[sessionPersistenceAccountIsolation](../../test/sessionPersistenceAccountIsolation.test.js)。
 
 ## 快照、镜像、写回与 Undo
 

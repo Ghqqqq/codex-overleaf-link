@@ -25,6 +25,7 @@
     const now = new Date().toISOString();
     return {
       id: input.id || generateId('aud'),
+      accountScopeId: redactSecretLikeText(stringField(input.accountScopeId)),
       projectId: redactSecretLikeText(stringField(input.projectId)),
       sessionId: redactSecretLikeText(stringField(input.sessionId)),
       turnId: redactSecretLikeText(stringField(input.turnId)),
@@ -84,6 +85,7 @@
   function normalizeAuditLogRecord(input = {}) {
     return {
       id: redactSecretLikeText(stringField(input.id)) || generateId('aud'),
+      accountScopeId: redactSecretLikeText(stringField(input.accountScopeId)),
       projectId: redactSecretLikeText(stringField(input.projectId)),
       sessionId: redactSecretLikeText(stringField(input.sessionId)),
       turnId: redactSecretLikeText(stringField(input.turnId)),

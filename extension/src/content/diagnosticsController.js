@@ -23,6 +23,7 @@
       otWarmMirrorController,
       getActiveFocusFiles,
       getCurrentProjectId,
+      getScope,
       isExperimentalOtEnabled,
       readOtBridgeStatus,
       formatOtStatusLabel,
@@ -38,6 +39,31 @@
       RUN_SNAPSHOT_ZIP_TIMEOUT_MS
     } = deps;
 
+  // All visible checks share one request owner. Aggregate collectOnly calls
+  // must not supersede their own parent, and a later single check supersedes
+  // an older aggregate just as a later aggregate does.
+  let requestGeneration = 0;
+  function captureDiagnosticsScope() {
+    const scope = getScope?.() || { projectId: getCurrentProjectId?.() };
+    return { accountScopeId: scope.accountScopeId, projectId: scope.projectId, generation: scope.generation };
+  }
+
+  function beginDiagnostics(title, subtitle) {
+    const request = { generation: ++requestGeneration, scope: captureDiagnosticsScope() };
+    showDiagnosticsLoading(title, subtitle);
+    return request;
+  }
+
+  function isCurrentDiagnosticsRequest(request) {
+    if (!request || request.generation !== requestGeneration) return false;
+    const scope = captureDiagnosticsScope();
+    return ['accountScopeId', 'projectId', 'generation'].every(key => scope[key] === request.scope[key]);
+  }
+
+  function showCurrentDiagnosticsResult(request, result) {
+    if (isCurrentDiagnosticsRequest(request)) showDiagnosticsResult(result);
+  }
+
   // Reduce a result status to a health bucket. 'completed' is a pass; a hard
   // failure is fail; everything else (warning, partial, info) is attention.
   function diagnosticsHealthBucket(status) {
@@ -50,7 +76,7 @@
   // report (a status row per check) instead of four separate result screens.
   // The overall bucket also updates the trigger dot.
   async function runAllDiagnostics() {
-    showDiagnosticsLoading(tr('diagnosticsHealthTitle'), tr('diagnosticsRunningAll'));
+    const request = beginDiagnostics(tr('diagnosticsHealthTitle'), tr('diagnosticsRunningAll'));
     const specs = [
       { label: tr('diagnosticsNativeShort'), run: inspectNativeEnvironment },
       { label: tr('diagnosticsPageShort'), run: inspectPageStateDiagnostics },
@@ -82,13 +108,13 @@
     const overallSubtitleKey = worst === 'ok'
       ? 'diagnosticsHealthOk'
       : worst === 'fail' ? 'diagnosticsHealthFail' : 'diagnosticsHealthWarn';
-    showDiagnosticsResult({
+    showCurrentDiagnosticsResult(request, {
       title: tr('diagnosticsHealthTitle'),
       subtitle: tr(overallSubtitleKey),
       status: worst === 'ok' ? 'completed' : worst === 'fail' ? 'failed' : 'warning',
       checks
     });
-    setDiagnosticsHealth(worst);
+    if (isCurrentDiagnosticsRequest(request)) setDiagnosticsHealth(worst);
   }
 
 
@@ -97,9 +123,8 @@
 
 
   async function inspectProjectSnapshot(options = {}) {
-    if (!options.collectOnly) {
-      showDiagnosticsLoading(tr('diagnosticsSnapshotTitle'), tr('diagnosticsSnapshotLoading'));
-    }
+    const request = options.collectOnly ? null
+      : beginDiagnostics(tr('diagnosticsSnapshotTitle'), tr('diagnosticsSnapshotLoading'));
     let result;
     try {
       const project = await callPageBridge('getProjectSnapshot', {
@@ -125,13 +150,12 @@
     if (options.collectOnly) {
       return result;
     }
-    showDiagnosticsResult(result);
+    showCurrentDiagnosticsResult(request, result);
   }
 
   async function inspectNativeEnvironment(options = {}) {
-    if (!options.collectOnly) {
-      showDiagnosticsLoading(tr('diagnosticsNativeTitle'), tr('diagnosticsNativeLoading'));
-    }
+    const request = options.collectOnly ? null
+      : beginDiagnostics(tr('diagnosticsNativeTitle'), tr('diagnosticsNativeLoading'));
     const params = CodexOverleafCompatibility?.buildBridgePingParams
       ? CodexOverleafCompatibility.buildBridgePingParams(getExtensionCompatibilityMetadata())
       : {};
@@ -140,7 +164,7 @@
     if (options.collectOnly) {
       return result;
     }
-    showDiagnosticsResult(result);
+    showCurrentDiagnosticsResult(request, result);
   }
 
   function formatNativeEnvironmentResult(response) {
@@ -329,9 +353,8 @@
   }
 
   async function inspectPageStateDiagnostics(options = {}) {
-    if (!options.collectOnly) {
-      showDiagnosticsLoading(tr('diagnosticsPageTitle'), tr('diagnosticsPageLoading'));
-    }
+    const request = options.collectOnly ? null
+      : beginDiagnostics(tr('diagnosticsPageTitle'), tr('diagnosticsPageLoading'));
     let result;
     try {
       const probe = await callPageBridge('probe', {
@@ -351,13 +374,12 @@
     if (options.collectOnly) {
       return result;
     }
-    showDiagnosticsResult(result);
+    showCurrentDiagnosticsResult(request, result);
   }
 
   async function inspectOtWarmMirrorDiagnostics(options = {}) {
-    if (!options.collectOnly) {
-      showDiagnosticsLoading(tr('diagnosticsOtTitle'), tr('diagnosticsLoading'));
-    }
+    const request = options.collectOnly ? null
+      : beginDiagnostics(tr('diagnosticsOtTitle'), tr('diagnosticsLoading'));
     // OT warm mirror is opt-in and off by default. When it is disabled
     // there is nothing live to probe, so report a clean, healthy "disabled"
     // state instead of querying (then warning about) absent OT metadata — or
@@ -384,7 +406,7 @@
       if (options.collectOnly) {
         return disabledResult;
       }
-      showDiagnosticsResult(disabledResult);
+      showCurrentDiagnosticsResult(request, disabledResult);
       return;
     }
     const projectId = getCurrentProjectId();
@@ -432,7 +454,7 @@
     if (options.collectOnly) {
       return result;
     }
-    showDiagnosticsResult(result);
+    showCurrentDiagnosticsResult(request, result);
   }
 
   function formatOtDiagnosticsResult({ otStatus, mirrorStatus }) {

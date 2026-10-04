@@ -15,6 +15,8 @@ const Transaction = load('extension/src/shared/scopedPersistenceTransaction');
 const ActiveTurnControl = load('extension/src/content/activeTurnControl');
 const Transcript = load('extension/src/shared/agentTranscript');
 const RunInputQueue = load('extension/src/shared/runInputQueue');
+const ComposerAttachmentDraft = load('extension/src/shared/composerAttachmentDraft');
+const { createMemoryDraftDb } = require('./_helpers/memoryDraftDb');
 const runtimeSource = fs.readFileSync(path.join(repo, 'extension/src/content/contentRuntime.js'), 'utf8');
 const backgroundSource = fs.readFileSync(path.join(repo, 'extension/src/background.js'), 'utf8');
 const markdownSource = fs.readFileSync(path.join(repo, 'extension/src/content/markdownText.js'), 'utf8');
@@ -80,8 +82,10 @@ function createHarness(options = {}) {
     }
   };
   const background = vm.createContext({ chrome, runJournals, journalWrites,
+    journalLoads: new Map(), ownerBindings: new Map(),
     RUN_JOURNAL_PREFIX: 'codex-overleaf:run-journal:', fetch: denyFetch });
-  for (const name of ['listRunJournals', 'acknowledgeRunJournal']) {
+  for (const name of ['listRunJournals', 'acknowledgeRunJournal', 'removeRunJournal',
+    'queueJournalStorage', 'invalidateJournalLoad', 'journalMatchesBinding']) {
     vm.runInContext(extractFunction(backgroundSource, name), background, { filename: 'background.' + name + '.js' });
   }
   chrome.runtime = { async sendMessage(message) {
@@ -101,7 +105,9 @@ function createHarness(options = {}) {
     throw new Error('Unexpected message: ' + message.type);
   } };
   const activeTurnControl = ActiveTurnControl.create({ chrome });
+  const draftStore = ComposerAttachmentDraft.createStore(createMemoryDraftDb().openDb);
   const db = { ...StorageDb, sharedSessionsEnabled: () => true,
+    readComposerAttachmentDraft: draftStore.read, writeComposerAttachmentDraft: draftStore.write,
     async getAllByIndex(store, index, key) {
       assert.equal(store, 'sessions'); assert.equal(index, 'projectId'); assert.equal(key, projectId);
       return clone([...mainRecords.values()]);
@@ -155,7 +161,10 @@ function createHarness(options = {}) {
     state, currentRunView: null, cachedAccountScopeId: accountScopeId,
     storageKey: 'synthetic-storage-036', chrome, fetch: denyFetch, structuredClone,
     activeTurnControl, RunInputQueue, MAX_RUN_EVENTS: 300, PANEL_DEFAULT_WIDTH: 380,
-    Modules: { StorageDb: db, StorageMigration: Migration, SessionState,
+    composerDraftPersistence: null,
+    composerAttachmentController: { serializePersistableAttachments: () => [], clear() {}, restorePersistedAttachments() {} },
+    saveStateSoon() {},
+    Modules: { StorageDb: db, StorageMigration: Migration, SessionState, ComposerAttachmentDraft,
       ScopedPersistenceCoordinator: Scoped, SessionPersistence },
     getScopedPersistenceCoordinator: () => options.staleCommit ? { commit: async () => ({ ok: false, reason: 'stale_view' }) } : coordinator,
     getCurrentProjectId: () => currentProjectId, getLocale: () => 'en', tr: key => key, tx: english => english,
@@ -179,7 +188,8 @@ function createHarness(options = {}) {
   for (const name of ['recoverInterruptedRunJournals', 'upsertRunStreamRecordEvent', 'appendStreamText',
     'saveState', 'readLiveRunViewForSaveStateGuard', 'prepareCompactFallbackState',
     'buildScopedFallbackStorageKey', 'isScopedPersistenceIdentityFailure', 'isStorageQuotaError',
-    'loadStoredState', 'loadStoredStateForProject', 'normalizeLoadedPanelState']) {
+    'loadStoredState', 'loadStoredStateForProject', 'normalizeLoadedPanelState',
+    'getComposerDraftPersistence', 'loadComposerAttachmentsForProject']) {
     vm.runInContext(extractFunction(runtimeSource, name), context, { filename: 'contentRuntime.' + name + '.js' });
   }
   return {

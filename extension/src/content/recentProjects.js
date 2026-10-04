@@ -21,7 +21,8 @@
       ProjectSessionCleanup, SessionPersistence, SessionState, StorageDb, StorageKeys, StorageMigration
     } = deps;
     const projectSessionCleanup = ProjectSessionCleanup.create({
-      tr, getAccountScopeId: getCachedAccountScopeId, showPluginConfirm, showPluginToast,
+      tr, tx, getAccountScopeId: getCachedAccountScopeId, showPluginConfirm, showPluginToast,
+      getViewGeneration: () => dashboardRenderGeneration,
       sendBackgroundNative, mutateProjectPanelState, renderRecentProjectsVariant,
       SessionState, StorageDb, StorageMigration
     });
@@ -492,6 +493,7 @@
   // Kept as a compatibility entry point and as the recovery path for invalid project links.
   function renderRecentProjectRow(row) {
     var projectId = row && row.projectId;
+    var cleanupScope = { accountScopeId: getCachedAccountScopeId(), generation: dashboardRenderGeneration };
     var valid = isValidProjectId(projectId);
     var wrap = createViewElement('div', 'recent-projects-row-wrap recent-projects-unavailable-row');
     wrap.setAttribute('data-project-id', projectId || '');
@@ -501,7 +503,7 @@
     link.appendChild(textNode(projectDisplayName(projectId), 'recent-projects-row-name'));
     if (valid) link.addEventListener('click', function () { openProjectFromRow(projectId); });
     var cleanup = createViewButton(tr(valid ? 'recentProjects_clearProject' : 'recentProjects_cleanup'), function () {
-      if (valid) projectSessionCleanup.clearProjectSessions(projectId, projectDisplayName(projectId)).catch(function () {});
+      if (valid) projectSessionCleanup.clearProjectSessions(projectId, projectDisplayName(projectId), cleanupScope).catch(function () {});
       else cleanupDeadProjectEntry(projectId).catch(function () {});
     }, valid ? 'data-project-clear' : 'data-row-cleanup');
     wrap.appendChild(link);
@@ -533,6 +535,7 @@
   }
 
   function renderProjectSessionRow(sessionsEl, projectId, record, options) {
+    var cleanupScope = { accountScopeId: getCachedAccountScopeId(), generation: dashboardRenderGeneration };
     var featured = Boolean(options && options.featured);
     var running = Boolean(StorageDb)
       && settleDashboardRunStatus(StorageDb.derivePrimaryStatusBadge(record), record.updatedAt || record.lastActivityAt) === 'running';
@@ -586,7 +589,7 @@
     }, 'data-project-conversations');
     var openProject = createViewButton(tr('recentProjects_openProject'), function () { openProjectFromRow(projectId); });
     var clear = createViewButton(tr('recentProjects_clearProject'), function () {
-      projectSessionCleanup.clearProjectSessions(projectId, projectDisplayName(projectId)).catch(function () {});
+      projectSessionCleanup.clearProjectSessions(projectId, projectDisplayName(projectId), cleanupScope).catch(function () {});
     }, 'data-project-clear');
     row.appendChild(renderActionsMenu([rename, del, projectConversations, openProject, clear]));
 
@@ -697,9 +700,10 @@
   // saveState uses, so opening the project later sees a coherent state.
   // NOTE: if the project is open in another tab, that tab's in-memory state
   // wins on its next save; the IndexedDB record mutation below still holds.
-  async function mutateProjectPanelState(projectId, mutate) {
+  async function mutateProjectPanelState(projectId, mutate, options = {}) {
     var key = projectPanelStateKey(projectId);
     var stored = await chrome.storage.local.get(key);
+    options.assertCurrent?.();
     var blob = stored && stored[key];
     if (!blob || !SessionState) {
       return false;
@@ -707,7 +711,9 @@
     var nextState = mutate(SessionState.normalizePanelState(blob));
     var payload = {};
     payload[key] = SessionState.prepareStateForStorage(nextState);
+    options.assertCurrent?.();
     await chrome.storage.local.set(payload);
+    options.assertCurrent?.();
     return true;
   }
 

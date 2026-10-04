@@ -335,6 +335,7 @@
     otWarmMirrorController,
     getActiveFocusFiles,
     getCurrentProjectId,
+    getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId(), generation: spaRouteGeneration }),
     isExperimentalOtEnabled,
     readOtBridgeStatus,
     formatOtStatusLabel,
@@ -1024,6 +1025,7 @@
   const diagnosticsExporter = Modules.DiagnosticsExport.create({
     root, window, document, Blob, URL, TextEncoder, AuditRecords, StorageDb: Modules.StorageDb,
     CodexOverleafCompatibility, getState: () => state, getCurrentRunView: () => currentRunView,
+    getAccountScopeId: () => cachedAccountScopeId || '',
     getCurrentProjectId, findRunRecord, getMirrorFreshness, getExtensionCompatibilityMetadata,
     getModelDiscovery, getGovernanceRulesForCurrentProject, sendBackgroundNative,
     fallbackNativeCompatibility, isNativeCompatibilityCompatible, getNativeCompatibilityClassification,
@@ -2758,6 +2760,7 @@
         );
       },
       run: item => runTask({ queuedInput: item }),
+      getGuideScope: () => ({ projectId: getCurrentProjectId(), accountScopeId: cachedAccountScopeId, generation: spaRouteGeneration }),
       sendSteer: params => sendBackgroundNative({ method: 'codex.steer', params }),
       getContainer: () => panel?.querySelector('[data-pending-inputs]'),
       createView: options => PendingInputView.create(options),
@@ -3180,11 +3183,17 @@
     if (!StorageDb || !AuditRecords) {
       return null;
     }
+    // Audit follows the captured run owner even if the visible page changes.
+    // Missing owner identity must never be filled with a later account.
+    const accountScopeId = currentRunView ? currentRunView.runAccountScopeId : cachedAccountScopeId;
+    const projectId = currentRunView ? currentRunView.runProjectId : getCurrentProjectId();
+    if (!accountScopeId || !projectId) return null;
     const executionSnapshot = input.executionSnapshot
       || currentRunView?.executionSnapshot
       || captureCurrentExecutionSnapshot();
     const draft = AuditRecords.buildAuditDraftRecord({
-      projectId: getCurrentProjectId(),
+      accountScopeId,
+      projectId,
       sessionId: input.sessionId || '',
       turnId: currentRunView?.recordId || '',
       mode: input.mode || executionSnapshot.mode,
@@ -3219,8 +3228,10 @@
       return draft;
     }
     const record = StorageDb.buildAuditLogRecord
-      ? StorageDb.buildAuditLogRecord({ ...draft, ...updates, id: draft.id, completedAt: updates.completedAt || draft.completedAt || '' })
-      : { ...draft, ...updates };
+      ? StorageDb.buildAuditLogRecord({ ...draft, ...updates, id: draft.id,
+        accountScopeId: draft.accountScopeId, projectId: draft.projectId,
+        completedAt: updates.completedAt || draft.completedAt || '' })
+      : { ...draft, ...updates, id: draft.id, accountScopeId: draft.accountScopeId, projectId: draft.projectId };
     return StorageDb.putRecord('auditLogs', record).then(() => record).catch(() => draft);
   }
 
@@ -3962,19 +3973,11 @@
   // it from cross-project queries (spec §5.2 storage rules).
   window.codexOverleafDeriveAccountScopeId = () => cachedAccountScopeId;
   var sharedSessionViewSync = Modules.SharedSessionViewSync.install({
-    Bridge: Modules.SharedSessionBridge,
-    StorageDb: Modules.StorageDb,
-    getScope: () => ({
-      accountScopeId: cachedAccountScopeId,
-      projectId: getCurrentProjectId(),
-      generation: spaRouteGeneration
-    }),
-    getState: () => state,
+    Bridge: Modules.SharedSessionBridge, StorageDb: Modules.StorageDb,
+    getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId(), generation: spaRouteGeneration }),
+    getState: () => state, setState: next => { state = next; },
     isBusy: () => Boolean(readLiveRunViewForSaveStateGuard() || document.querySelector('dialog[open]')),
-    apply: sessions => {
-      state = normalizePanelState({ ...state, sessions }, { restoreRunningRuns: false });
-      applyStateToPanel();
-    },
+    normalize: normalizePanelState, render: applyStateToPanel,
     notice: error => appendStorageNoticeOnce('shared-history-refresh', tx(
       `Could not refresh shared history: ${error.message}`,
       `共享会话历史刷新失败：${error.message}`
@@ -5298,6 +5301,8 @@
           focusFiles: session.focusFiles || [], selectionContext: session.selectionContext?.projectId === projectId ? session.selectionContext : null,
           projectReferenceFiles: session.projectReferenceFiles || [],
           codexThreadId: session.codexThreadId || '',
+          forkedFromSessionId: session.forkedFromSessionId || '',
+          forkedFromRunId: session.forkedFromRunId || '',
           createdAt: session.createdAt,
           updatedAt: session.updatedAt,
           runs: Array.isArray(session.runs) ? session.runs : [],

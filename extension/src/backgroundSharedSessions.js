@@ -1,8 +1,9 @@
 (function (root, factory) {
-  const api = factory();
+  const api = factory(typeof module === 'object' && module.exports
+    ? require('./shared/sharedSessionTransfer') : root.CodexOverleafSharedSessionTransfer);
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) root.CodexOverleafSharedSessionsBackground = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Transfer) {
   'use strict';
   const MESSAGE = 'codex-overleaf/shared-sessions-v1';
   const LOCK_PORT = 'codex-overleaf/shared-session-lock-v1';
@@ -137,7 +138,7 @@
           const stored = item.value;
           if (value.projectId && stored.projectId !== value.projectId) { item.continue(); return; }
           const record = { ...stored.record, sharedRevision: stored.revision };
-          const size = JSON.stringify(record).length * 2;
+          const size = Transfer.byteLength(JSON.stringify(record));
           if (result.length && (result.length >= 8 || bytes + size > MAX_BYTES)) {
             resolve({ records: result, next: last }); return;
           }
@@ -162,10 +163,9 @@
           appliedOperations: [], trackedChangeCaptures: [], undoStatus: '' })) };
     }
     async function writeMany(message, value, importing, origin, sender) {
-      const entries = (importing ? [{ record: message.record }] : message.entries || [])
-        .map(entry => ({ record: clone(entry.record), base: clone(entry.base) }));
-      if (JSON.stringify(entries).length * 2 > MAX_BYTES * 3)
-        throw failure('shared_session_too_large', 'The session batch exceeds the shared storage transfer limit.');
+      // Reject a lost owner before doing any bounded decompression work.
+      ensureLock(message, value, sender);
+      const entries = (await Transfer.decode(message)).map(entry => ({ record: clone(entry.record), base: clone(entry.base) }));
       for (const { record, base } of entries) {
         if (!record || record.accountScopeId !== value.accountScopeId || record.projectId !== value.projectId)
           throw failure('shared_store_scope_mismatch', 'The session does not belong to the captured account and project.');
@@ -197,6 +197,14 @@
             putAt(entry.record, entry.base);
           }
         };
+        function appendResult(record, revision) {
+          // Merge may grow beyond either input. Reject inside this transaction,
+          // before returning success or committing any sibling record.
+          Transfer.validateRecord(record);
+          const result = { ...record, sharedRevision: revision };
+          Transfer.validateResponse([...results, result]);
+          results.push(result);
+        }
         function putAt(candidate, base, copy = false) {
           const key = [value.accountScopeId, candidate.id];
           const tombstone = deleted.get(key);
@@ -214,7 +222,7 @@
                 let next = candidate;
                 if (importing && existing) {
                   if (equal(existing.record, candidate) || copy) {
-                    results.push({ ...existing.record, sharedRevision: existing.revision }); return;
+                    appendResult(existing.record, existing.revision); return;
                   }
                   putAt(recoveryCopy(candidate, origin), null, true); return;
                 }
@@ -227,9 +235,9 @@
                   throw failure('shared_session_deleted', 'The session no longer exists.');
                 }
                 const revision = (existing?.revision || 0) + 1;
+                appendResult(next, revision);
                 store.put({ accountScopeId: value.accountScopeId, projectId: value.projectId,
                   id: next.id, record: next, revision });
-                results.push({ ...next, sharedRevision: revision });
               } catch (error) { abort(error); }
             };
           };
@@ -284,7 +292,7 @@
         tx.objectStore('migrations').put({ ...value, origin, complete: true, at: Date.now() });
         await done; return { complete: true };
       }
-      if (method === 'put' || method === 'import') {
+      if (method === 'put' || method === 'put-compressed' || method === 'import') {
         const result = await writeMany(message, value, method === 'import', origin, sender);
         if (result.length) await notify(value, message.clientId);
         return result;

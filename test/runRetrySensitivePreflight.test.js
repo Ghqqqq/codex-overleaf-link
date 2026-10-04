@@ -84,6 +84,7 @@ function harness(options = {}) {
     selectionContextView: { capture: () => null, clear: no, render: no },
     composerAttachmentController: { getAttachmentsForRun: () => [], serializePersistableAttachments: () => [],
       clear() { io.cleared.push({ activeSessionId: context.state.activeSessionId, taskValue: controls.get('[data-task]').value }); } },
+    getComposerDraftPersistence: () => ({ hydrate: no, syncScope: no, changed: no, save: async () => {}, load: async () => [] }),
     getActiveFocusFiles: () => options.focusFiles || [], getCustomInstructionsForCurrentProject: () => '',
     getSkillLoadingSettings: () => ({ loadCodexLocalSkills: false, loadCodexOverleafSkills: false }),
     getComposerAttachmentsForRun: () => [], getComposerSkillInvocationForRun: () => null,

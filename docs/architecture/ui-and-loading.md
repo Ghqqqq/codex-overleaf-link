@@ -97,9 +97,10 @@ Provider 通过 `revealProviders` 嵌入工作台；相关编辑器由 [Provider
 | 设置中的清空历史 | `PanelMaintenance.clearAllHistoryWithConfirm` → `StorageDb.clearAllStores`，随后重置项目名称缓存、重建会话状态并保存 | 入口检查当前页面 `currentRunView`，通过 destructive confirm 后执行；该入口未调用 Native `codex.history.clearPlugin` |
 | 共享历史启用时的清空实现 | [SharedSessionBridge.decorate](../../extension/src/shared/sharedSessionBridge.js) 将会话清理交给 `erase('clear-account')`；同时删除当前账号的站点 legacy 会话备份 | 其他账号的 legacy 会话备份保留；辅助 stores 经站点本地 `clearAuxiliaryStores` 在同一事务中清理并推进附件草稿 epoch，其范围不能按会话的账号隔离推定 |
 | legacy 存储实现 | [StorageDb.clearAllStores](../../extension/src/shared/storageDb.js) 在当前站点 IndexedDB 事务中清空 `STORES` | 与后台共享账号会话库是不同存储边界；控件位于项目设置过滤器也不会缩小此范围 |
-| dashboard 的逐项目清理 | [ProjectSessionCleanup.clearProjectSessions](../../extension/src/content/projectSessionCleanup.js) 按 projectId 查询、按已解析账号过滤，检查近期 running 记录，再确认并写墓碑、删除会话及请求 Native 历史清理 | 会话删除数和 Native 历史清理失败分别统计；剩余记录仍可显示并重试。账号缺失时过滤条件有放行分支，不能从此函数单独推定始终账号隔离 |
+| dashboard 的逐项目清理 | [ProjectSessionCleanup.clearProjectSessions](../../extension/src/content/projectSessionCleanup.js) 捕获账号、项目和 dashboard 渲染代次，查询所属会话，检查 running 并确认；确认后重读，再处理墓碑、兼容 blob、共享删除及 Native 历史清理 | 仅处理确认过且仍存在的会话；确认后新增会话保留，出现近期 running 记录则停止。缺少账号或身份/视图变化时停止后续步骤；会话删除数与 Native 清理失败分别统计 |
 
-逐项目清理还需分别核对入口、兼容存储和共享删除。初始账号未知时 dashboard 不显示清理入口；旧按钮点击前账号缺失时，共享查询的 scope capture 也会拒绝请求。确认期间身份变化是另一窗口：已选会话的兼容墓碑和旧 panel blob 可先被处理，随后共享删除按调用时的账号/锁进行检查。因此共享行仍保留时，兼容墓碑也可能使其在后续列表中隐藏；删除计数不能独自证明对应共享行已移除。Native 清理请求的派发与实际结果也需单独判断。
+逐项目清理的按钮捕获创建时的账号与 dashboard 渲染代次，旧按钮和确认期间变化的视图不能继续清理。每次异步查询及副作用前后复核身份；兼容 blob 读写接收同一守卫，共享 `deleteRecord` 显式传入预期账号/项目，再由 bridge capture 与后台锁检查。确认取消或身份失效不显示完整成功。
+该操作跨兼容墓碑、旧 blob、共享库和 Native，仍是分步清理；守卫阻止后续动作，已经完成或派发的原作用域操作无法统一回滚。兼容存储失败、共享删除和 Native 清理结果需分别核对，不能仅凭计数推断跨库原子成功。[projectCleanupAccountIsolation.test.js](../../test/projectCleanupAccountIsolation.test.js) 串联真实 dashboard 按钮、确认与共享存储守卫，以 I/O 替身覆盖换账号、旧按钮、重绘代次、新会话和新 running 记录；不执行真实历史删除。
 
 清库后同步清除旧会话兼容镜像、草稿和控制器输入，再创建空白会话；完整成功提示要求新状态获得持久确认。名称缓存清理或保存失败会显示部分完成，旧内存仍保持清空，详见[清空历史后的状态](run-state-and-recovery.md#clear-history-state)。
 
@@ -293,9 +294,10 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 
 [DiagnosticsController.runAllDiagnostics](../../extension/src/content/diagnosticsController.js) 依次收集 Native、页面、快照和 OT 检查，并按最差 health 汇总；DiagnosticsPanel 负责菜单、loading 与结果 DOM。
 [DiagnosticsPanel.closeResult](../../extension/src/content/diagnosticsPanel.js) 隐藏结果并设置 `resultDismissed`，`showResult` 在该布尔屏障为真时忽略结果；关闭按钮、Escape 和外部点击均可进入此路径。关闭没有取消底层检查，全检仍可继续并更新 health。
-下一次 `showLoading` 会清除 `resultDismissed`；该状态未绑定请求 ID 或 generation，不能据此保证新检查启动后会忽略旧检查的迟到结果。[diagnosticsViewport](../../test/diagnosticsViewport.test.js) 覆盖“关闭 → 原结果返回”与重新 loading 的局部状态；还需覆盖“关闭 → 另起检查 → 旧结果返回”的交错次序。
+每次可见的全检或单项检查由 `DiagnosticsController.beginDiagnostics` 建立新请求代次，并捕获账号、项目及路由代次；只有仍匹配的请求可发布结果，全检更新 health 也受同一检查约束。全检内部的 `collectOnly` 子检查沿用其父请求，不争夺可见结果。下一次 `showLoading` 清除 `resultDismissed` 后，旧检查仍不能覆盖新检查；仅关闭且未启动新检查时，原检查仍可更新 health。该机制过滤迟到结果，不取消已经发出的底层读取。
+[diagnosticsRequestOwnership.test.js](../../test/diagnosticsRequestOwnership.test.js) 串联真实 Panel、Controller 和 runtime 绑定，覆盖全检/单项交错、账号项目及路由变化；[diagnosticsViewport](../../test/diagnosticsViewport.test.js) 另检查关闭及布局。DOM 和通信替身不构成真实浏览器验收。
 [DiagnosticsExport.exportDiagnosticsBundle](../../extension/src/content/diagnosticsExport.js) 取近期运行、audit、mirror、Native 摘要；异步采集后复核 projectId，再交给 [AuditRecords.buildDiagnosticBundle](../../extension/src/shared/auditRecords.js)。
-辅助 audit 存储没有账号字段，导出查询只按 projectId；项目复核不能替代账号过滤。导出元数据、历史视图筛选与删除范围的差异见[审计和诊断消费](context-and-governance.md#5-审计和诊断消费)。
+审计 writer 保留运行账号；导出查询先按 projectId 读取，再按捕获账号过滤，并在采集后复核账号与项目。旧无账号 audit 不进入导出。运行摘要的旧字段兼容、历史视图筛选与删除范围见[审计和诊断消费](context-and-governance.md#5-审计和诊断消费)，不同来源的身份保证分别判断。
 AuditRecords 构造摘要字段并使用 secret-like 文本处理。维护约束是避免正文、完整附件或凭据进入诊断；新增字段须沿采集、摘要和导出链检查，已有字段的处理不能作为其他出口的无泄漏保证。
 [Direct popup HTML](../../extension/popup.html) 和 [Managed popup HTML](../../extension/bootstrap/popup.html) 共用 [src/popup.js](../../extension/src/popup.js)；后者通过 runtime 路径加载可替换代码和 CSS。
 `ensureMinimalPopupShell` 可改造旧 managed HTML 外壳；`initPopupState/applyPopupPreferences` 读取全局语言主题、监听变化，并设置 `<html lang>`。

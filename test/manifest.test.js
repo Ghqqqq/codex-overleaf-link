@@ -74,18 +74,27 @@ test('loads reference sanitizers immediately after project files', () => {
 
 test('loads storage helpers in canonical contiguous order before storageDb', () => {
   const js = contentBundleSourceOrder;
+  const transferIndex = js.indexOf('src/shared/sharedSessionTransfer.js');
+  const sharedBridgeIndex = js.indexOf('src/shared/sharedSessionBridge.js');
   const runActionsIndex = js.indexOf('src/shared/storageRunActions.js');
   const sessionClaimsIndex = js.indexOf('src/shared/storageSessionClaims.js');
   const pruningIndex = js.indexOf('src/shared/storageValuePruning.js');
+  const draftIndex = js.indexOf('src/shared/composerAttachmentDraft.js');
   const storageDbIndex = js.indexOf('src/shared/storageDb.js');
 
+  assert.notEqual(transferIndex, -1);
+  assert.notEqual(sharedBridgeIndex, -1);
+  assert.equal(sharedBridgeIndex, transferIndex + 1);
+  assert.ok(sharedBridgeIndex < runActionsIndex);
   assert.notEqual(runActionsIndex, -1);
   assert.notEqual(sessionClaimsIndex, -1);
   assert.notEqual(storageDbIndex, -1);
   assert.notEqual(pruningIndex, -1);
   assert.equal(sessionClaimsIndex, runActionsIndex + 1);
   assert.equal(pruningIndex, sessionClaimsIndex + 1);
-  assert.equal(storageDbIndex, pruningIndex + 1);
+  assert.notEqual(draftIndex, -1);
+  assert.equal(draftIndex, pruningIndex + 1);
+  assert.equal(storageDbIndex, draftIndex + 1);
 });
 
 test('pins the Native Messaging host name', () => {

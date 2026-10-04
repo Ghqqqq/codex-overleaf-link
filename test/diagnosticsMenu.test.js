@@ -85,15 +85,17 @@ test('diagnostics render in a floating result panel instead of the task transcri
   assert.doesNotMatch(nativeBody, /appendLog\(/);
   assert.doesNotMatch(pageBody, /appendLog\(/);
   assert.doesNotMatch(snapshotBody, /appendLog\(/);
-  assert.match(nativeBody, /showDiagnosticsLoading\(tr\('diagnosticsNativeTitle'\)/);
-  assert.match(pageBody, /showDiagnosticsLoading\(tr\('diagnosticsPageTitle'\)/);
-  assert.match(snapshotBody, /showDiagnosticsLoading\(tr\('diagnosticsSnapshotTitle'\)/);
+  assert.match(nativeBody, /beginDiagnostics\(tr\('diagnosticsNativeTitle'\)/);
+  assert.match(pageBody, /beginDiagnostics\(tr\('diagnosticsPageTitle'\)/);
+  assert.match(snapshotBody, /beginDiagnostics\(tr\('diagnosticsSnapshotTitle'\)/);
   // Each check builds its structured result via its formatter and renders it
-  // through showDiagnosticsResult (the collectOnly path returns it for Run all).
+  // through the request guard (the collectOnly path returns it for Run all).
   assert.match(nativeBody, /formatNativeEnvironmentResult/);
   assert.match(pageBody, /formatPageStateDiagnosticsResult/);
   assert.match(snapshotBody, /formatProjectSnapshotDiagnosticsResult/);
-  assert.match(nativeBody, /showDiagnosticsResult\(/);
+  assert.match(nativeBody, /showCurrentDiagnosticsResult\(request, result\)/);
+  assert.match(extractFunction(diagnosticsController, 'beginDiagnostics'), /showDiagnosticsLoading\(/);
+  assert.match(extractFunction(diagnosticsController, 'showCurrentDiagnosticsResult'), /showDiagnosticsResult\(/);
 });
 
 test('diagnostics menu exports a content-redacted audit bundle', () => {
@@ -147,14 +149,14 @@ test('experimental OT diagnostics read metadata without draining project content
 
   assert.match(menuBody, /\[data-diagnostics-ot\]/);
   assert.match(menuBody, /onOtDiagnostics/);
-  assert.match(inspectBody, /showDiagnosticsLoading\(tr\('diagnosticsOtTitle'\)/);
+  assert.match(inspectBody, /beginDiagnostics\(tr\('diagnosticsOtTitle'\)/);
   assert.match(inspectBody, /callPageBridge\('getOtStatus'/);
   assert.match(inspectBody, /getMirrorFreshness\(\)/);
   assert.doesNotMatch(inspectBody, /drainOtEvents/);
   // The metadata result is built from formatOtDiagnosticsResult and rendered
   // (or returned for Run all via collectOnly).
   assert.match(inspectBody, /formatOtDiagnosticsResult\(\{ otStatus, mirrorStatus \}\)/);
-  assert.match(inspectBody, /showDiagnosticsResult\(result\)/);
+  assert.match(inspectBody, /showCurrentDiagnosticsResult\(request, result\)/);
   assert.match(inspectBody, /status:\s*'warning'/);
   assert.doesNotMatch(inspectBody, /'warnings:'/);
   assert.doesNotMatch(inspectBody, /warnings\.map/);

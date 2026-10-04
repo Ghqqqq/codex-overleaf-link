@@ -4,11 +4,39 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  const sameScope = (a, b) => a.accountScopeId === b.accountScopeId
+    && a.projectId === b.projectId && a.generation === b.generation;
+
+  function applySnapshot(options, sessions) {
+    const previous = options.getState(), scope = options.getScope();
+    const next = options.normalize({ ...previous, sessions }, { restoreRunningRuns: false });
+    const unchangedSnapshot = JSON.stringify(next);
+    options.setState(next);
+    try {
+      options.render();
+    } catch (error) {
+      // A callback may replace state, edit it in place or navigate. Restore only
+      // the unchanged view owned by this failed passive application.
+      let unchanged = false;
+      try {
+        unchanged = options.getState() === next && sameScope(scope, options.getScope())
+          && JSON.stringify(options.getState()) === unchangedSnapshot;
+      } catch (_error) { /* Unknown state must not overwrite a newer edit. */ }
+      if (unchanged) {
+        options.setState(previous);
+        // A second render can also fail. The old merge base still protects
+        // subsequent saves, including values from partially restored controls.
+        try { options.render(); } catch (_error) { /* Report the first failure. */ }
+      }
+      throw error;
+    }
+  }
+
   function install(options) {
-    const { Bridge, StorageDb, getScope, getState, isBusy, apply, notice } = options;
+    const { Bridge, StorageDb, getScope, getState, isBusy, notice } = options;
+    const apply = options.apply || (sessions => applySnapshot(options, sessions));
     let saving = 0, version = 0, pending = false, timer = null, refreshing = false, stopped = false;
-    const sameScope = (a, b) => a.accountScopeId === b.accountScopeId
-      && a.projectId === b.projectId && a.generation === b.generation;
+    let retryCount = 0;
     const signature = state => JSON.stringify([state.activeSessionId,
       (state.sessions || []).map(session => [session.id, session.updatedAt, session.task])]);
     function schedule(delay = 250) {
@@ -37,12 +65,21 @@
         const ids = new Set(records.map(record => record.id));
         const newLocal = (local.sessions || []).filter(session =>
           !ids.has(session.id) && !StorageDb.wasSharedSessionStored(session.id));
-        // The data has now been adopted by this view; future writes may use it
-        // as a merge baseline. Snapshot reads alone never advance the baseline.
-        StorageDb.adoptSharedSessionBaseline(records);
+        // Rendering may fail after only part of the composer was updated.
+        // Keep the prior merge base until the complete view accepts the data.
         apply([...records, ...newLocal]);
+        if (stopped || !sameScope(scope, getScope())) return;
+        if (saving || version !== capturedVersion) { pending = true; return; }
+        StorageDb.adoptSharedSessionBaseline(records);
+        retryCount = 0;
       } catch (error) {
         notice?.(error);
+        // One retry can recover transient DOM failures. Local edits, navigation
+        // and persistent failures stop it; another notification starts afresh.
+        if (!stopped && sameScope(scope, getScope()) && version === capturedVersion
+          && signature(getState()) === capturedSignature && retryCount < 1) {
+          retryCount++; pending = true;
+        }
       } finally {
         refreshing = false;
         schedule(1000);
@@ -51,7 +88,7 @@
     const unsubscribe = Bridge.subscribe(change => {
       const scope = getScope();
       if (!change.projectId || change.projectId === scope.projectId) {
-        pending = true; schedule();
+        retryCount = 0; pending = true; schedule();
       }
     });
     return {
@@ -68,5 +105,5 @@
       }
     };
   }
-  return { install };
+  return { install, applySnapshot };
 });

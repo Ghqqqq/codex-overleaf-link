@@ -73,7 +73,7 @@ Chrome runtime 消息由多个 listener 消费，各自拥有准入函数。当�
 | update coordinator 的 `MESSAGE_TYPES` | [backgroundUpdateCoordinator.isAllowedSender](../../extension/src/backgroundUpdateCoordinator.js) | 本扩展 ID，sender URL 优先；允许三站点项目路径或扩展的 `/bootstrap/popup.html` |
 | Bootstrap update-get-state/check-now/postpone | [bootstrap/background listener](../../extension/bootstrap/background.js) | 按这三个消息类型路由，listener 未消费 sender 参数；后续更新流程另有授权和事务条件 |
 
-共享会话写入还检查 scope、记录归属与锁 token；这些检查不能由允许访问某个站点推导。各共享方法的锁例外见[运行状态与恢复](run-state-and-recovery.md)。
+共享会话写入还检查 scope、记录归属与锁 token；这些检查不能由允许访问某个站点推导。各共享方法的锁例外见[运行状态与恢复](run-state-and-recovery.md)。 `put-compressed` 经 [SharedSessionTransfer](../../extension/src/shared/sharedSessionTransfer.js) 有界解码后沿同一整批写入事务；原始与压缩格式的字节上限、旧后台拒绝行为见[存储容量](run-state-and-recovery.md#storage-compaction)。
 普通 Native listener 的报错文案提到项目页面，但 `isAllowedOverleafSender` 有 tab 分支当前只检查主机和协议。
 该 helper 的条件允许 Overleaf `/learn`，也未额外拒绝“顶层 tab 为 Overleaf、sender URL 指向其他源且 frameId 非零”的字段组合。
 真实扩展消息的 sender 元数据由 Chrome 提供，网页脚本不能任意指定它；函数接受一个合成对象不证明现行注入与 Chrome 投递路径能够产生该组合，实际可达性需要独立浏览器验证。

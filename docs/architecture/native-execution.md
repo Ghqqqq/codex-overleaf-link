@@ -221,20 +221,15 @@ Provider HTTP 空闲/总预算属于另一层，见 [Provider 与协议](provide
 ### 后台重建与 journal 的寿命
 
 后台 [background.js](../../extension/src/background.js) 同时管理内存 `runJournals/journalWrites` 和 `chrome.storage.session` 中的 journal；两者的寿命不同。
-后台 worker 重建时，`pending/runJournals/ownerBindings` 从空 Map 开始，当前没有从 session 存储恢复这些运行登记的入口。
-[ActiveTurnControl.connect](../../extension/src/content/activeTurnControl.js) 可在 owner port 断连后重新连接并发送原 binding，但后台 bind 只登记连接，不加载旧 journal。
-随后 owner 再断连时，`interruptOwnerlessRun` 仅给内存中存在的 journal 设置 `ownerLost`，也仅对仍在 `pending` 的请求发送取消。
-因此，重建前保存的 `terminal:false、ownerLost:false` 记录可继续留在存储中，却被 `listRunJournals` 的终态/ownerLost 过滤排除；已 terminal 但尚无 ownerLost 的记录也不能通过共享恢复的 `requireOwnerLost` 条件。
-这是恢复入口的已知限制；原页面若及时完成失败结算、持久化及 acknowledge，仍可经其收尾路径处理。真实 worker 重建、消息失败与页面关闭的竞速需要独立验证，不能由存储记录存在推定恢复可达，也不能据此断言运行记录已经丢失。
+后台 worker 重建时，`pending/runJournals/ownerBindings` 从空 Map 开始；owner bind 或失主处理调用 `restoreRunJournal(binding)`，按 requestId 从 session 存储恢复所需 journal。该过程只恢复日志证据，不恢复 pending Native RPC，也不重新派发原任务。
+`journalMatchesBinding` 检查 request/project 及绑定携带的 run/session；新 journal 还记录并核对发送者 tab/document。旧记录缺少发送者字段时保留按原 request/project 和已提供 run/session 兼容的路径，无法补造历史身份。
+[ActiveTurnControl.connect](../../extension/src/content/activeTurnControl.js) 在 owner port 断连后可重新连接并发送原 binding；合法重绑读取完成后复核当前 port binding 和 journal 对象，再清除旧 `ownerLost`。失主处理保留150ms宽限，并在异步读取及写入后重查活 owner。`listRunJournals` 等待在途恢复读取及写链，排除仍有匹配活绑定的记录，避免旁观页提前结算。
+读取失败或身份不匹配不会删除旧存储材料。真实 worker 回收、重连和页面关闭仍有独立时序，不能从存储记录存在推定所有中断场景均能恢复。
 
-`queueJournalWrite` 为每次写入捕获快照，并按 requestId 串入 Promise 链。`pruneInMemoryRunJournals` 在创建 journal 时从内存中的 terminal/ownerLost 项选择淘汰对象，以 16 项为保留目标；活动项不会仅因超过该数量被淘汰。
-**已知实现限制。** 淘汰直接删除内存及 `journalWrites` 条目并调用 storage.remove，没有等待或取消此前的写链；删除 Map 条目不会取消已经排队的 Promise。
-若旧快照在 remove 之后执行 storage.set，已淘汰的持久记录可被重新写入；它已脱离内存 Map，后续这条淘汰路径无法再次选中它。
-`listRunJournals` 的 `slice(-16)` 仅限制返回列表，单条 journal 的事件裁剪也不能证明持久记录总量有相同上限。真实存储配额影响仍需验证。
-`acknowledgeRunJournal` 另有等待当前写链后删除的顺序，不能用该入口的顺序替代 prune 的实现。
+`queueJournalStorage` 按 requestId 串行排列写入及删除；`queueJournalWrite` 捕获快照，并在实际写入前核对内存中的 journal 对象代次。`removeRunJournal` 供 prune/ack 共用：先使旧恢复读取失效、移除内存记录，再把删除排到既有写链尾部，链登记保留至操作完成。尚未执行的旧快照因代次失效而跳过，已经执行的写入由队尾删除收束；同 ID 已新建 journal 时，旧删除不能删除新代次。
+`pruneInMemoryRunJournals` 在新建及恢复失主标记时，以16项为内存保留目标，只淘汰 terminal/ownerLost 项；活动日志不会为达到数量目标被强删。`listRunJournals` 仍最多返回16条。本路径不全量回收跨重启的全部旧键，列表限额不能作为物理存储总量上限。ack 仍要求 content 已取得主库恢复保存回执，详见[运行状态与恢复](run-state-and-recovery.md#51-共享历史中的运行-owner)。
 
-最近验证入口为 [backgroundNativeError.test.js](../../test/backgroundNativeError.test.js)、[activeTurnControl.test.js](../../test/activeTurnControl.test.js) 与 [crossTabRuntimeRegression.test.js](../../test/crossTabRuntimeRegression.test.js)。后台 VM 用例未提供 `chrome.storage.session`，恢复用例直接注入 journal，均未覆盖上述存储寿命。
-组合验证需保留 session 存储并重建后台，再检查旧 binding 断连后的 ownerLost 和恢复筛选；淘汰验证需延迟旧 journal 写入，在删除后释放写链，并重新读取存储。页面失败结算和 acknowledge 应作为独立收尾分支纳入验证。
+[backgroundJournalLifecycle.test.js](../../test/backgroundJournalLifecycle.test.js) 加载完整后台和 ActiveTurnControl，以保留 session 存储的独立 VM 重建检查重绑、失主、恢复消费者、ack/prune、迟到读取及同 ID 新代次；Chrome 存储、端口和计时使用替身。相邻入口为 [backgroundNativeError.test.js](../../test/backgroundNativeError.test.js)、[activeTurnControl.test.js](../../test/activeTurnControl.test.js) 与 [crossTabRuntimeRegression.test.js](../../test/crossTabRuntimeRegression.test.js)。真实 Chrome worker 生命周期及磁盘配额仍需相应验收。
 
 ## 7. 配额与超限后的降级
 

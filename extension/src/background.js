@@ -38,6 +38,10 @@ if (!globalThis.CodexOverleafStorageRunActions) {
     }
   }
 }
+if (!globalThis.CodexOverleafSharedSessionTransfer) {
+  const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
+  importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/shared/sharedSessionTransfer.js`) : 'shared/sharedSessionTransfer.js');
+}
 if (!globalThis.CodexOverleafSharedSessionsBackground) {
   const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
   importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/backgroundSharedSessions.js`) : 'backgroundSharedSessions.js');
@@ -99,6 +103,7 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
   const pending = new Map();
   const runJournals = new Map();
   const journalWrites = new Map();
+  const journalLoads = new Map();
   const ownerBindings = new Map();
   const ownerCancelTimers = new Map();
   const RUN_JOURNAL_PREFIX = 'codex-overleaf:run-journal:';
@@ -221,13 +226,24 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
         return;
       }
       if (message.type === 'bind') {
-        ownerBindings.set(portConnection, {
+        const binding = {
           requestId,
           projectKey: String(message.projectKey || ''),
-          documentId: String(portConnection.sender?.documentId || '')
-        });
-        clearTimeout(ownerCancelTimers.get(requestId));
-        ownerCancelTimers.delete(requestId);
+          documentId: String(portConnection.sender?.documentId || ''),
+          tabId: portConnection.sender?.tab?.id,
+          clientRunId: String(message.clientRunId || ''),
+          sessionId: String(message.sessionId || '')
+        };
+        ownerBindings.set(portConnection, binding);
+        restoreRunJournal(binding).then(journal => {
+          if (ownerBindings.get(portConnection) !== binding || !journal || runJournals.get(requestId) !== journal) return;
+          clearTimeout(ownerCancelTimers.get(requestId));
+          ownerCancelTimers.delete(requestId);
+          if (!journal.ownerLost) return;
+          journal.ownerLost = false;
+          journal.updatedAt = new Date().toISOString();
+          return queueJournalWrite(requestId);
+        }).catch(() => {});
       }
     });
     portConnection.onDisconnect.addListener(() => {
@@ -306,6 +322,7 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
         resolve,
         reject,
         tabId: sender?.tab?.id,
+        documentId: String(sender?.documentId || ''),
         request,
         method: request.method,
         retryClass: getNativeRetryClass(request.method),
@@ -913,6 +930,8 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
       task: sanitizeJournalString(params.task).slice(0, 12000),
       mode: String(params.mode || ''),
       model: String(params.model || ''),
+      ownerTabId: pendingRequest.tabId,
+      ownerDocumentId: pendingRequest.documentId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       terminal: false,
@@ -920,6 +939,7 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
       nextSequence: 1,
       events: []
     };
+    invalidateJournalLoad(id);
     runJournals.set(id, journal);
     pruneInMemoryRunJournals();
     return queueJournalWrite(id);
@@ -996,11 +1016,15 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
     if (!storage || !runJournals.has(id)) {
       return Promise.resolve();
     }
+    const journal = runJournals.get(id);
+    const snapshot = JSON.parse(JSON.stringify(journal));
+    return queueJournalStorage(id, () => runJournals.get(id) === journal
+      ? storage.set({ [RUN_JOURNAL_PREFIX + id]: snapshot }) : undefined);
+  }
+
+  function queueJournalStorage(id, operation) {
     const previous = journalWrites.get(id) || Promise.resolve();
-    const snapshot = JSON.parse(JSON.stringify(runJournals.get(id)));
-    const next = previous.catch(() => {}).then(() => storage.set({
-      [RUN_JOURNAL_PREFIX + id]: snapshot
-    }));
+    const next = previous.catch(() => {}).then(operation);
     journalWrites.set(id, next);
     return next.finally(() => {
       if (journalWrites.get(id) === next) {
@@ -1009,7 +1033,67 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
     });
   }
 
+  function invalidateJournalLoad(id) {
+    const load = journalLoads.get(id);
+    if (load) load.cancelled = true;
+    journalLoads.delete(id);
+  }
+
+  function journalMatchesBinding(journal, binding) {
+    return journal?.requestId === binding.requestId && Boolean(binding.projectKey)
+      && journal.projectKey === binding.projectKey
+      && (!Number.isInteger(journal.ownerTabId) || journal.ownerTabId === binding.tabId)
+      && (!journal.ownerDocumentId || journal.ownerDocumentId === binding.documentId)
+      && (!binding.clientRunId || journal.clientRunId === binding.clientRunId)
+      && (!binding.sessionId || journal.sessionId === binding.sessionId);
+  }
+
+  function hasRunOwner(binding) {
+    return Array.from(ownerBindings.values()).some(owner => owner.requestId === binding.requestId
+      && owner.projectKey === binding.projectKey && owner.tabId === binding.tabId
+      && owner.documentId === binding.documentId && owner.clientRunId === binding.clientRunId
+      && owner.sessionId === binding.sessionId);
+  }
+
+  async function restoreRunJournal(binding) {
+    const id = binding.requestId;
+    if (runJournals.has(id)) {
+      const journal = runJournals.get(id);
+      return journalMatchesBinding(journal, binding) ? journal : null;
+    }
+    if (!chrome.storage?.session || !binding.projectKey) return null;
+    let load = journalLoads.get(id);
+    if (!load) {
+      load = { cancelled: false };
+      load.promise = (async () => {
+        await (journalWrites.get(id) || Promise.resolve()).catch(() => {});
+        if (load.cancelled) return null;
+        const values = await chrome.storage.session.get(RUN_JOURNAL_PREFIX + id);
+        const stored = values?.[RUN_JOURNAL_PREFIX + id];
+        if (load.cancelled || !journalMatchesBinding(stored, binding) || !Array.isArray(stored.events)) return null;
+        const journal = runJournals.get(id) || stored;
+        trimRunJournal(journal);
+        runJournals.set(id, journal);
+        return journal;
+      })().finally(() => {
+        if (journalLoads.get(id) === load) journalLoads.delete(id);
+      });
+      journalLoads.set(id, load);
+    }
+    const journal = await load.promise;
+    return journalMatchesBinding(journal, binding) ? journal : null;
+  }
+
+  function removeRunJournal(id) {
+    invalidateJournalLoad(id);
+    runJournals.delete(id);
+    // Retain the chain until removal completes; old queued writes cannot follow it.
+    return queueJournalStorage(id, () => !runJournals.has(id)
+      ? chrome.storage?.session?.remove?.(RUN_JOURNAL_PREFIX + id) : undefined);
+  }
+
   async function listRunJournals(projectKey) {
+    await Promise.allSettled(Array.from(journalLoads.values(), load => load.promise));
     await Promise.allSettled(Array.from(journalWrites.values()));
     const storage = chrome.storage?.session;
     if (!storage) {
@@ -1019,7 +1103,8 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
     const entries = Object.entries(values || {})
       .filter(([key, value]) => key.startsWith(RUN_JOURNAL_PREFIX)
         && (!projectKey || value?.projectKey === projectKey)
-        && (value?.terminal || value?.ownerLost))
+        && (value?.terminal || value?.ownerLost)
+        && !Array.from(ownerBindings.values()).some(binding => journalMatchesBinding(value, binding)))
       .sort((a, b) => String(a[1]?.createdAt || '').localeCompare(String(b[1]?.createdAt || '')));
     return entries.slice(-16).map(([_key, value]) => value);
   }
@@ -1033,9 +1118,7 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
       .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
       .slice(0, runJournals.size - 16);
     for (const journal of oldest) {
-      runJournals.delete(journal.requestId);
-      journalWrites.delete(journal.requestId);
-      chrome.storage?.session?.remove?.(RUN_JOURNAL_PREFIX + journal.requestId).catch?.(() => {});
+      removeRunJournal(journal.requestId).catch(() => {});
     }
   }
 
@@ -1043,27 +1126,26 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
     if (!id) {
       return;
     }
-    await (journalWrites.get(id) || Promise.resolve()).catch(() => {});
-    runJournals.delete(id);
-    journalWrites.delete(id);
-    await chrome.storage?.session?.remove?.(RUN_JOURNAL_PREFIX + id);
+    await removeRunJournal(id);
   }
 
   async function interruptOwnerlessRun(binding) {
     ownerCancelTimers.delete(binding.requestId);
-    if (Array.from(ownerBindings.values()).some(value => value.requestId === binding.requestId)) {
+    if (hasRunOwner(binding)) {
       return;
     }
-    const journal = runJournals.get(binding.requestId);
+    const journal = await restoreRunJournal(binding).catch(() => null);
+    if (hasRunOwner(binding)) return;
+    if (journal && runJournals.get(binding.requestId) !== journal) return;
     if (journal) {
       journal.ownerLost = true;
       journal.updatedAt = new Date().toISOString();
       await queueJournalWrite(binding.requestId).catch(() => {});
     }
-    if (!pending.has(binding.requestId)) {
-      return;
-    }
+    if (hasRunOwner(binding)) return;
+    if (journal && runJournals.get(binding.requestId) !== journal) return;
     try {
+      if (!pending.has(binding.requestId) || !journalMatchesBinding(journal, binding)) return;
       sendNativeCancel({
         method: 'codex.cancel',
         params: {
@@ -1073,6 +1155,8 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
       });
     } catch (_error) {
       // The original request disconnect path will settle the journal.
+    } finally {
+      pruneInMemoryRunJournals();
     }
   }
 })();

@@ -29,7 +29,7 @@ test('tracked Codex runs use the compatibility controller public API', () => {
     /async function sendTrackedCodexRun\(params\) \{[\s\S]*?\n  \}/
   )?.[0] || '';
 
-  assert.match(sendTrackedRunBody, /nativeCompatibilityController\.ensureForMethod\('codex\.run'\)/);
+  assert.match(sendTrackedRunBody, /nativeCompatibilityController\.ensureForMethod\('codex\.run',\s*\{\s*assertCurrent\s*\}\)/);
   assert.match(sendTrackedRunBody, /nativeCompatibilityController\.attachEvidence\(/);
   assert.doesNotMatch(sendTrackedRunBody, /\bensureNativeCompatibilityForMethod\b/);
   assert.doesNotMatch(sendTrackedRunBody, /\battachNativeCompatibilityEvidence\b/);

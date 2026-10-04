@@ -273,7 +273,7 @@ test('dashboard project rows expose a guarded one-confirm clear-all action', () 
   assert.match(clear, /recentProjects_clearProject_title/);
   assert.match(clear, /destructive: true/);
   assert.match(clear, /SessionState\.deleteSession\(nextState, record\.id\)/);
-  assert.match(clear, /deleteRecord\('sessions', record\.id\)/);
+  assert.match(clear, /deleteRecord\('sessions', record\.id, \{ accountScopeId: scope, projectId \}\)/);
   assert.match(clear, /codex\.history\.clearPlugin/);
   assert.match(clear, /renderRecentProjectsVariant\(\)/);
   const I18n = require('../extension/src/shared/i18n');

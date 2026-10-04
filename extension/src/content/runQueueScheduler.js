@@ -226,15 +226,38 @@
       const item = (session?.pendingInputs || []).find(entry => entry.id === itemId);
       const run = options.getCurrentRun?.();
       const binding = run?.activeTurn;
-      if (!session || !item || !run || run.sessionId !== session.id || !binding?.threadId || !binding?.turnId) {
+      const guideScope = options.getGuideScope?.();
+      if (!session || !item || item.status !== 'queued' || !run || run.sessionId !== session.id || !binding?.threadId || !binding?.turnId) {
         options.toast?.(options.tr?.('queuedInputGuideUnavailable'), 'warning');
         return;
       }
       options.setQueue?.(session.id, Queue.markSteering(session.pendingInputs, itemId));
       render();
-      await options.save?.({
-        queueMutation: { type: 'transition', sessionId: session.id, itemId }
-      });
+      try {
+        await options.save?.({
+          queueMutation: { type: 'transition', sessionId: session.id, itemId }
+        });
+      } catch (error) {
+        // No steer was dispatched. Restore only this attempt's still-owned item;
+        // a concurrent removal, replacement or scope switch must stay untouched.
+        const liveScope = options.getGuideScope?.();
+        const sameScope = !guideScope || (liveScope?.projectId === guideScope.projectId
+          && liveScope?.accountScopeId === guideScope.accountScopeId && liveScope?.generation === guideScope.generation);
+        const latest = options.getSession?.(session.id);
+        const current = latest?.pendingInputs?.find(entry => entry.id === itemId);
+        if (sameScope && latest?.createdAt === session.createdAt && current?.status === 'steering'
+          && current.clientUserMessageId === item.clientUserMessageId && current.createdAt === item.createdAt
+          && current.text === item.text) {
+          options.setQueue?.(session.id, Queue.returnToQueue(latest.pendingInputs, itemId));
+          render();
+          try {
+            await options.save?.({ queueMutation: { type: 'transition', sessionId: session.id, itemId } });
+          } catch (recoveryError) {
+            if (error && typeof error === 'object') error.persistenceRecoveryError = recoveryError?.message || String(recoveryError);
+          }
+        }
+        throw error;
+      }
       try {
         const response = await options.sendSteer?.({
           requestId: run.nativeRequestId,
