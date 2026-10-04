@@ -1,7 +1,7 @@
 (function initStorageDb(root, factory) {
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(require('./storageRunActions'), require('./runInputQueue'),
-      require('./settlementFacts'), require('./storageSessionClaims'), require('./sessionState'), require('./runActivityModel'), require('./sharedSessionBridge'), require('./subagentActivityModel'), require('./storageValuePruning'), require('./composerAttachmentDraft'));
+      require('./settlementFacts'), require('./storageSessionClaims'), require('./sessionState'), require('./runActivityModel'), require('./sharedSessionBridge'), require('./subagentActivityModel'), require('./storageValuePruning'), require('./composerAttachmentDraft'), require('./sharedSessionTransfer'));
   } else {
     root.CodexOverleafModuleRegistry.define('StorageDb', [
       'StorageRunActions',
@@ -13,10 +13,11 @@
       'SharedSessionBridge',
       'SubagentActivityModel',
       'StorageValuePruning',
-      'ComposerAttachmentDraft'
+      'ComposerAttachmentDraft',
+      'SharedSessionTransfer'
     ], factory);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue, SettlementFacts, StorageSessionClaims, SessionState, RunActivityModel, SharedSessionBridge, SubagentActivityModel, StorageValuePruning, ComposerAttachmentDraft) {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue, SettlementFacts, StorageSessionClaims, SessionState, RunActivityModel, SharedSessionBridge, SubagentActivityModel, StorageValuePruning, ComposerAttachmentDraft, SharedSessionTransfer) {
   'use strict';
   const { removeEmptySummaryFields, removeEmptyFields } = StorageValuePruning;
   if (!StorageRunActions?.compactRunsForStorage || !StorageRunActions?.compactRunActionPayload || !StorageRunActions?.compactProviderSnapshot || !StorageRunActions?.compactRunExecutionSnapshot || !StorageRunActions?.compactStructuredEventValue || !StorageRunActions?.hashString || !RunInputQueue?.compactForStorage || !SettlementFacts?.compactSettlementFacts || !StorageSessionClaims?.createSessionClaimer) {
@@ -269,7 +270,7 @@
     var lastActivityAt = typeof input.lastActivityAt === 'string' && input.lastActivityAt
       ? input.lastActivityAt
       : updatedAt;
-    return {
+    var record = {
       id: input.id || generateId('ses'),
       projectId: input.projectId || '',
       title: normalizeSessionTitleForStorage(input.title, titleSource),
@@ -287,7 +288,7 @@
         normalizePaths: normalizePathList
       }),
       history: compactHistoryForStorage(input.history),
-      runs: compactRunsForStorage(input.runs, options),
+      runs: compactRunsForStorage(input.runs, { preserveRunActionPayload: false }),
       task: normalizeDisplayTextForStorage(input.task, SESSION_STORAGE_LIMITS.taskChars),
       mode: normalizeCurrentMode(input.mode), providerId: typeof input.providerId === 'string' && input.providerId ? input.providerId : 'builtin',
       model: typeof input.model === 'string' ? input.model : '',
@@ -301,6 +302,23 @@
       accountScopeUnavailable: accountScopeUnavailable,
       safeTaskSummary: safeTaskSummary
     };
+    if (options.preserveRunActionPayload === true) {
+      // Count the real display record before allocating recovery space. Adding
+      // older checkpoints must not make an otherwise valid history unwritable.
+      var metadataText = JSON.stringify(record), metadataBytes = SharedSessionTransfer.byteLength(metadataText);
+      record.runs = compactRunsForStorage(input.runs, { ...options,
+        canRetainActionPayload: function (bytes, chars) {
+          var totalBytes = metadataBytes + bytes + 4096, totalChars = metadataText.length + chars + 4096;
+          return totalBytes <= SharedSessionTransfer.MAX_WIRE_BYTES
+            || (totalBytes <= SharedSessionTransfer.MAX_RECORD_BYTES && totalChars * 2 <= SharedSessionTransfer.MAX_WIRE_BYTES);
+        } });
+    }
+    for (var run of record.runs) SessionState.pruneRunRecoveryScope(run, record);
+    return record;
+  }
+
+  function compactSessionBatchActions(records, options) {
+    return StorageRunActions.compactSessionBatchActions(records, options, buildSessionRecord, SharedSessionTransfer);
   }
 
   function resolveAccountScopeId(input) {
@@ -655,9 +673,9 @@
   function compactRunsForStorage(runs, options) {
     return StorageRunActions.compactRunsForStorage(runs, options, SESSION_STORAGE_LIMITS.maxRunsPerSession, compactRunForStorage);
   }
-  function compactRunForStorage(run, keepActionPayload) {
+  function compactRunForStorage(run, keepActionPayload, preparedActionPayload) {
     run = SessionState.recoverRecordedRunFailure(run);
-    var actionPayload = StorageRunActions.compactRunActionPayload(run, keepActionPayload);
+    var actionPayload = preparedActionPayload || StorageRunActions.compactRunActionPayload(run, keepActionPayload);
     var compact = {
       ...SessionState.pickWritebackRecovery(run),
       id: run.id,
@@ -683,6 +701,9 @@
       undoTrackedChanges: actionPayload.undoTrackedChanges,
       undoExpectedFiles: actionPayload.undoExpectedFiles,
       ...(actionPayload.trackedChangeCaptures ? { trackedChangeCaptures: actionPayload.trackedChangeCaptures } : {}),
+      ...(actionPayload.manualReviewProof ? { manualReviewProof: actionPayload.manualReviewProof } : {}),
+      ...(actionPayload.pendingDirectoryCleanup ? { pendingDirectoryCleanup: actionPayload.pendingDirectoryCleanup } : {}),
+      ...(actionPayload.recoveryRetention ? { recoveryRetention: SessionState.normalizeRecoveryRetention(actionPayload.recoveryRetention) } : {}),
       undoStatus: normalizeDisplayTextForStorage(run.undoStatus, SESSION_STORAGE_LIMITS.statusTextChars),
       nativeRequestId: normalizeTextField(run.nativeRequestId, 160),
       codexThreadId: normalizeTextField(run.codexThreadId, 160), codexTurnId: normalizeTextField(run.codexTurnId, 160),
@@ -1310,6 +1331,9 @@
     readComposerAttachmentDraft: composerDraftStore.read,
     writeComposerAttachmentDraft: composerDraftStore.write,
     buildSessionRecord: buildSessionRecord,
+    compactSessionBatchActions: compactSessionBatchActions,
+    projectRetentionWarnings: StorageRunActions.projectRetentionWarnings,
+    projectRetentionUpdates: StorageRunActions.projectRetentionUpdates,
     mergeSessionReviewState: StorageRunActions.mergeSessionReviewState,
     buildTurnRecord: buildTurnRecord,
     buildEventRecord: buildEventRecord,

@@ -4,7 +4,7 @@ const test = require('node:test');
 const projectFiles = require('../extension/src/shared/projectFiles');
 const WritebackController = require('../extension/src/content/writebackController');
 
-test('safe project path validator rejects traversal, absolute, Windows, encoded, and control paths', () => {
+test('safe project path validator rejects traversal, absolute, Windows, and control paths', () => {
   const unsafePaths = [
     '../x',
     '.',
@@ -12,7 +12,7 @@ test('safe project path validator rejects traversal, absolute, Windows, encoded,
     '/abs.tex',
     'C:\\tmp\\x.tex',
     'folder\\file.tex',
-    'folder/%2e%2e/file.tex',
+    'folder/../file.tex',
     'bad\u0000name.tex'
   ];
 

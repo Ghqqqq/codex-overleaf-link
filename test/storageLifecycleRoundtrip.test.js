@@ -13,6 +13,8 @@ const RunController=require(path.join(repo,'extension/src/content/runController'
 const UndoOperations=require(path.join(repo,'extension/src/shared/undoOperations'));
 const CaptureController=require(path.join(repo,'extension/src/content/trackedChangeCaptureController'));
 const StorageKeys=require(path.join(repo,'extension/src/shared/storageKeys'));
+const ReviewController=require(path.join(repo,'extension/src/content/runReviewController'));
+const RecoveryActions=require(path.join(repo,'extension/src/content/runRecoveryActions'));
 const {extractFunction}=require(path.join(repo,'test/_helpers/extractFunction'));
 const runtime=source('extension/src/content/contentRuntime.js');
 const timelineSource=source('extension/src/content/runTimelineView.js');
@@ -68,7 +70,7 @@ function longState(runCount,eventsPerRun=300) {
 function buttonRoot() {
   const nodes=new Map();
   const make=selector=>({hidden:false,disabled:false,title:'',listeners:{},classList:{add(){},remove(){}},
-    setAttribute(){},cloneNode(){return make(selector);},replaceWith(value){nodes.set(selector,value);},
+    setAttribute(){},replaceChildren(){},cloneNode(){return make(selector);},replaceWith(value){nodes.set(selector,value);},
     addEventListener(type,fn){this.listeners[type]=fn;},remove(){}});
   return {nodes,querySelector(selector){if(!nodes.has(selector))nodes.set(selector,make(selector));return nodes.get(selector);},querySelectorAll:()=>[]};
 }
@@ -81,8 +83,9 @@ function actionView(run,forkHandler=async()=>{}) {
     configureLifecycleUndoButton:()=>{throw new Error('stripped_fork_must_not_be_lifecycle');},
     wireAcceptInlineConfirm:()=>{throw new Error('stripped_fork_must_not_accept');},root,run};
   vm.createContext(ctx);
+  ctx.renderDirectoryCleanup=RecoveryActions.create({tx:en=>en}).renderDirectoryCleanup;
   vm.runInContext(extractFunction(resultActionsSource,'configureForkButton'),ctx);
-  for(const name of ['isTrackedChangeLifecycleRun','configureEditButton','configureWritebackButton','configureUndoButton','configureAcceptButton'])
+  for(const name of ['isTrackedChangeLifecycleRun','configureEditButton','configureWritebackCheckButton','configureWritebackButton','configureUndoButton','configureAcceptButton'])
     vm.runInContext(extractFunction(timelineSource,name),ctx);
   ctx.configureForkButton(root,run);ctx.configureEditButton(root,run);ctx.configureWritebackButton(root,run);
   ctx.configureUndoButton(root,run);ctx.configureAcceptButton(root,run);
@@ -100,6 +103,9 @@ async function checkActualUndoAcceptEntries(run) {
     callPageBridge:()=>{calls.page++;throw new Error('unexpected_page_action');},
     refreshRunCardControls:()=>{calls.view++;throw new Error('unexpected_action_started');}};
   vm.createContext(ctx);
+  let controller;
+  ctx.getRunReviewController=()=>controller||(controller=ReviewController.create({...ctx,
+    getState:()=>({runs:[run],sessions:[{id:'reloaded-session',runs:[run]}]})}));
   for(const name of ['buildTrackedUndoPostFiles','hasTrackedEditorUndo','getRunUndoCount','undoRun','acceptRun'])
     vm.runInContext(extractFunction(runtime,name),ctx);
   vm.runInContext(extractFunction(timelineSource,'isTrackedChangeLifecycleRun'),ctx);

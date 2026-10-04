@@ -128,7 +128,7 @@
 - 入口：[StorageMigration](../../extension/src/shared/storageMigration.js)、[StorageKeys](../../extension/src/shared/storageKeys.js)、[StorageDb](../../extension/src/shared/storageDb.js)、[SharedSessionTransfer](../../extension/src/shared/sharedSessionTransfer.js)、[backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js)。
 - 状态 owner：共享 sessions、站点 audit、全局 prefs、兼容 blob 及后台 journal 分别维护版本和清理；详见[数据生命周期](run-state-and-recovery.md#storage-lifecycle)。
 - 必须联动：runtime `loadStoredStateForProject/saveState`、[storageValuePruning](../../extension/src/shared/storageValuePruning.js)、[SessionPersistence](../../extension/src/content/sessionPersistence.js)、[ChangeHistoryModel](../../extension/src/shared/changeHistoryModel.js) 与诊断导出。存储压缩应检查[实际写入消费者](run-state-and-recovery.md#storage-compaction)，迁移标记和输出条数不能独自证明历史已迁移或磁盘占用有界。
-- 最近测试：[storageLifecycleRoundtrip](../../test/storageLifecycleRoundtrip.test.js)、[sharedSessionTransfer](../../test/sharedSessionTransfer.test.js)、[storageMigration](../../test/storageMigration.test.js)、[storageMigrationAccountIsolation](../../test/storageMigrationAccountIsolation.test.js)、[storageDb](../../test/storageDb.test.js)、[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)；后台重建另查[journal 生命周期](native-execution.md#journal-lifecycle)。
+- 最近测试：[actionPayloadRetention](../../test/actionPayloadRetention.test.js)、[storageLifecycleRoundtrip](../../test/storageLifecycleRoundtrip.test.js)、[sharedSessionTransfer](../../test/sharedSessionTransfer.test.js)、[storageMigration](../../test/storageMigration.test.js)、[storageMigrationAccountIsolation](../../test/storageMigrationAccountIsolation.test.js)、[storageDb](../../test/storageDb.test.js)、[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)；后台重建另查[journal 生命周期](native-execution.md#journal-lifecycle)。
 
 ### 改项目主页、最近项目或会话列表
 
@@ -146,23 +146,25 @@
 - 入口：[snapshotRouter](../../extension/src/page/snapshotRouter.js)、[overleafProjectSnapshot](../../extension/src/page/overleafProjectSnapshot.js)、[OtWarmMirror](../../extension/src/content/otWarmMirror.js)。
 - 状态 owner：Page 提供读取证据；[mirrorWorkspace](../../native-host/src/mirrorWorkspace.js) 管理本地文件与 baseline；[mirrorHealth](../../extension/src/content/mirrorHealth.js) 投影镜像可用性。
 - 必须联动：[otWarmMirrorController](../../extension/src/content/otWarmMirrorController.js)、[shared/otText](../../extension/src/shared/otText.js)、[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 的 mirror 方法、快照完整性和空字符串语义。
-- ZIP 前快启入口为 `resolveWarmRunStart`；OT producer 的非空 overlays 与 Native validator 的拒绝条件存在冲突，需同时定位 `mirror_stale` 回退，详见写回章节。
-- 最近测试：[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[snapshotEmptyContent](../../test/snapshotEmptyContent.test.js)、[snapshotSkippedAssets](../../test/snapshotSkippedAssets.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)、[otWarmMirrorIntegration](../../test/otWarmMirrorIntegration.test.js)、[mirrorHealth](../../test/mirrorHealth.test.js)。
+- ZIP 前快启入口为 `resolveWarmRunStart`；OT overlays 以可信聚焦文本 SHA-256 核对后只作为相等证明，失败沿 `mirror_stale` 回退。写后就地确认由 Controller 的 `buildMirrorWritebackConfirmation` 提供页面 post-image 哈希，Native 核对全部目标后更新基线。
+- 最近测试：[mirrorWritebackProof](../../test/mirrorWritebackProof.test.js)、[otWarmMirrorContract](../../test/otWarmMirrorContract.test.js)、[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[snapshotEmptyContent](../../test/snapshotEmptyContent.test.js)、[snapshotSkippedAssets](../../test/snapshotSkippedAssets.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)、[otWarmMirrorIntegration](../../test/otWarmMirrorIntegration.test.js)、[mirrorHealth](../../test/mirrorHealth.test.js)。
 
 ### 改 Auto 编辑、保存确认、编译或失败重试
 
 - 入口：[WritebackOrchestrator.applySyncChangesToOverleaf](../../extension/src/content/writebackOrchestrator.js)、[writebackRouter](../../extension/src/page/writebackRouter.js)。
-- 状态 owner：[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 汇总结果；[saveState](../../extension/src/page/saveState.js) 观察保存；[writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 保存页面操作回执。
+- 状态 owner：[WritebackVerificationController](../../extension/src/content/writebackVerificationController.js) 负责写前持久意图和只读内容核验；[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 汇总结果；[saveState](../../extension/src/page/saveState.js) 观察保存；[writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 保存页面操作回执。
 - 必须联动：[staleGuard](../../extension/src/shared/staleGuard.js)、[writebackController](../../extension/src/content/writebackController.js)、[compileBridge](../../extension/src/page/compileBridge.js)、[runSettlementPersistence](../../extension/src/content/runSettlementPersistence.js)。详细链路见[Auto 编辑与 Undo](auto-edit-undo.md)。 空基线与整文兜底的行为入口见 [emptyContentWriteback](../../test/emptyContentWriteback.test.js)；Page 闭包变化同时核对共享 revision 和重新注入。
 - 最近测试：[writebackCancellationRecovery](../../test/writebackCancellationRecovery.test.js)、[assetTransferCancellation](../../test/assetTransferCancellation.test.js)、[writebackSaveCheck](../../test/writebackSaveCheck.test.js)、[writebackSettlementContract](../../test/writebackSettlementContract.test.js)、[writebackReceiptRecovery](../../test/writebackReceiptRecovery.test.js)、[retryCreatedFile](../../test/retryCreatedFile.test.js)、[writebackCancellationFlow](../../test/writebackCancellationFlow.test.js)。
 
 ### 改 Accept、Undo、新建/删除文件或二进制资产
 
-- 入口：runtime 的 run 操作回调、[trackedChangesLifecycle](../../extension/src/page/trackedChangesLifecycle.js)、[AssetTransferBroker](../../extension/src/content/assetTransferBroker.js)。
+- 入口：runtime 的薄回调与 [RunReviewController](../../extension/src/content/runReviewController.js)、[trackedChangesLifecycle](../../extension/src/page/trackedChangesLifecycle.js)、[AssetTransferBroker](../../extension/src/content/assetTransferBroker.js)。
 - 状态 owner：[undoOperations](../../extension/src/shared/undoOperations.js) 与 run checkpoint 保存撤销证据；页面 receipt 和 settlement 记录部分完成结果。
-- 支持范围：Auto 重命名按 create/delete 拆分，二进制删除、生成 PDF 与资产扩展名另有过滤；删除恢复由 UndoOperations 分离文本 review 与文件重建，历史补齐需要保留原文及已应用删除证据，详见[文件操作与撤销](auto-edit-undo.md)。
-- 二进制覆盖走 uploader 独立链，当前未携带旧版本基线比较；新载荷完整性和上传后核验不能单独证明覆盖前远端未变化。
+- 支持范围：Native 按唯一类型/哈希配对生成 move，[FileMoveApproval](../../extension/src/content/fileMoveApproval.js) 整份计划确认，[FileMover](../../extension/src/page/fileMover.js) 保留同一实体执行原生 rename/move，Undo 反向复用身份与基线。未配对 create/delete 也整批确认；独立二进制删除、生成 PDF 与未支持资产仍有过滤，详见[文件操作与撤销](auto-edit-undo.md)。
+- 二进制覆盖走 uploader 独立链，Native `previousSha256` 经 Controller/Broker 传入，覆盖前按精确路径与实体核对旧字节；上传后继续验证新哈希，平台原子条件覆盖仍属边界。
 - 必须联动：[treeOperations](../../extension/src/page/treeOperations.js)、[nativeAssetTransfer](../../native-host/src/nativeAssetTransfer.js)、[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 和镜像失效处理。详细链路见[Auto 编辑与 Undo](auto-edit-undo.md)。
+- 人工收尾：不支持自动 Accept 的账本使用 [manualReviewRecovery](../../extension/src/page/manualReviewRecovery.js) 和 [ManualReviewProof](../../extension/src/shared/manualReviewProof.js)；残留目录使用 [DirectoryCleanupRecovery](../../extension/src/content/directoryCleanupRecovery.js)、[OwnedDirectoryCleanup](../../extension/src/page/ownedDirectoryCleanup.js) 及 [DirectoryCleanupProof](../../extension/src/shared/directoryCleanupProof.js)。读取核验不能直接赋予写入权限。
+- 新链路验证：[fileMovePipeline](../../test/fileMovePipeline.test.js)、[directoryCleanupRecovery](../../test/directoryCleanupRecovery.test.js)、[manualReviewWorkflow](../../test/manualReviewWorkflow.test.js)、[ordinaryUndoDurability](../../test/ordinaryUndoDurability.test.js)、[ordinaryUndoDeadlineConsumer](../../test/ordinaryUndoDeadlineConsumer.test.js)、[binaryOverwriteBaseline](../../test/binaryOverwriteBaseline.test.js)。
 - 最近测试：[undoPersistenceFailure](../../test/undoPersistenceFailure.test.js)、[writebackRouterAccept](../../test/writebackRouterAccept.test.js)、[createdFileUndo](../../test/createdFileUndo.test.js)、[deletedFileUndo](../../test/deletedFileUndo.test.js)、[ordinaryUndoRouting](../../test/ordinaryUndoRouting.test.js)、[binaryUploadUndoRoundTrip](../../test/binaryUploadUndoRoundTrip.test.js)。
 
 ## Native、Provider、子代理与写作风格

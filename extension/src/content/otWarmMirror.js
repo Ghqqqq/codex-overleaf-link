@@ -833,7 +833,7 @@
     if (getCurrentProjectId() !== projectId) return { useExistingMirror: false, reason: 'project_changed' };
     const otWarmStart = otWarmMirrorController.canUseOtWarmStart({
       enabled: isExperimentalOtEnabled() && !otWarmMirrorState.failureActive,
-      focusFiles,
+      focusFiles, focusFilesAreLiteral: true,
       mirrorStatus
     });
     if (!mirrorStatus?.exists || (!otWarmStart.ok && !isMirrorReusable(mirrorStatus))) {
@@ -858,10 +858,9 @@
       return { useExistingMirror: false, reason: 'overlay_probe_failed', mirrorStatus };
     }
     if (getCurrentProjectId() !== projectId) return { useExistingMirror: false, reason: 'project_changed' };
-    const fileOverlays = buildSnapshotFileOverlays(overlayProject, focusFiles);
-    if (!fileOverlays.length) {
-      return { useExistingMirror: false, reason: 'missing_current_overlay', mirrorStatus };
-    }
+    const fileOverlays = buildSnapshotFileOverlays(overlayProject, focusFiles).filter(file =>
+      !otWarmStart.ok || focusFiles.some(path => normalizeSnapshotPath(path) === normalizeSnapshotPath(file.path)));
+    if (!fileOverlays.length) return { useExistingMirror: false, reason: 'missing_current_overlay', mirrorStatus };
     if (focusFiles.length && !focusFiles.every(path => {
       const normalized = normalizeSnapshotPath(path);
       return fileOverlays.some(file => normalizeSnapshotPath(file.path) === normalized);

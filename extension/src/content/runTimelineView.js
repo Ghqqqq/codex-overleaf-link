@@ -1,5 +1,9 @@
-(function initCodexOverleafRunTimelineView() {
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./runRecoveryActions'));
+  else root.CodexOverleafModuleRegistry.define('RunTimelineView', ['RunRecoveryActions'], factory);
+})(typeof window !== 'undefined' ? window : globalThis, function (RunRecoveryActions) {
   'use strict';
+
 
   // Owns scroll, cards, reports and mature run actions. The optional activity
   // presenter projects stored events without taking ownership of settlement.
@@ -41,12 +45,17 @@
       refillComposerForRetry,
       canEditRun,
       retryWriteback,
+      checkWriteback,
+      openManualReviewFile,
+      verifyManualReview,
+      checkCreatedDirectories,
       showNativeSetupGuidance,
       openProjectFileForFailure,
       openStorageSettings,
       trackedChangeInFlight,
       projectRunSettlement,
       getCurrentProjectId,
+      getAccountScopeId,
       getProjectName
     } = deps;
 
@@ -69,6 +78,13 @@
     onLayoutChange: scroller => logAutoFollow ? scrollLogToBottom() : updateJumpToLatestButton(scroller)
   });
   const failureNotice = RunFailureNotice?.create({ tr, projectRunSettlement, sanitizeText: sanitizeAssistantVisibleText });
+  const { buildRecoveryButton, appendRecoveryActionForFailure, renderDirectoryCleanup } = RunRecoveryActions.create({
+    document: typeof document === 'undefined' ? undefined : document,
+    window: typeof window === 'undefined' ? undefined : window,
+    tx, failureNotice, refillComposerForRetry, openProjectFileForFailure, showNativeSetupGuidance,
+    openStorageSettings, forceCancelStuckTaskForCurrentProject, getCurrentRunView, trackedChangeInFlight,
+    openManualReviewFile, verifyManualReview, getCurrentProjectId, getAccountScopeId, checkCreatedDirectories
+  });
   const presence = RunPresence?.create({ tx, getLocale, formatElapsed });
   const displayRun = run => RunFailureNotice?.projectResolvedUndo?.(run) || run;
   const activitySummary = RunActivitySummary?.create({ RunActivityModel, SubagentActivityView, tx, findRunRecord: (...args) => displayRun(findRunRecord(...args)), getPanel, cssEscape,
@@ -380,7 +396,9 @@
           <button type="button" data-run-undo hidden title="Undo this run's writes to Overleaf">Undo</button>
           <button type="button" class="run-copy-action run-edit-action" data-run-edit hidden></button>
           <button type="button" class="run-copy-action run-sync-action" data-run-sync-retry hidden></button>
+          <button type="button" class="run-final-answer__recovery-action" data-run-sync-check hidden></button>
         </div>
+        <section class="run-feedback" data-run-directory-cleanup hidden></section>
         <details class="run-process" data-run-process>
           <summary data-run-process-summary>
             <span class="run-status" data-run-status></span>
@@ -755,132 +773,6 @@
   // the normal cancel button is hidden because currentRunView is null).
   // Recovery-action registry: failure codes whose "next step" is executable
   // from the panel get a button, not prose. One primary action per failure.
-  const RETRYABLE_FAILURE_CODES = new Set([
-    'native_request_failed', 'codex_timeout', 'codex_no_usable_result',
-    'codex_output_limit', 'stale_source_changed', 'patch_anchor_not_found',
-    'target_editor_not_ready', 'write_timeout', 'partial_write_needs_review',
-    'write_operation_failed'
-  ]);
-  const NATIVE_SETUP_FAILURE_CODES = new Set([
-    'native_bridge_unavailable', 'native_protocol_incompatible'
-  ]);
-  const OPEN_FILE_FAILURE_CODES = new Set([
-    'target_file_not_active', 'target_file_open_failed', 'target_file_not_found'
-  ]);
-  const STORAGE_FAILURE_CODES = new Set([
-    'storage_quota_exceeded', 'run_state_persist_failed'
-  ]);
-  // A missing `codex` binary is fixed in the terminal, not the panel — the
-  // action opens the README troubleshooting section (PATH / login checks).
-  const CODEX_INSTALL_FAILURE_CODES = new Set(['codex_not_found']);
-  const CODEX_CLI_TROUBLESHOOTING_URL = 'https://github.com/Ghqqqq/codex-overleaf-link#faq-and-troubleshooting';
-
-  function buildRecoveryButton(failureCode, label, title) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'run-final-answer__recovery-action';
-    button.dataset.recoveryFor = failureCode;
-    button.textContent = label;
-    if (title) {
-      button.title = title;
-    }
-    return button;
-  }
-
-  function appendEditAndResend(report, run, actionKey) {
-    const retry = buildRecoveryButton(actionKey,
-      tx('Edit & resend', '编辑后重发'),
-      tx('Put this run\u2019s task back into the composer so you can adjust and resend it.', '把本轮任务填回输入框，修改后可直接重发。'));
-    retry.addEventListener('click', clickEvent => {
-      clickEvent.stopPropagation();
-      refillComposerForRetry(run || null);
-    });
-    report.append(retry);
-  }
-
-  function appendRecoveryActionForFailure(report, event, run) {
-    const recovery = failureNotice?.prepareRecovery(report, { openFile: openProjectFileForFailure });
-    const failureCode = event?.failure?.code || '';
-    if (recovery?.handled) return;
-    report = recovery?.target || report;
-    if (RETRYABLE_FAILURE_CODES.has(failureCode) && typeof refillComposerForRetry === 'function') {
-      appendEditAndResend(report, run, failureCode);
-      return;
-    }
-    if (NATIVE_SETUP_FAILURE_CODES.has(failureCode) && typeof showNativeSetupGuidance === 'function') {
-      const fix = buildRecoveryButton(failureCode,
-        tx('Fix the native host', '修复 native host'),
-        tx('Opens the install/update guidance with the copyable command.', '打开安装/更新指引（含可复制命令）。'));
-      fix.addEventListener('click', clickEvent => {
-        clickEvent.stopPropagation();
-        showNativeSetupGuidance();
-      });
-      report.append(fix);
-      return;
-    }
-    if (OPEN_FILE_FAILURE_CODES.has(failureCode) && event?.failure?.file && typeof openProjectFileForFailure === 'function') {
-      const open = buildRecoveryButton(failureCode,
-        tx(`Open ${event.failure.file} in Overleaf`, `在 Overleaf 打开 ${event.failure.file}`), '');
-      open.addEventListener('click', clickEvent => {
-        clickEvent.stopPropagation();
-        openProjectFileForFailure(event.failure.file);
-      });
-      report.append(open);
-      return;
-    }
-    if (STORAGE_FAILURE_CODES.has(failureCode) && typeof openStorageSettings === 'function') {
-      const clean = buildRecoveryButton(failureCode,
-        tx('Open history & storage cleanup', '打开历史与存储清理'), '');
-      clean.addEventListener('click', clickEvent => {
-        clickEvent.stopPropagation();
-        openStorageSettings();
-      });
-      report.append(clean);
-      return;
-    }
-    if (CODEX_INSTALL_FAILURE_CODES.has(failureCode)) {
-      const guide = buildRecoveryButton(failureCode,
-        tx('Codex CLI troubleshooting guide', '查看 Codex CLI 排查指引'),
-        tx('Opens the README section on fixing a missing `codex` command (PATH / login).', '打开 README 中「找不到 codex 命令」的排查说明（PATH／登录）。'));
-      guide.addEventListener('click', clickEvent => {
-        clickEvent.stopPropagation();
-        window.open(CODEX_CLI_TROUBLESHOOTING_URL, '_blank', 'noopener');
-      });
-      report.append(guide);
-      return;
-    }
-    if (failureCode !== 'codex_project_locked') return;
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'run-final-answer__recovery-action';
-    button.dataset.recoveryFor = failureCode;
-    button.textContent = tx('Force-release the stuck task', '强制释放卡住的任务');
-    button.title = tx(
-      'Sends a force-cancel to the native host that drops the project lock so a new run can start. Use this when refreshing the tab did not free the project.',
-      '向 native host 发送强制取消请求，释放当前 Overleaf 项目的占用，让新的任务可以启动。刷新页面没用时使用。'
-    );
-    button.addEventListener('click', event => {
-      event.stopPropagation();
-      button.disabled = true;
-      button.textContent = tx('Releasing…', '正在释放…');
-      forceCancelStuckTaskForCurrentProject().then(result => {
-        if (result?.ok) {
-          button.textContent = tx('Force-released — you can retry the run.', '已释放，可以重试本轮任务。');
-          return;
-        }
-        // The helper resolves (never throws) with a non-ok result when the
-        // request was not delivered. Report the real outcome instead of a
-        // blanket success, and re-enable the button so the user can retry.
-        button.disabled = false;
-        button.textContent = tx('Release failed — refresh the tab, then try again.', '释放失败，请刷新页面后重试。');
-      }).catch(() => {
-        button.disabled = false;
-        button.textContent = tx('Release failed — refresh the tab, then try again.', '释放失败，请刷新页面后重试。');
-      });
-    });
-    report.append(button);
-  }
-
   // A run belongs to the tracked-change lifecycle iff trackedChangeStatus is set
   // or it still has tracked-change refs. Every other run is a legacy-undo run.
   function isTrackedChangeLifecycleRun(run) {
@@ -917,6 +809,8 @@
   }
 
   function configureWritebackButton(root, run, options = {}) {
+    renderDirectoryCleanup(root, run);
+    configureWritebackCheckButton(root, run, options);
     const existing = root.querySelector('[data-run-sync-retry]');
     if (!existing) return;
     const button = existing.cloneNode(true);
@@ -932,6 +826,31 @@
     button.setAttribute('aria-label', button.title);
     button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.5 7A7 7 0 0 0 4 5L2 7m0-4v4h4M3.5 13A7 7 0 0 0 16 15l2-2m0 4v-4h-4"/></svg>';
     button.addEventListener('click', event => { event.stopPropagation(); if (!getCurrentRunView?.()) void retryWriteback(run.id); });
+  }
+
+  function configureWritebackCheckButton(root, run, options = {}) {
+    const existing = root.querySelector('[data-run-sync-check]');
+    if (!existing) return;
+    const button = existing.cloneNode(true);
+    existing.replaceWith(button);
+    const check = run?.writebackCheck;
+    const available = !run?.forkSnapshot && check?.v === 1 && check.purpose === 'writeback-revalidation'
+      && Array.isArray(check.files) && check.files.length > 0 && typeof checkWriteback === 'function';
+    button.hidden = !available;
+    if (!available) return;
+    const busy = () => Boolean(getCurrentRunView?.());
+    button.disabled = typeof options.running === 'boolean' ? options.running : busy();
+    button.textContent = tx('Check writeback content', '核查写入内容');
+    button.title = tx('Read the current project contents without repeating writes or changing Undo ownership.', '只读取当前项目内容，不重复写入或改变撤销归属。');
+    button.setAttribute('aria-label', button.textContent);
+    button.addEventListener('click', async event => {
+      event.stopPropagation();
+      if (busy()) return;
+      button.disabled = true;
+      try { await checkWriteback(run.id); }
+      catch (_error) { /* The runtime check owns error feedback and scope validation. */ }
+      finally { button.disabled = busy(); }
+    });
   }
 
   function configureUndoButton(root, run) {
@@ -956,11 +875,13 @@
     }
 
     button.hidden = false;
-    button.disabled = run.undoStatus === 'running' || run.undoStatus === 'applied';
-    button.textContent = run.undoStatus === 'applied'
+    const inFlight = trackedChangeInFlight?.get(run.id) === 'reject';
+    const applied = run.undoStatus === 'applied' && !inFlight;
+    button.disabled = inFlight || run.undoStatus === 'running' || run.undoStatus === 'applied';
+    button.textContent = applied
       ? tr('undoApplied')
       : (run.partialWriteback ? tr('undoPartialRun') : tr('undoRun'));
-    button.title = run.undoStatus === 'applied'
+    button.title = applied
       ? tr('undoAppliedTitle')
       : (run.partialWriteback ? tr('undoPartialRunTitle') : tr('undoRunTitle'));
     button.addEventListener('click', event => {
@@ -1184,5 +1105,5 @@
     };
   }
 
-  window.CodexOverleafRunTimelineView = { create };
-})();
+  return { create };
+});

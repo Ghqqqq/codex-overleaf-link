@@ -24,6 +24,7 @@ const Undo = load('extension/src/shared/undoOperations');
 const SessionState = load('extension/src/shared/sessionState');
 const StorageDb = load('extension/src/shared/storageDb');
 const Intent = load('extension/src/shared/writebackIntent');
+const Verification = load('extension/src/content/writebackVerificationController');
 const { extractFunction } = load('test/_helpers/extractFunction');
 const runtimeSource = fs.readFileSync(path.join(repo, 'extension/src/content/contentRuntime.js'), 'utf8');
 const orchestratorSource = fs.readFileSync(path.join(repo, 'extension/src/content/writebackOrchestrator.js'), 'utf8');
@@ -56,6 +57,8 @@ function harness({ dropApply = false, cancelAfterBroker = false, partial = false
   const runtime = vm.createContext({
     console, fetch: noFetch, crypto: { randomUUID: crypto.randomUUID },
     state, currentRunView: view, cachedAccountScopeId: 'account-a', runCancellationRequested: false,
+    writebackVerificationController: null, spaRouteGeneration: 0, trackedChangeInFlight: new Map(), updateIdleClient: null,
+    renderRunHistory() {}, showPluginToast() {},
     runCancellationController: new AbortController(), panel: { dataset: {} },
     getCurrentProjectId: () => projectId, findRunRecord: (id, sid) => id === record.id && sid === view.sessionId ? record : null,
     nativeChannel: { getActiveRequestId: () => 'synthetic-native-request' }, setRunning() {},
@@ -65,10 +68,11 @@ function harness({ dropApply = false, cancelAfterBroker = false, partial = false
     normalizeApplyTrackedChanges: Settlement.normalizeApplyTrackedChanges,
     selectExpectedFilesForTrackedUndo: Settlement.selectExpectedFilesForTrackedUndo,
     buildUndoCheckpoint: Undo.buildUndoCheckpoint, buildCreatedFileUndoCheckpoint: Undo.buildCreatedFileUndoCheckpoint,
-    Modules: { UndoOperations: Undo, SessionState, WritebackIntent: Intent },
+    Modules: { UndoOperations: Undo, SessionState, WritebackIntent: Intent, WritebackVerificationController: Verification,
+      StorageDb: { getRecord: async () => persisted } },
     writebackController: Controller, flushQueuedSaveState: flush
   });
-  for (const name of ['recoveryOwner', 'stageWritebackRecovery', 'settleWritebackRecovery', 'recordUndoFromApply', 'cancelActiveRun']) {
+  for (const name of ['recoveryOwner', 'getWritebackVerificationController', 'stageWritebackRecovery', 'settleWritebackRecovery', 'recordUndoFromApply', 'cancelActiveRun']) {
     vm.runInContext(extractFunction(runtimeSource, name), runtime, { filename: 'contentRuntime.' + name + '.js' });
   }
 

@@ -33,7 +33,7 @@
       const failure = projection?.primaryFailure || event.failure;
       if (report.dataset.status === 'cancelled' || CANCEL_CODES.has(failure?.code)) return;
       const facts = run?.settlement || run?.settlementFacts || {};
-      const unconfirmed = REVIEW_CODES.has(failure?.code)
+      const unconfirmed = projection?.requiresWriteReview === true || REVIEW_CODES.has(failure?.code)
         || facts.documentEffect === 'possibly-changed'
         || (facts.evidence?.applied === 'unknown' && facts.evidence?.settled === 'needs-review');
       const partial = facts.evidence?.applied === 'partial' || run?.partialWriteback === true;
@@ -74,10 +74,15 @@
       return row.value;
     }
 
-    function prepareRecovery(report, { openFile } = {}) {
+    function getRecoveryContext(report) {
       const info = notices.get(report);
-      const target = info?.notice || report;
-      if (!info?.unconfirmed) return { target, handled: false };
+      return { target: info?.notice || report, failure: info?.failure, unconfirmed: info?.unconfirmed === true, file: info?.file || '' };
+    }
+
+    function prepareRecovery(report, { openFile } = {}) {
+      const info = getRecoveryContext(report);
+      const target = info.target;
+      if (!info.unconfirmed) return { target, handled: false, failure: info.failure };
       const canOpen = Boolean(info.file && typeof openFile === 'function');
       const button = documentRef.createElement('button');
       button.type = 'button';
@@ -100,10 +105,10 @@
         }
       });
       target.append(button);
-      return { target, handled: true };
+      return { target, handled: true, failure: info.failure };
     }
 
-    return Object.freeze({ append, formatMetaValue, prepareRecovery });
+    return Object.freeze({ append, formatMetaValue, getRecoveryContext, prepareRecovery });
   }
 
   function safeProjectPath(value) {

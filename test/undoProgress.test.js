@@ -47,9 +47,19 @@ test('failure on one path preserves it while consuming the independent text rece
   assert.equal(next.undoTrackedChanges.length, 0);
   assert.equal(next.undoExpectedFiles.length, 0);
 });
-test('pure text legacy checkpoints retain their existing settlement ownership', () => {
-  const before = { ...run(), undoOperations: [{ type: 'edit', path: 'main.tex' }] };
-  assert.equal(advanceUndoCheckpoint(before, { applied: [] }, () => true), before);
+test('pure text progress consumes verified paths and retries only the remaining checkpoints', () => {
+  const before = { ...run(), undoOperations: [{ type: 'edit', path: 'main.tex' }, { type: 'edit', path: 'other.tex' }],
+    undoExpectedFiles: [{ path: 'main.tex', content: 'before' }, { path: 'other.tex', content: 'other before' }] };
+  const snapshot = JSON.stringify(before);
+  assert.equal(advanceUndoCheckpoint(before, { applied: [] }, () => false), before, 'unverified text retains recovery');
+  const next = advanceUndoCheckpoint(before, { applied: [] }, file => file.path === 'main.tex');
+  assert.deepEqual(next.undoOperations, [{ type: 'edit', path: 'other.tex' }]);
+  assert.deepEqual(next.undoExpectedFiles, [{ path: 'other.tex', content: 'other before' }]);
+  assert.deepEqual(next.undoTrackedChanges, []);
+  assert.deepEqual(next.trackedChangeCaptures, [{ path: 'other.tex', state: 'pending' }]);
+  assert.equal(next.appliedOperations, before.appliedOperations, 'forward audit remains intact');
+  assert.equal(JSON.stringify(before), snapshot, 'progress returns a new checkpoint without mutating its input');
+  assert.equal(advanceUndoCheckpoint(next, { error: 'timeout' }, () => true), next, 'a later timeout retains only unfinished recovery');
 });
 test('exactly verified absence is idempotent completion for a created file', () => {
   const next = advanceUndoCheckpoint(run(), { applied: [receipt({ idempotent: true, changedDocument: false })] });

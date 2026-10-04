@@ -354,6 +354,7 @@ function runnerHarness() {
   const imports = {
     'node:child_process': { spawn: () => child }, 'node:fs': {}, 'node:path': path,
     '../../package.json': { version: 'subagent-protocol-test' },
+    '../../extension/src/shared/projectFiles': require('../extension/src/shared/projectFiles'),
     './codexHome': { buildCodexHomeEnv: env => env },
     './codexArgs': { buildCodexSpeedArgs: () => [] },
     './debugLog': { truncateText: (value, size) => String(value).slice(0, size) },

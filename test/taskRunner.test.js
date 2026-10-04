@@ -172,7 +172,7 @@ test('bridge.ping returns bridge metadata', async () => {
   assert.deepEqual(response.result.supportedProtocol, { min: 1, max: 2 });
   assert.deepEqual(
     response.result.capabilities,
-    Object.fromEntries(REQUIRED_CAPABILITIES.map(capability => [capability, true]))
+    { ...Object.fromEntries(REQUIRED_CAPABILITIES.map(capability => [capability, true])), literalProjectPaths: true }
   );
   assert.equal(response.result.minExtensionVersion, MIN_COMPATIBLE_EXTENSION_VERSION);
   assert.equal(response.result.environment.codex.ok, true);
@@ -1173,7 +1173,7 @@ test('codex.run accepts stale project mirror only for explicitly focused OT-fres
   }
 });
 
-test('codex.run rejects overlays on fresh OT warm mirror reuse before mirror mutation', async () => {
+test('codex.run rejects non-focused overlays on fresh OT warm mirror reuse before mirror mutation', async () => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-fresh-ot-overlay-'));
   const projectId = 'fresh-ot-overlay-project';
   let calls = 0;
@@ -1207,7 +1207,7 @@ test('codex.run rejects overlays on fresh OT warm mirror reuse before mirror mut
 
     assert.equal(response.ok, false);
     assert.equal(response.error.code, 'mirror_stale');
-    assert.match(response.error.message, /OT warm mirror reuse does not accept file overlays/);
+    assert.match(response.error.message, /OT warm mirror overlay does not match the current focused OT baseline/);
     assert.equal(calls, 0);
     assert.equal(fs.readFileSync(path.join(mirror.workspacePath, 'refs.bib'), 'utf8'), '@article{old}');
     assert.equal(refsEntry.content, '@article{old}');
@@ -1257,7 +1257,7 @@ test('codex.run rejects fresh OT warm mirror reuse without focused result restri
   }
 });
 
-test('codex.run rejects overlays on stale OT warm mirror reuse before mirror mutation', async () => {
+test('codex.run rejects non-focused overlays on stale OT warm mirror reuse before mirror mutation', async () => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-stale-ot-overlay-'));
   const projectId = 'stale-ot-overlay-project';
   let calls = 0;
@@ -1292,7 +1292,7 @@ test('codex.run rejects overlays on stale OT warm mirror reuse before mirror mut
 
     assert.equal(response.ok, false);
     assert.equal(response.error.code, 'mirror_stale');
-    assert.match(response.error.message, /OT warm mirror reuse does not accept file overlays/);
+    assert.match(response.error.message, /OT warm mirror overlay does not match the current focused OT baseline/);
     assert.equal(calls, 0);
     assert.equal(fs.readFileSync(path.join(mirror.workspacePath, 'refs.bib'), 'utf8'), '@article{old}');
     assert.equal(refsEntry.content, '@article{old}');

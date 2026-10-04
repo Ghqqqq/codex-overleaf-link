@@ -29,6 +29,10 @@ function getWritebackOrchestratorSource() {
   return fs.readFileSync(path.join(__dirname, WRITEBACK_ORCHESTRATOR_PATH), 'utf8');
 }
 
+function getRunReviewSource() {
+  return fs.readFileSync(path.join(__dirname, '../extension/src/content/runReviewController.js'), 'utf8');
+}
+
 
 function createMinimalDocument() {
   class Element {
@@ -538,7 +542,7 @@ test('run timeline uses user-facing action transcript and undo language', () => 
   assert.match(contentScript, /同步本地 Codex 改动到 Overleaf/);
   assert.match(contentScript, /本地 Codex 改动已同步回 Overleaf/);
   assert.match(contentScript, /undoCheckpointPlain/);
-  assert.match(contentScript, /undoNoTraceTitle/);
+  assert.match(getRunReviewSource(), /undoNoTraceTitle/);
   assert.doesNotMatch(contentScript, /Starting \$\{state\.mode\} task/);
   assert.doesNotMatch(contentScript, /Apply result:/);
   assert.doesNotMatch(contentScript, /Undo checkpoint recorded:/);
@@ -2901,27 +2905,27 @@ test('partial writeback report tells the user what already changed and how to re
 
 test('undo flow blocks legacy full-file replaceAll restores that would mark whole documents changed', () => {
   const contentScript = getContentScriptSource();
-  const undoRunBody = contentScript.match(/async function undoRun\(runId\) \{[\s\S]*?\n  function recordUndoFromApply/)?.[0] || '';
+  const undoRunBody = extractFunction(getRunReviewSource(), 'executeUndo');
 
   assert.match(contentScript, /const MAX_SAFE_UNDO_REPLACEALL_CHARS/);
   assert.match(contentScript, /function findUnsafeFullFileUndoOperation\(/);
   assert.match(undoRunBody, /findUnsafeFullFileUndoOperation\(undoOperations,\s*\{/);
   assert.match(undoRunBody, /allowSnapshotRestore:\s*undoRestore\.snapshotRestore/);
-  assert.match(contentScript, /undoUnsafeFullFileTitle/);
+  assert.match(getRunReviewSource(), /undoUnsafeFullFileTitle/);
 });
 
 test('undo flow uses no-trace restoring instead of requiring Reviewing write mode', () => {
   const contentScript = getContentScriptSource();
-  const undoRunBody = contentScript.match(/async function undoRun\(runId\) \{[\s\S]*?\n  function findUnsafeFullFileUndoOperation/)?.[0] || '';
+  const undoRunBody = extractFunction(getRunReviewSource(), 'executeUndo');
 
   assert.doesNotMatch(undoRunBody, /ensureReviewingBeforeWrite\(run\.undoOperations\)/);
   assert.match(undoRunBody, /reviewingPolicy:\s*'no-trace-undo'/);
-  assert.match(contentScript, /undoNoTraceTitle/);
+  assert.match(getRunReviewSource(), /undoNoTraceTitle/);
 });
 
 test('no-trace undo restores original file snapshots in one operation per file', () => {
   const contentScript = getContentRuntimeSource();
-  const undoRunBody = contentScript.match(/async function undoRun\(runId\) \{[\s\S]*?\n  async function undoRunTrackedChanges/)?.[0] || '';
+  const undoRunBody = extractFunction(getRunReviewSource(), 'executeUndo');
   const recordUndoBody = contentScript.match(/function recordUndoFromApply\(project, applyResult\) \{[\s\S]*?\n  function normalizeApplyTrackedChanges/)?.[0] || '';
 
   assert.match(contentScript, /function buildNoTraceUndoRestoreOperations\(run\)/);
@@ -2937,20 +2941,21 @@ test('no-trace undo restores original file snapshots in one operation per file',
 
 test('no-trace undo marks button applied when verified restore succeeds despite stale leftover skips', () => {
   const contentScript = getContentScriptSource();
-  const undoRunBody = contentScript.match(/async function undoRun\(runId\) \{[\s\S]*?\n  async function undoRunTrackedChanges/)?.[0] || '';
+  const undoRunBody = extractFunction(getRunReviewSource(), 'executeUndo');
 
   assert.match(contentScript, /function isUndoResultEffectivelyApplied\(run, result\)/);
   assert.match(undoRunBody, /const undoApplied = isUndoResultEffectivelyApplied\(run, result\)/);
-  assert.match(undoRunBody, /status:\s*undoApplied \? 'completed' : result\.skipped\?\.length \? 'failed' : 'completed'/);
+  assert.match(undoRunBody, /status:\s*undoApplied \? 'completed' : 'failed'/);
   assert.match(undoRunBody, /applyLegacyUndoSettlement\([\s\S]*?undoApplied && fullSelection \? 'applied' : 'partial'/);
 });
 
 test('reviewing write undo rejects Overleaf tracked changes instead of text patching', () => {
   const contentScript = getContentScriptSource();
-  const undoRunBody = contentScript.match(/async function undoRun\(runId\) \{[\s\S]*?\n  function appendUndoReviewingPolicyEvent/)?.[0] || '';
+  const undoRunBody = extractFunction(getRunReviewSource(), 'executeUndo');
   const recordUndoBody = contentScript.match(/function recordUndoFromApply\(project, applyResult\) \{[\s\S]*?\n  function appendRunRecordEvent/)?.[0] || '';
 
-  assert.match(undoRunBody, /rejectTrackedChanges/);
+  assert.match(undoRunBody, /executeTrackedUndo\(runId, run\)/);
+  assert.match(extractFunction(getRunReviewSource(), 'executeTrackedUndo'), /callPageBridge\('rejectTrackedChanges'/);
   assert.match(undoRunBody, /run\.undoTrackedChanges/);
   assert.match(recordUndoBody, /applyResult\?\.trackedChanges/);
   assert.match(recordUndoBody, /undoTrackedChanges/);
@@ -2972,14 +2977,15 @@ test('reviewing write undo passes post-run content so Overleaf native undo can r
     path.join(__dirname, '../extension/src/page/trackedChangesLifecycle.js'),
     'utf8'
   );
-  const undoRunBody = contentScript.match(/async function undoRunTrackedChanges\(runId, run\) \{[\s\S]*?\n  function getRunUndoCount/)?.[0] || '';
+  const undoRunBody = extractFunction(getRunReviewSource(), 'executeTrackedUndo');
   const undoCountBody = contentScript.match(/function getRunUndoCount\(run\) \{[\s\S]*?\n  function appendUndoReviewingPolicyEvent/)?.[0] || '';
   const recordUndoBody = contentScript.match(/function recordUndoFromApply\(project, applyResult\) \{[\s\S]*?\n  function normalizeApplyTrackedChanges/)?.[0] || '';
 
   assert.match(contentScript, /buildExpectedFilesAfterOperations/);
   assert.match(contentScript, /function buildTrackedUndoPostFiles\(run\)/);
   assert.match(contentScript, /function hasTrackedEditorUndo\(run\)/);
-  assert.match(undoRunBody, /postFiles:\s*buildTrackedUndoPostFiles\(run\)/);
+  assert.match(undoRunBody, /const trackedUndoPostFilesAtDispatch = buildTrackedUndoPostFiles\(textRun\)/);
+  assert.match(undoRunBody, /postFiles:\s*trackedUndoPostFilesAtDispatch/);
   assert.match(contentScript, /hasTrackedEditorUndo\(run\)/);
   assert.match(undoCountBody, /hasTrackedEditorUndo\(run\)\s*\?\s*1\s*:\s*0/);
   assert.match(recordUndoBody, /hasTrackedEditorUndo\(record\)/);
@@ -3069,7 +3075,7 @@ test('run worlds split: legacy-undo runs never show Accept All and keep the undo
 
 test('acceptRun uses an inline confirm flow before dispatching acceptTrackedChanges', () => {
   const contentScript = getContentScriptSource();
-  const acceptRunBody = contentScript.match(/async function acceptRun\(runId\) \{[\s\S]*?\n  (?:async )?function /)?.[0] || '';
+  const acceptRunBody = extractFunction(getRunReviewSource(), 'acceptRun');
 
   assert.match(contentScript, /async function acceptRun\(runId\)/);
   // Inline confirm: the accept only fires through the page bridge.
@@ -3094,8 +3100,8 @@ test('acceptRun drives the run through the decisive §7 settlement reducer, with
   assert.doesNotMatch(contentScript, /function applyTerminalTrackedChangeStatus\(/);
   assert.match(contentScript, /function applyTrackedChangeSettlement\(/);
 
-  const acceptRunBody = contentScript.match(/async function acceptRun\(runId\) \{[\s\S]*?\n  (?:async )?function /)?.[0] || '';
-  assert.match(acceptRunBody, /applyTrackedChangeSettlement\(runId,\s*'accept',\s*result\)/);
+  const acceptRunBody = extractFunction(getRunReviewSource(), 'acceptRun');
+  assert.match(acceptRunBody, /applyTrackedChangeSettlement\(runId,\s*'accept',\s*result,\s*\{\s*assertCurrent:\s*owner\.assert\s*\}\)/);
   const settlementBody = contentScript.match(/function applyTrackedChangeSettlement\([\s\S]*?\n  function /)?.[0] || '';
   assert.match(settlementBody, /WritebackSettlement\.settleTrackedChangeLifecycle/);
   assert.match(settlementBody, /WritebackSettlement\.applySettlementTransition/);
@@ -3287,8 +3293,8 @@ test('acceptRun settlement: failed or unverified page action remains actionable 
   assert.match(contentScript, /accept_not_verified/);
   // The settlement helper, not the unconditional terminal call, is what
   // acceptRun invokes after the page bridge returns ok.
-  const acceptRunBody = contentScript.match(/async function acceptRun\(runId\) \{[\s\S]*?\n  (?:async )?function /)?.[0] || '';
-  assert.match(acceptRunBody, /applyTrackedChangeSettlement\(runId,\s*'accept',\s*result\)/);
+  const acceptRunBody = extractFunction(getRunReviewSource(), 'acceptRun');
+  assert.match(acceptRunBody, /applyTrackedChangeSettlement\(runId,\s*'accept',\s*result,\s*\{\s*assertCurrent:\s*owner\.assert\s*\}\)/);
   assert.doesNotMatch(acceptRunBody, /applyTerminalTrackedChangeStatus\(runId,\s*'accepted'\)/);
   assert.equal(
     WritebackSettlement.settleTrackedChangeLifecycle({
@@ -3326,10 +3332,10 @@ test('undoRunTrackedChanges settlement: successful page action routes to rejecte
   assert.match(contentScript, /undo_reviewing_restore_unverified/);
   assert.match(contentScript, /tracked_change_nodes_not_identified/);
 
-  const undoTrackedBody = contentScript.match(/async function undoRunTrackedChanges\(runId, run\) \{[\s\S]*?\n  (?:async )?function /)?.[0] || '';
+  const undoTrackedBody = extractFunction(getRunReviewSource(), 'executeTrackedUndo');
   // The lifecycle reject path now hands off to applyRejectSettlement, not the
   // unconditional terminal call.
-  assert.match(undoTrackedBody, /applyTrackedChangeSettlement\(runId,\s*'reject',\s*result\)/);
+  assert.match(undoTrackedBody, /applyTrackedChangeSettlement\(runId,\s*'reject',\s*result,\s*\{\s*assertCurrent\s*\}\)/);
   assert.doesNotMatch(undoTrackedBody, /applyTerminalTrackedChangeStatus\(runId,\s*'rejected'\)/);
 });
 
@@ -3390,11 +3396,11 @@ test('content runtime tracks needs_review as actionable without exposing a third
 
 test('lifecycle Undo defers terminal rejected to the settlement helper, not an unconditional call', () => {
   const contentScript = getContentScriptSource();
-  const undoTrackedBody = contentScript.match(/async function undoRunTrackedChanges\(runId, run\) \{[\s\S]*?\n  (?:async )?function /)?.[0] || '';
+  const undoTrackedBody = extractFunction(getRunReviewSource(), 'executeTrackedUndo');
 
   // The lifecycle reject path now hands off to applyRejectSettlement, which is
   // the §7 proof-aware replacement for the v1.3.7 unconditional terminal call.
-  assert.match(undoTrackedBody, /applyTrackedChangeSettlement\(runId,\s*'reject',\s*result\)/);
+  assert.match(undoTrackedBody, /applyTrackedChangeSettlement\(runId,\s*'reject',\s*result,\s*\{\s*assertCurrent\s*\}\)/);
   // No closed-ledger machinery survives.
   assert.doesNotMatch(undoTrackedBody, /applyTrackedChangeLedger/);
 });
@@ -5638,8 +5644,9 @@ test('writeback failure promotes the primary skipped failure so file/write recov
   assert.match(fn, /failure:\s*writebackIncomplete \? promoteWritebackSkippedFailure\(applied\)/,
     'the failed-writeback report must carry the primary skipped failure');
   const picker = extractFromContentScript('promoteWritebackSkippedFailure');
-  assert.match(picker, /getSkippedEntries\(applied\)/);
-  assert.match(picker, /failure\.file/, 'promoted failure must keep/derive the file for the open-file action');
+  assert.match(picker, /writebackSettlement\.collectFailuresFromResult\(applied\)/);
+  assert.match(picker, /writebackSettlement\.selectPrimaryFailure\(failures\)/,
+    'report failure uses the normalized settlement selector, including file context and review priority');
 });
 
 test('clear-all-history re-renders the panel explicitly instead of relying on startNewSession (v1.7.5 fleet)', () => {
@@ -5688,18 +5695,15 @@ test('every page-world module writebackRouter dereferences is actually injected 
   assert.ok(lifecycleAt < routerAt, 'lifecycle must load before the router that dereferences it');
 });
 
-test('verified text-only writebacks confirm the mirror in place with a full-resync fallback (v1.8.0)', () => {
-  // The written content ORIGINATES in the local workspace, so a verified
-  // writeback only needs the baseline re-hashed (mirror.confirmWriteback) —
-  // not a full project re-download. Anything unusual must fall back.
+test('verified text-only writebacks confirm page post-image proofs with a full-resync fallback', () => {
   const refresh = extractFromContentScript('refreshProjectMirrorAfterWriteback');
   assert.match(refresh, /await tryConfirmMirrorWriteback\(applied,\s*target\.runProjectId\)/,
     'the incremental confirm path runs first');
   assert.match(refresh, /getProjectSnapshot/,
     'the full zip resync fallback stays in place');
   const confirm = extractFromContentScript('tryConfirmMirrorWriteback');
-  assert.match(confirm, /MIRROR_CONFIRMABLE_OPERATION_TYPES\.has\(operation\.type\)/,
-    'only whitelisted text operations qualify');
+  assert.match(confirm, /buildMirrorWritebackConfirmation/,
+    'the production proof builder decides whether verified text operations qualify');
   assert.match(confirm, /return false/,
     'any non-qualifying entry falls back to the full resync');
   assert.match(confirm, /projectId:\s*runProjectId/);
@@ -5708,9 +5712,8 @@ test('verified text-only writebacks confirm the mirror in place with a full-resy
     'dispatches the v1.8.0 confirm method');
   assert.match(confirm, /catch \(error\)/,
     'an old native host without the method must not break the refresh');
-  const src = getContentScriptSource();
-  assert.match(src, /MIRROR_CONFIRMABLE_OPERATION_TYPES = new Set\(\['edit'\]\)/,
-    'tree ops and binary writes are excluded from the in-place confirm');
+  assert.match(confirm, /proof\.expectedFiles\.every/,
+    'the response hashes must still match the requested page post-images');
 });
 
 test('writeback records the undo checkpoint before any cancellable verify await; mirror runs in background with barriers (v1.7.5)', () => {
@@ -5732,7 +5735,7 @@ test('writeback records the undo checkpoint before any cancellable verify await;
   // The barriers: an in-flight mirror.sync landing AFTER an undo (or after
   // the next run started) would push the pre-undo snapshot as the local
   // baseline. Both consumers must wait it out.
-  const undoBody = extractFromContentScript('undoRun');
+  const undoBody = extractFunction(getRunReviewSource(), 'executeUndo');
   assert.match(undoBody, /getPendingMirrorRefresh/,
     'undoRun must barrier on the pending mirror refresh');
   const runTaskBody = getContentScriptSource().match(/async function runTask\([^)]*\) \{[\s\S]*?\n  async function handleTaskResult/)?.[0] || '';

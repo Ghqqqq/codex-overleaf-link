@@ -42,6 +42,9 @@
       if (!/^[a-f0-9]{64}$/i.test(String(params.sha256 || ''))) {
         return failure('binary_asset_hash_invalid', 'Asset SHA-256 is missing or invalid.');
       }
+      if (params.overwrite === true && !/^[a-f0-9]{64}$/i.test(String(params.previousSha256 || ''))) {
+        return failure('binary_asset_baseline_missing', 'The original binary version is unavailable. Read the project again before replacing this file.');
+      }
       pruneReceipts();
       if (transfers.has(transferId) || receipts.has(transferId)) {
         return failure('binary_upload_transfer_conflict', 'Asset transfer ID is already in use.');
@@ -54,9 +57,11 @@
         path: projectPath,
         size,
         sha256: String(params.sha256).toLowerCase(),
+        previousSha256: params.overwrite === true ? String(params.previousSha256).toLowerCase() : '',
         mimeType: String(params.mimeType || 'application/octet-stream'),
         projectId: treeOperations.getProjectId(),
         overwrite: params.overwrite === true,
+        createdDirectories: [], folderChanged: false, fileUploadAttempted: false,
         chunks: [],
         received: 0
       });
@@ -96,11 +101,19 @@
       transfer.promise = commitOnce(params).catch(error => ({
         ...failure(error.code || 'binary_upload_failed', error.message),
         changedDocument: transfer.mutationAttempted === true
-      })).then(result => {
-        transfer.result = result;
+      })).then(async result => {
+        if (result.ok !== true && transfer.createdDirectories.length && typeof deps.cleanupCreatedDirectories === 'function') {
+          try {
+            const cleanup = await deps.cleanupCreatedDirectories(transfer.createdDirectories, {
+              projectId: transfer.projectId, isCurrent: () => treeOperations.getProjectId() === transfer.projectId && receipts.get(id) === transfer
+            });
+            transfer.createdDirectories = cleanup.remaining || transfer.createdDirectories;
+          } catch (_error) { /* Retain ownership proofs when cleanup cannot be confirmed. */ }
+        }
+        transfer.result = { ...result, ...directoryFacts(transfer, result.ok !== true) };
         transfer.finishedAt = Date.now();
         transfer.chunks = [];
-        return result;
+        return transfer.result;
       });
       return transfer.promise;
     }
@@ -112,11 +125,12 @@
         || treeOperations.getProjectId() !== transfer.projectId) {
         return failure('binary_upload_receipt_missing', 'Asset upload receipt is unavailable for this project.');
       }
-      if (transfer.result?.ok !== true && transfer.mutationAttempted === true) {
+      if (transfer.result?.ok !== true && transfer.fileUploadAttempted === true) {
         const evidence = await waitForPath(transfer, {}, 2500).catch(() => null);
         if (evidence?.hashVerified === true) {
           transfer.result = { ok: true, written: true, path: transfer.path,
-            changedDocument: true, method: 'remote-hash-reconciliation' };
+            changedDocument: true, method: 'remote-hash-reconciliation', ...directoryFacts(transfer),
+            entityId: evidence.observed?.id || readTreeEntityId(evidence.observed), sha256: transfer.sha256 };
         }
       }
       return { ok: true, transferId: transfer.id, runProjectId: transfer.projectId,
@@ -156,17 +170,22 @@
             assertTransferProject(transfer);
             const overwriteVerified = hashVerified || result?.confirmedByTransport === true;
             if (result?.ok && observed && overwriteVerified) {
-              return { ok: true, written: true, path: transfer.path, method: result.method, changedDocument: true };
+              return { ok: true, written: true, path: transfer.path, method: result.method, changedDocument: true,
+                entityId: observed.id || observed._id || observed.entityId || observed.fileId || '', sha256: transfer.sha256 };
             }
             if (result?.ok && observed && !overwriteVerified) errors.push('Overleaf did not expose enough evidence to verify the binary replacement.');
             if (result?.reason) errors.push(result.reason);
           } catch (error) {
+            if (error?.code?.startsWith('binary_asset_baseline_')) return {
+              ...failure(error.code, error.message), changedDocument: transfer.mutationAttempted === true
+            };
             errors.push(error.message);
           }
           // Once submission may have happened, changing transports can duplicate
           // or overwrite a successful upload. Reconcile the same attempt instead.
           if (transfer.mutationAttempted === true) {
-            const evidence = await waitForPath(transfer, {}, 12000).catch(() => null);
+            const evidence = transfer.fileUploadAttempted === true
+              ? await waitForPath(transfer, {}, 12000).catch(() => null) : null;
             if (evidence?.hashVerified === true) {
               return { ok: true, written: true, path: transfer.path,
                 method: 'remote-hash-reconciliation', changedDocument: true };
@@ -194,6 +213,12 @@
       }
     }
 
+    function directoryFacts(transfer, requireCleanup = false) {
+      return { createdDirectories: transfer.createdDirectories.map(proof => ({ ...proof })),
+        folderChanged: transfer.folderChanged === true, fileUploadAttempted: transfer.fileUploadAttempted === true,
+        directoryCleanupRequired: requireCleanup && transfer.createdDirectories.length > 0 };
+    }
+
     async function uploadWithMultipart(file, transfer) {
       const projectId = treeOperations.getProjectId();
       if (!projectId || typeof windowRef.fetch !== 'function') return { ok: false, reason: 'Project upload endpoint is unavailable.' };
@@ -208,7 +233,11 @@
       const headers = csrf ? { 'X-CSRF-Token': csrf } : {};
       const query = folderId ? `?folder_id=${encodeURIComponent(folderId)}` : '';
       assertTransferProject(transfer);
+      await assertBinaryBaseline(transfer);
+      if (parentPath && await findFolderId(parentPath) !== folderId) throw baselineError('The target folder changed before replacement.');
+      assertTransferProject(transfer);
       transfer.mutationAttempted = true;
+      transfer.fileUploadAttempted = true;
       const response = await windowRef.fetch(`/project/${encodeURIComponent(projectId)}/upload${query}`, {
         method: 'POST', body: form, credentials: 'same-origin', headers
       });
@@ -231,15 +260,24 @@
 
     async function uploadWithDom(file, transfer) {
       const parentPath = transfer.path.split('/').slice(0, -1).join('/');
-      if (typeof deps.prepareUploadParent !== 'function') {
+      if (typeof deps.prepareUploadParent !== 'function' || typeof deps.isUploadParentCurrent !== 'function') {
         return { ok: false, reason: 'Verified folder selection is unavailable for asset upload.' };
       }
-      await deps.prepareUploadParent(parentPath, {
+      transfer.uploadParent = await deps.prepareUploadParent(parentPath, {
         createMissing: true,
-        onMutation: () => { transfer.mutationAttempted = true; },
+        onMutation: () => { transfer.mutationAttempted = true; transfer.folderChanged = true; },
+        onCreatedDirectory: proof => {
+          if (proof?.v !== 1 || proof.projectId !== transfer.projectId || typeof proof.path !== 'string'
+            || !transfer.path.startsWith(proof.path + '/')) return;
+          const next = { v: 1, projectId: proof.projectId, path: proof.path, nativeFolderId: String(proof.nativeFolderId || ''),
+            ownershipConfirmed: proof.ownershipConfirmed === true, observedAfterCreate: proof.observedAfterCreate === true };
+          const index = transfer.createdDirectories.findIndex(value => value.path === proof.path);
+          if (index >= 0) transfer.createdDirectories[index] = next; else transfer.createdDirectories.push(next);
+        },
         isCurrent: () => treeOperations.getProjectId() === transfer.projectId && transfers.get(transfer.id) === transfer
       });
       assertTransferProject(transfer);
+      transfer.uploadParentPath = parentPath;
       let input = findFileInput();
       if (!input) {
         const button = findUploadButton();
@@ -251,8 +289,13 @@
       const data = new windowRef.DataTransfer();
       data.items.add(file);
       assertTransferProject(transfer);
+      await assertBinaryBaseline(transfer);
+      assertTransferProject(transfer);
+      if (deps.isUploadParentCurrent(parentPath, transfer.uploadParent) !== true) throw baselineError('The selected upload folder changed before submission.');
+      if (input.isConnected === false || findFileInput() !== input) throw baselineError('The upload input changed before submission.');
       assignFilesToInput(input, data.files, windowRef);
       transfer.mutationAttempted = true;
+      transfer.fileUploadAttempted = true;
       input.dispatchEvent(new windowRef.Event('input', { bubbles: true }));
       input.dispatchEvent(new windowRef.Event('change', { bubbles: true }));
       await clickReplaceIfShown(transfer);
@@ -265,10 +308,14 @@
       for (const name of ['uploadFile', 'uploadAsset', 'createBinaryFile', 'createFile', 'addFile']) {
         if (typeof manager[name] !== 'function') continue;
         try {
+          await assertBinaryBaseline(transfer);
+          assertTransferProject(transfer);
+          if (treeOperations.findFileTreeManager() !== manager) throw baselineError('The upload manager changed before submission.');
           transfer.mutationAttempted = true;
+          transfer.fileUploadAttempted = true;
           await manager[name](transfer.path, file);
           return { ok: true, method: `fileTreeManager.${name}`, confirmedByTransport: true };
-        } catch (error) { return { ok: false, reason: error.message }; }
+        } catch (error) { if (error?.code?.startsWith('binary_asset_baseline_')) throw error; return { ok: false, reason: error.message }; }
       }
       return { ok: false, reason: 'Legacy file-tree manager has no compatible asset method.' };
     }
@@ -322,9 +369,84 @@
       await delay(180);
       assertTransferProject(transfer);
       if (!transfer.overwrite) return;
-      const button = Array.from(documentRef.querySelectorAll('[role="dialog"] button')).find(node => !isCodexOwnedNode(node)
-        && /replace|overwrite|替换|覆盖/i.test(node.textContent || ''));
-      if (button) button.click();
+      const candidates = () => Array.from(documentRef.querySelectorAll('[role="dialog"] button')).filter(node => !isCodexOwnedNode(node)
+        && /^(replace|overwrite|替换|覆盖)(?:\b|\s|$)/i.test(String(node.textContent || '').trim()));
+      const buttons = candidates();
+      if (!buttons.length) return;
+      const matchesTarget = node => {
+        const dialog = node.closest?.('[role="dialog"]');
+        const text = String(dialog?.textContent || '');
+        return [transfer.path, transfer.path.split('/').pop()].some(path =>
+          new RegExp('(^|[^\\w./-])' + path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\w./-])').test(text));
+      };
+      const intended = buttons.filter(matchesTarget);
+      if (intended.length !== 1) throw baselineError('The replacement dialog could not be bound to the target file.');
+      const button = intended[0], dialog = button.closest('[role="dialog"]');
+      await assertBinaryBaseline(transfer);
+      assertTransferProject(transfer);
+      if (deps.isUploadParentCurrent(transfer.uploadParentPath, transfer.uploadParent) !== true) throw baselineError('The selected upload folder changed before replacement confirmation.');
+      const current = candidates().filter(matchesTarget);
+      if (current.length !== 1 || current[0] !== button || button.isConnected === false
+        || button.closest('[role="dialog"]') !== dialog) throw baselineError('The replacement dialog changed before confirmation.');
+      button.click();
+    }
+    async function binaryIdentity(transfer) {
+      assertTransferProject(transfer);
+      const nativeRoot = documentRef.querySelector?.('[data-testid="file-tree-list-root"]');
+      // The generic adapter may resolve a root basename to another folder.
+      // Only the native ancestry or an exact metadata path can bind old bytes.
+      const node = nativeRoot ? findNativeTreeNode(transfer.path, 'file') : null;
+      let id = readTreeEntityId(node);
+      if (!id) {
+        const list = await snapshotRouter?.buildProjectFileList({ force: true, maxAgeMs: 0, preferLightweight: true, allowZipFallback: false });
+        const file = list?.files?.find(file => file.path === transfer.path);
+        id = file?.id || file?._id || file?.entityId || file?.fileId || '';
+      }
+      assertTransferProject(transfer);
+      return id;
+    }
+    async function assertBinaryBaseline(transfer) {
+      if (!transfer.overwrite) return;
+      const { id, digest } = await readBaselineDigest(transfer);
+      assertTransferProject(transfer);
+      if (digest !== transfer.previousSha256) throw baselineError('The binary file changed since Codex read it. Read the project again before replacing it.');
+      transfer.previousEntityId = id;
+    }
+    function baselineError(message) { return Object.assign(new Error(message), { code: 'binary_asset_baseline_changed' }); }
+    async function readBaselineDigest(transfer) {
+      const controller = new AbortController();
+      let timer, reader;
+      const timeout = new Promise((_resolve, reject) => { timer = setTimeout(() => {
+        controller.abort(); reader?.cancel().catch(() => {});
+        reject(baselineError('Reading the original binary file timed out.'));
+      }, 8000); });
+      try {
+        return await Promise.race([timeout, (async () => {
+          const id = await binaryIdentity(transfer);
+          if (controller.signal.aborted) throw baselineError('Reading the original binary file timed out.');
+          if (!id || (transfer.previousEntityId && transfer.previousEntityId !== id)) throw baselineError('The binary file identity changed before replacement.');
+          const response = await windowRef.fetch(`/project/${encodeURIComponent(transfer.projectId)}/file/${encodeURIComponent(id)}`, {
+            credentials: 'same-origin', cache: 'no-store', signal: controller.signal
+          });
+          if (!response.ok || Number(response.headers?.get?.('content-length')) > MAX_ASSET_BYTES) throw baselineError('The original binary file is unavailable or exceeds the read limit.');
+          let bytes;
+          if (response.body?.getReader) {
+            reader = response.body.getReader(); const chunks = []; let size = 0;
+            for (;;) { const chunk = await reader.read(); if (chunk.done) break;
+              size += chunk.value.byteLength;
+              if (size > MAX_ASSET_BYTES) throw baselineError('The original binary file exceeds the read limit.');
+              chunks.push(chunk.value);
+            }
+            bytes = joinChunks(chunks, size);
+          } else bytes = new Uint8Array(await response.arrayBuffer());
+          if (bytes.byteLength > MAX_ASSET_BYTES) throw baselineError('The original binary file exceeds the read limit.');
+          const digest = await sha256Hex(bytes, windowRef.crypto);
+          if (await binaryIdentity(transfer) !== id) throw baselineError('The binary file identity changed while its original bytes were read.');
+          assertTransferProject(transfer);
+          if (controller.signal.aborted) throw baselineError('Reading the original binary file timed out.');
+          return { id, digest };
+        })()]);
+      } finally { clearTimeout(timer); controller.abort(); reader?.cancel().catch(() => {}); }
     }
     function readTreeEntityId(node) {
       const owner = node?.closest?.('[data-entity-id], [data-file-id], [data-folder-id], [data-id]');

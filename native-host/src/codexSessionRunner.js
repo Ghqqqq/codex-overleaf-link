@@ -7,6 +7,7 @@ const { version: PACKAGE_VERSION } = require('../../package.json');
 const { SUBAGENT_QUEUE_DIR, collectMirrorChangesDetailed, getProjectMirror, markMirrorDirty, syncOverleafToMirror } = require('./mirrorWorkspace');
 const { computeLineDiff } = require('./diffEngine');
 const { prepareSelectionScope, filterSelectionChanges } = require('./selectionScope');
+const { normalizeSafeProjectPath } = require('../../extension/src/shared/projectFiles');
 const WritingStyleRuntime = require('./writingStyleRuntime');
 const { createRecoveringStyleRunner } = require('./codexModelRecovery');
 const { computeTextPatches } = require('./textPatch');
@@ -92,9 +93,10 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
       skippedFiles: mirror.skippedFiles || []
     }, 'completed');
   }
-
   if (skillInstallTurn && params.selectionContext) throw new Error('Remove the selected text before installing skills.');
   const selectionScope = prepareSelectionScope(params.selectionContext, mirror.workspacePath, projectId);
+  if (selectionScope?.rebased) emitCodexEvent(emit, 'overleaf.selection.rebased', 'The unchanged selection was mapped to the current document.',
+    { path: selectionScope.selection.path, from: selectionScope.selection.from, to: selectionScope.selection.to, original: selectionScope.original }, 'info');
   const projectLocalSkills = loadProjectLocalSkillsContext(params, mirror);
   if (projectLocalSkills.missing.length) {
     emitCodexEvent(emit, 'codex.local_skills.missing', 'Selected project-local skills were missing', {
@@ -248,6 +250,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
   const filteredChanges = filterSyncChangesForFocus({
     changes: selectionChanges.changes,
     focusFiles: params.focusFiles || params.session?.focusFiles,
+    focusFilesAreLiteral: params.focusFilesAreLiteral === true,
     restrictToFocusFiles: params.restrictToFocusFiles
   });
   let rawSyncChanges = filteredChanges.changes;
@@ -262,13 +265,14 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
   // syncChanges would write directly.
   const subagentViolationPaths = subagentBroker ? subagentBroker.getViolationPaths() : null;
   if (subagentViolationPaths && subagentViolationPaths.size) {
-    const blocked = rawSyncChanges.filter(change => subagentViolationPaths.has(change.path));
-    rawSyncChanges = rawSyncChanges.filter(change => !subagentViolationPaths.has(change.path));
+    const violatedPath = change => [change.path, change.to].find(file => file && subagentViolationPaths.has(file));
+    const blocked = rawSyncChanges.filter(change => violatedPath(change));
+    rawSyncChanges = rawSyncChanges.filter(change => !violatedPath(change));
     for (const change of blocked) {
       unsupportedChanges.push({
         type: 'unsupported-local-file',
         path: change.path,
-        reason: subagentBroker.getBlockedReason(change.path)
+        reason: subagentBroker.getBlockedReason(violatedPath(change))
       });
     }
   }
@@ -329,7 +333,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
     files: response.syncChanges.map(change => change.path),
     unsupportedCount: response.unsupportedChanges.length,
     unsupportedFiles: response.unsupportedChanges.map(change => change.path)
-  }, 'completed');
+  }, response.unsupportedChanges.length ? 'warning' : 'completed');
 
   return response;
 }
@@ -349,11 +353,11 @@ function buildCodexTurnPrompt(params = {}, mirror = {}, projectLocalSkills, turn
 
 
 
-function normalizeFocusFiles(value) {
+function normalizeFocusFiles(value, literal = false) {
   const seen = new Set();
   const files = [];
   for (const item of Array.isArray(value) ? value : []) {
-    const filePath = normalizeProjectPath(item);
+    const filePath = literal ? normalizeSafeProjectPath(item) : normalizeProjectPath(item);
     if (!filePath || seen.has(filePath)) {
       continue;
     }
@@ -365,20 +369,20 @@ function normalizeFocusFiles(value) {
   }
   return files;
 }
-
-function filterSyncChangesForFocus({ changes = [], focusFiles = [], restrictToFocusFiles = false } = {}) {
+function filterSyncChangesForFocus({ changes = [], focusFiles = [], restrictToFocusFiles = false, focusFilesAreLiteral = false } = {}) {
   if (!restrictToFocusFiles) {
     return { changes, unsupportedChanges: [] };
   }
-  const focusSet = new Set(normalizeFocusFiles(focusFiles));
-  if (!focusSet.size) {
+  const focusSet = new Set(normalizeFocusFiles(focusFiles, focusFilesAreLiteral === true));
+  if (!focusSet.size && focusFilesAreLiteral !== true) {
     return { changes, unsupportedChanges: [] };
   }
 
   const accepted = [];
   const rejected = [];
   for (const change of changes || []) {
-    if (focusSet.has(normalizeProjectPath(change?.path))) {
+    if (focusSet.has(normalizeSafeProjectPath(change?.path))
+      && (!change?.to || focusSet.has(normalizeSafeProjectPath(change.to)))) {
       accepted.push(change);
     } else if (change?.path) {
       rejected.push({
@@ -393,7 +397,6 @@ function filterSyncChangesForFocus({ changes = [], focusFiles = [], restrictToFo
     unsupportedChanges: rejected
   };
 }
-
 function normalizeProjectPath(value) {
   return String(value || '')
     .replace(/^@file:/i, '')
@@ -1479,9 +1482,7 @@ function isUnsupportedReasoningSummaryError(error) {
   return /unsupported_parameter/i.test(message) && /reasoning\.summary|summary/i.test(message);
 }
 
-function cleanAssistantMessage(value) {
-  return String(value || '').trim();
-}
+const cleanAssistantMessage = value => String(value || '').trim();
 
 module.exports = {
   applyCodexSkillIsolation,

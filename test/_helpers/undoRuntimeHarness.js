@@ -18,6 +18,7 @@ const NativeCapture = require('../../extension/src/page/trackedChangeCapture');
 const Lifecycle = require('../../extension/src/page/trackedChangesLifecycle');
 const Scope = require('../../extension/src/content/scopedPersistencePanelState');
 const FailureReasons = require('../../extension/src/shared/failureReasons');
+const ReviewController = require('../../extension/src/content/runReviewController');
 const runtime = fs.readFileSync(path.join(__dirname, '../../extension/src/content/contentRuntime.js'), 'utf8');
 function extract(name) {
   const match = new RegExp('^  (?:async )?function ' + name + '\\(', 'm').exec(runtime);
@@ -172,7 +173,14 @@ function harness(options = {}) {
       state.results.push(result); return result;
     }
   };
+  context.getDirectoryCleanupRecovery = () => require('../../extension/src/content/directoryCleanupRecovery').create({
+    getProjectId: () => state.projectId, getAccountScopeId: () => 'account-one', getState: () => context.state,
+    getRouteGeneration: () => 0, findRunRecord: () => run, refresh() {}
+  });
   vm.createContext(context);
+  let reviewController;
+  context.getRunReviewController = () => reviewController || (reviewController = ReviewController.create({ ...context,
+    getState: () => context.state }));
   for (const name of ['getRunUndoCount', 'recordUndoFromApply', 'undoRun', 'undoRunTrackedChanges',
     'applyTrackedChangeSettlement', 'applyLegacyUndoSettlement']) vm.runInContext(extract(name), context);
   if (runtime.includes('  function advanceRunUndoProgress(')) vm.runInContext(extract('advanceRunUndoProgress'), context);

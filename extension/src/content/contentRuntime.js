@@ -463,6 +463,12 @@
     refillComposerForRetry,
     canEditRun: run => runController.isRetryReplacementEligible(run, WritebackSettlement.projectRunSettlement(run)),
     retryWriteback: retryRunWriteback,
+    checkWriteback: checkRunWriteback,
+    checkCreatedDirectories,
+    getCurrentProjectId,
+    getAccountScopeId: () => cachedAccountScopeId,
+    openManualReviewFile,
+    verifyManualReview,
     showNativeSetupGuidance: () => showNativeUpdateGuidanceModal({}),
     openProjectFileForFailure,
     openStorageSettings,
@@ -628,7 +634,7 @@
   const assetTransferBroker = Modules.AssetTransferBroker.create({ callPageBridge, sendBackgroundNative });
   const { partitionUnsafeProjectPathOperations, normalizeOperationProjectPaths, getInvalidOperationProjectPath,
     evaluateGovernedOperations, buildGovernanceSkippedApplyResult, filterSyncChangesByOperations, mergeApplyResultSkipped,
-    confirmBinaryOperations, buildAuditSummaryFromApply, summarizeOperationForAudit } = Modules.WritebackPlan.create({
+    confirmBinaryOperations, confirmWholeFilePlan, buildAuditSummaryFromApply, summarizeOperationForAudit } = Modules.WritebackPlan.create({
     tx, tr, normalizeSafeProjectPath, GovernanceRules, getGovernanceRulesForCurrentProject,
     showPluginConfirm, formatOperationFiles, getAppliedEntries, getSkippedEntries
   });
@@ -669,6 +675,7 @@
     buildReviewingBlockedApplyResult,
     ensureReviewingBeforeWrite,
     confirmBinaryOperations,
+    confirmWholeFilePlan,
     filterSyncChangesByOperations,
     writebackController,
     assetTransferBroker,
@@ -1891,6 +1898,7 @@
         project,
         snapshotWarnings,
         focusFiles,
+        focusFilesAreLiteral: true,
         isUsableProjectFileContent: Modules.ProjectFiles.isUsableProjectFileContent
       });
       let restrictToFocusFiles = runController.shouldRestrictWritebackToFocus({ focusFiles, focusedPartialSnapshot });
@@ -4408,7 +4416,7 @@
       const applied = await applyTaskOperations(project, operations);
       applyResults.push(applied);
       appendApplyResult(applied);
-      recordUndoFromApply(project, applied);
+      await recordUndoFromApply(project, applied);
       const approved = await showPluginConfirm({
         title: tx('Confirm delete plan?', '确认删除计划？'),
         message: formatDeletePlan(result.deletePlan || []),
@@ -4422,7 +4430,7 @@
         const deleteApplied = await applyTaskOperations(project, pendingOperations, { allowHighRisk: true });
         applyResults.push(deleteApplied);
         appendApplyResult(deleteApplied);
-        recordUndoFromApply(project, deleteApplied);
+        await recordUndoFromApply(project, deleteApplied);
         appendLog(tx('Deleted files after confirmation.', '已按确认删除文件。'));
         const summaryLine = appendChangeSummary({
           notes,
@@ -4475,7 +4483,7 @@
     appendOperationsPreview(operations, tx('Preparing to write', '准备写入'));
     const applied = await applyTaskOperations(project, operations);
     appendApplyResult(applied);
-    recordUndoFromApply(project, applied);
+    await recordUndoFromApply(project, applied);
     appendLog(mode === 'auto' ? tx('Auto write task completed.', '自动写入任务完成。') : tx('Task completed.', '任务完成。'));
     const summaryLine = appendChangeSummary({
       notes,
@@ -4500,6 +4508,7 @@
   }
 
   async function applyTaskOperations(project, operations, options = {}) {
+    const target = currentRunView;
     const runRequireReviewing = typeof options.requireReviewing === 'boolean'
       ? options.requireReviewing
       : state.requireReviewing === true;
@@ -4509,7 +4518,13 @@
         title: tr('undoNoWritesTitle'),
         status: 'completed'
       });
-    } else {
+    }
+    const reviewing = await ensureReviewingBeforeWrite(partitioned.safe, { requireReviewing: runRequireReviewing });
+    if (!reviewing.ok) {
+      return buildReviewingBlockedApplyResult(partitioned.safe, reviewing, partitioned.skipped);
+    }
+    if (partitioned.safe.length) await stageWritebackRecovery(partitioned.safe, target, runRequireReviewing, project);
+    if (partitioned.safe.length) {
       appendRunEvent({
         title: tx('Saved a recoverable version before this run writes.', '已保存本轮写入前的可恢复版本。'),
         status: 'completed',
@@ -4518,10 +4533,7 @@
         }
       });
     }
-    const reviewing = await ensureReviewingBeforeWrite(partitioned.safe, { requireReviewing: runRequireReviewing });
-    if (!reviewing.ok) {
-      return buildReviewingBlockedApplyResult(partitioned.safe, reviewing, partitioned.skipped);
-    }
+
     const applied = partitioned.safe.length
       ? await callPageBridge('applyOperations', {
         operations: partitioned.safe,
@@ -4529,7 +4541,7 @@
         requireReviewing: runRequireReviewing,
         requireEditing: !runRequireReviewing,
         // Welcome-panel + write-guard:
-        runProjectId: currentRunView?.runProjectId || ''
+        runProjectId: target?.runProjectId || ''
       })
       : { ok: true, applied: [], skipped: [] };
 
@@ -4933,7 +4945,7 @@
       focusFiles: getActiveFocusFiles()
     });
     const sanitizedProject = sanitizeRunProjectSnapshot(project);
-    if (sanitizedProject?.capabilities?.fullProjectSnapshot) {
+    if (sanitizedProject?.capabilities?.fullProjectSnapshot || sanitizedProject?.capabilities?.pathIdentityComplete === false) {
       return sanitizedProject;
     }
     const pageStateProject = await callPageBridge('getProjectSnapshot', {
@@ -4954,25 +4966,37 @@
   }
 
   function sanitizeRunProjectSnapshot(project) {
-    if (!project || typeof project !== 'object') {
-      return project;
-    }
-    const activePath = normalizeSnapshotPath(project.activePath || '');
+    if (!project || typeof project !== 'object') return project;
+    const normalize = Modules.ProjectFiles.normalizeSafeProjectPath;
     const files = Array.isArray(project.files) ? project.files : [];
-    const filePathSet = new Set(files.map(file => normalizeSnapshotPath(file?.path || '')).filter(Boolean));
-    const activePathKnown = activePath && filePathSet.has(activePath);
-    if (!activePath || activePathKnown) {
-      return project;
+    const counts = new Map();
+    for (const file of files) {
+      const path = normalize(file?.path);
+      if (path) counts.set(path, (counts.get(path) || 0) + 1);
     }
+    const skipped = [];
+    const safeFiles = files.filter(file => {
+      const path = normalize(file?.path);
+      if (path && counts.get(path) === 1) return true;
+      skipped.push({ path: typeof file?.path === 'string' ? file.path : '',
+        reason: path ? 'snapshot_path_duplicate' : 'snapshot_path_invalid' });
+      return false;
+    });
+    const activePath = normalize(project.activePath || '');
+    const activePathKnown = activePath && safeFiles.some(file => file.path === activePath);
+    const rejectActive = Boolean(project.activePath && !activePathKnown);
+    if (!skipped.length && !rejectActive) return project;
     return {
       ...project,
-      activePath: '',
-      files: files.map(file => file?.active ? { ...file, active: false } : file),
+      activePath: rejectActive ? '' : project.activePath,
+      files: safeFiles.map(file => rejectActive && file?.active ? { ...file, active: false } : file),
       capabilities: {
         ...(project.capabilities || {}),
+        ...(skipped.length ? { fullProjectSnapshot: false, contentComplete: false, pathIdentityComplete: false,
+          skipped: [...(project.capabilities?.skipped || []), ...skipped] } : {}),
         diagnostics: {
           ...(project.capabilities?.diagnostics || {}),
-          rejectedActivePath: project.activePath
+          ...(rejectActive ? { rejectedActivePath: project.activePath } : {})
         }
       }
     };
@@ -5058,11 +5082,8 @@
   }
 
   function normalizeSnapshotPath(path) {
-    return String(path || '')
-      .replace(/^@file:/i, '')
-      .replace(/\\/g, '/')
-      .trim()
-      .replace(/^\/+/, '');
+    // Snapshot/overlay/focus arrays already carry canonical names from file chips.
+    return Modules.ProjectFiles.normalizeSafeProjectPath(path);
   }
 
   function mergeProjectWithSyncChangeBaseFiles(project = {}, syncChanges = []) {
@@ -5414,8 +5435,10 @@
         ? structuredClone(compactState)
         : JSON.parse(JSON.stringify(compactState));
 
+      const retentionScope = { accountScopeId: typeof cachedAccountScopeId === 'string' ? cachedAccountScopeId : '', projectId, generation: typeof spaRouteGeneration === 'number' ? spaRouteGeneration : null };
+      let written;
       const persistScopedState = async persistenceContext => {
-        await Modules.ScopedPersistenceCoordinator.persistPanelState({
+        written = await Modules.ScopedPersistenceCoordinator.persistPanelState({
         state: stateSnapshot,
         compactState: compactStateSnapshot,
         projectId,
@@ -5456,6 +5479,18 @@
           throw Object.assign(new Error(`Scoped persistence failed: ${committed.reason}`), {
             code: committed.reason
           });
+        }
+        if (committed.ok) {
+          const retentionUpdates = StorageDb.projectRetentionUpdates?.({ liveState: state, capturedState: stateSnapshot, written,
+            capturedScope: retentionScope, currentScope: { accountScopeId: typeof cachedAccountScopeId === 'string' ? cachedAccountScopeId : '',
+              projectId: getCurrentProjectId(), generation: typeof spaRouteGeneration === 'number' ? spaRouteGeneration : null } }) || [];
+          for (const update of retentionUpdates) for (const run of [...(state.runs || []), ...(state.sessions || []).flatMap(session => session.runs || [])]) {
+            if (run.id !== update.runId) continue;
+            if (update.retention) run.recoveryRetention = update.retention; else delete run.recoveryRetention;
+          }
+          if (retentionUpdates.some(update => update.retention)) appendStorageNoticeOnce('undo-retention', tx(
+            'Some recovery evidence was not retained durably. After reloading, check Overleaf history or Review.',
+            '部分恢复材料未持久保留；刷新后请核对 Overleaf 历史或审阅。'));
         }
         if (options?.requireDurable || options?.recoveryRuns?.length) return true;
       }
@@ -5596,7 +5631,7 @@
           // here (e.g. fallback chrome.storage.local.set rethrew).
           emitStorageQuotaFailure(error, null);
         }
-        if (persistenceOptions?.reviewRunIds?.length) throw error;
+        if (persistenceOptions?.requireDurable || persistenceOptions?.reviewRunIds?.length) throw error;
         appendPlainLog(tx(`Failed to save session state: ${formatStateSaveError(error)}`, `保存会话状态失败：${formatStateSaveError(error)}`));
       })
       .finally(() => {
@@ -6592,337 +6627,43 @@
     );
   }
 
+  let runReviewController = null;
+  function getRunReviewController() {
+    if (!runReviewController) runReviewController = Modules.RunReviewController.create({
+      Modules, WritebackSettlement, trackedChangeInFlight, findRunRecord,
+      getRunUndoCount, isTrackedChangeLifecycleRun, getPendingMirrorRefresh, hasTrackedEditorUndo, buildNoTraceUndoRestore,
+      findUnsafeFullFileUndoOperation, showUndoFileSelection, showPluginConfirm, tr,
+      truncateRunTitle, formatOperationFiles, formatTrackedChangeFiles, formatTrackedUndoFiles,
+      getPageBridgeTimeoutMs, callPageBridge, setRunUndoStatus, appendRunRecordEvent, getRunProjectIdForWriteback,
+      isUndoResultEffectivelyApplied, writebackOrchestrator, appendUndoReviewingPolicyEvent, formatOperationType,
+      formatApplyResultReason, buildTrackedUndoPostFiles, getTrackedChangeCaptureController, buildContentFailure,
+      applyTrackedChangeSettlement, refreshRunCardControls, formatBridgeResultReason, advanceRunUndoProgress,
+      saveStateSoon, flushQueuedSaveState,
+      getState: () => state, getCurrentProjectId, getAccountScopeId: () => cachedAccountScopeId,
+      getRouteGeneration: () => spaRouteGeneration, tx, notify: message => showPluginToast(message, { status: 'warning', sticky: true })
+    });
+    return runReviewController;
+  }
+
   async function undoRun(runId) {
-    const run = findRunRecord(runId);
-    if (run) Object.assign(run, Modules.UndoOperations.prepareRunUndo(run));
-    if (!getRunUndoCount(run) || run.undoStatus === 'applied') {
-      return;
-    }
-    // Wait out any background mirror refresh before undoing (v1.7.5): a
-    // mirror.sync finishing after the undo would push the pre-undo snapshot
-    // as the local baseline and resurrect the undone content next run.
-    const pendingMirror = getPendingMirrorRefresh?.();
-    if (pendingMirror) {
-      await pendingMirror.catch(() => {});
-    }
-
-    if ((Array.isArray(run.undoTrackedChanges) && run.undoTrackedChanges.length) || hasTrackedEditorUndo(run)
-      || (run.trackedChangeStatus === 'needs_review' && run.undoOperations?.some(Modules.UndoOperations.isFileUndoOperation))) {
-      await undoRunTrackedChanges(runId, run);
-      return;
-    }
-
-    const undoRestore = buildNoTraceUndoRestore(run);
-    const undoOperations = undoRestore.operations;
-    const unsafeFullFileUndo = findUnsafeFullFileUndoOperation(undoOperations, {
-      allowSnapshotRestore: undoRestore.snapshotRestore
-    });
-    if (unsafeFullFileUndo) {
-      appendRunRecordEvent(runId, {
-        title: tr('undoUnsafeFullFileTitle'),
-        status: 'failed',
-        detail: {
-          [tr('detailFile')]: unsafeFullFileUndo.path,
-          [tr('detailReason')]: tr('undoUnsafeFullFileReason')
-        }
-      });
-      return;
-    }
-
-    // v1.8.0 C3: multi-file undos confirm through a per-file selection —
-    // undoing a subset leaves undoStatus 'partial' and the button usable;
-    // re-undoing an already-restored file is skipped by the base check.
-    const undoPaths = Array.from(new Set(undoOperations.map(operation => operation?.path).filter(Boolean)));
-    let selectedOperations = undoOperations;
-    if (undoPaths.length > 1 && typeof showUndoFileSelection === 'function') {
-      const selectedPaths = await showUndoFileSelection({
-        title: tr('undoFileSelectTitle'),
-        task: truncateRunTitle(run.task),
-        confirmLabel: tr('undoFileSelectConfirm'),
-        cancelLabel: tr('confirmDefaultCancel'),
-        selectAllLabel: tr('undoFileSelectAll'),
-        paths: undoPaths
-      });
-      if (!selectedPaths) {
-        return;
-      }
-      const selectedSet = new Set(selectedPaths);
-      selectedOperations = undoOperations.filter(operation => selectedSet.has(operation?.path));
-    } else {
-      const approved = await showPluginConfirm({
-        title: tr('undoNoTraceTitle'),
-        message: [
-          truncateRunTitle(run.task),
-          '',
-          tr('undoNoTraceMessage', { files: formatOperationFiles(undoOperations) })
-        ].join('\n'),
-        confirmLabel: tr('undoConfirm'),
-        cancelLabel: tr('confirmDefaultCancel'),
-        destructive: true
-      });
-      if (!approved) {
-        return;
-      }
-    }
-
-    const deadlineAt = Date.now() + getPageBridgeTimeoutMs('rejectTrackedChanges');
-    setRunUndoStatus(runId, 'running');
-    appendRunRecordEvent(runId, {
-      title: tr('undoNoTraceStarted'),
-      status: 'running',
-      detail: { [tr('detailWillUndo')]: formatOperationFiles(selectedOperations) }
-    });
-
-      const result = await callPageBridge('applyOperations', {
-        operations: selectedOperations, deadlineAt,
-        baseFiles: run.undoBaseFiles || [],
-        reviewingPolicy: 'no-trace-undo',
-        // Undo remains bound to its original project, including after navigation.
-        runProjectId: getRunProjectIdForWriteback(run)
-      });
-      const undoApplied = isUndoResultEffectivelyApplied(run, result);
-      writebackOrchestrator.invalidateMirrorAfterUndo(runId, getRunProjectIdForWriteback(run), result);
-      appendUndoReviewingPolicyEvent(runId, result.reviewingPolicy);
-      appendRunRecordEvent(runId, {
-        title: tr('undoResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
-        status: undoApplied ? 'completed' : result.skipped?.length ? 'failed' : 'completed',
-        detail: {
-          [tr('detailUndone')]: (result.applied || []).map(item => ({
-            [tr('detailAction')]: formatOperationType(item.operation?.type),
-            [tr('detailFile')]: item.operation?.path
-        })),
-        [tr('detailSkipped')]: (result.skipped || []).map(item => ({
-          [tr('detailAction')]: formatOperationType(item.operation?.type),
-          [tr('detailFile')]: item.operation?.path,
-            [tr('detailReason')]: formatApplyResultReason(item)
-          }))
-        }
-      });
-      // A subset undo never closes the ledger: unselected files can still
-      // be undone later, so the run stays 'partial' and the button usable.
-      const fullSelection = selectedOperations.length === undoOperations.length;
-      applyLegacyUndoSettlement(
-        runId,
-        undoApplied && fullSelection ? 'applied' : 'partial',
-        result
-      );
+    return getRunReviewController().undoRun(runId);
   }
 
   async function undoRunTrackedChanges(runId, run) {
-    const fileUndoOperations = Modules.UndoOperations.getFileUndoOperations(run);
-    const textRun = Modules.UndoOperations.textUndoRun(run);
-    const trackedUndo = textRun.undoTrackedChanges.length > 0;
-    const hasTextUndo = trackedUndo || buildTrackedUndoPostFiles(textRun).length > 0;
-    const approved = await showPluginConfirm({
-      title: !hasTextUndo ? tr('undoNoTraceTitle') : trackedUndo ? tr('undoTrackedTitle') : tr('undoNativeTitle'),
-      message: [
-        truncateRunTitle(run.task),
-        '',
-        ...(hasTextUndo ? [trackedUndo
-          ? tr('undoTrackedMessage', { files: formatTrackedChangeFiles(run.undoTrackedChanges) })
-          : tr('undoNativeMessage', { files: formatTrackedUndoFiles(run) })] : []),
-        ...(fileUndoOperations.length ? [tr('undoNoTraceMessage', { files: formatOperationFiles(fileUndoOperations) })] : [])
-      ].join('\n'),
-      confirmLabel: trackedUndo ? tr('undoTrackedConfirm') : tr('undoConfirm'),
-      cancelLabel: tr('confirmDefaultCancel'),
-      destructive: true
-    });
-    if (!approved) {
-      return;
-    }
-
-    const deadlineAt = Date.now() + getPageBridgeTimeoutMs('rejectTrackedChanges');
-    // Keep the review lifecycle until every pending part has settled.
-    // Its local lock stays active while verified recovery progress is persisted.
-    const lifecycleReject = (trackedUndo || fileUndoOperations.length > 0) && isTrackedChangeLifecycleRun(run);
-    if (lifecycleReject) {
-      trackedChangeInFlight.set(runId, 'reject');
-      refreshRunCardControls(runId);
-    } else {
-      setRunUndoStatus(runId, 'running');
-    }
-    appendRunRecordEvent(runId, {
-      title: !hasTextUndo ? tr('undoNoTraceStarted') : trackedUndo ? tr('undoTrackedStarted') : tr('undoNativeStarted'),
-      status: 'running',
-      detail: { [tr('detailWillUndo')]: !hasTextUndo ? formatOperationFiles(fileUndoOperations)
-        : trackedUndo ? formatTrackedChangeFiles(run.undoTrackedChanges) : formatTrackedUndoFiles(run) }
-    });
-
-    let result;
-    try {
-      const trackedUndoPostFilesAtDispatch = buildTrackedUndoPostFiles(textRun);
-      result = hasTextUndo ? await callPageBridge('rejectTrackedChanges', {
-        trackedChanges: textRun.undoTrackedChanges || [], deadlineAt,
-        expectedFiles: textRun.undoExpectedFiles || [],
-        postFiles: trackedUndoPostFilesAtDispatch,
-        untrackedUndo: run.executionSnapshot
-          ? run.executionSnapshot.requireReviewing === false && ['submitted', 'legacy-captured'].includes(run.executionSnapshot.source)
-          : getTrackedChangeCaptureController().hasLegacyUntrackedCheckpoint(run),
-        // The page-side project guard still refuses writes after navigation.
-        runProjectId: getRunProjectIdForWriteback(run)
-      }) : { ok: true, applied: [], skipped: [] };
-      if (fileUndoOperations.length && lifecycleReject && hasTextUndo) {
-        WritebackSettlement.attachUndoNotVerifiedFailure(textRun, result, { buildFailure: buildContentFailure, postFiles: trackedUndoPostFilesAtDispatch });
-        await applyTrackedChangeSettlement(runId, 'reject', { ...result, ok: false });
-      }
-      if (fileUndoOperations.length) {
-        let createdResult;
-        try {
-          if (result.ok === false || result.skipped?.length) {
-            throw new Error('Text changes remain unresolved; file restoration was kept for the next undo attempt.');
-          }
-          createdResult = await callPageBridge('applyOperations', {
-            operations: fileUndoOperations, deadlineAt,
-            baseFiles: run.undoBaseFiles || [],
-            reviewingPolicy: 'no-trace-undo',
-            runProjectId: getRunProjectIdForWriteback(run)
-          });
-        } catch (error) {
-          createdResult = { ok: false, applied: [], skipped: fileUndoOperations.map(operation => ({
-            operation, result: { ok: false, code: 'undo_operation_failed', reason: error.message }
-          })) };
-        }
-        result = Modules.UndoOperations.mergeFileUndoResult(result, createdResult, fileUndoOperations);
-      }
-      appendRunRecordEvent(runId, {
-        title: fileUndoOperations.length ? tr('undoResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }) : trackedUndo
-          ? tr('undoTrackedResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 })
-          : tr('undoNativeResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
-        status: result.skipped?.length ? 'failed' : 'completed',
-        detail: {
-          [trackedUndo && !fileUndoOperations.length ? tr('detailRejected') : tr('detailUndone')]: (result.applied || []).map(item => ({
-            [tr('detailFile')]: item.trackedChange?.path || item.operation?.path || tr('unknownFile'),
-            [tr('detailRecord')]: item.trackedChange?.label || item.trackedChange?.id || item.trackedChange?.key || item.operation?.type
-          })),
-          [tr('detailSkipped')]: (result.skipped || []).map(item => ({
-            [tr('detailFile')]: item.trackedChange?.path || item.operation?.path || tr('unknownFile'),
-            [tr('detailRecord')]: item.trackedChange?.label || item.trackedChange?.id || item.trackedChange?.key || item.operation?.type || '',
-            [tr('detailReason')]: formatBridgeResultReason(item.result, item.trackedChange?.path || item.operation?.path)
-          }))
-        }
-      });
-      if (lifecycleReject) {
-        WritebackSettlement.attachUndoNotVerifiedFailure(textRun, result, {
-          buildFailure: buildContentFailure,
-          postFiles: trackedUndoPostFilesAtDispatch
-        });
-        await applyTrackedChangeSettlement(runId, 'reject', result);
-        return;
-      }
-      applyLegacyUndoSettlement(runId, result.skipped?.length ? 'partial' : 'applied', result);
-    } finally {
-      // Known Page changes require invalidation even when a durable checkpoint fails.
-      if (result) writebackOrchestrator.invalidateMirrorAfterUndo(runId, getRunProjectIdForWriteback(run), result);
-      if (lifecycleReject) {
-        trackedChangeInFlight.delete(runId);
-        refreshRunCardControls(runId);
-      }
-    }
+    return getRunReviewController().undoRunTrackedChanges(runId, run);
   }
 
   async function acceptRun(runId) {
-    const run = findRunRecord(runId);
-    if (!run || !isTrackedChangeLifecycleRun(run)) {
-      return;
-    }
-    const status = run.trackedChangeStatus || '';
-    // pending and needs_review are both actionable per §7: needs_review means
-    // the prior attempt could not prove a clean post-action state, and the
-    // user is supposed to be able to retry after inspecting Overleaf.
-    if (status !== 'pending' && status !== 'needs_review') {
-      return;
-    }
-    if (!Array.isArray(run.undoTrackedChanges) || !run.undoTrackedChanges.length) {
-      return;
-    }
-    if (trackedChangeInFlight.get(runId)) {
-      return;
-    }
-
-    trackedChangeInFlight.set(runId, 'accept');
-    refreshRunCardControls(runId);
-    appendRunRecordEvent(runId, {
-      title: tr('runAcceptTrackedStarted'),
-      status: 'running',
-      detail: { [tr('detailAccepted')]: formatTrackedChangeFiles(run.undoTrackedChanges) }
-    });
-
-    try {
-      const result = await callPageBridge('acceptTrackedChanges', {
-        trackedChanges: run.undoTrackedChanges || [],
-        expectedFiles: run.undoExpectedFiles || [],
-        postFiles: buildTrackedUndoPostFiles(run),
-        appliedOperations: Array.isArray(run.appliedOperations) ? run.appliedOperations : [],
-        runProjectId: getRunProjectIdForWriteback(run)
-      });
-      appendAcceptDiagnosticEvents(runId, Array.isArray(result.diagnostics) ? result.diagnostics : []);
-      appendRunRecordEvent(runId, {
-        title: tr('runAcceptTrackedResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
-        status: result.skipped?.length ? 'failed' : 'completed',
-        detail: {
-          [tr('detailAccepted')]: (result.applied || []).map(item => ({
-            [tr('detailFile')]: item.trackedChange?.path || tr('unknownFile'),
-            [tr('detailRecord')]: item.trackedChange?.label || item.trackedChange?.id || item.trackedChange?.key
-          })),
-          [tr('detailSkipped')]: (result.skipped || []).map(item => ({
-            [tr('detailFile')]: item.trackedChange?.path || tr('unknownFile'),
-            [tr('detailRecord')]: item.trackedChange?.label || item.trackedChange?.id || item.trackedChange?.key || '',
-            [tr('detailReason')]: formatBridgeResultReason(item.result, item.trackedChange?.path)
-          }))
-        }
-      });
-      if (result.ok === false) {
-        appendRunRecordEvent(runId, {
-          title: tr('runAcceptTrackedFailed'),
-          status: 'failed',
-          detail: {
-            [tr('detailReason')]: tr('runAcceptTrackedFailedReason')
-          }
-        });
-        if (!WritebackSettlement.isSuccessfulTrackedChangeSettlement(result)) {
-          refreshRunCardControls(runId);
-        }
-      }
-      WritebackSettlement.attachAcceptNotVerifiedFailure(run, result, {
-        buildFailure: buildContentFailure
-      });
-      await applyTrackedChangeSettlement(runId, 'accept', result);
-    } finally {
-      trackedChangeInFlight.delete(runId);
-      refreshRunCardControls(runId);
-    }
+    return getRunReviewController().acceptRun(runId);
   }
+
+  async function openManualReviewFile(runId, path) { return getRunReviewController().openManualReviewFile(runId, path); }
+  async function verifyManualReview(runId) { return getRunReviewController().verifyManualReview(runId); }
 
   function getRunProjectIdForWriteback(run) {
     return typeof run?.runProjectId === 'string' && run.runProjectId
       ? run.runProjectId
       : '';
-  }
-
-  // Translates the page bridge's Accept All `diagnostics` array into one
-  // run-card event row per step. Each entry is `{ step, info }`; the step
-  // names map 1:1 to the runAcceptTrackedStep* i18n keys. We render `info`
-  // as the event detail so the user can copy-paste the full trace without
-  // any extra page-state query.
-  function appendAcceptDiagnosticEvents(runId, diagnostics) {
-    for (const entry of diagnostics || []) {
-      const step = entry && entry.step;
-      const info = (entry && entry.info) || {};
-      const titleKey = WritebackSettlement.ACCEPT_DIAGNOSTIC_TITLE_KEYS[step];
-      if (!titleKey) {
-        continue;
-      }
-      const title = titleKey === 'runAcceptTrackedStepReplayStart' || titleKey === 'runAcceptTrackedStepReplayDone'
-        ? tr(titleKey, { path: info.path || tr('unknownFile') })
-        : tr(titleKey);
-      const status = WritebackSettlement.acceptDiagnosticStatus(step, info);
-      appendRunRecordEvent(runId, {
-        title,
-        kind: 'activity',
-        status,
-        detail: info
-      });
-    }
   }
 
   function buildContentFailure(code, operation, overrides) {
@@ -6934,27 +6675,29 @@
     );
   }
 
-  async function applyTrackedChangeSettlement(runId, kind, result) {
+  async function applyTrackedChangeSettlement(runId, kind, result, options = {}) {
     const record = findRunRecord(runId);
-    const createdUndo = record?.undoOperations?.some(Modules.UndoOperations.isFileUndoOperation);
-    const run = kind === 'reject' && createdUndo ? advanceRunUndoProgress(record, result) : record;
+    const run = kind === 'reject' ? advanceRunUndoProgress(record, result) : record;
     const settlement = WritebackSettlement.settleTrackedChangeLifecycle({
       kind,
       run,
       result,
       failureReasons: FailureReasons
     });
-    if (settlement.decision === 'blocked' && !(kind === 'reject' && createdUndo)) {
+    if (settlement.decision === 'blocked' && !record?.manualReviewProof
+      && !(kind === 'reject' && (run !== record || record?.undoOperations?.some(Modules.UndoOperations.isFileUndoOperation)))) {
       return;
     }
     await Modules.ScopedPersistenceCoordinator.applyReviewTransition({
       getState: () => state, runId, transition: WritebackSettlement.applySettlementTransition(run, settlement),
-      persist: flushQueuedSaveState
+      persist: flushQueuedSaveState, assertCurrent: options.assertCurrent
     });
   }
 
 
   function advanceRunUndoProgress(run, result) {
+    getDirectoryCleanupRecovery().capture({ recordId: run.id, sessionId: state.activeSessionId,
+      runProjectId: run.runProjectId, runAccountScopeId: run.runAccountScopeId }, result);
     const postFiles = buildTrackedUndoPostFiles(run);
     return Modules.UndoOperations.advanceUndoCheckpoint(run, result, file =>
       WritebackSettlement.isUndoVerifiedContentMatching({ undoExpectedFiles: [file] }, result, { postFiles })
@@ -6980,17 +6723,39 @@
       sessionId: target.sessionId, runId: target.recordId, createdAt: new Date().toISOString() };
   }
 
-  async function stageWritebackRecovery(operations, target, requireReviewing) {
-    const record = findRunRecord(target.recordId, target.sessionId);
-    if (!record) throw new Error('The writeback run is no longer available.');
-    const creates = operations.filter(op => op.type === 'create' && typeof op.content === 'string');
-    record.retryRequireReviewing = requireReviewing === true; // In-memory; seeds an edit-only retry intent.
-    if (!creates.length) return;
-    const candidate = Modules.WritebackIntent.normalize({ ...recoveryOwner(target), id: crypto.randomUUID(),
-      operations: creates, baseFiles: [], requireReviewing });
-    const safe = Modules.SessionState.pickWritebackRecovery({ ...record, retryWriteback: candidate }).retryWriteback;
-    if (safe) record.retryWriteback = safe; else delete record.retryWriteback;
-    await flushQueuedSaveState();
+  let directoryCleanupRecovery = null;
+  function getDirectoryCleanupRecovery() {
+    return directoryCleanupRecovery || (directoryCleanupRecovery = Modules.DirectoryCleanupRecovery.create({
+      getState: () => state, getCurrentRun: () => currentRunView, getProjectId: getCurrentProjectId,
+      getAccountScopeId: () => cachedAccountScopeId, getRouteGeneration: () => spaRouteGeneration, findRunRecord,
+      readSession: id => Modules.StorageDb.getRecord('sessions', id), persist: flushQueuedSaveState,
+      callPageBridge, canCheck: () => !trackedChangeInFlight.size && !updateIdleClient?.isApplying?.(),
+      refresh: refreshRunCardControls, tx, notify: message => showPluginToast(message, { sticky: true })
+    }));
+  }
+  async function checkCreatedDirectories(runId) {
+    try { return await getDirectoryCleanupRecovery().check(runId); }
+    catch (error) { showPluginToast(error.message, { status: 'warning', sticky: true }); }
+  }
+
+  let writebackVerificationController = null;
+  function getWritebackVerificationController() {
+    if (!writebackVerificationController) writebackVerificationController = Modules.WritebackVerificationController.create({
+      getState: () => state, getCurrentRun: () => currentRunView, getProjectId: getCurrentProjectId,
+      getAccountScopeId: () => cachedAccountScopeId, getRouteGeneration: () => spaRouteGeneration, findRunRecord,
+      readSession: id => Modules.StorageDb.getRecord('sessions', id), persist: flushQueuedSaveState, callPageBridge,
+      canCheck: () => !trackedChangeInFlight.size && !updateIdleClient?.isApplying?.(),
+      refresh: () => renderRunHistory({ preserveScroll: true }), tx, randomUUID: () => crypto.randomUUID(),
+      notify: message => showPluginToast(message, { sticky: true })
+    });
+    return writebackVerificationController;
+  }
+  async function stageWritebackRecovery(operations, target, requireReviewing, project) {
+    return getWritebackVerificationController().stage({ operations, target, requireReviewing, project });
+  }
+  async function checkRunWriteback(runId) {
+    try { return await getWritebackVerificationController().check(runId); }
+    catch (error) { showPluginToast(tx(`Could not check current content: ${error.message}`, `无法核验当前内容：${error.message}`), { status: 'warning', sticky: true }); }
   }
 
   async function settleWritebackRecovery(applied, project, verification, target) {
@@ -7034,6 +6799,8 @@
       || owner.accountScopeId !== cachedAccountScopeId || owner.sessionId !== session.id
       || owner.runId !== record.id || record.undoStatus === 'applied' || record.trackedChangeStatus === 'rejected') return;
     const originalStatus = record.status;
+    const retryAutoRecompile = typeof record.executionSnapshot?.autoRecompile === 'boolean'
+      ? record.executionSnapshot.autoRecompile : undefined;
     // State is renormalized during the awaits below (probes, session sync), which
     // replaces run objects; always write through the current copy.
     const live = () => findRunRecord(runId, session.id) || record;
@@ -7069,6 +6836,7 @@
         const result = await applySyncChangesToOverleaf(intent.operations.map(op => op.type === 'edit'
           ? { type: 'write', path: op.path, patches: op.patches, content: op.replaceAll } : op.type === 'delete' ? { type: 'delete', path: op.path } : { ...op, type: 'create' }),
           { id: owner.projectId, files: intent.baseFiles }, { mode: 'auto', requireReviewing: intent.requireReviewing,
+            autoRecompile: retryAutoRecompile,
             retryCreates: true, assistantMessage: tx('Retried the remaining file transfers for this task.', '已重试本轮未完成的文件同步。') });
         assertOwner();
         if (result.settlement?.facts) live().settlement = WritebackSettlement.mergeRetrySettlement(live().settlement, result.settlement.facts); // Keep files outside the retry.
@@ -7189,7 +6957,12 @@
     });
   }
 
-  function recordUndoFromApply(project, applyResult) {
+  async function recordUndoFromApply(project, applyResult) {
+    const directoryRecovery = Modules.DirectoryCleanupRecovery ? getDirectoryCleanupRecovery() : null;
+    let directoryCapture, directoryCaptureError;
+    try { directoryCapture = directoryRecovery?.capture(currentRunView, applyResult); }
+    catch (error) { directoryCaptureError = error; }
+    try {
     const appliedEntries = getAppliedEntries(applyResult).filter(entry => entry.result?.idempotent !== true);
     if (!currentRunView?.recordId || !appliedEntries.length) {
       return;
@@ -7307,6 +7080,10 @@
         [tr('detailReason')]: operation.reason
       }))
     });
+    } finally {
+      if (directoryCapture) await directoryRecovery.persist(directoryCapture);
+      if (directoryCaptureError) throw directoryCaptureError;
+    }
   }
 
   function normalizeApplyTrackedChanges(changes = []) {
@@ -7382,21 +7159,8 @@
     refreshRunCardControls(runId);
   }
 
-  function applyLegacyUndoSettlement(runId, undoStatus, result) {
-    const run = findRunRecord(runId);
-    if (!run) return;
-    const checkpoint = run.undoOperations?.some(Modules.UndoOperations.isFileUndoOperation)
-      ? advanceRunUndoProgress(run, result) : run;
-    Object.assign(run, WritebackSettlement.applySettlementTransition(
-      checkpoint,
-      WritebackSettlement.settleLegacyUndo({
-        run: checkpoint,
-        status: undoStatus,
-        result
-      })
-    ));
-    saveStateSoon();
-    refreshRunCardControls(runId);
+  async function applyLegacyUndoSettlement(runId, undoStatus, result) {
+    return getRunReviewController().applyLegacyUndoSettlement(runId, undoStatus, result);
   }
 
   function refreshRunCardControls(runId) {

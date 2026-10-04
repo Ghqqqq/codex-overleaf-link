@@ -203,43 +203,10 @@
   }
 
   function normalizeSafeProjectPathFallback(value) {
-    if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value)) {
-      return '';
-    }
-    const trimmed = value.trim();
-    if (!trimmed || trimmed.startsWith('/') || trimmed.includes('\\') || /^[A-Za-z]:/.test(trimmed)) {
-      return '';
-    }
-    let decoded = trimmed;
-    for (let index = 0; index < 3; index += 1) {
-      if (/%(?:2f|5c)/i.test(decoded)) {
-        return '';
-      }
-      let next;
-      try {
-        next = decodeURIComponent(decoded);
-      } catch (_error) {
-        return '';
-      }
-      if (next === decoded) {
-        break;
-      }
-      decoded = next;
-    }
-    if (/[\u0000-\u001f\u007f]/.test(decoded)
-      || decoded.startsWith('/')
-      || decoded.includes('\\')
-      || /^[A-Za-z]:/.test(decoded)) {
-      return '';
-    }
-    const normalized = decoded.replace(/\/+/g, '/').trim();
-    if (!normalized) {
-      return '';
-    }
-    const segments = normalized.split('/');
-    return segments.some(segment => !segment || segment === '.' || segment === '..')
-      ? ''
-      : normalized;
+    if (typeof value !== 'string' || !value || value.length > 2048 || value.trim() !== value
+      || /[\u0000-\u001f\u007f]/.test(value) || value.startsWith('/')
+      || value.includes('\\') || /^[A-Za-z]:/.test(value)) return '';
+    return value.split('/').some(segment => !segment || segment === '.' || segment === '..') ? '' : value;
   }
 
   return {

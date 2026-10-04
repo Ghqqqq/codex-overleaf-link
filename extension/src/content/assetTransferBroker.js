@@ -17,12 +17,13 @@
       const deadlineAt = Number.isFinite(input.deadlineAt) && input.deadlineAt > 0 ? input.deadlineAt : null;
       const invalidDeadline = input.deadlineAt !== undefined && deadlineAt === null;
       const expired = () => invalidDeadline || (deadlineAt !== null && now() >= deadlineAt);
-      let textBatch = [], blocked = false, cancelled = false;
+      let textBatch = [], blocked = false, cancelled = false, halted = false;
       function skipUndispatched(operations) {
         const result = normalizeTextResult({ ok: false,
           code: cancelled ? 'codex_cancelled' : blocked ? 'writeback_tail_not_started' : 'writeback_deadline_exceeded',
           error: cancelled ? 'The run was cancelled. This operation was not dispatched.'
-            : blocked ? 'An earlier writeback is unconfirmed. This operation was not dispatched.'
+            : halted ? 'An earlier writeback stopped this file plan. This operation was not dispatched.'
+              : blocked ? 'An earlier writeback is unconfirmed. This operation was not dispatched.'
             : invalidDeadline ? 'The writeback deadline is invalid. This operation was not dispatched.'
               : 'The writeback deadline has elapsed. This operation was not dispatched.',
           changedDocument: false }, operations);
@@ -59,7 +60,8 @@
         if (response?.code === 'codex_cancelled' && response.changedDocument === false) result.receiptUnconfirmed = false;
         results.push(result);
         cancelled ||= hasCancellation(result);
-        blocked = result.receiptUnconfirmed === true;
+        halted ||= result.haltRemainingOperations === true;
+        blocked = halted || result.receiptUnconfirmed === true;
       }
       for (const operation of Array.isArray(input.operations) ? input.operations : []) {
         if (blocked || cancelled || expired()) {
@@ -154,6 +156,7 @@
           sha256: assetRef?.sha256 || operation.sha256 || '',
           mimeType: assetRef?.mimeType || operation.mimeType || 'application/octet-stream',
           overwrite: operation.type === 'overwrite-binary',
+          previousSha256: operation.type === 'overwrite-binary' ? await binaryBaselineHash(operation, input.baseFiles) : undefined,
           runProjectId: input.runProjectId || ''
         });
         if (!begin?.ok) throw responseError(begin, 'binary_upload_begin_failed');
@@ -222,6 +225,9 @@
               ok: false,
               code,
               reason: error.message || 'Binary asset upload failed.',
+              ...(Array.isArray(error.createdDirectories) ? { createdDirectories: error.createdDirectories,
+                folderChanged: error.folderChanged === true, fileUploadAttempted: error.fileUploadAttempted === true,
+                directoryCleanupRequired: error.createdDirectories.length > 0 } : {}),
               changedDocument,
               failure: { code, stage: 'write', file: operation.path, changedDocument }
             }
@@ -268,6 +274,7 @@
     const result = response && typeof response === 'object' ? { ...response } : { ok: false };
     result.applied = Array.isArray(result.applied) ? result.applied : [];
     result.skipped = Array.isArray(result.skipped) ? result.skipped.slice() : [];
+    if (result.skipped.some(entry => entry.result?.receiptUnconfirmed === true)) result.receiptUnconfirmed = true;
     const key = operation => [operation?.type, operation?.path, operation?.to || ''].join('\0');
     const known = new Map();
     for (const entry of [...result.applied, ...result.skipped]) {
@@ -305,6 +312,7 @@
     for (const result of results) {
       merged.applied.push(...(Array.isArray(result?.applied) ? result.applied : []));
       merged.skipped.push(...(Array.isArray(result?.skipped) ? result.skipped : []));
+      if (result?.haltRemainingOperations) merged.haltRemainingOperations = true;
       // Text writeback returns the Reviewing references captured by the page
       // bridge. They are lifecycle data, not diagnostics: dropping them makes
       // recordUndoFromApply classify a successful Track write as legacy Undo,
@@ -346,6 +354,26 @@
       || result?.skipped?.some(entry => entry.result?.code === 'codex_cancelled');
   }
 
+  async function binaryBaselineHash(operation, baseFiles = []) {
+    const valid = value => typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
+    const base = (baseFiles || []).find(file => file?.path === operation.path);
+    let captured = valid(base?.sha256) ? base.sha256.toLowerCase() : '';
+    if (typeof base?.contentBase64 === 'string' && globalThis.crypto?.subtle && typeof atob === 'function') {
+      const bytes = Uint8Array.from(atob(base.contentBase64), value => value.charCodeAt(0));
+      const hash = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+      const digest = Array.from(new Uint8Array(hash), value => value.toString(16).padStart(2, '0')).join('');
+      if (captured && captured !== digest) throw codedError('binary_asset_baseline_conflict', 'The captured binary baseline has conflicting content and hash.');
+      captured = digest;
+    }
+    if (operation.previousSha256 != null) {
+      if (!valid(operation.previousSha256) || (captured && captured !== operation.previousSha256.toLowerCase())) {
+        throw codedError('binary_asset_baseline_conflict', 'The Native and browser binary baselines differ. Read the project again before replacement.');
+      }
+      return operation.previousSha256.toLowerCase();
+    }
+    return captured;
+  }
+
   function isTransientReceiptFailure(value) {
     const code = value?.code || value?.error?.code;
     if (code) return ['page_bridge_timeout', 'page_bridge_unavailable', 'page_bridge_transport_error',
@@ -361,6 +389,11 @@
       response?.reason || response?.error?.message || response?.error || 'Asset transfer failed.'
     );
     if (typeof response?.changedDocument === 'boolean') error.changedDocument = response.changedDocument;
+    if (Array.isArray(response?.createdDirectories)) {
+      error.createdDirectories = response.createdDirectories;
+      error.folderChanged = response.folderChanged === true;
+      error.fileUploadAttempted = response.fileUploadAttempted === true;
+    }
     error.stage = response?.failure?.stage || 'write';
     return error;
   }

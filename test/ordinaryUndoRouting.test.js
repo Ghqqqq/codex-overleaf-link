@@ -14,13 +14,14 @@ const sessionState = require('../extension/src/shared/sessionState');
 const undoOperations = require('../extension/src/shared/undoOperations');
 const captureControllerModule = require('../extension/src/content/trackedChangeCaptureController');
 const snapshotCodec = require('../extension/src/shared/runExecutionSnapshotCodec');
+const reviewControllerModule = require('../extension/src/content/runReviewController');
+const panelStateModule = require('../extension/src/content/scopedPersistencePanelState');
+const FailureReasons = require('../extension/src/shared/failureReasons');
+const directoryRecoveryModule = require('../extension/src/content/directoryCleanupRecovery');
+const { extractFunction } = require('./_helpers/extractFunction');
 
 const runtimeSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/contentRuntime.js'), 'utf8');
 const orchestratorSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/writebackOrchestrator.js'), 'utf8');
-const functionStart = runtimeSource.indexOf('  async function undoRunTrackedChanges(');
-const functionEnd = runtimeSource.indexOf('  async function acceptRun(', functionStart);
-assert.ok(functionStart >= 0 && functionEnd > functionStart);
-const undoSource = runtimeSource.slice(functionStart, functionEnd);
 
 // Exercise the actual content dispatch and page router with the native ledger
 // adapter present. Omitting that adapter bypasses the production review guard.
@@ -132,9 +133,16 @@ function createHarness(spec = {}) {
     },
     appendRunRecordEvent() { assert.fail('mirror invalidation should succeed in this fixture'); }
   });
-  const undo = vm.runInNewContext('(' + undoSource + ')', {
+  const panelState = { activeSessionId: 'session-undo', runs: [run], sessions: [{ id: 'session-undo', projectId: run.runProjectId,
+    accountScopeId: 'account-undo', runs: [run] }] };
+  let currentRun = run;
+  const directoryRecovery = directoryRecoveryModule.create({});
+  const context = {
     writebackOrchestrator,
-    Modules: { UndoOperations: undoOperations },
+    state: panelState, FailureReasons,
+    Modules: { UndoOperations: undoOperations, ScopedPersistenceCoordinator: panelStateModule },
+    findRunRecord: () => currentRun,
+    getDirectoryCleanupRecovery: () => directoryRecovery,
     showPluginConfirm: async () => true,
     tr: key => key,
     truncateRunTitle: value => value,
@@ -143,25 +151,41 @@ function createHarness(spec = {}) {
     isTrackedChangeLifecycleRun: record => record.undoTrackedChanges.length > 0,
     trackedChangeInFlight: new Map(),
     refreshRunCardControls() {},
-    setRunUndoStatus: (_id, status) => { state.status = status; },
+    setRunUndoStatus: (_id, status) => { currentRun.undoStatus = status; state.status = status; },
     appendRunRecordEvent() {},
     buildTrackedUndoPostFiles: record => postController.buildPostFiles(record),
+    hasTrackedEditorUndo: record => postController.buildPostFiles(record).length > 0,
     getTrackedChangeCaptureController: () => postController,
     getRunProjectIdForWriteback: record => record.runProjectId,
     getPageBridgeTimeoutMs: () => 120000,
     requireReviewing: spec.currentTrack === true,
     async callPageBridge(method, params) {
       state.requests.push(params);
-      return await guard.runWriteGuard(params) || await router[method](params);
+      state.result = await guard.runWriteGuard(params) || await router[method](params);
+      return state.result;
     },
     formatBridgeResultReason: result => result?.code || '',
     WritebackSettlement: settlementModule,
     buildContentFailure: (code, data) => ({ code, ...data }),
-    applyTrackedChangeSettlement: (_id, _action, result) => { state.result = result; state.status = result.ok ? 'rejected' : 'needs_review'; },
-    applyLegacyUndoSettlement: (_id, status, result) => { state.result = result; state.status = status; }
-  });
+    async flushQueuedSaveState(options) {
+      assert.equal(options.requireDurable, true);
+      state.saved = storageDb.buildSessionRecord(panelState.sessions[0], { preserveRunActionPayload: true });
+      state.status = currentRun.trackedChangeStatus || currentRun.undoStatus;
+    }
+  };
+  // Bind the production facade to its new owner; only storage I/O remains synthetic.
+  vm.createContext(context);
+  let controller;
+  context.getRunReviewController = () => controller || (controller = reviewControllerModule.create({
+    ...context, getState: () => panelState
+  }));
+  for (const name of ['getRunUndoCount', 'advanceRunUndoProgress', 'applyTrackedChangeSettlement', 'undoRunTrackedChanges']) {
+    vm.runInContext(extractFunction(runtimeSource, name), context);
+  }
   return { docs, state, run, router, window, async undo(record) {
-      await undo(run.id, record || run);
+      currentRun = record || run;
+      panelState.runs = panelState.sessions[0].runs = [currentRun];
+      await context.undoRunTrackedChanges(run.id, currentRun);
       await writebackOrchestrator.getPendingMirrorRefresh();
     },
     pageParams: () => ({ runProjectId: run.runProjectId, untrackedUndo: true, trackedChanges: [],
@@ -187,7 +211,7 @@ test('ordinary Undo uses the frozen Track-off intent and restores its checkpoint
   assert.equal(h.state.requests[0].untrackedUndo, true);
   assert.equal(h.state.status, 'applied', JSON.stringify(h.state.result));
   assert.equal(h.state.result.applied.length, 1);
-  assert.equal(h.docs.get('main.tex').text, h.run.undoExpectedFiles[0].content);
+  assert.equal(h.docs.get('main.tex').text, h.docs.get('main.tex').before);
   assert.deepEqual(h.state.clicks, []);
   assert.equal(h.state.writes.length, 1);
   assert.deepEqual(h.state.mirrorRequests.map(request => ({ method: request.method, projectId: request.params.projectId })),
@@ -222,7 +246,7 @@ test('ordinary Undo after reload restores its no-trace checkpoint', async () => 
   assert.equal(h.state.status, 'applied', JSON.stringify(h.state.result));
   assert.equal(h.state.clicks.length, 0);
   assert.equal(h.state.writes.length, 1);
-  assert.equal(h.docs.get('main.tex').text, h.run.undoExpectedFiles[0].content);
+  assert.equal(h.docs.get('main.tex').text, h.docs.get('main.tex').before);
 });
 
 test('ordinary Undo never resurrects an older user edit from the global history', async () => {

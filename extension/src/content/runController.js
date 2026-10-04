@@ -1,10 +1,10 @@
 (function initCodexOverleafRunController(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('../shared/projectFiles'));
   } else {
-    root.CodexOverleafRunController = factory();
+    root.CodexOverleafRunController = factory(root.CodexOverleafProjectFiles);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function runControllerFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function runControllerFactory(ProjectFiles) {
   'use strict';
 
   const DEFAULT_EXPECTED_MIRROR_FRESHNESS_MS = 5 * 60 * 1000;
@@ -56,6 +56,7 @@
       otWarmStart: useExistingMirror && otWarmStart ? true : undefined,
       warmStartStrategy: useExistingMirror && otWarmStart ? 'ot-warm-mirror' : undefined,
       focusFiles,
+      focusFilesAreLiteral: true,
       restrictToFocusFiles: restrictToFocusFiles || undefined,
       model: state.model,
       reasoningEffort: state.reasoningEffort,
@@ -117,13 +118,14 @@
     project = {},
     snapshotWarnings = {},
     focusFiles = [],
+    focusFilesAreLiteral = false,
     isUsableProjectFileContent = defaultIsUsableProjectFileContent
   } = {}) {
     const blocking = Array.isArray(snapshotWarnings.blocking) ? snapshotWarnings.blocking : [];
     if (!blocking.length || !blocking.some(isFullSnapshotWarning)) {
       return false;
     }
-    const normalizedFocusFiles = normalizeFocusFiles(focusFiles);
+    const normalizedFocusFiles = normalizeFocusFiles(focusFiles, focusFilesAreLiteral === true);
     if (!normalizedFocusFiles.length) {
       return false;
     }
@@ -133,10 +135,10 @@
 
     const textFilesByPath = new Map((project.files || [])
       .filter(file => file && typeof file.path === 'string' && typeof file.content === 'string')
-      .map(file => [normalizeFocusPath(file.path), file]));
+      .map(file => [normalizeFocusPath(file.path, true), file]));
 
     return normalizedFocusFiles.every(filePath => {
-      const file = textFilesByPath.get(normalizeFocusPath(filePath));
+      const file = textFilesByPath.get(filePath);
       return file && isUsableProjectFileContent(file.content);
     });
   }
@@ -149,11 +151,11 @@
     return /Full project snapshot was not captured/i.test(String(warning || ''));
   }
 
-  function normalizeFocusFiles(value) {
+  function normalizeFocusFiles(value, literal = false) {
     const seen = new Set();
     const files = [];
     for (const item of Array.isArray(value) ? value : []) {
-      const filePath = normalizeFocusPath(item);
+      const filePath = normalizeFocusPath(item, literal);
       if (!filePath || seen.has(filePath)) {
         continue;
       }
@@ -163,7 +165,8 @@
     return files;
   }
 
-  function normalizeFocusPath(value) {
+  function normalizeFocusPath(value, literal = false) {
+    if (literal) return ProjectFiles.normalizeSafeProjectPath(value);
     return String(value || '')
       .replace(/^@file:/i, '')
       .replace(/\\/g, '/')

@@ -123,9 +123,12 @@ const ReviewSettlement = require('../extension/src/shared/writebackSettlement');
 const ReviewSessionState = require('../extension/src/shared/sessionState');
 const ReviewStorageDb = require('../extension/src/shared/storageDb');
 const ReviewFailureReasons = require('../extension/src/shared/failureReasons');
+const ReviewController = require('../extension/src/content/runReviewController');
+const ManualReviewProof = require('../extension/src/shared/manualReviewProof');
+const DirectoryRecovery = require('../extension/src/content/directoryCleanupRecovery');
 const reviewTimelineSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/runTimelineView.js'), 'utf8');
 const reviewActionSource = [
-  ...['acceptRun', 'undoRunTrackedChanges', 'applyTrackedChangeSettlement', 'mergeSaveStateOptions',
+  ...['acceptRun', 'undoRunTrackedChanges', 'getRunUndoCount', 'advanceRunUndoProgress', 'applyTrackedChangeSettlement', 'mergeSaveStateOptions',
     'saveStateSoon', 'runQueuedSaveState', 'flushQueuedSaveState'].map(name => extractProductionFunction(runtimeSource, name)),
   ...['configureAcceptButton', 'configureLifecycleUndoButton'].map(name => extractProductionFunction(reviewTimelineSource, name))
 ].join('\n');
@@ -142,8 +145,10 @@ function createReviewPersistenceHarness(options = {}) {
   // Start at the live post-write boundary; reload the durable result through the real codecs below.
   const session = { id: 'review-session', title: 'QA', runs: [run] };
   const state = { activeSessionId: session.id, sessions: [session], runs: session.runs };
-  return new Function('state', 'WritebackSettlement', 'StorageDb', 'FailureReasons', 'options', 'PanelState', 'UndoOperations', `
-    const Modules = { ScopedPersistenceCoordinator: PanelState, UndoOperations };
+  return new Function('state', 'WritebackSettlement', 'StorageDb', 'FailureReasons', 'options', 'PanelState', 'UndoOperations', 'ReviewController', 'ManualReviewProof', 'DirectoryRecovery', `
+    const Modules = { ScopedPersistenceCoordinator: PanelState, UndoOperations, ManualReviewProof };
+    const directoryRecovery = DirectoryRecovery.create({});
+    const getDirectoryCleanupRecovery = () => directoryRecovery;
     const record = state.runs[0];
     const trackedChangeInFlight = new Map(), timers = new Map(), pendingSaves = [], saved = [], calls = [];
     let saveStateTimer = null, saveStateInFlight = false, saveStateRunAfterFlight = false;
@@ -179,6 +184,7 @@ function createReviewPersistenceHarness(options = {}) {
     const getRunProjectIdForWriteback = value => value.runProjectId;
     const getPageBridgeTimeoutMs = () => 120000;
     const buildTrackedUndoPostFiles = value => value.undoPostFiles || [];
+    const hasTrackedEditorUndo = value => buildTrackedUndoPostFiles(value).length > 0;
     const getTrackedChangeCaptureController = () => ({ hasLegacyUntrackedCheckpoint: () => false });
     const showPluginConfirm = async () => true;
     const writebackOrchestrator = { invalidateMirrorAfterUndo() {} };
@@ -204,11 +210,23 @@ function createReviewPersistenceHarness(options = {}) {
     function appendPlainLog() {}
     function formatStateSaveError(error) { return String(error); }
     ${reviewActionSource}
+    let controller;
+    function getRunReviewController() {
+      return controller || (controller = ReviewController.create({ Modules, WritebackSettlement, trackedChangeInFlight,
+        findRunRecord, getRunUndoCount, isTrackedChangeLifecycleRun, hasTrackedEditorUndo, showPluginConfirm,
+        tr, truncateRunTitle, formatTrackedChangeFiles, formatTrackedUndoFiles, getPageBridgeTimeoutMs,
+        callPageBridge, setRunUndoStatus, appendRunRecordEvent, getRunProjectIdForWriteback,
+        writebackOrchestrator, buildTrackedUndoPostFiles, getTrackedChangeCaptureController, buildContentFailure,
+        applyTrackedChangeSettlement, refreshRunCardControls, formatBridgeResultReason, advanceRunUndoProgress,
+        saveStateSoon, flushQueuedSaveState, getState: () => state, getCurrentProjectId: () => 'project-a',
+        getAccountScopeId: () => 'account-a', getRouteGeneration: () => 1 }));
+    }
     return { record, trackedChangeInFlight, pendingSaves, saved, calls,
       beginOlderSave: runQueuedSaveState, render() { refreshRunCardControls(); return rendered; },
       start: kind => kind === 'accept' ? acceptRun(record.id) : undoRunTrackedChanges(record.id, record) };
 `)(state, ReviewSettlement, ReviewStorageDb, ReviewFailureReasons, options,
-    require('../extension/src/content/scopedPersistencePanelState'), require('../extension/src/shared/undoOperations'));
+    require('../extension/src/content/scopedPersistencePanelState'), require('../extension/src/shared/undoOperations'), ReviewController,
+    ManualReviewProof, DirectoryRecovery);
 }
 
 for (const kind of ['accept', 'reject']) {

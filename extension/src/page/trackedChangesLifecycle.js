@@ -1,20 +1,19 @@
 (function initCodexOverleafTrackedChangesLifecycle(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./trackedChangeReplay'));
+    module.exports = factory(require('./trackedChangeReplay'), require('./manualReviewRecovery'), require('./reviewContext'));
   } else {
-    root.CodexOverleafTrackedChangesLifecycle = factory(root.CodexOverleafTrackedChangeReplay);
+    root.CodexOverleafTrackedChangesLifecycle = factory(root.CodexOverleafTrackedChangeReplay, root.CodexOverleafManualReviewRecovery, root.CodexOverleafReviewContext);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function trackedChangesLifecycleFactory(Replay) {
+})(typeof window !== 'undefined' ? window : globalThis, function trackedChangesLifecycleFactory(Replay, ManualRecovery, ReviewContext) {
   'use strict';
 
-  // Tracked-changes lifecycle — carved out of writebackRouter.js in v1.8.0
-  // (structural-debt phase 7, #117): the accept/reject flows, the
-  // accept-replay + editor-undo recovery machinery, the reviewing/editing
-  // blocked-result builders, and the DOM collectors for Overleaf's
-  // tracked-change widgets. Code moved verbatim (original indentation kept);
-  // page-side collaborators are factory-injected by writebackRouter, which
-  // remains the only consumer and the owner of applyOperations itself.
   function create(deps = {}) {
+    const base = createCore(deps);
+    const run = (method, params) => ReviewContext.create(deps, params).run((scoped, input) => createCore(scoped)[method](input));
+    return { ...base, rejectTrackedChanges: params => run('rejectTrackedChanges', params),
+      acceptTrackedChanges: params => run('acceptTrackedChanges', params) };
+  }
+  function createCore(deps = {}) {
     const {
       window,
       checkWritebackRunProjectId,
@@ -49,6 +48,9 @@
       verifyActiveEditorText,
       collectElements,
     } = deps;
+    const manualReview = ManualRecovery?.create({ ...deps, prepareTrackedChangeCapture: (...args) => prepareTrackedChangeCapture(...args),
+      getProjectId: deps.getProjectId || (() => /\/project\/([^/?#]+)/.exec(window?.location?.pathname || '')?.[1]),
+      assertCurrent: params => deps.reviewGuard?.() || checkWritebackRunProjectId(params) });
     const { buildAcceptReplayOperations, rebaseCheckpointPair } = Replay.create({
       normalizeSafeProjectPath, applyTextPatches
     });
@@ -99,7 +101,7 @@
       ...checkpoints.map(file => normalizeSafeProjectPath(file?.path))])];
     if ((!refs.length && !untracked) || refs.some(ref => ref.invalidProjectPath || !ref.path) || paths.some(path => !path))
       return nativeReviewBlocked('', 'native_review_identity_unavailable');
-    const files = [], deadline = Date.now() + 90000;
+    const files = [], deadline = Math.min(Date.now() + 90000, deps.reviewDeadlineAt ?? Infinity);
     for (const path of paths) {
       if (Date.now() >= deadline || checkWritebackRunProjectId(params))
         return nativeReviewBlocked(path, 'native_review_context_changed');
@@ -162,6 +164,7 @@
       }));
       const expectedText = accepting ? post[0].content : before[0].content;
       const expectedKeys = accepting ? scope.merged.preservedKeys : scope.merged.beforeKeys;
+      if (deps.reviewGuard?.()) return nativeReviewBlocked(path, 'native_review_context_changed');
       attempted = true;
       view.dispatch({ changes });
       compileBridge.markSourceEdited();
@@ -199,7 +202,7 @@
   async function rejectPlanWithMergedInsertions(params, plan) {
     const mixed = plan.files.find(file => !file.scope.merged && file.scope.unrelated.length);
     if (mixed) return nativeReviewBlocked(mixed.path, 'native_reject_mixed_changes');
-    const applied = [];
+    const applied = deps.createReviewApplied?.() || [];
     for (const file of plan.files) {
       if (Date.now() >= plan.deadline || checkWritebackRunProjectId(params))
         return nativeReviewBlocked(file.path, 'native_review_context_changed', applied, applied.length > 0);
@@ -220,7 +223,7 @@
   }
 
   async function acceptNativeReview(params, plan) {
-    const applied = [];
+    const applied = deps.createReviewApplied?.() || [];
     let token = window?.document?.querySelector?.('meta[name="ol-csrfToken"]')?.getAttribute('content');
     try { token = JSON.parse(token); } catch (_error) { /* Older pages expose plain text. */ }
     if (typeof token !== 'string' || !token || token.length > 4096
@@ -229,7 +232,11 @@
     // History-OT uses snapshot-range operations, not the classic ID endpoint.
     // An unsupported engine must never fall through to text undo/replay.
     const unsupported = plan.files.find(file => !file.scope.acceptByIdSupported);
-    if (unsupported) return nativeReviewBlocked(unsupported.path, 'native_accept_protocol_unsupported');
+    if (unsupported) {
+      const manualReviewProof = await manualReview?.build(params, plan);
+      return { ...nativeReviewBlocked(unsupported.path, 'native_accept_protocol_unsupported'),
+        ...(manualReviewProof ? { manualReviewProof } : {}) };
+    }
     for (const file of plan.files) {
       const path = file.path;
       if (Date.now() >= plan.deadline || checkWritebackRunProjectId(params))
@@ -251,6 +258,7 @@
       const controller = new window.AbortController();
       const timer = window.setTimeout(() => controller.abort(), Math.min(12000, Math.max(1, plan.deadline - Date.now())));
       try {
+        if (deps.reviewGuard?.()) return nativeReviewBlocked(path, 'native_review_context_changed', applied, applied.length > 0);
         // Same ID-scoped endpoint and CSRF header used by Overleaf's RangesProvider.
         const response = await window.fetch('/project/' + encodeURIComponent(params.runProjectId)
           + '/doc/' + encodeURIComponent(scope.nativeDocId) + '/changes/accept', {
@@ -258,6 +266,7 @@
           headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Csrf-Token': token },
           body: JSON.stringify({ change_ids: scope.ids })
         });
+        if (deps.reviewGuard?.()) return nativeReviewBlocked(path, 'native_review_context_changed', applied, true);
         if (!response.ok) return nativeReviewBlocked(path, 'native_accept_http_' + response.status, applied, true);
       } catch (_error) {
         return nativeReviewBlocked(path, 'native_accept_request_unconfirmed', applied, true);
@@ -294,7 +303,7 @@
     const trackedChanges = normalizeTrackedChangeRefs(params.trackedChanges || []);
     const expectedFiles = Array.isArray(params.expectedFiles) ? params.expectedFiles : [];
     const postFiles = Array.isArray(params.postFiles) ? params.postFiles : [];
-    const applied = [];
+    const applied = deps.createReviewApplied?.() || [];
     const skipped = [];
     const appliedPaths = new Set();
     const invalidTrackedChange = trackedChanges.find(trackedChange => trackedChange.invalidProjectPath);
@@ -512,11 +521,13 @@
     // guard uses.
     const writeGuardBlock = checkWritebackRunProjectId(params);
     if (writeGuardBlock) return writeGuardBlock;
+    if (params.verifyManualReview === true) return manualReview
+      ? manualReview.verify(params) : nativeReviewBlocked('', 'manual_review_proof_unavailable');
     const nativeReview = await prepareNativeReview(params);
     if (nativeReview) return nativeReview.ok ? acceptNativeReview(params, nativeReview) : nativeReview;
     const expectedFiles = Array.isArray(params.expectedFiles) ? params.expectedFiles : [];
     const postFiles = Array.isArray(params.postFiles) ? params.postFiles : [];
-    const applied = [];
+    const applied = deps.createReviewApplied?.() || [];
     const skipped = [];
     // diagnostics: a per-step trace returned to the caller so the run card can
     // surface exactly what happened on each Accept All step. Each entry is

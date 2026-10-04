@@ -220,7 +220,7 @@ async function harness(t, options = {}) {
   });
   const creator = Creator.create({ window: win, document: documentRef, treeOperations: tree, snapshotRouter });
   const uploader = Uploader.create({ window: win, document: documentRef, treeOperations: tree, snapshotRouter,
-    prepareUploadParent: creator.prepareUploadParent, findFolderNode: creator.findFolderNode });
+    prepareUploadParent: creator.prepareUploadParent, isUploadParentCurrent: creator.isUploadParentCurrent, findFolderNode: creator.findFolderNode });
   const broker = Broker.create({
     now: () => clock, delay: async ms => { clock += ms; },
     callPageBridge(method, params) {

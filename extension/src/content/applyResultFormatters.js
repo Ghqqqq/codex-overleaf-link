@@ -85,7 +85,8 @@
    */
   function normalizeSkippedFailure(item) {
     if (!FailureReasons || !FailureReasons.normalizeFailureReason) return null;
-    const failure = FailureReasons.normalizeFailureReason(item?.result, item?.operation || {}, { locale: getLocale() });
+    const normalize = FailureReasons.normalizeWritebackFailure || FailureReasons.normalizeFailureReason;
+    const failure = normalize(item?.result, item?.operation || {}, { locale: getLocale() });
     if (!failure || !failure.code) return null;
     const localized = FailureReasons.localizeFailureReason
       ? FailureReasons.localizeFailureReason(failure, getLocale(), failureReasonI18nLookup)
@@ -98,7 +99,7 @@
 
   function pickPrimarySkippedFailure(failures) {
     if (!FailureReasons || !FailureReasons.selectPrimaryFailure) return null;
-    return FailureReasons.selectPrimaryFailure(failures);
+    return (FailureReasons.selectPrimaryWritebackFailure || FailureReasons.selectPrimaryFailure)(failures);
   }
 
   function failureReasonI18nLookup(key) {

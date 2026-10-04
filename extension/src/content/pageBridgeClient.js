@@ -8,6 +8,7 @@
   const PAGE_WORLD_SCRIPTS = Object.freeze([
     ['src/shared/reviewing.js', 'codex-overleaf-reviewing-script'],
     ['src/shared/projectFiles.js', 'codex-overleaf-project-files-script'],
+    ['src/shared/manualReviewProof.js', 'codex-overleaf-manual-review-proof-script', true],
     ['src/shared/compatibility.js', 'codex-overleaf-compatibility-page-script'],
     ['src/shared/pageRpcContract.js', 'codex-overleaf-page-rpc-contract-script', true],
     ['src/shared/staleGuard.js', 'codex-overleaf-stale-guard-script'],
@@ -21,14 +22,18 @@
     ['src/page/overleafProjectSnapshot.js', 'codex-overleaf-project-snapshot-script'],
     ['src/page/pageBridgeCapability.js', 'codex-overleaf-page-bridge-capability-script'],
     ['src/page/treeOperations.js', 'codex-overleaf-tree-operations-script', true],
+    ['src/page/ownedDirectoryCleanup.js', 'codex-overleaf-owned-directory-cleanup-script', true],
     ['src/page/textFileCreator.js', 'codex-overleaf-text-file-creator-script', true],
     ['src/page/binaryAssetUploader.js', 'codex-overleaf-binary-asset-uploader-script', true],
     ['src/page/snapshotRouter.js', 'codex-overleaf-snapshot-router-script'],
     ['src/page/referenceProjects.js', 'codex-overleaf-reference-projects-script', true],
+    ['src/page/fileMover.js', 'codex-overleaf-file-mover-script', true],
     ['src/page/writeGuard.js', 'codex-overleaf-write-guard-script', true],
     ['src/page/trackedChangeOwnership.js', 'codex-overleaf-tracked-change-ownership-script', true],
     ['src/page/trackedChangeCapture.js', 'codex-overleaf-tracked-change-capture-script', true],
     ['src/page/trackedChangeReplay.js', 'codex-overleaf-tracked-change-replay-script', true],
+    ['src/page/manualReviewRecovery.js', 'codex-overleaf-manual-review-recovery-script', true],
+    ['src/page/reviewContext.js', 'codex-overleaf-review-context-script', true],
     ['src/page/trackedChangesLifecycle.js', 'codex-overleaf-tracked-changes-lifecycle-script', true],
     ['src/page/writebackRouter.js', 'codex-overleaf-writeback-router-script', true],
     ['src/page/writebackReceiptJournal.js', 'codex-overleaf-writeback-receipt-script', true],
@@ -75,6 +80,11 @@
         const requestTimeoutMs = Number.isFinite(Number(policy.timeoutMs))
           ? Number(policy.timeoutMs)
           : Contract.resolveTimeoutMs(method, timeoutOverrides);
+        // Review preparation and its nested writes share the transport budget.
+        if (Contract.getMethod(method)?.timeoutClass === 'lifecycle') {
+          params = { ...params, deadlineAt: params?.deadlineAt == null ? now() + requestTimeoutMs
+            : Number.isFinite(params.deadlineAt) ? Math.min(params.deadlineAt, now() + requestTimeoutMs) : params.deadlineAt };
+        }
         const remainingMs = params?.deadlineAt == null ? Infinity
           : Number.isFinite(params.deadlineAt) ? params.deadlineAt - now() : 0;
         if (remainingMs <= 0) {

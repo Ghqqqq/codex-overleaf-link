@@ -22,6 +22,8 @@ const WritebackIntent = req('extension/src/shared/writebackIntent.js');
 const SessionState = req('extension/src/shared/sessionState.js');
 const StaleGuard = req('extension/src/shared/staleGuard.js');
 const WriteGuard = req('extension/src/page/writeGuard.js');
+const Verification = req('extension/src/content/writebackVerificationController.js');
+const Storage = req('extension/src/shared/storageDb.js');
 const runtimeSource = read('extension/src/content/contentRuntime.js');
 const pageSource = read('extension/src/pageBridge.js');
 const orchestratorSource = read('extension/src/content/writebackOrchestrator.js');
@@ -72,7 +74,10 @@ function createHarness({ existing, pending = true, zipOptions = {}, content = '%
   const record = { id: owner.runId, status: 'failed', runProjectId: owner.projectId, events: [] };
   if (pending) record.retryWriteback = { ...owner, id: 'fixture-recovery', operations: [clone(op)], baseFiles: [], requireReviewing: false };
   const session = { id: owner.sessionId, runs: [record] }, state = { mode: 'auto', requireReviewing: false, autoRecompile: false };
-  const runtime = vm.createContext({ Modules: { WritebackIntent, SessionState, UndoOperations: Undo }, WritebackSettlement: Settlement,
+  const durableRows = new Map();
+  const runtime = vm.createContext({ Modules: { WritebackIntent, SessionState, UndoOperations: Undo,
+      WritebackVerificationController: Verification, StorageDb: { ...Storage, getRecord: async (_store, id) => clone(durableRows.get(id)) } }, WritebackSettlement: Settlement,
+    spaRouteGeneration: 0, writebackVerificationController: null, updateIdleClient: null,
     crypto, AbortController, TextEncoder, Date, console, state, currentRunView: null,
     trackedChangeInFlight: new Set(), cachedAccountScopeId: owner.accountScopeId,
     runCancellationRequested: false, runCancellationController: null,
@@ -86,17 +91,20 @@ function createHarness({ existing, pending = true, zipOptions = {}, content = '%
     selectExpectedFilesForTrackedUndo: Settlement.selectExpectedFilesForTrackedUndo,
     buildCreatedFileUndoCheckpoint: Undo.buildCreatedFileUndoCheckpoint, buildUndoCheckpoint: Undo.buildUndoCheckpoint,
     refreshRunCardControls: noop, appendRunEvent: noop, formatOperationType: x => x,
-    flushQueuedSaveState: async () => { persisted.push(clone(record)); }, saveStateSoon: noop,
+    flushQueuedSaveState: async () => {
+      persisted.push(clone(record));
+      durableRows.set(session.id, Storage.buildSessionRecord({ ...clone(session), projectId: owner.projectId, accountScopeId: owner.accountScopeId }, { preserveRunActionPayload: true }));
+      return true;
+    }, saveStateSoon: noop,
     finishRunView: async (label, status) => { record.status = status; finishes.push({ label, status }); } });
-  for (const name of ['recoveryOwner', 'stageWritebackRecovery', 'settleWritebackRecovery', 'retryRunWriteback', 'recordUndoFromApply']) {
+  for (const name of ['recoveryOwner', 'getWritebackVerificationController', 'stageWritebackRecovery', 'settleWritebackRecovery', 'retryRunWriteback', 'recordUndoFromApply']) {
     vm.runInContext(extractFunction(runtimeSource, name), runtime, { filename: 'contentRuntime.js#' + name });
   }
   const plan = Plan.create({ tx, tr, normalizeSafeProjectPath: ProjectFiles.normalizeSafeProjectPath,
     GovernanceRules: Governance, getGovernanceRulesForCurrentProject: () => ({}), showPluginConfirm: async () => true,
     formatOperationFiles: () => '', getAppliedEntries, getSkippedEntries });
-  const outer = vm.createContext({ window: {}, console });
-  vm.runInContext(orchestratorSource, outer, { filename: 'writebackOrchestrator.js' });
-  const orchestrator = outer.window.CodexOverleafWritebackOrchestrator.create({
+  const orchestratorModule = new Function('window', orchestratorSource + '\nreturn window.CodexOverleafWritebackOrchestrator;')({});
+  const orchestrator = orchestratorModule.create({
     ...plan, tr, tx, getLocale: () => 'en', getState: () => state, getCurrentRunView: () => runtime.currentRunView,
     getCurrentProjectId: () => owner.projectId, getAssistantAnswerForCurrentRun: () => 'fixture answer', cleanFinalAnswer: x => x,
     appendRunEvent: noop, appendRunRecordEvent: noop, appendChangeSummary: () => 'summary',

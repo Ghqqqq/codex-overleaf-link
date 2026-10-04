@@ -1564,15 +1564,6 @@
       };
     }
 
-    function fileTreeMethodNames(type) {
-      return {
-        create: ['createDoc', 'createFile', 'addDoc', 'addFile'],
-        rename: ['renameEntity', 'renameFile', 'renameDoc'],
-        move: ['moveEntity', 'moveFile', 'moveDoc'],
-        delete: ['deleteEntity', 'deleteFile', 'deleteDoc', 'removeEntity']
-      }[type] || [];
-    }
-
     function resolveTimeoutMs(options = {}, fallback) {
       const value = Number(options.timeoutMs);
       return Number.isFinite(value) && value >= 0 ? value : fallback;
@@ -1615,5 +1606,11 @@
     return text;
   }
 
-  return { create };
+  function fileTreeMethodNames(type) {
+    return {
+      create: ['createDoc', 'createFile', 'addDoc', 'addFile'], rename: ['renameEntity', 'renameFile', 'renameDoc'],
+      move: ['moveEntity', 'moveFile', 'moveDoc'], delete: ['deleteEntity', 'deleteFile', 'deleteDoc', 'removeEntity']
+    }[type] || [];
+  }
+  return { create, fileTreeMethodNames };
 });

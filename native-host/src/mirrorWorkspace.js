@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { getHomeDir } = require('./nativeHostPlatform');
+const { assertProjectPathsForPlatform } = require('./projectPathPlatform');
 
 const BASELINE_FILE = 'baseline.json';
 const MAX_BINARY_FILE_BYTES = 10 * 1024 * 1024;
@@ -40,6 +41,8 @@ async function syncOverleafToMirror({ projectId, project, rootDir }) {
   const previous = readBaseline(mirror.baselinePath);
   const fullProjectSnapshot = project?.capabilities?.fullProjectSnapshot !== false;
   const skippedFiles = resolveUnreadSnapshotFiles(project, normalized, previous, fullProjectSnapshot);
+  // Runtime platform is authoritative; request fields cannot opt out of this check.
+  assertProjectPathsForPlatform([...files, ...skippedFiles].map(file => file.path), process.platform);
   const unreadPaths = new Set(skippedFiles.map(file => file.path));
   const nextPaths = new Set([...files.map(file => file.path), ...unreadPaths]);
   const completeContents = fullProjectSnapshot && !unreadPaths.size;
@@ -240,6 +243,7 @@ async function collectMirrorChangesDetailed({ projectId, rootDir }) {
         previousExists: Boolean(previous),
         previousKind: previous?.kind || '',
         previousSize: previous?.size,
+        previousSha256: previous?.kind === 'binary' ? previous.hash : undefined,
         size: contentOrBinary.size
       });
       continue;
@@ -287,9 +291,10 @@ async function collectMirrorChangesDetailed({ projectId, rootDir }) {
     }
   }
 
+  const relocated = combineVerifiedFileMoves(changes, unsupportedChanges, baselineByPath);
   const budgeted = enforceNativeResponsePayloadBudget({
-    changes,
-    unsupportedChanges,
+    changes: relocated.changes,
+    unsupportedChanges: relocated.unsupportedChanges,
     mirror
   });
 
@@ -297,6 +302,44 @@ async function collectMirrorChangesDetailed({ projectId, rootDir }) {
     changes: budgeted.changes.sort(compareSyncChanges),
     unsupportedChanges: budgeted.unsupportedChanges.sort((left, right) => left.path.localeCompare(right.path))
   };
+}
+
+// The filesystem diff has no rename event. Only an unambiguous, byte-identical
+// removed source/new destination pair can be represented as a single move.
+// Content is read afresh by the Page move handler under this baseline hash.
+function combineVerifiedFileMoves(changes, unsupportedChanges, baselineByPath) {
+  const sources = new Map(), destinations = new Map();
+  const add = (map, key, value) => map.set(key, [...(map.get(key) || []), value]);
+  for (const change of changes) {
+    const previous = baselineByPath.get(change.path);
+    if (change.type === 'delete' && previous && previous.kind !== 'binary') {
+      add(sources, 'text:' + hashText(previous.content || ''), change);
+    } else if (!previous && change.type === 'write') {
+      add(destinations, 'text:' + hashText(change.content || ''), change);
+    } else if (!previous && change.type === 'binary-create') {
+      add(destinations, 'binary:' + change.sha256, change);
+    }
+  }
+  for (const change of unsupportedChanges) {
+    const previous = baselineByPath.get(change.path);
+    if (change.reason === 'binary_delete_unsupported' && previous?.kind === 'binary'
+      && isSupportedBinaryAssetPath(change.path) && /^[a-f0-9]{64}$/i.test(previous.hash || '')) {
+      add(sources, 'binary:' + previous.hash, change);
+    }
+  }
+  const consumed = new Set(), moves = [];
+  for (const [key, removed] of sources) {
+    const added = destinations.get(key);
+    if (removed.length !== 1 || added?.length !== 1) continue;
+    const source = removed[0], destination = added[0];
+    const [kind, sha256] = key.split(':');
+    consumed.add(source); consumed.add(destination);
+    moves.push({ type: 'move', path: source.path, to: destination.path,
+      moveProof: { v: 1, kind, sha256 }, previousExists: true, previousKind: kind,
+      size: kind === 'binary' ? destination.size : Buffer.byteLength(destination.content || '', 'utf8') });
+  }
+  return { changes: [...changes.filter(change => !consumed.has(change)), ...moves],
+    unsupportedChanges: unsupportedChanges.filter(change => !consumed.has(change)) };
 }
 
 function enforceNativeResponsePayloadBudget({ changes, unsupportedChanges, mirror }) {
@@ -787,6 +830,7 @@ function buildOtStatusFields(baseline = {}, trusted) {
       && isFreshOtObservation(file.freshness))
     .map(file => ({
       path: file.path,
+      sha256: file.hash,
       source: file.freshness.source,
       state: file.freshness.state,
       lastFullSyncAt: file.freshness.lastFullSyncAt || '',
@@ -836,12 +880,10 @@ async function applyFileOverlays({ projectId, overlays, rootDir }) {
 }
 
 // v1.8.0: after a VERIFIED writeback, the workspace already holds the exact
-// content that landed in Overleaf (the writeback reads from this workspace).
-// Instead of re-downloading the whole project only to rewrite what we just
-// uploaded, re-hash the written workspace files in place and refresh the
-// baseline freshness metadata. Any doubt -> ok:false, and the caller falls
-// back to a full syncOverleafToMirror.
-async function confirmWritebackFiles({ projectId, paths, rootDir }) {
+// content that landed in Overleaf only while its hashes match the page's
+// verified post-images. Check every target before updating any baseline.
+// Missing or mismatched evidence falls back to a full syncOverleafToMirror.
+async function confirmWritebackFiles({ projectId, paths, expectedFiles, rootDir }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const baseline = readBaseline(mirror.baselinePath);
   if ((baseline.unreadFiles || []).length) {
@@ -855,14 +897,32 @@ async function confirmWritebackFiles({ projectId, paths, rootDir }) {
   }
   const filesByPath = new Map((baseline.files || []).map(file => [file.path, file]));
   const confirmed = [];
-  for (const rawPath of Array.isArray(paths) ? paths : []) {
+  const requestedPaths = Array.isArray(paths) ? paths : [];
+  const seenPaths = new Set();
+  const expectedByPath = new Map();
+  if (Array.isArray(expectedFiles) && expectedFiles.length === requestedPaths.length) {
+    for (const file of expectedFiles) {
+      if (typeof file?.path !== 'string' || !/^[a-f0-9]{64}$/i.test(file?.sha256 || '')) {
+        return { ok: false, reason: 'postimage_proof_invalid' };
+      }
+      const normalizedPath = normalizeRelativePath(file.path);
+      if (expectedByPath.has(normalizedPath)) return { ok: false, reason: 'postimage_proof_invalid' };
+      expectedByPath.set(normalizedPath, file.sha256.toLowerCase());
+    }
+  }
+  for (const rawPath of requestedPaths) {
     const normalizedPath = normalizeRelativePath(rawPath);
+    if (seenPaths.has(normalizedPath)) return { ok: false, reason: 'postimage_proof_invalid' };
+    seenPaths.add(normalizedPath);
     const baselineFile = filesByPath.get(normalizedPath);
     if (!baselineFile) {
       return { ok: false, reason: 'missing_baseline_file', path: normalizedPath };
     }
     if (baselineFile.kind !== 'text') {
       return { ok: false, reason: 'not_text', path: normalizedPath };
+    }
+    if (!expectedByPath.has(normalizedPath)) {
+      return { ok: false, reason: 'postimage_proof_required', path: normalizedPath };
     }
     let target;
     try {
@@ -880,6 +940,9 @@ async function confirmWritebackFiles({ projectId, paths, rootDir }) {
       return { ok: false, reason: 'workspace_read_failed', path: normalizedPath };
     }
     const hash = hashText(content);
+    if (hash !== expectedByPath.get(normalizedPath)) {
+      return { ok: false, reason: 'postimage_mismatch', path: normalizedPath };
+    }
     filesByPath.set(normalizedPath, { ...baselineFile, hash, content });
     confirmed.push({ path: normalizedPath, hash });
   }

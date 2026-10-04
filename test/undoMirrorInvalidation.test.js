@@ -11,6 +11,11 @@ const { handleRequest } = require('../native-host/src/taskRunner');
 const { syncOverleafToMirror, getMirrorStatus, getProjectMirror } = require('../native-host/src/mirrorWorkspace');
 const Compatibility = require('../extension/src/shared/compatibility');
 const NativeCompatibilityController = require('../extension/src/content/nativeCompatibilityController');
+const ReviewController = require('../extension/src/content/runReviewController');
+const ReviewSettlement = require('../extension/src/shared/writebackSettlement');
+const ReviewPanelState = require('../extension/src/content/scopedPersistencePanelState');
+const FailureReasons = require('../extension/src/shared/failureReasons');
+const DirectoryRecovery = require('../extension/src/content/directoryCleanupRecovery');
 const packageVersion = require('../package.json').version;
 const runtimeSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/contentRuntime.js'), 'utf8');
 const orchestratorSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/writebackOrchestrator.js'), 'utf8');
@@ -78,10 +83,17 @@ for (const kind of ['legacy', 'tracked']) {
       undoTrackedChanges: kind === 'tracked' ? [{ id: 'change', path: 'root.tex' }] : [],
       undoExpectedFiles: before, undoBaseFiles: written };
     const operations = before.map(file => ({ type: 'edit', path: file.path }));
-    const receipt = { changedDocument: true, skipped: [], applied: operations.map(operation => ({ operation,
-      trackedChange: { path: operation.path, id: operation.path } })) };
+    // Supply the Page receipt's proof fields to the real settlement validators.
+    const receipt = { ok: true, changedDocument: true, skipped: [], applied: operations.map(operation => ({ operation,
+      trackedChange: { path: operation.path, id: operation.path, key: 'editor-undo:' + operation.path },
+      result: { ok: true, method: 'overleaf-editor-undo', verified: true,
+        verifiedContent: before.find(file => file.path === operation.path).content } })) };
+    const state = { activeSessionId: 'mirror-session', runs: [run], sessions: [{ id: 'mirror-session', projectId: 'undo-project', runs: [run] }] };
+    const directoryRecovery = DirectoryRecovery.create({});
     const scope = {
-      Modules: { UndoOperations: require('../extension/src/shared/undoOperations') },
+      state, FailureReasons,
+      getDirectoryCleanupRecovery: () => directoryRecovery,
+      Modules: { UndoOperations: require('../extension/src/shared/undoOperations'), ScopedPersistenceCoordinator: ReviewPanelState },
       writebackOrchestrator: h.instance,
       getPendingMirrorRefresh: h.instance.getPendingMirrorRefresh,
       findRunRecord: () => run, getRunUndoCount: () => 1,
@@ -100,12 +112,15 @@ for (const kind of ['legacy', 'tracked']) {
       appendRunRecordEvent() {}, appendUndoReviewingPolicyEvent() {},
       trackedChangeInFlight: new Map(), refreshRunCardControls() {},
       setRunUndoStatus: (_id, status) => { run.undoStatus = status; },
-      applyLegacyUndoSettlement: (_id, status) => { run.undoStatus = status; },
-      applyTrackedChangeSettlement: () => { run.trackedChangeStatus = 'rejected'; },
-      WritebackSettlement: { attachUndoNotVerifiedFailure() {} }, buildContentFailure() {}
+      async flushQueuedSaveState(options) { assert.equal(options.requireDurable, true); },
+      WritebackSettlement: ReviewSettlement, buildContentFailure: (code, details) => ({ code, ...details })
     };
     vm.createContext(scope);
-    vm.runInContext(extractFunction(runtimeSource, 'undoRunTrackedChanges') + '\n' + extractFunction(runtimeSource, 'undoRun'), scope);
+    let controller;
+    scope.getRunReviewController = () => controller || (controller = ReviewController.create({ ...scope, getState: () => state }));
+    for (const name of ['advanceRunUndoProgress', 'applyTrackedChangeSettlement', 'undoRunTrackedChanges', 'undoRun']) {
+      vm.runInContext(extractFunction(runtimeSource, name), scope);
+    }
     await scope.undoRun(run.id);
     await h.instance.getPendingMirrorRefresh();
     assert.equal(getMirrorStatus('undo-project', { rootDir }).exists, false);

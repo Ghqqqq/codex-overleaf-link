@@ -12,6 +12,8 @@
 
 真实模型验收与烟测统一选择 Luna，以 UI 中实际可用的模型标识核验，并逐次记录运行使用的模型。Luna 不可用时记录阻塞，不自动改用 Sol 或其他模型。此约定只约束测试选择，不修改产品默认模型。
 
+后续新增子 agent 任务统一显式选择 `gpt-6.1-sol`。该约定用于开发、验证和审阅的子任务调度；真实模型验收仍遵守上一段的 Luna 约定。
+
 ## 按需阅读
 
 1. 首次接手阅读[指南入口](docs/architecture/README.md)与[系统总览](docs/architecture/system-overview.md)。

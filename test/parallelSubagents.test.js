@@ -80,10 +80,20 @@ test('workers inherit the parent run shape minus the fan-out skill and the timel
 test('ownership violations are demoted from syncChanges to unsupportedChanges (S8)', () => {
   const runner = repo('native-host/src/codexSessionRunner.js');
   assert.match(runner, /getViolationPaths\(\)/);
-  assert.match(runner, /reason: subagentBroker\.getBlockedReason\(change\.path\)/);
+  assert.match(runner, /reason: subagentBroker\.getBlockedReason\(violatedPath\(change\)\)/);
   const block = runner.match(/const subagentViolationPaths[\s\S]*?\r?\n  \}/)?.[0] || '';
-  assert.match(block, /rawSyncChanges = rawSyncChanges\.filter\(change => !subagentViolationPaths\.has\(change\.path\)\)/);
+  assert.match(block, /\[change\.path, change\.to\]/);
+  assert.match(block, /rawSyncChanges = rawSyncChanges\.filter\(change => !violatedPath\(change\)\)/);
   assert.match(block, /unsupportedChanges\.push\(/);
+  const changes = [
+    { type: 'move', path: 'source-blocked.tex', to: 'first.tex' },
+    { type: 'move', path: 'second.tex', to: 'target-blocked.tex' },
+    { type: 'move', path: 'safe-source.tex', to: 'safe-target.tex' }
+  ];
+  const execute = new Function('rawSyncChanges', 'subagentBroker', `const unsupportedChanges = []; ${block}; return { rawSyncChanges, unsupportedChanges };`);
+  const result = execute(changes, { getViolationPaths: () => new Set(['source-blocked.tex', 'target-blocked.tex']), getBlockedReason: path => 'blocked:' + path });
+  assert.deepEqual(result.rawSyncChanges, [changes[2]]);
+  assert.deepEqual(result.unsupportedChanges.map(row => row.reason), ['blocked:source-blocked.tex', 'blocked:target-blocked.tex']);
 });
 
 test('the subagent queue directory never enters the mirror scan', () => {

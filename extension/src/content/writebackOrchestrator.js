@@ -53,6 +53,7 @@
   let buildReviewingBlockedApplyResult;
   let ensureReviewingBeforeWrite;
   let confirmBinaryOperations;
+  let confirmWholeFilePlan;
   let compileAdapter;
   let filterSyncChangesByOperations;
   let writebackController;
@@ -100,6 +101,21 @@
     return pending;
   }
 
+  function selectionViolationNextStep() {
+    return tx('Select the intended region again and request only changes within it. Valid written parts can be undone.',
+      '请重新选择目标范围，仅请求修改该范围。已写入的合法部分可撤销。');
+  }
+
+  function buildWithheldEntry(change) {
+    const reason = writebackController.formatUnsupportedLocalChangeReason(change, getLocale());
+    const nextAction = change.reason === 'selection_scope_violation' ? selectionViolationNextStep()
+      : tx('The main agent must review the withheld file before syncing it.', '主代理需核对未同步文件后再写回。');
+    return { operation: { type: 'create', path: change.path }, result: { ok: false,
+      code: change.reason, reason, changedDocument: false, failure: { code: change.reason,
+        stage: 'preflight', severity: 'blocked', retryable: false, terminalState: 'blocked', changedDocument: false,
+        userMessage: reason, nextAction } } };
+  }
+
   async function applySyncChangesToOverleaf(syncChanges = [], project = {}, options = {}) {
     const activeRun = getCurrentRunView?.();
     const saveTarget = { runProjectId: activeRun?.runProjectId || '', recordId: activeRun?.recordId || '', sessionId: activeRun?.sessionId || '' };
@@ -110,20 +126,23 @@
     const assistantMessage = cleanFinalAnswer(options.assistantMessage || getAssistantAnswerForCurrentRun());
     const unsupportedChanges = Array.isArray(options.unsupportedChanges) ? options.unsupportedChanges : [];
     appendUnsupportedLocalChanges(unsupportedChanges);
-    const withheldOnly = unsupportedChanges.filter(change => ['subagent_unfinished_output', 'subagent_unauthorized_edit'].includes(change.reason));
+    const withheldOnly = unsupportedChanges.filter(change => ['subagent_unfinished_output', 'subagent_unauthorized_edit', 'selection_scope_violation'].includes(change.reason));
     if (runMode !== 'ask' && !syncChanges.length && withheldOnly.length) {
-      const skipped = withheldOnly.map(change => ({ operation: { type: 'create', path: change.path }, result: {
-        ok: false, code: change.reason, changedDocument: false,
-        reason: writebackController.formatUnsupportedLocalChangeReason(change, getLocale())
-      } }));
+      const skipped = withheldOnly.map(buildWithheldEntry);
+      const hasSelectionViolation = withheldOnly.some(change => change.reason === 'selection_scope_violation');
       const applied = { ok: false, applied: [], skipped };
-      appendCompletionReport({ conclusion: assistantMessage || tx('Some generated files still need review.', '部分生成文件仍需核对。'),
+      appendCompletionReport({ conclusion: assistantMessage || tx('Some generated changes were blocked.', '部分生成的改动已被阻止。'),
         status: 'failed', operations: [], applyResults: [applied], mode: runMode,
-        nextStep: tx('The main agent must review and adopt the withheld files before syncing them.', '主代理需核对并接管未同步文件后再写回。') });
-      return { summaryLine: tx('Generated files are awaiting review.', '生成文件待核对。'), hasSkippedOperations: true,
+        nextStep: hasSelectionViolation
+          ? selectionViolationNextStep()
+          : tx('The main agent must review and adopt the withheld files before syncing them.', '主代理需核对并接管未同步文件后再写回。') });
+      return { summaryLine: hasSelectionViolation
+          ? tx('Changes outside the selection were blocked.', '选区外改动已被阻止。')
+          : tx('Generated files are awaiting review.', '生成文件待核对。'), hasSkippedOperations: true,
         applied, settlement: buildSettlement({ operations: [], applyResult: applied }),
         audit: buildAuditSummaryFromApply({ operations: [], applyResults: [applied], resultStatus: 'completed_with_skips' }) };
     }
+
     // Guard on the immutable submitted mode, not the mutable panel state.
     if (options.mode === 'ask' && ((syncChanges || []).length || unsupportedChanges.length)) {
       appendRunEvent({
@@ -165,6 +184,7 @@
       };
     }
     let operations = buildSyncApplyOperations(syncChanges, project);
+    const requestedOperations = operations;
     let visibleSyncChanges = syncChanges || [];
     let additionalSkippedEntries = [];
     let skippedFilesForAudit = additionalSkippedEntries;
@@ -225,7 +245,11 @@
       };
     }
 
-    const deleteOperations = operations.filter(operation => operation.type === 'delete');
+    const wholePlan = requestedOperations.some(op => op.type === 'move')
+      || requestedOperations.some(op => op.type === 'delete') && requestedOperations.some(op => ['create', 'binary-create'].includes(op.type));
+    const filePlan = wholePlan ? await confirmWholeFilePlan(operations, { originalOperations: requestedOperations }) : null;
+    if (filePlan) { operations = filePlan.operations; additionalSkippedEntries.push(...filePlan.skipped); }
+    const deleteOperations = filePlan ? [] : operations.filter(operation => operation.type === 'delete');
     if (deleteOperations.length) {
       const approved = await showPluginConfirm({
         title: tr('deleteFilePromptTitle'),
@@ -253,7 +277,7 @@
         status: 'running'
       });
     }
-    const binaryDecision = await confirmBinaryOperations(operations);
+    const binaryDecision = filePlan ? { operations, skipped: [] } : await confirmBinaryOperations(operations);
     operations = binaryDecision.operations;
     additionalSkippedEntries.push(...binaryDecision.skipped);
 
@@ -336,7 +360,7 @@
       status: 'running',
       activity: { v: 1, kind: 'sync', id: writebackActivityId, state: 'running', paths: operations.map(operation => operation.path).filter(Boolean) }
     });
-    await stageWritebackRecovery?.(operations, saveTarget, runRequireReviewing);
+    await stageWritebackRecovery?.(operations, saveTarget, runRequireReviewing, project);
     const applied = operations.length
       ? mergeApplyResultSkipped(await assetTransferBroker.applyOperations({
         operations,
@@ -351,12 +375,8 @@
       }), additionalSkippedEntries)
       : mergeApplyResultSkipped({ ok: true, applied: [], skipped: [] }, additionalSkippedEntries);
     const hasConfirmedApplyResult = hasApplyResultEntries(applied);
-    for (const change of unsupportedChanges.filter(item => ['subagent_unfinished_output', 'subagent_unauthorized_edit'].includes(item.reason))) {
-      const reason = writebackController.formatUnsupportedLocalChangeReason(change, getLocale());
-      applied.skipped.push({ operation: { type: 'create', path: change.path }, result: { ok: false,
-        code: change.reason, reason, changedDocument: false, failure: { code: change.reason,
-          stage: 'preflight', severity: 'blocked', retryable: false, terminalState: 'blocked', changedDocument: false,
-          userMessage: reason, nextAction: 'The main agent must review the withheld file before syncing it.' } } });
+    for (const change of unsupportedChanges.filter(item => ['subagent_unfinished_output', 'subagent_unauthorized_edit', 'selection_scope_violation'].includes(item.reason))) {
+      applied.skipped.push(buildWithheldEntry(change));
       applied.ok = false;
     }
     // Record the apply result + undo checkpoint IMMEDIATELY, before any
@@ -367,7 +387,7 @@
     // landed in Overleaf. The manual-confirm path already records undo right
     // after its write — match that ordering here (v1.6.2).
     appendApplyResult(applied);
-    recordUndoFromApply(project, applied);
+    await recordUndoFromApply(project, applied);
     const skippedEntries = getSkippedEntries(applied);
     if (skippedEntries.length) {
       appendPartialWritebackWarning(applied);
@@ -568,37 +588,29 @@
     return 'failed';
   }
 
-  // v1.8.0: text-only writebacks confirm the mirror in place. The written
-  // content ORIGINATED in the local workspace, so after a verified writeback
-  // the workspace already equals Overleaf; only the baseline hashes and
-  // freshness metadata are stale. mirror.confirmWriteback re-hashes the
-  // written files without re-downloading the project. Anything unusual —
-  // tree ops, binary writes, dirty mirror, an older native host without the
-  // method — falls back to the full zip resync below.
-  const MIRROR_CONFIRMABLE_OPERATION_TYPES = new Set(['edit']);
+  // Text-only confirmation requires the page's verified post-image digest.
+  // Local files can change after writeback; Native must match those digests
+  // before advancing its baseline. Missing evidence and non-text/tree writes
+  // retain the authoritative ZIP fallback below.
 
   async function tryConfirmMirrorWriteback(applied, runProjectId) {
-    const entries = Array.isArray(applied?.applied) ? applied.applied : [];
-    if (!entries.length) {
-      return false;
-    }
-    const paths = [];
-    for (const entry of entries) {
-      const operation = entry?.operation || {};
-      if (!MIRROR_CONFIRMABLE_OPERATION_TYPES.has(operation.type) || !operation.path) {
-        return false;
-      }
-      paths.push(operation.path);
-    }
     try {
+      if (!runProjectId || getCurrentProjectId() !== runProjectId) return false;
+      const proof = await writebackController.buildMirrorWritebackConfirmation?.(applied);
+      if (!proof || getCurrentProjectId() !== runProjectId) return false;
       const response = await sendBackgroundNative({
         method: 'mirror.confirmWriteback',
         params: {
           projectId: runProjectId,
-          paths: Array.from(new Set(paths))
+          ...proof
         }
       });
-      return response?.ok === true && response?.result?.ok === true;
+      const confirmations = Array.isArray(response?.result?.confirmed) ? response.result.confirmed : [];
+      const confirmed = new Map(confirmations.map(file => [file?.path, file?.hash]));
+      return getCurrentProjectId() === runProjectId && response?.ok === true && response?.result?.ok === true
+        && confirmations.length === proof.expectedFiles.length
+        && confirmed.size === proof.expectedFiles.length
+        && proof.expectedFiles.every(file => confirmed.get(file.path) === file.sha256);
     } catch (error) {
       return false;
     }
@@ -765,19 +777,11 @@
     return compileAdapter.buildPostWriteCompileSummary(input);
   }
 
-  // First structured per-operation failure among the skipped writeback
-  // entries — the run-level failure the completion report promotes.
+  // Use the same normalized failure selection as settlement and its UI, while
+  // preserving the selected producer's full evidence on the historical report.
   function promoteWritebackSkippedFailure(applied) {
-    for (const entry of getSkippedEntries(applied)) {
-      const failure = entry?.result?.failure || entry?.failure;
-      if (failure?.code) {
-        if (!failure.file && entry?.path) {
-          return { ...failure, file: entry.path };
-        }
-        return failure;
-      }
-    }
-    return null;
+    const failures = writebackSettlement.collectFailuresFromResult(applied);
+    return writebackSettlement.selectPrimaryFailure(failures);
   }
 
   function appendCompileSummaryToConclusion(conclusion, compileSummary) {
@@ -887,6 +891,7 @@
       buildReviewingBlockedApplyResult,
       ensureReviewingBeforeWrite,
       confirmBinaryOperations,
+      confirmWholeFilePlan,
       filterSyncChangesByOperations,
       writebackController,
       RUN_SNAPSHOT_ZIP_TIMEOUT_MS,

@@ -86,13 +86,19 @@ Chrome runtime 消息由多个 listener 消费，各自拥有准入函数。当�
 
 兼容性门控决定当前版本与协议能否处理某个方法，与发送者准入、用户操作授权分别执行。
 [compatibility.js](../../extension/src/shared/compatibility.js) 定义协议范围、最低版本、必要 capabilities，以及 `compatible/update-available/incompatible` 分类和允许方法矩阵。
-[taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) 的 `bridge.ping` 报告 Native 版本、协议、能力和环境；capabilities 取自共享常量，不能视作逐项业务实测结果。
+[taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) 的 `bridge.ping` 报告 Native 版本、协议、能力和环境；基础 capabilities 取自共享常量，另宣告按功能协商的可选能力；能力宣告不能视作逐项业务实测结果。
 
 Content 的 [NativeCompatibilityController.ensureForMethod](../../extension/src/content/nativeCompatibilityController.js) 先 ping，再用传入的 `gatedMethods` 集合决定是否阻止目标方法。
 该方法接受可选的 `{assertCurrent}`：普通运行与 skill-installer 共用的 `sendTrackedCodexRun` 传入原运行句柄、AbortSignal 和账号/项目校验。controller 在 `bridge.ping` 返回后、兼容评估及 blocked 通知前执行回调，sender 在 gate 返回后再次执行，再消费通过或拒绝结果；旧运行的迟到响应不能向后继运行派发请求或追加兼容失败。其他通用 `sendNative/sendBackgroundNative` 调用保持各自取消语义，未统一获得这一运行身份回调。
 集合定义在 [contentRuntime.NATIVE_COMPATIBILITY_GATED_METHODS](../../extension/src/content/contentRuntime.js)；只有集合内方法会附加兼容性 evidence，并执行对应派发前取消检查。
 其中 `mirror.invalidate` 豁免该取消检查，用于保留 Undo 后的镜像失效处理；不能从豁免推定其他操作可在取消后继续。
 后台 [getNativeCompatibilityBlock](../../extension/src/background.js) 再检查请求 evidence；它不会为普通请求重新执行独立 ping。
+
+**字面 focus 的可选能力门。** [RunController.buildCodexRunParams](../../extension/src/content/runController.js) 为文件 chip 中已经解析为项目路径的 focus 数组设置 `focusFilesAreLiteral:true`；runtime 的首次运行与参数重建共用该生产者。只有布尔 `true` 开启字面语义。Native 的 `hasRunnableProjectSnapshotEvidence`、`validateOtFocusedWarmMirrorReuse` 与 `codexSessionRunner.filterSyncChangesForFocus` 按该标志解释 focus 数组；结构化文件、OT 状态、覆盖层及变更路径始终按字面身份匹配。Content 的 OT producer 同样显式启用字面 focus。因而名为 `@file:main.tex` 的真实文件不会被当成 `main.tex` 的提示语。
+
+`bridge.ping` 额外宣告 `capabilities.literalProjectPaths:true`，该项不加入全局 `REQUIRED_CAPABILITIES`。后台 `getNativeCompatibilityBlock` 对 `codex.run` 增加条件：当 `focusFilesAreLiteral===true`，且 focus 数组非空或 `restrictToFocusFiles===true` 时，兼容 evidence 必须含 `native.capabilities.literalProjectPaths===true`。缺少能力时，在 Native 派发前返回 `native_update_required`、`status:native_capability_missing` 和缺失能力名，提示安装协调版本并重载扩展；同产品版本号也不能代替此能力证据。
+
+无 focus、无范围限制的普通运行继续使用原兼容规则；旧调用者未声明字面标志时保留 focus 提示语兼容，例如 `@file:/main.tex`，不会自动获得新的字面保证。该兼容分支只解释 focus 输入，不能重新解释结构化 `file.path` 或 `change.path/to`。相关边界由 [literalFocusIdentity](../../test/literalFocusIdentity.test.js)、[otWarmMirrorContract](../../test/otWarmMirrorContract.test.js) 与 [backgroundNativeError](../../test/backgroundNativeError.test.js) 定位；新增该能力或调整字段时需同时核对生产者、后台门控和 Native 消费者。
 
 | 范围 | 方法族及例外 |
 | --- | --- |

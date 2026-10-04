@@ -93,6 +93,44 @@ test('background blocks side-effecting native requests without compatibility evi
   assert.match(blockedRun.error.message, new RegExp(`recommended update target is v${escapeRegExp(compatibility.BUILD_TARGET_VERSION)}`, 'i'));
 });
 
+test('literal focus requests require the native path capability before any native dispatch', async () => {
+  const sender = { tab: { id: 101, url: 'https://www.overleaf.com/project/abc123' } };
+  for (const capability of [undefined, false, 'true']) {
+    const harness = loadBackgroundHarness();
+    const response = harness.sendNative({ id: 'literal-gate', method: 'codex.run', params: {
+      ...withOkNativeCompatibility({ focusFilesAreLiteral: true, focusFiles: ['@file:main.tex'] }),
+      nativeCompatibility: { status: 'ok', classification: 'compatible', native: { capabilities: { literalProjectPaths: capability } } }
+    } }, sender);
+    // Settle an incorrectly dispatched request as well, so a red test does not
+    // leave a synthetic port or promise running after its assertion fails.
+    harness.ports[0]?.emitMessage({ id: 'literal-gate', ok: true, result: {} });
+    const result = await settleWithin(response);
+    assert.equal(harness.ports.length, 0);
+    assert.equal(result.error.code, 'native_update_required');
+    assert.equal(result.error.status, 'native_capability_missing');
+    assert.match(result.error.message, /Reload/);
+  }
+});
+
+test('literal-capable native hosts and legacy or unfocused requests retain their dispatch paths', async () => {
+  const sender = { tab: { id: 101, url: 'https://www.overleaf.com/project/abc123' } };
+  const cases = [
+    { focusFilesAreLiteral: true, focusFiles: ['@file:main.tex'], capability: true },
+    { focusFiles: ['@file:/main.tex'] },
+    { focusFilesAreLiteral: true, focusFiles: [], restrictToFocusFiles: false }
+  ];
+  for (const value of cases) {
+    const harness = loadBackgroundHarness();
+    const params = withOkNativeCompatibility(value);
+    if (value.capability) params.nativeCompatibility.native = { capabilities: { literalProjectPaths: true } };
+    const response = harness.sendNative({ id: 'literal-ok', method: 'codex.run', params }, sender);
+    assert.equal(harness.ports.length, 1);
+    assert.equal(harness.ports[0].messages[0].method, 'codex.run');
+    harness.ports[0].emitMessage({ id: 'literal-ok', ok: true, result: {} });
+    assert.equal((await settleWithin(response)).ok, true);
+  }
+});
+
 test('background allows only update-available methods when native evidence is older but capability-compatible', async () => {
   const harness = loadBackgroundHarness();
   const sender = {

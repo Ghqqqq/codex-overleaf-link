@@ -163,7 +163,7 @@ test('settlement compaction keeps mandatory top-level facts under the per-run bu
   assert.ok(facts.compaction.omittedFileSettlements.changed >= 0);
 });
 
-test('settlement compaction keeps the primary failure within budget at the operation quota', () => {
+for (const needsReview of [false, true]) test(`settlement compaction retains the selected primary within budget; review=${needsReview}`, () => {
   const facts = Settlement.compactSettlementFacts({
     documentEffect: 'possibly-changed',
     failures: Array.from({ length: 1000 }, (_, index) => ({
@@ -175,12 +175,12 @@ test('settlement compaction keeps the primary failure within budget at the opera
       file: `sections/${'z'.repeat(250)}-${index}.tex`,
       operationType: 'edit',
       retryable: true,
-      terminalState: index === 999 ? 'blocked' : 'needs_review'
+      terminalState: index === 999 ? 'blocked' : needsReview ? 'needs_review' : 'degraded'
     }))
   });
 
   assert.ok(utf8Bytes(facts) <= Settlement.SETTLEMENT_FACTS_MAX_BYTES);
-  assert.equal(facts.failures[0].code, 'blocked-primary');
+  assert.equal(facts.failures[0].code, needsReview ? 'warning-0' : 'blocked-primary');
   assert.ok(facts.compaction.omittedFailures > 0);
 });
 

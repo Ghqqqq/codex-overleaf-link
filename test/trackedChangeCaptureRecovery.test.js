@@ -252,10 +252,14 @@ test('action storage round-trips pending capture and keeps Undo within the actio
   const payload = StorageActions.compactRunActionPayload(run, true);
   assert.deepEqual(payload.trackedChangeCaptures, run.trackedChangeCaptures);
   run.trackedChangeCaptures[0].oversize = 'x'.repeat(2100 * 1024);
+  const retained = StorageActions.compactRunActionPayload(run, true);
+  assert.deepEqual(retained.trackedChangeCaptures, run.trackedChangeCaptures, 'capture above the former 2 MiB budget remains available');
+  run.trackedChangeCaptures[0].oversize = 'x'.repeat(16 * 1024 * 1024);
   const limited = StorageActions.compactRunActionPayload(run, true);
   assert.deepEqual(limited.appliedOperations, run.appliedOperations);
   assert.deepEqual(limited.undoExpectedFiles, run.undoExpectedFiles);
   assert.equal(limited.trackedChangeCaptures, undefined);
+  assert.equal(limited.recoveryRetention, undefined, 'dropping optional capture preserves actionable Undo');
 });
 
 test('unicode fingerprint includes both halves of supplementary characters', () => {

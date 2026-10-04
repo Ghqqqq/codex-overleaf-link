@@ -15,11 +15,13 @@
     return JSON.parse(JSON.stringify(value));
   }
 
-  async function applyReviewTransition({ getState, runId, transition, persist }) {
+  async function applyReviewTransition({ getState, runId, transition, persist, legacyUndo = false, assertCurrent }) {
     const targets = () => Array.from(new Set([
       ...(getState().runs || []),
       ...(getState().sessions || []).flatMap(session => session.runs || [])
     ])).filter(run => run.id === runId);
+    assertCurrent?.();
+    const capturedState = getState(), capturedSessionId = capturedState.activeSessionId;
     const records = targets();
     const sessions = (getState().sessions || []).filter(session =>
       (session.runs || []).some(run => run.id === runId));
@@ -31,12 +33,19 @@
         (Date.parse(session.lastActivityAt) || 0) + 1)).toISOString();
       session.lastActivityAt = session.updatedAt;
     }
+    const staged = records.map(record => JSON.stringify(record));
     try {
-      await persist({ preserveRunActionPayload: true, reviewRunIds: [runId] });
+      await persist({ preserveRunActionPayload: true, reviewRunIds: [runId], requireDurable: true });
+      assertCurrent?.();
+      if (getState() !== capturedState || getState().activeSessionId !== capturedSessionId
+        || records.some(record => !targets().includes(record))) throw reviewPersistenceError();
     } catch (error) {
+      try { assertCurrent?.(); } catch (_stale) { throw error; }
       // The remote action may have succeeded. Keep its recovery data and expose uncertainty.
-      for (const record of targets()) {
-        Object.assign(record, cloneSnapshot(previous), { trackedChangeStatus: 'needs_review' });
+      for (const record of records) {
+        if (getState() !== capturedState || !targets().includes(record)
+          || JSON.stringify(record) !== staged[records.indexOf(record)]) continue;
+        Object.assign(record, cloneSnapshot(previous), legacyUndo ? { undoStatus: 'partial' } : { trackedChangeStatus: 'needs_review' });
         for (const field of ['settlement', 'settlementFacts']) {
           if (!Object.prototype.hasOwnProperty.call(previous, field)) delete record[field];
         }
@@ -157,10 +166,11 @@
         focusFiles: Array.isArray(session.focusFiles) ? session.focusFiles : [],
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
-        pendingInputs: (Array.isArray(session.pendingInputs) ? session.pendingInputs : [])
+      pendingInputs: (Array.isArray(session.pendingInputs) ? session.pendingInputs : [])
           .filter(function (item) { return !queueTombstones[item?.id]; })
       }), { preserveRunActionPayload: true });
     });
+    sessionRecords = StorageDb.compactSessionBatchActions?.(sessionRecords, { activeSessionId: state.activeSessionId }) || sessionRecords;
     var written = await input.SessionPersistence.writeSessions({
       Migration: Migration,
       StorageDb: StorageDb,
@@ -174,9 +184,16 @@
       writerId: input.persistenceContext?.writerId || ''
     });
     if (!reviewRuns.every(reviewRun => (written || []).some(session => (session.runs || []).some(run =>
-      run.id === reviewRun.id && run.trackedChangeStatus === reviewRun.trackedChangeStatus
+      run.id === reviewRun.id && (!reviewRun.manualReviewProof || !['pending', 'needs_review'].includes(reviewRun.trackedChangeStatus)
+        || JSON.stringify(run.manualReviewProof) === JSON.stringify(reviewRun.manualReviewProof))
+      && (!reviewRun.trackedChangeStatus && ['applied', 'partial'].includes(reviewRun.undoStatus)
+        ? run.undoStatus === reviewRun.undoStatus && (reviewRun.undoStatus === 'applied'
+          || ['undoOperations', 'undoBaseFiles', 'undoExpectedFiles', 'undoTrackedChanges']
+            .every(field => JSON.stringify(run[field] || []) === JSON.stringify(reviewRun[field] || [])))
+        : run.trackedChangeStatus === reviewRun.trackedChangeStatus)
     )))) throw reviewPersistenceError();
     verifyRecoveredRuns(input.recoveryRuns, sessionRecords, written);
+    return written;
   }
 
   return Object.freeze({ persistPanelState: persistPanelState, applyReviewTransition: applyReviewTransition });

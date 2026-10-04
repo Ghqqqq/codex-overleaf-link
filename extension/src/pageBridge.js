@@ -77,11 +77,16 @@
   });
   binaryAssetUploader = requirePageModule('CodexOverleafBinaryAssetUploader').create({
     prepareUploadParent: textFileCreator.prepareUploadParent,
+    cleanupCreatedDirectories: textFileCreator.cleanupCreatedDirectories,
+    isUploadParentCurrent: textFileCreator.isUploadParentCurrent,
     findFolderNode: textFileCreator.findFolderNode,
     document,
     snapshotRouter,
     treeOperations,
     window
+  });
+  const fileMover = requirePageModule('CodexOverleafFileMover').create({
+    window, document, treeOperations, snapshotRouter, textFileCreator, normalizeSafeProjectPath
   });
   writeGuard = requirePageModule('CodexOverleafWriteGuard').create({
     document,
@@ -103,6 +108,7 @@
     beginTextCreateBatch: textFileCreator.beginCreateBatch,
     finishTextCreateBatch: textFileCreator.finishCreateBatch,
     deleteTextFile: textFileCreator.deleteFile,
+    moveFile: fileMover.moveFile,
     activeEditorIdentityChanged,
     clickNode,
     collectElements,
@@ -242,6 +248,11 @@
     ensureEditing: params => textFileCreator.ensureWriteMode(false, params),
     applyOperations: writebackReceipts.apply,
     getWritebackReceipt: writebackReceipts.get,
+    checkCreatedDirectories(params) {
+      const sequence = readWriteCancellationSequence();
+      return textFileCreator.cleanupCreatedDirectories(params.directories, { projectId: params.runProjectId,
+        isCurrent: () => getProjectId() === params.runProjectId && readWriteCancellationSequence() === sequence });
+    },
     getSelectionContext,
     binaryUploadBegin: params => binaryAssetUploader.begin(params),
     binaryUploadAppend: params => binaryAssetUploader.append(params),
@@ -691,7 +702,14 @@
     if (to - from > 20000) return { ok: false, code: 'selection_too_large' };
     const source = editorState.doc.toString();
     const text = source.slice(from, to);
-    const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+    // UTF-8 replaces isolated surrogates; exclude them so flank hashes prove exact UTF-16 text.
+    if (/[\uD800-\uDFFF]/u.test(source) || /[\uD800-\uDFFF]/u.test(text)) return { ok: false, code: 'selection_unavailable' };
+    const hashText = async value => Array.from(new Uint8Array(
+      await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+    ), byte => byte.toString(16).padStart(2, '0')).join('');
+    const [documentHash, prefixHash, suffixHash] = await Promise.all([
+      hashText(source), hashText(source.slice(0, from)), hashText(source.slice(to))
+    ]);
     if (getProjectId() !== projectId || getActiveFilePath() !== path || getCodeMirrorEditorView() !== view
       || view.state.doc !== editorState.doc || view.state.selection.main.from !== from || view.state.selection.main.to !== to) {
       return { ok: false, code: 'selection_changed' };
@@ -699,7 +717,8 @@
     const captured = { projectId, path, from, to, text,
       lineStart: editorState.doc.lineAt(from).number,
       lineEnd: editorState.doc.lineAt(Math.max(from, to - 1)).number,
-      documentHash: Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join(''),
+      documentHash,
+      rebaseEvidence: { v: 1, documentLength: source.length, prefixHash, suffixHash },
       capturedAt: new Date().toISOString() };
     let anchor = null;
     try {

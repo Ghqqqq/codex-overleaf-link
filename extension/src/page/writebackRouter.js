@@ -1,11 +1,12 @@
 (function initCodexOverleafWritebackRouter(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./treeOperations'));
   } else {
-    root.CodexOverleafWritebackRouter = factory();
+    root.CodexOverleafWritebackRouter = factory(root.CodexOverleafTreeOperations);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function writebackRouterFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function writebackRouterFactory(TreeOperations) {
   'use strict';
+  const { fileTreeMethodNames } = TreeOperations;
 
   function create(deps = {}) {
     const window = deps.window || (typeof globalThis !== 'undefined' ? globalThis : {});
@@ -398,10 +399,12 @@
       : result;
   }
 
-  async function confirmNoTraceUndoEditing() {
+  async function confirmNoTraceUndoEditing(options = {}) {
     let changed = false;
     let toggle = { ok: true, changed: false, enabled: false };
     for (let attempt = 0; attempt < 2; attempt++) {
+      const blocked = options.reviewGuard?.();
+      if (blocked) return blocked;
       if (!isEditingConfirmedForNoTraceUndo(getReviewingState({}))) {
         toggle = await setReviewingEnabled(false, { waitMs: 1800 });
         if (!toggle.ok && (!['editing_not_confirmed', 'reviewing_disable_failed'].includes(toggle.code)
@@ -418,8 +421,13 @@
       reason: 'Overleaf Editing mode did not remain confirmed before undo; no undo write was started.' };
   }
 
+  async function awaitReview(options, work) {
+    try { return options.reviewAwait ? await options.reviewAwait(work) : await work(); }
+    catch (error) { if (error?.reviewFailure) return error.reviewFailure; throw error; }
+  }
+
   async function applyOperationsWithNoTraceUndo(operations, options = {}) {
-    const disabled = await confirmNoTraceUndoEditing();
+    const disabled = await awaitReview(options, () => confirmNoTraceUndoEditing(options));
     if (!disabled.ok) return buildNoTraceUndoBlockedResult(operations, disabled);
     const result = await applyOperationsCore(operations, {
       ...options, noTraceUndo: true, trackReviewingChanges: false
@@ -441,13 +449,7 @@
     const safeBaseFiles = normalizeBaseFilesForSafety(options.baseFiles);
     const baseFileLookup = window.CodexOverleafStaleGuard?.buildBaseFileLookup(safeBaseFiles);
     const baseBinaryFileLookup = buildBaseBinaryFileLookup(safeBaseFiles);
-    // Mid-run project-change guard. The pageBridge wrapper already ran the
-    // writeGuard once at entry, but each per-op step here can take 0.5-5s
-    // (openFileByPath, waitForActiveEditorText, save-state verification),
-    // so a multi-op write can span 10-30 seconds total. If the user SPA-
-    // navigates to a different project mid-flight, the remaining operations
-    // would land in the wrong project. Re-check the editor project before
-    // each op and short-circuit the rest of the queue when it diverges.
+    // Recheck project identity between awaited operations and before each write.
     const runProjectId = typeof options.runProjectId === 'string' ? options.runProjectId : '';
     const writeGuardSurface = window.CodexOverleafWriteGuard?.create({
       window,
@@ -478,13 +480,17 @@
       ? await deps.beginTextCreateBatch(createCandidates, { isCurrent: () =>
         treeOperations.getProjectId?.() === runProjectId && readWriteCancellationSequence() === cancelBaselineSequence }) : null;
     const deferredCreates = [];
+    let haltRemainingOperations = false;
+    const skipTail = (operation, result) => operations.slice(operations.indexOf(operation) + 1)
+      .forEach(tail => skipped.push({ operation: normalizeOperationPaths(tail), result }));
     const reopenQueue = [];
     const deadlineFailure = () => Number.isFinite(options.deadlineAt) && now() >= options.deadlineAt
       ? { ok: false, code: 'writeback_deadline_exceeded', changedDocument: false,
         reason: 'The undo time budget expired before this operation could start.' } : null;
-    const editOptions = () => ({ baseFileLookup, runProjectId,
+    const editOptions = () => ({ baseFileLookup, runProjectId, deadlineAt: options.deadlineAt,
+      reviewGuard: options.reviewGuard, reviewAwait: options.reviewAwait,
       recheckWriteProject: writeGuardSurface ? () => {
-        const expired = deadlineFailure();
+        const expired = options.reviewGuard?.() || deadlineFailure();
         return expired ? { applied: [], skipped: [{ operation: {}, result: expired }] }
           : writeGuardSurface.runWriteGuard({ runProjectId });
       } : null,
@@ -499,13 +505,15 @@
     };
 
     for (const rawOperation of operations) {
+      const reviewBlock = options.reviewGuard?.();
+      if (reviewBlock) {
+        skipped.push({ operation: normalizeOperationPaths(rawOperation), result: reviewBlock });
+        skipTail(rawOperation, reviewBlock); break;
+      }
       // Stop undispatched work when cancellation arrives during an awaited operation.
       if (readWriteCancellationSequence() !== cancelBaselineSequence) {
         skipped.push({ operation: normalizeOperationPaths(rawOperation), result: cancelledSkipResult });
-        const remainingForCancel = operations.slice(operations.indexOf(rawOperation) + 1);
-        for (const tailOperation of remainingForCancel) {
-          skipped.push({ operation: normalizeOperationPaths(tailOperation), result: cancelledSkipResult });
-        }
+        skipTail(rawOperation, cancelledSkipResult);
         break;
       }
       // Re-check project ownership before this operation and preserve every skipped tail entry.
@@ -515,10 +523,7 @@
           // Keep the current path and the remaining operations attributable.
           const guardFailure = guardBlock.skipped[0].result;
           skipped.push({ operation: normalizeOperationPaths(rawOperation), result: guardFailure });
-          const remaining = operations.slice(operations.indexOf(rawOperation) + 1);
-          for (const tailOperation of remaining) {
-            skipped.push({ operation: normalizeOperationPaths(tailOperation), result: guardFailure });
-          }
+          skipTail(rawOperation, guardFailure);
           break;
         }
       }
@@ -557,16 +562,21 @@
         continue;
       }
       record(operation, result);
+      if (operation.type === 'move' && operation.moveProof && !result.ok) {
+        haltRemainingOperations = true;
+        skipTail(rawOperation, { ok: false, code: 'file_plan_not_completed', changedDocument: false,
+          reason: 'The file move did not finish; the remaining file plan was not started.' }); break;
+      }
     }
 
     // A file that could not be opened mid-batch usually opens once the
     // previous document has settled: give untouched open failures one pass.
-    if (reopenQueue.length && readWriteCancellationSequence() === cancelBaselineSequence
+    if (!haltRemainingOperations && reopenQueue.length && readWriteCancellationSequence() === cancelBaselineSequence
       && !skipped.some(entry => entry.result?.code === 'aborted_project_changed')) {
       await delay(deps.reopenRetryDelayMs ?? 1200);
     }
     for (const entry of reopenQueue) {
-      const blocked = readWriteCancellationSequence() !== cancelBaselineSequence
+      const blocked = options.reviewGuard?.() || haltRemainingOperations || readWriteCancellationSequence() !== cancelBaselineSequence
         || skipped.some(item => item.result?.code === 'aborted_project_changed')
         || Boolean(runProjectId && writeGuardSurface && await writeGuardSurface.runWriteGuard({ runProjectId }));
       const result = blocked ? entry.result : await applyEditOperation(entry.operation, editOptions());
@@ -589,25 +599,26 @@
       ok: skipped.length === 0,
       applied,
       skipped,
+      ...(haltRemainingOperations ? { haltRemainingOperations: true } : {}),
       trackedChanges: trackedChangeCaptures.some(capture => capture.state !== 'observed') ? [] : mergeTrackedChangeRefs(trackedChanges),
       trackedChangeCaptures
     };
   }
 
-  function isUntouchedOpenFailure(result) {
-    return result?.ok === false && result.failure?.code === 'target_file_open_failed'
-      && result.failure.changedDocument === false;
-  }
+  const isUntouchedOpenFailure = result => result?.ok === false && result.failure?.code === 'target_file_open_failed'
+    && result.failure.changedDocument === false;
 
   async function applyEditOperation(operation, options = {}) {
+    const reviewBlock = options.reviewGuard?.();
+    if (reviewBlock) return reviewBlock;
     const currentPath = getActiveFilePath();
-    const editorReady = await ensureEditorReadyForOperation(operation, options.baseFileLookup, currentPath);
+    const editorReady = await awaitReview(options, () => ensureEditorReadyForOperation(operation, options.baseFileLookup, currentPath));
     if (!editorReady.ok) {
       return editorReady;
     }
 
     if (options.noTraceUndo === true) {
-      const editing = await confirmNoTraceUndoEditing();
+      const editing = await awaitReview(options, () => confirmNoTraceUndoEditing(options));
       if (!editing.ok) return buildNoTraceUndoBlockedResult([operation], editing).skipped[0].result;
     }
     const trackReviewingChanges = options.trackReviewingChanges === true;
@@ -625,7 +636,8 @@
       options.baseFileLookup
     ) || { ok: true };
     if (!freshness.ok) {
-      const ready = await waitForFreshEditorTextForOperation(operation, options.baseFileLookup, 1500);
+      const ready = await awaitReview(options, () => waitForFreshEditorTextForOperation(operation, options.baseFileLookup, 1500));
+      if (options.reviewGuard?.()) return options.reviewGuard();
       if (!ready.ok) {
         const decorated = attachWritebackDebug(freshness, 'stale_guard', operation, options.baseFileLookup, current, {
           initialActivePath: currentPath,
@@ -732,6 +744,8 @@
           reason: 'Overleaf left Editing mode before the undo write.' }).skipped[0].result;
     }
 
+    const finalReviewBlock = options.reviewGuard?.();
+    if (finalReviewBlock) return finalReviewBlock;
     const result = Array.isArray(operation.patches) && operation.patches.length
       ? replaceActiveEditorPatches(preparedPatches.patches, nextContent)
       : replaceActiveEditorText(nextContent);
@@ -739,7 +753,9 @@
       return result;
     }
 
-    const verified = await verifyActiveEditorText(nextContent, operation.path, deps.writeVerifyWaitMs ?? 2500, current);
+    const verifyWaitMs = Math.min(deps.writeVerifyWaitMs ?? 2500, Number.isFinite(options.deadlineAt)
+      ? Math.max(0, options.deadlineAt - now()) : Infinity);
+    const verified = await verifyActiveEditorText(nextContent, operation.path, verifyWaitMs, current);
     if (!verified.ok) {
       const decorated = attachWritebackDebug(verified, 'write_verification', operation, options.baseFileLookup, readActiveEditorText(), {
         initialActivePath: currentPath,
@@ -1320,9 +1336,7 @@
     return baseFile.size == null || currentSize == null || baseFile.size === currentSize;
   }
 
-  function normalizeBase64(value) {
-    return String(value || '').replace(/\s+/g, '');
-  }
+  const normalizeBase64 = value => String(value || '').replace(/\s+/g, '');
 
   function decodeBase64Bytes(contentBase64) {
     try {
@@ -1373,6 +1387,15 @@
     }
     const initialProjectId = treeOperations.getProjectId?.();
     const initialCancellationSequence = readWriteCancellationSequence();
+    if (operation.type === 'move' && operation.moveProof) {
+      if (typeof deps.moveFile !== 'function') return { ok: false, code: 'file_move_unavailable', changedDocument: false,
+        reason: 'Verified native file moves are unavailable. Reload the extension and Overleaf.' };
+      const result = await deps.moveFile(operation, { runProjectId: options.runProjectId, deadlineAt: options.deadlineAt,
+        isCurrent: () => treeOperations.getProjectId?.() === initialProjectId
+          && readWriteCancellationSequence() === initialCancellationSequence });
+      if (result.ok) recordFileTreeOperationSuccess(operation, options.baseFileLookup);
+      return result;
+    }
     if (operation.type === 'create' && options.createBatch && typeof deps.createTextFile === 'function') {
       if (options.baseFileLookup?.has(operation.path) && options.retryCreates !== true) {
         return checkFileTreeOperationFreshness(operation, options.baseFileLookup);
@@ -1654,15 +1677,6 @@
     }
   }
 
-  function fileTreeMethodNames(type) {
-    return {
-      create: ['createDoc', 'createFile', 'addDoc', 'addFile'],
-      rename: ['renameEntity', 'renameFile', 'renameDoc'],
-      move: ['moveEntity', 'moveFile', 'moveDoc'],
-      delete: ['deleteEntity', 'deleteFile', 'deleteDoc', 'removeEntity']
-    }[type] || [];
-  }
-
   function normalizeOperationPaths(operation) {
     if (!operation || typeof operation !== 'object') {
       return operation;
@@ -1797,23 +1811,12 @@
 
     async function applyOperationsForBridge(operationsOrOptions, options = {}) {
       if (Array.isArray(operationsOrOptions)) {
-        // Welcome-panel + write-guard: defense-in-depth
-        // also runs on the array-shaped entry. T2 only guarded the
-        // payload-object branch; if any future caller goes straight to the
-        // array entry without `options.runProjectId`, the router would have
-        // silently dispatched. Mirror the same `editor_project_id_unavailable`
-        // failure shape the payload branch and the page-side guard already
-        // emit.
+        // Both public call shapes require the original project identity.
         const writeGuardBlock = checkWritebackRunProjectId(options);
         if (writeGuardBlock) return writeGuardBlock;
         return applyOperations(operationsOrOptions, options);
       }
       const payload = operationsOrOptions || {};
-      // Welcome-panel + write-guard: defense-in-depth.
-      // The pageBridge wrapper already runs the runProjectId guard, but a
-      // future caller could reach the router directly. A missing or empty
-      // `runProjectId` on the payload-shaped call blocks the write with the
-      // same `editor_project_id_unavailable` shape the page-side guard uses.
       const writeGuardBlock = checkWritebackRunProjectId(payload);
       if (writeGuardBlock) return writeGuardBlock;
       return applyOperations(payload.operations || [], payload);
@@ -1822,10 +1825,7 @@
     function checkWritebackRunProjectId(params) {
       const runProjectId = params && typeof params.runProjectId === 'string' ? params.runProjectId : '';
       if (runProjectId) return null;
-      // operation: {} (not null) — batch-level guard fired before any per-op
-      // dispatch; matches the abortDispatchResult shape in pageBridge.js and
-      // avoids crashing downstream audit / transcript code that reads
-      // operation.path without a null guard.
+      // Keep operation.path safe for downstream readers of batch-level failures.
       return {
         ok: false,
         applied: [],
@@ -1931,7 +1931,7 @@
       captureTrackedWrite, reconcileTrackedChangeCapture,
       waitForTrackedChangeDiff
     } = trackedChangesLifecycleModule.create({
-      window, confirmReviewWriteback: deps.confirmReviewWriteback,
+      window, now, readWriteCancellationSequence, confirmReviewWriteback: deps.confirmReviewWriteback,
       checkWritebackRunProjectId,
       buildNoTraceUndoBlockedResult,
       buildReviewingRequiredBlockedResult,

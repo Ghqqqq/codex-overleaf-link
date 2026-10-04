@@ -5,7 +5,7 @@
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this), function () {
   'use strict';
 
-  var REVISION = '2026-10-04-create-retry-and-snapshot-v37';
+  var REVISION = '2026-10-04-b02-recovery-and-file-identity-v38';
   var METHODS = freezeCatalog({
     initializeCapability: entry('bridge.initialize', 'control', 'none', 'default', false, 'none'),
     probe: entry('bridge.probe', 'read', 'none', 'default', false, 'safe'),
@@ -22,6 +22,7 @@
     applyOperations: entry('document.write', 'document', 'required', 'writeback', true, 'no_retry'),
     // Receipts settle already-dispatched writes after cancellation; their RPC deadlines still apply.
     getWritebackReceipt: entry('writeback.receipt', 'read', 'required', 'default', false, 'safe'),
+    checkCreatedDirectories: entry('directory.cleanup.read', 'read', 'required', 'snapshot', true, 'safe'),
     getSelectionContext: entry('editor.selection', 'read', 'required', 'default', true, 'safe'),
     binaryUploadBegin: entry('asset.stage', 'cache', 'required', 'default', true, 'no_retry'),
     binaryUploadAppend: entry('asset.stage', 'cache', 'none', 'writeback', true, 'no_retry'),

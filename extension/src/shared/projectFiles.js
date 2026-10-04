@@ -83,55 +83,31 @@
       .replace(/^\/+/, '');
   }
 
+  // Project metadata, ZIP names and operation paths are already literal names.
+  // Decoding here would alias e.g. "a%20b.tex" with "a b.tex".
   function normalizeSafeProjectPath(value) {
-    if (typeof value !== 'string') {
-      return '';
-    }
-    if (hasControlCharacter(value)) {
-      return '';
-    }
-    const trimmed = value.trim();
-    if (!trimmed || trimmed.length > MAX_SAFE_PROJECT_PATH_LENGTH) {
-      return '';
-    }
-    if (trimmed.startsWith('/') || trimmed.includes('\\') || hasWindowsDrivePrefix(trimmed)) {
-      return '';
-    }
+    if (typeof value !== 'string' || !value || value.length > MAX_SAFE_PROJECT_PATH_LENGTH || value.trim() !== value
+      || hasControlCharacter(value) || value.startsWith('/') || value.includes('\\')
+      || hasWindowsDrivePrefix(value)) return '';
+    return value.split('/').some(segment => !segment || segment === '.' || segment === '..') ? '' : value;
+  }
 
-    let decoded = trimmed;
+  // Use only at an explicitly URL-encoded input boundary. Return one decoding,
+  // while conservatively checking nested encodings for traversal/separators.
+  function normalizeUrlEncodedProjectPath(value) {
+    if (typeof value !== 'string' || hasEncodedSeparator(value)) return '';
+    let decoded;
+    try { decoded = decodeURIComponent(value); } catch (_error) { return ''; }
+    const result = normalizeSafeProjectPath(decoded);
+    if (!result) return '';
     for (let index = 0; index < 3; index += 1) {
-      if (hasEncodedSeparator(decoded)) {
-        return '';
-      }
+      if (hasEncodedSeparator(decoded) || !normalizeSafeProjectPath(decoded)) return '';
       let next;
-      try {
-        next = decodeURIComponent(decoded);
-      } catch (_error) {
-        return '';
-      }
-      if (next === decoded) {
-        break;
-      }
+      try { next = decodeURIComponent(decoded); } catch (_error) { break; }
+      if (next === decoded) break;
       decoded = next;
     }
-
-    if (hasControlCharacter(decoded)
-      || decoded.startsWith('/')
-      || decoded.includes('\\')
-      || hasWindowsDrivePrefix(decoded)
-      || decoded.length > MAX_SAFE_PROJECT_PATH_LENGTH) {
-      return '';
-    }
-
-    const normalized = decoded.replace(/\/+/g, '/').trim();
-    if (!normalized || normalized.length > MAX_SAFE_PROJECT_PATH_LENGTH) {
-      return '';
-    }
-    const segments = normalized.split('/');
-    if (segments.some(segment => !segment || segment === '.' || segment === '..')) {
-      return '';
-    }
-    return normalized;
+    return hasEncodedSeparator(decoded) || !normalizeSafeProjectPath(decoded) ? '' : result;
   }
 
   function assertSafeProjectPath(value, label = 'path') {
@@ -175,6 +151,7 @@
     isUsableProjectFileContent,
     isTextProjectPath,
     normalizePath,
-    normalizeSafeProjectPath
+    normalizeSafeProjectPath,
+    normalizeUrlEncodedProjectPath
   };
 });

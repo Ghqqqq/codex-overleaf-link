@@ -10,6 +10,11 @@
   function buildSyncApplyOperations(syncChanges = [], project = {}) {
     const existingPaths = new Set((project.files || []).map(file => file.path));
     return (syncChanges || []).map(change => {
+      if (change.type === 'move') {
+        return { type: 'move', path: change.path, to: change.to,
+          moveProof: change.moveProof && typeof change.moveProof === 'object' ? { ...change.moveProof } : undefined,
+          reason: 'Move the existing Overleaf file while preserving its identity.' };
+      }
       if (change.type === 'binary-create' || change.type === 'overwrite-binary') {
         return {
           type: change.type,
@@ -22,6 +27,7 @@
           previousExists: change.previousExists === true,
           previousKind: change.previousKind || '',
           previousSize: Number.isFinite(Number(change.previousSize)) ? Number(change.previousSize) : undefined,
+          ...(typeof change.previousSha256 === 'string' ? { previousSha256: change.previousSha256 } : {}),
           reasonKey: change.type === 'overwrite-binary' ? 'localWorkspaceBinaryOverwrite' : 'localWorkspaceBinaryCreate',
           reason: change.type === 'overwrite-binary'
             ? 'Synced a binary asset replacement from the local Codex workspace.'
@@ -158,14 +164,18 @@
 
       if ((operation.type === 'rename' || operation.type === 'move') && operation.to) {
         const previous = filesByPath.get(operation.path) || originalByPath.get(operation.path);
+        const destination = filesByPath.get(operation.to);
+        const binary = operation.moveProof?.kind === 'binary' || previous?.kind === 'binary';
         filesByPath.delete(operation.path);
         filesByPath.set(operation.to, {
           ...(previous || {}),
+          ...(destination || {}),
           path: operation.to,
-          kind: 'text',
-          content: result.verifiedContent || previous?.content || '',
+          kind: binary ? 'binary' : 'text',
+          ...(!binary ? { content: result.verifiedContent ?? destination?.content ?? previous?.content ?? '' } : {}),
           source: 'verified-writeback'
         });
+        if (binary) delete filesByPath.get(operation.to).content;
         continue;
       }
 
@@ -234,8 +244,8 @@
     }
     if (reason === 'selection_scope_violation') {
       return isEnglish
-        ? 'The local changes exceeded the captured selection. No changes from this task were written back.'
-        : '本地改动超出了已附加的选区，本轮改动未写回。';
+        ? 'This local change exceeded the captured selection and was withheld. Independently valid selection changes may still be written.'
+        : '该项本地改动超出了已附加的选区，已阻止写回；独立且合法的选区内改动仍可写入。';
     }
     if (reason === 'generated_artifact') {
       return isEnglish
@@ -319,6 +329,13 @@
       if (!path || result.ok === false) { unsupported.push(path || 'unknown'); continue; }
       if (operation.type === 'delete') { expected.set(path, { absent: true }); continue; }
       if (operation.type === 'rename' || operation.type === 'move') {
+        const moveProof = result.moveProof || operation.moveProof;
+        if (moveProof?.v === 1 && moveProof.kind === 'binary' && /^[a-f0-9]{64}$/i.test(moveProof.sha256 || '')) {
+          if (!operation.to || (operation.moveProof?.sha256 && operation.moveProof.sha256 !== moveProof.sha256)) { unsupported.push(path); continue; }
+          if (operation.to !== path) expected.set(path, { absent: true });
+          expected.set(operation.to, { sha256: moveProof.sha256.toLowerCase() });
+          continue;
+        }
         const content = typeof result.verifiedContent === 'string'
           ? result.verifiedContent : original.get(path)?.content;
         if (!operation.to || typeof content !== 'string') { unsupported.push(path); continue; }
@@ -453,6 +470,30 @@
     } };
   }
 
+  async function buildMirrorWritebackConfirmation(applied = {}) {
+    const entries = Array.isArray(applied.applied) ? applied.applied : [];
+    if (!entries.length) return null;
+    const postImages = new Map();
+    for (const entry of entries) {
+      const operation = entry?.operation, result = entry?.result;
+      if (operation?.type !== 'edit' || typeof operation.path !== 'string' || !operation.path || result?.ok !== true
+        || result.verified !== true || typeof result.verifiedContent !== 'string') return null;
+      // Several edits can target one file; the last verified readback is its post-image.
+      postImages.set(operation.path, result.verifiedContent);
+    }
+    try {
+      const expectedFiles = [];
+      for (const [path, content] of postImages) {
+        const sha256 = await textDigest(content);
+        if (!/^[a-f0-9]{64}$/.test(sha256)) return null;
+        expectedFiles.push({ path, sha256 });
+      }
+      return { paths: expectedFiles.map(file => file.path), expectedFiles };
+    } catch (_error) {
+      return null; // No digest evidence: use the authoritative snapshot fallback.
+    }
+  }
+
   async function bytesDigest(bytes) {
     if (!globalThis.crypto?.subtle) return '';
     const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
@@ -503,6 +544,75 @@
     return files.length ? { ...owner, v: 1, files } : null;
   }
 
+  async function buildPlannedWritebackCheck(operations, project, owner) {
+    const fail = () => { throw Object.assign(new Error('The planned file contents could not be recorded for a read-only check. No write was started.'), { code: 'writeback_plan_unavailable' }); };
+    const validPath = path => typeof path === 'string' && path.length > 0 && path.length <= 1024
+      && !/^[\\/]|^[A-Za-z]:|[\u0000-\u001f\u007f]/.test(path) && !path.replace(/\\/g, '/').split('/').some(part => !part || part === '.' || part === '..');
+    const validHash = hash => typeof hash === 'string' && /^[a-f0-9]{64}$/i.test(hash);
+    if (!Array.isArray(operations) || !operations.length || operations.length > 1000 || project?.id !== owner?.projectId) fail();
+    for (const key of ['id', 'projectId', 'accountScopeId', 'sessionId', 'runId']) {
+      if (typeof owner?.[key] !== 'string' || !owner[key].trim() || owner[key].length > 160 || /[\u0000-\u001f\u007f]/.test(owner[key])) fail();
+    }
+    if (typeof owner.createdAt !== 'string' || owner.createdAt.length > 64 || !Number.isFinite(Date.parse(owner.createdAt))) fail();
+    const files = new Map((project.files || []).filter(file => typeof file.content === 'string').map(file => [file.path, { kind: 'text', content: file.content }]));
+    const touched = new Set();
+    for (const op of operations) {
+      if (!validPath(op?.path) || (op.to !== undefined && !validPath(op.to))) fail();
+      touched.add(op.path);
+      if (op.type === 'create') {
+        if (typeof op.content !== 'string') fail();
+        files.set(op.path, { kind: 'text', content: op.content });
+      } else if (op.type === 'edit') {
+        const before = files.get(op.path);
+        if (before?.kind !== 'text') fail();
+        let content = before.content;
+        if (typeof op.replaceAll === 'string') content = op.replaceAll;
+        else {
+          if (!Array.isArray(op.patches) || op.patches.length > 1000) fail();
+          let previousTo = 0;
+          for (const patch of op.patches) {
+            if (!Number.isSafeInteger(patch.from) || !Number.isSafeInteger(patch.to) || patch.from < previousTo
+              || patch.to < patch.from || patch.to > content.length || typeof patch.expected !== 'string'
+              || typeof patch.insert !== 'string' || content.slice(patch.from, patch.to) !== patch.expected) fail();
+            previousTo = patch.to;
+          }
+          for (const patch of op.patches.slice().reverse()) content = content.slice(0, patch.from) + patch.insert + content.slice(patch.to);
+        }
+        files.set(op.path, { kind: 'text', content });
+      } else if (op.type === 'delete') files.delete(op.path);
+      else if (op.type === 'move' || op.type === 'rename') {
+        if (!validPath(op.to) || op.path === op.to) fail();
+        const before = files.get(op.path);
+        const moved = op.moveProof?.v === 1 && op.moveProof.kind === 'binary' && validHash(op.moveProof.sha256)
+          ? { kind: 'binary', sha256: op.moveProof.sha256.toLowerCase() } : before;
+        if (!moved) fail();
+        files.delete(op.path); files.set(op.to, moved); touched.add(op.to);
+      } else if (op.type === 'binary-create' || op.type === 'overwrite-binary') {
+        const sha256 = op.sha256 || op.assetRef?.sha256 || await binaryDigest(op.contentBase64);
+        if (!validHash(sha256)) fail();
+        files.set(op.path, { kind: 'binary', sha256: sha256.toLowerCase() });
+      } else fail();
+    }
+    if (touched.size > 1000) fail();
+    const expected = [];
+    for (const path of touched) {
+      const file = files.get(path);
+      if (!file) expected.push({ path, absent: true });
+      else {
+        // Planned text follows the Page's logical line-ending equivalence.
+        const sha256 = file.kind === 'text' ? await textDigest(file.content.replace(/\r\n?/g, '\n')) : file.sha256;
+        if (!validHash(sha256)) fail();
+        expected.push({ path, kind: file.kind, sha256 });
+      }
+    }
+    const result = { v: 1, purpose: 'writeback-revalidation' };
+    for (const key of ['id', 'projectId', 'accountScopeId', 'sessionId', 'runId', 'createdAt']) result[key] = owner?.[key];
+    result.files = expected;
+    const bytes = typeof TextEncoder === 'function' ? new TextEncoder().encode(JSON.stringify(result)).length : JSON.stringify(result).length * 2;
+    if (bytes > 256 * 1024) fail();
+    return result;
+  }
+
   async function confirmSaveCheck(check, options) {
     if (!check?.projectId || !Array.isArray(check.files) || !check.files.length
       || check.files.some(file => !file?.path || (file.absent !== true && !/^[a-f0-9]{64}$/i.test(file.sha256 || '')))) {
@@ -536,7 +646,9 @@
         const kind = typeof file.content === 'string' ? 'text'
           : typeof file.contentBase64 === 'string' ? 'binary' : '';
         if (!kind || (expected.kind && expected.kind !== kind)) { matched = false; continue; }
-        const hash = kind === 'binary' ? await binaryDigest(file.contentBase64) : await textDigest(file.content);
+        const content = kind === 'text' && check.purpose === 'writeback-revalidation'
+          ? file.content.replace(/\r\n?/g, '\n') : file.content;
+        const hash = kind === 'binary' ? await binaryDigest(file.contentBase64) : await textDigest(content);
         if (!hash || hash !== expected.sha256.toLowerCase()) matched = false;
       }
       options.assertCurrent();
@@ -548,7 +660,9 @@
 
   return {
     confirmPostWriteSave,
+    buildMirrorWritebackConfirmation,
     buildSaveCheck,
+    buildPlannedWritebackCheck,
     confirmSaveCheck,
     buildSavedWritebackExpectations,
     matchSavedWritebackSnapshot,

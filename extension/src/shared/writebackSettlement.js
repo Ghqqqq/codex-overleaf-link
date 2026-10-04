@@ -215,7 +215,7 @@
   }
 
   function deriveSettledEvidence(primaryFailure, fileSettlements = []) {
-    if (primaryFailure?.terminalState === 'needs_review'
+    if (primaryFailure?.terminalState === 'needs_review' || DefaultFailureReasons.isUnconfirmedWriteFailure?.(primaryFailure)
       || fileSettlements.some(file => file.readBack === 'mismatch')) {
       return 'needs-review';
     }
@@ -339,7 +339,8 @@
   }
 
   function settleLegacyUndo(input = {}) {
-    const status = input.status === 'applied' ? 'applied' : 'partial';
+    const status = input.status === 'applied'
+      && isUndoResultEffectivelyApplied(input.run, input.result, input.run?.undoOperations) ? 'applied' : 'partial';
     const recovery = preserveRecovery();
     return {
       statePatch: { undoStatus: status },
@@ -444,7 +445,8 @@
   }
 
   function isUndoResultEffectivelyApplied(run, result, undoOperations = []) {
-    if (!result?.skipped?.length) return true;
+    if (result?.saveVerification?.ok === false || result?.receiptUnconfirmed === true) return false;
+    if (!result?.skipped?.length) return result?.ok === true;
     const expectedByPath = new Map((run?.undoExpectedFiles || [])
       .filter(file => file?.path && typeof file.content === 'string')
       .map(file => [normalizeSettlementPath(file.path), file.content])
@@ -583,8 +585,9 @@
       const inner = entry?.result || entry;
       if (!inner || inner.ok === true) continue;
       const operation = entry?.operation || (entry?.trackedChange ? { path: entry.trackedChange.path } : undefined);
-      failures.push(failureReasons?.normalizeFailureReason instanceof Function
-        ? failureReasons.normalizeFailureReason(inner, operation)
+      const normalize = failureReasons?.normalizeWritebackFailure || failureReasons?.normalizeFailureReason;
+      failures.push(normalize instanceof Function
+        ? normalize(inner, operation)
         : normalizeFailure(inner, operation));
     }
     return failures.filter(Boolean);
@@ -633,9 +636,22 @@
 
   function attachVerifiedContentToOperation(operation, result) {
     if (!operation || typeof operation !== 'object') return operation;
-    return operation.type === 'edit' && typeof result?.verifiedContent === 'string'
-      ? { ...operation, verifiedContent: result.verifiedContent }
-      : operation;
+    const createdDirectories = (Array.isArray(result?.createdDirectories) ? result.createdDirectories
+      : Array.isArray(result?.moveProof?.createdDirectories) ? result.moveProof.createdDirectories : [])
+      .filter(proof => proof?.v === 1 && typeof proof.projectId === 'string' && proof.projectId
+        && typeof proof.path === 'string' && proof.path && !proof.path.split('/').some(part => !part || part === '.' || part === '..')
+        && typeof proof.nativeFolderId === 'string')
+      .map(proof => ({ v: 1, projectId: proof.projectId, path: proof.path, nativeFolderId: proof.nativeFolderId,
+        ownershipConfirmed: false, observedAfterCreate: proof.observedAfterCreate === true }));
+    const rawMove = result?.moveProof;
+    const moveProof = rawMove?.v === 1 && ['text', 'binary'].includes(rawMove.kind) && /^[a-f0-9]{64}$/i.test(rawMove.sha256 || '')
+      && typeof rawMove.sourceEntityId === 'string' && rawMove.sourceEntityId
+      && typeof rawMove.targetEntityId === 'string' && rawMove.targetEntityId
+      ? { v: 1, kind: rawMove.kind, sha256: rawMove.sha256.toLowerCase(), sourceEntityId: rawMove.sourceEntityId,
+        targetEntityId: rawMove.targetEntityId, ...(['doc', 'file'].includes(rawMove.entityType) ? { entityType: rawMove.entityType } : {}), ...(createdDirectories.length ? { createdDirectories } : {}) } : null;
+    if (!(operation.type === 'edit' && typeof result?.verifiedContent === 'string') && !createdDirectories.length && !moveProof) return operation;
+    return { ...operation, ...(operation.type === 'edit' && typeof result?.verifiedContent === 'string' ? { verifiedContent: result.verifiedContent } : {}),
+      ...(createdDirectories.length ? { createdDirectories } : {}), ...(moveProof ? { moveProof } : {}) };
   }
 
   function selectExpectedFilesForTrackedUndo(
@@ -658,10 +674,9 @@
     return 'info';
   }
 
-  function selectPrimaryFailure(failures, failureReasons) {
-    return failureReasons?.selectPrimaryFailure instanceof Function
-      ? failureReasons.selectPrimaryFailure(failures)
-      : failures[0] || null;
+  function selectPrimaryFailure(failures, failureReasons = DefaultFailureReasons) {
+    const select = failureReasons?.selectPrimaryWritebackFailure || failureReasons?.selectPrimaryFailure;
+    return select instanceof Function ? select(failures) : failures[0] || null;
   }
 
   function appendSyntheticFailure(result, failure, path, code, type) {
@@ -733,6 +748,7 @@
     normalizeOperationEvidence,
     normalizeSaveEvidence,
     projectRunSettlement,
+    selectPrimaryFailure,
     selectExpectedFilesForTrackedUndo,
     settle,
     settleLegacyUndo,

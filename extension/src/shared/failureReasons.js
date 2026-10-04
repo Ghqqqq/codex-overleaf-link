@@ -57,6 +57,11 @@
       fallbackUserMessage: 'Codex could not resolve the requested selection or context.',
       fallbackNextAction: 'Select the target again or specify the file/section explicitly.'
     },
+    selection_scope_violation: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'A generated change exceeded the attached selection and was blocked.',
+      fallbackNextAction: 'Select the intended region again and request only changes within it. Valid written parts can be undone.'
+    },
     base_file_missing_at_start: {
       stage: 'context', severity: 'error', defaultRetryable: true,
       fallbackUserMessage: 'A file needed for this task was missing during the initial project read.',
@@ -580,6 +585,40 @@
     return out;
   }
 
+  // Writeback consumers share catalog normalization, including file context,
+  // while retaining the mutation evidence carried by older result envelopes.
+  function normalizeWritebackFailure(result, operation) {
+    if (!result || typeof result !== 'object' || (!result.failure && !result.code && result.ok !== false)) return null;
+    const failure = normalizeFailureReason(result, operation);
+    const explicit = result.failure && typeof result.failure === 'object' ? result.failure : {};
+    const changedDocument = typeof explicit.changedDocument === 'boolean' ? explicit.changedDocument : result.changedDocument;
+    if (typeof changedDocument === 'boolean') failure.changedDocument = changedDocument;
+    if (explicit.mayHaveMutated === true || result.mayHaveMutated === true) failure.mayHaveMutated = true;
+    const terminalState = explicit.terminalState || result.terminalState;
+    if (ALLOWED_SEVERITY_PER_TERMINAL[terminalState]?.has(failure.severity)) failure.terminalState = terminalState;
+    // An unrecognized transport code can still carry a valid write-stage hint.
+    if (failure.code === 'unknown_legacy_failure') {
+      const stage = explicit.stage || result.stage;
+      if (FAILURE_STAGES.has(stage)) failure.stage = stage;
+    }
+    return failure;
+  }
+
+  function isUnconfirmedWriteFailure(failure) {
+    if (!failure || typeof failure !== 'object') return false;
+    return failure.terminalState === 'needs_review' || failure.mayHaveMutated === true
+      || ['write_timeout', 'partial_write_needs_review', 'writeback_result_unconfirmed', 'write_result_missing'].includes(failure.code)
+      || (failure.changedDocument === true && ['write', 'verify', 'undo', 'accept'].includes(failure.stage));
+  }
+
+  // A potentially changed document needs review before unrelated blockers can
+  // offer a retry. Keep the generic severity/stage order within each group.
+  function selectPrimaryWritebackFailure(failures) {
+    if (!Array.isArray(failures)) return null;
+    const review = failures.filter(isUnconfirmedWriteFailure);
+    return selectPrimaryFailure(review.length ? review : failures);
+  }
+
   function buildFallbackFailureReason(code, op) {
     const catalog = FAILURE_CODE_CATALOG[code] || FAILURE_CODE_CATALOG.unknown_legacy_failure;
     return augmentWithOperation({
@@ -682,6 +721,9 @@
     STAGE_TIE_BREAKER_ORDER,
     validateFailureReason,
     normalizeFailureReason,
+    normalizeWritebackFailure,
+    isUnconfirmedWriteFailure,
+    selectPrimaryWritebackFailure,
     selectPrimaryFailure,
     localizeFailureReason
   };

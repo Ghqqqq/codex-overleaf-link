@@ -20,6 +20,11 @@ const noop = () => {};
 function browserFactory(source, name, globals = {}) {
   const context = { ...globals };
   context.window = { ...globals.window };
+  if (name === 'CodexOverleafRunTimelineView') {
+    for (const file of ['moduleRegistryKernel', 'runRecoveryActions']) {
+      vm.runInNewContext(read('extension/src/content/' + file + '.js'), context);
+    }
+  }
   vm.runInNewContext(source, context);
   return context.window[name];
 }

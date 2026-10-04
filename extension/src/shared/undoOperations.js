@@ -72,10 +72,13 @@
         if (!operation.path || !operation.to) {
           continue;
         }
+        if (operation.moveProof && !operation.moveProof.targetEntityId) continue;
         undo.push(normalizeUndoOperation({
           type: 'move',
           path: operation.to,
           to: operation.path,
+          ...(operation.moveProof ? { moveProof: { ...operation.moveProof,
+            sourceEntityId: operation.moveProof.targetEntityId, targetEntityId: operation.moveProof.sourceEntityId } } : {}),
           reason: 'Undo move'
         }));
       } else if (operation.type === 'delete') {
@@ -178,9 +181,9 @@
       const proof = operation?.undoCreatedFile;
       if (operation?.type !== 'delete' || proof?.v !== 1) continue;
       if (proof.kind === 'text' && priorFiles.has(operation.path)) {
-        created.set(operation.path, { kind: 'text', content: priorFiles.get(operation.path) });
+        created.set(operation.path, { kind: 'text', content: priorFiles.get(operation.path), createdDirectories: proof.createdDirectories });
       } else if (proof.kind === 'binary' && /^[a-f0-9]{64}$/i.test(proof.sha256 || '')) {
-        created.set(operation.path, { kind: 'binary', sha256: proof.sha256.toLowerCase() });
+        created.set(operation.path, { kind: 'binary', sha256: proof.sha256.toLowerCase(), createdDirectories: proof.createdDirectories });
       }
     }
     for (const operation of appliedOperations || []) {
@@ -190,17 +193,17 @@
         if (originalPaths.has(path) && !created.has(path)) continue;
         if (operation.type === 'create' && typeof operation.content === 'string') {
           created.set(path, { kind: 'text', content: typeof operation.verifiedContent === 'string'
-            ? operation.verifiedContent : operation.content });
+            ? operation.verifiedContent : operation.content, createdDirectories: operation.createdDirectories });
         } else {
           const hash = operation.sha256 || operation.assetRef?.sha256;
           if (operation.previousExists !== true && /^[a-f0-9]{64}$/i.test(hash || '')) {
-            created.set(path, { kind: 'binary', sha256: hash.toLowerCase() });
+            created.set(path, { kind: 'binary', sha256: hash.toLowerCase(), createdDirectories: operation.createdDirectories });
           }
         }
       } else if (operation.type === 'edit' && created.get(path)?.kind === 'text') {
         const files = new Map([[path, created.get(path).content]]);
         applyOperationToFiles(files, operation);
-        created.set(path, { kind: 'text', content: files.get(path) });
+        created.set(path, { ...created.get(path), kind: 'text', content: files.get(path) });
       } else if (['delete', 'rename', 'move', 'overwrite-binary'].includes(operation.type)) {
         // Existing rename/overwrite recovery retains ownership of these cases.
         created.delete(path);
@@ -211,14 +214,21 @@
     for (const [path, proof] of Array.from(created).reverse()) {
       const undoCreatedFile = proof.kind === 'binary'
         ? { v: 1, kind: 'binary', sha256: proof.sha256 } : { v: 1, kind: 'text' };
+      if (Array.isArray(proof.createdDirectories) && proof.createdDirectories.length) {
+        undoCreatedFile.createdDirectories = proof.createdDirectories.map(item => ({ ...item }));
+      }
       undoOperations.push({ ...normalizeUndoOperation({ type: 'delete', path, reason: 'Undo create' }), undoCreatedFile });
       if (proof.kind === 'text') undoBaseFiles.push({ path, content: proof.content });
     }
+    // Reviewing has no text insertion/deletion refs for a native metadata move.
+    // Keep its identity-bound inverse with the other file-level proofs.
+    undoOperations.push(...buildUndoOperations(project, appliedOperations).filter(operation => operation.type === 'move' && operation.moveProof));
     return { undoOperations, undoBaseFiles };
   }
 
   function isFileUndoOperation(operation) {
     return operation?.undoCreatedFile?.v === 1
+      || (operation?.type === 'move' && operation.moveProof?.v === 1)
       || (operation?.type === 'create' && typeof operation.content === 'string');
   }
 
@@ -249,7 +259,8 @@
   }
 
   function textUndoRun(run = {}) {
-    const restored = new Set(getFileUndoOperations(run).filter(operation => operation.type === 'create').map(operation => operation.path));
+    const restored = new Set(getFileUndoOperations(run).flatMap(operation => operation.type === 'create' ? [operation.path]
+      : operation.type === 'move' ? [operation.path, operation.to] : []));
     return { ...run,
       undoExpectedFiles: (run.undoExpectedFiles || []).filter(file => !restored.has(file.path)),
       undoTrackedChanges: (run.undoTrackedChanges || []).filter(ref => !restored.has(ref.path))
@@ -275,7 +286,6 @@
   // remain audit evidence; recovery arrays describe only unfinished work.
   function advanceUndoCheckpoint(run = {}, result = {}, verifyText = () => false) {
     const operations = Array.isArray(run?.undoOperations) ? run.undoOperations : [];
-    if (!operations.some(isFileUndoOperation)) return run;
     const applied = Array.isArray(result.applied) ? result.applied : [];
     const skipped = Array.isArray(result.skipped) ? result.skipped : [];
     const failed = path => skipped.some(entry => {
@@ -298,9 +308,17 @@
         && entry.operation.path === operation.path && entry.operation.content === operation.content
         && entry.result?.ok === true && entry.result.verified === true
         && entry.result.verification === 'overleaf-zip')).map(operation => operation.path));
+    const movedPaths = new Set(operations.filter(operation => operation?.type === 'move' && operation.moveProof?.v === 1
+      && !failed(operation.path) && applied.some(entry => entry?.operation?.type === 'move'
+        && entry.operation.path === operation.path && entry.operation.to === operation.to
+        && JSON.stringify(entry.operation.moveProof) === JSON.stringify(operation.moveProof)
+        && entry.result?.ok === true && entry.result.verified === true && entry.result.verification === 'overleaf-zip'))
+      .flatMap(operation => [operation.path, operation.to]));
     for (const path of restoredPaths) textPaths.add(path);
+    for (const path of movedPaths) textPaths.add(path);
     if (!textPaths.size && !deletedPaths.size) return run;
     const pending = operations.filter(operation => !restoredPaths.has(operation.path) && !(operation?.type === 'edit' && textPaths.has(operation.path))
+      && !(operation?.type === 'move' && movedPaths.has(operation.path))
       && !(operation?.type === 'delete' && operation.undoCreatedFile?.v === 1 && deletedPaths.has(operation.path)));
     const needed = new Set(pending.flatMap(operation => [operation?.path, operation?.to]).filter(Boolean));
     return { ...run,
@@ -494,6 +512,7 @@
         insert: String(patch.insert ?? '')
       }));
     }
+    if (operation.type === 'move' && operation.moveProof?.v === 1) normalized.moveProof = JSON.parse(JSON.stringify(operation.moveProof));
     return normalized;
   }
 

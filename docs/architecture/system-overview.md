@@ -31,6 +31,8 @@ flowchart LR
 
 Native Messaging 是浏览器扩展与本地程序之间的消息通道。Page RPC 是隔离环境请求页面主世界执行能力的调用协议。两种通道拥有不同的请求标识、限制与重试规则。
 
+Content 内的运行维护进一步分工：[RunReviewController](../../extension/src/content/runReviewController.js) 管理 Undo/Accept 及其持久终态，[WritebackVerificationController](../../extension/src/content/writebackVerificationController.js) 管理写前内容摘要和回执丢失后的只读检查，[DirectoryCleanupRecovery](../../extension/src/content/directoryCleanupRecovery.js) 管理待核查目录观测。显示这些事实的卡片与按钮没有独立写入权限；执行入口仍复核原账号、项目、运行及恢复证据。
+
 同源检查、扩展来源、项目身份与版本能力分别回答不同问题。各消息族的准入条件以及 Page token 的同文档信任前提见[协议与信任边界](protocols-and-trust.md)，不能由一次握手推定所有方法具有相同权限检查。
 
 自定义 Provider 仍通过 Codex app-server 管理 agent 的工具与线程。[codexProviderLaunch.prepareProviderLaunch](../../native-host/src/codexProviderLaunch.js) 将 Responses、Chat Completions 或 Anthropic 上游连接接到本地桥，再向 Codex 提供统一入口。更换模型服务与更换 agent 执行引擎需要分别理解。

@@ -12,7 +12,7 @@ test('safe project path validator rejects unsafe governance operation paths', ()
     '/abs.tex',
     'C:\\tmp\\x.tex',
     'folder\\file.tex',
-    'folder/%2e%2e/file.tex',
+    'folder/../file.tex',
     'bad\u0000name.tex'
   ]) {
     assert.equal(projectFiles.normalizeSafeProjectPath(filePath), '', filePath);
@@ -73,7 +73,7 @@ test('evaluateGovernedOperations blocks unsafe write paths', () => {
     { type: 'edit', path: '../x' },
     { type: 'create', path: '.' },
     { type: 'delete', path: '/abs.tex' },
-    { type: 'rename', path: 'main.tex', destinationPath: 'folder/%2e%2e/file.tex' },
+    { type: 'rename', path: 'main.tex', destinationPath: 'folder/../file.tex' },
     { type: 'move', path: 'main.tex', to: 'C:\\tmp\\x.tex' },
     { type: 'binary-create', path: 'figures\\plot.pdf' }
   ], {
@@ -92,4 +92,18 @@ test('evaluateGovernedOperations blocks unsafe write paths', () => {
     { type: 'move', reason: 'invalid_project_path' },
     { type: 'binary-create', reason: 'invalid_project_path' }
   ]);
+});
+
+
+test('URL input rejects encoded traversal while canonical operation names remain exact literals', () => {
+  for (const name of ['folder/%2e%2e/file.tex','folder/%252e%252e/file.tex','folder%2Ffile.tex']) {
+    assert.equal(projectFiles.normalizeUrlEncodedProjectPath(name), '');
+    const result = governance.evaluateGovernedOperations([{type:'create',path:name}], {writablePatterns:['**']});
+    assert.equal(result.allowed[0].path,name);
+  }
+  const result=governance.evaluateGovernedOperations([
+    {type:'edit',path:'a%20b.tex'},{type:'edit',path:'a b.tex'}
+  ], {readonlyPatterns:['a b.tex']});
+  assert.deepEqual(result.allowed.map(item=>item.path),['a%20b.tex']);
+  assert.deepEqual(result.blocked.map(item=>item.operation.path),['a b.tex']);
 });

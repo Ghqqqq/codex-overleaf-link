@@ -75,7 +75,7 @@ Native 的 `emitCodexEvent` 创建 `type/title/status/detail/timestamp`；单调
 `handleRequest` 先调用信封的 `getRequestQuotaViolation`；超额返回 `native_request_quota_exceeded`，再进入具体方法。
 `handleCodexRun` 检查 Codex 可发现性，派发运行时身份事件，获取项目锁并创建 controller；通过 `nativeRunLifecycle.register` 登记断连收尾，另在 `request.id` 为真值时登记取消/steer 的三个活动索引，再解析执行 Provider。
 Provider revision、地址披露、模型和 Auto 协议协商由 `providerRuntime.resolveRunProviderForRun` 决定，详见 [Provider 与协议](providers-and-protocols.md)。
-普通非 `useExistingMirror` 请求的完整快照或聚焦部分快照须通过 `hasRunnableProjectSnapshotEvidence`；`useExistingMirror` 路径另查 freshness，OT 聚焦复用另查覆盖并拒绝 overlays。
+普通非 `useExistingMirror` 请求的完整快照或聚焦部分快照须通过 `hasRunnableProjectSnapshotEvidence`；`useExistingMirror` 路径另查 freshness，OT 聚焦复用另查覆盖；有 overlays 时，必须恰好覆盖聚焦路径且内容 SHA-256 与可信 OT-fresh 文本基线一致。获准的 OT overlays 仅作相等证明，不再次写盘；不一致走 `mirror_stale` 回退。
 技能安装和风格生成有独立入口例外，不能把普通项目快照前置条件套到所有运行。
 
 `Known gap / 静态参数边界`：`handleCodexRun` 仅在 `useExistingMirror` 路径把 `skipMirrorSync` 设为 true，其余路径原样传递 params；[runCodexSession](../../native-host/src/codexSessionRunner.js) 独立按 `skipMirrorSync` 跳过同步。
@@ -140,6 +140,8 @@ Provider revision、地址披露、模型和 Auto 协议协商由 `providerRunti
 
 `resolveProjectKey` 规范化项目字符串，并有 `unknown` 兜底；它提供锁索引，不能替代账号、页面与运行身份认证。
 `mirror.sync/patchFiles/confirmWriteback/invalidate` 也使用项目锁；status/scan 等查询和下述停止屏障各有独立准入范围。
+
+`handleMirrorConfirmWriteback` 将页面已验证文本的 `expectedFiles` 哈希传入 `mirrorWorkspace.confirmWritebackFiles`。全部目标的本地字节与证明一致后才推进基线；缺证明或不匹配时拒绝，由 Content 完整快照同步回退。项目锁协调本桥的请求，无法排他阻止其他本地进程写盘；页面内容证明与锁承担不同约束，详见[镜像与保存确认](auto-edit-undo.md)。
 `handleCodexRun` 在 finally 移除所属活动索引并释放 token 锁，再调用生命周期句柄 `complete()` 结束断连等待。该句柄的 `trackProcess` 由 runner 的 `onProcessStarted` 报告父任务、worker 及写作风格执行中的有效 PID 身份；无进程或无有效 PID 不创建未知屏障。异常停止时即使锁释放，持久屏障仍可独立阻止下次准入。
 
 `Known gap / 静态参数边界`：Native `getRequestQuotaViolation` 限制字符串 ID 长度，却未要求 ID 存在；缺失 ID 或 `id:0` 的请求仍可持锁执行，但其 controller 不进入三个 RPC 活动索引，按项目取消和 steer 无法通过该表找到它。断连收尾另由 `nativeRunLifecycle` 的 Set 登记覆盖，不依赖这些 ID。

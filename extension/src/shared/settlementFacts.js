@@ -157,6 +157,9 @@
       canAccept,
       canUndo,
       canRetry: Boolean(primaryFailure?.retryable),
+      requiresWriteReview: Boolean(facts && (facts.documentEffect === 'possibly-changed'
+        || facts.evidence?.settled === 'needs-review'
+        || facts.failures.some(failure => DefaultFailureReasons.isUnconfirmedWriteFailure?.(failure)))),
       terminalState: failureTerminalState || '',
       actions: { accept: canAccept, undo: canUndo }
     };
@@ -209,6 +212,7 @@
         file: safePath(item.file),
         operationType: text(item.operationType).slice(0, 80),
         changedDocument: item.changedDocument === true,
+        ...(item.mayHaveMutated === true ? { mayHaveMutated: true } : {}),
         terminalState: normalizeTerminalState(item.terminalState)
       }));
   }
@@ -287,8 +291,9 @@
   }
 
   function selectPrimaryFailure(failures) {
-    return DefaultFailureReasons?.selectPrimaryFailure instanceof Function
-      ? DefaultFailureReasons.selectPrimaryFailure(failures)
+    const select = DefaultFailureReasons?.selectPrimaryWritebackFailure || DefaultFailureReasons?.selectPrimaryFailure;
+    return select instanceof Function
+      ? select(failures)
       : failures[0] || null;
   }
 

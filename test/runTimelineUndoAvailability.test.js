@@ -9,10 +9,12 @@ const ResultActions = require('../extension/src/content/runResultActions');
 const { projectRunSettlement } = require('../extension/src/shared/settlementFacts');
 
 const sandbox = { window: {} };
-vm.runInNewContext(fs.readFileSync(path.join(__dirname,
-  '../extension/src/content/runTimelineView.js'), 'utf8'), sandbox);
+for (const file of ['moduleRegistryKernel', 'runRecoveryActions', 'runTimelineView']) {
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,
+    '../extension/src/content/' + file + '.js'), 'utf8'), sandbox);
+}
 
-function harness() {
+function harness(trackedChangeInFlight = new Map()) {
   const calls = [];
   const root = {
     buttons: {},
@@ -32,7 +34,7 @@ function harness() {
   const view = sandbox.window.CodexOverleafRunTimelineView.create({
     RunResultActions: ResultActions.create(),
     projectRunSettlement,
-    trackedChangeInFlight: new Map(),
+    trackedChangeInFlight,
     tr: key => key,
     tx: english => english,
     undoRun: id => calls.push(id)
@@ -52,6 +54,17 @@ function assetRun(type = 'overwrite-binary') {
     appliedOperations: [{ type, path: 'figures/result.png' }],
     undoOperations: [], undoBaseFiles: [], undoExpectedFiles: [], undoTrackedChanges: [] };
 }
+
+test('ordinary Undo does not show a staged applied state as durable while its review lock is held', () => {
+  const run = { id: 'pending-save', status: 'completed', undoStatus: 'applied',
+    undoOperations: [{ type: 'edit', path: 'main.tex', replaceAll: 'before' }] };
+  const pending = harness(new Map([[run.id, 'reject']])).render(run).undo;
+  assert.equal(pending.disabled, true);
+  assert.notEqual(pending.textContent, 'undoApplied');
+  assert.notEqual(pending.title, 'undoAppliedTitle');
+  const durable = harness().render(run).undo;
+  assert.equal(durable.textContent, 'undoApplied');
+});
 
 for (const type of ['binary-create', 'overwrite-binary']) {
   test(`asset-only ${type} does not advertise an unavailable Undo`, () => {

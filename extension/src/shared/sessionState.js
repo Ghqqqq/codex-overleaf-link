@@ -10,12 +10,15 @@
       require('./sessionTitle'),
       require('./runActivityModel'),
       require('./subagentActivityModel'),
-      require('./writebackIntent')
+      require('./writebackIntent'),
+      require('./manualReviewProof'),
+      require('./directoryCleanupProof'),
+      require('./undoOperations')
     );
   } else {
     root.CodexOverleafModuleRegistry.define(
       'SessionState',
-      ['I18n', 'SettlementFacts', 'RunInputQueue', 'SelectionContext', 'LineReferences', 'PathRedaction', 'SessionTitle', 'RunActivityModel', 'SubagentActivityModel', 'WritebackIntent'],
+      ['I18n', 'SettlementFacts', 'RunInputQueue', 'SelectionContext', 'LineReferences', 'PathRedaction', 'SessionTitle', 'RunActivityModel', 'SubagentActivityModel', 'WritebackIntent', 'ManualReviewProof', 'DirectoryCleanupProof', 'UndoOperations'],
       factory
     );
   }
@@ -29,7 +32,10 @@
   SessionTitle,
   RunActivityModel,
   SubagentActivityModel,
-  WritebackIntent
+  WritebackIntent,
+  ManualReviewProof,
+  DirectoryCleanupProof,
+  UndoOperations
 ) {
   'use strict';
 
@@ -213,6 +219,8 @@
     const history = normalizeHistoryEntries(session.history);
     const normalizedRuns = normalizeRuns(session.runs, options);
     const runs = normalizedRuns.length ? normalizedRuns : recoverRunsFromHistory(session, history);
+    for (const run of runs) pruneRunRecoveryScope(run, session);
+
     const rawTitle = typeof session.title === 'string' ? session.title.trim() : '';
     const derivedTitle = deriveSessionTitle(runs, session.task);
     const titleSource = normalizeTitleSource(session.titleSource, rawTitle, derivedTitle);
@@ -642,6 +650,26 @@
       finishedAt: Number.isFinite(Date.parse(run.finishedAt)) ? run.finishedAt : event.timestamp };
   }
 
+  function pruneRunRecoveryScope(run, session = {}) {
+    const wrongAccount = proof => Object.prototype.hasOwnProperty.call(session, 'accountScopeId')
+      && proof.accountScopeId !== session.accountScopeId;
+    const wrongProject = value => Boolean(session.projectId && value !== session.projectId);
+    if (run.writebackCheck && (run.writebackCheck.sessionId !== session.id || wrongAccount(run.writebackCheck)
+      || wrongProject(run.writebackCheck.projectId))) delete run.writebackCheck;
+    if (run.manualReviewProof && (wrongAccount(run.manualReviewProof)
+      || wrongProject(run.manualReviewProof.runProjectId))) delete run.manualReviewProof;
+    if (run.pendingDirectoryCleanup && (run.pendingDirectoryCleanup.sessionId !== session.id
+      || wrongAccount(run.pendingDirectoryCleanup) || wrongProject(run.pendingDirectoryCleanup.projectId))) delete run.pendingDirectoryCleanup;
+    applyTrackedChangeStatus(run, run.trackedChangeStatus);
+  }
+
+  function normalizeRecoveryRetention(value) {
+    if (value?.state !== 'omitted') return undefined;
+    return { state: 'omitted', reason: ['run-budget', 'session-budget', 'fallback', 'invalid'].includes(value.reason)
+      ? value.reason : 'invalid', bytes: Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? value.bytes : 0,
+      ...(value.directoryCleanup === true ? { directoryCleanup: true } : {}) };
+  }
+
   function normalizeRun(run, options = {}) {
     if (options.restoreRunningRuns === true || options.recoverSettledRuns === true) run = recoverSettledRunningRun(run);
     run = recoverRecordedRunFailure(run, options.locale);
@@ -687,6 +715,8 @@
       undoBaseFiles: normalizeRunFiles(run.undoBaseFiles),
       undoTrackedChanges: normalizeRunTrackedChanges(run.undoTrackedChanges),
       undoExpectedFiles: normalizeRunFiles(run.undoExpectedFiles),
+      ...(normalizeRecoveryRetention(run.recoveryRetention) && !run.forkSnapshot
+        ? { recoveryRetention: normalizeRecoveryRetention(run.recoveryRetention) } : {}),
       undoStatus: sanitizeAssistantVisibleText(run.undoStatus),
       nativeRequestId: sanitizeAssistantVisibleText(run.nativeRequestId),
       codexThreadId: sanitizeAssistantVisibleText(run.codexThreadId), codexTurnId: sanitizeAssistantVisibleText(run.codexTurnId),
@@ -712,6 +742,12 @@
     if (Array.isArray(run.trackedChangeCaptures) && run.trackedChangeCaptures.length && !run.forkSnapshot) {
       normalized.trackedChangeCaptures = sanitizeAssistantVisibleValue(run.trackedChangeCaptures);
     }
+    const directories = DirectoryCleanupProof.normalize(run.pendingDirectoryCleanup);
+    if (directories && directories.runId === normalized.id && directories.projectId === normalized.runProjectId
+      && !run.forkSnapshot) normalized.pendingDirectoryCleanup = directories;
+    const manualReview = ManualReviewProof.normalize(run.manualReviewProof);
+    if (manualReview?.runProjectId === normalized.runProjectId && !run.forkSnapshot
+      && run.undoStatus !== 'applied' && !TERMINAL_TRACKED_CHANGE_STATUS.has(run.trackedChangeStatus)) normalized.manualReviewProof = manualReview;
     applyTrackedChangeStatus(normalized, run.trackedChangeStatus);
     Object.assign(normalized, pickWritebackRecovery(run));
 
@@ -724,6 +760,7 @@
   // output yields the same result.
   function applyTrackedChangeStatus(run, rawStatus) {
     const hasRefs = run.undoTrackedChanges.length > 0;
+    const hasFileUndo = (run.undoOperations || []).some(UndoOperations.isFileUndoOperation);
     const hasRawStatus = rawStatus !== undefined && rawStatus !== null && rawStatus !== '';
 
     // Step 1 — value recovery. Keep a stable value; recover any other present
@@ -740,12 +777,12 @@
     }
 
     // Step 1 — reload reconciliation. A non-terminal status (`pending`) with no
-    // refs is the post-reload state of an un-acted tracked-change run: the heavy refs are
-    // never persisted, so without them there is nothing to act on. Drop it so
-    // the run returns to the legacy-undo world. A terminal status with no refs
+    // refs can result from an old record or a storage-budget omission. A valid
+    // manual-review proof still supports a read-only reconciliation. Otherwise
+    // drop pending and let actual legacy Undo material decide the action. A terminal status with no refs
     // is kept — step 3 already empties terminal payloads and the label stays
     // meaningful.
-    if (!hasRefs && status === 'pending') {
+    if (!hasRefs && !hasFileUndo && !run.manualReviewProof && status === 'pending') {
       status = undefined;
     }
 
@@ -758,11 +795,12 @@
     if (TERMINAL_TRACKED_CHANGE_STATUS.has(status)) {
       run.undoTrackedChanges = [];
       run.undoExpectedFiles = [];
+      delete run.manualReviewProof;
     }
 
     if (status !== undefined) {
       run.trackedChangeStatus = status;
-    }
+    } else delete run.trackedChangeStatus;
   }
 
   // Welcome-panel + write-guard: the run lifecycle now
@@ -1283,6 +1321,11 @@
       undoBaseFiles: undoPayload.undoBaseFiles,
       undoTrackedChanges: undoPayload.undoTrackedChanges,
       undoExpectedFiles: undoPayload.undoExpectedFiles,
+      ...(!run.forkSnapshot && (run.pendingDirectoryCleanup || run.recoveryRetention?.directoryCleanup === true || (run.undoStatus !== 'applied' && !['accepted', 'rejected'].includes(run.trackedChangeStatus)))
+        && (run.pendingDirectoryCleanup || run.recoveryRetention?.state === 'omitted' || ['appliedOperations', 'undoOperations', 'undoTrackedChanges', 'undoExpectedFiles']
+          .some(key => Array.isArray(run[key]) && run[key].length))
+        ? { recoveryRetention: normalizeRecoveryRetention(run.recoveryRetention)
+          || { state: 'omitted', reason: 'fallback', bytes: 0, ...(run.pendingDirectoryCleanup ? { directoryCleanup: true } : {}) } } : {}),
       undoStatus: summarizeTextForStorage(run.undoStatus, 'undo status'),
       nativeRequestId: normalizeTextField(run.nativeRequestId, 160),
       codexThreadId: normalizeTextField(run.codexThreadId, 160), codexTurnId: normalizeTextField(run.codexTurnId, 160),
@@ -1698,11 +1741,16 @@
       && !containsSecretLikeText(retry)) result.retryWriteback = retry;
     const check = WritebackIntent.normalizeSaveCheck(run.saveCheck);
     if (check && check.runId === run.id && check.projectId === normalizeProjectPrefKey(run.runProjectId)) result.saveCheck = check;
+    const writebackCheck = WritebackIntent.normalizeWritebackCheck(run.writebackCheck);
+    if (writebackCheck && writebackCheck.runId === run.id
+      && writebackCheck.projectId === normalizeProjectPrefKey(run.runProjectId)) result.writebackCheck = writebackCheck;
     if (typeof run.saveConfirmedAt === 'string' && Number.isFinite(Date.parse(run.saveConfirmedAt))) result.saveConfirmedAt = run.saveConfirmedAt;
     return result;
   }
 
   return {
+    normalizeRecoveryRetention,
+    pruneRunRecoveryScope,
     pickWritebackRecovery,
     DEFAULT_PANEL_STATE,
     createSession,

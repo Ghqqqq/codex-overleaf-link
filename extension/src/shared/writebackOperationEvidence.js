@@ -1,10 +1,10 @@
 (function initCodexOverleafWritebackOperationEvidence(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('./failureReasons'));
   } else {
-    root.CodexOverleafModuleRegistry.define('WritebackOperationEvidence', [], factory);
+    root.CodexOverleafModuleRegistry.define('WritebackOperationEvidence', ['FailureReasons'], factory);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function writebackOperationEvidenceFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function writebackOperationEvidenceFactory(FailureReasons) {
   'use strict';
 
   function normalizeOperationEvidence(operations = [], applyResult = {}) {
@@ -99,18 +99,7 @@
   }
 
   function normalizeFailure(result, operation) {
-    if (result?.failure && typeof result.failure === 'object') return cloneValue(result.failure);
-    if (!result?.code) return null;
-    return {
-      code: result.code,
-      stage: result.stage || 'write',
-      severity: result.severity || 'error',
-      userMessage: result.reason || result.message || result.code,
-      retryable: result.retryable === true,
-      file: operation?.path || operation?.to || '',
-      changedDocument: result.changedDocument === true,
-      terminalState: result.terminalState || ''
-    };
+    return FailureReasons.normalizeWritebackFailure(result, operation);
   }
 
   function normalizeTrackedChanges(value) {

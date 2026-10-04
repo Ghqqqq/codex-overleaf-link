@@ -43,6 +43,9 @@ test('live activity projection uses the same filtered run without changing persi
   let options;
   const run = { id: 'r', undoStatus: 'applied', events: [failed(titles[0])] };
   const context = vm.createContext({ window: {} });
+  for (const file of ['moduleRegistryKernel', 'runRecoveryActions']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/content/' + file + '.js'), 'utf8'), context);
+  }
   vm.runInContext(timeline, context);
   context.window.CodexOverleafRunTimelineView.create({ RunFailureNotice: Notice,
     RunActivitySummary: { create(value) { options = value; return {}; } }, findRunRecord: () => run });

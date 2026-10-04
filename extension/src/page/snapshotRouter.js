@@ -97,9 +97,10 @@
             };
           }),
           capabilities: {
-            fullProjectSnapshot: true,
+            fullProjectSnapshot: zipSnapshot.pathIdentityComplete !== false,
+            pathIdentityComplete: zipSnapshot.pathIdentityComplete,
             method: 'overleaf-zip-file-list',
-            skipped: [],
+            skipped: zipSnapshot.skipped || [],
             diagnostics: {
               zipEndpoint: zipSnapshot.endpoint,
               zipTiming: zipSnapshot.diagnostics,
@@ -243,7 +244,7 @@
     if (zipSnapshot.ok && zipSnapshot.files.length) {
       const mergedFiles = mergeSnapshotFiles(
         zipSnapshot.files,
-        filterZipSnapshotOverlayFiles(zipSnapshot.files, lightweightSnapshot?.files || [])
+        filterZipSnapshotOverlayFiles(zipSnapshot.files, lightweightSnapshot?.files || [], zipSnapshot.skipped)
       );
       const files = filterRequestedSnapshotFiles(mergedFiles, params, activePath);
       const requestedPathsComplete = params.restrictToRequestedPathsOnly === true
@@ -255,7 +256,8 @@
         activePath,
         files,
         capabilities: {
-          fullProjectSnapshot: params.restrictToRequestedPathsOnly === true ? false : true,
+          fullProjectSnapshot: params.restrictToRequestedPathsOnly !== true && zipSnapshot.pathIdentityComplete !== false,
+          pathIdentityComplete: zipSnapshot.pathIdentityComplete,
           contentComplete: !(zipSnapshot.skipped || []).length,
           requestedPathsComplete,
           method: 'overleaf-zip',
@@ -317,7 +319,8 @@
       80
     );
     const files = [];
-    const skipped = [];
+    const skipped = [...(zipSnapshot?.skipped || [])];
+    const ambiguousPaths = new Set(skipped.filter(file => file.reason === 'zip_path_duplicate').map(file => file.path));
     if (zipSnapshot && !zipSnapshot.ok) {
       skipped.push({
         path: 'project.zip',
@@ -327,6 +330,7 @@
     let previousSignature = '';
 
     for (const filePath of projectPaths) {
+      if (ambiguousPaths.has(filePath)) continue;
       if (filePath === snapshotActivePath) {
         const ready = await waitForActiveEditorText(filePath, 5000);
         if (!ready.ok) {
@@ -405,7 +409,7 @@
       await waitForActiveEditorText(activePath, 5000);
     }
 
-    if (snapshotActivePath && !files.length && (!lightweightOnly || params.allowZipFallback === false)) {
+    if (snapshotActivePath && !ambiguousPaths.has(snapshotActivePath) && !files.length && (!lightweightOnly || params.allowZipFallback === false)) {
       files.push({
         path: snapshotActivePath,
         content: readActiveEditorText(),
@@ -420,7 +424,8 @@
       activePath: snapshotActivePath,
       files,
       capabilities: {
-        fullProjectSnapshot: params.restrictToRequestedPathsOnly === true ? false : requestedPathsComplete,
+        fullProjectSnapshot: params.restrictToRequestedPathsOnly !== true && requestedPathsComplete && zipSnapshot?.pathIdentityComplete !== false,
+        pathIdentityComplete: zipSnapshot?.pathIdentityComplete,
         requestedPathsComplete,
         method: resolvePageSnapshotMethod(files, lightweightOnly),
         skipped,
@@ -446,7 +451,7 @@
     const zipSnapshot = await fetchProjectZipSnapshot(params);
     if (zipSnapshot.ok && zipSnapshot.files.length) {
       const files = filterRequestedSnapshotFiles(
-        mergeSnapshotFiles(zipSnapshot.files, filterZipSnapshotOverlayFiles(zipSnapshot.files, activeOverlay)),
+        mergeSnapshotFiles(zipSnapshot.files, filterZipSnapshotOverlayFiles(zipSnapshot.files, activeOverlay, zipSnapshot.skipped)),
         params,
         activePath
       );
@@ -459,7 +464,8 @@
         activePath,
         files,
         capabilities: {
-          fullProjectSnapshot: params.restrictToRequestedPathsOnly === true ? false : true,
+          fullProjectSnapshot: params.restrictToRequestedPathsOnly !== true && zipSnapshot.pathIdentityComplete !== false,
+          pathIdentityComplete: zipSnapshot.pathIdentityComplete,
           contentComplete: !(zipSnapshot.skipped || []).length,
           requestedPathsComplete,
           method: 'overleaf-zip',
@@ -479,16 +485,18 @@
       id: getProjectId(),
       url: window.location.href,
       activePath,
-      files: activeOverlay,
+      files: filterZipSnapshotOverlayFiles([], activeOverlay, zipSnapshot.skipped, true),
       capabilities: {
         fullProjectSnapshot: false,
+        pathIdentityComplete: zipSnapshot.pathIdentityComplete,
         method: params.serverOnly === true ? 'overleaf-zip-unavailable'
           : activeOverlay.length
           ? 'active-editor-zip-only-fallback'
           : 'zip-only-fallback-empty',
-        skipped: [{
+        contentComplete: false,
+        skipped: [...(zipSnapshot.skipped || []), {
           path: 'project.zip',
-          reason: zipSnapshot.reason
+          reason: zipSnapshot.reason || 'ZIP file identities were incomplete'
         }],
         diagnostics: {
           docRecordCount: 0,
@@ -501,9 +509,11 @@
     };
   }
 
-  function filterZipSnapshotOverlayFiles(zipFiles = [], overlayFiles = []) {
+  function filterZipSnapshotOverlayFiles(zipFiles = [], overlayFiles = [], skipped = [], allowMissing = false) {
     const zipPaths = new Set((zipFiles || []).map(file => file.path).filter(Boolean));
-    return (overlayFiles || []).filter(file => file?.source !== 'active-editor' || zipPaths.has(file.path));
+    const ambiguousPaths = new Set((skipped || []).filter(file => file.reason === 'zip_path_duplicate').map(file => file.path));
+    return (overlayFiles || []).filter(file => !ambiguousPaths.has(file?.path)
+      && (allowMissing || file?.source !== 'active-editor' || zipPaths.has(file.path)));
   }
 
   function getRequestedSnapshotPaths(params = {}, activePath = '') {
@@ -705,7 +715,7 @@
         });
         const extractMs = Date.now() - extractStartedAt;
         const files = extracted.files || [];
-        if (!files.length) {
+        if (!files.length && extracted.pathIdentityComplete !== false) {
           attempts.push({
             endpoint,
             status: response.status,
@@ -729,6 +739,7 @@
         return {
           ok: true,
           endpoint,
+          pathIdentityComplete: extracted.pathIdentityComplete,
           skipped: extracted.skipped || [],
           files: files.map(file => ({
             ...file,
@@ -855,6 +866,9 @@
     const entryCount = view.getUint16(eocdOffset + 10, true);
     const centralDirectoryOffset = view.getUint32(eocdOffset + 16, true);
     const decoder = new TextDecoder('utf-8');
+    const nameDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+    const seenPaths = new Set();
+    let pathIdentityComplete = true;
     const files = [];
     const skipped = [];
     let binaryBytes = 0;
@@ -873,7 +887,25 @@
       const commentLength = view.getUint16(offset + 32, true);
       const localHeaderOffset = view.getUint32(offset + 42, true);
       const rawName = bytes.slice(offset + 46, offset + 46 + fileNameLength);
-      const path = normalizeSafeProjectPath(decoder.decode(rawName));
+      let name = '';
+      try { name = nameDecoder.decode(rawName); } catch (_error) { /* unknown identity is incomplete */ }
+      const directory = name.endsWith('/');
+      const path = normalizeSafeProjectPath(directory ? name.slice(0, -1) : name);
+      if (!path || seenPaths.has(path)) {
+        if (path) {
+          const previousIndex = files.findIndex(file => file.path === path);
+          if (previousIndex >= 0) files.splice(previousIndex, 1);
+        }
+        pathIdentityComplete = false;
+        skipped.push({ path: name, reason: path ? 'zip_path_duplicate' : 'zip_path_invalid', unknownPath: !name });
+        offset += 46 + fileNameLength + extraLength + commentLength;
+        continue;
+      }
+      seenPaths.add(path);
+      if (directory) {
+        offset += 46 + fileNameLength + extraLength + commentLength;
+        continue;
+      }
       const isText = window.CodexOverleafProjectFiles.isTextProjectPath(path);
       const shouldInclude = path && !path.endsWith('/') && (isText || options.includeBinaryFiles);
 
@@ -918,7 +950,7 @@
       offset += 46 + fileNameLength + extraLength + commentLength;
     }
 
-    return { files, skipped };
+    return { files, skipped, pathIdentityComplete };
   }
 
   function uint8ArrayToBase64(bytes) {
@@ -1049,11 +1081,10 @@
   }
 
   function fallbackNormalizeSafeProjectPath(value) {
-    const text = String(value || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+|\/+$/g, '').trim();
-    if (!text || text.split('/').some(part => !part || part === '.' || part === '..')) {
-      return '';
-    }
-    return text;
+    if (typeof value !== 'string' || !value || value.length > 2048 || value.trim() !== value
+      || /[\u0000-\u001f\u007f]/.test(value) || value.startsWith('/')
+      || value.includes('\\') || /^[A-Za-z]:/.test(value)) return '';
+    return value.split('/').some(part => !part || part === '.' || part === '..') ? '' : value;
   }
 
   return { create };

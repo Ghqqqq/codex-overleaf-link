@@ -3,6 +3,8 @@
 const { buildCodexRuntimeEvent } = require('./codexRuntimeIdentity');
 
 const { spawn } = require('node:child_process');
+const { normalizeSafeProjectPath } = require('../../extension/src/shared/projectFiles');
+const { createHash } = require('node:crypto');
 const { buildOperationSummary, splitDeletePlan } = require('../../extension/src/shared/summary');
 const {
   MIN_COMPATIBLE_EXTENSION_VERSION,
@@ -67,7 +69,7 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
       platform: getNativeRuntimePlatform({ env }),
       protocolVersion: 2,
       supportedProtocol: { ...SUPPORTED_NATIVE_PROTOCOL },
-      capabilities: Object.fromEntries(REQUIRED_CAPABILITIES.map(capability => [capability, true])),
+      capabilities: { ...Object.fromEntries(REQUIRED_CAPABILITIES.map(capability => [capability, true])), literalProjectPaths: true },
       minExtensionVersion: MIN_COMPATIBLE_EXTENSION_VERSION,
       version: PACKAGE_VERSION,
       environment: summarizeNativeEnvironment(env)
@@ -291,7 +293,9 @@ async function handleCodexRun(request, env, emit) {
         );
       }
 
-      if (Array.isArray(params.fileOverlays) && params.fileOverlays.length) {
+      // OT overlays prove that the current page agrees with the trusted OT
+      // baseline; they must not rewrite it or supply a replacement hash.
+      if (!isOtWarmMirrorReuseRequest(params) && Array.isArray(params.fileOverlays) && params.fileOverlays.length) {
         await applyFileOverlays({ projectId: projectKey, overlays: params.fileOverlays, rootDir });
       }
     } else if (!params.writingStyleBuild && !isSnapshotlessSkillInstallerRun(params) && !hasRunnableProjectSnapshotEvidence(params)) {
@@ -549,13 +553,13 @@ function hasRunnableProjectSnapshotEvidence(params = {}) {
   if (params.restrictToFocusFiles !== true) {
     return false;
   }
-  const normalizedFocusFiles = normalizeSnapshotEvidencePaths(params.focusFiles);
+  const normalizedFocusFiles = normalizeSnapshotEvidencePaths(params.focusFiles, params.focusFilesAreLiteral === true);
   if (!normalizedFocusFiles.length || !Array.isArray(params.project?.files)) {
     return false;
   }
   const evidenceFiles = new Map();
   for (const file of params.project.files) {
-    const filePath = normalizeSnapshotEvidencePath(file?.path);
+    const filePath = normalizeSafeProjectPath(file?.path);
     if (!filePath || !isUsableSnapshotEvidenceContent(file?.content)) {
       continue;
     }
@@ -573,12 +577,6 @@ function validateOtFocusedWarmMirrorReuse(params = {}, status = {}) {
   if (!isOtWarmMirrorReuseRequest(params)) {
     return { ok: false };
   }
-  if (Array.isArray(params.fileOverlays) && params.fileOverlays.length) {
-    return {
-      ok: false,
-      message: 'OT warm mirror reuse does not accept file overlays'
-    };
-  }
   if (status?.exists !== true) {
     return {
       ok: false,
@@ -591,7 +589,7 @@ function validateOtFocusedWarmMirrorReuse(params = {}, status = {}) {
       message: 'OT warm mirror reuse requires restrictToFocusFiles=true'
     };
   }
-  const normalizedFocusFiles = normalizeSnapshotEvidencePaths(params.focusFiles);
+  const normalizedFocusFiles = normalizeSnapshotEvidencePaths(params.focusFiles, params.focusFilesAreLiteral === true);
   if (!normalizedFocusFiles.length) {
     return {
       ok: false,
@@ -599,14 +597,14 @@ function validateOtFocusedWarmMirrorReuse(params = {}, status = {}) {
     };
   }
 
-  const freshFiles = new Set();
+  const freshFiles = new Map();
   for (const file of Array.isArray(status.otFreshFiles) ? status.otFreshFiles : []) {
     if (file?.state !== 'fresh') {
       continue;
     }
-    const filePath = normalizeSnapshotEvidencePath(file.path);
+    const filePath = normalizeSafeProjectPath(file.path);
     if (filePath) {
-      freshFiles.add(filePath);
+      freshFiles.set(filePath, file);
     }
   }
   const missingFiles = normalizedFocusFiles.filter(filePath => !freshFiles.has(filePath));
@@ -615,6 +613,22 @@ function validateOtFocusedWarmMirrorReuse(params = {}, status = {}) {
       ok: false,
       message: `OT warm mirror focused files are not OT-fresh: ${missingFiles.join(', ')}`
     };
+  }
+
+  if (Array.isArray(params.fileOverlays) && params.fileOverlays.length) {
+    const overlays = new Set();
+    for (const overlay of params.fileOverlays) {
+      const filePath = normalizeSafeProjectPath(overlay?.path);
+      if (!normalizedFocusFiles.includes(filePath) || overlays.has(filePath)
+        || typeof overlay?.content !== 'string' || !/^[a-f0-9]{64}$/i.test(freshFiles.get(filePath)?.sha256 || '')
+        || createHash('sha256').update(overlay.content).digest('hex') !== freshFiles.get(filePath).sha256.toLowerCase()) {
+        return { ok: false, message: 'OT warm mirror overlay does not match the current focused OT baseline' };
+      }
+      overlays.add(filePath);
+    }
+    if (normalizedFocusFiles.some(filePath => !overlays.has(filePath))) {
+      return { ok: false, message: 'OT warm mirror overlays do not cover all focused files' };
+    }
   }
 
   return { ok: true };
@@ -632,11 +646,11 @@ function isUsableSnapshotEvidenceContent(content) {
   return Boolean(text) && !/^(loading|loading\.{3}|loading…)$/i.test(text);
 }
 
-function normalizeSnapshotEvidencePaths(value) {
+function normalizeSnapshotEvidencePaths(value, literal = false) {
   const seen = new Set();
   const paths = [];
   for (const item of Array.isArray(value) ? value : []) {
-    const filePath = normalizeSnapshotEvidencePath(item);
+    const filePath = literal ? normalizeSafeProjectPath(item) : normalizeSnapshotEvidencePath(item);
     if (!filePath || seen.has(filePath)) {
       continue;
     }
@@ -759,6 +773,7 @@ async function handleMirrorConfirmWriteback(request, env) {
     const result = await confirmWritebackFiles({
       projectId,
       paths: params.paths,
+      expectedFiles: params.expectedFiles,
       rootDir
     });
     return okResponse(request.id, result);

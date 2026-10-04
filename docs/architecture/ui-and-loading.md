@@ -41,6 +41,7 @@ ContentRuntime
 `SUPPORT_MODULES` 中缺失导出同样进入错误集合，名称中的 support 不能解释为可随意缺失。
 共享模块仍需遵守初始化顺序：[content-entry](../../extension/entries/content-entry.mjs) 在 `UndoOperations` 之前加载 `StaleGuard`，前者使用其补丁坐标映射；`WritebackSettlement` 将 `UndoOperations` 声明为显式 registry 依赖。修改恢复材料时需同时检查 CommonJS 与浏览器两条装配路径。
 [ContentRuntime.init](../../extension/src/content/contentRuntime.js) 是组合入口，向各 controller 注入 getter/callback；该文件仍包含业务流程，不能将其所有内容都归类为纯装配。
+[RunReviewController](../../extension/src/content/runReviewController.js) 拥有 Undo/Accept 操作编排；[WritebackVerificationController](../../extension/src/content/writebackVerificationController.js) 拥有写前摘要与只读内容核验；[DirectoryCleanupRecovery](../../extension/src/content/directoryCleanupRecovery.js) 拥有目录观测的保存与检查。runtime 保留薄入口并注入账号、项目、运行和持久化依赖。结果展示由 [RunCompletionMeta](../../extension/src/content/runCompletionMeta.js) 与 [RunRecoveryActions](../../extension/src/content/runRecoveryActions.js) 分别负责元信息和恢复动作。
 runtime 对重复初始化设有标记；发现旧 panel 已在 DOM、runtime 尚未登记时，返回 `stale-panel-before-runtime-init`。这条守卫不能证明所有旧页面都已自动恢复。
 异步初始化先加载全局偏好、账号作用域与持久状态，再建立队列、面板和恢复流程；项目列表路由立即挂 dashboard shell，后续填充列表。
 队列数据加载与队列卡重绘使用不同入口，由面板同步衔接；初始化及恢复后的显示路线见[队列显示与恢复入口](#pending-queue-render)。
@@ -173,11 +174,14 @@ Save and use 可经 `providerSwitchApproved:true` 跳过该确认，删除当前
 
 [SelectionContextView.attach](../../extension/src/content/selectionContextView.js) 捕获 projectId、sessionId、generation，调用 `getSelectionContext` 后以及打开 composer 后分别复核归属。
 [SelectionContext.normalize](../../extension/src/shared/selectionContext.js) 校验项目相对路径、非空文本、范围、文档 hash；上限 `MAX_TEXT=20000` 按 JavaScript 字符串长度计算。
+选区路径使用最长2048字符的完整项目字面路径，不截断成别名；反斜线、控制字符及首尾空白等无效路径被拒绝。Page 对文档及选中文字检查孤立 UTF-16 代理码元，避免 UTF-8 编码替换破坏哈希前提；完整 emoji 仍可参与选区。
 范围满足 \(0\le from<to\) 与 \(to-from=|text|\)，并携带 `documentHash`，用于说明选区来自哪个文档版本。
 `reference` 模式附加参考内容；`edit` 模式显示“仅此处”，runtime 的 `setSelection` 同时把会话模式设为 Auto。实际局部修改限制还依赖 [selectionScope](../../native-host/src/selectionScope.js)，标签本身不提供执行保证。
-Native 的 `prepareSelectionScope` 在镜像同步或复用准备后、执行器启动前读取 edit 目标整份文件，要求其 SHA-256 等于 `documentHash`，且 `before.slice(from, to)` 等于选区文本。整份文档摘要像版本指纹，选区外变化只要已进入此时的镜像，也会以 `selected_context_unresolved` 拒绝本次选区编辑并要求重选；这个启动检查不证明随后远端协作变化已被检测。
-`filterSelectionChanges` 要求每项均为同一路径的文本 write、`previousContent` 等于基线，并保留选区前缀与后缀；可接受结果满足 \(after=prefix+replacement+suffix\)。该函数使用 `items.every` 整组判定，任一项越界会令 `changes` 为空，并将整组映射为 `selection_scope_violation`，合法项也不会单独保留。该拒绝阻止生成远端写回计划，不会自动还原执行器已修改的本地镜像，后者可继续标为 dirty；reference 模式不启用这组 edit-only 过滤。
-验证选区执行约束时，应覆盖“选区外发生变化但选区文字相同”、前后缀变化、跨文件修改，以及合法项与越界项混合返回；[sentSelectionChip](../../test/sentSelectionChip.test.js) 的历史 chip 验证不能替代 Native 范围校验。
+Native 的 `prepareSelectionScope` 在镜像同步或复用准备后、执行器启动前核对整文 SHA-256 和选中文字。Page 捕获的可选 `rebaseEvidence` 还保存完整前缀、后缀的 SHA-256 及文档长度，坐标和长度均采用 JavaScript UTF-16 码元；不持久化整份前后缀正文。
+当整文版本变化时，只在选中文字不变且完整一侧仍匹配时重定位。设旧区间为 \([f,t)\)、旧长 \(L\)、新长 \(N\)、选中文字长 \(m=t-f\)，候选起点为原位置 \(f\) 或按旧后缀从文末定位的 \(N-(L-t)-m\)。前者要求完整前缀哈希一致，后者要求完整后缀哈希一致，且去重后只有一个有效候选。双侧均变化、选中文字变化或多个有效位置时以 `selected_context_unresolved` 拒绝；旧记录没有证明时继续使用严格整文版本检查。重定位后坐标、行号、documentHash 和模型输入都采用当前文档版本。
+`filterSelectionChanges` 逐项保留同一选区路径的合法文本 write：`previousContent` 必须等于当前基线，结果满足 \(after=prefix+replacement+suffix\)。跨文件、结构或二进制操作、选区外文本变化进入 `selection_scope_violation`；同路径重复结果被拒绝。单个文件内无法证明可分离的混合越界修改仍整项拒绝。Content 将被拒绝项纳入 skipped/blocked，混合结果明确部分完成，已写部分保留 Undo；本地镜像可继续为 dirty。
+[selectionScopeRebase.test.js](../../test/selectionScopeRebase.test.js) 覆盖 Page 捕获、存储/队列、Native 启动与重定位；[selectionScopeWriteback.test.js](../../test/selectionScopeWriteback.test.js) 覆盖部分合法结果的写回与恢复。页面及外部 I/O 使用替身；启动后的远端变化仍由 Page stale guard 检查，不由启动重定位自动解决。reference 模式不启用 edit-only 过滤。
+
 发送后的 `renderSent` 从 run execution snapshot 渲染 chip；草稿移除选区不应删除历史 chip。页面选区探测还检查编辑器焦点、连接状态和 probe generation。
 
 ### 文件重点与任务中的 @ 文字
@@ -244,25 +248,23 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 | --- | --- | --- |
 | 跳过项的原因、阶段、下一步 | [ApplyResultFormatters](../../extension/src/content/applyResultFormatters.js) 的 `normalizeSkippedFailure/appendApplyResult` 调用 [FailureReasons.normalizeFailureReason/selectPrimaryFailure](../../extension/src/shared/failureReasons.js) 并本地化 | 展开文案中的分类不保证等于结算保存的分类 |
 | 写回事实及其主因 | [WritebackSettlement.settle](../../extension/src/shared/writebackSettlement.js) 经 [WritebackOperationEvidence.normalizeOperationEvidence](../../extension/src/shared/writebackOperationEvidence.js) 收集失败；[SettlementFacts.projectRunSettlement](../../extension/src/shared/settlementFacts.js) 投影持久事实 | `evidence.settled`、failure 的 `terminalState` 和 `run.status` 具有不同含义 |
-| 完成报告与摘要 | [WritebackOrchestrator.promoteWritebackSkippedFailure](../../extension/src/content/writebackOrchestrator.js) 提升显式 failure；[Summary.buildChangeSummaryLine](../../extension/src/shared/summary.js) 与 [AgentTranscript.buildHumanCompletionReport](../../extension/src/shared/agentTranscript.js) 统计原始返回集合；runtime `appendCompletionReport` 保存 report event | 报告 failure 未统一采用严重度排序，返回条目计数也未补齐缺失回执 |
+| 完成报告与摘要 | [WritebackOrchestrator.promoteWritebackSkippedFailure](../../extension/src/content/writebackOrchestrator.js) 提升显式 failure；[Summary.buildChangeSummaryLine](../../extension/src/shared/summary.js) 与 [AgentTranscript.buildHumanCompletionReport](../../extension/src/shared/agentTranscript.js) 统计原始返回集合；runtime `appendCompletionReport` 保存 report event | 写回 failure 共用主因规则；条目计数消费 Broker 已补齐的结果集合 |
 | 报告中的失败告警 | [RunFailureNotice.append/formatMetaValue](../../extension/src/content/runFailureNotice.js) 优先读当前 settlement 主因，缺少时读 report event.failure | 刷新后重建的告警与报告中保存的原 failure 可能来源不同 |
-| 告警旁的恢复按钮 | `RunFailureNotice.prepareRecovery` 先处理写入不确定性；[RunTimelineView.appendRecoveryActionForFailure](../../extension/src/content/runTimelineView.js) 再按 event.failure.code 白名单及注入 callback 路由 | `canRetry` 或 `retryable` 为真不保证存在按钮；按钮出现也不单独证明原操作适合自动重放 |
+| 告警旁的恢复按钮 | [RunRecoveryActions.appendRecoveryActionForFailure](../../extension/src/content/runRecoveryActions.js) 先从 Notice context 处理原运行专用人工 Review，再由 `RunFailureNotice.prepareRecovery` 处理通用写入核查，其余动作按同一当前 failure.code 白名单路由 | `canRetry` 或 `retryable` 为真不保证存在按钮；按钮出现也不单独证明原操作适合自动重放 |
 | 活动告警与运行页眉 | [RunActivityModel.project](../../extension/src/shared/runActivityModel.js) 分类活动；[RunActivitySummary](../../extension/src/content/runActivitySummary.js) 汇总活动事实，调用 [RunPresence](../../extension/src/content/runPresence.js)；timeline `classifyRunPresence` 读取 run.status | 活动 warning 不直接决定运行失败；页眉文件数不能当作页面已写文件数 |
 
-**失败归一化与排序的边界。** `FailureReasons.normalizeFailureReason` 校验显式 failure，失败时回退到 legacy code 映射和目录默认值；`WritebackOperationEvidence.normalizeFailure` 直接复制显式 failure，只有原始 code 时采用 `write/error/retryable=false` 等默认值。两者未共享同一归一化契约。例如合成输入 `code: stale_snapshot` 在前者变为 `stale_source_changed/preflight/blocked/retryable=true`，在后者保留 `stale_snapshot/write/error/retryable=false`。这一输入说明 helper 差异，不能推定当前真实页面仍会产生该 legacy 结果。
-
-`selectPrimaryFailure` 按严重度 `blocked > error > warning > info`，再按 `STAGE_TIE_BREAKER_ORDER` 选主因，可记为 \(f^*=\arg\min_f(\operatorname{severityRank}(f),\operatorname{stageRank}(f))\)，相同排序项保留输入顺序。当前 `promoteWritebackSkippedFailure` 只取首个带 code 的显式 failure；例如编辑器读回失败的 `write_operation_failed/error` 排在新建前 ZIP 读取失败的 `source_zip_unavailable/blocked` 前面时，report 可保存前者，格式化器及 settlement 主因选择后者。反序或单一故障时可能一致，修改其中一个消费者不能推定另一个已同步。
-单条 failure 的 `terminalState: needs_review` 与结算的 `evidence.settled: needs-review` 也须分别核对。`deriveSettledEvidence` 检查主因的 needs_review 或任一文件读回 mismatch；较低优先级的 needs_review 并不必然覆盖较高优先级的 blocked，不能将其概括为对全部 failure 取最严格终态。
+**失败归一化与排序。** 写回相关消费者共用 `FailureReasons.normalizeWritebackFailure`，把旧 code 映射、目录默认值、文件上下文及可能发生修改的证据归一化。`selectPrimaryWritebackFailure` 先选择需要核查写入结果的失败，再按通用严重度和阶段排序：\(f^*=\arg\min_f(\operatorname{reviewRank}(f),\operatorname{severityRank}(f),\operatorname{stageRank}(f))\)。通用严重度仍为 `blocked > error > warning > info`，同等级保留原顺序；未修改非写回场景的通用选择器。
+报告、格式化器、逐项证据、settlement 和 Notice 使用同一写回主因规则；不确定修改的证据不会被另一个更高严重度的阻断原因遮住。`terminalState: needs_review` 与 `evidence.settled: needs-review` 分别属于失败与结算表示，修改时继续核对其消费者。
 
 **缺项回执的归一化与结算兜底。** 普通 Auto/Retry 文本写回先经过 [AssetTransferBroker.normalizeTextResult](../../extension/src/content/assetTransferBroker.js)，按计划核对返回项并补齐 skipped。执行结果不确定的缺项会带上 `receiptUnconfirmed` 并阻断未派发尾部；明确未派发的取消保留取消语义，运行可为 cancelled。两者均不按完整成功结算，该入口保护必须与末端投影一起检查。
 `normalizeOperationEvidence` 另为未匹配计划补 `write_result_missing`；Summary、AgentTranscript 和 `appendApplyResult` 按传入的 applied/skipped 集合统计。若绕开 Broker 直接交给末端“一项 applied、空 skipped”的孤立结果，结算仍可为 partial/needs-review，而报告计数或 completed 标签不一致。这个兜底差异不构成普通主链已经假成功的证据；新增入口或调整 Broker 时应保持补项与后续消费者的衔接。
 
-**恢复动作的边界。** `RunFailureNotice` 将 `write_timeout/partial_write_needs_review`、possibly-changed 或特定 unknown/needs-review 证据归入写入未确认，优先提供检查文件或展开详情，并覆盖报告的 Write result/Next 显示值。普通恢复 registry 随后只读 report event.failure.code：例如 `provider_rate_limited` 即使 retryable 为真也未进入编辑重发白名单；`write_operation_failed` 的白名单分支未再检查 retryable。当前 settlement 主因改变后，告警可显示新主因，普通按钮仍按原 report event 路由。Accept/Undo 另经实际恢复材料投影，见[运行状态与恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
-工具栏的 Retry sync 还按 `retryWriteback/saveCheck` 提供独立恢复入口；普通 registry 无按钮不等于整张卡没有恢复动作。Edit & resend 只回填 composer，仍需新的显式提交，不会因按钮出现就自动重放原操作。
+**恢复动作的边界。** `RunFailureNotice` 将需要核查写入的证据优先展示为检查文件或展开详情；[RunRecoveryActions](../../extension/src/content/runRecoveryActions.js) 从同一个 Notice context 取得当前 failure，再按明确白名单和 callback 提供动作。旧 report event 继续保留历史事实，当前提示及动作不会各自从不同主因派生。`retryable` 本身仍不足以授权自动重放；Edit & resend 只回填 composer，需新的显式提交。
+工具栏 Retry sync 按 `retryWriteback/saveCheck` 提供独立入口；`writebackCheck` 提供服务器内容的只读重新核验，不能补造执行回执或 Undo 所有权。手动 Review 的定位及重新核验也由 RunRecoveryActions 提供，接受终态须经过原文件身份、完整正文和目标/无关 refs 检查。[RunCompletionMeta](../../extension/src/content/runCompletionMeta.js) 负责完成信息和 `recoveryRetention` 提示，区分预算省略与摘要降级；现有内存材料仍可用时不会禁用其 Undo。Accept/Undo 的执行资格仍由实际恢复材料决定，见[运行状态与恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
 
 **活动与页眉的边界。** `RunActivityModel.isDiagnosticNotice` 将未携带显式 failure 且活动 state 非 failed 的普通 warning/configWarning 放入 diagnostics，保留 guardianWarning 等需要留意的事件；`needsUserAttention` 通常不把普通工具失败升级为任务告警，TeX 编译命令失败另有识别规则。页眉 files 统计 completed 本地 edit 活动中的路径，增删行数来自这些活动；compiled 取 completed compile 活动。`classifyRunPresence` 在 `retryingWriteback` 为真时先返回 plain，其余按 run.status 区分 Done 等分类。这些数值描述各自记录的活动，页面 applied/saved/compiled 结算证据仍需另查；裁剪历史还受 `filesClipped` 限定。
 
-**验证入口与范围。** [failureReasons](../../test/failureReasons.test.js) 检查目录、校验与排序；[writebackSettlement](../../test/writebackSettlement.test.js) 的缺项用例检查合成回执的结算；[writebackSettlementContract](../../test/writebackSettlementContract.test.js) 检查证据和恢复材料投影；[summary](../../test/summary.test.js) 与 [agentTranscript](../../test/agentTranscript.test.js) 覆盖各自的报告 helper。[p0ProductExperience](../../test/p0ProductExperience.test.js) 的恢复 registry 用例主要检查源码装配，[runPresence](../../test/runPresence.test.js) 检查局部页眉 renderer，[runActivityHistoryPersistence](../../test/runActivityHistoryPersistence.test.js) 检查活动元数据经过存储投影后仍可分类。它们不能共同替代 `orchestrator → report → settlement → finishRunView → hydration → 按钮/页眉` 的组合验证；修改这些语义时应同时比较运行中展示、重载后展示及各自保存的事实。
+**验证入口与范围。** [writebackOutcomeConsistency](../../test/writebackOutcomeConsistency.test.js) 检查真实写回失败组合、主因和动作一致性；[failureReasons](../../test/failureReasons.test.js) 检查目录、校验与排序；[writebackSettlement](../../test/writebackSettlement.test.js) 的缺项用例检查合成回执的结算；[writebackSettlementContract](../../test/writebackSettlementContract.test.js) 检查证据和恢复材料投影；[summary](../../test/summary.test.js) 与 [agentTranscript](../../test/agentTranscript.test.js) 覆盖各自的报告 helper。[p0ProductExperience](../../test/p0ProductExperience.test.js) 的恢复 registry 用例主要检查源码装配，[runPresence](../../test/runPresence.test.js) 检查局部页眉 renderer，[runActivityHistoryPersistence](../../test/runActivityHistoryPersistence.test.js) 检查活动元数据经过存储投影后仍可分类。它们不能共同替代 `orchestrator → report → settlement → finishRunView → hydration → 按钮/页眉` 的组合验证；修改这些语义时应同时比较运行中展示、重载后展示及各自保存的事实。
 
 ### 复制结论
 

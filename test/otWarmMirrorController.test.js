@@ -15,7 +15,7 @@ test('exports positive OT warm mirror timing and batch constants', () => {
   assert.ok(Controller.OT_MAX_PATCH_BATCH > 0);
 });
 
-test('exposes the controller as a browser global when CommonJS is unavailable', () => {
+test('resolves the controller and real ProjectFiles dependency through the browser registry', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '../extension/src/content/otWarmMirrorController.js'),
     'utf8'
@@ -24,6 +24,9 @@ test('exposes the controller as a browser global when CommonJS is unavailable', 
   sandbox.globalThis = sandbox;
   sandbox.window = sandbox;
 
+  for (const relative of ['../extension/src/content/moduleRegistryKernel.js', '../extension/src/shared/projectFiles.js']) {
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, relative), 'utf8'), sandbox, { filename: relative });
+  }
   vm.runInNewContext(source, sandbox, { filename: 'otWarmMirrorController.js' });
 
   assert.equal(
@@ -85,7 +88,7 @@ test('buildPatchFilesRequest sends only native patch fields for valid OT events'
       source: 'ot',
       files: [
         {
-          path: 'main.tex',
+          path: '@file:/main.tex',
           baseHash: 'base-hash',
           nextContent: 'new',
           observedVersion: 42,
@@ -94,6 +97,37 @@ test('buildPatchFilesRequest sends only native patch fields for valid OT events'
       ]
     }
   });
+});
+
+test('literal focus and OT status retain distinct file identities while legacy focus hints stay supported', () => {
+  const status = path => ({ exists: true, otFreshFiles: [{ path, state: 'fresh', observedAt: new Date().toISOString() }] });
+  for (const name of ['@file:main.tex', 'a%20b.tex']) {
+    const options = { enabled: true, focusFiles: [name], focusFilesAreLiteral: true };
+    assert.equal(Controller.canUseOtWarmStart({ ...options, mirrorStatus: status(name) }).ok, true);
+    assert.equal(Controller.canUseOtWarmStart({ ...options, mirrorStatus: status(name === '@file:main.tex' ? 'main.tex' : 'a b.tex') }).ok, false);
+  }
+  assert.equal(Controller.canUseOtWarmStart({ enabled: true, focusFiles: ['@file:/main.tex'], mirrorStatus: status('main.tex') }).ok, true);
+  assert.equal(Controller.canUseOtWarmStart({ enabled: true, focusFiles: ['@file:main.tex'], focusFilesAreLiteral: 'true', mirrorStatus: status('@file:main.tex') }).ok, false);
+  assert.equal(Controller.canUseOtWarmStart({ enabled: true, focusFiles: ['main.tex'], mirrorStatus: status('@file:main.tex') }).ok, false);
+});
+
+test('OT event queue, patch payload and receipt preserve literal names and reject lossy aliases', () => {
+  const now = Date.now();
+  const events = ['@file:main.tex', 'main.tex', 'a%20b.tex', 'a b.tex'].map(path => ({ path, baseHash: 'a', nextHash: 'b', nextContent: '', observedAt: new Date(now).toISOString() }));
+  const queued = Controller.queuePatchEvents([], events, now);
+  assert.equal(queued.ok, true);
+  assert.deepEqual(queued.queue.map(event => event.path), events.map(event => event.path));
+  assert.deepEqual(Controller.buildPatchFilesRequest({ events: queued.queue }).params.files.map(file => file.path), events.map(event => event.path));
+  const receipt = { appliedCount: 1, appliedFiles: [{ path: '@file:main.tex', hash: 'b' }] };
+  assert.equal(Controller.validatePatchReceipt([events[0]], receipt, now).ok, true);
+  assert.equal(Controller.validatePatchReceipt([events[1]], receipt, now).ok, false);
+  for (const path of ['/main.tex', 'a\\b.tex', 'a//b.tex', ' a.tex', 'a/../b.tex', 'C:main.tex']) {
+    const event = { ...events[0], path };
+    assert.equal(Controller.queuePatchEvents([], [event], now).ok, false, path);
+    assert.deepEqual(Controller.buildPatchFilesRequest({ events: [event] }).params.files, [], path);
+    assert.equal(Controller.canUseOtWarmStart({ enabled: true, focusFiles: [path], focusFilesAreLiteral: true,
+      mirrorStatus: { exists: true, otFreshFiles: [{ path, state: 'fresh', observedAt: event.observedAt }] } }).ok, false, path);
+  }
 });
 
 test('buildPatchFilesRequest can carry native compatibility evidence for background run gates', () => {

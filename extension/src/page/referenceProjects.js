@@ -113,6 +113,7 @@
         }, { projectId, signal: controller.signal });
         if (controller.signal.aborted) throw failure('reference_read_cancelled', 'Reference reading was cancelled.');
         if (!snapshot?.ok) throw failure('reference_project_unavailable', snapshot?.reason || 'The reference project could not be read.');
+        if (snapshot.pathIdentityComplete === false) throw failure('reference_project_incomplete', 'Some ZIP file identities could not be read unambiguously.');
         const files = (snapshot.files || []).filter(file => /\.tex$/i.test(file.path || ''));
         if (!files.length) throw failure('reference_project_empty', 'This project contains no readable TeX files.');
         if (files.length > 1000 || files.some(file => typeof file.content !== 'string')) {

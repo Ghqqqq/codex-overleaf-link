@@ -214,7 +214,7 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 | --- | --- | --- |
 | [SessionState.prepareStateForStorage](../../extension/src/shared/sessionState.js) | `STORAGE_DEFAULT_LIMITS` 默认12会话、每会话10 runs、每 run 120事件；估算结果超过4 MiB时改用 `STORAGE_AGGRESSIVE_LIMITS` 的4会话、3 runs、20事件 | 主提交只提取其轻量偏好；该结果还参与 fallback 构造。4 MiB是切换压缩模式的目标，激进分支不继续循环直到达到某个总字节上限 |
 | [StorageDb.buildSessionRecord](../../extension/src/shared/storageDb.js) | `SESSION_STORAGE_LIMITS` 保留最近10条 history、20 runs、每 run 300事件；各文本字段另有长度约束 | 主 sessions 记录的实际裁剪；该 builder 未采用前一行的会话总量或总字节目标 |
-| [StorageRunActions.compactRunsForStorage/compactRunActionPayload](../../extension/src/shared/storageRunActions.js) | 启用 `preserveRunActionPayload` 后，最多保留最近2个具备可恢复材料的 run；每 run 的动作材料限2 MiB，超限整组丢弃，可选 captures 不得挤掉已有 Undo 材料 | 主 session 中的 Undo/Accept 恢复能力；保留 run 的显示记录不代表其动作材料仍在 |
+| [StorageRunActions.compactRunsForStorage/compactRunActionPayload](../../extension/src/shared/storageRunActions.js) | 启用 `preserveRunActionPayload` 后，在保留的20个 run 内按新到旧分配每会话16 MiB核心动作总预算；完整 record 的传输余量可进一步收紧，可选 captures 在核心材料分配完成后使用余量 | 主 session 中的 Undo/Accept 恢复能力；保留 run 的显示记录不代表其动作材料仍在 |
 
 **当前容量边界。** compactState 的摘要与激进压缩提示仍服务于各自消费者，主 sessions 的较长历史文字不通过它做额外有损裁剪。排查主保存容量应检查真实 `putRecords` 的 record/base 及传输编码；`StorageValuePruning` 只删除摘要空字段，保留 `false/0`，不执行容量回收。
 
@@ -310,24 +310,27 @@ baseline 是下次三路合并的共同底稿。归一化与渲染失败时保�
 
 ## 6. Undo 的持久化与重载投影
 
-Undo 能力来自可用恢复材料和结算结果，不能只看 completed 或显示过某个按钮。
+Undo 能力来自可用恢复材料和结算结果，不能只看 completed 或显示过某个按钮。runtime 的 `undoRun/undoRunTrackedChanges/acceptRun` 为薄入口，实际编排由 [RunReviewController](../../extension/src/content/runReviewController.js) 拥有。
 关键字段包括 appliedOperations、undoOperations、undoBaseFiles、undoTrackedChanges、undoExpectedFiles；字段应按具体操作路径解释。
 [storageRunActions.js](../../extension/src/shared/storageRunActions.js) 的 `hasReloadableRunActionPayload/compactRunActionPayload` 判定并保留这些材料。
-当前 preserveRunActionPayload 路径先从待保存运行末尾选择最多两个满足 `hasReloadableRunActionPayload` 形状的候选，再逐候选检查 2 MiB 的 UTF-8 动作材料预算；超限整组丢弃。超限候选仍占本次候选名额，较旧但较小的运行不会补位，因此实际保留数可少于两个。没有动作材料的 Ask 记录不占候选名额。
-可选 trackedChangeCaptures 不能挤掉已满足预算的核心撤销材料；历史文本仍存在不能证明 Undo 材料仍完整。
-`StorageDb` 可在材料裁剪后保留 `trackedChangeStatus: pending`，但 `SessionState.applyTrackedChangeStatus` 在重载时会移去无 refs 的 pending。按钮还要检查实际材料，缺少材料的 Undo/Accept 入口会早退；不能仅凭存储中的 pending 或历史记录仍在推定操作可用。该裁剪影响插件恢复能力，不会直接撤销文稿内容，也不描述 Overleaf 自身的历史恢复范围。
+当前 `preserveRunActionPayload` 在主记录保留的最近20个 run 中，由新到旧选择完整核心材料，每会话总量由 `MAX_PERSISTED_ACTION_BYTES_PER_SESSION` 限为16 MiB。超过预算的候选被跳过，较旧的小候选仍可保留；已接受或已撤销的写操作材料、分叉快照和无动作 Ask 不消耗恢复预算；待目录核查的只读记录独立于审阅终态保留。所有核心候选选择后才考虑可选 `trackedChangeCaptures`，因此 captures 不挤掉其他运行的核心材料。
+
+`StorageDb.buildSessionRecord` 先计算实际显示记录开销，再检查动作材料加入后的 UTF-8 与旧 UTF-16 两条准入规则；中文长历史仍保留已有兼容窗口。`compactSessionBatchActions` 还按整批响应上限预留64 KiB，必要时优先活动会话、再按更新时间给其他会话分配恢复空间。它保留显示历史，省略的材料写入 `recoveryRetention: {state: omitted, reason, bytes}`，不会凭省略标记补造操作权限。已有超大历史或旧底稿仍可能使整批提交被拒绝；失败时沿原存储错误流程处理。
+
+保存成功后，`StorageDb.projectRetentionUpdates` 仅向同账号/项目/路由代次且动作指纹未变的运行投影实际保留结果，必要时清除旧省略标记；不改内存检查点。卡片根据 `recoveryRetention` 提示持久恢复材料未保留，当前页面仍持有的有效材料可继续使用，刷新后的权限由实际恢复字段决定。`directoryCleanup:true` 表示目录核查材料被省略，已接受或已撤销的文本终态仍显示独立目录提示。旧版本已经丢弃的原文无法由新预算重建。
+`SessionState.applyTrackedChangeStatus` 移去既无 refs、也无剩余文件结构 Undo 检查点及有效 `manualReviewProof` 的 pending；主 writer 和 reader 使用同一父作用域清理规则。有效人工审阅证明支持只读收尾，单独存在时不赋予 Undo/Accept 权限。按钮还要检查实际材料，缺少材料的 Undo/Accept 入口会早退；不能仅凭存储中的 pending 或历史记录仍在推定操作可用。该裁剪影响插件恢复能力，不会直接撤销文稿内容，也不描述 Overleaf 自身的历史恢复范围。
 
 `contentRuntime.undoRun` 先经 `UndoOperations.prepareRunUndo` 补齐有原文及已应用删除证据的旧文件恢复操作，再等待旧 mirror 刷新并选择恢复路径；页面调用始终携带原 runProjectId。文件结构恢复的已验证成功项经 `advanceUndoCheckpoint` 从逆操作和待恢复前像中移除，进度成功持久化后重载只保留未完成项；已被存储预算裁掉的原文不因此恢复。详细链路见[文件创建、删除与混合 Undo](auto-edit-undo.md#62-文件创建删除与混合-undo)及 [deletedFileUndo.test.js](../../test/deletedFileUndo.test.js)。
 tracked Undo/Accept 经过 `applyTrackedChangeSettlement → ScopedPersistenceCoordinator.applyReviewTransition`。
 [scopedPersistencePanelState.js](../../extension/src/content/scopedPersistencePanelState.js) 强制 preserveRunActionPayload 和 reviewRunIds，并验证持久记录中的结果。
 保存失败时恢复先前材料、标记 needs_review 并继续抛错，因为页面操作可能已经发生。部分验证失败生成 `review_state_not_persisted`，底层保存异常也可能原样传播，不能只匹配单一错误码。
-legacy/no-trace Undo 的 `applyLegacyUndoSettlement` 使用 `saveStateSoon`；后续修改不能假定它与 tracked review 路径有相同的确认屏障。
-普通 Undo 可在文件已经恢复时只排队保存运行状态；页面在计时器执行前结束，或后续主存储写入失败，均可能使重载后的卡片重新显示可 Undo。正常排队提交成功后才能从主库恢复相同终态。函数名 `undoRunTrackedChanges` 也包含无 refs 的普通文本恢复分支，不能仅据函数名称推定其具有 tracked 持久确认；重新出现按钮不独自证明再次点击会改坏正文。
+普通 Undo 的 `RunReviewController.applyLegacyUndoSettlement` 也等待明确的持久提交，通过 `reviewRunIds` 验证 `undoStatus`；partial 还核对剩余检查点。存储返回前保持操作锁和“正在撤销”，不提前显示 Undone。共享合并保护已持久的 applied，旧页自动保存不能复活已消耗的恢复状态。保存失败时仅补偿仍属同一 state、原记录且未并发变化的暂存字段，保留恢复材料与未完成状态；页面实际已发生的修改不会被该内存补偿自动逆转。
+`manualReviewProof` 的原文后像、文件身份与 refs 属于同组恢复材料，只有完整核验后才能持久接受终态。`pendingDirectoryCleanup` 保存带账号/项目/会话/运行身份的目录观测，不声明创建所有权；它在文本已接受或已撤销后仍可支持只读检查，确认目录已消失后才清空，分叉快照不继承这些操作入口。
 
 重载后，SessionState/StorageDb 归一化记录；`SettlementFacts.projectRunSettlement` 提供基础能力，`RunResultActions.projectUndoAvailability` 进一步检查实际材料。
 [runTimelineView.js](../../extension/src/content/runTimelineView.js) 的 `configureUndoButton/configureAcceptButton` 仅消费投影，不应补造恢复身份或修改持久证据。
 纯资源写入、缺少创建检查点、forkSnapshot 和已接受/撤销记录都有不同展示规则，见 [runResultActions.js](../../extension/src/content/runResultActions.js)；分叉标记的持久化与来源保留见下节。
-相关已有定义为 [reviewingUndoPersistence.test.js](../../test/reviewingUndoPersistence.test.js)、[runTimelineUndoAvailability.test.js](../../test/runTimelineUndoAvailability.test.js) 和 [undoNoticeRecovery.test.js](../../test/undoNoticeRecovery.test.js)。
+容量与跨共享存储往返见 [actionPayloadRetention.test.js](../../test/actionPayloadRetention.test.js)；普通 Undo 的耐久及期限消费见 [ordinaryUndoDurability.test.js](../../test/ordinaryUndoDurability.test.js)、[ordinaryUndoDeadlineConsumer.test.js](../../test/ordinaryUndoDeadlineConsumer.test.js)。相关已有定义为 [reviewingUndoPersistence.test.js](../../test/reviewingUndoPersistence.test.js)、[runTimelineUndoAvailability.test.js](../../test/runTimelineUndoAvailability.test.js) 和 [undoNoticeRecovery.test.js](../../test/undoNoticeRecovery.test.js)。
 
 ### 6.1 会话分叉与恢复材料隔离
 

@@ -26,6 +26,9 @@ if (!globalThis.CodexOverleafStorageRunActions) {
   // registry and shared-module imports do not exist in this context.
   const storageDependencies = [
     ['CodexOverleafModuleRegistry', 'content/moduleRegistryKernel.js'],
+    ['CodexOverleafProjectFiles', 'shared/projectFiles.js'],
+    ['CodexOverleafManualReviewProof', 'shared/manualReviewProof.js'],
+    ['CodexOverleafDirectoryCleanupProof', 'shared/directoryCleanupProof.js'],
     ['CodexOverleafUndoOperations', 'shared/undoOperations.js'],
     ['CodexOverleafSelectionContext', 'shared/selectionContext.js'],
     ['CodexOverleafWritebackIntent', 'shared/writebackIntent.js'],
@@ -538,6 +541,16 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
         });
       }
       return null;
+    }
+
+    const params = request.params || {};
+    if (request.method === 'codex.run' && params.focusFilesAreLiteral === true
+      && (params.restrictToFocusFiles === true || (Array.isArray(params.focusFiles) && params.focusFiles.length))
+      && evidence?.native?.capabilities?.literalProjectPaths !== true) {
+      return { ...createNativeUpdateRequiredBlock(request.method, {
+        ...evidence, status: 'native_capability_missing', classification: 'incompatible'
+      }), message: 'This Native Host does not support literal project paths. Reload the extension after installing the coordinated build.',
+      missingCapabilities: ['literalProjectPaths'] };
     }
 
     if (isNativeMethodAllowedByCompatibility(request.method, evidence)) {

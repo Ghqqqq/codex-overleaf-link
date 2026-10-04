@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { createHash } = require('node:crypto');
 
 const {
   confirmWritebackFiles,
@@ -741,7 +742,7 @@ test('rejects project paths that would escape the local mirror', async () => {
   }
 });
 
-test('confirmWritebackFiles re-hashes written workspace files in place and refreshes freshness (v1.8.0)', async () => {
+test('confirmWritebackFiles matches the verified post-image before refreshing freshness', async () => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-mirror-'));
   try {
     await syncOverleafToMirror({
@@ -759,13 +760,14 @@ test('confirmWritebackFiles re-hashes written workspace files in place and refre
     const statusBefore = getMirrorStatus('confirm-project', { rootDir });
 
     // Codex edits the workspace copy (the writeback SOURCE), then the
-    // writeback lands it in Overleaf. Confirm must adopt the workspace
-    // content as the new baseline without any re-download.
+    // writeback lands it in Overleaf. The caller supplies the verified page
+    // post-image digest before Native may adopt the matching local bytes.
     fs.writeFileSync(path.join(mirror.workspacePath, 'main.tex'), 'edited by codex\n', 'utf8');
 
     const result = await confirmWritebackFiles({
       projectId: 'confirm-project',
       paths: ['main.tex'],
+      expectedFiles: [{ path: 'main.tex', sha256: createHash('sha256').update('edited by codex\n').digest('hex') }],
       rootDir
     });
     assert.equal(result.ok, true);

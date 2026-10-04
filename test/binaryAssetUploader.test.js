@@ -107,6 +107,7 @@ function uploadHarness(t, options = {}) {
   let clock = 1000;
   let projectId = 'qa-project';
   let metadataReads = 0;
+  let uploadStarted = false;
   t.mock.method(Date, 'now', () => clock);
   const bytes = Uint8Array.from([1, 2, 3, 4]);
   const getIds = [];
@@ -134,7 +135,7 @@ function uploadHarness(t, options = {}) {
   const group = { previousElementSibling: folder, parentElement: { closest: () => root } };
   const fileRow = row('probe.png', 'file', 'asset-id', group);
   root.rows = [folder, fileRow];
-  const input = { ...fakeInput({ inUppy: true }), dispatchEvent() {} };
+  const input = { ...fakeInput({ inUppy: true }), dispatchEvent(event) { if (event.type === 'change') uploadStarted = true; } };
   const windowRef = {
     File, FormData, Event, crypto: webcrypto, atob,
     DataTransfer: class {
@@ -143,12 +144,13 @@ function uploadHarness(t, options = {}) {
     setTimeout(callback, ms) { clock += ms; queueMicrotask(callback); },
     async fetch(url, init = {}) {
       if (init.method === 'POST') {
+        uploadStarted = true;
         posts.push({ url, ...init });
         return { ok: options.multipartOk === true, status: 422, text: async () => options.multipartOk ? '{}' : '{"error":"rejected"}' };
       }
-      getIds.push(decodeURIComponent(url.split('/').pop()));
+      if (uploadStarted) getIds.push(decodeURIComponent(url.split('/').pop()));
       if (options.changeProjectOnRead) projectId = 'other-project';
-      const body = getIds.length <= (options.staleReads || 0) ? Uint8Array.from([9, 9]) : bytes;
+      const body = !uploadStarted || getIds.length <= (options.staleReads || 0) ? Uint8Array.from([9, 9]) : bytes;
       return { ok: true, arrayBuffer: async () => body.buffer };
     }
   };
@@ -159,6 +161,7 @@ function uploadHarness(t, options = {}) {
       querySelectorAll: selector => selector === 'input[type="file"]' && !options.noInput ? [input] : []
     },
     prepareUploadParent: async () => {},
+    isUploadParentCurrent: () => true,
     findFolderNode: () => options.nativeTree ? folder : null,
     treeOperations: {
       getProjectId: () => projectId,
@@ -171,7 +174,8 @@ function uploadHarness(t, options = {}) {
     snapshotRouter: {
       async buildProjectFileList() {
         metadataReads += 1;
-        return { files: options.metadata ? [{ path: 'figures/probe.png', id: 'metadata-id' }] : [] };
+        return { files: [{ path: 'figures/probe.png', id: options.metadata ? 'metadata-id'
+          : options.rotatingId && getIds.length ? 'replacement-id' : 'asset-id' }] };
       }
     }
   });
@@ -179,6 +183,7 @@ function uploadHarness(t, options = {}) {
     getIds, posts, metadataReads: () => metadataReads,
     async commit() {
       assert.equal(api.begin({ transferId: 'qa-asset-transfer', path: 'figures/probe.png', size: bytes.length,
+        previousSha256: createHash('sha256').update(Uint8Array.from([9, 9])).digest('hex'),
         sha256: createHash('sha256').update(bytes).digest('hex'), overwrite: true, mimeType: 'image/png' }).ok, true);
       assert.equal(api.append({ transferId: 'qa-asset-transfer', offset: 0, contentBase64: Buffer.from(bytes).toString('base64') }).ok, true);
       return api.commit({ transferId: 'qa-asset-transfer' });

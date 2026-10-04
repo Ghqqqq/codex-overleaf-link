@@ -43,10 +43,12 @@ test('a tracked-change run keeps its Accept payload at the same size', () => {
   assert.equal(payload.appliedOperations.length, 2);
 });
 
-test('payloads above the cap are still dropped whole, never truncated', () => {
-  const huge = 'h'.repeat(1100 * 1024);
+test('payloads above the 16 MiB core budget are dropped whole with an explicit reason', () => {
+  const huge = 'h'.repeat(9 * 1024 * 1024);
   const run = thesisRun({ undoBaseFiles: [{ path: 'roadmap.md', content: huge }, { path: 'tex_v1/Chap_03.tex', content: huge }] });
   const payload = StorageRunActions.compactRunActionPayload(run, true);
   assert.equal(payload.undoOperations.length, 0);
   assert.equal(payload.undoBaseFiles.length, 0);
+  assert.equal(payload.recoveryRetention.state, 'omitted');
+  assert.equal(payload.recoveryRetention.reason, 'run-budget');
 });

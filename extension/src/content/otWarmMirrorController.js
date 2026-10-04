@@ -1,10 +1,10 @@
 (function initCodexOverleafOtWarmMirrorController(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('../shared/projectFiles'));
   } else {
-    root.CodexOverleafOtWarmMirrorController = factory();
+    root.CodexOverleafModuleRegistry.define('OtWarmMirrorController', ['ProjectFiles'], factory);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function otWarmMirrorControllerFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function otWarmMirrorControllerFactory(projectFiles) {
   'use strict';
 
   const OT_POLL_INTERVAL_MS = 1000;
@@ -17,6 +17,7 @@
   const OT_MAX_BATCH_BYTES = 2 * 1024 * 1024;
   const encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
   const PAUSE_STATES = new Set(['running', 'writing', 'undoing', 'compiling']);
+  const normalizeLiteralPath = projectFiles.normalizeSafeProjectPath;
 
   function buildPatchFilesRequest({ projectId, events, nativeCompatibility } = {}) {
     const files = [];
@@ -24,8 +25,8 @@
       if (files.length >= OT_MAX_PATCH_BATCH) {
         break;
       }
-      const filePath = normalizePath(event?.path);
-      if (!isSafeRelativePath(filePath) || typeof event?.baseHash !== 'string') {
+      const filePath = normalizeLiteralPath(event?.path);
+      if (!filePath || typeof event?.baseHash !== 'string') {
         continue;
       }
       const baseHash = event.baseHash.trim();
@@ -73,7 +74,7 @@
     return { pause: false };
   }
 
-  function canUseOtWarmStart({ enabled, focusFiles, mirrorStatus, now = Date.now() } = {}) {
+  function canUseOtWarmStart({ enabled, focusFiles, focusFilesAreLiteral = false, mirrorStatus, now = Date.now() } = {}) {
     if (!enabled) {
       return { ok: false, reason: 'disabled' };
     }
@@ -82,7 +83,10 @@
     }
     if (mirrorStatus.dirty === true) return { ok: false, reason: 'mirror_dirty' };
 
-    const normalizedFocusFiles = normalizePaths(focusFiles);
+    if (focusFilesAreLiteral === true && Array.isArray(focusFiles) && focusFiles.some(path => !normalizeLiteralPath(path))) {
+      return { ok: false, reason: 'invalid_focus_paths' };
+    }
+    const normalizedFocusFiles = normalizePaths(focusFiles, focusFilesAreLiteral === true);
     if (!normalizedFocusFiles.length) {
       return { ok: false, reason: 'no_focus_files' };
     }
@@ -94,7 +98,7 @@
       }
       const age = now - Date.parse(file.observedAt ?? file.lastPatchAt ?? '');
       if (!Number.isFinite(age) || age < 0 || age > OT_FRESHNESS_MAX_AGE_MS) continue;
-      const filePath = normalizePath(file.path);
+      const filePath = normalizeLiteralPath(file.path);
       if (filePath) {
         freshFiles.add(filePath);
       }
@@ -124,9 +128,9 @@
     let bytes = next.reduce((sum, event) => sum + patchBytes(event), 0);
     if (next.length > OT_MAX_PENDING_EVENTS || bytes > OT_MAX_PENDING_BYTES) return { ok: false, reason: 'ot_queue_limit' };
     for (const input of events) {
-      const path = normalizePath(input?.path);
+      const path = normalizeLiteralPath(input?.path);
       const time = typeof input?.observedAt === 'number' ? input.observedAt : Date.parse(input?.observedAt || '');
-      if (!isSafeRelativePath(path) || path.length > 1024 || typeof input?.nextContent !== 'string' ||
+      if (!path || path.length > 1024 || typeof input?.nextContent !== 'string' ||
           typeof input.baseHash !== 'string' || !input.baseHash || input.baseHash.length > 128) {
         return { ok: false, reason: 'ot_event_invalid' };
       }
@@ -165,7 +169,7 @@
     }
     if (!events.length || Number(result.appliedCount) !== events.length || !Array.isArray(result.appliedFiles) ||
         result.appliedFiles.length !== events.length || !result.appliedFiles.every((file, index) =>
-          normalizePath(file?.path) === events[index].path && (!events[index].nextHash || file.hash === events[index].nextHash))) {
+          normalizeLiteralPath(file?.path) === events[index].path && (!events[index].nextHash || file.hash === events[index].nextHash))) {
       return { ok: false, reason: 'mirror_patch_invalid_result' };
     }
     if (events.some(event => { const time = Date.parse(event.observedAt);
@@ -220,11 +224,11 @@
       .replace(/^\/+/, '');
   }
 
-  function normalizePaths(value) {
+  function normalizePaths(value, literal = false) {
     const seen = new Set();
     const paths = [];
     for (const item of Array.isArray(value) ? value : []) {
-      const filePath = normalizePath(item);
+      const filePath = literal ? normalizeLiteralPath(item) : normalizePath(item);
       if (!filePath || seen.has(filePath)) {
         continue;
       }
@@ -232,13 +236,6 @@
       paths.push(filePath);
     }
     return paths;
-  }
-
-  function isSafeRelativePath(filePath) {
-    if (!filePath) {
-      return false;
-    }
-    return !filePath.split('/').some(part => part === '.' || part === '..');
   }
 
   function isPrimitiveMetadata(value) {

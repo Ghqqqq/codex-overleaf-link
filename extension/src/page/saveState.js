@@ -311,16 +311,18 @@
         expected.set(path, entry.result.verifiedContent);
       }
     }
-    const deadline = now() + Math.max(0, timeoutMs);
+    const deadline = Math.min(now() + Math.max(0, timeoutMs), params.deadlineAt == null ? Infinity
+      : Number.isFinite(params.deadlineAt) ? params.deadlineAt : now());
     let attempts = 0;
     if (expected.size && typeof readSnapshot === 'function') {
       do {
-        if (!params.runProjectId || getProjectId() !== params.runProjectId) break;
+        if (now() >= deadline || params.reviewGuard?.() || !params.runProjectId || getProjectId() !== params.runProjectId) break;
         try {
-          const snapshot = await readSnapshot({ force: true, maxAgeMs: 0,
+          const read = () => readSnapshot({ force: true, maxAgeMs: 0,
             zipTimeoutMs: Math.max(1, Math.min(8000, deadline - now())) });
+          const snapshot = params.reviewAwait ? await params.reviewAwait(read) : await read();
           attempts++;
-          if (getProjectId() !== params.runProjectId) break;
+          if (now() >= deadline || params.reviewGuard?.() || getProjectId() !== params.runProjectId) break;
           if (snapshot?.ok === true && Array.from(expected).every(([path, content]) =>
             snapshot.files?.some(file => file.path === path && file.source === 'overleaf-zip'
               && file.content === content))) {

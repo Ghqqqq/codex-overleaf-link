@@ -18,6 +18,22 @@
         if (typeof input[key] === 'string') op[key] = input[key];
       }
       if (Number.isSafeInteger(input.size)) op.size = input.size;
+      if (input.moveProof !== undefined) {
+        const proof = input.moveProof;
+        if (input.type !== 'move' || proof?.v !== 1 || !['text', 'binary'].includes(proof.kind)
+          || !/^[a-f0-9]{64}$/i.test(proof.sha256 || '')) return null;
+        op.moveProof = { v: 1, kind: proof.kind, sha256: proof.sha256.toLowerCase() };
+        if (proof.entityType !== undefined) {
+          if (!['doc', 'file'].includes(proof.entityType)) return null;
+          op.moveProof.entityType = proof.entityType;
+        }
+        for (const key of ['sourceEntityId', 'targetEntityId']) {
+          if (proof[key] !== undefined) {
+            if (typeof proof[key] !== 'string' || !proof[key] || proof[key].length > 160 || /[\0\r\n]/.test(proof[key])) return null;
+            op.moveProof[key] = proof[key];
+          }
+        }
+      }
       if (Array.isArray(input.patches)) {
         if (input.patches.length > 1000) return null;
         op.patches = input.patches.map(p => ({ from: p.from, to: p.to, expected: String(p.expected ?? ''), insert: String(p.insert ?? '') }));
@@ -58,5 +74,32 @@
       accountScopeId: String(value.accountScopeId).slice(0, 160), sessionId: String(value.sessionId).slice(0, 160),
       runId: String(value.runId).slice(0, 160), createdAt: String(value.createdAt || '').slice(0, 64), files } : null;
   }
-  return { normalize, normalizeSaveCheck, expectedFiles, MAX_BYTES };
+  function normalizeWritebackCheck(value) {
+    if (value?.v !== 1 || value.purpose !== 'writeback-revalidation' || !Array.isArray(value.files)
+      || !value.files.length || value.files.length > 1000) return null;
+    const result = { v: 1, purpose: 'writeback-revalidation' };
+    for (const key of ['id', 'projectId', 'accountScopeId', 'sessionId', 'runId']) {
+      if (typeof value[key] !== 'string' || !value[key].trim() || value[key].length > 160 || /[\u0000-\u001f\u007f]/.test(value[key])) return null;
+      result[key] = value[key];
+    }
+    if (typeof value.createdAt !== 'string' || value.createdAt.length > 64 || !Number.isFinite(Date.parse(value.createdAt))) return null;
+    result.createdAt = value.createdAt;
+    const seen = new Set();
+    result.files = [];
+    for (const file of value.files) {
+      if (!path(file?.path) || file.path.length > 1024 || /[\u0000-\u001f\u007f]/.test(file.path) || seen.has(file.path)) return null;
+      seen.add(file.path);
+      if (file.absent === true) result.files.push({ path: file.path, absent: true });
+      else if (['text', 'binary'].includes(file.kind) && /^[a-f0-9]{64}$/i.test(file.sha256 || '')) {
+        result.files.push({ path: file.path, kind: file.kind, sha256: file.sha256.toLowerCase() });
+      } else return null;
+    }
+    if (typeof value.checkedAt === 'string' && value.checkedAt.length <= 64 && Number.isFinite(Date.parse(value.checkedAt))
+      && ['matches', 'differs', 'unavailable'].includes(value.observation)) {
+      result.checkedAt = value.checkedAt; result.observation = value.observation;
+    }
+    const bytes = typeof TextEncoder === 'function' ? new TextEncoder().encode(JSON.stringify(result)).length : JSON.stringify(result).length * 2;
+    return bytes <= 256 * 1024 ? result : null;
+  }
+  return { normalize, normalizeSaveCheck, normalizeWritebackCheck, expectedFiles, MAX_BYTES };
 });

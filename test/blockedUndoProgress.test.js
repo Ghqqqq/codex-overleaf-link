@@ -104,12 +104,15 @@ function harness(options = {}) {
   };
   const apply = new Function('state', 'WritebackSettlement', 'FailureReasons', 'Modules', 'flushQueuedSaveState', `
     const findRunRecord = id => state.runs.find(run => run.id === id);
+    const getDirectoryCleanupRecovery = () => Modules.DirectoryCleanupRecovery.create({
+      getState: () => state, findRunRecord, getProjectId: () => state.sessions[0].projectId,
+      getAccountScopeId: () => state.sessions[0].accountScopeId, getRouteGeneration: () => 0 });
     const buildTrackedUndoPostFiles = run => (run.appliedOperations || [])
       .filter(operation => operation.type === 'edit')
       .map(operation => ({ path: operation.path, content: operation.verifiedContent }));
     ${actionSource}
     return applyTrackedChangeSettlement;
-  `)(state, Settlement, FailureReasons, { ScopedPersistenceCoordinator: Scope, UndoOperations: Undo }, persist);
+  `)(state, Settlement, FailureReasons, { ScopedPersistenceCoordinator: Scope, UndoOperations: Undo, DirectoryCleanupRecovery: require('../extension/src/content/directoryCleanupRecovery') }, persist);
   return { initial, state, calls, writes, apply: (result, kind = 'reject') => apply(initial.runs[0].id, kind, result),
     get run() { return state.runs[0]; }, get rows() { return rows; },
     reload() {
@@ -118,8 +121,8 @@ function harness(options = {}) {
     } };
 }
 function assertPending(run, expectedPaths, restored = false) {
-  assert.equal(run.trackedChangeStatus, restored && !run.undoTrackedChanges.length ? undefined : 'pending',
-    'live blocked lifecycle stays pending; refresh removes only the empty tracked lifecycle');
+  assert.equal(run.trackedChangeStatus, 'pending',
+    'blocked lifecycle remains pending across refresh while file Undo material is retained');
   assert.equal(run.undoStatus, 'partial', 'blocked must not promote Undo to applied');
   assert.deepEqual(run.undoOperations.map(operation => operation.path), expectedPaths);
   assert.equal(run.settlement.evidence.settled, 'needs-review');
@@ -135,7 +138,7 @@ test('blocked mixed Undo persists independently verified progress and the real f
   assert.equal(Settlement.settleTrackedChangeLifecycle({ kind: 'reject', run: h.run, result }).decision, 'blocked');
   await h.apply(result);
   assert.equal(h.calls.length, 1);
-  assert.deepEqual(h.calls[0], { preserveRunActionPayload: true, reviewRunIds: ['run-mixed'] });
+  assert.deepEqual(h.calls[0], { preserveRunActionPayload: true, reviewRunIds: ['run-mixed'], requireDurable: true });
   for (const [run, restored] of [[h.run, false], [h.state.sessions[0].runs[0], false],
     [h.rows[0].runs[0], false], [h.reload(), true]]) {
     assertPending(run, [nestedPath], restored);

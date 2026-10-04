@@ -282,7 +282,7 @@ test('successful text writeback settles while skipped-asset refresh invalidates 
       h.setMain(nextMain);
       appliedCount++;
       return { ok: true, applied: params.operations.map(operation => ({ operation,
-        result: { ok: true, changedDocument: true, content: nextMain } })), skipped: [] };
+        result: { ok: true, changedDocument: true, verified: true, verifiedContent: nextMain, content: nextMain } })), skipped: [] };
     }
     if (method === 'waitForSaveState') return { ok: true, state: 'verified_saved' };
     if (method === 'invalidateProjectSnapshot') return { ok: true };

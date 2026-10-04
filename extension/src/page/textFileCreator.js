@@ -1,7 +1,7 @@
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.CodexOverleafTextFileCreator = factory();
-})(typeof window !== 'undefined' ? window : globalThis, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./ownedDirectoryCleanup'));
+  else root.CodexOverleafTextFileCreator = factory(root.CodexOverleafOwnedDirectoryCleanup);
+})(typeof window !== 'undefined' ? window : globalThis, function (OwnedDirectoryCleanup) {
   'use strict';
 
   const MAX_CONFIRMATION_OBSERVATIONS = 8;
@@ -18,6 +18,7 @@
     const delay = ms => new Promise(resolve => window.setTimeout(resolve, ms));
     const now = typeof deps.now === 'function' ? deps.now : Date.now;
     const verificationReads = new Set();
+    const uploadParentProofs = new WeakMap();
     const verificationBudget = () => ({ remainingMs: 90000 });
     async function pauseVerification(budget, durationMs) {
       const started = now();
@@ -81,7 +82,18 @@
             } : {}) };
           } finally { if (controller) verificationReads.delete(controller); }
           assertVerificationOwner(projectId, isCurrent);
-          if (result?.ok === true && Array.isArray(result.files)) return result;
+          if (result?.ok === true && Array.isArray(result.files)) {
+            const skipped = [...(Array.isArray(result.skipped) ? result.skipped : []),
+              ...(Array.isArray(result.capabilities?.skipped) ? result.capabilities.skipped : [])];
+            if (result.pathIdentityComplete === false || result.capabilities?.pathIdentityComplete === false
+              || skipped.some(file => file?.unknownPath || ['zip_path_invalid', 'zip_path_duplicate'].includes(file?.reason))) {
+              throw Object.assign(new Error('The server snapshot contains unresolved file identities; absence cannot be confirmed.'), {
+                code: 'source_zip_unavailable', originalCode: 'zip_path_identity_incomplete', retryable: false,
+                diagnostics: { ...(result.diagnostics || {}), pathIdentityComplete: false }
+              });
+            }
+            return result;
+          }
           last = Object.assign(new Error('The server project snapshot could not be read.'), {
             code: 'source_zip_unavailable', diagnostics: result?.diagnostics || null,
             technicalMessage: result?.reason || 'No complete server snapshot was returned.',
@@ -142,11 +154,13 @@
         if (!lastError && observed.get(operation.path)?.content === operation.content) {
           results.push({ operation, result: { ok: true, verified: true, changedDocument: true,
             method: 'overleaf.native-text-upload', verification: 'overleaf-zip',
+            createdDirectories: entry.result?.createdDirectories || [], fileUploadAttempted: entry.result?.fileUploadAttempted === true,
             saveReceipt: await makeSaveReceipt(batch.projectId, operation.path, operation.content) } });
         } else {
-          results.push({ operation, result: verificationFailure(lastError || new Error(
+          results.push({ operation, result: { ...verificationFailure(lastError || new Error(
             observed.has(operation.path) ? 'Server content differs from the submitted file.' : 'The file is not yet present in the server snapshot.'
-          ), true, 'post-upload') });
+          ), true, 'post-upload'), createdDirectories: entry.result?.createdDirectories || [],
+            fileUploadAttempted: entry.result?.fileUploadAttempted === true } });
         }
       }
       // The final fresh snapshot can also prove unrelated edits in this batch.
@@ -191,6 +205,10 @@
       return folder;
     };
 
+    const directoryCleanup = OwnedDirectoryCleanup.create({ document, treeOperations, delay, now,
+      readServerSnapshot, assertVerificationOwner, normalizeDomText, normalizeSafeProjectPath });
+    const { folderIdentity, cleanupCreatedDirectories } = directoryCleanup;
+
     async function createFolderWithDom(entryPath, options = {}) {
       const target = normalizeSafeProjectPath(entryPath);
       const projectId = getProjectId();
@@ -230,7 +248,15 @@
         toggle.click();
         await waitFor(() => findFolder(parentPath)?.getAttribute('aria-expanded') === 'true');
       };
-      let ownedDialog = null;
+      let ownedDialog = null, createdProof = null;
+      const publishProof = () => {
+        if (!createdProof) return;
+        if (getProjectId() === projectId) {
+          const row = findFolder(target);
+          if (row) { createdProof.nativeFolderId = folderIdentity(row); createdProof.observedAfterCreate = true; }
+        }
+        options.onCreatedDirectory?.({ ...createdProof });
+      };
       try {
         assertCurrent();
         if (findFolder(target)) return;
@@ -259,12 +285,18 @@
         await delay(0);
         assertCurrent();
         if (findFolder(target) || projectPathExists(target)) throw new Error('The target path appeared during creation; no replacement was attempted.');
+        const confirm = choose(ownedDialog, /^(?:Create|创建)$/i);
+        createdProof = { v: 1, projectId, path: target, nativeFolderId: '', ownershipConfirmed: false, observedAfterCreate: false };
+        options.onCreatedDirectory?.({ ...createdProof });
         options.onMutation?.();
-        choose(ownedDialog, /^(?:Create|创建)$/i).click();
+        confirm.click();
+        publishProof();
         await waitFor(() => !dialogs().length);
         await expandParent();
         await waitFor(() => findFolder(target));
+        publishProof();
       } finally {
+        publishProof();
         if (ownedDialog && getProjectId() === projectId && dialogs().includes(ownedDialog)) {
           const cancel = Array.from(ownedDialog.querySelectorAll('button')).filter(node => visible(node) && /^(?:Cancel|取消)$/i.test(controlName(node)));
           if (cancel.length === 1) cancel[0].click();
@@ -281,7 +313,12 @@
       if (!target || !projectId || typeof operation.content !== 'string' || !window.CodexOverleafProjectFiles?.isTextProjectPath(target)) {
         return { ok: false, code: 'invalid_project_path', reason: 'A valid text-file path and project are required.' };
       }
-      let mutationAttempted = false;
+      let mutationAttempted = false, fileUploadAttempted = false;
+      const createdDirectories = [];
+      const recordDirectory = proof => {
+        const index = createdDirectories.findIndex(item => item.path === proof.path);
+        if (index < 0) createdDirectories.push(proof); else createdDirectories[index] = proof;
+      };
       let verificationPhase = 'preflight', zipReadCount = 0, lastZipFailure = null;
       const readBudget = options.batch?.budget || verificationBudget();
       let uploadDialog = null;
@@ -346,7 +383,7 @@
         data.items.add(file);
         assertCurrent();
         uploadHelpers.assignFilesToInput(input, data.files, window);
-        mutationAttempted = true;
+        mutationAttempted = true; fileUploadAttempted = true;
         options.batch?.pending.set(target, operation);
         input.dispatchEvent(new window.Event('change', { bubbles: true }));
         // Never click Replace/Overwrite. A concurrent name conflict must stop.
@@ -402,20 +439,28 @@
           const folderPath = parts.slice(0, depth).join('/');
           if (!findFolder(folderPath)) await createFolderWithDom(folderPath, {
             isCurrent: () => { assertCurrent(); return true; },
-            onMutation: () => { mutationAttempted = true; }
+            onMutation: () => { mutationAttempted = true; }, onCreatedDirectory: recordDirectory
           });
           await ensureFolderExpanded(folderPath);
         }
         await uploadText();
-        if (options.batch) return { ok: false, pendingVerification: true, changedDocument: true };
-        return { ok: true, method: 'overleaf.native-text-upload', changedDocument: true,
+        if (options.batch) return { ok: false, pendingVerification: true, changedDocument: true, createdDirectories, fileUploadAttempted };
+        return { ok: true, method: 'overleaf.native-text-upload', changedDocument: true, createdDirectories, fileUploadAttempted,
           verified: true, verification: 'overleaf-zip',
           saveReceipt: await makeSaveReceipt(projectId, target, operation.content) };
       } catch (error) {
-        return {
-          ...verificationFailure(error, mutationAttempted, verificationPhase),
-          diagnostics: { verificationPhase, zipReadCount, lastZipFailure }
-        };
+        const directoryCleanup = createdDirectories.length
+          ? await cleanupCreatedDirectories(createdDirectories, { projectId, isCurrent: options.isCurrent }) : undefined;
+        const result = verificationFailure(error, mutationAttempted, verificationPhase);
+        if (!fileUploadAttempted && mutationAttempted) {
+          const reason = directoryCleanup?.ok ? 'File upload did not start. The new empty folders were removed.'
+            : 'File upload did not start. Some new folders remain and need review.';
+          result.reason = reason; result.code = 'file_tree_operation_unverified';
+          result.failure = { ...result.failure, code: result.code, stage: 'directory-preparation', userMessage: reason,
+            nextAction: directoryCleanup?.ok ? 'Retry sync to create the file.' : 'Review the remaining folders before retrying.' };
+        }
+        return { ...result, createdDirectories: directoryCleanup?.remaining || createdDirectories,
+          fileUploadAttempted, directoryCleanup, diagnostics: { verificationPhase, zipReadCount, lastZipFailure } };
       } finally {
         if (uploadDialog && getProjectId() === projectId && dialogs().includes(uploadDialog)) {
           const close = Array.from(uploadDialog.querySelectorAll('button')).find(node => visible(node)
@@ -424,6 +469,31 @@
         }
       }
     }
+    const rootUploadIdentity = row => row?.querySelector?.('[data-file-type="doc"][data-file-id], [data-file-type="file"][data-file-id]')
+      ?.getAttribute?.('data-file-id') || '';
+    function rememberUploadParent(path, node, projectId) {
+      if (node && typeof node === 'object') uploadParentProofs.set(node, Object.freeze({
+        path, projectId, nativeId: path ? folderIdentity(node) : rootUploadIdentity(node)
+      }));
+      return node;
+    }
+    // Synchronous last-moment guard after any uploader await. Snapshot the
+    // identity at preparation, since React can reuse a DOM row for a new ID.
+    function isUploadParentCurrent(folderPath, parentNode) {
+      const target = normalizeSafeProjectPath(folderPath);
+      const proof = parentNode && uploadParentProofs.get(parentNode);
+      if ((!target && folderPath !== '') || !proof?.projectId || !proof.nativeId
+        || proof.path !== target || getProjectId() !== proof.projectId) return false;
+      const root = document.querySelector('[data-testid="file-tree-list-root"], .file-tree-list[role="tree"]');
+      if (!root?.children) return false;
+      const selected = Array.from(root.querySelectorAll?.('[role="treeitem"]') || [])
+        .filter(row => row.getAttribute('aria-selected') === 'true');
+      if (selected.length !== 1 || selected[0] !== parentNode) return false;
+      if (!target) return parentNode.closest?.('[role="tree"]') === root
+        && !parentNode.querySelector('[data-file-type="folder"]') && rootUploadIdentity(parentNode) === proof.nativeId;
+      return findFolder(target) === parentNode && folderIdentity(parentNode) === proof.nativeId;
+    }
+
     // Binary uploads use the same folder hierarchy as verified text uploads.
     // A folder is not a text document and must never use basename fallback.
     async function prepareUploadParent(folderPath, options = {}) {
@@ -454,7 +524,7 @@
         if (selected.length !== 1 || selected[0] !== anchor || anchor.closest('[role="tree"]') !== currentRoot) {
           throw new Error('Overleaf did not confirm the selected root upload parent.');
         }
-        return anchor;
+        return rememberUploadParent('', anchor, projectId);
       }
       const expand = async path => {
         assertCurrent();
@@ -479,7 +549,8 @@
         const path = parts.slice(0, depth).join('/');
         assertCurrent();
         if (!findFolder(path) && options.createMissing === true) await createFolderWithDom(path, {
-          isCurrent: () => { assertCurrent(); return true; }, onMutation: options.onMutation
+          isCurrent: () => { assertCurrent(); return true; }, onMutation: options.onMutation,
+          onCreatedDirectory: options.onCreatedDirectory
         });
         await expand(path);
       }
@@ -493,7 +564,7 @@
       if (selected.getAttribute('aria-selected') !== 'true') {
         throw new Error('Overleaf did not confirm the selected upload parent.');
       }
-      return selected;
+      return rememberUploadParent(target, selected, projectId);
     }
 
     async function prepareEditor(params = {}) {
@@ -552,6 +623,18 @@
       const deadlineAt = Math.min(now() + 90000, Number.isFinite(options.deadlineAt) ? options.deadlineAt : Infinity);
       const preflightDeadlineAt = deadlineAt - 15000;
       const expected = options.expectedContent;
+      const finishCreatedDeletion = async result => {
+        const proofs = operation.undoCreatedFile?.createdDirectories;
+        if (options.undoCreatedFile !== true || !Array.isArray(proofs) || !proofs.length) return result;
+        const directoryCleanup = await cleanupCreatedDirectories(proofs, { projectId, isCurrent: options.isCurrent });
+        if (directoryCleanup.ok) return { ...result, directoryCleanup, changedDocument: result.changedDocument || directoryCleanup.changedDocument };
+        const reason = 'The created file was removed. Some created folders remain and need review.';
+        return { ...result, ok: false, fileDeleted: true, code: 'created_directory_cleanup_unconfirmed', reason, directoryCleanup,
+          changedDocument: result.changedDocument || directoryCleanup.changedDocument,
+          failure: { code: 'created_directory_cleanup_unconfirmed', stage: 'cleanup', severity: 'warning', retryable: true,
+            terminalState: 'needs_review', changedDocument: result.changedDocument || directoryCleanup.changedDocument,
+            userMessage: reason, nextAction: 'Retry Undo after the remaining folders are empty and their identity can be checked.' } };
+      };
       const binary = operation.undoCreatedFile?.v === 1 && operation.undoCreatedFile.kind === 'binary'
         && options.undoCreatedFile === true && /^[a-f0-9]{64}$/i.test(options.expectedSha256 || '');
       const matchesExpected = async file => {
@@ -658,8 +741,8 @@
         if (!snapshotRouter?.fetchProjectZipSnapshot) throw new Error('Verified deletion support is unavailable.');
         const original = (await readServerFiles()).find(file => file.path === target);
         if (!original && options.undoCreatedFile === true && !resolveRow()) {
-          return { ok: true, method: 'overleaf.native-created-file-delete', changedDocument: false,
-            idempotent: true, verified: true, verification: 'overleaf-zip' };
+          return finishCreatedDeletion({ ok: true, method: 'overleaf.native-created-file-delete', changedDocument: false,
+            idempotent: true, verified: true, verification: 'overleaf-zip' });
         }
         const originalMatches = await matchesExpected(original);
         assertCurrent();
@@ -741,8 +824,8 @@
         for (let observation = 0; ; observation++) {
           const files = await readServerFiles();
           if (!files.some(file => file.path === target)) {
-            return { ok: true, method: binary ? 'overleaf.native-created-file-delete' : 'overleaf.native-text-delete', changedDocument: true,
-              verified: true, verification: 'overleaf-zip' };
+            return finishCreatedDeletion({ ok: true, method: binary ? 'overleaf.native-created-file-delete' : 'overleaf.native-text-delete', changedDocument: true,
+              verified: true, verification: 'overleaf-zip' });
           }
           await delay(Math.min(250 * (2 ** Math.min(observation, 3)), remainingMs()));
         }
@@ -776,7 +859,7 @@
     async function createFile(operation, options = {}) {
       return createTextFileWithDom(operation, options);
     }
-    return { createFile, deleteFile, prepareEditor, ensureWriteMode, prepareUploadParent, findFolderNode: findFolder,
+    return { createFile, deleteFile, prepareEditor, ensureWriteMode, prepareUploadParent, isUploadParentCurrent, cleanupCreatedDirectories, findFolderNode: findFolder,
       beginCreateBatch, finishCreateBatch,
       cancelVerifications() { for (const controller of verificationReads) controller.abort(); } };
   }

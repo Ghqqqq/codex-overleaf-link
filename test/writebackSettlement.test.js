@@ -374,7 +374,7 @@ test('legacy undo terminal state is projected through the settlement reducer', (
   };
   const next = Settlement.applySettlementTransition(
     run,
-    Settlement.settleLegacyUndo({ run, status: 'applied' })
+    Settlement.settleLegacyUndo({ run, status: 'applied', result: { ok: true, applied: [], skipped: [] } })
   );
 
   assert.equal(next.undoStatus, 'applied');

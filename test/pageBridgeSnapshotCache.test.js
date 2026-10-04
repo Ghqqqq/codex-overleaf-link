@@ -1436,6 +1436,8 @@ function createSnapshotHarness({
   vm.runInContext(treeOperationsSource, context, { filename: 'treeOperations.js' });
   vm.runInContext(snapshotRouterSource, context, { filename: 'snapshotRouter.js' });
   vm.runInContext(binaryAssetUploaderSource, context, { filename: 'binaryAssetUploader.js' });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/ownedDirectoryCleanup.js'), 'utf8'), context, { filename: 'ownedDirectoryCleanup.js' });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/fileMover.js'), 'utf8'), context, { filename: 'fileMover.js' });
   vm.runInContext(textFileCreatorSource, context, { filename: 'textFileCreator.js' });
   vm.runInContext(writeGuardSource, context, { filename: 'writeGuard.js' });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/trackedChangeOwnership.js'), 'utf8'), context, { filename: 'trackedChangeOwnership.js' });
@@ -1444,6 +1446,11 @@ function createSnapshotHarness({
   if (typeof window.fetch !== 'function') window.fetch = async () => { throw new Error('Unexpected reference-project fetch in page fixture'); };
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/referenceProjects.js'), 'utf8'), context, { filename: 'referenceProjects.js' });
   vm.runInContext(trackedChangeCaptureSource, context, { filename: 'trackedChangeCapture.js' });
+  context.CodexOverleafProjectFiles = context.window.CodexOverleafProjectFiles;
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/shared/manualReviewProof.js'), 'utf8'), context, { filename: 'manualReviewProof.js' });
+  context.window.CodexOverleafManualReviewProof = context.CodexOverleafManualReviewProof;
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/manualReviewRecovery.js'), 'utf8'), context, { filename: 'manualReviewRecovery.js' });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/page/reviewContext.js'), 'utf8'), context, { filename: 'reviewContext.js' });
   vm.runInContext(trackedChangesLifecycleSource, context, { filename: 'trackedChangesLifecycle.js' });
   vm.runInContext(writebackRouterSource, context, { filename: 'writebackRouter.js' });
   if (pageBridgeCapabilitySource) {
