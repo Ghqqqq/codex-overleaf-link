@@ -483,7 +483,7 @@ test('composer attachments enforce a total raw byte limit before reads', () => {
   assert.match(attachments, /canReserveAttachmentBytes\(fileSize\)/);
   assert.match(attachments, /pendingAttachmentBytes \+= fileSize/);
   assert.match(attachments, /pendingAttachmentBytes = Math\.max\(0, pendingAttachmentBytes - fileSize\)/);
-  assert.match(attachments, /readFileAsDataUrl\(file\)/);
+  assert.match(attachments, /readFileAsDataUrl\(file,\s*tx\)/);
 });
 
 test('composer defaults to English task modes and keeps Chinese translations available', () => {
@@ -5229,6 +5229,7 @@ test('Fix A: saveState skips persistence when run is navigation-divergent and no
     + "function notifyAggressiveCompactionOnce(){}"
     + "function appendPlainLog(){ window.__skipLogged = true; }"
     + "function tx(en, _zh){ return en; }"
+    + "function localizeVisibleReason(value){ return value; }"
     + "function getCurrentProjectId(){ return window.__projectId || ''; }"
     + "let chrome = { storage: { local: { set: () => Promise.resolve() } } };"
     + guardAccessor + ";"

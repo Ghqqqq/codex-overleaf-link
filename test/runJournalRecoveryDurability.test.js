@@ -168,6 +168,7 @@ function createHarness(options = {}) {
       ScopedPersistenceCoordinator: Scoped, SessionPersistence },
     getScopedPersistenceCoordinator: () => options.staleCommit ? { commit: async () => ({ ok: false, reason: 'stale_view' }) } : coordinator,
     getCurrentProjectId: () => currentProjectId, getLocale: () => 'en', tr: key => key, tx: english => english,
+    localizeVisibleReason: value => value,
     findSessionById: id => state.sessions.find(session => session.id === id),
     getActiveSession: SessionState.getActiveSession,
     normalizePanelState: SessionState.normalizePanelState,

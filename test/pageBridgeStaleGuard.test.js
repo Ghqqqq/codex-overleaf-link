@@ -3756,12 +3756,14 @@ function createPageBridgeHarness({
 
   function makeTrackedChangeNode(change) {
     const rowId = change.domId || change.id;
+    const fragment = change.fragments.find(op => typeof op.i === 'string')
+      || change.fragments.find(op => typeof op.d === 'string');
     return {
       tagName: 'DIV',
       textContent: `Tracked change ${rowId}`,
       innerText: `Tracked change ${rowId}`,
       id: `tracked-${rowId}`,
-      className: 'review-change-row track-change',
+      className: `review-change-row track-change ${typeof fragment?.d === 'string' ? 'delete' : 'insert'}`,
       disabled: false,
       parentElement: null,
       getAttribute(attribute) {
@@ -3771,12 +3773,18 @@ function createPageBridgeHarness({
         if (attribute === 'data-path') {
           return change.path;
         }
+        if (attribute === 'data-pos') {
+          return fragment ? String(fragment.p) : '';
+        }
         if (attribute === 'aria-label' || attribute === 'title') {
           return `Tracked change ${rowId}`;
         }
         return '';
       },
       querySelectorAll(selector) {
+        if (selector === '.review-panel-expandable-content') {
+          return fragment ? [{ textContent: fragment.i ?? fragment.d }] : [];
+        }
         if (/button|role|aria-label|title|\*/i.test(selector)) {
           return [
             makeAcceptTrackedChangeButton(change),

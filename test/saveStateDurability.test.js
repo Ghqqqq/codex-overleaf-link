@@ -29,7 +29,7 @@ function setup(options = {}) {
     buildScopedFallbackStorageKey: () => 'scoped-fallback',
     prepareCompactFallbackState: () => ({ sessions: [], task: '' }),
     chrome: { storage: { local: { async set() { io.fallback++; } } } },
-    tx: en => en, appendPlainLog() {}, isStorageQuotaError: () => false,
+    tx: en => en, localizeVisibleReason: value => value, appendPlainLog() {}, isStorageQuotaError: () => false,
     appendStorageNoticeOnce: (_id, text) => io.notices.push(text)
   });
   for (const name of ['readLiveRunViewForSaveStateGuard', 'saveState']) {

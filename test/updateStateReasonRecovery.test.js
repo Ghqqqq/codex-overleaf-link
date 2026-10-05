@@ -90,7 +90,7 @@ function renderExistingSettings(view, locale = 'en') {
     actionInFlight: false, settingsActionInFlight: false, cancellationInFlight: false, getLocale: () => locale, tx: (en, zh) => locale === 'zh' ? zh : en, Date };
   vm.createContext(sandbox);
   const notice = source('extension/src/content/updateNotice.js');
-  for (const name of ['manualReasonText', 'manualUpdateCommand', 'blockerCopy', 'blockersCopy', 'getCopy', 'renderSettings']) vm.runInContext(extractFunction(notice, name), sandbox);
+  for (const name of ['manualReasonText', 'manualUpdateCommand', 'formatUpdateMessage', 'blockerCopy', 'blockersCopy', 'getCopy', 'renderSettings']) vm.runInContext(extractFunction(notice, name), sandbox);
   sandbox.renderSettings();
   return { ...nodes, command: sandbox.manualUpdateCommand(view.state), copy: sandbox.getCopy(view.state) };
 }

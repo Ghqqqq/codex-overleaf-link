@@ -352,11 +352,11 @@ page 的实际分流在 `trackedChangesLifecycle.prepareNativeReview` 与 `accep
 
 | 分支 | 写入与验证行为 | 失败、模式与联动入口 |
 |---|---|---|
-| 原生 ID Accept | `acceptNativeReview` 向原项目及文档的 `/changes/accept` 提交 `change_ids`；随后确认目标 refs 消失、无关 refs 保留、文本未变 | 不改编辑器模式；请求或核验不确定时保留部分结果与恢复材料。History-OT 等 `acceptByIdSupported: false` 的表示返回 `native_accept_protocol_unsupported`，不回退文本 replay |
+| 原生 ID Accept | `acceptNativeReview` 向原项目及文档的 `/changes/accept` 提交 `change_ids`；随后确认目标 refs 消失、无关 refs 保留、文本未变 | 不改编辑器模式；请求或核验不确定时保留部分结果与恢复材料。当前账本的 `acceptByIdSupported: false` 时返回 `native_accept_protocol_unsupported`，不回退 DOM Accept 或 legacy 文本 replay |
 | 与旧留痕合并的原运行插入 | `trackedChangeOwnership.prepareMergedInsertionReview` 核对范围证明；`reviewMergedInsertion` 在稳定 Editing 下同文替换获证的插入区间，消除该部分留痕 | 不把合并父 ID 送入整项 Accept；核对文本和应保留 refs。已尝试写入后保持 Editing，避免待保存操作重新产生留痕；该范围证明也用于对应 Undo |
 | legacy adapter | 尝试 editor Undo 或 checkpoint 恢复，再由 `buildAcceptReplayOperations` 生成无留痕 replay；逐项重确认 Editing | 中途失败可能已经改变内容；成功 replay 后保持 Editing。联动 [trackedChangeReplay](../../extension/src/page/trackedChangeReplay.js)，不能用该分支概括生产 Native Accept |
 
-**自动 Accept 的支持限制。** 不支持按 ID 安全接受的 History-OT 等表示继续返回明确失败并保留已有恢复材料，用户可使用 Overleaf 原生 Review。插件不提供“人工接受后再核验为 accepted”的额外流程。旧 `manualReviewProof` 不构成当前 Accept/Undo 权限，存储归一化会丢弃该退休字段，已有真实 refs、正文检查点和终态分别保留。原 Accept 行为及退役请求保护见 [writebackRouterAccept.test.js](../../test/writebackRouterAccept.test.js) 与 [manualReviewWorkflow.test.js](../../test/manualReviewWorkflow.test.js)。
+**自动 Accept 的支持限制。** [trackedChangeCapture.readNativeSnapshot](../../extension/src/page/trackedChangeCapture.js) 按当前账本的实际表示计算 `acceptByIdSupported`：任一变更带有 `snapshotRange`，或 ID 符合 `change-(insert|delete)-数字` 时，不允许按 ID 接受并返回明确失败，保留已有恢复材料；用户可使用 Overleaf 原生 Review。不能仅凭编辑器名称或以前观察到的 History-OT 表示推断本次一定失败；当前账本支持 ID 协议且归属与结果核验通过时，原生 Accept 可以成功。插件不提供“人工接受后再核验为 accepted”的额外流程。旧 `manualReviewProof` 不构成当前 Accept/Undo 权限，存储归一化会丢弃该退休字段，已有真实 refs、正文检查点和终态分别保留。原 Accept 行为及退役请求保护见 [writebackRouterAccept.test.js](../../test/writebackRouterAccept.test.js) 与 [manualReviewWorkflow.test.js](../../test/manualReviewWorkflow.test.js)。
 
 [writebackSettlement](../../extension/src/shared/writebackSettlement.js) 的 `settleTrackedChangeLifecycle`、`attachAcceptNotVerifiedFailure`、`attachUndoNotVerifiedFailure` 判断终态。
 `contentRuntime.applyTrackedChangeSettlement` 通过 [scopedPersistenceCoordinator](../../extension/src/content/scopedPersistenceCoordinator.js) 保存迁移。

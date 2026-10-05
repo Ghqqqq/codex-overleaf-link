@@ -36,7 +36,7 @@ test('composer discovers model options through the native codex.models endpoint'
   assert.match(modelPicker, /model\.speedTiers/);
   assert.match(modelPicker, /document\.createElement\('option'\)/);
   assert.match(modelPicker, /document\.createElement\('button'\)/);
-  assert.match(modelPicker, /option\.textContent\s*=\s*model\.label/);
+  assert.match(modelPicker, /option\.textContent\s*=\s*model\.unverified && model\.label === `\$\{id\} \(custom\)` \? tx\(`\$\{id\} \(custom\)`, `\$\{id\}（自定义）`\) : model\.label/);
   assert.match(modelPicker, /const sourceTitle = tr\('modelDisplayTitle'/);
   assert.match(modelPicker, /modelDisplay\.title = sourceTitle/);
   assert.match(i18n, /modelSourceFallback:\s*'fallback'/);
