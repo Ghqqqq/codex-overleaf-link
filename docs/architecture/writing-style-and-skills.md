@@ -233,7 +233,10 @@ Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元�
 普通 runner 将选定项目技能作为 prompt 内容传递，并向底层执行器传 `projectLocalSkills: null`；home 的项目技能物化能力另有调用条件。
 主开关及单技能启用 map 由 [projectSettingsCoordinator](../../extension/src/content/projectSettingsCoordinator.js) 与 [globalPreferences](../../extension/src/shared/globalPreferences.js) 协作保存。
 `loadSelectedCodexOverleafSkill()` 按主开关及 enabled IDs 检查显式调用；未提供 enabled IDs 的兼容请求默认允许所有项。
-`composePluginSkillsDirectory()` 不按该 ID 列表筛选整个注册目录；单技能开关的效力不能直接推广为全目录不可发现。
+
+**单技能开关的发现缺口。** `runCodexSession()` 的普通执行器输入不携带 `enabledCodexOverleafSkillIds`；`composePluginSkillsDirectory()` 不按该列表筛选目录，`applyCodexSkillIsolation()` 也不为其中关闭的插件技能写入禁用配置。没有显式技能选择时，完整生产提示词在该单项开关前后相同，未补充单项关闭信息。
+在 macOS 的 Codex CLI `0.160.0` 上，真实 `skills/list` 仍把这类关闭项报告为 `enabled: true`；真实 `skills/config/write` 禁用后该项变为 `enabled: false`，关闭插件技能主开关则不再发现对应目录。由生产 home 准备和隔离入口交付的关闭项，可被 `gpt-6-luna` 在自然任务中自动读取并采用其正文指令；真实 API 禁用对照没有发生该调用。因此现有单项开关只在显式 loader 等已接入检查处生效，尚未约束普通自动发现和调用。
+上述真实模型行为覆盖生产 home/隔离入口与直接 app-server 自然任务；完整生产提示词的开关信号缺失已在执行边界核对，但包装该提示词的模型轮次及浏览器端到端仍需分别验收。任意文件读取隔离、运行中撤销和历史上下文清除属于其他契约。
 
 删除技能涉及持久目录与列表更新、Composer 调用清理两部分。[LocalSkillsPanel.removeCodexOverleafSkill()](../../extension/src/content/localSkillsPanel.js) 在 `skills.remove` 成功后，以生产 normalizer 的 `{ id, title, scope }` 形状核对当前调用；只有 scope 为 `codex-overleaf` 且 id 与删除目标相同，才执行 `clearComposerSkillInvocation()` 并立即重绘标签。删除失败保留选择；等待期间改选其他技能时，新的选择保持。随后刷新技能列表并保存状态。
 原生 `loadSelectedCodexOverleafSkill()` 仍按主开关、启用 ID 和实际文件存在性过滤显式调用。标签清除不取消已在执行的技能，也不证明整个发现目录或其他进程已经同步清理。Composer 标签旁的 `×` 继续提供原有手动清除入口。
@@ -258,7 +261,7 @@ installer 完成由模型运行结果汇总，当前路径未统一核验是否�
 | 表达画像和证据要求 | builder Skill；`writingStyleProfile`、`writingStyleEvidence`、bundle renderer | 需增加针对 JSON 修复、证据匹配和发布失败的行为验证 |
 | 版本捕获和队列恢复 | `capture/forRun`；execution snapshot codec、storage compaction、runner | [runExecutionSnapshot](../../test/runExecutionSnapshot.test.js)、[releaseBoundaryHelpers](../../test/releaseBoundaryHelpers.test.js) |
 | 配置保存与异常资产恢复 | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) 的 `get/set/build/saveConfig/writeJson/safeBundleText`；[writingStyleSettings](../../extension/src/content/writingStyleSettings.js) 的 `toggle/ensureLoaded`、[contentRuntime](../../extension/src/content/contentRuntime.js) 的 `runTask` | [writingStyleLimits](../../test/writingStyleLimits.test.js) 仅覆盖输入配额与编码预算；[p2UiRegression](../../test/p2UiRegression.test.js) 的风格依赖为同步刷新 stub。需增加关闭保存后读取失败、索引超限、初始化清理及跨进程竞争的合成故障验证 |
-| 普通技能安装和开关 | `localSkills`、`codexHome`；panel、偏好、runner、command approval | [localSkills](../../test/localSkills.test.js)、[codexHome](../../test/codexHome.test.js)、[contentPanelModules](../../test/contentPanelModules.test.js)、[codexSessionRunner](../../test/codexSessionRunner.test.js)；共享 home 还需覆盖不同项目、worker、风格生成和 installer 交错准备后的路径稳定性与安装持久性 |
+| 普通技能安装和开关 | `localSkills`、`codexHome`；panel、偏好、runner、command approval | [localSkills](../../test/localSkills.test.js)、[codexHome](../../test/codexHome.test.js)、[contentPanelModules](../../test/contentPanelModules.test.js)、[codexSessionRunner](../../test/codexSessionRunner.test.js)；单项开关分别核对显式 loader、真实 skills/list 及模型自动调用；共享 home 还需覆盖不同项目、worker、风格生成和 installer 交错准备后的路径稳定性与安装持久性 |
 | Codex 配置继承与过滤 | `codexHome.copyUserCodexFile/stripPersonalizationFromCodexConfig/sanitizeCodexConfigForLocalSkillIsolation`；[tomlStatements.splitTomlStatements](../../native-host/src/tomlStatements.js) 负责语句边界，runner 传入技能开关 | [codexConfigIsolation](../../test/codexConfigIsolation.test.js)、[codexHome](../../test/codexHome.test.js)；核对完整值删除、未选字段/文本保留、结构错误时旧配置保持、同 home 分支与等价写法范围 |
 | 删除当前选中的技能 | `LocalSkillsPanel.removeCodexOverleafSkill`、`contentRuntime.normalizeComposerSkillInvocation/clearComposerSkillInvocation/getEnabledCodexOverleafSkillIds`、Native 显式调用过滤 | [removedComposerSkill](../../test/removedComposerSkill.test.js) 串联真实 controller、生产 normalizer/标签重绘及临时技能库，覆盖匹配删除、失败、其他技能、installer、等待期间改选及原文件缺失检查；[contentPanelModules](../../test/contentPanelModules.test.js) 保留原删除按钮确认行为。浏览器呈现与实际点击另行验收 |
 

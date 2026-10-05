@@ -178,9 +178,13 @@ Chat 且响应模式 Auto 时先 streaming；只有工具不兼容或流式工�
 **Built-in 的配置来源。** [providerRuntime.resolveRunProvider](../../native-host/src/providerRuntime.js) 对 Built-in 返回 `providerLaunch: null` 和 revision 0；[codexProviderLaunch.buildProviderConfigArgs](../../native-host/src/codexProviderLaunch.js) 随之返回空参数，不覆盖 Codex 的 `model_provider`。
 [codexHome.copyUserCodexFile](../../native-host/src/codexHome.js) 将用户 `config.toml` 复制到插件 home 时，保留 `model_provider` 与 `[model_providers.*]`；关闭本地技能也不移除这些连接字段。[codexSessionRunner.runCodexAppServerProcess](../../native-host/src/codexSessionRunner.js) 把该 home 交给子进程，thread/start 与 thread/resume 的参数只指定本次 model、cwd、sandbox 等，未另行固定 Provider。
 因此 Built-in 的连接配置还受继承的 Codex 配置影响，插件的 Custom 端点披露及 profile revision 校验不覆盖这条来源。修改用户配置不会因此更新插件的 Built-in revision，固定的执行快照也不记录该配置的内容哈希。
-审计经 [contentRuntime.createAuditDraftForRun](../../extension/src/content/contentRuntime.js) 调用 [ProviderSettingsCoordinator.getProviderSnapshot](../../extension/src/content/providerSettingsCoordinator.js)，读取浏览器目录中的 Built-in 身份，端点为空；该记录不能作为继承配置实际网络目的地的证明。实际 Codex 版本的配置解析、认证选择及最终服务端点仍需独立验证，保留连接字段本身不证明已发送任何内容。配置过滤的 TOML 形式限制另见[技能继承与作用域](writing-style-and-skills.md#普通技能安装继承与作用域)。
+审计经 [contentRuntime.createAuditDraftForRun](../../extension/src/content/contentRuntime.js) 调用 [ProviderSettingsCoordinator.getProviderSnapshot](../../extension/src/content/providerSettingsCoordinator.js)，读取浏览器目录中的 Built-in 身份，端点为空；该记录不能作为继承配置实际网络目的地或当前认证状态的证明。file API-key 的继承行为见下文，其他配置及认证路线仍需按实际 Codex 版本和消费者核对，保留连接字段本身不证明已发送任何内容。配置过滤的 TOML 形式限制另见[技能继承与作用域](writing-style-and-skills.md#普通技能安装继承与作用域)。
 
-**认证副本的生命周期。** 用户 home 与插件 home 分离时，`preparePluginCodexHome()` 只复制本次仍为普通文件的来源；先前已复制的 `auth.json` 在来源消失后不会被同步删除。源 `config.toml` 缺失有单独清理分支，`clearPluginCodexHistory()` 也只删除历史目录，均不能推广到认证副本。来源文件移除与插件副本删除是两个事件；旧副本是否仍可认证、实际采用哪个身份或服务端是否已撤销凭据，仍需结合具体 Codex 与认证服务验证。
+**认证副本的生命周期。** 用户 home 与插件 home 分离时，[codexHome.preparePluginCodexHome](../../native-host/src/codexHome.js) 只复制本次仍为普通文件的来源；先前已复制的 `auth.json` 在来源消失后不会被同步删除。源 `config.toml` 缺失有单独清理分支，`clearPluginCodexHistory()` 也只删除历史目录，均不能推广到认证副本。来源更新为另一 API key 时，下次准备会复制新值；来源缺失时却继续保留旧值，形成认证继承的一致性缺口。
+
+**Current behavior / file API-key。** 在 macOS、Codex CLI 0.160.0 的 `cli_auth_credentials_store="file"` 路线中，来源 home 已无认证、CLI 显示未登录后，插件 home 的旧副本仍会被真实 CLI 选择并发送。[runCodexAppServerSession/runCodexAppServerProcess](../../native-host/src/codexSessionRunner.js) 使用准备后的插件 `CODEX_HOME`，因此新建 app-server 任务同样可采用该旧 key；该现象不依赖一个尚未退出的旧 CLI 进程。来源无认证、插件 home 没有旧副本且没有其他凭据来源时，CLI 保持未认证。用户与插件使用同一 home 的提前返回分支不属于这个复制缺口。
+
+本地选择凭据、将凭据放入请求和服务端接受凭据是三层事实。即使 CLI 仍选择旧 key，服务端仍可拒绝它；实际有效期或撤销状态不能由本地认证状态推断。上述确认范围不覆盖 ChatGPT/OAuth 刷新、`keyring/auto/ephemeral` 存储（含系统钥匙串）、长驻 daemon 缓存及其他平台，也不提供服务端撤销或跨应用统一注销保证。
 
 **Custom 的 prepared launch。**
 `providerModelCatalog.prepareProviderModelCatalog` 写临时 `models.json`，定义 shell_command、上下文窗口、reasoning 和输入模态等 Codex 可见能力。
@@ -355,7 +359,7 @@ guard 允许 cache key 等例外；`sanitizeProfile` 会复制允许的 headers/
 | Responses 诊断与透传 | responsesPassthroughBridge、providerRedaction、stream lifecycle | `node --test test/responsesProtocolRedaction.test.js`；JSON/SSE/compact 诊断、重复键、正常输出与接收边界 |
 | 显式输出预算、buffered 与请求覆盖项 | dialog/Profiles、providerProfile/Store、launch、三协议请求及响应转换 | `node --test test/providerWireSettings.test.js test/providerReliability.test.js`；新值/旧迁移、实际 wire stream、SSE 内容和终态、允许字段与核心字段保护、取消 |
 | 内建/自定义发现 | codexModels、ProviderRuntime、ModelPicker | `node --test test/codexModels.test.js test/modelSelectionRecovery.test.js test/modelPickerCurrentError.test.js`；cache 优先级、当前错误与迟到结果、不可用模型与 fallback |
-| Built-in 配置继承 | codexHome、ProviderRuntime、codexSessionRunner、ProviderSettingsCoordinator 与审计 | `node --test test/codexHome.test.js test/codexSessionRunner.test.js`；分别检查配置保留与参数构造；实际服务解析、配置变更后的快照及审计投影需组合验证 |
+| Built-in 配置继承 | codexHome、ProviderRuntime、codexSessionRunner、ProviderSettingsCoordinator 与审计 | `node --test test/codexHome.test.js test/codexSessionRunner.test.js`；分别检查配置保留与参数构造；file API-key 的真实消费者范围见第 5 节，其他认证方式、配置变更后的快照及审计投影需分别验证 |
 | Speed 参数映射 | ModelPicker、运行快照、codexSessionRunner、codexArgs | `node --test test/codexArgs.test.js test/codexSessionRunner.test.js`；standard/fast 的 exec 与 app-server 参数构造 |
 | Chat 转换/reasoning | chatBridgeRequest/Response、providerReasoning、launch | `node --test test/providerReliability.test.js test/providerToolCompletion.test.js`；工具命名空间、参数完整性、finish_reason、可选字段和认证路由 |
 | Anthropic 转换/续传 | anthropicBridgeRequest/Response、MessagesBridge | `node --test test/anthropicBridge.test.js test/providerToolCompletion.test.js`；工具往返、完成前参数检查、签名、限额续传与 cache usage |

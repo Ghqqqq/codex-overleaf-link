@@ -51,7 +51,8 @@ worker 使用新的 thread，`session: null`、`threadId: ''`；继承当前运�
 
 **Ask 模式的投递边界。** broker gate 未排除 Ask，但 [codexSessionRunner](../../native-host/src/codexSessionRunner.js) 的 `buildCodexSettings()` 为普通 Ask 任务指定 `read-only` 与 `approvalPolicy: never`，`buildThreadStartParams/buildThreadResumeParams` 将沙箱设置交给 app-server；父任务与 worker 没有 job 目录的单独写入例外。
 Native Host 仍可创建队列并发布 `broker.json` 的 `ready`，而 [parallel-subagents 技能](../../native-host/src/skills/parallel-subagents/SKILL.md) 要求模型写入 job JSON 后才能派发；host 就绪不能单独证明模型有权投递。
-该配置与文件投递要求存在冲突，实际可用性和拒绝表现仍需结合平台及 app-server 的沙箱执行验证，不能据此推定所有实机 Ask 任务都会失败。
+在 macOS 的 Codex CLI `0.160.0` 上，实际 `thread/start` 返回的 Ask `readOnly` 策略允许读取项目和握手，但拒绝队列文件创建及重命名（`EPERM`）；Auto 的 `workspaceWrite` 策略允许相同投递，broker 可接纳任务并启动 worker。因此该平台与版本的 Ask 文件 broker 会发布无法完成既定投递的 `ready`。
+该权限结论覆盖使用真实线程返回策略的独立 `command/exec` 文件操作，此入口不产生模型轮次。模型自行投递后的反馈、其他 CLI 版本及其他平台仍需分别核对，不能由文件 broker 限制推定普通 Ask 任务整体不可用。
 Codex 原生 collab 路线不通过这个文件队列，相关发现与状态证据按第 7 节单独核对。
 
 **技能环境的共享边界。** [codexHome](../../native-host/src/codexHome.js) 的 `getPluginCodexHome()` 默认让各项目和 runner 共用插件 `CODEX_HOME`。
@@ -224,7 +225,7 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 |---|---|---|
 | 启动 gate、继承、禁递归 | codexSessionRunner、localSkills、技能正文、面板技能目录 | `node scripts/run-tests.mjs test/parallelSubagents.test.js` |
 | 首次目录准备与提交 | contentRuntime、projectSettingsCoordinator、RunController；runner gate | `node scripts/run-tests.mjs test/skillsCatalogSubmission.test.js test/runSubmissionOwnership.test.js test/queueSubmissionContext.test.js`；延迟/失败目录、配置捕获、草稿与队列对照 |
-| Ask 投递边界 | codexSessionRunner thread 参数、技能文件队列与真实沙箱 | `node scripts/run-tests.mjs test/parallelSubagents.test.js test/codexSessionRunner.test.js`；线程参数测试不能替代真实沙箱投递验证 |
+| Ask 投递边界 | codexSessionRunner thread 参数、技能文件队列与真实沙箱 | `node scripts/run-tests.mjs test/parallelSubagents.test.js test/codexSessionRunner.test.js`；线程参数测试不能替代真实沙箱投递验证，平台与 CLI 变化时复核队列创建、重命名和 Auto 对照；已知适用范围见第 2 节 |
 | 共享技能目录与交错准备 | codexHome、codexSessionRunner、writingStyleRuntime、项目锁；installer 映射 | `node scripts/run-tests.mjs test/codexHome.test.js test/codexSessionRunner.test.js`；还需覆盖活跃路径及安装持久性的交错准备场景 |
 | 并发、同文件串行、预算、活动计数、取消 | subagentBroker、subagentAdmission、subagentWorkspace 回执写入、runner、codexSessionTiming、taskRunnerRuntime 登记与锁、镜像 dirty | `node scripts/run-tests.mjs test/subagentAdmissionState.test.js test/subagentBroker.test.js test/subagentIoFailure.test.js`；规范路径、冲突预算、异步顺序派发前复核、计数及回执失败后的收尾 |
 | 拒绝回执身份与目标目录 | subagentBroker 的 jobIdOrFallback/idFromFileName/writeResult、输入拒绝原因及事件 | `node scripts/run-tests.mjs test/subagentReceiptIdentity.test.js test/subagentBroker.test.js`；保留合法 ID 查找，并检查异常 ID/文件名不会选中结果目录外的目标 |
@@ -248,7 +249,7 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 7. **历史临时读取失败后的恢复。** 同一 child 的 `readDisabled` 会阻止后续补读；分别检查已保存活动、实时通知与缺失历史，不能由只读视图重新打开推定原生历史重试。
 8. **活跃 worker 期间重建技能目录。** 另一个项目或风格生成会按自身开关准备共享 home；核对父任务与 worker 已发现的路径能否继续读取，以及并行 installer 的目标是否仍为持久技能根。文件路径检查与 app-server 缓存行为分别取证。
 9. **目录预取尚未返回时提交。** 从空目录开始延迟 `skills.list`，检查派发先等待且共享同一请求；等待期间修改启用表或草稿，原提交配置保持。分别覆盖失败后原入口重试、关闭技能、cached 目录和队列既有 IDs，确认未知目录不会变成静默禁用。
-10. **Ask 中的 ready 与实际投递。** 分别核对 broker 创建、父 thread 的只读配置、模型写 job 的结果及 worker 是否启动；使用隔离项目验证实际沙箱行为，并把原生 collab 事件与文件 broker 结果分开记录。
+10. **Ask 中的 ready 与实际投递。** 复核平台或 CLI 变化时，使用实际 thread 返回的策略检查隔离队列创建、独立重命名及 Auto 对照；第 2 节的 macOS 限制已有真实沙箱依据。模型写 job 的结果与反馈仍需对应模型轮次，原生 collab 事件与文件 broker 结果分别记录。
 11. **回执错误与停止重入。** 分别注入自然完成和 queued 取消回执故障，检查错误保留、abort/close、重入次数及外层登记；对忽略 abort 或迟到 resolve 的 worker 检查输出隔离，不能把 stop 返回或锁释放当作 OS 退出证据。
 
 **集成验证范围。** 同文件冲突和异步完成顺序的派发预算由受控 broker 测试覆盖；真实长任务时长、忽略 abort 的 worker 与 drain/停止确认交接、波次内跨所有权路径写入，以及真实 app-server 版本的子线程历史字段仍需相应环境验证。拒绝回执路径、活动计数、协议失败终态与暂时性历史错误应分别覆盖；源码中的限制与真实运行后果须保持区分。
