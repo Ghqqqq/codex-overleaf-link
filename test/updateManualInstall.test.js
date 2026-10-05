@@ -9,6 +9,7 @@ const test = require('node:test');
 const trust = require('../native-host/src/updateTrust');
 const UpdateConsent = require('../extension/src/shared/updateConsent');
 const { createCoordinatorHarness, UPDATE_KEY } = require('./helpers/updateCoordinatorHarness');
+const { managedFixture } = require('./helpers/managedUpdateFixture');
 
 const NOTE = { reason: { en: 'Adds a new Overleaf site permission.', zh: '新增了一个 Overleaf 站点权限。' } };
 
@@ -65,6 +66,88 @@ test('a release for another Bootstrap protocol reports a manual install instead 
   fs.writeFileSync(path.join(root, 'active-version'), '2.6.0');
   const after = await updater.checkForUpdate(context, { currentVersion: '2.6.0', etag: 'W/"e1"' }, { fetch, network: { delayMs: 0 } });
   assert.equal(after.reason, 'not_modified');
+});
+
+test('a withdrawn manual release cannot reappear under the replacement latest ETag', async t => {
+  const { root, updater, context, fetch } = harness(t);
+  const first = await updater.checkForUpdate(context, {}, { fetch });
+  assert.equal(first.reason, 'manual_install_required');
+  const withdrawn = await updater.checkForUpdate(context, { etag: first.etag }, { fetch: async () => ({
+    ok: true, status: 200,
+    url: 'https://github.com/Ghqqqq/codex-overleaf-link/releases/tag/v2.5.0',
+    headers: { get: name => name === 'etag' ? 'W/"current"' : '' }
+  }) });
+  assert.equal(withdrawn.reason, 'up_to_date');
+  const cached = await updater.checkForUpdate(context, { etag: withdrawn.etag }, { fetch });
+  assert.equal(cached.reason, 'not_modified');
+  assert.equal(cached.available, false);
+  assert.equal(fs.existsSync(path.join(root, 'manual-candidate.json')), false);
+});
+
+test('manual 304 cache uses signed fields and only the same discovery source and ETag', async t => {
+  const { root, updater, context, fetch } = harness(t);
+  await updater.checkForUpdate(context, {}, { fetch });
+  const filename = path.join(root, 'manual-candidate.json');
+  const candidate = JSON.parse(fs.readFileSync(filename, 'utf8'));
+  const check = etag => updater.checkForUpdate(context, { etag }, { fetch });
+  fs.writeFileSync(filename, JSON.stringify({ ...candidate, latestVersion: '9.9.9',
+    manualInstall: { reason: { en: 'Unsigned text', zh: '未签名文本' } } }));
+  const verified = await check(candidate.etag);
+  assert.equal(verified.latestVersion, '2.6.0');
+  assert.deepEqual(verified.manualInstall.reason, NOTE.reason);
+  assert.equal((await check('W/"another-response"')).reason, 'not_modified');
+  fs.writeFileSync(filename, JSON.stringify({ ...candidate, currentVersion: '2.4.9' }));
+  assert.equal((await check(candidate.etag)).reason, 'not_modified');
+  const modifiedManifest = JSON.parse(Buffer.from(candidate.manifestBase64, 'base64'));
+  modifiedManifest.version = '9.9.9';
+  fs.writeFileSync(filename, JSON.stringify({ ...candidate,
+    manifestBase64: Buffer.from(JSON.stringify(modifiedManifest)).toString('base64') }));
+  assert.equal((await check(candidate.etag)).reason, 'not_modified');
+  delete candidate.manifestBase64;
+  delete candidate.signatureBase64;
+  fs.writeFileSync(filename, JSON.stringify(candidate));
+  assert.equal((await check(candidate.etag)).reason, 'not_modified', 'old derived-only cache is a miss');
+});
+
+test('a source-bound 304 miss clears browser offers and permits the next unconditional check', async t => {
+  const f = managedFixture(t); f.install('2.4.9');
+  const signed = harness(t);
+  const requests = [];
+  const onNative = request => {
+    requests.push(structuredClone(request));
+    return signed.updater.handleUpdateRequest(request, { env: { ...f.env,
+      CODEX_OVERLEAF_ACTIVE_VERSION: fs.readFileSync(path.join(f.context.nativeRoot, 'active-version'), 'utf8').trim()
+    }, fetch: signed.fetch });
+  };
+  const before = await createCoordinatorHarness({ version: '2.4.9', onNative });
+  const first = await before.send('codex-overleaf/consent-update-check');
+  assert.equal(first.result.state.state, 'manual_install_required');
+  assert.equal(first.result.state.latestVersion, '2.6.0');
+  const persisted = structuredClone(before.data[UPDATE_KEY]);
+  f.install('2.5.0');
+  const after = await createCoordinatorHarness({ version: '2.5.0', onNative });
+  after.seed(persisted);
+  const countBefore = requests.filter(request => request.method === 'update.check').length;
+  const missed = await after.send('codex-overleaf/consent-update-check');
+  assert.equal(missed.result.actions.install, false);
+  assert.equal(missed.result.actions.copyInstall, false);
+  assert.equal(missed.result.manualInstall, false);
+  assert.equal(missed.result.available, false);
+  assert.equal(missed.result.showPanel, false);
+  assert.equal(missed.result.state.state, 'idle');
+  assert.equal(missed.result.state.latestVersion, '2.5.0');
+  assert.equal(after.data[UPDATE_KEY].etag, '');
+  assert.deepEqual(after.data[UPDATE_KEY].manualReason, {});
+  assert.equal(requests.filter(request => request.method === 'update.check').length, countBefore + 1,
+    'a cache miss must not add an immediate network retry');
+  const refreshed = await after.send('codex-overleaf/consent-update-check');
+  const checked = requests.filter(request => request.method === 'update.check');
+  assert.equal(checked.at(-1).params.etag, '');
+  assert.equal(refreshed.result.state.state, 'manual_install_required');
+  assert.equal(refreshed.result.state.latestVersion, '2.6.0');
+  assert.equal(refreshed.result.actions.copyInstall, true);
+  assert.equal(refreshed.result.actions.install, false);
+  assert.equal(requests.some(request => ['update.authorize', 'update.stage', 'update.apply'].includes(request.method)), false);
 });
 
 test('staging and applying still refuse a foreign Bootstrap protocol', () => {

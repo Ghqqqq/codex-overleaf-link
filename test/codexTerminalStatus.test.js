@@ -101,7 +101,7 @@ for (const status of ['failed', 'unexpected']) {
     assert.equal(result.ok, false);
     assert.equal(result.error.code, 'codex_run_failed');
     assert.equal(result.result, undefined);
-    assert.deepEqual(getActiveNativeWorkState(), { projectLocks: 0, runControllers: 0, activeTurnControls: 0 });
+    assert.deepEqual(getActiveNativeWorkState(), { projectLocks: 0, processStopBarriers: 0, runControllers: 0, activeTurnControls: 0 });
   });
 }
 
@@ -123,7 +123,7 @@ for (const [status, code] of [['completed', null], ['failed', 'codex_run_failed'
       assert.equal(result.error.code, code);
       assert.equal(result.result, undefined, 'failed/cancelled run must not expose sync changes');
     } else assert.deepEqual(result.result.syncChanges.map(change => change.path), ['main.tex']);
-    assert.deepEqual(getActiveNativeWorkState(), { projectLocks: 0, runControllers: 0, activeTurnControls: 0 });
+    assert.deepEqual(getActiveNativeWorkState(), { projectLocks: 0, processStopBarriers: 0, runControllers: 0, activeTurnControls: 0 });
   });
 }
 

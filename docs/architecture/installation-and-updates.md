@@ -100,9 +100,9 @@ Windows的manifest实际位于`%LOCALAPPDATA%/codex-overleaf/native-messaging-ho
 Doctor继续读取manifest并直接启动bridge完成ping，因此注册异常时仍能提供独立执行诊断；直接ping兼容而注册未验证时，聚合结果为`registration_unverified`及退出码2。文本输出分别显示注册发现和执行状态，观察到的manifest路径仍按原隐私选项隐藏或展示。
 [installReleaseSafety.test.js](../../test/installReleaseSafety.test.js)使用注册表与进程替身，覆盖有效、缺失和错误指向在相同健康bridge下的不同结果；[nativeInstallScripts.test.js](../../test/nativeInstallScripts.test.js)保留平台命令及直接桥接测试。真实Windows Chrome发现注册及连接仍需实机验收。
 
-失败恢复的范围需要准确限定：Native 安装/注册抛错时，外层 catch 恢复扩展目录；代码未提供跨所有 Native 指针和系统注册写入的统一回滚事务。
-若注册manifest写入失败发生在Native active指针切换之后，可留下旧扩展与新Native并存的配对；后续`update.check`的管理布局检查会拒绝该失配。较早的复制或指针写入失败有不同结果，应按失败阶段核对。
-因此安装失败后需核查两端标记、指针和注册结果，不能宣称每个失败点都使磁盘自动恢复成原样。
+`installManagedDistribution()`在替换已有树前，由 [managedInstallRecovery.js](../../native-host/src/managedInstallRecovery.js) 的`createInstallRestorePoint()`取得Native更新共用的`updates/mutation.lock`，首次安装也遵守此顺序。持锁后才读取旧文件和目标槽，保存本次会改写的active/previous指针、Native管理标记、内部launcher、外层bridge、注册manifest、安装标记、更新journal及authorization的字节和权限，并保留同名Native目标槽。注册或事务结算抛错时，连同扩展rollback恢复这些内容；原先不存在的文件恢复为不存在，同版本覆盖也保留旧字节。
+首次安装补偿在文件和注册恢复完成前一直持锁，按自身token释放后仅尝试删除空目录，避免清理后继安装的新锁或内容。安装器与updater共用锁格式和回收规则：存活PID即使期限已过仍不可抢锁，确认已退出的PID可回收；无有效owner时等待文件mtime超出既有stale期限，以保护建锁与写owner之间的窗口。
+这属于有限的进程内补偿，未提供任意断电或跨管理根、文件与注册表的全局原子事务。补偿不完整返回`managed_install_restore_failed`；Windows旧注册值无法核实且已尝试改写时也明确报告恢复未完成。成功提交后的备份清理失败仅报告warning，不再次使用已消耗的恢复材料。失败后仍需按返回结果核对两端内容及注册状态；真实Chrome发现注册与bridge执行分别取证。
 `selectRunnableVersion()`位于 [managedLauncherRuntime.js](../../native-host/src/managedLauncherRuntime.js)，优先选择 active，缺少入口文件时尝试 previous。
 该 fallback 检查入口文件存在性；它不执行完整健康诊断，也不保证扩展 runtime 与 fallback Native 版本自动匹配。
 卸载入口为 `uninstallManagedDistribution()`；其删除范围是管理根和注册，项目镜像、浏览器历史等数据拥有其他生命周期。
@@ -116,7 +116,7 @@ Doctor继续读取manifest并直接启动bridge完成ping，因此注册异常�
 | 用户意图、目标授权、延后 | [backgroundUpdateCoordinator.js](../../extension/src/backgroundUpdateCoordinator.js)、`chrome.storage.local` | 操作 generation 和事务/授权快照约束迟到恢复写入；superseded 两个入口共用协调器写队列 |
 | 授权撤销意图 | [updateRevocationIntent.js](../../extension/src/shared/updateRevocationIntent.js) | 持久化后再发送 cancel/revoke，重启继续清理 |
 | 已验证候选 | [updateManager.js](../../native-host/src/updateManager.js) 的 `candidate.json` | 保存签名 manifest、签名及 bundle 地址 |
-| 手动重装提示缓存 | 同模块的`manual-candidate.json` | 只保存目标、协议、说明及检查元数据；304恢复不重新验签，边界见第9节 |
+| 手动重装提示缓存 | 同模块的`manual-candidate.json` | 保存原始manifest与签名；304要求同ETag和来源版本，重验签后派生目标及说明，边界见第9节 |
 | 可执行授权 | 同模块的 `authorization.json` | 绑定 source/target version、authorization ID及 transaction ID |
 | 安装事务 | 同模块的 `transaction.json`及磁盘指针 | 决定 staged、activation_pending、applying、awaiting_health、committed等事实 |
 | 阶段规范与恢复解释 | [managedUpdateProjection.js](../../extension/src/shared/managedUpdateProjection.js) | 归一别名、阶段、期限、进度和迁移；不执行文件替换 |
@@ -176,10 +176,9 @@ Native `applyStagedUpdate()`再次检查本地 gate、管理布局、事务及�
 **整体枚举失败的处理。** 后台 `verifyManagedUpdateSafety` 将 `tabs.query` 拒绝或非数组结果记为 `tab_inventory_unavailable` blocker，不把未知清单等同合法空数组。该 blocker 与单页探针、Native gate 及后台 pending 检查共同决定是否允许 apply；合法空清单仍可在其他条件满足时放行。
 二次检查受阻经 `update_not_idle` 回到 `waiting_for_idle`，保留暂存事务和授权，并沿现有定时器重试；UI 仍采用已有 busy 投影。首次协调器枚举错误保留原失败/撤销处理。[managedUpdateSafetyGate.test.js](../../test/managedUpdateSafetyGate.test.js) 从实际安装消息入口装配完整后台与协调器，验证枚举恢复后只 apply 一次；Chrome/Native I/O 使用内存替身，真实浏览器异常仍需验收。
 
-Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入口从 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js) 的`getActiveNativeWorkState()`提供这两个计数。
-它没有扫描所有操作系统进程，也没有在该 gate 中直接枚举持久化`processStopBarrier`记录。
-因此 UI idle、当前 Native计数为零、所有历史子进程已退出，分别属于不同证据，不能相互推定。
-`Target contract`：更新不能破坏活动任务与保存工作；更强的跨进程退出保证需要单独追踪屏障、锁寿命和异常终止证据。
+Native `getApplyGate()`检查`projectLocks`、`runControllers`和`processStopBarriers`；生产入口将`runtimeEnv`传入 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js) 的`getActiveNativeWorkState(env)`，读取当前镜像根的既有退出屏障。`update.canApply`、实际`update.apply`和延迟`update.activate`均使用该gate；未确认退出沿原等待状态及双语文案呈现，当前锁和controller计数为零也不能跳过屏障。
+[processStopBarrier.js](../../native-host/src/processStopBarrier.js) 的`getBlockedProjectCount(rootDir, { env })`检查当前mirror-root内已有项目隔离文件，以及本Host尚未成功持久化的既有记录，按原进程身份复核退出。未知、损坏或不可读的屏障证据继续阻断；该读取不改写记录，也不扫描任意操作系统进程。
+UI idle、当前Native计数为零、所有历史子进程已退出，仍属于不同证据。现有安全点覆盖被记录的任务和退出屏障，不提供任意OS任务的全局互锁；活动工作、保存信号和异常生命周期继续分别核查。
 
 ## 7. 健康、取消、超时与恢复
 
@@ -196,9 +195,13 @@ Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入�
 | 已进入安装/健康确认 | 前端或Native返回`update_revoke_too_late` | 撤销授权与回滚安装采用不同协议 |
 | 安装结果未知或阶段过期 | `reconcileExpiredPhase()`读取 Native事务、校验身份和磁盘一致性 | 可能确认提交、确认回滚或保持`recoveryPending` |
 | Native重启见`activation_pending` | `recoverAndReadStatus()`恢复为staged | 重新等待协调，不擅自继续旧定时激活 |
-| Native重启见`applying` | 按journal调用`rollbackFiles()`后登记rolled_back | 恢复槽缺失时仍可能返回成功，标签和指针对齐不能代替旧runtime实际恢复 |
+| Native重启见`applying` | `rollbackFiles()`先核对实际source文件，恢复后比对两端文件树摘要，再登记带`rollbackEvidence`的rolled_back | 恢复槽缺失时仅允许当前槽仍是实际source的早期中断；必要来源缺失或读回不同则拒绝成功 |
 | 协调器处理阶段超时 | `reconcileExpiredPhase()`携带事务身份调用`update.rollback`，核对来源版本并回读`update.status` | 检查安装对齐后才报告恢复完成 |
-| Bootstrap 健康失败 | `rollbackBrokenRuntime()`仅传 reasonCode，收到 Native ok 即写 rolled_back 并重载 | 当前未执行与协调器相同的事务、来源版本及回读核验；Native仅在请求提供相应字段时检查身份 |
+| Bootstrap 健康失败 | `rollbackBrokenRuntime()`携带捕获的transactionId与expectedState，核对rollback应答后再读`update.status` | 同事务、source、active指针、布局及实际`restoredPair`相符才写rolled_back并重载；变化或恢复失败保留失败状态 |
+
+[managedRuntimeEvidence.js](../../native-host/src/managedRuntimeEvidence.js) 的`readManagedRuntimeEvidence()`读取实际扩展compatibility版本、runtime manifest及必需资产，并检查Native版本目录package与入口，再对两棵文件树取SHA-256。文件按固定UTF-16代码单元顺序遍历，使摘要与进程LANG/locale无关。摘要像文件树的指纹，用于比较恢复前后字节，不能证明这些字节已通过业务健康检查。
+带`rollbackEvidence`的journal只有在当前实际字节仍与保存证据一致时，`update.status`才提供`restoredPair`；旧journal没有历史摘要时保留兼容读取，只证明本次观察到的source配对。marker和manifest对齐拥有独立含义，不能替代文件树证据。Bootstrap消费上述回读；协调器`reconcileExpiredPhase()`继续核对事务、来源及`installedAligned`，其当前收尾条件不单独比较`restoredPair`。
+恢复检查针对磁盘上launcher下一次将加载的Native来源；仍存活的Native进程可能属于刚失败的target，不能以该进程ping替代磁盘来源证据。
 
 [updateNetworkControl.js](../../native-host/src/updateNetworkControl.js) 的 `cancel()`写operation取消标记，中止本进程控制器并等待对应mutation锁释放。
 标记也用于拒绝其他Host中迟到的同operation网络工作；该取消针对更新网络操作，不承担agent子进程的停止职责。
@@ -210,16 +213,15 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 设置页的现有状态文字按当前语言说明失败目标暂缓及可再次检查的时间，继续使用原“检查更新”按钮。后续正常检查清掉旧冷却原因和期限；`idle`本身仍不证明当前安装已达到最新目标版本。
 [updateStateReasonRecovery.test.js](../../test/updateStateReasonRecovery.test.js)串联真实 Native rollback/check、协调器及现有设置消费者，覆盖冷却中的原因/期限保留、双语文字和到期后重新发现更新；文件、网络及浏览器 I/O 为隔离替身。[updateCenter.test.js](../../test/updateCenter.test.js)与[updateConsent.test.js](../../test/updateConsent.test.js)分别保留原恢复装配和视图规则验证。
 
-`supersedeObsoleteJournal()`仅在安装对齐且active版本同时严格高于journal的source和target版本时淘汰旧journal；同target版本重装不满足该条件。
-`installManagedNativeVersion()`保留`native/updates`，完整扩展重装则建立新树。旧journal停在`applying`后重装同target时，后续`update.status`仍可进入`recoverAndReadStatus()`的`rollbackFiles()`分支；新扩展树已无旧runtime槽时，目标runtime可以保留，但manifest、marker和指针被改回source，目标Native版本目录还可能被清理。
-旧`awaiting_health`事务下同target重装也可能缺少恢复槽；Bootstrap健康失败后仍可收到回滚成功应答并重载。`installedAligned`比较布局标签，不能独自证明runtime字节来自所标版本；重装后需分别核对journal、指针、manifest、恢复槽和实际内容。
+`supersedeObsoleteJournal()`保留原严格更高版本规则：安装对齐且active同时高于journal的source和target时淘汰旧journal。完整安装另在扩展、Native和浏览器注册全部成功后调用`settleReinstalledUpdate()`，仅结算安装开始时锁内捕获、当前仍匹配的旧journal。实际安装版本须高于source并达到target；写入`superseded/update_reinstalled`及实际文件树`reinstalledPair`，使同target完整重装也能退役旧事务。
+该结算处于安装补偿范围；失败重装恢复旧journal，普通apply不调用此入口，普通中断恢复保持原语义。`update.status`重新检查重装字节与保存的`reinstalledPair`，变化后不再返回该证明；只有版本标签相等不足以证明完整重装成立。
 
-严格更高且安装对齐的重装会通过`supersedeObsoleteJournal()`结算旧事务的授权：仅当授权为`bound`，且authorization ID、transaction ID、source和target均与旧journal一致时调用`settleAuthorization()`。不同身份、来源或目标的授权，以及尚未绑定的新`authorized`授权均保留；已经`superseded`的旧journal也按相同严格条件补清遗留授权。该处理不改变两小时authorized期限、bound绑定条件或同target重装边界。
+旧事务授权只在状态为`bound`，且authorization ID、transaction ID、source和target均与旧journal一致时结算；`settleReinstalledUpdate()`与严格更高版本的`supersedeObsoleteJournal()`均遵守此身份约束。不同身份、来源或目标的授权，以及尚未绑定的新`authorized`授权均保留；已经`superseded`的旧journal也按匹配条件补清遗留授权。两小时authorized期限和bound绑定规则保持不变。
 
 浏览器保留两个恢复入口，但`superseded`共用一个落盘owner：[background.reconcileManagedUpdateTransaction](../../extension/src/background.js)在等待`update.status`前调用协调器的`captureRecoveryOwner()`，把结果交给`settleSupersededTransaction()`；[backgroundUpdateCoordinator.reconcileExpiredPhase](../../extension/src/backgroundUpdateCoordinator.js)直接使用同一结算函数。后台不再独立清除授权并写idle。
-`captureRecoveryOwner()`固定操作generation、当时的状态/transaction/operation及授权身份。结算进入协调器既有写队列后，复核这些身份、Native安装对齐、`supersededByVersion`及严格更高版本，遇到新的Native授权或不匹配浏览器授权继续保留恢复状态。匹配时同一批存储写入idle、空旧授权及空待刷新列表，并推进generation，使旧等待结果失效。普通协调器恢复在Native等待返回和最终存储读取后也复核owner；committed、rolled_back及未安装收尾均不能覆盖新事务或新授权。
+`captureRecoveryOwner()`固定操作generation、当时的状态/transaction/operation及授权身份。结算进入协调器既有写队列后，复核这些身份、Native安装对齐及`supersededByVersion`；版本通常须严格高于target，仅明确`update_reinstalled`且Native返回新鲜`reinstalledPair`时允许等于target，仍须高于source。新的Native授权或不匹配浏览器授权继续保留恢复状态。匹配时同一批存储写入idle、空旧授权及空待刷新列表，并推进generation，使旧等待结果失效。普通协调器恢复在Native等待返回和最终存储读取后也复核owner；committed、rolled_back及未安装收尾均不能覆盖新事务或新授权。
 这项收敛针对现有两个superseded入口及协调器恢复写入，没有提供所有浏览器写入者共同参与的原子“值未变才写入”保证。Native授权与浏览器状态仍由各自owner收尾，不能用其中一端的清理替代另一端。
-[updateManager.test.js](../../test/updateManager.test.js)覆盖严格更高版本和保留旧回滚；[updateStateReasonRecovery.test.js](../../test/updateStateReasonRecovery.test.js)补充精确bound授权结算、新owner保留、已superseded遗留、同target拒绝及两个浏览器入口迟到顺序。当前证据来自临时磁盘和生产模块配合模拟Chrome存储，完整service worker启动调度仍需实机验收。
+[updateManager.test.js](../../test/updateManager.test.js)覆盖严格更高版本和保留旧回滚；[updateStateReasonRecovery.test.js](../../test/updateStateReasonRecovery.test.js)覆盖精确bound授权结算、新owner保留、已superseded遗留、无重装证明时同target拒绝及两个浏览器入口迟到顺序。[updateRollbackEvidence.test.js](../../test/updateRollbackEvidence.test.js)和[managedInstallRecovery.test.js](../../test/managedInstallRecovery.test.js)补充来源缺失、实际字节恢复及完整重装结算；[managedRuntimeEvidence.test.js](../../test/managedRuntimeEvidence.test.js)检查摘要顺序。临时磁盘与模拟Chrome存储提供对应调用链证据，完整service worker启动调度仍需实机验收。
 阶段期限在`PHASE_TIMEOUTS`统一声明，具体网络/页面探测还有更短预算；超时值不能混用为同一个总耗时保证。
 
 ## 8. 信任链与网络重试
@@ -246,13 +248,14 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 
 `BOOTSTRAP_PROTOCOL=3`定义于`updateTrust.js`；Native runtime协议为2，两者描述不同边界。
 固定Bootstrap、扩展权限/资源公开形状，以及第3节的外层bridge和内部Native launcher，均无法通过runtime-only包任意替换。
+本机修复涉及固定Bootstrap时，须通过完整Managed安装更新固定文件，再分别核验磁盘摘要、扩展重载及页面加载；仅安装runtime-only包无法交付这部分修复。公开发布仍按既有Bootstrap变更及协议迁移门禁处理。
 `checkForUpdate()`首次下载并验证签名manifest后，若Bootstrap协议不同，会返回`manual_install_required`及其中的说明；staging/apply仍拒绝该候选。
 
-普通`candidate.json`保存原始manifest与签名，304分支会调用`verifySignedReleaseManifest()`重新验证。手动提示的`manual-candidate.json`只保存派生字段；304分支的`readManualCandidate()`检查重装原因、目标版本高于当前版本及所需协议不同，未保存或重新验证签名，也未将缓存ETag与本次请求匹配，`checkedAt`不参与有效期判断。
-因此缓存恢复的说明依赖本地派生数据，首次联网验签的保证不能推广到每次304恢复。[backgroundUpdateCoordinator.js](../../extension/src/backgroundUpdateCoordinator.js) 的 `checkOnly()` 将目标和 `manualInstall.reason` 写入浏览器更新状态；当前面板由 [updateNotice.js](../../extension/src/content/updateNotice.js) 的 `manualUpdateCommand/manualReasonText` 生成重装命令和原因说明。
-缓存失效还存在自然顺序问题：先得到较新版本A的已签名手动重装提示，随后上游latest回到当前版本并返回新的ETag B，200分支返回`up_to_date`，协调器转为`idle`并记录ETag B，但保留旧manual缓存；下一次304(B)仍可恢复A的旧提示及固定版本复制命令。该路径不要求修改本地缓存，问题在于缓存与当前检查结果、ETag没有绑定。
-该缓存用于手动操作提示；`stageCandidate()`仍从`candidate.json`读取原始manifest与签名，执行验签、协议及下载字节校验。手动提示缓存的验证缺口不能作为staging签名校验被绕过的证据。
-[updateManualInstall.test.js](../../test/updateManualInstall.test.js)覆盖首次签名候选、后续304保留提示及重装后的版本判断；缓存内容损坏、ETag不匹配、检查时间过旧与UI目标命令的组合尚未纳入该正式测试，维护时需补充对应回归。
+普通`candidate.json`与手动提示`manual-candidate.json`都保存原始manifest和签名。304表示服务端所观察资源相对本次ETag未变，ETag类似该资源版本的校验标签，本身不授予安装资格。两类缓存均须具有与本次请求相同的非空ETag、相同来源`currentVersion`，并通过`verifySignedReleaseManifest()`重验签；`readManualCandidate()`从签名原件重新派生目标、协议和说明，继续要求目标高于当前版本且Bootstrap协议不同。错ETag、错来源、无效签名及旧版仅含派生字段的缓存按miss处理；`checkedAt`不构成TTL，当前未新增缓存时间政策。
+有效200 latest响应先使上一份ordinary/manual发现候选失效，即使latest已回到当前版本或仍在cooldown也不保留旧候选。由此，先发现较新手动目标A、随后latest撤回并产生ETag B、再收到304(B)时，旧提示与固定版本复制命令不会复活。已授权候选的独立复用路径保持原授权约束。
+[backgroundUpdateCoordinator.js](../../extension/src/backgroundUpdateCoordinator.js) 的`checkOnly()`只依据Native返回的`available`提供自动安装资格；Native的`not_modified`且无验证候选时，浏览器收敛`idle`，清除旧目标投影、说明和ETag，不增加即时请求。下一次正常检查携空ETag重新获取发现结果；取消、恢复或已授权状态仍可按既有规则提前停止检查。协调器保留operation代次守卫，取消后的迟到结果不能写回新状态。
+有效手动结果继续把目标和`manualInstall.reason`写入浏览器状态；当前面板由 [updateNotice.js](../../extension/src/content/updateNotice.js) 的`manualUpdateCommand/manualReasonText`生成原固定版本重装命令及说明。手动提示不提供自动安装资格，`stageCandidate()`仍独立执行签名、协议及下载字节校验。
+[updateManualInstall.test.js](../../test/updateManualInstall.test.js)覆盖自然ETag撤回、签名原件/来源/错ETag/旧缓存，以及完整隔离重装后的Native miss→协调器清除动作→下一次显式Check链路。该证据不代表发布网络、剪贴板或Chrome均已实机验收，也不形成抵御同用户任意磁盘篡改的新安全边界。
 
 `checkForUpdate()`另有RC晋升例外：已安装标记为`prerelease`且最新stable具有相同数字版本时，返回`prerelease_promotion_requires_manual_update`、`available: false`，需要手动重装，不能按数字版本相等认定stable内容已经加载。
 `backgroundUpdateCoordinator.checkOnly()`将该专用原因映射到已有`manual_install_required`状态并保留code；`updateConsent.deriveViewModel()`仅在这个原因下允许目标与运行版本相同的重装提示，其他手动候选仍要求目标版本更高。
@@ -294,10 +297,10 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 
 | 改动 | 必须联动阅读 | 相关测试 |
 | --- | --- | --- |
-| 目录/扩展ID/系统注册 | managedInstall、nativeHostPlatform、manifest、CLI | [managedInstall.test.js](../../test/managedInstall.test.js)、[nativeInstallScripts.test.js](../../test/nativeInstallScripts.test.js) |
+| 目录/扩展ID/系统注册 | managedInstall、managedInstallRecovery、nativeHostPlatform、manifest、CLI；检查同锁快照与有限补偿 | [managedInstall.test.js](../../test/managedInstall.test.js)、[managedInstallRecovery.test.js](../../test/managedInstallRecovery.test.js)、[nativeInstallScripts.test.js](../../test/nativeInstallScripts.test.js) |
 | 固定Native启动链 | launcher、managedLauncherRuntime、managedInstall、updateManager、protected paths；核对外层bridge与内部launcher | [launcher.test.js](../../test/launcher.test.js)、[managedInstall.test.js](../../test/managedInstall.test.js)、[nativeInstallScripts.test.js](../../test/nativeInstallScripts.test.js) |
 | 更新按钮/延后/撤销 | coordinator、consent、revocation、UI | [updateConsent.test.js](../../test/updateConsent.test.js)、[updateRevocationIntent.test.js](../../test/updateRevocationIntent.test.js) |
-| 安全点/安装/恢复 | background、updateIdle、updateManager、Bootstrap、runtime identity | [updateManager.test.js](../../test/updateManager.test.js)、[updateRuntimeRecovery.test.js](../../test/updateRuntimeRecovery.test.js)、[updateRuntimeIdentity.test.js](../../test/updateRuntimeIdentity.test.js)、[updateStateReasonRecovery.test.js](../../test/updateStateReasonRecovery.test.js)、[updateCenter.test.js](../../test/updateCenter.test.js)、[autoUpdateBootstrap.test.js](../../test/autoUpdateBootstrap.test.js) |
+| 安全点/安装/恢复 | background、updateIdle、updateManager、taskRunnerRuntime、processStopBarrier、managedRuntimeEvidence、Bootstrap、runtime identity | [updateManager.test.js](../../test/updateManager.test.js)、[updateStopBarrier.test.js](../../test/updateStopBarrier.test.js)、[updateRollbackEvidence.test.js](../../test/updateRollbackEvidence.test.js)、[managedRuntimeEvidence.test.js](../../test/managedRuntimeEvidence.test.js)、[updateRuntimeRecovery.test.js](../../test/updateRuntimeRecovery.test.js)、[updateRuntimeIdentity.test.js](../../test/updateRuntimeIdentity.test.js)、[updateStateReasonRecovery.test.js](../../test/updateStateReasonRecovery.test.js)、[updateCenter.test.js](../../test/updateCenter.test.js)、[autoUpdateBootstrap.test.js](../../test/autoUpdateBootstrap.test.js) |
 | 候选/签名/缓存/归档/网络 | updateManager、updateTrust、updateArchive、releaseTransport、releaseProxy；手动提示联动coordinator与UI | [updateAuthorizedCandidate.test.js](../../test/updateAuthorizedCandidate.test.js)、[updateManualInstall.test.js](../../test/updateManualInstall.test.js)、[updateTrust.test.js](../../test/updateTrust.test.js)、[updateArchive.test.js](../../test/updateArchive.test.js)、[releaseTransport.test.js](../../test/releaseTransport.test.js) |
 | Bootstrap形状/协议迁移 | 两份manifest、protected paths、manual note、update-hop | [updateManualInstall.test.js](../../test/updateManualInstall.test.js)、[updateBoundaryWorkingTree.test.js](../../test/updateBoundaryWorkingTree.test.js) |
 | 发布包/工作流 | build-release、npm范围、签名与产物验证、workflow | [releaseScripts.test.js](../../test/releaseScripts.test.js)、[updateHopRehearsalWiring.test.js](../../test/updateHopRehearsalWiring.test.js) |
@@ -317,13 +320,15 @@ node scripts/run-tests.mjs test/updateManager.test.js test/updateRevocationInten
 ## 12. 边界场景与验证要点
 
 1. 磁盘版本已升级、页面仍旧：应检查`reload_required`与当前加载摘要，不能宣布全部runtime已切换。
-2. UI空闲、Native计数归零、仍有退出未确认记录：更新gate未提供全进程退出证明，需单独检查屏障与异常生命周期。
+2. UI空闲、Native锁/controller计数归零、仍有退出未确认记录：当前mirror-root的既有屏障仍会阻止canApply/apply/activate；证据未知时保持阻断，不推广为所有OS进程的退出证明。
 3. 点击取消、下载请求已abort、Native锁尚未释放：只能报告取消待确认；安装已开始时还可能返回too-late并转恢复。
 4. 页面和Native版本相等、capabilities齐全、写回仍失败：健康检查已完成其加载职责，业务回归仍需单独验证。
-5. 安装注册阶段失败：扩展目录恢复不足以证明Native指针及系统注册全部回退，应检查实际磁盘与注册状态。
+5. 安装注册阶段失败：安装器在同一mutation lock内恢复扩展、指针、目标槽及已捕获注册内容；补偿不完整会明确报错，仍应核查实际结果，不能推定任意断电也具备同等恢复能力。
 6. update-hop迁移分支通过：证据是旧版拒绝不兼容包，不能描述成旧版已经自动升级成功。
 7. staged等待超过授权创建时的两小时期限：`bound`不再按`expiresAt`拒绝，需按实际授权状态判断。
-8. 旧`applying`事务下手动重装同target：安装器保留journal，严格版本条件不会将它supersede；需核验后续恢复对指针、manifest和runtime的影响。
+8. 旧`applying`或`awaiting_health`事务下完整重装同target：仅在实际配对和注册全部成功后退役匹配旧journal，并以新鲜`reinstalledPair`允许浏览器收尾；失败重装和无完整重装证明的普通中断保留原恢复路径。
 9. 多个管理根中卸载旧副本：分别核对当前bridge、manifest及所选注册键归属；无法识别或已属于其他副本时应保留，管理目录存在不足以证明Native入口可用。
+10. 手动提示后改变安装来源版本再收到304：Native拒绝来源失配缓存，协调器清除旧动作和ETag；下一次原Check重新检查最新发布，不把旧浏览器latest提升为可安装事实。
+11. Bootstrap健康失败后收到rollback成功：仍需同事务、来源及`update.status.restoredPair`回读匹配后才能重载；旧journal缺少历史摘要时，只能声明本次source观察和实际恢复验证的范围。
 
 这些场景需要通过故障注入和Chrome验收检查实际调用路径；验证结果应分别记录安装事实、加载身份、事务恢复和业务功能，避免以单一成功信号替代整条链路的保证。

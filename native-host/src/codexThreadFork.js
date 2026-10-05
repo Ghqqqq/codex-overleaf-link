@@ -1,5 +1,7 @@
 'use strict';
 
+const { runOwnedNativeHelper } = require('./nativeHelperLifecycle');
+const { stopCodexAppServer, throwIfAborted } = require('./codexSessionTiming');
 const { spawn } = require('node:child_process');
 const { version: PACKAGE_VERSION } = require('../../package.json');
 const { buildCodexHomeEnv } = require('./codexHome');
@@ -7,9 +9,16 @@ const { resolveCodexCommand, shouldUseShellForCommand } = require('./codexComman
 const { buildCodexAppServerArgs } = require('./codexSessionRunner');
 
 function forkCodexThread(params = {}, env = process.env) {
+  return runOwnedNativeHelper(signal => runForkProcess(params, env, signal));
+}
+
+function runForkProcess(params, env, signal) {
+  throwIfAborted(signal);
   const threadId = cleanId(params.threadId, 'threadId');
   const lastTurnId = cleanId(params.lastTurnId, 'lastTurnId');
   const childEnv = buildCodexHomeEnv(env, {
+    isolateRuntimeHome: true,
+    enabledCodexOverleafSkillIds: params.enabledCodexOverleafSkillIds,
     loadCodexLocalSkills: params.loadCodexLocalSkills !== false,
     loadCodexOverleafSkills: params.loadCodexOverleafSkills !== false
   });
@@ -23,6 +32,7 @@ function forkCodexThread(params = {}, env = process.env) {
     }), {
       env: childEnv,
       shell: shouldUseShellForCommand(command, childEnv),
+      detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe']
     });
     const pending = new Map();
@@ -30,6 +40,8 @@ function forkCodexThread(params = {}, env = process.env) {
     let buffer = '';
     let stderr = '';
     let settled = false;
+    const onAbort = () => finish(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
     const timeout = setTimeout(() => finish(codedError('codex_thread_fork_timeout', 'Codex thread fork timed out.')), 30000);
 
     child.stdout.setEncoding('utf8');
@@ -41,12 +53,14 @@ function forkCodexThread(params = {}, env = process.env) {
       for (const line of lines) if (line.trim()) handleMessage(line);
     });
     child.stderr.on('data', chunk => { stderr += chunk; });
+    child.stdin.on('error', finish);
     child.on('error', finish);
     child.on('close', code => {
       if (!settled) finish(codedError('codex_thread_fork_failed', stderr || `Codex app-server exited with code ${code}.`));
     });
 
     (async () => {
+      throwIfAborted(signal);
       await request('initialize', {
         clientInfo: { name: 'codex-overleaf-link', version: PACKAGE_VERSION },
         capabilities: null
@@ -85,11 +99,12 @@ function forkCodexThread(params = {}, env = process.env) {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      signal.removeEventListener('abort', onAbort);
       for (const waiter of pending.values()) waiter.reject(error || codedError('codex_thread_fork_closed', 'Fork process closed.'));
       pending.clear();
-      try { child.stdin.end(); } catch (_error) { /* best effort */ }
-      try { child.kill(); } catch (_error) { /* best effort */ }
-      if (error) reject(error); else resolve(result);
+      stopCodexAppServer(child, { processGroup: process.platform !== 'win32', reason: error }).then(() => {
+        if (error) reject(error); else resolve(result);
+      }, reject);
     }
   });
 }

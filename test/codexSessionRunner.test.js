@@ -1421,7 +1421,9 @@ test('Codex skill isolation disables system and real-user skills while keeping C
         if (method === 'skills/list') {
           assert.deepEqual(params, {
             cwd: '/tmp/project',
-            includeDisabled: true
+            includeDisabled: true,
+            cwds: ['/tmp/project'],
+            forceReload: true
           });
           return {
             data: [

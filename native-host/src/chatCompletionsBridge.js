@@ -11,6 +11,7 @@ const {
 const { requiresReasoningContentReplay } = require('./providerReasoning');
 const { classifyResponsesRoute } = require('./providerBridgeRoutes');
 const { providerError } = require('./providerProfile');
+const { fetchProvider, readProviderText, readProviderJson } = require('./providerHttp');
 const { sanitizeProviderMessage } = require('./providerRedaction');
 const { logDebug } = require('./debugLog');
 const {
@@ -118,15 +119,19 @@ async function handleRequest({
   const startedAt = Date.now();
   const previousResponseId = String(requestBody.previous_response_id || '');
   const previous = history.get(previousResponseId);
-  const fallbackAnchor = previous
+  const fallbackAllowed = !previousResponseId || previousResponseId === continuationState.responseId;
+  const fallbackAnchor = previous || !fallbackAllowed
     ? []
     : continuationState.anchorMessages;
+  const continuationAttempts = previous
+    ? Number(previous.continuationAttempts) || 0
+    : fallbackAllowed ? continuationState.attempts : 0;
   const translated = buildChatRequest({
     requestBody,
     launch,
     historyMessages: previous?.messages || fallbackAnchor
   });
-  assertReasoningContinuationBudget(translated.messages, continuationState.attempts);
+  assertReasoningContinuationBudget(translated.messages, continuationAttempts);
   const idleTimeoutMs = resolveProviderIdleTimeoutMs(launch);
   const totalTimeoutMs = resolveProviderTotalTimeoutMs(launch, idleTimeoutMs);
   logDebug('provider.bridge.request', {
@@ -141,7 +146,7 @@ async function handleRequest({
     usedFallbackAnchor: fallbackAnchor.length > 0,
     inputItemCount: Array.isArray(requestBody.input) ? requestBody.input.length : requestBody.input ? 1 : 0,
     messageCount: translated.messages.length,
-    continuationAttempts: continuationState.attempts,
+    continuationAttempts,
     idleTimeoutMs,
     totalTimeoutMs
   });
@@ -161,15 +166,15 @@ async function handleRequest({
   res.on('close', onClientClose);
   lifecycle.start();
   try {
-    const upstream = await fetch(buildChatCompletionsUrl(launch.baseUrl, launch), {
+    const upstream = await fetchProvider(buildChatCompletionsUrl(launch.baseUrl, launch), {
       method: 'POST',
       headers: buildUpstreamHeaders(launch),
       body: JSON.stringify(translated.body),
       signal: controller.signal
-    });
+    }, launch);
     lifecycle.touch();
     if (!upstream.ok) {
-      await forwardUpstreamError(upstream, res, launch.apiKey);
+      await forwardUpstreamError(upstream, res, launch.apiKey, lifecycle.touch);
       return;
     }
     const context = {
@@ -193,7 +198,7 @@ async function handleRequest({
         : 0;
       if (anchored) {
         continuationState.anchorMessages = continuation;
-        continuationState.attempts += 1;
+        continuationState.attempts = continuationAttempts + 1;
         continuationState.responseId = converted.response.id;
       } else {
         continuationState.anchorMessages = [];
@@ -217,7 +222,7 @@ async function handleRequest({
       rememberHistory(history, converted.response.id, [
         ...translated.messages,
         ...continuation
-      ]);
+      ], { continuationAttempts: anchored ? continuationAttempts + 1 : 0 });
     };
     if (requestBody.stream !== false) {
       const contentType = String(upstream.headers.get('content-type') || '').toLowerCase();
@@ -231,11 +236,11 @@ async function handleRequest({
           recoverInterrupted: lifecycle.recoverInterrupted
         });
       } else {
-        const converted = convertChatResponse(await upstream.json(), context);
+        const converted = convertChatResponse(await readProviderJson(upstream, lifecycle.touch), context);
         writeConvertedResponseAsSse(res, converted, context, remember);
       }
     } else {
-      const converted = convertChatResponse(await upstream.json(), context);
+      const converted = convertChatResponse(await readProviderJson(upstream, lifecycle.touch), context);
       remember(converted);
       sendJson(res, 200, converted.response);
     }
@@ -376,7 +381,8 @@ function normalizeBridgeErrorCode(value) {
     'provider_agent_tools_incompatible',
     'provider_reasoning_continuation_exhausted',
     'provider_stream_tool_parse_failed',
-    'provider_protocol_incompatible'
+    'provider_protocol_incompatible',
+    'provider_upstream_error'
   ].includes(value) ? value : 'provider_bridge_failed';
 }
 
@@ -386,8 +392,8 @@ function bridgeErrorMessage(code) {
     : 'The local provider bridge failed.';
 }
 
-async function forwardUpstreamError(upstream, res, apiKey) {
-  const text = (await upstream.text()).slice(0, MAX_ERROR_BYTES);
+async function forwardUpstreamError(upstream, res, apiKey, onActivity) {
+  const text = (await readProviderText(upstream, onActivity)).slice(0, MAX_ERROR_BYTES);
   let message = `Provider returned HTTP ${upstream.status}.`;
   try {
     const parsed = JSON.parse(text);
@@ -396,9 +402,9 @@ async function forwardUpstreamError(upstream, res, apiKey) {
   sendJsonError(res, upstream.status, 'provider_upstream_error', sanitizeProviderMessage(message, [apiKey]));
 }
 
-function rememberHistory(history, responseId, messages) {
+function rememberHistory(history, responseId, messages, metadata = {}) {
   history.delete(responseId);
-  history.set(responseId, { messages });
+  history.set(responseId, { messages, ...metadata });
   while (history.size > MAX_HISTORY_ENTRIES) {
     history.delete(history.keys().next().value);
   }

@@ -211,17 +211,26 @@ test('real bridge.ping compatibility follows package version metadata', async ()
 });
 
 test('codex.models returns a usable fallback model list', async () => {
-  const response = await handleRequest(
-    { id: 'models-1', method: 'codex.models', params: {} },
-    { HOME: path.join(__dirname, 'fixtures', 'missing-codex-model-home') }
-  );
-
-  assert.equal(response.id, 'models-1');
-  assert.equal(response.ok, true);
-  assert.equal(Array.isArray(response.result.models), true);
-  assert.equal(response.result.models.some(model => model.id === 'gpt-5.5'), true);
-  assert.equal(response.result.source, 'fallback');
-  assert.equal(typeof response.result.fetchedAt, 'string');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-fallback-models-'));
+  // Keep CLI discovery at the external boundary deterministic; an explicit
+  // empty command then exercises the real model fallback without a user CLI.
+  const isolated = loadTaskRunnerWithFakeRunner(() => assert.fail('Fallback must not start a session'), {
+    refreshEnvironment: env => env
+  });
+  try {
+    const response = await isolated.handleRequest(
+      { id: 'models-1', method: 'codex.models', params: {} },
+      { HOME: home, USERPROFILE: home, CODEX_OVERLEAF_ENV_READY: '1', CODEX_OVERLEAF_CODEX_PATH: '' }
+    );
+    assert.equal(response.id, 'models-1');
+    assert.equal(response.ok, true);
+    assert.equal(Array.isArray(response.result.models), true);
+    assert.equal(response.result.models.some(model => model.id === 'gpt-5.5'), true);
+    assert.equal(response.result.source, 'fallback');
+    assert.equal(typeof response.result.fetchedAt, 'string');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('codex.models returns models discovered from the Codex cache', async () => {

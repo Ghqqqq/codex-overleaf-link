@@ -196,7 +196,7 @@ test('cooperative app-server exits before disconnected Host exits', options, asy
   assert.equal(value.hostExit.code, 0);
   assert.equal(value.peerAliveAtHostExit, false);
   assert.equal(value.stopAtHostExit.at(-1).event, 'resolved');
-  assert.deepEqual(value.hostExitEvidence.at(-1).work, { projectLocks: 0, runControllers: 0, activeTurnControls: 0 });
+  assert.deepEqual(value.hostExitEvidence.at(-1).work, { projectLocks: 0, processStopBarriers: 0, runControllers: 0, activeTurnControls: 0 });
   assert.equal(value.finalContent, baseline);
 });
 test('connected failure waits through interrupt and TERM to confirmed KILL exit', options, async () => {

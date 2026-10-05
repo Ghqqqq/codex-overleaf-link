@@ -53,7 +53,8 @@ flowchart TD
 | 已有本地镜像 | [scanMirrorSensitiveFiles](../../native-host/src/mirrorSensitiveScan.js) 经 `mirror.scanSensitive` | 扩展名白名单、单文件大小和返回数量限制 |
 | 自定义指令、技能、编译日志 | 后续由 [codexPromptAssembly](../../native-host/src/codexPromptAssembly.js) 组装 | 未作为完整 prompt 进入本次预检；某些材料有独立处理，不能合并推定为已扫描 |
 | 普通附件与图片 | [turnAttachments](../../native-host/src/turnAttachments.js) 等专用路径 | 不因项目文本扫描成功获得同等保证；图片像素无该正则扫描 |
-| 写作风格参考及资产 | 独立 build/forRun 路径 | 见[写作风格与技能](writing-style-and-skills.md)的数据边界 |
+| 写作风格的选定项目参考文本 | `WritingStyleSettings.generate → preflightProjectReferences → SensitivePreflight`，在 `startBuild` 前检查 | 复用目标项目规则、文本判断和原确认政策；确认等待后再次核对取消及账号/项目归属 |
+| 写作风格的 PDF、saved 语料及版本资产 | 独立 build/forRun 路径 | 不因选定项目文本预检获得同等扫描保证，见[写作风格与技能](writing-style-and-skills.md)的数据边界 |
 
 ### 镜像扫描与未扫描内容
 
@@ -106,6 +107,7 @@ runtime 的 `createAuditDraftForRun/updateAuditSensitiveFindings/finalizeAuditRe
 | 新增检测器、预览或去重 | shared SensitiveScan、Native 镜像复用、审计预览 | [sensitiveScan.test.js](../../test/sensitiveScan.test.js) 直接测试正则及预览，不覆盖全部出站材料 |
 | 改镜像白名单、大小或失败处理 | mirrorSensitiveScan、Native dispatcher、runtime 消费者 | [taskRunner.test.js](../../test/taskRunner.test.js) 含镜像扫描请求；浏览器完整性提示另需接入验证 |
 | 命中确认与数据流 | SensitivePreflight、runtime 首次/恢复派发、prompt 组装、审计 | [runRetrySensitivePreflight.test.js](../../test/runRetrySensitivePreflight.test.js) 串联 runtime、真实检测器、warm-mirror guard 和审计投影，检查阻止/批准/拒绝/关闭及第二次派发参数；Page、Native 和持久化 I/O 使用替身 |
+| 风格生成的项目参考检查 | WritingStyleSettings、组合根 `preflightProjectReferences`、SensitivePreflight、Native build | [writingStylePreflight.test.js](../../test/writingStylePreflight.test.js) 检查现有政策、取消和作用域变化；PDF/OCR 与通用出站检测不在该入口范围 |
 | 只读与可写路径规则 | GovernanceRules、WritebackPlan、orchestrator、错误展示和审计 | [governanceRules.test.js](../../test/governanceRules.test.js) 的路径和优先级行为；[writebackOrchestratorInitialization.test.js](../../test/writebackOrchestratorInitialization.test.js) 的装配 |
 | 新增诊断或历史字段 | auditRecords、storageDb、diagnosticsExport、历史视图 | [auditRecords.test.js](../../test/auditRecords.test.js) 的摘要与处理规则；真实导出另行验证 |
 

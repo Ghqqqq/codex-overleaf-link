@@ -22,6 +22,7 @@ export function formatInstallManagedHuman(result) {
     '2. Remove the previous Codex Overleaf Link entry if Chrome shows a duplicate.',
     '3. Choose Load unpacked and select: ' + result.loadUnpackedPath,
     'Future signed stable updates are checked automatically. Choose Update now to authorize a version; installation waits until Overleaf is saved and idle.',
+    ...(result.warning ? ['Warning: ' + result.warning] : []),
     ''
   ].join('\n');
 }

@@ -62,6 +62,12 @@
       const value = deps.getScope();
       return value?.accountScopeId && value?.projectId ? value : null;
     }
+    function errorMessage(message, code) {
+      // codex.run currently wraps style-build error codes as codex_run_failed.
+      if (code === 'writing_style_busy' || message === 'Writing-style settings are being updated by another Native Host. Retry shortly.') return tx('Writing-style settings are being updated by another Native Host. Retry shortly.', '写作风格设置正在由另一个本地进程更新，请稍后重试。');
+      if (code === 'writing_style_changed' || message === 'The saved writing skill changed. Rebuild it in General settings.' || message === 'Writing-style asset integrity changed.') return tx(message || 'The saved writing skill changed. Rebuild it in General settings.', '写作风格资产不可用，请在常规设置中重新生成。');
+      return message;
+    }
     function alignScope() {
       const next = currentScope(), key = next ? next.accountScopeId + ':' + next.projectId : '';
       if (scopeKey !== key) {
@@ -83,7 +89,7 @@
     async function request(method, params = {}) {
       const response = await deps.request({ method, params });
       if (!response?.ok) {
-        const error = new Error(response?.error?.message || tx('The request could not be completed.', '请求未能完成。'));
+        const error = new Error(errorMessage(response?.error?.message, response?.error?.code) || tx('The request could not be completed.', '请求未能完成。'));
         error.code = response?.error?.code || 'writing_style_failed'; throw error;
       }
       return response.result;
@@ -105,7 +111,7 @@
         meta = value;
         if (setupEnabled === null) desiredEnabled = value.enabled === true;
         if (!dirty && !activeGeneration) restoreSources(value);
-        if (value.error && !message) { message = value.error; messageTone = 'error'; }
+        if (value.error && !message) { message = errorMessage(value.error, value.errorCode); messageTone = 'error'; }
         clearTimeout(pollTimer); pollTimer = null;
         if (value.building) pollTimer = setTimeout(() => { void ensureLoaded(true).catch(() => {}); }, 1800);
         else if (!activeGeneration) cancelling = false;
@@ -198,7 +204,8 @@
       activeGeneration = operation; cancelling = false; pickerOpen = false; preview = null;
       message = ''; messageTone = ''; expanded = true; render();
       const stillActive = () => {
-        if (operation.cancelled || generation !== epoch) {
+        const current = currentScope();
+        if (operation.cancelled || generation !== epoch || current?.accountScopeId !== target.accountScopeId || current?.projectId !== target.projectId) {
           const error = new Error(tx('Style generation cancelled.', '已取消风格生成。'));
           error.code = 'codex_cancelled'; throw error;
         }
@@ -206,7 +213,7 @@
       try {
         const settings = await deps.getModelSettings();
         stillActive();
-        const attachments = [], selected = [];
+        const attachments = [], selected = [], projectFiles = [];
         for (const source of chosen) {
           stillActive();
           if (source.kind === 'pdf') {
@@ -222,6 +229,7 @@
             }
             const body = new Blob([JSON.stringify(snapshot)], { type: 'application/json' });
             if (body.size > LIMITS.maxProjectBytes) throw new Error(tx('Reference project is too large: ', '参考项目过大：') + source.name);
+            projectFiles.push(...(snapshot.files || []).map(file => ({ ...file, path: source.projectId + '/' + file.path })));
             const id = crypto.randomUUID();
             attachments.push({ id, name: source.projectId + '.writing-reference.json', size: body.size,
               mimeType: 'application/json', kind: 'file', contentBase64: await encode(body) });
@@ -229,6 +237,11 @@
           } else selected.push({ kind: 'saved', sourceId: source.sourceId });
         }
         stillActive();
+        if (projectFiles.length) {
+          const check = await deps.preflightProjectReferences({ project: { files: projectFiles }, assertCurrent: stillActive });
+          stillActive();
+          if (check.blocked) throw new Error(tx('Blocked: sensitive content review required', '已阻止：需要处理敏感内容'));
+        }
         operation.phase = 'learning'; operation.sourceName = ''; render();
         const tracked = await deps.startBuild({ ...settings, ...target, mode: 'ask',
           task: 'Generate the selected project writing skill and its section references.',
@@ -241,7 +254,7 @@
         const response = await tracked.promise;
         if (generation !== epoch) return;
         if (!response?.ok) {
-          const error = new Error(response?.error?.message || tx('Style generation failed.', '风格生成失败。'));
+          const error = new Error(errorMessage(response?.error?.message, response?.error?.code) || tx('Style generation failed.', '风格生成失败。'));
           error.code = response?.error?.code; throw error;
         }
         const result = response.result?.writingStyle;
@@ -253,7 +266,7 @@
       } catch (error) {
         if (generation === epoch) {
           message = operation.cancelled || error.code === 'codex_cancelled'
-            ? tx('Style generation cancelled.', '已取消风格生成。') : error.message;
+            ? tx('Style generation cancelled.', '已取消风格生成。') : errorMessage(error.message, error.code);
           messageTone = operation.cancelled || error.code === 'codex_cancelled' ? '' : 'error';
         }
       } finally {

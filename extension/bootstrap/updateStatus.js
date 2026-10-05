@@ -17,6 +17,7 @@
     tab_not_idle: 'An Overleaf tab is still busy.',
     native_project_locked: 'The native host still holds a project lock.',
     native_run_active: 'The native host is still processing a Codex run.',
+    native_process_stop_unconfirmed: 'A previous Codex process has not yet confirmed its exit.',
     native_gate_unavailable: 'The native host could not report whether it is idle.',
     native_not_idle: 'The native host is still busy.',
     busy: 'An update safety check is still busy.'

@@ -177,8 +177,7 @@
         }), CHECK_REQUEST_TIMEOUT_MS, codedError('update_check_timeout', 'The managed update check did not complete in time.'));
         assertOperation(operation);
         const checkedAt = Date.now();
-        if (result.available || (result.reason === 'not_modified'
-          && policy.compareStableVersions(currentState.latestVersion, currentVersion()) > 0)) {
+        if (result.available) {
           const latestVersion = result.latestVersion || currentState.latestVersion;
           await setConsentState({ ...consent,
             ...(latestVersion !== consent.snoozedVersion ? { snoozedVersion: '', snoozedUntil: 0 } : {}),
@@ -205,7 +204,9 @@
           await setUpdateState({ ...currentState, state: 'idle', operationId: operation.id,
             currentVersion: result.currentVersion || currentVersion(),
             latestVersion: result.latestVersion || result.currentVersion || currentVersion(),
-            etag: result.etag || currentState.etag || '', lastCheckedAt: checkedAt,
+            // A 304 without a verified Native candidate is a cache miss. Drop
+            // its validator so the next normal check can obtain fresh bytes.
+            etag: result.reason === 'not_modified' ? '' : result.etag || currentState.etag || '', lastCheckedAt: checkedAt,
             postponeUntil: LEGACY_GUARD, transactionId: '',
             code: result.reason === 'cooldown' ? 'update_cooldown' : '',
             cooldownUntil: result.reason === 'cooldown' ? Number(result.cooldownUntil || 0) : 0,
@@ -703,10 +704,16 @@
       const [previous, consent] = await Promise.all([getUpdateState(), getConsentState()]);
       if (!matchesRecoveryOwner(owner, previous, consent)) return previous;
       const transaction = status?.transaction;
+      const sameTargetReinstall = transaction?.reasonCode === 'update_reinstalled'
+        && status.activeVersion === transaction.targetVersion
+        && status.reinstalledPair?.extensionVersion === status.activeVersion
+        && status.reinstalledPair?.nativeVersion === status.activeVersion
+        && /^[0-9a-f]{64}$/.test(status.reinstalledPair.extensionSha256 || '')
+        && /^[0-9a-f]{64}$/.test(status.reinstalledPair.nativeSha256 || '');
       if (activeOperation || transaction?.state !== 'superseded' || !transaction.id
         || (previous.transactionId && previous.transactionId !== transaction.id)
         || status.installedAligned !== true || status.activeVersion !== transaction.supersededByVersion
-        || policy.compareStableVersions(status.activeVersion, transaction.targetVersion) <= 0
+        || (!sameTargetReinstall && policy.compareStableVersions(status.activeVersion, transaction.targetVersion) <= 0)
         || policy.compareStableVersions(status.activeVersion, transaction.sourceVersion) <= 0
         || ['authorized', 'bound'].includes(status.authorization?.state)
         || (consent.authorizedVersion && consent.authorizedVersion !== transaction.targetVersion)

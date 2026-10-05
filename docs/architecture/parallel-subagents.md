@@ -26,8 +26,9 @@
 **当前实现。** [codexSessionRunner](../../native-host/src/codexSessionRunner.js) 的 `runCodexSession` 在以下条件同时满足时创建 broker：
 
 1. 当前运行为普通项目任务，未进入 skill installer 分支。
-2. `loadCodexOverleafSkills` 未关闭。
-3. `enabledCodexOverleafSkillIds` 包含 `parallel-subagents`。
+2. `buildCodexSettings()` 选择 `workspace-write`。
+3. `loadCodexOverleafSkills` 未关闭。
+4. `enabledCodexOverleafSkillIds` 包含 `parallel-subagents`。
 
 技能目录由 [localSkills](../../native-host/src/localSkills.js) 管理，面板打开时的目录预取在 `contentRuntime.primeCodexOverleafSkillsCatalog`。
 运行参数与 UI 技能启用读取应同时核对，避免只修改面板列表却未影响实际 gate。
@@ -49,17 +50,14 @@ worker 使用新的 thread，`session: null`、`threadId: ''`；继承当前运�
 `buildCodexSettings` 按运行模式选择 `read-only` 或 `workspace-write`；`job.files` 通过提示词、调度互斥和事后证据管理。
 技能中的文件限制不能直接解释成操作系统对每个 worker 单独设置的路径 ACL。
 
-**Ask 模式的投递边界。** broker gate 未排除 Ask，但 [codexSessionRunner](../../native-host/src/codexSessionRunner.js) 的 `buildCodexSettings()` 为普通 Ask 任务指定 `read-only` 与 `approvalPolicy: never`，`buildThreadStartParams/buildThreadResumeParams` 将沙箱设置交给 app-server；父任务与 worker 没有 job 目录的单独写入例外。
-Native Host 仍可创建队列并发布 `broker.json` 的 `ready`，而 [parallel-subagents 技能](../../native-host/src/skills/parallel-subagents/SKILL.md) 要求模型写入 job JSON 后才能派发；host 就绪不能单独证明模型有权投递。
-在 macOS 的 Codex CLI `0.160.0` 上，实际 `thread/start` 返回的 Ask `readOnly` 策略允许读取项目和握手，但拒绝队列文件创建及重命名（`EPERM`）；Auto 的 `workspaceWrite` 策略允许相同投递，broker 可接纳任务并启动 worker。因此该平台与版本的 Ask 文件 broker 会发布无法完成既定投递的 `ready`。
-该权限结论覆盖使用真实线程返回策略的独立 `command/exec` 文件操作，此入口不产生模型轮次。模型自行投递后的反馈、其他 CLI 版本及其他平台仍需分别核对，不能由文件 broker 限制推定普通 Ask 任务整体不可用。
-Codex 原生 collab 路线不通过这个文件队列，相关发现与状态证据按第 7 节单独核对。
+**Ask 模式的投递边界。** [codexSessionRunner](../../native-host/src/codexSessionRunner.js) 的 `buildCodexSettings()` 为普通 Ask 指定 `read-only` 与 `approvalPolicy: never`；文件 broker 的可写策略 gate 因此排除 Ask。Ask 沿既有无 broker 分支删除旧队列，执行器不会读到先前 Auto 遗留的 `ready`，普通只读运行仍可继续。[parallel-subagents 技能](../../native-host/src/skills/parallel-subagents/SKILL.md) 已规定握手缺失或未 ready 时自行顺序处理任务，未增加 Ask 写权限或投递入口。
+文件队列需要创建、重命名 job JSON；macOS 的 Codex CLI `0.160.0` 在真实 Ask `readOnly` 策略下拒绝这些操作（`EPERM`），Auto 的 `workspaceWrite` 允许相同投递。该权限依据来自采用真实线程返回策略的独立 `command/exec`，不包含模型轮次。当前 gate 与旧队列清理由生产 session 回归覆盖；新构建的真实模型反馈、其他 CLI/平台行为及 Chrome 呈现仍需相应验收。
+Codex 原生 collab 路线不通过这个文件队列，不受上述 broker gate 控制；相关发现与状态证据按第 7 节单独核对。
 
-**技能环境的共享边界。** [codexHome](../../native-host/src/codexHome.js) 的 `getPluginCodexHome()` 默认让各项目和 runner 共用插件 `CODEX_HOME`。
-`runCodexAppServerProcess()` 为父任务、worker 和风格生成分别调用 `buildCodexHomeEnv()`；`composePluginSkillsDirectory()` 每次先删除 `skills`，再按本次开关重建。
-继承技能开关没有产生独立目录，另一个任务的环境准备可能改变活跃任务已发现路径的可读性；关闭两类技能的风格生成也走这条共享准备链。
-`taskRunnerRuntime.acquireProjectLock()` 只按项目加锁，不保护共享 home。installer 的持久目录映射被普通运行替换后，新安装内容还可能落入下次重建会删除的组合目录，详见[普通技能安装、继承与作用域](writing-style-and-skills.md#普通技能安装继承与作用域)。
-路径变化、app-server 的技能缓存及后续读取行为需要分别验证，不能由每个 worker 使用新 thread 推定技能环境隔离。
+**技能执行目录与共享历史。** [codexHome.buildCodexHomeEnv](../../native-host/src/codexHome.js) 为实际父任务、worker、风格生成和分叉启用稳定 scope；[codexHomeScope](../../native-host/src/codexHomeScope.js) 按技能开关、启用/禁用 IDs、角色、来源目录和捕获配置派生持久执行目录。
+新 scope 完整准备后原子发布，已发布 skills 不再重建；另一个任务不会因准备不同配置删除活跃路径。worker 继承本次启用列表并排除 fan-out 技能，[codexSkillIsolation](../../native-host/src/codexSkillIsolation.js) 再核对实际发现来源并禁用关闭项。installer 使用独立角色，skills 始终映射到持久插件技能根。
+父与 worker 保持原 canonical home 身份，插件会话目录共享，SQLite 显式配置及环境优先级保持；默认数据根仍为 canonical。scope 持久保留以维持 rollout 绝对路径，没有整轮 home 锁或新增 GC。项目写入互斥仍归 `taskRunnerRuntime.acquireProjectLock()`；worker 共享镜像和 OS 权限的边界不因此改变。
+技能正文仍经来源链接读取，使用者对源文件的更改和删除继续生效。路径保持、配置发现、实际模型调用与跨 scope 历史恢复分别验收，详见[普通技能安装、继承与作用域](writing-style-and-skills.md#普通技能安装继承与作用域)；samehome 提前返回仍为显式例外。
 
 ## 3. job 文件协议与权威状态
 
@@ -202,12 +200,13 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 父任务上的“派发完成”或外层 `item/completed` 不能单独证明子任务成功；历史读取不支持时保留 `historyUnavailable`。
 `compactEvent` 限定字段、长度并遮盖常见 secret；原始私有 reasoning 和任意请求体不会直接进入子任务展示通道。
 
-**已知实现限制。** [snapshot](../../native-host/src/subagentTelemetry.js#L234) 对仍属当前活动代次的历史请求 rejection 设置 `readDisabled: true`，不区分能力不支持与暂时性读取错误。
-此后同一 child 在当前 observer 生命周期内不再补读；新 turn 的重置分支也未清除此值。2 秒节流不构成错误重试，后续 completed 活动通知同样无法恢复补读；实时子线程通知仍可更新记录。
-[unsupported history 测试](../../test/subagentTelemetry.test.js#L267) 检查停读与保留记录，未验证暂时性错误后的恢复；真实历史缺失范围仍需集成验证。
+**历史错误与恢复。** [subagentTelemetry.snapshot](../../native-host/src/subagentTelemetry.js) 对明确的 `-32601` 或不支持 `thread/read` 的错误设置 `readDisabled`，同一 observer 内保持降级。其他错误标记历史暂不可用，允许后续真实活动触发补读；连续失败达到 `MAX_HISTORY_READ_FAILURES`（当前为 3）后暂停该 child 当前代次的补读。有效成功读取或新的 child turn 都会清除连续失败计数；新 turn 不解除明确 unsupported 的禁用。
+`runCodexAppServerProcess` 保留 JSON-RPC error.code 的数字/字符串分类。只有通过 thread、parent、turn、generation 检查的成功历史读取才发布 `historyUnavailable: false`；旧代次的迟到错误不禁用新代次。没有新增计时轮询、无限重试或执行控制，实时子线程通知继续独立更新记录。
+[subagentTelemetry 测试](../../test/subagentTelemetry.test.js) 覆盖活动驱动恢复、连续失败预算、新 turn、unsupported、runner RPC 分类及前端持久化；合成错误响应不提供真实 CLI 暂时错误频率或完整历史可用性的保证。
 
 [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `appendNativeEvent` 把子事件交给 `SubagentActivityModel.ingest` 后提前返回，防止混入父答案流。
 模型按 native journal 序号和子事件 sequence 去重；最多 16 子记录、每项 100 事件，并对事件序列按 48,000 字符阈值裁剪。
+`SubagentActivityModel.ingest` 以显式 boolean 更新 `historyUnavailable`，因此成功恢复能清除警告；缺少该字段的旧事件保留现状，归一化和持久化继续保留更新后的值。
 该字符阈值属于序列裁剪策略，不应描述成严格的 UTF-8 字节限额。
 [sessionState](../../extension/src/shared/sessionState.js) 的归一化和存储裁剪保留 `run.subagents`；所属账号/项目/会话边界见 [运行状态与恢复](run-state-and-recovery.md)。
 
@@ -225,8 +224,8 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 |---|---|---|
 | 启动 gate、继承、禁递归 | codexSessionRunner、localSkills、技能正文、面板技能目录 | `node scripts/run-tests.mjs test/parallelSubagents.test.js` |
 | 首次目录准备与提交 | contentRuntime、projectSettingsCoordinator、RunController；runner gate | `node scripts/run-tests.mjs test/skillsCatalogSubmission.test.js test/runSubmissionOwnership.test.js test/queueSubmissionContext.test.js`；延迟/失败目录、配置捕获、草稿与队列对照 |
-| Ask 投递边界 | codexSessionRunner thread 参数、技能文件队列与真实沙箱 | `node scripts/run-tests.mjs test/parallelSubagents.test.js test/codexSessionRunner.test.js`；线程参数测试不能替代真实沙箱投递验证，平台与 CLI 变化时复核队列创建、重命名和 Auto 对照；已知适用范围见第 2 节 |
-| 共享技能目录与交错准备 | codexHome、codexSessionRunner、writingStyleRuntime、项目锁；installer 映射 | `node scripts/run-tests.mjs test/codexHome.test.js test/codexSessionRunner.test.js`；还需覆盖活跃路径及安装持久性的交错准备场景 |
+| Ask 投递边界 | codexSessionRunner 可写策略 gate、旧队列清理、普通 Ask 及原生 collab | `node scripts/run-tests.mjs test/askBrokerAvailability.test.js test/skillsCatalogSubmission.test.js test/subagentTelemetry.test.js`；检查旧 ready 清理、权限保持、Auto gate 及子事件；真实平台权限与模型反馈分别验证 |
+| 技能 scope 与交错准备 | codexHome/Scope、codexSkillIsolation、runner；canonical 历史与 installer 映射 | `node scripts/run-tests.mjs test/codexHomeScope.test.js test/codexSkillDiscovery.test.js test/codexSessionRunner.test.js`；活跃路径、同 scope 并发发布、安装持久性及父/worker 参数；真实 CLI 恢复与发现另验 |
 | 并发、同文件串行、预算、活动计数、取消 | subagentBroker、subagentAdmission、subagentWorkspace 回执写入、runner、codexSessionTiming、taskRunnerRuntime 登记与锁、镜像 dirty | `node scripts/run-tests.mjs test/subagentAdmissionState.test.js test/subagentBroker.test.js test/subagentIoFailure.test.js`；规范路径、冲突预算、异步顺序派发前复核、计数及回执失败后的收尾 |
 | 拒绝回执身份与目标目录 | subagentBroker 的 jobIdOrFallback/idFromFileName/writeResult、输入拒绝原因及事件 | `node scripts/run-tests.mjs test/subagentReceiptIdentity.test.js test/subagentBroker.test.js`；保留合法 ID 查找，并检查异常 ID/文件名不会选中结果目录外的目标 |
 | 文件归属、quarantine、adoption | subagentWorkspace、subagentWorkspacePath、broker、最终 syncChanges 过滤 | `node scripts/run-tests.mjs test/subagentBroker.test.js test/parallelSubagents.test.js` |
@@ -236,7 +235,7 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 具体定义可直接阅读 [subagentBroker 测试](../../test/subagentBroker.test.js)、[parallelSubagents 测试](../../test/parallelSubagents.test.js)、
 [subagentTelemetry 测试](../../test/subagentTelemetry.test.js)、[子对话测试](../../test/subagentActivityView.test.js) 和 [终态计时测试](../../test/subagentTerminalClock.test.js)。
 其中部分测试检查源码装配，部分使用注入的假 worker 或 app-server；真实进程、权限及 Chrome 状态需另取运行证据。
-回执身份专项使用内存文件系统；失败结束帧经真实 runner 到 broker 的隔离和镜像过滤由合成 app-server 组合测试覆盖。准入和活动计数专项使用真实临时目录、受控 worker Promise 和时钟；目录提交专项的模型执行使用替身。暂时性历史错误后的恢复仍有第 7 节的独立验证缺口，不能由相近测试名称推定已完整覆盖。
+回执身份专项使用内存文件系统；失败结束帧经真实 runner 到 broker 的隔离和镜像过滤由合成 app-server 组合测试覆盖。准入和活动计数专项使用真实临时目录、受控 worker Promise 和时钟；目录提交专项的模型执行使用替身。暂时性历史错误恢复已由生产 RPC/observer 与前端投影的合成响应覆盖，真实错误发生条件仍受第 7 节边界限制。
 
 ## 9. 边界场景与验证要点
 
@@ -246,10 +245,10 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 4. **非法 ID 的拒绝回执。** 检查合法队列文件名回退、非法文件名生成标识及最终 writer 校验，确认错误仍可被发现且目标留在 `results/`；保持合法任务各终态的原 ID 查找能力。
 5. **磁盘 activeWorkers 为 0 时整合文件。** 计数随登记变化刷新，仍需核对波次与当前 token；实际接管继续检查内存 running。close 后计数尚非零表示仍有未结算 worker，不能将 closed 当作 OS 退出证明。
 6. **worker 失败终态后的部分文件隔离。** 覆盖没有独立 error/abort 的 failed/interrupted 结束帧、矛盾 error 与未知状态；核对 runner 拒绝、停止处理、broker 隔离及差异过滤，同时保留旧无 status 成功兼容。
-7. **历史临时读取失败后的恢复。** 同一 child 的 `readDisabled` 会阻止后续补读；分别检查已保存活动、实时通知与缺失历史，不能由只读视图重新打开推定原生历史重试。
-8. **活跃 worker 期间重建技能目录。** 另一个项目或风格生成会按自身开关准备共享 home；核对父任务与 worker 已发现的路径能否继续读取，以及并行 installer 的目标是否仍为持久技能根。文件路径检查与 app-server 缓存行为分别取证。
+7. **历史临时读取失败后的恢复。** 分别检查真实活动重试、连续失败预算、成功与新 turn 的重置，以及 unsupported 持续降级；恢复后前端警告应清除。只读视图重新打开不触发原生历史重试，旧代次错误不得影响新代次。
+8. **活跃 worker 期间准备其他 scope。** 按不同项目/风格开关准备新 scope，核对父任务与 worker 已发现路径继续可读，并行 installer 仍写持久根；同配置并发首次准备只能发布完整目录。另核对来源配置变化与跨 scope 的历史 read/resume/fork，文件路径证据不替代实际消费者。
 9. **目录预取尚未返回时提交。** 从空目录开始延迟 `skills.list`，检查派发先等待且共享同一请求；等待期间修改启用表或草稿，原提交配置保持。分别覆盖失败后原入口重试、关闭技能、cached 目录和队列既有 IDs，确认未知目录不会变成静默禁用。
-10. **Ask 中的 ready 与实际投递。** 复核平台或 CLI 变化时，使用实际 thread 返回的策略检查隔离队列创建、独立重命名及 Auto 对照；第 2 节的 macOS 限制已有真实沙箱依据。模型写 job 的结果与反馈仍需对应模型轮次，原生 collab 事件与文件 broker 结果分别记录。
+10. **Ask 与旧 ready。** 从上轮 Auto 遗留队列启动 Ask，检查队列在执行前清理、read-only/never 保持、普通结果和原生 collab 仍可用；Auto 则继续创建 ready 和派发。平台/CLI 权限验证与真实模型反馈分别取证。
 11. **回执错误与停止重入。** 分别注入自然完成和 queued 取消回执故障，检查错误保留、abort/close、重入次数及外层登记；对忽略 abort 或迟到 resolve 的 worker 检查输出隔离，不能把 stop 返回或锁释放当作 OS 退出证据。
 
 **集成验证范围。** 同文件冲突和异步完成顺序的派发预算由受控 broker 测试覆盖；真实长任务时长、忽略 abort 的 worker 与 drain/停止确认交接、波次内跨所有权路径写入，以及真实 app-server 版本的子线程历史字段仍需相应环境验证。拒绝回执路径、活动计数、协议失败终态与暂时性历史错误应分别覆盖；源码中的限制与真实运行后果须保持区分。

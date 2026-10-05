@@ -132,7 +132,7 @@
       if (typeof value === 'string' && value) agent[field] = clean(value, sanitize, field === 'task' ? 4096 : 160);
     }
     agent.clipped ||= detail.historyClipped === true;
-    agent.historyUnavailable ||= detail.historyUnavailable === true;
+    if (typeof detail.historyUnavailable === 'boolean') agent.historyUnavailable = detail.historyUnavailable;
     let next = type.endsWith('.queued') ? 'pending' : type.endsWith('.started') ? 'running'
       : type.endsWith('.completed') ? 'completed' : type.endsWith('.rejected') ? 'failed'
         : type.endsWith('.failed') ? (detail.status === 'cancelled' ? 'cancelled' : 'failed') : detail.status;

@@ -218,8 +218,10 @@ function rectifyAnthropicRequestForRetry(body, errorText) {
     return changed;
   }
   if (/budget_tokens|thinking budget|must be less than max_tokens|at least 1024/i.test(message)) {
+    // Keep this existing compatibility retry only when its budget fits the
+    // caller's maximum. Otherwise expose the original upstream rejection.
+    if (!Number.isFinite(Number(body.max_tokens)) || Number(body.max_tokens) < 64000) return false;
     body.thinking = { type: 'enabled', budget_tokens: 32000 };
-    body.max_tokens = Math.max(Number(body.max_tokens) || 0, 64000);
     delete body.output_config;
     return true;
   }

@@ -89,7 +89,7 @@ for (const parentOutcome of ['completed', 'failed', 'cancelled']) {
     assert.equal(value.afterNative.pollTimers, 0);
     assert.equal(value.afterNative.brokerStatus, 'closed');
     assert.equal(value.afterDeadline.queuedReceipt.status, 'cancelled');
-    assert.deepEqual(value.afterNative.nativeWork, { projectLocks: 0, runControllers: 0, activeTurnControls: 0 });
+    assert.deepEqual(value.afterNative.nativeWork, { projectLocks: 0, processStopBarriers: 0, runControllers: 0, activeTurnControls: 0 });
     assert.equal(value.nativeResponse.ok, parentOutcome === 'completed');
     if (parentOutcome === 'cancelled') assert.equal(value.nativeResponse.error.code, 'codex_cancelled');
     assert.deepEqual(value.blockedPaths, ['main.tex']);
@@ -106,7 +106,7 @@ for (const parentOutcome of ['completed', 'failed', 'cancelled']) {
       assert.equal(after.pollTimers, 0);
       assert.equal(after.workerDeadlineTimers, 0);
       assert.equal(after.brokerStatus, 'closed');
-      assert.deepEqual(after.nativeWork, { projectLocks: 0, runControllers: 0, activeTurnControls: 0 });
+      assert.deepEqual(after.nativeWork, { projectLocks: 0, processStopBarriers: 0, runControllers: 0, activeTurnControls: 0 });
       assert.equal(value.repeatedStopError.code, 'subagent_io_failed');
       assert.deepEqual(value.blockedPaths, ['main.tex']);
       assert.equal(value.afterDeadline.runningReceipt.status, 'cancelled');

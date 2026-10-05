@@ -26,6 +26,15 @@ function nativeFixture(t, version = '2.4.2') {
   context.updatesRoot = path.join(context.nativeRoot, 'updates');
   for (const dir of [context.updatesRoot, path.join(context.nativeRoot, 'versions', version), path.join(context.extensionRoot, 'runtime')]) fs.mkdirSync(dir, { recursive: true });
   const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value));
+  const runtime = (directory, value) => {
+    fs.mkdirSync(path.join(directory, 'src/shared'), { recursive: true });
+    fs.writeFileSync(path.join(directory, 'src/shared/compatibility.js'), `const BUILD_TARGET_VERSION = '${value}';\n`);
+    write(path.join(directory, 'runtime-manifest.json'), { schemaVersion: 1, js: ['src/shared/compatibility.js'], css: [] });
+    const native = path.join(context.nativeRoot, 'versions', value);
+    fs.mkdirSync(path.join(native, 'native-host/src'), { recursive: true });
+    write(path.join(native, 'package.json'), { version: value });
+    fs.writeFileSync(path.join(native, 'native-host/src/index.js'), 'void 0;\n');
+  };
   const align = value => {
     fs.writeFileSync(path.join(context.nativeRoot, 'active-version'), value + '\n');
     for (const [dir, kind] of [[context.nativeRoot, 'native'], [context.extensionRoot, 'extension']]) {
@@ -34,13 +43,14 @@ function nativeFixture(t, version = '2.4.2') {
     write(path.join(context.extensionRoot, 'manifest.json'), { manifest_version: 3, version: value, background: { service_worker: 'bootstrap/background.js' } });
     fs.mkdirSync(path.join(context.extensionRoot, 'bootstrap'), { recursive: true });
     fs.writeFileSync(path.join(context.extensionRoot, 'bootstrap/background.js'), '// fixture');
-    write(path.join(context.extensionRoot, 'runtime/runtime-manifest.json'), { schemaVersion: 1 });
+    runtime(path.join(context.extensionRoot, 'runtime'), value);
   };
   align(version);
+  runtime(path.join(context.extensionRoot, 'slots/previous/runtime'), '2.4.1');
   const env = { CODEX_OVERLEAF_MANAGED: '1', CODEX_OVERLEAF_ACTIVE_VERSION: version,
     CODEX_OVERLEAF_MANAGED_NATIVE_ROOT: context.nativeRoot, CODEX_OVERLEAF_MANAGED_EXTENSION_ROOT: context.extensionRoot };
   const journal = { id: 'old-transaction', state: 'awaiting_health', sourceVersion: '2.4.1', targetVersion: '2.4.2', authorizationId: AUTH,
-    previousManifest: JSON.stringify({ version: '2.4.1' }) };
+    previousManifest: JSON.stringify({ manifest_version: 3, version: '2.4.1', background: { service_worker: 'bootstrap/background.js' } }) };
   const authorization = { id: AUTH, state: 'bound', transactionId: journal.id, sourceVersion: journal.sourceVersion,
     targetVersion: journal.targetVersion, expiresAt: '2020-01-01T00:00:00.000Z' };
   write(path.join(context.updatesRoot, 'transaction.json'), journal);

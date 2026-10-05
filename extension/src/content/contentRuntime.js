@@ -624,6 +624,14 @@
         locale: getLocale()
       };
     },
+    preflightProjectReferences: ({ project, assertCurrent }) => {
+      assertCurrent();
+      return Modules.SensitivePreflight.create({
+        SensitiveScan, normalizeGovernanceRules, isTextSnapshotFile, getCurrentProjectId,
+        appendRunEvent: () => {}, appendCompletionReport: () => {},
+        showPluginConfirm, tr, tx
+      }).run({ task: '', project, rules: getGovernanceRulesForCurrentProject(), assertCurrent });
+    },
     startBuild: async params => {
       const gate = await nativeCompatibilityController.ensureForMethod('codex.run');
       if (!gate.ok) throw new Error(gate.response?.error?.message || 'Native host update required.');

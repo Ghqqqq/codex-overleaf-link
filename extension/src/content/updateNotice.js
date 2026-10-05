@@ -548,6 +548,7 @@
       tab_unavailable: tx('An Overleaf tab is unavailable for the safety check.', '某个 Overleaf 标签页当前无法完成安全检查。'),
       idle_probe_failed: tx('The Overleaf safety check failed. Reload the affected tab and retry.', 'Overleaf 安全检查失败；请刷新受影响的标签页后重试。'),
       native_project_locked: tx('Native Host still holds a project lock.', 'Native Host 仍持有项目锁。'),
+      native_process_stop_unconfirmed: tx('A previous Codex process has not yet confirmed its exit.', '前一次 Codex 进程尚未确认退出。'),
       native_run_active: tx('Native Host is still processing a task.', 'Native Host 仍在处理任务。'),
       busy: tx('A component is still busy.', '某个组件仍处于忙碌状态。')
     }[value] || tx('Waiting until every Overleaf tab is saved and idle.', '正在等待所有 Overleaf 标签页完成保存并进入空闲状态。');

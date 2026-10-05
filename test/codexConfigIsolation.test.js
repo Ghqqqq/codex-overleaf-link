@@ -138,3 +138,29 @@ for (const [name, brokenValue] of [
     }
   });
 }
+
+for (const [name, config] of [
+  ['quoted section', '["mcp_servers".example]\ncommand="synthetic-never-executed"\n'],
+  ['literal section', "['mcp_servers'.example]\ncommand='synthetic-never-executed'\n"],
+  ['spaced dotted section', '[mcp_servers . example]\ncommand="synthetic-never-executed"\n'],
+  ['dotted assignment', 'mcp_servers.example.command="synthetic-never-executed"\n'],
+  ['inline table', 'mcp_servers={example={command="synthetic-never-executed"}}\n'],
+  ['Unicode escaped section', '["mcp_\\u0073ervers".example]\ncommand="synthetic-never-executed"\n'],
+  ['Unicode escaped notify', '"not\\U00000069fy"=["synthetic-never-executed"]\n'],
+  ['quoted array table', '[["skills"."config"]]\npath="synthetic-path"\nenabled=true\n']
+]) {
+  test('skill isolation filters semantically equivalent root paths: ' + name, () => {
+    assert.equal(prepare(prefix + config + '[features]\nmulti_agent=true\n', { loadCodexLocalSkills: false }), prefix + '[features]\nmulti_agent=true\n');
+  });
+}
+
+test('escaped personality is removed while quoted dots remain distinct literal keys', () => {
+  const escaped = '"per\\u0073onality"="private"\n';
+  const preserved = '"mcp_servers.example"={command="literal-key"}\n["mcp_servers.example"]\nnotify=["table-value"]\n';
+  assert.equal(prepare(prefix + escaped + preserved, { loadCodexLocalSkills: false }), prefix + preserved);
+});
+
+test('equivalent local-skill paths remain unchanged when local skills are enabled', () => {
+  const config = prefix + '["mcp_servers".example]\ncommand="synthetic-never-executed"\n';
+  assert.equal(prepare(config, { loadCodexLocalSkills: true }), config);
+});

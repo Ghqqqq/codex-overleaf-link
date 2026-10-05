@@ -2,7 +2,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { splitTomlStatements } = require('./tomlStatements');
+const { filterTomlRootKeys } = require('./tomlStatements');
+const { copyInheritedAuth, removeMissingInheritedAuth } = require('./codexInheritedAuth');
 const {
   getHomeDir,
   getNativeHostPlatform
@@ -87,9 +88,11 @@ function preparePluginCodexHome(env = process.env, options = {}) {
   const linked = [];
   const skippedLinks = [];
   for (const fileName of COPIED_USER_CODEX_FILES) {
+    if (fileName === 'config.toml' && options.skipCopiedUserConfig === true) continue;
     const source = path.join(userHome, fileName);
     const target = path.join(pluginHome, fileName);
     if (!isRegularFile(source)) {
+      if (fileName === 'auth.json') removeMissingInheritedAuth(source, target);
       continue;
     }
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -167,60 +170,36 @@ function ensureDefaultCodexOverleafSkills({ env = process.env } = {}) {
 }
 
 function copyUserCodexFile(source, target, fileName, options = {}) {
+  if (fileName === 'auth.json') {
+    copyInheritedAuth(source, target);
+    return;
+  }
   if (fileName !== 'config.toml') {
     fs.copyFileSync(source, target);
     return;
   }
-  let content = stripPersonalizationFromCodexConfig(fs.readFileSync(source, 'utf8'));
+  const content = sanitizeCopiedCodexConfig(fs.readFileSync(source, 'utf8'), options);
+  fs.writeFileSync(target, content, 'utf8');
+}
+
+function sanitizeCopiedCodexConfig(content, options = {}) {
+  content = stripPersonalizationFromCodexConfig(content);
   if (options.loadCodexLocalSkills === false) {
     content = sanitizeCodexConfigForLocalSkillIsolation(content);
   }
-  fs.writeFileSync(target, content, 'utf8');
+  return content;
 }
 
 // Remove the complete top-level personality assignment. Statement boundaries
 // keep keys/table headers inside multiline strings from becoming filter input.
-// Bare keys and their ordinary quoted forms are supported; table-scoped fields
-// remain distinct. Other source text is preserved, with CRLF normalized to LF.
+// Key paths are decoded before filtering, including quoted/dotted spellings.
+// Table-scoped fields remain distinct. Unselected source text is preserved.
 function stripPersonalizationFromCodexConfig(content) {
-  const output = [];
-  let beforeFirstSection = true;
-  for (const statement of splitTomlStatements(content)) {
-    if (statement.trimStart().startsWith('[')) {
-      beforeFirstSection = false;
-    }
-    if (beforeFirstSection && /^[ \t]*(?:personality|"personality"|'personality')[ \t]*=/.test(statement)) continue;
-    output.push(statement);
-  }
-  return output.join('');
+  return filterTomlRootKeys(content, ['personality']);
 }
 
 function sanitizeCodexConfigForLocalSkillIsolation(content) {
-  const output = [];
-  let skippedSection = false;
-  let beforeFirstSection = true;
-
-  for (const statement of splitTomlStatements(content)) {
-    if (statement.trimStart().startsWith('[')) {
-      beforeFirstSection = false;
-      skippedSection = isLocalSkillConfigSection(parseTomlSectionName(statement.trimEnd()));
-    }
-    if (skippedSection || (beforeFirstSection && /^[ \t]*(?:notify|"notify"|'notify')[ \t]*=/.test(statement))) {
-      continue;
-    }
-    output.push(statement);
-  }
-
-  return output.join('');
-}
-
-function parseTomlSectionName(line) {
-  const match = String(line || '').match(/^\s*\[{1,2}\s*([^\]]+?)\s*\]{1,2}\s*(?:#.*)?$/);
-  return match ? match[1].trim() : '';
-}
-
-function isLocalSkillConfigSection(sectionName) {
-  return LOCAL_SKILL_CONFIG_SECTIONS.some(prefix => sectionName === prefix || sectionName.startsWith(`${prefix}.`));
+  return filterTomlRootKeys(content, ['notify', ...LOCAL_SKILL_CONFIG_SECTIONS]);
 }
 
 function removePluginHomeEntry(pluginHome, entryName, skippedLinks) {
@@ -236,6 +215,17 @@ function removePluginHomeEntry(pluginHome, entryName, skippedLinks) {
 }
 
 function buildCodexHomeEnv(env = process.env, options = {}) {
+  const userHome = getUserCodexHome(env, options);
+  const canonicalHome = getPluginCodexHome(env, options);
+  if (options.isolateRuntimeHome === true && !samePath(userHome, canonicalHome)) {
+    const { prepareScopedPluginCodexHome } = require('./codexHomeScope');
+    const prepared = prepareScopedPluginCodexHome(env, options, {
+      userHome, canonicalHome, prepare: preparePluginCodexHome, ensureSkills: ensureDefaultCodexOverleafSkills,
+      prepareConfig: sanitizeCopiedCodexConfig
+    });
+    return { ...env, CODEX_HOME: prepared.pluginHome, CODEX_SQLITE_HOME: env.CODEX_SQLITE_HOME || canonicalHome,
+      CODEX_OVERLEAF_CODEX_HOME: canonicalHome, CODEX_OVERLEAF_USER_CODEX_HOME: userHome };
+  }
   const prepared = preparePluginCodexHome(env, options);
   return {
     ...env,
@@ -295,6 +285,10 @@ function composePluginSkillsDirectory({
     for (const entry of fs.readdirSync(source.root, { withFileTypes: true })) {
       if (!entry.isDirectory() || !isSafeSkillEntryName(entry.name)) {
         continue;
+      }
+      if (source.name === 'codex-overleaf') {
+        if (Array.isArray(options.enabledCodexOverleafSkillIds) && !options.enabledCodexOverleafSkillIds.includes(entry.name)) continue;
+        if (Array.isArray(options.disableCodexOverleafSkillIds) && options.disableCodexOverleafSkillIds.includes(entry.name)) continue;
       }
       const sourcePath = path.join(source.root, entry.name);
       const targetPath = path.join(targetRoot, entry.name);

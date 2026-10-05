@@ -60,7 +60,8 @@ test('first submission waits for pending official skills and passes enabled IDs 
     h.release(); await prime; await run;
     assert.equal(h.io.errors.length, 0);
     assert.deepEqual(h.io.requests[0].enabledCodexOverleafSkillIds, ['annotated-rewrite', 'parallel-subagents']);
-    assert.equal(await actualBrokerGate(t, h.io.requests[0]), true);
+    assert.equal(await actualBrokerGate(t, h.io.requests[0]), false, 'Ask keeps the file broker unavailable');
+    assert.equal(await actualBrokerGate(t, { ...h.io.requests[0], mode: 'auto' }), true);
   } finally { h.release(); await prime; await run; }
 });
 
@@ -78,7 +79,8 @@ test('cached catalog preserves the normal broker route without another skills re
   const h = skillsHarness({ cached: true });
   await h.start();
   assert.equal(h.calls(), 0); assert.equal(h.io.errors.length, 0);
-  assert.equal(await actualBrokerGate(t, h.io.requests[0]), true);
+  assert.equal(await actualBrokerGate(t, h.io.requests[0]), false, 'Ask keeps the file broker unavailable');
+    assert.equal(await actualBrokerGate(t, { ...h.io.requests[0], mode: 'auto' }), true);
 });
 
 test('disabled official skills do not wait for a catalog or activate the broker', async t => {
@@ -141,5 +143,6 @@ test('failed shared prefetch remains retryable through the original task entry',
   h.context.sendBackgroundNative = async () => ({ ok: true, result: { skills: catalog } });
   await h.start();
   assert.equal(h.io.requests.length, 1);
-  assert.equal(await actualBrokerGate(t, h.io.requests[0]), true);
+  assert.equal(await actualBrokerGate(t, h.io.requests[0]), false, 'Ask keeps the file broker unavailable');
+    assert.equal(await actualBrokerGate(t, { ...h.io.requests[0], mode: 'auto' }), true);
 });

@@ -2,6 +2,8 @@
 
 const { buildCodexRuntimeEvent } = require('./codexRuntimeIdentity');
 
+const { runOwnedNativeHelper } = require('./nativeHelperLifecycle');
+const { stopCodexAppServer, throwIfAborted } = require('./codexSessionTiming');
 const { spawn } = require('node:child_process');
 const { normalizeSafeProjectPath } = require('../../extension/src/shared/projectFiles');
 const { createHash } = require('node:crypto');
@@ -1149,10 +1151,12 @@ function parseAgentArgsJson(value) {
 }
 
 function runExternalAgent(agentSpec, params, emit = () => {}, options = {}) {
-  return new Promise((resolve, reject) => {
+  return runOwnedNativeHelper(signal => new Promise((resolve, reject) => {
+    throwIfAborted(signal);
     const child = spawn(agentSpec.file, agentSpec.args || [], {
       env: options.env || process.env,
       shell: false,
+      detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe']
     });
     const timeoutMs = parseOptionalPositiveInteger(options.timeoutMs);
@@ -1162,6 +1166,8 @@ function runExternalAgent(agentSpec, params, emit = () => {}, options = {}) {
     let stderrRemainder = '';
     let outputBytes = 0;
     let settled = false;
+    const onAbort = () => fail(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
 
     const timeout = timeoutMs
       ? setTimeout(() => {
@@ -1186,10 +1192,8 @@ function runExternalAgent(agentSpec, params, emit = () => {}, options = {}) {
       if (timeout) {
         clearTimeout(timeout);
       }
-      if (child.exitCode === null && !child.killed) {
-        child.kill('SIGTERM');
-      }
-      reject(error);
+      signal.removeEventListener('abort', onAbort);
+      stopCodexAppServer(child, { processGroup: process.platform !== 'win32', reason: error }).then(() => reject(error), reject);
     }
 
     function succeed(result) {
@@ -1200,7 +1204,8 @@ function runExternalAgent(agentSpec, params, emit = () => {}, options = {}) {
       if (timeout) {
         clearTimeout(timeout);
       }
-      resolve(result);
+      signal.removeEventListener('abort', onAbort);
+      stopCodexAppServer(child, { processGroup: process.platform !== 'win32' }).then(() => resolve(result), reject);
     }
 
     child.stdout.setEncoding('utf8');
@@ -1222,6 +1227,7 @@ function runExternalAgent(agentSpec, params, emit = () => {}, options = {}) {
         emitTaskEvent(emit, event.type || 'agent.progress', event.title || event.type || 'Agent progress', event.detail || {}, event.status || 'running');
       }
     });
+    child.stdin.on('error', fail);
     child.on('error', fail);
     child.on('close', code => {
       if (settled) {
@@ -1248,7 +1254,7 @@ function runExternalAgent(agentSpec, params, emit = () => {}, options = {}) {
     });
 
     child.stdin.end(JSON.stringify(params));
-  });
+  }));
 }
 
 function parsePositiveInteger(value, fallback) {
@@ -1321,9 +1327,10 @@ function errorResponse(id, code, message, details = {}) {
   };
 }
 
-function getActiveNativeWorkState() {
+function getActiveNativeWorkState(env = process.env) {
   return {
     projectLocks: activeProjectLocks.size,
+    processStopBarriers: processStopBarrier.getBlockedProjectCount(env.CODEX_OVERLEAF_MIRROR_ROOT, { env }),
     runControllers: activeRunControllers.size,
     activeTurnControls: Array.from(activeRunEntries.values()).filter(entry => entry.control).length
   };

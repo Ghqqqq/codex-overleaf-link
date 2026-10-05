@@ -190,6 +190,7 @@
 - 必须联动：[NativeChannel](../../extension/src/content/nativeChannel.js)、[nativeTransportEnvelope](../../native-host/src/nativeTransportEnvelope.js)、[nativeQuotas](../../native-host/src/nativeQuotas.js)、[providerBridgeRoutes](../../native-host/src/providerBridgeRoutes.js)、双方 compatibility、secret 脱敏与取消路径。
 - 最近测试：[nativeMessaging](../../test/nativeMessaging.test.js)、[streamEvents](../../test/streamEvents.test.js)、[providerReliability](../../test/providerReliability.test.js)、[providerStoreCapacity](../../test/providerStoreCapacity.test.js)、[responsesProtocolRedaction](../../test/responsesProtocolRedaction.test.js)、[providerToolCompletion](../../test/providerToolCompletion.test.js)、[codexTerminalStatus](../../test/codexTerminalStatus.test.js)、[nativeTransportEnvelope](../../test/nativeTransportEnvelope.test.js)。
 - Provider 显式预算的来源标记沿 draft → Store → catalog → launch 保留；buffered 与允许的 bodyOverrides 须检查实际 wire 消费，见 [providerWireSettings](../../test/providerWireSettings.test.js)。兼容性分类之外仍需同步 Content/后台方法集合，见 [nativeCompatibilityBusinessMethods](../../test/nativeCompatibilityBusinessMethods.test.js)。
+- 三桥的逐跳请求和普通 JSON 活动读取共用 [providerHttp](../../native-host/src/providerHttp.js)；修改鉴权重定向、续传 ID/次数或输出预算时核对 [providerBoundaryGuards](../../test/providerBoundaryGuards.test.js) 和 [providerJsonActivity](../../test/providerJsonActivity.test.js)，保留各协议既有容量及兼容边界。
 
 ### 改进程退出、断连隔离或正常完成时机
 
@@ -197,6 +198,7 @@
 - 状态 owner：[nativeRunLifecycle](../../native-host/src/nativeRunLifecycle.js) 的 `register` 返回 `trackProcess/complete`，由 taskRunnerRuntime 登记并在释放锁后结束；`abortAllActiveOperations/quarantineActiveOperations` 经 runtime 导出供 index 使用。[codexSessionTiming](../../native-host/src/codexSessionTiming.js) 提供退出证据，[processStopBarrier](../../native-host/src/processStopBarrier.js) 管理跨 Host 准入屏障。
 - 必须联动：父任务、worker、风格执行的 `onProcessStarted`、已关闭 transport 的派发拒绝、无 RPC ID 的登记、正常停止及持久化失败；范围与平台限制见[Native 执行](native-execution.md)。
 - 最近测试：[codexProcessSettlement](../../test/codexProcessSettlement.test.js)、[nativeDisconnectSettlement](../../test/nativeDisconnectSettlement.test.js)、[nativeRunLifecycle](../../test/nativeRunLifecycle.test.js)、[readProgressGuard](../../test/readProgressGuard.test.js)。
+- 外部 task、thread fork 和 Provider test 从准备到收尾由 [nativeHelperLifecycle](../../native-host/src/nativeHelperLifecycle.js) 作为自有 helper 登记，保留独立取消语义；对应 [nativeHelperShutdown](../../test/nativeHelperShutdown.test.js) 与 [providerTestCancellation](../../test/providerTestCancellation.test.js)。helper 断连清理与普通项目的持久退出屏障分别理解。
 
 ### 改并行子代理、文件归属或子对话展示
 
@@ -205,14 +207,18 @@
 - [subagentAdmission.estimateWorkerWaves](../../native-host/src/subagentAdmission.js) 根据规范路径、冲突和并发槽估计准入波次，broker 在真实启动前再核剩余预算；握手计数随登记与结算刷新。对应 [subagentAdmissionState](../../test/subagentAdmissionState.test.js)，父运行和 OS 退出时限另行核对。
 - 必须联动：[codexSessionRunner](../../native-host/src/codexSessionRunner.js)、[subagentActivityModel](../../extension/src/shared/subagentActivityModel.js)、[parallel-subagents skill](../../native-host/src/skills/parallel-subagents/SKILL.md)，以及运行 settlement。
 - 最近测试：[subagentBroker](../../test/subagentBroker.test.js)、[subagentIoFailure](../../test/subagentIoFailure.test.js)、[codexTerminalStatus](../../test/codexTerminalStatus.test.js)、[parallelSubagents](../../test/parallelSubagents.test.js)、[subagentTelemetry](../../test/subagentTelemetry.test.js)、[subagentActivityView](../../test/subagentActivityView.test.js)。
+- 文件 broker 只在既有可写沙箱下建立，Ask 清理旧握手并按技能已有顺序回退；见 [askBrokerAvailability](../../test/askBrokerAvailability.test.js)。历史补读的临时错误按真实活动有界重试，成功恢复的显式 `historyUnavailable:false` 需继续穿过前端投影和持久化。
 
 ### 改 Write in My Style、参考资料或 skills
 
 - 入口：[WritingStyleSettings](../../extension/src/content/writingStyleSettings.js)、[writingStyleRuntime.build/get/set/forRun](../../native-host/src/writingStyleRuntime.js)、[LocalSkillsPanel](../../extension/src/content/localSkillsPanel.js)。
-- 状态 owner：Native 风格配置带 revision 和版本 bundle；[writingStyleProfile](../../native-host/src/writingStyleProfile.js) 校验生成结构；[localSkills](../../native-host/src/localSkills.js) 管理本地技能。
+- 状态 owner：Native 风格配置带 revision 和版本 bundle；[writingStyleStore](../../native-host/src/writingStyleStore.js) 管理同 scope 配置短事务及临时文件；[writingStyleProfile](../../native-host/src/writingStyleProfile.js) 校验生成结构；[localSkills](../../native-host/src/localSkills.js) 管理本地技能。
 - 必须联动：[referenceProjects](../../extension/src/page/referenceProjects.js)、[writingStyleEvidence](../../native-host/src/writingStyleEvidence.js)、[runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js)、[codexPromptAssembly](../../native-host/src/codexPromptAssembly.js)，以及全局 skill 开关；配置继承需核对 [codexHome](../../native-host/src/codexHome.js) 与 [tomlStatements](../../native-host/src/tomlStatements.js) 的完整语句过滤及等价写法边界。
 - 最近测试：[writingStyleLimits](../../test/writingStyleLimits.test.js)、[localSkills](../../test/localSkills.test.js)、[runExecutionSnapshot](../../test/runExecutionSnapshot.test.js)、[codexHome](../../test/codexHome.test.js)、[codexConfigIsolation](../../test/codexConfigIsolation.test.js)。
+- 项目参考在 `startBuild` 前经组合根的 `preflightProjectReferences` 复用既有敏感预检；发布前逐资产采用同一消费校验。配置竞争、恢复与预检对应 [writingStyleRecovery](../../test/writingStyleRecovery.test.js)、[writingStylePreflight](../../test/writingStylePreflight.test.js)。
 - 删除技能后按归一化单次调用的 `id` 清理当前 composer，见 [removedComposerSkill](../../test/removedComposerSkill.test.js)；已捕获的排队项遵守各自快照规则。
+- 技能环境由 [codexHomeScope](../../native-host/src/codexHomeScope.js) 按配置发布稳定 home，[codexConfigPaths](../../native-host/src/codexConfigPaths.js) 保持已知配置路径的原锚点，[codexInheritedAuth](../../native-host/src/codexInheritedAuth.js) 处理可归因的认证副本；[codexSkillIsolation](../../native-host/src/codexSkillIsolation.js) 管理发现结果中的逐项禁用。父任务、worker 和 fork 的参数及共享历史需一起核对。
+- 对应 [codexHomeScope](../../test/codexHomeScope.test.js)、[codexConfigPaths](../../test/codexConfigPaths.test.js)、[codexInheritedAuth](../../test/codexInheritedAuth.test.js)、[codexSkillDiscovery](../../test/codexSkillDiscovery.test.js)；真实 CLI 的路径、历史和认证行为有独立版本边界，详见技能与 Provider 领域页。
 
 ## 上下文扫描与写入治理
 
@@ -241,15 +247,18 @@
 - 必须联动：取消 generation、恢复待定、重装命令、四版本加载投影及恢复写入顺序；旧 `bootstrap/update.html` 不承担现行面板入口。
 - 最近测试：[updateCenter](../../test/updateCenter.test.js)、[managedUpdateSafetyGate](../../test/managedUpdateSafetyGate.test.js)、[updateConsent](../../test/updateConsent.test.js)、[updateRevocationIntent](../../test/updateRevocationIntent.test.js)、[updateRuntimeRecovery](../../test/updateRuntimeRecovery.test.js)。
 - 冷却原因、同数字 RC 晋升的手动重装指引、旧 bound 授权收尾及双恢复入口竞态见 [updateStateReasonRecovery](../../test/updateStateReasonRecovery.test.js)。
+- 完整同版本重装只在 Native 给出已替代事务及有效 `reinstalledPair` 时结算旧恢复状态；手动提示缓存需绑定当前 ETag、来源版本和签名原件，见 [updateManualInstall](../../test/updateManualInstall.test.js)。
 
 ### 改安装、doctor、托管更新或发布包
 
 - 入口：[CLI](../../bin/codex-overleaf-link.mjs)、[install-managed](../../scripts/install-managed.mjs)、[bootstrap/background](../../extension/bootstrap/background.js)、[release workflow](../../.github/workflows/release.yml)。
 - 状态 owner：[managedInstall](../../native-host/src/managedInstall.js) 管理安装；[updateManager](../../native-host/src/updateManager.js) 管理更新；[backgroundUpdateCoordinator](../../extension/src/backgroundUpdateCoordinator.js) 协调授权与浏览器状态。
+- 有限安装补偿由 [managedInstallRecovery](../../native-host/src/managedInstallRecovery.js) 在同一 mutation lock 下保护指针、注册及目标槽；[managedRuntimeEvidence](../../native-host/src/managedRuntimeEvidence.js) 核对实际扩展/Native 文件树。回滚、完整重装结算和固定 Bootstrap 回读共同消费这些证据，不能以 marker 对齐代替实际字节恢复。
 - 必须联动：[nativeDoctor](../../native-host/src/nativeDoctor.js)、[launcher](../../native-host/src/launcher.js) 生成的外层桥及 [managedLauncherRuntime](../../native-host/src/managedLauncherRuntime.js) 内层启动器、[managedUpdateProjection](../../extension/src/shared/managedUpdateProjection.js)、[updateTrust](../../native-host/src/updateTrust.js)、[build-release](../../scripts/build-release.mjs)、manifest/版本及 npm 包边界。
 - 最近测试：[managedInstall](../../test/managedInstall.test.js)、[nativeInstallScripts](../../test/nativeInstallScripts.test.js)、[updateManager](../../test/updateManager.test.js)、[releaseScripts](../../test/releaseScripts.test.js)；发布还需另读当前发布 skill。
 - [installReleaseSafety](../../test/installReleaseSafety.test.js) 定位 Windows 注册发现、跨管理根共享入口归属、签名 manifest 与实际 bundle 字节绑定，以及固定启动器生成器的更新边界；真实 Windows 注册和发布资产仍需对应环境验证。
 - Windows 注册值的只读查询在 [nativeHostRegistration.queryWindowsNativeHostRegistration](../../native-host/src/nativeHostRegistration.js)，由 Doctor 和卸载归属检查共同消费；[compatibility.buildInstallCommand](../../extension/src/shared/compatibility.js) 根据安装身份生成原模式修复命令，Popup、原面板指引和诊断的完整消费链见 [managedRepairGuidance](../../test/managedRepairGuidance.test.js)。
+- Native 更新安全点还经 `getActiveNativeWorkState(env)` 消费 [processStopBarrier.getBlockedProjectCount](../../native-host/src/processStopBarrier.js) 的既有退出屏障；对应 [updateStopBarrier](../../test/updateStopBarrier.test.js)、[managedInstallRecovery](../../test/managedInstallRecovery.test.js)、[updateRollbackEvidence](../../test/updateRollbackEvidence.test.js)、[managedRuntimeEvidence](../../test/managedRuntimeEvidence.test.js)。
 
 ## 新增模块与能力的加载清单
 

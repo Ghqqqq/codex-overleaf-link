@@ -8,6 +8,7 @@ const { getCodexOverleafHome } = require('./nativeHostPlatform');
 const Shared = require('../../extension/src/shared/writingStyle');
 const REFERENCE_LIMITS = Shared.REFERENCE_LIMITS;
 const StyleProfile = require('./writingStyleProfile');
+const { writeJson, withConfigLock } = require('./writingStyleStore');
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const checkAbort = signal => { if (signal?.aborted) throw signal.reason || fail('codex_cancelled', 'Writing-style generation was cancelled.'); };
@@ -38,12 +39,6 @@ function readJson(file, fallback, max = 2 * 1024 * 1024) {
   } catch (error) { if (error.code === 'ENOENT') return fallback; throw error; }
 }
 
-function writeJson(file, value) {
-  const temp = file + '.' + crypto.randomUUID() + '.tmp';
-  fs.writeFileSync(temp, JSON.stringify(value), { mode: 0o600 });
-  fs.renameSync(temp, file);
-}
-
 function config(scope) { return readJson(path.join(scope.root, 'config.json'), { revision: 0, enabled: false, version: '' }); }
 function saveConfig(scope, value) { const next = { ...value, revision: (Number(value.revision) || 0) + 1 }; writeJson(path.join(scope.root, 'config.json'), next); return next; }
 function alive(pid) { try { process.kill(Number(pid), 0); return true; } catch (error) { return error.code !== 'ESRCH'; } }
@@ -57,6 +52,10 @@ function versionRoot(scope, version) {
 
 function readBundle(scope, version, bundleHash) {
   const root = versionRoot(scope, version);
+  return readBundleAtRoot(scope, version, root, bundleHash);
+}
+
+function readBundleAtRoot(scope, version, root, bundleHash) {
   const raw = fs.readFileSync(path.join(root, 'manifest.json'), 'utf8');
   if (raw.length > 100000 || (bundleHash && sha(raw) !== bundleHash)) throw fail('writing_style_changed', 'The saved writing skill changed. Rebuild it in General settings.');
   const manifest = JSON.parse(raw);
@@ -79,13 +78,25 @@ function publicBundle(scope, bundle) {
 function get(params, env, isRequestActive) {
   const scope = scopeOf(params, env);
   let state = config(scope);
-  if (state.building && (!alive(state.building.pid)
-    || (state.building.pid === process.pid && isRequestActive && !isRequestActive(state.building.requestId)))) {
-    state = saveConfig(scope, { ...state, building: null, error: 'The previous style-generation task was interrupted.' });
+  const interrupted = value => value.building && (!alive(value.building.pid)
+    || (value.building.pid === process.pid && isRequestActive && !isRequestActive(value.building.requestId)));
+  if (interrupted(state)) {
+    state = withConfigLock(scope, () => {
+      const latest = config(scope);
+      return interrupted(latest) ? saveConfig(scope, { ...latest, building: null, error: 'The previous style-generation task was interrupted.' }) : latest;
+    });
   }
-  const bundle = state.version ? readBundle(scope, state.version) : null;
+  let bundle = null, unavailable = '';
+  if (state.version) {
+    try { bundle = readBundle(scope, state.version); }
+    catch (error) {
+      if (state.enabled === true || params.includePreview) throw error;
+      unavailable = 'The saved writing skill changed. Rebuild it in General settings.';
+    }
+  }
   const result = { enabled: state.enabled === true, ready: Boolean(bundle),
-    revision: state.revision, building: state.building || null, error: state.error || '',
+    revision: state.revision, building: state.building || null, error: state.error || unavailable,
+    errorCode: !state.error && unavailable ? 'writing_style_changed' : '',
     ...(bundle ? publicBundle(scope, bundle) : { sources: [], sections: [], snapshot: null }) };
   if (params.includePreview && bundle) {
     result.preview = ['SKILL.md', 'references/writing-style.md', ...bundle.manifest.sections.map(item => item.file)]
@@ -96,10 +107,12 @@ function get(params, env, isRequestActive) {
 
 function set(params, env) {
   const scope = scopeOf(params, env);
-  const state = config(scope);
-  if (params.enabled === true && !state.version) throw fail('writing_style_not_ready', 'Generate the writing skill before enabling it.');
-  if (params.enabled === true) readBundle(scope, state.version);
-  saveConfig(scope, { ...state, enabled: params.enabled === true });
+  withConfigLock(scope, () => {
+    const state = config(scope);
+    if (params.enabled === true && !state.version) throw fail('writing_style_not_ready', 'Generate the writing skill before enabling it.');
+    if (params.enabled === true) readBundle(scope, state.version);
+    saveConfig(scope, { ...state, enabled: params.enabled === true });
+  });
   return get(params, env);
 }
 
@@ -333,12 +346,16 @@ async function build({ params, env, signal, execute, providerLaunch, onControlRe
   const scope = scopeOf(params, env), input = params.writingStyleBuild;
   const id = crypto.randomUUID();
   const staging = path.join(scope.root, '.build-' + id);
-  fs.mkdirSync(path.join(staging, 'corpus'), { recursive: true, mode: 0o700 });
-  const before = config(scope);
-  saveConfig(scope, { ...before, error: '', building: { id, pid: process.pid,
-    requestId: String(input.requestId || ''), startedAt: new Date().toISOString() } });
-  let keepStaging = false;
+  let keepStaging = false, registered = false;
   try {
+    fs.mkdirSync(path.join(staging, 'corpus'), { recursive: true, mode: 0o700 });
+    const before = withConfigLock(scope, () => {
+      const state = config(scope);
+      saveConfig(scope, { ...state, error: '', building: { id, pid: process.pid,
+        requestId: String(input.requestId || ''), startedAt: new Date().toISOString() } });
+      return state;
+    });
+    registered = true;
     const documents = await prepareSources(input, params, scope, env, signal);
     checkAbort(signal);
     for (const doc of documents) {
@@ -404,8 +421,6 @@ async function build({ params, env, signal, execute, providerLaunch, onControlRe
       + 'Preserve current facts, numbers, citations, notation, and mathematical qualifications. Never copy a source paper\'s results into the target paper. '
       + 'PDF examples support prose only, not original macros or exact equation notation. '
       + 'Do not expand the edit scope, search for additional sources, or change Track/Undo behavior.\n';
-    const latest = config(scope);
-    if (latest.building?.id !== id) throw fail('writing_style_build_superseded', 'A newer style-generation task replaced this one.');
     const versionDir = path.join(scope.root, 'versions', id);
     fs.mkdirSync(path.dirname(versionDir), { recursive: true, mode: 0o700 });
     const built = path.join(staging, 'bundle');
@@ -423,11 +438,18 @@ async function build({ params, env, signal, execute, providerLaunch, onControlRe
       traits: result.traits.map(({ id, dimension, title, exampleIds, sourceIds }) => ({ id, dimension, title, exampleIds, sourceIds })),
       sections, files: hashes };
     fs.writeFileSync(path.join(built, 'manifest.json'), JSON.stringify(manifest), { mode: 0o400 });
+    const bundle = readBundleAtRoot(scope, id, built);
+    for (const file of Object.keys(bundle.manifest.files)) safeBundleText(bundle, file);
     checkAbort(signal);
-    fs.renameSync(built, versionDir);
-    const unchangedPreference = latest.revision === before.revision + 1;
-    saveConfig(scope, { ...latest, version: id, building: null, error: '',
-      enabled: unchangedPreference ? input.enableAfterBuild !== false : latest.enabled === true });
+    withConfigLock(scope, () => {
+      checkAbort(signal);
+      const latest = config(scope);
+      if (latest.building?.id !== id) throw fail('writing_style_build_superseded', 'A newer style-generation task replaced this one.');
+      fs.renameSync(built, versionDir);
+      const unchangedPreference = latest.revision === before.revision + 1;
+      saveConfig(scope, { ...latest, version: id, building: null, error: '',
+        enabled: unchangedPreference ? input.enableAfterBuild !== false : latest.enabled === true });
+    });
     return { status: 'completed', assistantMessage: 'Writing skill generated: ' + result.label,
       syncChanges: [], unsupportedChanges: [], writingStyle: get({ ...params }, env) };
   } catch (error) {
@@ -435,9 +457,15 @@ async function build({ params, env, signal, execute, providerLaunch, onControlRe
       keepStaging = true;
       onStopUnconfirmed?.(error);
     }
-    const state = config(scope);
-    if (state.building?.id === id) saveConfig(scope, { ...state, building: null,
-      error: error?.code === 'codex_cancelled' ? 'Style generation cancelled.' : String(error.message || 'Style generation failed.').replace(/\/Users\/\S+|\/home\/\S+|[A-Z]:\\\S+/g, '[local path]').slice(0, 300) });
+    if (registered) {
+      try {
+        withConfigLock(scope, () => {
+          const state = config(scope);
+          if (state.building?.id === id) saveConfig(scope, { ...state, building: null,
+            error: error?.code === 'codex_cancelled' ? 'Style generation cancelled.' : String(error.message || 'Style generation failed.').replace(/\/Users\/\S+|\/home\/\S+|[A-Z]:\\\S+/g, '[local path]').slice(0, 300) });
+        });
+      } catch (_) { /* Preserve the original failure if config is unavailable. */ }
+    }
     throw error;
   } finally {
     if (!keepStaging) fs.rmSync(staging, { recursive: true, force: true });

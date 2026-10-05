@@ -12,6 +12,7 @@ const WritingStyleRuntime = require('./writingStyleRuntime');
 const { createRecoveringStyleRunner } = require('./codexModelRecovery');
 const { computeTextPatches } = require('./textPatch');
 const { buildCodexHomeEnv } = require('./codexHome');
+const { applyCodexSkillIsolation } = require('./codexSkillIsolation');
 const { buildCodexSpeedArgs } = require('./codexArgs');
 const { truncateText } = require('./debugLog');
 const {
@@ -132,11 +133,12 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
       throw error;
     }
   };
-  // Parallel-subagents broker (v1.6): activated solely by the official skill
-  // being enabled for this run. Workers are sibling Codex runs spawned by the
+  // The file broker is available only to writable runs with the official
+  // skill enabled. Ask keeps its existing read-only sandbox. Workers are sibling Codex runs spawned by the
   // host (fresh sandbox — never nested), confined to the same mirror; the
   // broker enforces file ownership and wall-clock deadlines (spec §5-§7).
   const subagentBroker = !skillInstallTurn
+    && settings.sandboxMode === 'workspace-write'
     && skillLoading.loadCodexOverleafSkills !== false
     && Array.isArray(params.enabledCodexOverleafSkillIds)
     && params.enabledCodexOverleafSkillIds.includes(PARALLEL_SUBAGENTS_SKILL_ID)
@@ -157,6 +159,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
         speedTier: normalizeSpeedTier(params.speedTier),
         loadCodexLocalSkills: skillLoading.loadCodexLocalSkills,
         loadCodexOverleafSkills: skillLoading.loadCodexOverleafSkills,
+        enabledCodexOverleafSkillIds: params.enabledCodexOverleafSkillIds,
         skillInvocation: null,
         installCodexOverleafSkillsTarget: false,
         projectLocalSkills: null,
@@ -202,6 +205,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
       speedTier: normalizeSpeedTier(params.speedTier),
       loadCodexLocalSkills: skillLoading.loadCodexLocalSkills,
       loadCodexOverleafSkills: skillLoading.loadCodexOverleafSkills,
+      enabledCodexOverleafSkillIds: params.enabledCodexOverleafSkillIds,
       skillInvocation: effectiveSkillInvocation,
       installCodexOverleafSkillsTarget: skillInstallTurn,
       projectLocalSkills: null,
@@ -559,39 +563,6 @@ function buildCodexAppServerArgs(input = {}) {
   ];
 }
 
-async function applyCodexSkillIsolation({ input = {}, childEnv = process.env, request, emit = () => {} } = {}) {
-  if (input.loadCodexLocalSkills !== false) {
-    return { disabled: [] };
-  }
-  if (typeof request !== 'function') {
-    throw new Error('Codex skill isolation requires an app-server request function');
-  }
-
-  const listResult = await request('skills/list', {
-    cwd: input.workspacePath,
-    includeDisabled: true
-  });
-  const skills = flattenCodexSkillsList(listResult);
-  const disabled = [];
-  for (const skill of skills) {
-    if (skill?.enabled === false || !shouldDisableCodexSkillForIsolation(skill, input, childEnv)) {
-      continue;
-    }
-    const params = buildSkillDisableParams(skill);
-    if (!params) {
-      continue;
-    }
-    await request('skills/config/write', params);
-    disabled.push(String(skill.name || skill.path || '').trim());
-  }
-  if (disabled.length) {
-    emitCodexEvent(emit, 'codex.skill_isolation.applied', 'Disabled non-Overleaf Codex skills for this turn', {
-      disabledSkillNames: disabled.filter(Boolean)
-    }, 'completed');
-  }
-  return { disabled };
-}
-
 // Recursion guard (spec S6): disable specific Codex-Overleaf skills for one
 // app-server child process — used to strip `parallel-subagents` from worker
 // runs so an inheriting worker cannot discover the queue and fan out again.
@@ -739,6 +710,9 @@ function runCodexAppServerProcess(input) {
       return;
     }
     const childEnv = applyProviderEnvironment(buildCodexHomeEnv(input.env || process.env, {
+      isolateRuntimeHome: true,
+      enabledCodexOverleafSkillIds: input.enabledCodexOverleafSkillIds,
+      disableCodexOverleafSkillIds: input.disableCodexOverleafSkillIds,
       loadCodexLocalSkills: input.loadCodexLocalSkills !== false,
       loadCodexOverleafSkills: input.loadCodexOverleafSkills !== false,
       installCodexOverleafSkillsTarget: input.installCodexOverleafSkillsTarget === true,
@@ -944,7 +918,9 @@ function runCodexAppServerProcess(input) {
         }
         pending.delete(message.id);
         if (message.error) {
-          pendingRequest.reject(new Error(message.error.message || JSON.stringify(message.error)));
+          const error = new Error(message.error.message || JSON.stringify(message.error));
+          if (typeof message.error.code === 'number' || typeof message.error.code === 'string') error.code = message.error.code;
+          pendingRequest.reject(error);
         } else {
           if (pendingRequest.method === 'thread/start' || pendingRequest.method === 'thread/resume') {
             activeThreadId = message.result?.thread?.id || message.result?.threadId || pendingRequest.params?.threadId || activeThreadId;

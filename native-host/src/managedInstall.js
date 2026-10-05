@@ -21,6 +21,8 @@ const {
 const { queryWindowsNativeHostRegistration } = require('./nativeHostRegistration');
 const { buildRuntimeFileManifest } = require('./runtimeInstaller');
 const { BOOTSTRAP_PROTOCOL, parseSemver, updateError } = require('./updateTrust');
+const { createInstallRestorePoint } = require('./managedInstallRecovery');
+const { settleReinstalledUpdate } = require('./updateManager');
 
 const MANAGED_BY = 'codex-overleaf-link';
 const EXTENSION_MARKER = '.codex-overleaf-managed-extension.json';
@@ -70,44 +72,83 @@ function installManagedDistribution(options = {}) {
     throw error;
   }
 
-  const previousExtensionMarker = readManagedMarker(extensionRoot, EXTENSION_MARKER);
+  let previousExtensionMarker = readManagedMarker(extensionRoot, EXTENSION_MARKER);
   if (fs.existsSync(extensionRoot) && !isManagedMarker(previousExtensionMarker, 'extension')) {
     safeRemove(extensionStage);
     throw new Error('Refusing to replace an unmarked managed extension root: ' + extensionRoot);
   }
   let extensionRollbackCreated = false;
+  let restorePoint;
+  let previousTransaction;
+  const registration = getNativeHostRegistrationTarget({ platform, browser, env });
+  const bridgePath = getDefaultBridgePath({ platform, browser, env });
+  let previousRegistration = null;
+  let registrationAttempted = false;
   try {
+    const nativeMarker = readManagedMarker(nativeRoot, NATIVE_MARKER);
+    if (fs.existsSync(nativeRoot) && !isManagedMarker(nativeMarker, 'native')) {
+      throw new Error('Refusing to replace an unmarked managed native root: ' + nativeRoot);
+    }
+    restorePoint = createInstallRestorePoint({ nativeRoot, version, files: [
+      path.join(nativeRoot, 'active-version'), path.join(nativeRoot, 'previous-version'),
+      path.join(nativeRoot, NATIVE_MARKER), path.join(nativeRoot, 'bootstrap', 'launcher.js'),
+      path.join(nativeRoot, 'updates', 'transaction.json'), path.join(nativeRoot, 'updates', 'authorization.json'),
+      path.join(managedRoot, '.codex-overleaf-managed.json'), bridgePath, registration.manifestPath
+    ] });
+    previousExtensionMarker = readManagedMarker(extensionRoot, EXTENSION_MARKER);
+    if (fs.existsSync(extensionRoot) && !isManagedMarker(previousExtensionMarker, 'extension')) {
+      throw new Error('Refusing to replace an unmarked managed extension root: ' + extensionRoot);
+    }
+    previousRegistration = registration.kind === 'registry'
+      ? queryWindowsNativeHostRegistration(registration, { env }) : null;
+    previousTransaction = readManagedMarker(path.join(nativeRoot, 'updates'), 'transaction.json');
     if (fs.existsSync(extensionRoot)) {
       fs.renameSync(extensionRoot, extensionRollback);
       extensionRollbackCreated = true;
     }
     fs.renameSync(extensionStage, extensionRoot);
-  } catch (error) {
-    safeRemove(extensionStage);
-    if (extensionRollbackCreated && !fs.existsSync(extensionRoot)) {
-      fs.renameSync(extensionRollback, extensionRoot);
-    }
-    throw error;
-  }
-
-  try {
-    installManagedNativeVersion({ packageRoot, nativeRoot, version, releaseRef, releaseChannel });
+    installManagedNativeVersion({ packageRoot, nativeRoot, version, releaseRef, releaseChannel,
+      allowUnmarkedRoot: !restorePoint.nativeExisted });
     installManagedNativeRegistration({
       browser,
       env,
       extensionId,
       managedRoot,
       nativeRoot,
-      platform
+      platform,
+      onRegistryMutation: () => { registrationAttempted = true; }
     });
-    safeRemove(extensionRollback);
+    settleReinstalledUpdate({ managed: true, nativeRoot, extensionRoot,
+      updatesRoot: path.join(nativeRoot, 'updates'), env }, version, previousTransaction);
   } catch (error) {
-    safeRemove(extensionRoot);
-    if (extensionRollbackCreated && fs.existsSync(extensionRollback)) {
-      fs.renameSync(extensionRollback, extensionRoot);
+    const failures = [];
+    try {
+      safeRemove(extensionStage);
+      if (extensionRollbackCreated && fs.existsSync(extensionRollback)) {
+        safeRemove(extensionRoot);
+        fs.renameSync(extensionRollback, extensionRoot);
+      } else if (!previousExtensionMarker && restorePoint) safeRemove(extensionRoot);
+    } catch (failure) { failures.push(failure); }
+    if (restorePoint) {
+      try { restorePoint.restore(); } catch (failure) { failures.push(failure); }
+      if (registrationAttempted && registration.kind === 'registry') {
+        try {
+          if (!previousRegistration?.registeredManifestPath) throw new Error('Previous browser registration could not be verified.');
+          runRegistry(['add', registration.registryKey, '/ve', '/t', 'REG_SZ', '/d', previousRegistration.registeredManifestPath, '/f']);
+        } catch (failure) { failures.push(failure); }
+      }
+      try { failures.length ? restorePoint.release() : restorePoint.finish(); }
+      catch (failure) { failures.push(failure); }
     }
+    if (failures.length) throw updateError('managed_install_restore_failed',
+      'Managed installation failed and the previous installation could not be fully restored.', { cause: error });
     throw error;
   }
+  // The installed pair is committed. Cleanup errors must not trigger a second
+  // rollback after some of its retained files have already been removed.
+  const warnings = [];
+  try { safeRemove(extensionRollback); } catch (_) { warnings.push('Previous extension cleanup is incomplete.'); }
+  try { restorePoint.finish(); } catch (_) { warnings.push('Previous Native installation cleanup is incomplete.'); }
 
   return {
     ok: true,
@@ -119,7 +160,8 @@ function installManagedDistribution(options = {}) {
     extensionRoot,
     nativeRoot,
     loadUnpackedPath: extensionRoot,
-    allowedOrigin: buildAllowedOrigin(extensionId)
+    allowedOrigin: buildAllowedOrigin(extensionId),
+    ...(warnings.length ? { warning: warnings.join(' ') } : {})
   };
 }
 
@@ -166,9 +208,9 @@ function buildManagedExtensionTree(options = {}) {
   return { targetRoot, version };
 }
 
-function installManagedNativeVersion({ packageRoot, nativeRoot, version, releaseRef = `v${version}`, releaseChannel = 'stable' }) {
+function installManagedNativeVersion({ packageRoot, nativeRoot, version, releaseRef = `v${version}`, releaseChannel = 'stable', allowUnmarkedRoot = false }) {
   const marker = readManagedMarker(nativeRoot, NATIVE_MARKER);
-  if (fs.existsSync(nativeRoot) && !isManagedMarker(marker, 'native')) {
+  if (fs.existsSync(nativeRoot) && !isManagedMarker(marker, 'native') && !allowUnmarkedRoot) {
     throw new Error('Refusing to replace an unmarked managed native root: ' + nativeRoot);
   }
   fs.mkdirSync(path.join(nativeRoot, 'versions'), { recursive: true });
@@ -177,18 +219,21 @@ function installManagedNativeVersion({ packageRoot, nativeRoot, version, release
 
   const stage = path.join(nativeRoot, 'versions', '.' + version + '.staging-' + process.pid + '-' + Date.now());
   const target = path.join(nativeRoot, 'versions', version);
-  for (const entry of buildRuntimeFileManifest({ packageRoot })) {
-    copyFile(entry.sourcePath, path.join(stage, entry.relativePath));
+  try {
+    for (const entry of buildRuntimeFileManifest({ packageRoot })) {
+      copyFile(entry.sourcePath, path.join(stage, entry.relativePath));
+    }
+    fs.writeFileSync(path.join(stage, '.codex-overleaf-version.json'), JSON.stringify({
+      version,
+      releaseRef,
+      releaseChannel
+    }, null, 2) + '\n');
+    if (fs.existsSync(target)) safeRemove(target);
+    fs.renameSync(stage, target);
+  } catch (error) {
+    safeRemove(stage);
+    throw error;
   }
-  fs.writeFileSync(path.join(stage, '.codex-overleaf-version.json'), JSON.stringify({
-    version,
-    releaseRef,
-    releaseChannel
-  }, null, 2) + '\n');
-  if (fs.existsSync(target)) {
-    safeRemove(target);
-  }
-  fs.renameSync(stage, target);
 
   copyFile(
     path.join(packageRoot, 'native-host/src/managedLauncherRuntime.js'),
@@ -208,7 +253,7 @@ function installManagedNativeVersion({ packageRoot, nativeRoot, version, release
   }, null, 2) + '\n', 'utf8');
 }
 
-function installManagedNativeRegistration({ browser, env, extensionId, managedRoot, nativeRoot, platform }) {
+function installManagedNativeRegistration({ browser, env, extensionId, managedRoot, nativeRoot, platform, onRegistryMutation }) {
   const bridgePath = getDefaultBridgePath({ platform, browser, env });
   const platformPath = platform === 'win32' ? path.win32 : path.posix;
   const bootstrapEntry = platformPath.join(nativeRoot, 'bootstrap', 'launcher.js');
@@ -229,6 +274,7 @@ function installManagedNativeRegistration({ browser, env, extensionId, managedRo
   fs.mkdirSync(platformPath.dirname(target.manifestPath), { recursive: true });
   fs.writeFileSync(target.manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
   if (target.kind === 'registry') {
+    onRegistryMutation?.();
     runRegistry(['add', target.registryKey, '/ve', '/t', 'REG_SZ', '/d', target.manifestPath, '/f']);
   }
   fs.writeFileSync(path.join(managedRoot, '.codex-overleaf-managed.json'), JSON.stringify({

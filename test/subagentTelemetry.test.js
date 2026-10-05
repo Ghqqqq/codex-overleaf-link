@@ -335,7 +335,7 @@ test('known child terminal and error messages stay in the child lane', async t =
 });
 
 function runnerHarness() {
-  const child = new EventEmitter(), events = [], requests = [], histories = new Map();
+  const child = new EventEmitter(), events = [], requests = [], histories = new Map(), historyErrors = new Map();
   const run = { status: 'running', subagents: [] };
   child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.stdin = new EventEmitter();
   child.stdout.setEncoding = child.stderr.setEncoding = () => {};
@@ -348,7 +348,8 @@ function runnerHarness() {
     const result = request.method === 'thread/start' ? { thread: { id: ROOT.threadId } }
       : request.method === 'turn/start' ? { turn: { id: ROOT.turnId } }
       : request.method === 'thread/read' ? (histories.get(request.params.threadId) || history(request.params.threadId)) : {};
-    queueMicrotask(() => push({ id: request.id, result }));
+    const error = request.method === 'thread/read' && historyErrors.get(request.params.threadId);
+    queueMicrotask(() => push(error ? { id: request.id, error } : { id: request.id, result }));
   };
   const clock = () => ({ reset() {}, cancel() {} });
   const imports = {
@@ -359,6 +360,7 @@ function runnerHarness() {
     './codexArgs': { buildCodexSpeedArgs: () => [] },
     './debugLog': { truncateText: (value, size) => String(value).slice(0, size) },
     './subagentTelemetry': Telemetry, './readProgressGuard': Scope,
+    './codexSkillIsolation': require('../native-host/src/codexSkillIsolation'),
     './codexCommand': { resolveCodexCommand: () => 'no-real-process', shouldUseShellForCommand: () => false },
     './codexProviderLaunch': {
       prepareProviderLaunch: async launch => ({ launch, close: async () => {} }),
@@ -388,7 +390,7 @@ function runnerHarness() {
     model: 'gpt-6-luna', reasoningEffort: 'max',
     emit(event) { events.push(event); Subagents.ingest(run, event); }
   }).then(result => { settled = true; return result; });
-  return { push, requests, events, histories, run, done, settled: () => settled };
+  return { push, requests, events, histories, historyErrors, run, done, settled: () => settled };
 }
 
 test('runner routes native children separately and resolves only the root final answer', { timeout: 3000 }, async () => {
@@ -742,4 +744,59 @@ test('close discards a late task metadata response as well as its terminal state
   assert.equal(s.events.length, count);
   assert.equal(s.run.subagents[0].task, '');
   assert.equal(s.run.subagents[0].status, 'running');
+});
+
+test('transient history failure recovers on terminal activity and clears persisted warning', async t => {
+  let reads = 0;
+  const s = setup(() => ++reads === 1
+    ? Promise.reject(Object.assign(new Error('temporarily unavailable'), { code: -32001 }))
+    : history('child-a', 'completed', [{ id: 'recovered', type: 'agentMessage', text: 'RECOVERED_HISTORY' }]));
+  t.after(() => s.observer.close());
+  s.observer.observe(activity()); await tick();
+  assert.equal(s.run.subagents[0].historyUnavailable, true);
+  s.observer.observe(activity('completed')); await tick();
+  assert.equal(reads, 2); assert.equal(s.run.subagents[0].historyUnavailable, false);
+  assert.match(JSON.stringify(s.run.subagents), /RECOVERED_HISTORY/);
+  const restored = require('../extension/src/shared/sessionState').normalizeRuns([{ ...s.run, id: 'run' }])[0];
+  assert.equal(restored.subagents[0].historyUnavailable, false);
+  Subagents.ingest(restored, { type: 'codex.subagent.observed', detail: { source: 'codex', threadId: 'child-a', sequence: 1000 } });
+  assert.equal(restored.subagents[0].historyUnavailable, false, 'legacy events with no availability field preserve state');
+});
+
+test('transient history retries are activity-driven and bounded until a new child turn', async t => {
+  let reads = 0;
+  const s = setup(() => { reads++; return Promise.reject(new Error('temporary')); });
+  t.after(() => s.observer.close());
+  s.observer.observe(activity()); await tick(); await tick();
+  assert.equal(reads, 1, 'no background retry');
+  for (let i = 0; i < 9; i++) { s.observer.observe(activity('completed', 'child-a', 'failure-' + i)); await tick(); }
+  assert.equal(reads, 3);
+  s.observer.observe({ method: 'turn/started', params: { threadId: 'child-a', turn: { id: 'next-child-turn' } } });
+  s.observer.observe(activity('completed', 'child-a', 'next-turn-activity')); await tick();
+  assert.equal(reads, 4);
+});
+
+test('unsupported RPC code stays disabled across new turns while old events keep warnings', async t => {
+  const s = setup(() => Promise.reject(Object.assign(new Error('generic remote error'), { code: -32601 })));
+  t.after(() => s.observer.close());
+  s.observer.observe(activity()); await tick();
+  s.observer.observe({ method: 'turn/started', params: { threadId: 'child-a', turn: { id: 'next-child-turn' } } });
+  s.observer.observe(activity('completed')); await tick();
+  assert.equal(s.requests.length, 1);
+  Subagents.ingest(s.run, { type: 'codex.subagent.observed', detail: { source: 'codex', threadId: 'child-a', sequence: 1000 } });
+  assert.equal(s.run.subagents[0].historyUnavailable, true);
+});
+
+for (const code of [-32001, -32601]) test('runner preserves history RPC classification ' + code, async () => {
+  const h = runnerHarness(); await tick();
+  h.historyErrors.set('child-a', { code, message: 'remote history error' });
+  h.push(activity()); await tick();
+  assert.equal(h.run.subagents[0].historyUnavailable, true);
+  h.historyErrors.delete('child-a');
+  h.histories.set('child-a', history('child-a', 'completed', [{ id: 'recovered', type: 'agentMessage', text: 'RPC_RECOVERED' }]));
+  h.push(activity('completed')); await tick();
+  assert.equal(h.requests.filter(r => r.method === 'thread/read').length, code === -32601 ? 1 : 2);
+  assert.equal(h.run.subagents[0].historyUnavailable, code === -32601);
+  h.push({ method: 'turn/completed', params: { threadId: ROOT.threadId, turn: { id: ROOT.turnId, status: 'completed', items: [{ id: 'answer', type: 'agentMessage', text: 'Parent answer' }] } } });
+  assert.equal((await h.done).assistantMessage, 'Parent answer');
 });

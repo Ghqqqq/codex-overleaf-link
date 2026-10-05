@@ -155,7 +155,7 @@ test('unconfirmed stop after successful terminal withholds changes and persists 
   assert.equal(value.response.result, undefined);
   assert.equal(value.aliveAtNativeReturn, true);
   assert.equal(value.stopBarrierAtReturn, true);
-  assert.deepEqual(value.nativeWorkAtReturn, { projectLocks: 0, runControllers: 0, activeTurnControls: 0 });
+  assert.deepEqual(value.nativeWorkAtReturn, { projectLocks: 0, processStopBarriers: 0, runControllers: 0, activeTurnControls: 0 });
 });
 
 test('a process-registration hook failure stops its owned child before rejecting', options, async () => {
@@ -191,7 +191,7 @@ test('failed terminal rejects without exposing changes and waits for peer exit',
   assert.equal(value.response.error.code, 'codex_run_failed');
   assert.equal(value.response.result, undefined);
   assert.equal(value.aliveAtNativeReturn, false);
-  assert.deepEqual(value.nativeWorkAtReturn, { projectLocks: 0, runControllers: 0, activeTurnControls: 0 });
+  assert.deepEqual(value.nativeWorkAtReturn, { projectLocks: 0, processStopBarriers: 0, runControllers: 0, activeTurnControls: 0 });
 });
 
 test('successful Native result must not precede a live writer changing its collected mirror bytes', options, async () => {
@@ -205,7 +205,7 @@ test('successful Native result must not precede a live writer changing its colle
   assert.equal(value.diskAtReturn, stableContent);
   assert.equal(value.returnedChanges.find(change => change.path === 'main.tex').content, stableContent);
   assert.equal(value.lateWriteBeforeLatch, null, 'late write cannot happen before the result-dependent latch');
-  assert.deepEqual(value.nativeWorkAtReturn, { projectLocks: 0, runControllers: 0, activeTurnControls: 0 });
+  assert.deepEqual(value.nativeWorkAtReturn, { projectLocks: 0, processStopBarriers: 0, runControllers: 0, activeTurnControls: 0 });
   if (value.lateWrite) {
     assert.equal(value.sigtermReceived.pid, value.pid);
     assert.equal(value.lateWrite.pid, value.pid);

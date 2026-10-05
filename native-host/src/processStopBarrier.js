@@ -4,7 +4,7 @@
 // Native Host restarts and only permits work after positive exit evidence.
 const fs = require('node:fs');
 const path = require('node:path');
-const { getProjectMirror } = require('./mirrorWorkspace');
+const { getProjectMirror, getDefaultMirrorRoot } = require('./mirrorWorkspace');
 const pending = new Map();
 
 function location(projectId, rootDir) {
@@ -87,4 +87,29 @@ function isBlocked(projectId, rootDir) {
   return remaining.length > 0;
 }
 
-module.exports = { record, isBlocked };
+// Update safety observes the existing project quarantine. It neither searches
+// unrelated OS processes nor mutates a project's recovery records.
+function getBlockedProjectCount(rootDir, options = {}) {
+  const root = path.resolve(rootDir || getDefaultMirrorRoot(options));
+  const files = new Set();
+  let unknown = 0;
+  try {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (entry.isDirectory()) files.add(path.join(root, entry.name, '.codex-stop-barrier.json'));
+      else if (entry.isSymbolicLink()) unknown += 1;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') unknown += 1;
+  }
+  // Include failed persistence owned by this Host, even if its directory was
+  // never created. A disk inventory alone cannot release that quarantine.
+  for (const file of pending.keys()) {
+    if (path.dirname(path.dirname(file)) === root) files.add(file);
+  }
+  for (const file of files) {
+    if (load(file).some(value => !stopped(value))) unknown += 1;
+  }
+  return unknown;
+}
+
+module.exports = { record, isBlocked, getBlockedProjectCount };

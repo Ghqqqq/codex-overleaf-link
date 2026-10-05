@@ -3,6 +3,7 @@
 // Observation only: never resumes a thread, starts a turn or settles a run.
 const CHILD_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$/;
 const MAX_CHILDREN = 16;
+const MAX_HISTORY_READ_FAILURES = 3;
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const EVIDENCE = { history: 1, agent: 2, turn: 3 };
 
@@ -185,7 +186,7 @@ function createNativeSubagentObserver({ emit, request, getRoot, ownsParent, isSt
     return false;
   }
   function snapshot(child, terminal = false) {
-    if (!active() || child.readDisabled) return;
+    if (!active() || child.readDisabled || (child.readFailures || 0) >= MAX_HISTORY_READ_FAILURES) return;
     if (child.reading) { child.readAgain ||= terminal; return; }
     if (!terminal && Date.now() - child.lastRead < 2000) return;
     child.reading = true; child.lastRead = Date.now();
@@ -204,6 +205,11 @@ function createNativeSubagentObserver({ emit, request, getRoot, ownsParent, isSt
         if (!turn?.id || turn.id === getRoot().turnId
           || child.turnId && child.turnId !== turn.id) return;
         child.historyTurnId = turn.id;
+        child.readFailures = 0;
+        if (child.historyUnavailable) {
+          child.historyUnavailable = false;
+          publish(child, null, { historyUnavailable: false });
+        }
         const items = Array.isArray(turn.items) ? turn.items : [];
         // Recover real child input before compactEvent drops user content.
         // A fork's parent context and encrypted delegation are not task text.
@@ -231,11 +237,14 @@ function createNativeSubagentObserver({ emit, request, getRoot, ownsParent, isSt
             ? (interruptionObserved ? 'cancelled' : undefined) : turn.status;
           if (setStatus(child, next, EVIDENCE.history)) publish(child, null);
         }
-      }).catch(() => {
+      }).catch(error => {
         if (!active() || child.generation !== generation) return;
-        // Older app servers may lack this capability. Keep observed records;
-        // reading history must never interrupt or resume the parent or child.
-        child.readDisabled = true;
+        // Unsupported history stays disabled; other errors get a bounded retry
+        // only on later activity. Observation never interrupts or resumes work.
+        child.readDisabled = error?.code === -32601 || error?.code === '-32601'
+          || /(?:thread[ /]read.*(?:unsupported|not supported)|method (?:not found|not supported))/i.test(String(error?.message || ''));
+        child.readFailures = (child.readFailures || 0) + 1;
+        child.historyUnavailable = true;
         publish(child, null, { historyUnavailable: true });
       }).finally(() => {
         child.reading = false;
@@ -258,6 +267,8 @@ function createNativeSubagentObserver({ emit, request, getRoot, ownsParent, isSt
           if (known.retiredTurns.size > 100) known.retiredTurns.delete(known.retiredTurns.values().next().value);
           known.turnId = turnId;
           known.generation += 1;
+          known.readFailures = 0;
+          known.lastRead = -Infinity;
           known.statusEvidence = 0;
           known.interruptionObserved = false;
         }

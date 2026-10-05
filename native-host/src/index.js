@@ -47,7 +47,7 @@ async function handleDecodedMessage(message) {
     const response = isUpdateMethod(message?.method)
       ? await handleUpdateRequest(message, {
           env: runtimeEnv,
-          getWorkState: getActiveNativeWorkState
+          getWorkState: () => getActiveNativeWorkState(runtimeEnv)
         })
       : await handleRequest(message, runtimeEnv, event => {
       writeResponse({

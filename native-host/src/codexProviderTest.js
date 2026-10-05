@@ -1,6 +1,8 @@
 'use strict';
 
-const { spawn, spawnSync } = require('node:child_process');
+const { runOwnedNativeHelper } = require('./nativeHelperLifecycle');
+const { stopCodexAppServer } = require('./codexSessionTiming');
+const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -12,16 +14,22 @@ const { providerError } = require('./providerProfile');
 const MAX_OUTPUT_BYTES = 256 * 1024;
 
 async function runProviderConnectionTest({ launch, env = process.env, signal } = {}) {
-  const prepared = await prepareProviderLaunch(launch, { signal });
-  try {
-    return await runProviderConnectionTestProcess({ launch: prepared.launch, env, signal });
-  } finally {
-    await prepared.close();
-  }
+  throwIfTestCancelled(signal);
+  return runOwnedNativeHelper(async ownedSignal => {
+    throwIfTestCancelled(ownedSignal);
+    const prepared = await prepareProviderLaunch(launch, { signal: ownedSignal });
+    try {
+      throwIfTestCancelled(ownedSignal);
+      return await runProviderConnectionTestProcess({ launch: prepared.launch, env, signal: ownedSignal });
+    } finally {
+      await prepared.close();
+    }
+  }, signal);
 }
 
 function runProviderConnectionTestProcess({ launch, env = process.env, signal } = {}) {
   return new Promise((resolve, reject) => {
+    throwIfTestCancelled(signal);
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-provider-test-'));
     const codexHome = path.join(root, 'codex-home');
     const workspace = path.join(root, 'workspace');
@@ -52,6 +60,7 @@ function runProviderConnectionTestProcess({ launch, env = process.env, signal } 
     const startedAt = Date.now();
     let child;
     try {
+      throwIfTestCancelled(signal);
       child = spawn(command, args, {
         cwd: workspace,
         env: childEnv,
@@ -61,7 +70,8 @@ function runProviderConnectionTestProcess({ launch, env = process.env, signal } 
       });
     } catch (error) {
       cleanup(root);
-      reject(providerError('provider_test_spawn_failed', 'Codex could not start the provider connection test.', { cause: error }));
+      reject(error?.code === 'provider_test_cancelled' ? error
+        : providerError('provider_test_spawn_failed', 'Codex could not start the provider connection test.', { cause: error }));
       return;
     }
     let stdout = '';
@@ -121,10 +131,10 @@ function runProviderConnectionTestProcess({ launch, env = process.env, signal } 
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
-      if (error) terminateProcessTree(child);
-      cleanup(root);
-      if (error) reject(error);
-      else resolve(result);
+      stopCodexAppServer(child, { processGroup: process.platform !== 'win32', reason: error }).then(() => {
+        cleanup(root);
+        if (error) reject(error); else resolve(result);
+      }, stopError => { cleanup(root); reject(stopError); });
     }
   });
 }
@@ -168,20 +178,8 @@ function hasLeakedToolControlTokens(value) {
   return /<\|tool_call_(?:begin|argument_begin|end)\|>/i.test(String(value || ''));
 }
 
-function terminateProcessTree(child) {
-  if (!child?.pid) return;
-  try {
-    if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
-    } else {
-      process.kill(-child.pid, 'SIGTERM');
-      setTimeout(() => {
-        try { process.kill(-child.pid, 'SIGKILL'); } catch (_error) {}
-      }, 500).unref?.();
-    }
-  } catch (_error) {
-    try { child.kill('SIGKILL'); } catch (_killError) {}
-  }
+function throwIfTestCancelled(signal) {
+  if (signal?.aborted) throw providerError('provider_test_cancelled', 'Provider connection test was cancelled.');
 }
 
 function cleanup(root) {

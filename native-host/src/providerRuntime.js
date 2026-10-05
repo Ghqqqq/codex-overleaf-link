@@ -92,6 +92,7 @@ async function testProvider(params, env, emit = () => {}, externalSignal = null)
   }, totalBudgetMs);
   const onExternalAbort = () => controller.abort();
   externalSignal?.addEventListener?.('abort', onExternalAbort, { once: true });
+  if (externalSignal?.aborted) onExternalAbort();
   activeTests.get(operationId)?.abort?.();
   activeTests.set(operationId, controller);
   const protocols = draft.wireApiPreference === 'auto'

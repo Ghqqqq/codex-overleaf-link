@@ -381,12 +381,12 @@ async function confirmPendingUpdate(transaction) {
   const targetVersion = transaction.targetVersion;
   const runtimeHealthy = await verifyPendingRuntimeHealth(targetVersion);
   if (!runtimeHealthy) {
-    await rollbackBrokenRuntime(new Error('Updated Overleaf content runtime did not report the target version.'));
+    await rollbackBrokenRuntime(new Error('Updated Overleaf content runtime did not report the target version.'), transaction);
     return;
   }
   const ping = await requestInternal({ method: 'bridge.ping', params: {} }).catch(() => null);
   if (!ping?.ok || ping.result?.version !== targetVersion) {
-    await rollbackBrokenRuntime(new Error('Updated native host did not report the target version.'));
+    await rollbackBrokenRuntime(new Error('Updated native host did not report the target version.'), transaction);
     return;
   }
   const native = ping.result || {};
@@ -399,7 +399,7 @@ async function confirmPendingUpdate(transaction) {
       native.protocolVersion < protocolRange.min ||
       native.protocolVersion > protocolRange.max ||
       missingCapabilities.length) {
-    await rollbackBrokenRuntime(new Error('Updated native host did not pass protocol and capability health checks.'));
+    await rollbackBrokenRuntime(new Error('Updated native host did not pass protocol and capability health checks.'), transaction);
     return;
   }
   const confirmed = await requestInternal({
@@ -411,7 +411,7 @@ async function confirmPendingUpdate(transaction) {
     }
   });
   if (!confirmed?.ok) {
-    await rollbackBrokenRuntime(nativeError(confirmed));
+    await rollbackBrokenRuntime(nativeError(confirmed), transaction);
     return;
   }
   await setUpdateState({
@@ -451,18 +451,51 @@ async function verifyPendingRuntimeHealth(targetVersion) {
   return remaining.size === 0;
 }
 
-async function rollbackBrokenRuntime(error) {
+async function rollbackBrokenRuntime(error, transaction) {
   await setUpdateState({ state: 'rolling_back', code: safeCode(error), message: safeMessage(error) });
+  let pending = transaction;
+  let readback;
+  if (!pending) {
+    readback = await requestInternal({ method: 'update.status', params: {} }).catch(() => null);
+    pending = readback?.ok ? readback.result?.transaction : null;
+  }
+  // A status recovery may have completed an interrupted apply before this
+  // loader obtained its transaction. The same source-byte proof is required.
+  if (isRollbackReadback(readback, pending)) {
+    await setUpdateState({ state: 'rolled_back', code: safeCode(error), currentVersion: pending.sourceVersion, transactionId: pending.id });
+    chrome.runtime.reload();
+    return;
+  }
+  if (!pending?.id || !pending.sourceVersion || !['applying', 'awaiting_health', 'committed'].includes(pending.state)) {
+    await setUpdateState({ state: 'failed', code: safeCode(error), message: safeMessage(error) });
+    return;
+  }
   const rolledBack = await requestInternal({
     method: 'update.rollback',
-    params: { reasonCode: safeCode(error) }
+    params: { reasonCode: safeCode(error), transactionId: pending.id, expectedState: pending.state }
   }).catch(() => null);
-  if (rolledBack?.ok) {
-    await setUpdateState({ state: 'rolled_back', code: safeCode(error), currentVersion: rolledBack.result.version });
+  if (rolledBack?.ok && rolledBack.result?.transactionId === pending.id
+    && rolledBack.result?.state === 'rolled_back' && rolledBack.result?.version === pending.sourceVersion) {
+    readback = await requestInternal({ method: 'update.status', params: {} }).catch(() => null);
+  }
+  if (rolledBack?.result?.restoredPair && isRollbackReadback(readback, pending, rolledBack.result.restoredPair)) {
+    await setUpdateState({ state: 'rolled_back', code: safeCode(error), currentVersion: pending.sourceVersion, transactionId: pending.id });
     chrome.runtime.reload();
     return;
   }
   await setUpdateState({ state: 'failed', code: safeCode(error), message: safeMessage(error) });
+}
+
+function isRollbackReadback(response, transaction, expectedPair) {
+  const status = response?.ok ? response.result : null;
+  const pair = status?.restoredPair;
+  return Boolean(transaction?.id && status?.transaction?.id === transaction.id
+    && status.transaction.state === 'rolled_back' && status.activeVersion === transaction.sourceVersion
+    && status.installedAligned === true && pair?.extensionVersion === transaction.sourceVersion
+    && pair?.nativeVersion === transaction.sourceVersion
+    && /^[0-9a-f]{64}$/.test(pair.extensionSha256 || '') && /^[0-9a-f]{64}$/.test(pair.nativeSha256 || '')
+    && (!expectedPair || ['extensionVersion', 'nativeVersion', 'extensionSha256', 'nativeSha256']
+      .every(key => pair[key] === expectedPair[key])));
 }
 
 async function reloadPendingOverleafTabs() {

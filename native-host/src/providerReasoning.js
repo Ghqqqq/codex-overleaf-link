@@ -13,7 +13,6 @@ const REASONING_ADAPTERS = new Set([
 ]);
 const REASONING_CAPABILITIES = new Set(['auto', 'none', 'toggle', 'effort']);
 const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
-const DEEPSEEK_MAX_REASONING_OUTPUT_TOKENS = 65536;
 
 function normalizeReasoningAdapter(value) {
   const normalized = String(value || '').trim().toLowerCase();
@@ -165,12 +164,8 @@ function resolveReasoningMaxOutputTokens(value, responsesRequest = {}, launch = 
   if (!Number.isFinite(number)) {
     return value;
   }
-  const normalized = Math.max(1, Math.floor(number));
-  const effort = resolveRequestedReasoningEffort(responsesRequest, launch);
-  const adapter = resolveReasoningAdapter(launch, modelId || launch.modelId);
-  return adapter === 'deepseek' && ['xhigh', 'max'].includes(effort)
-    ? Math.max(normalized, DEEPSEEK_MAX_REASONING_OUTPUT_TOKENS)
-    : normalized;
+  // Reasoning effort cannot silently increase the configured output maximum.
+  return Math.max(1, Math.floor(number));
 }
 
 function requiresReasoningContentReplay(launch = {}, modelId = '') {

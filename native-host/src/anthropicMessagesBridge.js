@@ -13,6 +13,7 @@ const {
 const { writeConvertedResponseAsSse } = require('./chatBridgeResponse');
 const { classifyResponsesRoute } = require('./providerBridgeRoutes');
 const { providerError } = require('./providerProfile');
+const { fetchProvider, readProviderText, readProviderJson } = require('./providerHttp');
 const { sanitizeProviderMessage } = require('./providerRedaction');
 const { logDebug } = require('./debugLog');
 const {
@@ -92,9 +93,13 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
   const requestBody = await readJsonBody(req);
   const previousResponseId = String(requestBody.previous_response_id || '');
   const previous = history.get(previousResponseId);
-  const fallbackAnchor = previous ? [] : continuationState.anchorMessages;
+  const fallbackAllowed = !previousResponseId || previousResponseId === continuationState.responseId;
+  const fallbackAnchor = previous || !fallbackAllowed ? [] : continuationState.anchorMessages;
+  const continuationAttempts = previous
+    ? Number(previous.continuationAttempts) || 0
+    : fallbackAllowed ? continuationState.attempts : 0;
   const continuing = Boolean(previous?.continuation || fallbackAnchor.length);
-  if (continuing && continuationState.attempts >= MAX_REASONING_CONTINUATIONS) {
+  if (continuing && continuationAttempts >= MAX_REASONING_CONTINUATIONS) {
     throw providerError(
       'provider_reasoning_continuation_exhausted',
       'The provider repeatedly interrupted the same reasoning stream. Retry the task or use a different model endpoint.'
@@ -112,7 +117,7 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
     thinkingType: translated.body.thinking?.type || 'disabled',
     hasPreviousResponse: Boolean(previousResponseId),
     continuing,
-    continuationAttempt: continuationState.attempts
+    continuationAttempt: continuationAttempts
   });
   const controller = new AbortController();
   activeRequests.add(controller);
@@ -130,7 +135,7 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
   res.on('close', onClientClose);
   lifecycle.start();
   try {
-    const upstream = await fetchWithRectification(launch, translated.body, controller.signal);
+    const upstream = await fetchWithRectification(launch, translated.body, controller.signal, lifecycle.touch);
     lifecycle.touch();
     if (!upstream.response.ok) {
       forwardUpstreamError(upstream.response, upstream.errorText, res, launch.apiKey);
@@ -152,14 +157,15 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
       const messages = [...baseMessages, ...assistantMessages];
       if (anchored) {
         continuationState.anchorMessages = messages;
-        continuationState.attempts += 1;
+        continuationState.attempts = continuationAttempts + 1;
         continuationState.responseId = converted.response.id;
       } else {
         continuationState.anchorMessages = [];
         continuationState.attempts = 0;
         continuationState.responseId = '';
       }
-      rememberHistory(history, converted.response.id, messages, { continuation: anchored });
+      rememberHistory(history, converted.response.id, messages, { continuation: anchored,
+        continuationAttempts: anchored ? continuationAttempts + 1 : 0 });
       const blocks = Array.isArray(converted.assistantBlocks) ? converted.assistantBlocks : [];
       logDebug('provider.anthropic.response', {
         responseId: converted.response.id,
@@ -185,7 +191,7 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
           recoverInterrupted: lifecycle.recoverInterrupted
         });
       } else {
-        const converted = convertAnthropicResponse(await upstream.response.json(), context);
+        const converted = convertAnthropicResponse(await readProviderJson(upstream.response, lifecycle.touch), context);
         writeConvertedResponseAsSse(res, converted, context, remember);
       }
     } else if (contentType.includes('text/event-stream')) {
@@ -202,7 +208,7 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
       remember(converted);
       sendJson(res, 200, converted.response);
     } else {
-      const converted = convertAnthropicResponse(await upstream.response.json(), context);
+      const converted = convertAnthropicResponse(await readProviderJson(upstream.response, lifecycle.touch), context);
       remember(converted);
       sendJson(res, 200, converted.response);
     }
@@ -224,27 +230,29 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
   }
 }
 
-async function fetchWithRectification(launch, body, signal) {
+async function fetchWithRectification(launch, body, signal, onActivity) {
   let requestBody = body;
-  let response = await fetch(buildAnthropicMessagesUrl(launch.baseUrl, launch), {
+  let response = await fetchProvider(buildAnthropicMessagesUrl(launch.baseUrl, launch), {
     method: 'POST',
     headers: buildAnthropicHeaders(launch),
     body: JSON.stringify(body),
     signal
-  });
+  }, launch);
+  onActivity();
   if (response.ok) return { response, errorText: '', requestBody };
-  let errorText = (await response.text()).slice(0, MAX_ERROR_BYTES);
+  let errorText = (await readProviderText(response, onActivity)).slice(0, MAX_ERROR_BYTES);
   if (response.status === 400) {
     const retryBody = JSON.parse(JSON.stringify(body));
     if (rectifyAnthropicRequestForRetry(retryBody, errorText)) {
       requestBody = retryBody;
-      response = await fetch(buildAnthropicMessagesUrl(launch.baseUrl, launch), {
+      response = await fetchProvider(buildAnthropicMessagesUrl(launch.baseUrl, launch), {
         method: 'POST',
         headers: buildAnthropicHeaders(launch),
         body: JSON.stringify(retryBody),
         signal
-      });
-      errorText = response.ok ? '' : (await response.text()).slice(0, MAX_ERROR_BYTES);
+      }, launch);
+      onActivity();
+      errorText = response.ok ? '' : (await readProviderText(response, onActivity)).slice(0, MAX_ERROR_BYTES);
     }
   }
   return { response, errorText, requestBody };

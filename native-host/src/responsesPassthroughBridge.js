@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const http = require('node:http');
 const { classifyResponsesRoute } = require('./providerBridgeRoutes');
 const { providerError } = require('./providerProfile');
+const { fetchProvider, readProviderText } = require('./providerHttp');
 const { sanitizeProviderMessage } = require('./providerRedaction');
 const { logDebug } = require('./debugLog');
 const {
@@ -141,15 +142,15 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
   res.on('close', onClientClose);
   lifecycle.start();
   try {
-    const upstream = await fetch(buildResponsesUrl(launch.baseUrl, launch, route), {
+    const upstream = await fetchProvider(buildResponsesUrl(launch.baseUrl, launch, route), {
       method: 'POST',
       headers: buildUpstreamHeaders(launch),
       body: JSON.stringify(prepared.body),
       signal: controller.signal
-    });
+    }, launch);
     lifecycle.touch();
     if (!upstream.ok) {
-      await forwardUpstreamError(upstream, res, launch.apiKey);
+      await forwardUpstreamError(upstream, res, launch.apiKey, lifecycle.touch);
       return;
     }
     if (route === 'compact') {
@@ -168,7 +169,7 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
       }
       response = await forwardResponsesSse(upstream, res, lifecycle.touch, launch.apiKey);
     } else {
-      const text = await upstream.text();
+      const text = await readProviderText(upstream, lifecycle.touch);
       try {
         response = JSON.parse(text);
       } catch (_error) {
@@ -732,8 +733,8 @@ function buildUpstreamHeaders(launch = {}) {
   return headers;
 }
 
-async function forwardUpstreamError(upstream, res, apiKey) {
-  const text = (await upstream.text()).slice(0, MAX_ERROR_BYTES);
+async function forwardUpstreamError(upstream, res, apiKey, onActivity) {
+  const text = (await readProviderText(upstream, onActivity)).slice(0, MAX_ERROR_BYTES);
   let message = `Provider returned HTTP ${upstream.status}.`;
   try {
     const parsed = JSON.parse(text);
@@ -772,7 +773,8 @@ function normalizeBridgeErrorCode(value) {
     'provider_request_too_large',
     'provider_responses_continuation_repeated',
     'provider_responses_continuation_unrecoverable',
-    'provider_continuation_history_limit'
+    'provider_continuation_history_limit',
+    'provider_upstream_error'
   ].includes(value) ? value : 'provider_bridge_failed';
 }
 

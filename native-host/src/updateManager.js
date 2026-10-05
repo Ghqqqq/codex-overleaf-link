@@ -14,6 +14,7 @@ const {
 const { extractVerifiedUpdateBundle } = require('./updateArchive');
 const { requestRelease } = require('./releaseTransport');
 const updateNetwork = require('./updateNetworkControl');
+const { readManagedRuntimeEvidence, sameRuntimeEvidence } = require('./managedRuntimeEvidence');
 const RUNNING_VERSION = require('../../package.json').version;
 
 const GITHUB_LATEST_URL = 'https://github.com/Ghqqqq/codex-overleaf-link/releases/latest';
@@ -185,9 +186,16 @@ async function acquireUpdateFileLock(context) {
 
 function removeStaleUpdateFileLock(lockPath) {
   const owner = readJsonSafe(lockPath, null);
-  const expired = !owner || Number(owner.expiresAt || 0) <= Date.now();
-  const abandoned = Number.isInteger(Number(owner?.pid)) && !isProcessAlive(Number(owner.pid));
-  if (!expired && !abandoned) return false;
+  const pid = Number(owner?.pid);
+  if (Number.isInteger(pid) && pid > 0) {
+    // Expiry is not exit evidence. A slow filesystem must not let another
+    // process steal a live install/apply lock.
+    if (isProcessAlive(pid)) return false;
+  } else {
+    // The creator may be between exclusive open and writing its owner record.
+    try { if (Date.now() - fs.statSync(lockPath).mtimeMs < MUTATION_LOCK_STALE_MS) return false; }
+    catch (_error) { return false; }
+  }
   try {
     fs.rmSync(lockPath, { force: true });
     return true;
@@ -238,7 +246,8 @@ async function checkForUpdate(context, params = {}, options = {}) {
   });
   if (releaseResponse.status === 304) {
     const candidate = readJsonSafe(path.join(context.updatesRoot, CANDIDATE_FILE), null);
-    if (candidate?.manifestBase64 && candidate?.signatureBase64) {
+    if (candidate?.manifestBase64 && candidate?.signatureBase64
+      && params.etag && candidate.etag === params.etag && candidate.currentVersion === currentVersion) {
       try {
         const manifest = verifySignedReleaseManifest(
           Buffer.from(candidate.manifestBase64, 'base64'),
@@ -258,7 +267,7 @@ async function checkForUpdate(context, params = {}, options = {}) {
         // Invalid cached candidates are treated as cache misses.
       }
     }
-    const manual = readManualCandidate(context, currentVersion);
+    const manual = readManualCandidate(context, currentVersion, params.etag);
     if (manual) return { ...manual, etag: params.etag || manual.etag || '', cached: true };
     return { managed: true, available: false, reason: 'not_modified', currentVersion, etag: params.etag || '' };
   }
@@ -270,6 +279,10 @@ async function checkForUpdate(context, params = {}, options = {}) {
     throw updateError('update_github_response_invalid', 'GitHub latest release did not resolve to a stable semantic-version tag.');
   }
   const latestVersion = releaseTag.slice(1);
+  // A successful latest response replaces the previous discovery result,
+  // including when a release was withdrawn or is now in cooldown.
+  fs.rmSync(path.join(context.updatesRoot, MANUAL_CANDIDATE_FILE), { force: true });
+  fs.rmSync(path.join(context.updatesRoot, CANDIDATE_FILE), { force: true });
   if (!isNewerStableVersion(latestVersion, currentVersion)) {
     const activeMarker = readJsonSafe(path.join(context.extensionRoot, EXTENSION_MARKER), null);
     const equalVersionPrerelease = compareSemver(latestVersion, currentVersion) === 0
@@ -319,7 +332,12 @@ async function checkForUpdate(context, params = {}, options = {}) {
       manualInstall: manifest.manualInstall?.reason ? { reason: manifest.manualInstall.reason } : {},
       etag: releaseResponse.headers.get('etag') || ''
     };
-    atomicWriteJson(path.join(context.updatesRoot, MANUAL_CANDIDATE_FILE), { ...manual, checkedAt: new Date().toISOString() });
+    atomicWriteJson(path.join(context.updatesRoot, MANUAL_CANDIDATE_FILE), {
+      ...manual,
+      checkedAt: new Date().toISOString(),
+      manifestBase64: manifestBytes.toString('base64'),
+      signatureBase64: signatureBytes.toString('base64')
+    });
     return manual;
   }
   const candidate = {
@@ -335,13 +353,29 @@ async function checkForUpdate(context, params = {}, options = {}) {
   return { managed: true, available: true, currentVersion, latestVersion, etag: candidate.etag };
 }
 
-function readManualCandidate(context, currentVersion) {
+function readManualCandidate(context, currentVersion, etag) {
   const manual = readJsonSafe(path.join(context.updatesRoot, MANUAL_CANDIDATE_FILE), null);
-  if (manual?.reason !== 'manual_install_required' || !parseSemver(manual.latestVersion)
-    || !isNewerStableVersion(manual.latestVersion, currentVersion)
-    || manual.requiredBootstrapProtocol === BOOTSTRAP_PROTOCOL) return null;
-  const { checkedAt: _checkedAt, ...result } = manual;
-  return { ...result, currentVersion };
+  if (!etag || manual?.etag !== etag || manual.currentVersion !== currentVersion
+    || !manual.manifestBase64 || !manual.signatureBase64) return null;
+  try {
+    const manifest = verifySignedReleaseManifest(
+      Buffer.from(manual.manifestBase64, 'base64'),
+      Buffer.from(manual.signatureBase64, 'base64'),
+      { allowBootstrapMismatch: true }
+    );
+    if (!isNewerStableVersion(manifest.version, currentVersion)
+      || manifest.bootstrapProtocol === BOOTSTRAP_PROTOCOL) return null;
+    return {
+      managed: true, available: false, reason: 'manual_install_required',
+      currentVersion, latestVersion: manifest.version,
+      installedBootstrapProtocol: BOOTSTRAP_PROTOCOL,
+      requiredBootstrapProtocol: manifest.bootstrapProtocol,
+      manualInstall: manifest.manualInstall?.reason ? { reason: manifest.manualInstall.reason } : {},
+      etag
+    };
+  } catch (_error) {
+    return null;
+  }
 }
 
 function readAuthorizedCandidate(context, currentVersion) {
@@ -534,6 +568,7 @@ function getApplyGate(options = {}) {
   const blockers = [];
   if (Number(state.projectLocks || 0) > 0) blockers.push('native_project_locked');
   if (Number(state.runControllers || 0) > 0) blockers.push('native_run_active');
+  if (Number(state.processStopBarriers || 0) > 0) blockers.push('native_process_stop_unconfirmed');
   return { idle: blockers.length === 0, blockers, workState: state };
 }
 
@@ -724,7 +759,7 @@ function rollbackUpdate(context, params = {}) {
   if (!journal || !['applying', 'awaiting_health', 'committed'].includes(journal.state)) {
     throw updateError('update_rollback_unavailable', 'No applied update is available for rollback.');
   }
-  rollbackFiles(context, journal);
+  const rollbackEvidence = rollbackFiles(context, journal);
   const cooldowns = readJsonSafe(path.join(context.updatesRoot, COOLDOWN_FILE), {});
   cooldowns[journal.targetVersion] = {
     until: Date.now() + 24 * 60 * 60 * 1000,
@@ -737,12 +772,13 @@ function rollbackUpdate(context, params = {}) {
     reasonCode: normalizeReasonCode(params.reasonCode),
     rolledBackAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    previousManifest: undefined
+    previousManifest: undefined,
+    rollbackEvidence
   });
   settleAuthorization(context, journal.authorizationId, 'revoked');
   cleanupStage(journal.stageRoot);
   cleanupOrphanStageRoots(context.updatesRoot);
-  return { version: journal.sourceVersion, state: 'rolled_back' };
+  return { transactionId: journal.id, version: journal.sourceVersion, state: 'rolled_back', restoredPair: rollbackEvidence };
 }
 
 function revokeUpdate(context, params = {}) {
@@ -786,6 +822,11 @@ function revokeUpdate(context, params = {}) {
 function rollbackFiles(context, journal) {
   const runtime = path.join(context.extensionRoot, 'runtime');
   const previousRuntime = path.join(context.extensionRoot, 'slots', 'previous', 'runtime');
+  // An early interrupted apply may still have the source in the current slot.
+  // A missing previous slot is recoverable only when these actual bytes match
+  // the source pair; the source manifest and markers alone are insufficient.
+  const source = readManagedRuntimeEvidence(context, journal.sourceVersion,
+    fs.existsSync(previousRuntime) ? previousRuntime : runtime);
   if (fs.existsSync(previousRuntime)) {
     fs.rmSync(runtime, { recursive: true, force: true });
     fs.renameSync(previousRuntime, runtime);
@@ -806,6 +847,11 @@ function rollbackFiles(context, journal) {
   if (parseSemver(journal.sourceVersion)) {
     syncManagedMarkerVersions(context, journal.sourceVersion);
   }
+  const restored = readManagedRuntimeEvidence(context, journal.sourceVersion);
+  if (!sameRuntimeEvidence(source, restored)) {
+    throw updateError('update_rollback_unconfirmed', 'The source runtime readback did not match the restored files.');
+  }
+  return restored;
 }
 
 function syncManagedMarkerVersions(context, version) {
@@ -853,12 +899,13 @@ function recoverAndReadStatus(context) {
     writeJournal(context, journal);
   }
   if (journal?.state === 'applying') {
-    rollbackFiles(context, journal);
-    journal = { ...journal, state: 'rolled_back', reasonCode: 'update_interrupted', updatedAt: new Date().toISOString() };
+    const rollbackEvidence = rollbackFiles(context, journal);
+    journal = { ...journal, rollbackEvidence, state: 'rolled_back', reasonCode: 'update_interrupted', updatedAt: new Date().toISOString() };
     writeJournal(context, journal);
     settleAuthorization(context, journal.authorizationId, 'revoked');
   }
   if (journal?.state === 'rolled_back' || journal?.state === 'superseded') {
+    if (journal.state === 'superseded') cleanupStage(journal.stageRoot);
     pruneNativeVersions(context.nativeRoot, new Set([
       readVersionPointer(context.nativeRoot, 'active-version'),
       readVersionPointer(context.nativeRoot, 'previous-version')
@@ -867,7 +914,49 @@ function recoverAndReadStatus(context) {
   return currentStatus(context, journal);
 }
 
+// Called by the full installer while holding the same mutation lock, only
+// after both runtime trees and browser registration have succeeded.
+function settleReinstalledUpdate(context, version, expected) {
+  if (!expected?.id || !parseSemver(expected.sourceVersion) || !parseSemver(expected.targetVersion)
+    || compareSemver(version, expected.targetVersion) < 0
+    || compareSemver(version, expected.sourceVersion) <= 0) return;
+  const journal = readJournal(context);
+  if (!journal || ['id', 'state', 'sourceVersion', 'targetVersion'].some(key => journal[key] !== expected[key])) {
+    throw updateError('update_transaction_mismatch', 'The update transaction changed during full installation.');
+  }
+  if (assertManagedLayout(context) !== version) {
+    throw updateError('update_managed_layout_invalid', 'Full installation did not produce the requested pair.');
+  }
+  const reinstalledPair = readManagedRuntimeEvidence(context, version);
+  const timestamp = new Date().toISOString();
+  writeJournal(context, {
+    ...journal, state: 'superseded', supersededFromState: journal.state,
+    supersededByVersion: version, supersededAt: timestamp,
+    updatedAt: timestamp, reasonCode: 'update_reinstalled', reinstalledPair
+  });
+  const authorization = readAuthorization(context);
+  if (authorization?.state === 'bound' && authorization.id === journal.authorizationId
+    && authorization.transactionId === journal.id && authorization.sourceVersion === journal.sourceVersion
+    && authorization.targetVersion === journal.targetVersion) {
+    settleAuthorization(context, authorization.id, 'revoked');
+  }
+}
+
 function currentStatus(context, journal = readJournal(context)) {
+  let restoredPair = null;
+  let reinstalledPair = null;
+  if (journal?.state === 'rolled_back') {
+    try {
+      const observed = readManagedRuntimeEvidence(context, journal.sourceVersion);
+      if (!journal.rollbackEvidence || sameRuntimeEvidence(journal.rollbackEvidence, observed)) restoredPair = observed;
+    } catch (_) { /* Missing or changed bytes cannot confirm a recovered pair. */ }
+  }
+  if (journal?.state === 'superseded' && journal.reasonCode === 'update_reinstalled' && journal.reinstalledPair) {
+    try {
+      const observed = readManagedRuntimeEvidence(context, journal.supersededByVersion);
+      if (sameRuntimeEvidence(journal.reinstalledPair, observed)) reinstalledPair = observed;
+    } catch (_) { /* A reinstall receipt cannot authenticate later changed files. */ }
+  }
   return {
     managed: true,
     activeVersion: readVersionPointer(context.nativeRoot, 'active-version'),
@@ -875,7 +964,9 @@ function currentStatus(context, journal = readJournal(context)) {
     installedAligned: Boolean(readAlignedManagedVersion(context)),
     previousVersion: readVersionPointer(context.nativeRoot, 'previous-version'),
     transaction: journal ? publicTransaction(journal) : null,
-    authorization: publicAuthorization(readAuthorization(context))
+    authorization: publicAuthorization(readAuthorization(context)),
+    restoredPair,
+    reinstalledPair
   };
 }
 
@@ -1256,6 +1347,7 @@ function errorResponse(id, code, message) {
 
 module.exports = {
   GITHUB_LATEST_URL,
+  MUTATION_LOCK_STALE_MS,
   applyStagedUpdate,
   assertManagedLayout,
   authorizeUpdate,
@@ -1267,8 +1359,10 @@ module.exports = {
   handleUpdateRequest,
   isUpdateMethod,
   revokeUpdate,
+  removeStaleUpdateFileLock,
   rollbackUpdate,
   scheduleStagedActivation,
+  settleReinstalledUpdate,
   stageCandidate,
   syncManagedMarkerVersions
 };

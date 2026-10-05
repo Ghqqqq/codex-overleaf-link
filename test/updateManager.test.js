@@ -31,7 +31,9 @@ function createAppliedUpdateFixture() {
   const payloadRoot = path.join(stageRoot, 'payload');
   fs.mkdirSync(path.join(extensionRoot, 'runtime'), { recursive: true });
   fs.writeFileSync(path.join(extensionRoot, 'runtime', 'old.js'), 'old\n');
-  fs.writeFileSync(path.join(extensionRoot, 'runtime', 'runtime-manifest.json'), '{"schemaVersion":1}\n');
+  fs.writeFileSync(path.join(extensionRoot, 'runtime', 'runtime-manifest.json'), '{"schemaVersion":1,"js":["old.js"],"css":[]}\n');
+  fs.mkdirSync(path.join(extensionRoot, 'runtime/src/shared'), { recursive: true });
+  fs.writeFileSync(path.join(extensionRoot, 'runtime/src/shared/compatibility.js'), "const BUILD_TARGET_VERSION = '1.9.0';\n");
   fs.mkdirSync(path.join(extensionRoot, 'bootstrap'), { recursive: true });
   fs.writeFileSync(path.join(extensionRoot, 'bootstrap', 'background.js'), '// bootstrap\n');
   fs.writeFileSync(path.join(extensionRoot, 'manifest.json'), JSON.stringify({
@@ -47,6 +49,9 @@ function createAppliedUpdateFixture() {
   }, null, 2) + '\n');
   fs.mkdirSync(path.join(nativeRoot, 'versions', '1.8.9'), { recursive: true });
   fs.mkdirSync(path.join(nativeRoot, 'versions', '1.9.0'), { recursive: true });
+  fs.writeFileSync(path.join(nativeRoot, 'versions/1.9.0/package.json'), '{"version":"1.9.0"}\n');
+  fs.mkdirSync(path.join(nativeRoot, 'versions/1.9.0/native-host/src'), { recursive: true });
+  fs.writeFileSync(path.join(nativeRoot, 'versions/1.9.0/native-host/src/index.js'), 'void 0;\n');
   fs.writeFileSync(path.join(nativeRoot, 'active-version'), '1.9.0\n');
   fs.writeFileSync(path.join(nativeRoot, 'previous-version'), '1.8.9\n');
   fs.writeFileSync(path.join(nativeRoot, '.codex-overleaf-managed-native.json'), JSON.stringify({
