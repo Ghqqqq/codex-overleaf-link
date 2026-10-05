@@ -254,3 +254,71 @@ test('declined deletion is a nonretryable blocker without implying other writes 
     assert.equal(localized.nextAction, I18n.t(locale, 'failureReason_' + code + '_next'));
   }
 });
+
+const trackedNotFoundReason = '没有在 Overleaf 页面里找到这轮写入对应的留痕记录；Codex 没有用文本补丁伪撤销。';
+const trackedNotFoundEnglish = 'No matching tracked changes were found on the Overleaf page for this run. Codex did not undo with text patches.';
+test('partial tracked Undo Notice follows the current locale after settlement and storage without changing recovery facts', () => {
+  for (const failurePath of [undoPath, '']) {
+    const initial = { id: 'r', status: 'completed', mode: 'auto', trackedChangeStatus: 'pending',
+      undoExpectedFiles: [{ path: undoPath, content: 'before' }],
+      undoTrackedChanges: [{ path: undoPath, id: 'owned-ref' }], events: [] };
+    const result = { ok: false, applied: [{ trackedChange: { path: 'main.tex' }, result: { ok: true } }],
+      skipped: [{ trackedChange: failurePath ? { path: failurePath } : null,
+        result: { ok: false, code: 'tracked_change_not_found', reason: trackedNotFoundReason } }] };
+    const settled = Settlement.applySettlementTransition(initial,
+      Settlement.settleTrackedChangeLifecycle({ kind: 'reject', run: initial, result }));
+    const record = Storage.buildSessionRecord({ id: 's', projectId: 'qa', accountScopeId: 'test', runs: [settled] });
+    const run = Session.normalizeRuns(JSON.parse(JSON.stringify(record)).runs)[0];
+    const before = JSON.stringify(run);
+    const failure = Settlement.projectRunSettlement(run).primaryFailure;
+    assert.equal(run.trackedChangeStatus, 'needs_review');
+    assert.equal(failure.code, 'unknown_legacy_failure');
+    assert.equal(failure.retryable, false);
+    assert.equal(failure.evidence, undefined, 'settlement may retain only the exact historical message');
+    for (const [locale, expected] of [['en', trackedNotFoundEnglish], ['zh', trackedNotFoundReason], ['en', trackedNotFoundEnglish]]) {
+      const { report, view, message } = renderFailure(run, locale);
+      assert.equal(message, [failurePath, expected].filter(Boolean).join(': '));
+      const recovery = view.getRecoveryContext(report);
+      assert.equal(recovery.failure.code, 'unknown_legacy_failure');
+      assert.equal(recovery.failure.retryable, false);
+      assert.equal(recovery.file, failurePath);
+    }
+    assert.equal(JSON.stringify(run), before, 'display must preserve statuses, original diagnostic and remaining checkpoints');
+  }
+});
+test('tracked Undo originalCode localizes Notice and details without canonicalizing stored diagnostics', () => {
+  const failure = FailureReasons.normalizeFailureReason({ ok: false, code: 'tracked_change_not_found',
+    reason: trackedNotFoundReason }, { path: undoPath });
+  const before = JSON.stringify(failure);
+  const context = vm.createContext({ window: {} });
+  for (const file of ['failureReasons', 'i18n']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/shared/' + file + '.js'), 'utf8'), context);
+  }
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../extension/src/content/applyResultFormatters.js'), 'utf8'), context);
+  let locale = 'en';
+  const formatters = context.window.CodexOverleafApplyResultFormatters.create({ i18n: context.CodexOverleafI18n,
+    FailureReasons: context.CodexOverleafFailureReasons, getLocale: () => locale,
+    tr: (key, params) => I18n.t(locale, key, params), tx: (en, zh) => locale === 'zh' ? zh : en });
+  for (const [activeLocale, expected] of [['en', trackedNotFoundEnglish], ['zh', trackedNotFoundReason]]) {
+    locale = activeLocale;
+    assert.equal(FailureReasons.localizeFailureReason(failure, locale, key => I18n.t(locale, key)).userMessage, expected);
+    const document = { createElement: tag => new NoticeNode(tag) };
+    const report = document.createElement('section'); report.dataset.status = 'failed';
+    const view = Notice.create({ document, tr: (key, params) => I18n.t(locale, key, params) });
+    view.append(report, { failure }, {});
+    assert.equal(report.children[0].children[1].textContent, undoPath + ': ' + expected);
+    assert.equal(view.getRecoveryContext(report).failure, failure);
+    for (const result of [{ ok: false, code: 'tracked_change_not_found', reason: trackedNotFoundReason }, { failure }]) {
+      assert.equal(formatters.formatBridgeResultReason(result, undoPath), undoPath + ': ' + expected);
+      assert.equal(formatters.formatApplyResultReason({ result, operation: { path: undoPath } }), undoPath + ': ' + expected);
+    }
+  }
+  assert.equal(FailureReasons.normalizeFailureReason({ failure }).code, 'unknown_legacy_failure');
+  assert.equal(JSON.stringify(failure), before, 'technicalMessage, originalCode, originalReason and retryability remain intact');
+});
+test('tracked Undo display compatibility preserves near-miss and unrelated diagnostics verbatim', () => {
+  for (const reason of [trackedNotFoundReason + ' Additional context.', trackedNotFoundReason.replace('留痕记录', '编辑记录')]) {
+    const run = persistedUndoFailure('unknown_legacy_failure', reason);
+    for (const locale of ['en', 'zh']) assert.equal(renderFailure(run, locale).message, undoPath + ': ' + reason);
+  }
+});

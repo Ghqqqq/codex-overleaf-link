@@ -294,6 +294,10 @@ Track 的 `selectExpectedFilesForTrackedUndo` 保留 `WritebackSettlement` 对�
 期限或取消阻止后续未开始的正文写入，已确认部分继续形成恢复进度。底层已经发出的导航或 HTTP 请求可能迟到完成；守卫不能撤回已发生的副作用，迟到导航也可能改变活动文件。
 [RunReviewController](../../extension/src/content/runReviewController.js) 与 `WritebackSettlement.isUndoResultEffectivelyApplied` 核对真实成功证据；`ok:false` 且没有 skipped 的运输失败保持 partial，不能仅凭空 skipped 显示 Undone。已验证的纯文本及结构操作由 `advanceUndoCheckpoint` 消耗恢复材料，持久化后重试只处理剩余项。普通 Undo 同样等待持久确认，操作锁存续时保持“正在撤销”。[reviewDeadline.test.js](../../test/reviewDeadline.test.js)、[ordinaryUndoDeadlineConsumer.test.js](../../test/ordinaryUndoDeadlineConsumer.test.js) 和 [ordinaryUndoDurability.test.js](../../test/ordinaryUndoDurability.test.js) 覆盖实际生产调用链与受控 I/O；真实平台延迟另需验收。
 
+Track Undo 的逐文件 reject sweep 即使未找到 DOM 留痕节点，也保留已知目标路径到 `result.file` 与 `skipped.trackedChange.path`。因此另一文件已有精确前像读回回执时，`advanceUndoCheckpoint` 可移除该成功项，持久化后的重试仅携带未完成文件；缺少路径的全局失败或缺少独立验证的成功项仍保留恢复材料。路径依据正在执行的 sweep 目标，无法定位到文件的失败继续保留全局范围。[trackedUndoCheckpoint.test.js](../../test/trackedUndoCheckpoint.test.js) 串联 Controller、Page RPC、原生账本前检、存储重载与重试，并覆盖无路径失败及未验证回执对照；编辑器与服务器 I/O 使用隔离替身。
+
+**已知限制。** 若旧 Track-on 持久记录已留下“某文件正文恢复前像、原留痕 refs 已消失，但该文件仍在恢复账本”的状态，原生 review 前检仍会以 `native_review_scope_changed` 停止。上述逐项结果传播防止新的独立成功回执被文件级失败连带保留，不为缺少当次成功回执的旧状态补造恢复证明；精确前像相等本身也不会绕过 Track-on 的原生归属匹配。该旧状态由同一测试保留无写入、可继续检查的失败对照。
+
 **目标契约与实现守卫。** 后来修改应保留；安全性依靠实际证据判断。
 原生 editor Undo 要求当前内容符合原运行 post-image；创建撤销要求文本内容或二进制哈希仍匹配。
 `waitForActiveEditorCheckpoint` 对能证明的前后缀变化支持受限重基，冲突或归属不明时应跳过并保留恢复信息。

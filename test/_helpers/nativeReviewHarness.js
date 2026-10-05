@@ -140,6 +140,8 @@ function createReviewFixture(t, options = {}) {
       getActiveFilePathFromEditorStore: () => state.active, readActiveEditorText: readText,
       getActiveEditorIdentity: identity, activeEditorIdentityChanged: previous => previous !== identity() });
   }
+  const undoControl = { tagName: 'BUTTON', disabled: false,
+    getAttribute: name => name === 'aria-label' ? 'Undo' : null };
   const router = Router.create({ window, now: () => timer.now, treeOperations: tree, writebackOpenSettleMs: 0,
     normalizeSafeProjectPath: ProjectFiles.normalizeSafeProjectPath,
     getCodeMirrorEditorView: identity, getTrackedChangeDocumentId: filePath => docs.get(filePath)?.id || '',
@@ -155,7 +157,14 @@ function createReviewFixture(t, options = {}) {
     setReviewingEnabled: async enabled => { state.reviewing = enabled; return { ok: true, enabled }; },
     ensureEditing: async () => { state.reviewing = false; return { ok: true }; },
     ensureReviewing: async () => { state.reviewing = true; return { ok: true }; },
-    collectElements: () => [], isInsideCodexPanel: () => false, readNodeSignalText: node => node.textContent || '',
+    collectElements: selector => /button/i.test(selector) && options.editorUndoPaths?.includes(state.active) ? [undoControl] : [],
+    isInsideCodexPanel: () => false, readNodeSignalText: node => node === undoControl ? 'Undo' : node.textContent || '',
+    clickNode(node) {
+      assert.equal(node, undoControl);
+      (state.editorUndos ||= []).push(state.active);
+      current().content = current().before;
+      current().changes = [];
+    },
     delay: timer.sleep, compileBridge: context.compileBridge,
     waitForSaveState: async () => ({ ok: true, state: 'verified_saved' }),
     confirmReviewWriteback: (params, result) => Save.confirmReviewWriteback({ params, result,

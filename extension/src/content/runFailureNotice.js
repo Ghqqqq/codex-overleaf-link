@@ -10,7 +10,7 @@
   const REVIEW_CODES = new Set(['write_timeout', 'partial_write_needs_review']);
   const CANCEL_CODES = new Set(['cancelled', 'user_cancelled', 'codex_cancelled']);
   const SNAPSHOT_UNDO_CODES = new Set(['snapshot_undo_current_mismatch', 'snapshot_undo_open_failed', 'snapshot_undo_unavailable']);
-  const LOCALIZED_FAILURE_CODES = new Set([...SNAPSHOT_UNDO_CODES, 'file_tree_controls_unavailable']);
+  const LOCALIZED_FAILURE_CODES = new Set([...SNAPSHOT_UNDO_CODES, 'tracked_change_not_found', 'file_tree_controls_unavailable']);
 
   // These exact Page templates survived old settlement compaction after the
   // original machine code was dropped. This compatibility view is never used
@@ -21,6 +21,9 @@
     const message = String(failure.userMessage || '');
     if (message === 'The saved checkpoint is unavailable for this undo.') {
       return { ...failure, code: 'snapshot_undo_unavailable' };
+    }
+    if (message === '没有在 Overleaf 页面里找到这轮写入对应的留痕记录；Codex 没有用文本补丁伪撤销。') {
+      return { ...failure, code: 'tracked_change_not_found' };
     }
     const templates = [
       ['snapshot_undo_current_mismatch', /^(.+) 当前内容或文档身份与本轮撤销检查点不一致；Codex 保留恢复材料并停止撤销。$/],

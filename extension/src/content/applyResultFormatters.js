@@ -242,7 +242,7 @@
   function formatCatalogFailureReason(result, path) {
     const code = result.failure?.code || result.code;
     const originalCode = code === 'unknown_legacy_failure' ? result.failure?.evidence?.originalCode : '';
-    if (!['snapshot_undo_current_mismatch', 'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'file_tree_controls_unavailable'].includes(originalCode || code)) return '';
+    if (!['snapshot_undo_current_mismatch', 'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'tracked_change_not_found', 'file_tree_controls_unavailable'].includes(originalCode || code)) return '';
     const failure = normalizeSkippedFailure({ result, operation: { path: result.file || path } });
     return failure ? [failure.file, failure.userMessage].filter(Boolean).join(': ') : '';
   }

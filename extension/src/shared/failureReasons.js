@@ -620,7 +620,7 @@
   function recoverDisplayFailureCode(failure) {
     const code = failure?.evidence?.originalCode;
     if (failure?.code !== 'unknown_legacy_failure'
-      || !['snapshot_undo_current_mismatch', 'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'file_tree_controls_unavailable'].includes(code)) return failure;
+      || !['snapshot_undo_current_mismatch', 'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'tracked_change_not_found', 'file_tree_controls_unavailable'].includes(code)) return failure;
     return { ...failure, code };
   }
 

@@ -124,7 +124,7 @@ Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并
 
 `persistPanelInputs` 先交给全局 controller；识别到全局字段就返回该 patch Promise。普通 task 输入走 debounce 保存，明确控件变更继续读取并持久化。
 全局 controller 将 pending patch 投影到本地视图，再接收递增 revision；失败时移除 pending patch 并报告错误。此结构旨在阻止旧会话 autosave 回滚全局偏好。
-语言存在三条呈现通路：[i18n](../../extension/src/shared/i18n.js) 的 `tr` 键、runtime 的 `tx(en, zh)`、Popup 的 `utx`。修改翻译需同时检查实际消费者。已知失败码由 `FailureReasons.localizeFailureReason` 在 Notice 和既有详情渲染时读取当前面板语言，原诊断继续保留。旧记录丢失原始错误码时，`RunFailureNotice.snapshotUndoDisplayFailure` 只对精确匹配的已知 Snapshot Undo 模板生成临时展示描述，不修改原失败分类、持久状态或恢复动作权限；未知诊断保留原文。
+语言存在三条呈现通路：[i18n](../../extension/src/shared/i18n.js) 的 `tr` 键、runtime 的 `tx(en, zh)`、Popup 的 `utx`。修改翻译需同时检查实际消费者。已知失败码由 `FailureReasons.localizeFailureReason` 在 Notice 和既有详情渲染时读取当前面板语言，原诊断继续保留。旧记录丢失原始错误码时，`RunFailureNotice.snapshotUndoDisplayFailure` 只对精确匹配的已知 Snapshot Undo 及留痕缺失模板生成临时展示描述；`tracked_change_not_found` 的展示兼容继续保留原 `unknown_legacy_failure` 分类、重试标志、持久状态与恢复动作权限。未知诊断保留原文。
 [ThemeController.applyTheme/watchAuto](../../extension/src/content/themeController.js) 负责主题效果；全局存储拥有偏好，CSS 与 dialog/浮动工具栏负责正确继承和显示。
 
 ### 已提交输入、运行中草稿与编辑重发

@@ -480,7 +480,7 @@
       const completion = await rejectRemainingTrackedChangesForExpectedFiles(expectedFiles, applied);
       if (!completion.ok) {
         skipped.push({
-          trackedChange: null,
+          trackedChange: completion.file ? { path: completion.file } : null,
           result: completion
         });
       }
@@ -488,7 +488,7 @@
       const completion = await rejectRemainingTrackedChangesForTrackedPaths(trackedChanges, applied);
       if (!completion.ok) {
         skipped.push({
-          trackedChange: null,
+          trackedChange: completion.file ? { path: completion.file } : null,
           result: completion
         });
       }
@@ -1360,7 +1360,9 @@
       }
       const result = await rejectRemainingTrackedChangesForExpectedFile(file, applied);
       if (!result.ok) {
-        return result;
+        // The sweep knows its target even when no DOM review node remains.
+        // Keep that scope so independently verified files can leave recovery.
+        return { ...result, file: file.path };
       }
     }
     return { ok: true };
@@ -1381,7 +1383,7 @@
     for (const path of paths) {
       const result = await rejectRemainingTrackedChangesForPath(path, applied);
       if (!result.ok) {
-        return result;
+        return { ...result, file: path };
       }
     }
     return { ok: true };
