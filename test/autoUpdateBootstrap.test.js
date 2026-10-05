@@ -66,17 +66,19 @@ test('health confirmation waits for the replacement content runtime to answer fr
   assert.match(source, /transaction\?\.state === 'rolled_back'[\s\S]*reloadPendingOverleafTabs/);
 });
 
-test('replaceable background runtime retires stale rollback UI and consent state', () => {
+test('replaceable background delegates retired transactions with the pre-request recovery owner', () => {
+  const { extractFunction } = require('./_helpers/extractFunction');
+  const recovery = extractFunction(backgroundRuntimeSource, 'reconcileManagedUpdateTransaction');
   const supersededBranch = backgroundRuntimeSource.match(
     /if \(transaction\?\.state === 'superseded'\) \{[\s\S]*?\n      return;\n    }/
   )?.[0] || '';
   assert.doesNotMatch(source, /transaction\?\.state === 'superseded'/);
-  assert.match(supersededBranch, /MANAGED_UPDATE_CONSENT_KEY/);
-  assert.match(supersededBranch, /MANAGED_UPDATE_TABS_KEY/);
-  assert.match(supersededBranch, /chrome\.storage\.local\.remove/);
-  assert.match(supersededBranch, /state:\s*'idle'/);
-  assert.match(supersededBranch, /currentVersion:\s*activeVersion/);
-  assert.match(supersededBranch, /transactionId:\s*''/);
-  assert.match(supersededBranch, /code:\s*''/);
-  assert.match(supersededBranch, /message:\s*''/);
+  assert.match(recovery, /const recoveryOwner = await coordinator\?\.captureRecoveryOwner\?\.\(\)/);
+  assert.ok(recovery.indexOf('captureRecoveryOwner') < recovery.indexOf('await sendNativeRequest'),
+    'the owner must be captured before Native status can arrive late');
+  assert.match(supersededBranch, /await coordinator\?\.settleSupersededTransaction\?\.\(response\.result, recoveryOwner\)/);
+  assert.doesNotMatch(supersededBranch, /chrome\.storage\.local\.(?:set|remove)|setManagedUpdateState/,
+    'the background must not bypass the coordinator writer to clear consent or update state');
+  // updateStateReasonRecovery.test.js exercises both production writers with
+  // delayed status responses and verifies old recovery cannot clear new state.
 });

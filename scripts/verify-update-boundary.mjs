@@ -21,6 +21,7 @@ function verifyUpdateBoundary() {
     'extension/popup.html',
     'native-host/src/updateTrust.js',
     'native-host/src/managedLauncherRuntime.js',
+    'native-host/src/launcher.js',
     'native-host/src/nativeHostPlatform.js',
     'native-host/src/manifest.js',
     MANAGED_INSTALLER_PATH,

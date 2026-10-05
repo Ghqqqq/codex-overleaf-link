@@ -4,7 +4,10 @@
   const popupScriptUrl = document.currentScript?.src || chrome.runtime.getURL('src/popup.js');
   ensureMinimalPopupShell();
   const CodexOverleafCompatibility = window.CodexOverleafCompatibility;
-  const DEFAULT_INSTALL_COMMAND = CodexOverleafCompatibility?.buildInstallCommand?.(
+  const isManagedInstall = chrome.runtime.getManifest()?.background?.service_worker === 'bootstrap/background.js'
+    || window.__CODEX_OVERLEAF_RUNTIME_PREFIX__ === 'runtime/';
+  let installIdentity = { managed: isManagedInstall };
+  const DEFAULT_INSTALL_COMMAND = isManagedInstall ? '' : CodexOverleafCompatibility?.buildInstallCommand?.(
     undefined,
     undefined,
     getCurrentExtensionId()
@@ -71,6 +74,7 @@
   });
 
   copyInstallCommand.addEventListener('click', async () => {
+    if (!currentInstallCommand) return;
     copyInstallCommand.disabled = true;
     copyFeedback.hidden = true;
     try {
@@ -81,7 +85,7 @@
       copyFeedback.textContent = utx('Copy failed. Select the command above to copy it.', '复制失败，可选中上方命令复制。');
       copyFeedback.hidden = false;
     } finally {
-      copyInstallCommand.disabled = false;
+      copyInstallCommand.disabled = !currentInstallCommand;
     }
   });
 
@@ -217,6 +221,7 @@
   }
 
   async function checkNativeHost() {
+    await readInstallIdentity();
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'codex-overleaf/native-request',
@@ -244,11 +249,29 @@
     }
   }
 
+  async function readInstallIdentity() {
+    if (!isManagedInstall) return;
+    try {
+      const response = await fetch(chrome.runtime.getURL('.codex-overleaf-managed-extension.json'));
+      const marker = response.ok ? await response.json() : null;
+      if (marker?.managedBy === 'codex-overleaf-link' && marker.kind === 'extension'
+        && marker.installIdentity?.extensionId === getCurrentExtensionId()) {
+        installIdentity = { ...marker.installIdentity, managed: true };
+      }
+    } catch (_) { /* Older markers cannot prove the original root or browser. */ }
+  }
+
   function showNativeInstallGuide(compatibility = {}) {
     nativeInstall.hidden = false;
     currentInstallCommand = getCompatibilityUpdateCommand(compatibility);
     installCommand.textContent = currentInstallCommand;
-    nativeStatusMessage.textContent = getNativeStatusMessage(compatibility.status, getCompatibilityClassification(compatibility));
+    copyInstallCommand.disabled = !currentInstallCommand;
+    nativeStatusMessage.textContent = !currentInstallCommand && isManagedInstall
+      ? utx('Repair this Managed installation using its original managed root, browser and extension ID. Rerun the original install-managed command with those parameters.',
+        '修复此托管安装需要原管理根目录、浏览器和扩展 ID。请使用这些原参数重新运行 install-managed 安装命令。')
+      : getNativeStatusMessage(compatibility.status, getCompatibilityClassification(compatibility))
+        + ((compatibility.native?.platform || installIdentity.platform) === 'win32' && isManagedInstall
+          ? utx(' Run the command in PowerShell.', ' 请在 PowerShell 中运行该命令。') : '');
   }
 
   function evaluateNativeCompatibility(response) {
@@ -303,7 +326,8 @@
       version: CodexOverleafCompatibility?.BUILD_TARGET_VERSION ||
         chrome.runtime.getManifest?.().version ||
         '',
-      extensionId: getCurrentExtensionId()
+      extensionId: getCurrentExtensionId(),
+      ...(isManagedInstall ? { installIdentity } : {})
     };
   }
 
@@ -331,8 +355,9 @@
     return CodexOverleafCompatibility?.buildInstallCommand?.(
       compatibility.recommendedVersion || CodexOverleafCompatibility.BUILD_TARGET_VERSION,
       compatibility.native?.platform || compatibility.platform,
-      getCurrentExtensionId()
-    ) || compatibility.updateCommand || compatibility.installCommand || DEFAULT_INSTALL_COMMAND;
+      getCurrentExtensionId(),
+      installIdentity
+    ) || (isManagedInstall ? '' : compatibility.updateCommand || compatibility.installCommand || DEFAULT_INSTALL_COMMAND);
   }
 
   function getStatusIconText(classification) {

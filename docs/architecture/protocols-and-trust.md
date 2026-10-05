@@ -95,7 +95,7 @@ Chrome runtime 消息由多个 listener 消费，各自拥有准入函数。当�
 [taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) 的 `bridge.ping` 报告 Native 版本、协议、能力和环境；基础 capabilities 取自共享常量，另宣告按功能协商的可选能力；能力宣告不能视作逐项业务实测结果。
 
 Content 的 [NativeCompatibilityController.ensureForMethod](../../extension/src/content/nativeCompatibilityController.js) 先 ping，再用传入的 `gatedMethods` 集合决定是否阻止目标方法。
-该方法接受可选的 `{assertCurrent}`：普通运行与 skill-installer 共用的 `sendTrackedCodexRun` 传入原运行句柄、AbortSignal 和账号/项目校验。controller 在 `bridge.ping` 返回后、兼容评估及 blocked 通知前执行回调，sender 在 gate 返回后再次执行，再消费通过或拒绝结果；旧运行的迟到响应不能向后继运行派发请求或追加兼容失败。其他通用 `sendNative/sendBackgroundNative` 调用保持各自取消语义，未统一获得这一运行身份回调。
+该方法接受可选的 `{assertCurrent}`：普通运行与 skill-installer 共用的 `sendTrackedCodexRun` 传入原运行句柄、AbortSignal 和账号/项目校验。controller 在 `bridge.ping` 返回后、兼容评估及 blocked 通知前执行回调，sender 在 gate 返回后再次执行，再消费通过或拒绝结果；旧运行的迟到响应不能向后继运行派发请求或追加兼容失败。Guide另将同一可选回调交给 `sendBackgroundNative(payload,{assertCurrent})`：controller在ping后和业务派发前复核原指导身份；该阶段抛出的拒绝标为 `requestDispatched:false`，供Guide保留可操作队列。其他通用调用保持各自取消语义，未统一获得这一运行身份回调。
 集合定义在 [contentRuntime.NATIVE_COMPATIBILITY_GATED_METHODS](../../extension/src/content/contentRuntime.js)；只有集合内方法会附加兼容性 evidence，并执行对应派发前取消检查。
 其中 `mirror.invalidate` 豁免该取消检查，用于保留 Undo 后的镜像失效处理；不能从豁免推定其他操作可在取消后继续。
 后台 [getNativeCompatibilityBlock](../../extension/src/background.js) 再检查请求 evidence；它不会为普通请求重新执行独立 ping。
@@ -108,18 +108,14 @@ Content 的 [NativeCompatibilityController.ensureForMethod](../../extension/src/
 
 | 范围 | 方法族及例外 |
 | --- | --- |
-| Content 与后台 required 集合共同覆盖 | `codex.run/steer`、`task.run`、镜像 `sync/patchFiles/confirmWriteback/invalidate/scanSensitive`、当前 `codex.providers.*` 七个方法、`codex.history.clearPlugin`、`skills.list/install/remove` |
+| Content 与后台 required 集合共同覆盖 | `codex.run/steer`、`task.run`、镜像 `sync/patchFiles/confirmWriteback/invalidate/scanSensitive`、当前 `codex.providers.*` 七个方法、`codex.history.clearPlugin`、`skills.list/install/remove`、`writing-style.get/set`、`codex.thread.fork`、`asset.readChunk/release` |
 | Content gate 中的额外项 | `mirror.status`、`codex.models`；后台将其列入 recoverable 集合 |
 | 后台 required 集合中的额外项 | `task.confirm`；当前 Native 返回 Suggest 模式已移除 |
 | 后台 recoverable 集合 | `bridge.ping`、`mirror.status`、`codex.models`、`codex.cancel`；无 evidence 不按 required 规则拦截，有 evidence 时仍应用分类规则 |
-| 当前未进入上述 required / Content gate 的业务方法 | `writing-style.get/set`、`codex.thread.fork`、`asset.readChunk/release` |
 
-**Current behavior 限定：**未进入 Content 集合的方法仍经过该 controller 的 ping，但 `allowed` 分支直接放行，`attachEvidence` 不附加检查结果。
-后台在没有 evidence 时仅阻止 required 集合内方法；如果上述五个业务方法显式携带 incompatible evidence，仍会被兼容性分类规则阻止。`bridge.ping` 则由分类规则始终放行。
-因此相同方法在“缺少 evidence”和“提供 incompatible evidence”两种输入下可有不同准入结果。
-真实调用者包括 [writingStyleSettings](../../extension/src/content/writingStyleSettings.js)、[sessionForkController](../../extension/src/content/sessionForkController.js) 与 [assetTransferBroker](../../extension/src/content/assetTransferBroker.js)，均由 runtime 注入 `sendBackgroundNative`。
-该分支使上述五个方法在 ping 为 incompatible 时仍可被发送；旧 Native 是否支持这些方法及其实际错误需另行验证。
+`writingStyleSettings`、`sessionForkController` 与 `assetTransferBroker` 的上述五个业务方法由runtime注入sender，Content取得不兼容结果后阻止派发；兼容请求附带evidence，后台在evidence缺失或不允许该方法时拒绝。该方法集合对齐不增加全局 `REQUIRED_CAPABILITIES`，也不改变 `bridge.ping`、取消或未列名未来方法的原政策。
 
+**Current behavior 限定：**未进入Content集合的方法仍保持既有ping及非gated放行策略；后台无evidence时仅阻止required方法，显式evidence继续按共享分类矩阵判定。`bridge.ping`由分类规则始终放行。生产集合、controller和真实后台准入的专项见 [nativeCompatibilityBusinessMethods.test.js](../../test/nativeCompatibilityBusinessMethods.test.js)。
 后台 `sanitizeNativeRequest` 在发送前剥离兼容性 evidence。Native `handleRequest` 执行配额、方法路由及各业务检查，没有再实施同一版本 gate。
 托管更新的 `requestManagedInternal` 显式使用 `skipCompatibility`；更新安全点、授权、签名与事务检查见[安装与更新](installation-and-updates.md)，不能按普通业务方法解释这条内部通道。
 
@@ -154,7 +150,7 @@ loopback 约束监听地址，token 约束请求持有的口令；二者都不�
 | --- | --- | --- |
 | Page 方法或握手 | client、capability guard、contract、dispatcher、Page 加载清单与消费者 | [pageRpcContract](../../test/pageRpcContract.test.js)、[pageBridgeClient](../../test/pageBridgeClient.test.js)、[pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js)、[writebackCancellationRecovery](../../test/writebackCancellationRecovery.test.js)、[assetTransferCancellation](../../test/assetTransferCancellation.test.js)：目录、模拟消息、Page 局部守卫和取消后回执收束 |
 | 后台消息准入 | 对应 listener、sender helper、manifest 注入、站点及 frame 范围 | [backgroundNativeError](../../test/backgroundNativeError.test.js)、[globalPreferences](../../test/globalPreferences.test.js)：worker VM 或存储 mock；不能代替 Chrome 投递验证 |
-| Native 兼容 gate | runtime 集合、controller、后台集合、共享分类、Native ping 与调用者 | [nativeCompatibilityController](../../test/nativeCompatibilityController.test.js)、[nativeCompatibilityRunDispatch](../../test/nativeCompatibilityRunDispatch.test.js)、[compatibility](../../test/compatibility.test.js)：须区分集合注入测试与生产集合完整性 |
+| Native 兼容 gate | runtime 集合、controller、后台集合、共享分类、Native ping 与调用者 | [nativeCompatibilityController](../../test/nativeCompatibilityController.test.js)、[nativeCompatibilityRunDispatch](../../test/nativeCompatibilityRunDispatch.test.js)、[nativeCompatibilityBusinessMethods](../../test/nativeCompatibilityBusinessMethods.test.js)、[compatibility](../../test/compatibility.test.js)：须区分集合注入测试与生产集合完整性 |
 | Provider 本地边界 | prepared launch、三桥 token/地址验证、关闭与取消 | [providerReliability](../../test/providerReliability.test.js)；具体依赖替换和网络范围需按用例核对 |
 
 纯 helper、源码断言和模拟消息能验证确定分支；真实 frame、Chrome sender 字段、不同扩展加载版本和实际 Native 注册需要对应环境验收。

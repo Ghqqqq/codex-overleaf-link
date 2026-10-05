@@ -78,6 +78,7 @@
       deadlineAt: finiteNumber(value.deadlineAt),
       heartbeatAt: finiteNumber(value.heartbeatAt),
       postponeUntil: finiteNumber(value.postponeUntil),
+      cooldownUntil: finiteNumber(value.cooldownUntil),
       code: safeToken(value.code),
       message: String(value.message || '').replace(/\s+/g, ' ').trim().slice(0, 300),
       manualReason: normalizeManualReason(value.manualReason)
@@ -118,9 +119,6 @@
     const state = normalizeUpdateState(updateValue, options.currentVersion);
     const consent = normalizeConsentState(consentValue);
     const newer = compareStableVersions(state.latestVersion, state.currentVersion) > 0;
-    const snoozed = newer &&
-      consent.snoozedVersion === state.latestVersion &&
-      consent.snoozedUntil > now;
     const execution = EXECUTION_STATES.has(state.state);
     const available = state.state === 'update_available' && newer;
     // A newer release that only a reinstall can apply. It is shown even after
@@ -129,7 +127,11 @@
     // still names the old one, and the notice must clear by itself.
     const runningVersion = safeVersion(options.currentVersion) || state.currentVersion;
     const manualInstall = state.state === 'manual_install_required'
-      && compareStableVersions(state.latestVersion, runningVersion) > 0;
+      && (compareStableVersions(state.latestVersion, runningVersion) > 0
+        || (state.code === 'prerelease_promotion_requires_manual_update'
+          && state.latestVersion === runningVersion));
+    const snoozed = (newer || manualInstall) &&
+      consent.snoozedVersion === state.latestVersion && consent.snoozedUntil > now;
     const progress = getProgressModel(state);
     const quietFailure = state.state === 'failed' &&
       state.initiatedBy !== 'manual' &&

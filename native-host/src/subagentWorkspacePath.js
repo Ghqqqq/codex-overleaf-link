@@ -7,14 +7,17 @@ const { SUBAGENT_QUEUE_DIR } = require('./mirrorWorkspace');
     if (typeof value !== 'string' || !value.trim()) {
       return null;
     }
-    const normalized = value.trim().replace(/\\/g, '/').replace(/^\.\//, '');
+    const normalized = value.trim().replace(/\\/g, '/');
     if (!normalized || path.isAbsolute(normalized)) {
       return null;
     }
-    const segments = normalized.split('/');
+    let segments = normalized.split('/');
     if (segments.some(segment => segment === '..' || segment === '')) {
       return null;
     }
+    // All consumers use the same identity, including control guards and locks.
+    segments = segments.filter(segment => segment !== '.');
+    if (!segments.length) return null;
     if (segments[0] === SUBAGENT_QUEUE_DIR) {
       // The queue control plane (jobs/results/logs/broker.json) is never
       // ownable — but the work/ scratch zone IS: single-file fan-out slices

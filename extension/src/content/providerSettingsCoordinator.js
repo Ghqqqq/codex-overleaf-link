@@ -14,9 +14,11 @@
       getSettingsPanelInstance: options.getSettingsPanelInstance || (() => null),
       getSelectedModel: options.getSelectedModel || (() => ''),
       getSelectedProviderId: options.getSelectedProviderId || (() => 'builtin'),
+      getSelectedProviderRevision: options.getSelectedProviderRevision || (() => undefined),
       hasCurrentProject: options.hasCurrentProject || (() => true),
       setSelectedProviderId: options.setSelectedProviderId || (() => {}),
       confirmProviderSwitch: options.confirmProviderSwitch || (() => true),
+      assertProviderSwitchAllowed: options.assertProviderSwitchAllowed || (() => {}),
       clearSelectedModel: options.clearSelectedModel || (() => {}),
       refreshModelOptions: options.refreshModelOptions || (() => {}),
       persistInputs: options.persistInputs || (() => {}),
@@ -195,15 +197,20 @@
       }
     }
     const changedProviderIds = Array.isArray(change.changedProviderIds) ? change.changedProviderIds : [];
-    const providerConfigurationChanged = changedProviderIds.includes(requestedProviderId);
+    const selectedRevision = instance.getSelectedProviderRevision();
+    const providerConfigurationChanged = changedProviderIds.includes(requestedProviderId)
+      || (requestedProviderId === previousProviderId && selectedRevision !== undefined
+        && Number(selectedRevision) !== Number(instance.Profiles.getProviderById(catalog, requestedProviderId)?.revision || 0));
     if (!change.forceSessionRefresh && !projectProviderChanged && !providerConfigurationChanged) {
       return;
     }
+    if (projectProviderChanged || providerConfigurationChanged) instance.assertProviderSwitchAllowed();
     const loadResult = change.modelsPreloaded === true
       ? { stale: false, selectedModel: change.preloadedModelId || '' }
       : await instance.refreshModelOptions(
         instance.Profiles.buildRunSelection(catalog, requestedProviderId),
-        { persist: false }
+        { persist: false, ...(projectProviderChanged || providerConfigurationChanged
+          ? { assertCurrent: instance.assertProviderSwitchAllowed } : {}) }
       );
     if (loadResult?.stale || loadResult?.error) {
       const error = createClientError(
@@ -223,6 +230,7 @@
 
   async function prepareProviderActivation(instance, providerId) {
     requireCurrentProject(instance);
+    instance.assertProviderSwitchAllowed();
     const previousProviderId = instance.getSelectedProviderId() || 'builtin';
     const provider = instance.Profiles.getProviderById(instance.catalog, providerId);
     if (providerId !== previousProviderId) {
@@ -234,9 +242,10 @@
         return { cancelled: true, previousProviderId };
       }
     }
+    instance.assertProviderSwitchAllowed();
     const result = await instance.refreshModelOptions(
       instance.Profiles.buildRunSelection(instance.catalog, providerId),
-      { persist: false }
+      { persist: false, assertCurrent: instance.assertProviderSwitchAllowed }
     );
     if (result?.stale || result?.error) {
       if (providerId !== previousProviderId) {
@@ -252,6 +261,7 @@
       error.details = result?.error || {};
       throw error;
     }
+    instance.assertProviderSwitchAllowed();
     return {
       cancelled: false,
       previousProviderId,
@@ -316,7 +326,10 @@
   async function saveProvider(instance, context, action = {}) {
     instance.dialog.setBusy('saving', instance.tx('Saving provider…', '正在保存模型服务…'));
     try {
-      if (action.activate === true) requireCurrentProject(instance);
+      if (action.activate === true) {
+        requireCurrentProject(instance);
+        instance.assertProviderSwitchAllowed();
+      }
       const result = await request(instance, 'codex.providers.upsert', {
         profileId: context.profileId,
         expectedRevision: context.expectedRevision,
@@ -347,8 +360,8 @@
         tone: fellBackToBuiltin ? 'warning' : 'success',
         title: fellBackToBuiltin
           ? instance.tx(
-              'Provider saved. Its endpoint changed, so Built-in Codex is active until the new endpoint is approved.',
-              '模型服务已保存。由于端点发生变化，确认新端点前将使用内置 Codex。'
+              'Provider saved. Its endpoint changed, so the Native Host default is Built-in Codex. The project provider is unchanged; approve the new endpoint before using it.',
+              '模型服务已保存。端点变更使 Native Host 默认项回退到内置 Codex，当前项目的服务选择保持不变；使用新端点前仍需确认披露。'
             )
           : action.activate
           ? instance.tx('Provider saved and activated.', '模型服务已保存并启用。')
@@ -376,7 +389,7 @@
       instance.dialog.setStatus({
         tone: 'success',
         title: result.activeProviderId === 'builtin'
-          ? instance.tx('API key removed. Built-in Codex is now active.', 'API 密钥已删除，当前已切换到内置 Codex。')
+          ? instance.tx('API key removed. The Native Host default is Built-in Codex; the project provider is unchanged.', 'API 密钥已删除。Native Host 默认项为内置 Codex，当前项目的服务选择保持不变。')
           : instance.tx('Stored API key removed.', '已删除存储的 API 密钥。')
       });
     } catch (error) {
@@ -387,6 +400,7 @@
   async function deleteProvider(instance, context) {
     instance.dialog.setBusy('deleting', instance.tx('Deleting provider…', '正在删除模型服务…'));
     try {
+      if (context.profileId === instance.getSelectedProviderId()) instance.assertProviderSwitchAllowed();
       const result = await request(instance, 'codex.providers.delete', {
         providerId: context.profileId,
         expectedRevision: context.expectedRevision

@@ -18,6 +18,7 @@ const {
   getDefaultManagedRoot,
   getNativeHostRegistrationTarget
 } = require('./nativeHostPlatform');
+const { queryWindowsNativeHostRegistration } = require('./nativeHostRegistration');
 const { buildRuntimeFileManifest } = require('./runtimeInstaller');
 const { BOOTSTRAP_PROTOCOL, parseSemver, updateError } = require('./updateTrust');
 
@@ -61,7 +62,8 @@ function installManagedDistribution(options = {}) {
       version,
       releaseRef,
       releaseChannel,
-      allowedFiles: options.allowedFiles
+      allowedFiles: options.allowedFiles,
+      installIdentity: { managedRoot, browser: browser === 'auto' ? 'chrome' : browser, extensionId, platform }
     });
   } catch (error) {
     safeRemove(extensionStage);
@@ -154,6 +156,7 @@ function buildManagedExtensionTree(options = {}) {
   fs.writeFileSync(path.join(targetRoot, EXTENSION_MARKER), JSON.stringify({
     managedBy: MANAGED_BY,
     kind: 'extension',
+    ...(options.installIdentity ? { installIdentity: options.installIdentity } : {}),
     bootstrapProtocol: BOOTSTRAP_PROTOCOL,
     version,
     releaseRef,
@@ -255,11 +258,19 @@ function uninstallManagedDistribution(options = {}) {
   }
   const registration = getNativeHostRegistrationTarget({ platform, browser, env });
   const bridgePath = getDefaultBridgePath({ platform, browser, env });
-  if (registration.kind === 'registry') {
+  const bridgeOwned = () => isBridgeForManagedRoot(bridgePath, nativeRoot, platform);
+  const manifestOwned = () => {
+    try {
+      const manifest = readJson(registration.manifestPath);
+      return bridgeOwned() && manifest.name === 'com.codex.overleaf' && manifest.path === bridgePath;
+    } catch (_) { return false; }
+  };
+  if (registration.kind === 'registry' && manifestOwned()
+    && queryWindowsNativeHostRegistration(registration, { env }).verified) {
     runRegistry(['delete', registration.registryKey, '/f'], { allowMissing: true });
   }
-  fs.rmSync(registration.manifestPath, { force: true });
-  fs.rmSync(bridgePath, { force: true });
+  if (manifestOwned()) fs.rmSync(registration.manifestPath, { force: true });
+  if (bridgeOwned()) fs.rmSync(bridgePath, { force: true });
   safeRemove(extensionRoot);
   safeRemove(nativeRoot);
   try {
@@ -270,6 +281,24 @@ function uninstallManagedDistribution(options = {}) {
     // Managed roots are already removed; leave harmless metadata when another process owns it.
   }
   return { ok: true, managedRoot, extensionRoot, nativeRoot, removed: true };
+}
+
+// Older installs lack ownership metadata. Compare the existing launcher's
+// exact target argument and agent assignment; the Node executable may change.
+function isBridgeForManagedRoot(bridgePath, nativeRoot, platform) {
+  try {
+    const platformPath = platform === 'win32' ? path.win32 : path.posix;
+    const entry = platformPath.join(nativeRoot, 'bootstrap', 'launcher.js');
+    const expected = buildLauncher({ platform, nodePath: '__node__', bridgeEntryPath: entry, agentPath: entry }).split(/\r?\n/);
+    const actual = fs.readFileSync(bridgePath, 'utf8').split(/\r?\n/);
+    const assignment = expected.find(line => line.includes('CODEX_OVERLEAF_AGENT_ARGS_JSON='));
+    const launch = expected.find(line => platform === 'win32' ? line.startsWith('"__node__" ') : line.startsWith('exec "__node__" '));
+    const target = launch.slice(launch.indexOf('"__node__"') + '"__node__"'.length);
+    const invocation = platform === 'win32' ? /^"(?:[^"]|"")*"/ : /^exec "(?:[^"\\]|\\.)+"/;
+    return actual.includes(assignment) && actual.some(line => {
+      const first = line.match(invocation); return first && line.slice(first[0].length) === target;
+    });
+  } catch (_) { return false; }
 }
 
 function assertSafeManagedRoot(root, options = {}) {

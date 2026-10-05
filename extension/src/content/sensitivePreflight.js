@@ -13,7 +13,7 @@
   }) {
     async function runSensitivePreflight(options) {
       options = options || {};
-      const { task, project, rules, useExistingMirror = false } = options;
+      const { task, project, rules, useExistingMirror = false, guidance = false } = options;
       const normalizedRules = normalizeGovernanceRules(rules);
       if (normalizedRules.sensitiveCheckEnabled === false) {
         return { blocked: false, findings: [] };
@@ -24,10 +24,10 @@
       let findings = SensitiveScan?.scanSensitiveInputs
         ? SensitiveScan.scanSensitiveInputs({
           task,
-          files: (project?.files || []).filter(isTextSnapshotFile)
+          files: guidance ? [] : (project?.files || []).filter(isTextSnapshotFile)
         })
         : [];
-      if (useExistingMirror) {
+      if (useExistingMirror && !guidance) {
         findings = dedupeSensitiveFindings([
           ...findings,
           ...await scanNativeMirrorSensitiveFindings()
@@ -36,6 +36,7 @@
       if (!findings.length) {
         return { blocked: false, findings: [] };
       }
+      options.assertCurrent?.();
       appendRunEvent({
         title: tx(
           `Sensitive content check found ${findings.length} item(s).`,
@@ -52,12 +53,15 @@
         const approved = await showPluginConfirm({
           title: tr('sensitiveConfirmTitle'),
           message: formatSensitiveConfirmMessage(findings),
-          confirmLabel: tr('sensitiveConfirmRun'),
+          confirmLabel: guidance ? tx('Send guidance', '发送指导') : tr('sensitiveConfirmRun'),
           cancelLabel: tr('confirmDefaultCancel'),
           destructive: true
         });
+        options.assertCurrent?.();
         return { blocked: !approved, findings };
       }
+      // Blocking an extra message must not finish the task already in progress.
+      if (guidance) return { blocked: true, findings };
       appendCompletionReport({
         conclusion: tx(
           'This run was blocked before Codex received project context because sensitive content was detected.',

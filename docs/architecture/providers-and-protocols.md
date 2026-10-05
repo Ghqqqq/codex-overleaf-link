@@ -17,7 +17,7 @@ Provider 连接配置包括上游端点、协议、模型清单、能力声明�
 | Custom Provider | 本地保存的端点和模型配置，经本地桥接入 Codex | 直接由面板实现独立 agent 引擎 |
 | `wireApiPreference` | `auto/responses/chat/anthropic` 的配置偏好 | Auto 表示任意失败都尝试全部协议 |
 | `resolvedWireApi` / model diagnostics | 对已测试连接指纹记下的协议结果 | 测试过一个模型即可证明该 Provider 全部模型可用 |
-| `upstreamResponseMode` | 模型级上游响应模式设置 | 三种协议均已实现相同 buffered 行为 |
+| `upstreamResponseMode` | 模型级上游响应模式；普通请求可选择上游 SSE 或完整 JSON，客户端输出模式另行适配 | 无限缓冲、所有网关兼容或通用断流重试 |
 | Provider revision | 单份配置的版本身份 | 等同整个存储目录的版本 |
 | `storeRevision` | profiles、secrets 配套提交的存储版本 | 每次变化都会使旧排队任务的 Provider revision 失效 |
 | 模型能力声明 | reasoning、上下文、输入模态、并行工具等配置 | 已经向上游逐项实测认证的能力 |
@@ -71,6 +71,7 @@ flowchart TD
 
 `ModelPicker.loadModelOptions` 发送 `codex.models`，同时捕获 modelLoadGeneration 和 Provider 选择。
 返回时校验 generation、Provider ID 和自定义 Provider revision，过期结果不能替换当前选择。
+revision 比较只用于成功响应；当前请求的错误响应即使没有 result/revision，仍进入不可用与错误展示。过期 generation 或另一 Provider 的响应继续被丢弃。
 入口为 [modelPicker.js](../../extension/src/content/modelPicker.js) 与 [modelPickerSupport.js](../../extension/src/content/modelPickerSupport.js)。
 Native 的 `resolveProviderModels` 对 Built-in 调用 `resolveCodexModels`，依次读取候选 `models_cache.json`，无可用缓存才返回内建 fallback。
 缓存位置优先级由 [codexModels.js](../../native-host/src/codexModels.js) 的 `getModelsCacheCandidates` 管理；当前发现链不主动向服务商拉取实时模型列表。
@@ -139,14 +140,17 @@ Save 调用 `codex.providers.upsert`，可在未测试时保存；普通 Save �
 Save & Use 同一次 upsert 请求带 activate，并要求当前项目和端点披露；后续仍需成功投影到项目选择。
 Use 针对已保存且可激活的配置；`prepareProviderActivation` 先要求当前项目，必要时确认项目服务切换，再加载模型目录；准备成功后调用 Native activate。
 Native 成功后 `notifyChanged/reconcileProviderSelection` 更新项目、会话默认值和模型控件；requireProjection 路径失败时显示失败，不能提前宣布 UI 已切换。
-同 ID revision 变化会使当前项目重新绑定，并清除旧 Codex thread 绑定；已有执行快照保留原值。
+允许切换时，同 ID revision 变化会使当前项目重新绑定，并清除旧 Codex thread 绑定；已有执行快照保留原值。
+
+运行中切换由 [ProjectProviderSelection.assertSwitchAllowed](../../extension/src/content/projectProviderSelection.js) 统一限制。Save & Use、Use、Use Built-in 和删除当前项目所选配置均复用该限制；确认或目录读取期间才开始运行，也会在后续模型投影及最终 `commit` 重新检查。
+普通 Save 可以保存配置，但活动运行期间不会借 revision 更新重置项目选择或线程；删除其他 Provider 仍可进行。后续空闲时调用既有 `syncSessionProvider`，协调器通过 `getSelectedProviderRevision` 比较项目已绑定 revision 与当前目录，完成目录读取后提交延期的新 revision 并清除旧线程；同 ID、同 revision 的普通刷新继续可用，没有新增轮询或运行结束即自动重绑的流程。若 Native 已完成配置变更、页面随后才发现新运行，最终项目提交仍拒绝，不能把页面守卫解释为跨进程事务回滚。
 
 **Current behavior / 两处选择状态。** Native `activeProviderId` 是默认项，项目 `providerId/providerRevision` 是后续运行明确提交的选择。
 [providerStore.js](../../native-host/src/providerStore.js) 的 `clearProviderSecretUnlocked` 清除当前 Native 默认服务的密钥时，将默认项改为 Built-in，但保留该 Custom profile 并递增 revision。
 `upsertProviderUnlocked` 在修改当前默认服务端点后普通 Save 时，也会清空旧披露并将 Native 默认项回退 Built-in；Save & Use 另行保存新披露。
 [ProviderSettingsCoordinator.reconcileProviderSelection](../../extension/src/content/providerSettingsCoordinator.js) 优先保留仍存在的项目配置，不因 Native 默认项变化直接换服务；目录投影成功后，清密钥和上述普通 Save 均可使项目继续绑定原 Custom ID 的新 revision。
-因此 `clearProviderSecret/saveProvider` 状态栏中的 Built-in 已启用文案不足以证明当前项目已切换；应核对 `getRunSelection` 和实际提交的 `providerSelection`。
-端点修改后保留的 Custom 选择会在下一次 `resolveRunProvider` 中因缺少新披露被拒绝为 `provider_disclosure_required`；清密钥后也不能据文案推定新任务会改投 Built-in。
+`clearProviderSecret/saveProvider` 状态栏分别说明 Native 默认项回退和项目服务选择保持，避免把两处状态合成一次已完成的项目切换；实际提交仍以 `getRunSelection` 的 `providerSelection` 为准。
+端点修改后保留的 Custom 选择会在下一次 `resolveRunProvider` 中因缺少新披露被拒绝为 `provider_disclosure_required`；清密钥不会自动把该项目的新任务改投 Built-in。
 删除配置则使项目所选 ID 不再存在，协调器另走 Built-in 目录加载与项目提交；投影失败仍需保留其失败边界。运行中认证失败不触发自动改投。
 
 Test 使用当前草稿和 secretMutation，可测尚未保存的连接；专用密钥无需先写入正式 secrets 文件。
@@ -208,16 +212,17 @@ Custom 的真实 API key 保留在上游 bridge launch 内存；传给 Codex 的
 ### 6.1 Streaming、buffered 与工具调用
 
 Streaming 按事件转发 SSE，Responses 桥在完整事件诊断检查后转发；buffered 先拿到完整 JSON，再转换成 Codex 期待的 SSE 或 JSON。传输方式不改变工具结果需要回接原 call ID 的要求。
-Chat 请求同时检查 Codex `requestBody.stream` 和 launch.upstreamResponseMode；buffered 可规避部分网关流式工具标记解析问题。
+三种普通协议请求均同时检查 Codex `requestBody.stream` 和 `launch.upstreamResponseMode`：客户端关闭流式或配置 buffered 时，上游请求 `stream: false`；Auto/streaming 继续沿各自原协议路线处理。buffered 可规避部分网关流式工具标记解析问题，不表示所有网关均已验证。
 Chat 响应根据真实 content-type 选择 SSE parser 或 JSON 转换器；流式终止信号可来自 finish_reason，不必一直等待 socket 关闭。
 工具参数 delta 累积后产生完整调用；命名空间和 custom 工具名称通过转换上下文恢复，原始控制标记泄漏会报错。
 Anthropic 转换 tool_use/tool_result、文本、带签名 thinking，并处理 cache usage；无工具选择时省略工具声明。
 `encrypted_content` 中的 Anthropic thinking 由带前缀 Base64URL JSON 编码，字段名不能证明该内容经过本地加密。
 
-**Current behavior 限定**：Responses passthrough 和 Anthropic request builder 的 stream 跟随 Codex 请求，未使用 launch.upstreamResponseMode 关闭上游流。
-因此 UI/profile 能保存 buffered，以及诊断记录该模式，均不足以证明这两条协议的 upstream buffering 已生效。
-Chat 和 Anthropic 合并 bodyOverrides 后覆盖受控字段；Responses `prepareResponsesRequest` 当前未合并 launch.bodyOverrides。
+上游返回完整 JSON 后，Anthropic 继续使用 `convertAnthropicResponse` 与已有 SSE 转换器服务流式客户端。Responses 在原协议诊断清洗之后，由 `writeBufferedResponseAsSse` 生成客户端所需事件：保留多段文本、reasoning summary、refusal、function/custom 调用及 call ID、encrypted_content、usage 和 completed/incomplete/failed 终态；JSON 客户端保持 JSON 返回。
+Responses 的 buffered SSE 适配拒绝非终态 JSON，避免把尚未完成的结果标为 completed；每个生成事件沿用 `MAX_STREAM_BUFFER_BYTES` 限制，超限事件不先行写出。该适配不提供工具 schema 或业务语义验证，既有工具参数检查范围见第 7 节。
+Chat 和 Anthropic 合并 bodyOverrides 后覆盖受控字段。Responses 普通与 compact 请求也合并允许的 `launch.bodyOverrides`，调用方请求字段优先；普通请求的 stream 与输出预算仍由受控规则决定，`previous_response_id` 只取当前请求，配置不能另造响应链。核心字段及敏感键拒绝仍由 `normalizeBodyOverrides` 执行。
 Chat/Anthropic 的 compact alias 仍走各自普通请求转换，Responses compact 则转发到上游对应路由；不能承诺三者压缩机制相同。
+Responses compact 合并配置后保留调用方请求形状，不注入普通请求的默认 stream 或输出预算；响应的 JSON 对象、容量及诊断检查见第 8 节。
 
 ### 6.2 Reasoning 能力
 
@@ -234,15 +239,16 @@ supportsParallelToolCalls、supportsStreamOptions 等字段也有具体 adapter 
 ### 6.3 输出预算的迁移、优先级与抬升
 
 输出预算限制单次模型响应的 token 数量，与第 7 节按毫秒计算的请求时间预算分别处理。
-[providerProfile.js](../../native-host/src/providerProfile.js) 的 Provider 级 `normalizeMaxOutputTokens` 在字段省略时默认 65536，并将 8192、32768 迁移为 65536；其余有限值在 256–65536 范围内归一化。
-该迁移按数值判断，未按文件版本区分新旧输入；浏览器 [providerProfiles.js](../../extension/src/shared/providerProfiles.js) 也有对应 Provider 级归一化。
+[providerProfile.js](../../native-host/src/providerProfile.js) 的 Provider 级 `normalizeMaxOutputTokens` 在字段省略时默认 65536，有限值在 256–65536 范围内归一化；新显式输入的 8192、32768 原样保留。
+当前表单 `readContext`、`normalizeProviderDraft` 和公共目录 `sanitizeProfile` 使用内部 `outputBudgetVersion: 1` 标记已经按当前规则解释的数值；浏览器 [providerProfiles.js](../../extension/src/shared/providerProfiles.js) 保留该标记，重复归一化与再次保存不会重新迁移这些显式值。该字段没有独立用户控件，也不等同 profile revision。
+[providerStore.normalizeStoredProfile](../../native-host/src/providerStore.js) 只对未标记的历史记录保留 8192/32768→65536 的旧默认迁移。其运行时对象与原始存储快照仍分开：清密钥等无关修改保持原始旧值及来源，显式 upsert 才持久化当前标记；公共目录提供已解析数值。没有历史来源信息时，无法据数值恢复原使用者的选择意图。
 模型级 `normalizeModelOutputTokens` 则将空值保留为 null，其他值要求为 256–65536 的整数，8192、32768 可原样保留。
 
 `createProviderLaunch` 优先采用模型有效值，再采用 Provider 值。正常 launch 总有正输出预算；Chat、Anthropic 和普通 Responses 的请求构造均优先采用该值，即使 Codex requestBody 请求了更小预算。
-相关消费符号为 [chatBridgeRequest.js](../../native-host/src/chatBridgeRequest.js) 的 `buildChatRequest`、[anthropicBridgeRequest.js](../../native-host/src/anthropicBridgeRequest.js) 的 `buildAnthropicRequest` 及 [responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js) 的 `prepareResponsesRequest/resolveMaxOutputTokens`；Responses compact 请求直接复制原 body，不经过普通请求的输出预算覆盖；响应另经 `forwardCompactResponse` 检查。
+相关消费符号为 [chatBridgeRequest.js](../../native-host/src/chatBridgeRequest.js) 的 `buildChatRequest`、[anthropicBridgeRequest.js](../../native-host/src/anthropicBridgeRequest.js) 的 `buildAnthropicRequest` 及 [responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js) 的 `prepareResponsesRequest/resolveMaxOutputTokens`；Responses compact 合并允许配置与原 body，不经过普通请求的输出预算覆盖；响应另经 `forwardCompactResponse` 检查。
 Chat 的 [providerReasoning.js](../../native-host/src/providerReasoning.js) `resolveReasoningMaxOutputTokens` 还会对 DeepSeek 的 xhigh/max 抬升预算：\(T_{wire}=\max(T_{launch},65536)\)。
 例如模型配置4096并选择 max，发出的 Chat max_tokens 可变为65536；结合前述 Anthropic 400 修正，配置值不能统一解释为三协议均遵守的硬上限。
-[providerReliability.test.js](../../test/providerReliability.test.js) 已有 Provider 级8192迁移和 Chat launch 预算覆盖请求值的断言；迁移测试标题仍写32K，实际断言为65536，应以断言和当前源码为准。
+[providerWireSettings.test.js](../../test/providerWireSettings.test.js) 沿表单捕获、临时 Store 保存/重载、目录与 launch 检查新显式值及旧记录迁移；同时检查旧记录的无关清密钥修改和模型级覆盖。[providerReliability.test.js](../../test/providerReliability.test.js) 保留默认预算、旧未标记目录及 Chat launch 预算优先级的对照。
 
 ## 7. 续传、请求中断与超时
 
@@ -267,7 +273,7 @@ Anthropic `buildAnthropicHistoryContinuation` 仅对 max_output_tokens 且没有
 [providerStreamLifecycle.js](../../native-host/src/providerStreamLifecycle.js) 管理 idle/total 计时和 AbortController。
 客户端连接关闭触发上游 abort；流消费入口调用 `touch` 才会重置 idle，total 不随流量延长。
 **Current behavior 限定**：三桥的 SSE 消费接入了逐块活动回调；普通 JSON 消费等待完整正文（Chat/Anthropic 的 `.json()`，Responses 的 `.text()` 后解析），正文块到达期间未调用 `touch`。Responses compact 的 `forwardCompactResponse` 单独逐块读取并调用 `touch`，不受这个普通 JSON 分支缺口约束。
-对应入口为 [Chat](../../native-host/src/chatCompletionsBridge.js) 和 [Anthropic](../../native-host/src/anthropicMessagesBridge.js) 的 `handleRequest` JSON 分支，以及 [Responses](../../native-host/src/responsesPassthroughBridge.js) 的非流式 JSON 分支；Chat 的 `Codex stream=true → launch buffered → 上游 JSON` 也经过该路径。
+对应入口为 [Chat](../../native-host/src/chatCompletionsBridge.js) 和 [Anthropic](../../native-host/src/anthropicMessagesBridge.js) 的 `handleRequest` JSON 分支，以及 [Responses](../../native-host/src/responsesPassthroughBridge.js) 的 JSON 分支；三桥的 `Codex stream=true → launch buffered → 上游 JSON` 也经过相应整体读取路径。
 在正常配置的 120 秒 idle 下，若响应头后第 35、70、105 秒仍有 JSON 正文字节到达，但正文尚未结束，第 120 秒仍会中止请求，距最近流量仅 15 秒。
 该阶段的 idle 实际约束从收到响应头到完整 JSON 读完的时间，不能统一解释为网络持续静默；更长的 HTTP total 或 Codex watchdog 不会推迟已触发的 idle 中止。
 
@@ -343,10 +349,11 @@ guard 允许 cache key 等例外；`sanitizeProfile` 会复制允许的 headers/
 
 | 修改意图 | 主改与联动 | 最窄命令及检查重点 |
 |---|---|---|
-| Save/Use、项目绑定 | dialog、coordinator、ProjectProviderSelection、store | `node --test test/providerSessionBinding.test.js test/projectProviderRevision.test.js`；同 ID revision、目录预加载、投影失败 |
+| Save/Use、项目绑定 | dialog、coordinator、ProjectProviderSelection、store | `node --test test/providerUiContracts.test.js test/providerSessionBinding.test.js test/projectProviderRevision.test.js`；Native 默认与项目选择、运行中切换、同 ID revision、目录预加载、投影失败 |
 | secret/profile/schema | providerProfile、providerStore、浏览器 Profiles 和表单 | `node --test test/providerReliability.test.js test/providerStoreCapacity.test.js`；字段校验、专用凭据、revision、披露、最终字节预算和旧数据恢复 |
 | Responses 诊断与透传 | responsesPassthroughBridge、providerRedaction、stream lifecycle | `node --test test/responsesProtocolRedaction.test.js`；JSON/SSE/compact 诊断、重复键、正常输出与接收边界 |
-| 内建/自定义发现 | codexModels、ProviderRuntime、ModelPicker | `node --test test/codexModels.test.js test/modelSelectionRecovery.test.js`；cache 优先级、不可用模型与 fallback |
+| 显式输出预算、buffered 与请求覆盖项 | dialog/Profiles、providerProfile/Store、launch、三协议请求及响应转换 | `node --test test/providerWireSettings.test.js test/providerReliability.test.js`；新值/旧迁移、实际 wire stream、SSE 内容和终态、允许字段与核心字段保护、取消 |
+| 内建/自定义发现 | codexModels、ProviderRuntime、ModelPicker | `node --test test/codexModels.test.js test/modelSelectionRecovery.test.js test/modelPickerCurrentError.test.js`；cache 优先级、当前错误与迟到结果、不可用模型与 fallback |
 | Built-in 配置继承 | codexHome、ProviderRuntime、codexSessionRunner、ProviderSettingsCoordinator 与审计 | `node --test test/codexHome.test.js test/codexSessionRunner.test.js`；分别检查配置保留与参数构造；实际服务解析、配置变更后的快照及审计投影需组合验证 |
 | Speed 参数映射 | ModelPicker、运行快照、codexSessionRunner、codexArgs | `node --test test/codexArgs.test.js test/codexSessionRunner.test.js`；standard/fast 的 exec 与 app-server 参数构造 |
 | Chat 转换/reasoning | chatBridgeRequest/Response、providerReasoning、launch | `node --test test/providerReliability.test.js test/providerToolCompletion.test.js`；工具命名空间、参数完整性、finish_reason、可选字段和认证路由 |
@@ -360,10 +367,13 @@ Response passthrough、真实 bridge HTTP 中断及 profile→launch→最终 wi
 |---|---|
 | [providerReliability.test.js](../../test/providerReliability.test.js) | Store 场景使用临时目录；能力、预算、URL/header 场景直接调用 helper；流转换使用构造的上游与 SSE 收集器。默认模型上下文和直接构造 catalog 的断言未覆盖 Provider 能力被模型默认值遮蔽的完整链路。 |
 | [providerStoreCapacity.test.js](../../test/providerStoreCapacity.test.js) | 真实 Store/Native dispatcher、临时目录和合成配置；临界容量、删除/清密钥、注入文件替换故障与重载恢复，不证明实际断电持久性。 |
+| [providerWireSettings.test.js](../../test/providerWireSettings.test.js) | 生产表单捕获函数配替身 DOM 字段，真实临时 Store/目录/launch、loopback 两协议桥及合成 key；检查预算重载、请求体、JSON/SSE 内容/终态、取消和既有接收限额，未运行真实 Codex 消费者或浏览器。 |
+| [providerUiContracts.test.js](../../test/providerUiContracts.test.js) | 生产 dialog 操作/协调器/项目选择配替身 UI、临时真实 Store 与 Native 配置接口；核对状态文案、确认前后及迟到目录/响应的运行守卫，未执行模型或真实浏览器持久化。 |
 | [responsesProtocolRedaction.test.js](../../test/responsesProtocolRedaction.test.js) | 真实桥与本地 HTTP 上游、合成 key、临时日志；检查出口与逐事件流动，不调用真实 Provider、Codex 或浏览器。 |
 | [anthropicBridge.test.js](../../test/anthropicBridge.test.js) | 直接调用请求/响应及续传 helper，流场景使用 Readable 与响应 sink；URL/header 断言未经历真实 HTTP 重定向、DNS 或认证传播。 |
 | [providerSessionBinding.test.js](../../test/providerSessionBinding.test.js)、[projectProviderRevision.test.js](../../test/projectProviderRevision.test.js) | 使用 FakeBroadcastChannel、替换的目录/Native 返回或内存项目状态，验证投影和 revision 分支；不能证明实际浏览器持久化与 Native 事务共同完成。 |
 | [modelSelectionRecovery.test.js](../../test/modelSelectionRecovery.test.js) | VM 中的选择控件和替换的 sendBackgroundNative 返回验证模型恢复与迟到结果守卫；未连接真实 Provider。 |
+| [modelPickerCurrentError.test.js](../../test/modelPickerCurrentError.test.js) | 生产 ModelPicker 配替身控件与合成 Native 响应，区分当前无 revision 错误、过期 generation、其他 Provider 和成功响应的 revision 守卫。 |
 | [codexArgs.test.js](../../test/codexArgs.test.js)、[codexSessionRunner.test.js](../../test/codexSessionRunner.test.js) 的 Speed 参数用例 | 直接调用 exec/app-server 参数构造器，断言 fast_mode 与 service_tier；不验证服务端档位支持、实际使用或费用。 |
 
 清密钥、改端点后普通 Save 的验证需同时检查 Native 默认项、项目选择、下一轮提交及状态文案；Store 或单独投影测试不能替代这四项组合。

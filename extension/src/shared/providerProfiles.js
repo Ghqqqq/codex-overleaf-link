@@ -167,7 +167,8 @@
       anthropicThinkingMode: normalizeAnthropicThinkingMode(value.anthropicThinkingMode),
       anthropicPromptCaching: value.anthropicPromptCaching === true,
       impersonateClaudeCode: value.impersonateClaudeCode === true,
-      maxOutputTokens: normalizeMaxOutputTokens(value.maxOutputTokens),
+      maxOutputTokens: normalizeMaxOutputTokens(value.maxOutputTokens, value.outputBudgetVersion !== 1),
+      outputBudgetVersion: 1,
       hasSecret: value.hasSecret === true,
       secretUpdatedAt: normalizeInteger(value.secretUpdatedAt),
       endpointDisclosureHost: normalizeText(value.endpointDisclosureHost),
@@ -262,6 +263,7 @@
       anthropicPromptCaching: false,
       impersonateClaudeCode: false,
       maxOutputTokens: 65536,
+      outputBudgetVersion: 1,
       hasSecret: false,
       secretUpdatedAt: 0,
       endpointDisclosureHost: '',
@@ -380,9 +382,9 @@
     return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
   }
 
-  function normalizeMaxOutputTokens(value) {
+  function normalizeMaxOutputTokens(value, legacy = false) {
     const number = normalizeInteger(value);
-    if (!number || number === 8192 || number === 32768) return 65536;
+    if (!number || (legacy && (number === 8192 || number === 32768))) return 65536;
     return Math.min(65536, Math.max(256, number));
   }
 

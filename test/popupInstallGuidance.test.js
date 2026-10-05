@@ -206,7 +206,7 @@ function incompatibleWindowsNativeResponse() {
   };
 }
 
-async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessage, onTabMessage, onClipboardWrite } = {}) {
+async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessage, onTabMessage, onClipboardWrite, managed = false, marker = null } = {}) {
   const compatibilitySource = fs.readFileSync(
     path.join(__dirname, '../extension/src/shared/compatibility.js'),
     'utf8'
@@ -238,7 +238,7 @@ async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessag
         id: TEST_EXTENSION_ID,
         getURL: value => 'chrome-extension://' + TEST_EXTENSION_ID + '/' + value,
         getManifest() {
-          return { version: compatibility.BUILD_TARGET_VERSION };
+          return { version: compatibility.BUILD_TARGET_VERSION, ...(managed ? { background: { service_worker: 'bootstrap/background.js' } } : {}) };
         },
         sendMessage(message) {
           if (typeof onSendMessage === 'function') {
@@ -259,6 +259,10 @@ async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessag
           return Promise.resolve();
         }
       }
+    },
+    fetch: async url => {
+      assert.equal(url, 'chrome-extension://' + TEST_EXTENSION_ID + '/.codex-overleaf-managed-extension.json');
+      return { ok: Boolean(marker), json: async () => marker };
     },
     crypto: {
       randomUUID() {
@@ -333,4 +337,29 @@ function createPopupElement(id, options = {}) {
       return listeners.get('change')?.({ target: this, currentTarget: this });
     }
   };
+}
+
+for (const platform of ['darwin', 'win32']) test('Managed repair retains original install identity when Native is unavailable: ' + platform, async () => {
+  const managedRoot = platform === 'win32' ? "C:\\Users\\Alice's 100%\\Managed" : "/tmp/Alice's $HOME `name`/Managed";
+  const h = await loadPopupHarness({ managed: true, nativeResponse: { ok: false }, marker: {
+    managedBy: 'codex-overleaf-link', kind: 'extension', bootstrapProtocol: 3,
+    installIdentity: { managedRoot, browser: 'chromium', extensionId: TEST_EXTENSION_ID, platform }
+  } });
+  assert.match(h.elements.installCommand.textContent, / -- install-managed /);
+  assert.match(h.elements.installCommand.textContent, /--browser chromium/);
+  assert.ok(h.elements.installCommand.textContent.includes('--extension-id ' + TEST_EXTENSION_ID));
+  assert.ok(h.elements.installCommand.textContent.includes('--managed-root '));
+  assert.doesNotMatch(h.elements.installCommand.textContent, /install-native/);
+  assert.equal(h.elements.copyInstallCommand.disabled, false);
+  if (platform === 'win32') assert.match(h.elements.nativeStatusMessage.textContent, /PowerShell/);
+});
+for (const marker of [null, { managedBy: 'codex-overleaf-link', kind: 'extension' },
+  { managedBy: 'codex-overleaf-link', kind: 'extension', installIdentity: { managedRoot: '/tmp/original', browser: 'chrome', extensionId: 'wrong' } }]) {
+  test('older/mismatched Managed identity never silently generates a Direct or default-root repair', async () => {
+    let copied = false;
+    const h = await loadPopupHarness({ managed: true, marker, nativeResponse: { ok: false }, onClipboardWrite() { copied = true; } });
+    assert.equal(h.elements.installCommand.textContent, ''); assert.equal(h.elements.copyInstallCommand.disabled, true);
+    assert.match(h.elements.nativeStatusMessage.textContent, /original.*managed.*root|managed.*original.*root/i);
+    await h.elements.copyInstallCommand.click(); assert.equal(copied, false);
+  });
 }

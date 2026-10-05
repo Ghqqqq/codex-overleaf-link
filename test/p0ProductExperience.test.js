@@ -1974,7 +1974,14 @@ test('native side-effecting requests are gated on compatibility before dispatch'
   assert.match(controllerSource, /Compatibility\?\.isNativeMethodAllowed/);
   assert.match(controllerSource, /native_update_required/);
   assert.match(controllerSource, /formatBlockedMessage/);
-  assert.match(controllerSource, /const compatibilityGate = await ensureForMethod\(payload\?\.method\)/);
+  const dispatchBody = controllerSource.slice(controllerSource.indexOf('async function dispatch('),
+    controllerSource.indexOf('async function ensureForMethod('));
+  assert.match(dispatchBody, /compatibilityGate = await ensureForMethod\(payload\?\.method, context\)/);
+  assert.match(dispatchBody, /if \(!compatibilityGate\.ok\) return compatibilityGate\.response/);
+  const sentAt = dispatchBody.indexOf('return nativeChannel[channelMethod]');
+  assert.ok(dispatchBody.indexOf('await ensureForMethod(') < sentAt && sentAt > 0);
+  assert.ok(dispatchBody.indexOf('context.assertCurrent?.()') >= 0
+    && dispatchBody.indexOf('context.assertCurrent?.()') < sentAt);
   assert.match(controllerSource, /attachEvidence\(payload, compatibilityGate\.compatibility\)/);
 });
 

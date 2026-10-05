@@ -134,13 +134,13 @@ Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并
 ```text
 textarea input → persistPanelInputs → readPanelInputs → updateActiveSession → debounce save
 提交 → safeRunTask
-  ├─ 无当前运行：runTask 捕获输入与归属 → 等待旧镜像 → 准备 Provider/风格 → startRunView → audit 等待与身份复核 → 条件清理输入
+  ├─ 无当前运行：runTask 捕获输入与归属 → 按需等待插件技能目录 → 等待旧镜像 → 准备 Provider/风格 → startRunView → audit 等待与身份复核 → 条件清理输入
   └─ 有当前运行：queueComposerInput → RunQueueScheduler coordinator → pendingInputs
 结果卡 Edit & resend → refillComposerForRetry → prepareRetryReplacement → 会话草稿
 ```
 
 [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `syncComposerSendAvailability` 在运行中且无文字时呈现取消，有文字时呈现排队发送；`safeRunTask` 将活动运行期间的提交交给队列协调器。
-`runTask` 在首次 await 前捕获输入、提交会话、提示词会话投影和线程，再等待 `pendingMirror`、Provider 与风格准备；风格快照仍在加载后获取。`startRunView` 按捕获的 sessionId 建立记录；`safeRunTask` 用准备期标志防止重复启动。
+`runTask` 在首次 await 前捕获输入、提交会话、提示词会话投影、线程和技能开关。普通提交启用插件技能时，先与面板预取共用 `primeCodexOverleafSkillsCatalog({ required:true })`，再按捕获的逐项开关生成启用 ID；读取失败走已有任务启动错误提示，输入保留，尚未派发任务。随后等待 `pendingMirror`、Provider 与风格准备；风格快照仍在加载后获取。`startRunView` 按捕获的 sessionId 建立记录；`safeRunTask` 用准备期标志防止重复启动。
 建立 run 后等待 audit 草稿，再复核账号项目并条件清理已提交输入。原会话草稿或当前文字、附件、技能、选区已变化时保留新输入；在途附件和 `SelectionContextView.getRevision` 的代次变化也阻止清理。切换会话后只可能清理仍匹配的原会话 task，当前 composer 保留；队列提升跳过此清理。普通与 skill-installer 参数消费已捕获的会话投影，详见[运行状态与恢复](run-state-and-recovery.md#31-执行快照)。
 [PendingInputView.pullBack](../../extension/src/content/pendingInputView.js) 只回填 queued 项，已有非空草稿时提示并返回；实际移除队列项与持久化由回调完成，UI 回填动作本身不提供事务提交证明。队列准入、推进和保存边界见[运行状态与恢复](run-state-and-recovery.md)。
 
@@ -158,15 +158,16 @@ composer 输入、运行状态变化和 turn 绑定仍会触发重绘。队列 c
 ## 4. 模型目录：请求返回顺序与用户选择分开处理
 
 [ModelPicker.loadModelOptions](../../extension/src/content/modelPicker.js) 发出 `codex.models`，请求携带当前 Provider selection；`modelLoadGeneration` 每次加载递增。
-成功响应先检查 generation，再检查响应 providerId；自定义 Provider 还比较 providerRevision。旧请求的迟到结果可返回 `{ stale: true }`，不进入目录重绘。
+响应先检查 generation，再核对响应中明确给出的 providerId；成功的自定义 Provider 目录还须匹配 providerRevision。旧请求或明确失配响应返回 `{ stale: true }`，不进入目录重绘。
 目录元数据由 [Models](../../extension/src/shared/models.js) 与 [ModelPickerSupport](../../extension/src/content/modelPickerSupport.js) 归一化，再渲染 model/reasoning/speed select 及其可视选择按钮。
 内建目录缺项或处于 fallback 时，`retainSelectedModel/preserveSelectedCapabilities` 可保留用户显式选择并标为 unverified；这仅保留选择，不能证明远端支持该能力。
-自定义 Provider 响应先通过身份/revision 检查，匹配身份但没有可用目录时进入 unavailable；不能把内建 fallback 模型填入自定义 Provider。
-**错误包例外。** Native 的 `providerErrorResponse` 不含 result；当前 `loadModelOptions` 在判断 ok 前比较 `Number(response?.result?.providerRevision)`，该值为 NaN 时会先返回 stale。此类错误包不会进入后面的 unavailable/fallback 分支。
-排查配置删除或 revision 冲突时，须先检查这段先行守卫，再读 `shouldUseBuiltInFallback`；现有 custom 空目录测试带匹配 revision，不能覆盖无 result 错误包。
+当前请求的失败包即使不含 result，也进入 `applyUnavailableModelOptions`，禁用不可用目录并保留真实 error code/message；不会用缺失 revision 的 NaN 比较把它误判为旧响应。Built-in fallback 仍有明确来源条件，自定义错误不填入内建模型。Coordinator 继续呈现该错误，不用通用目录失败取代具体原因。
+[modelPickerCurrentError](../../test/modelPickerCurrentError.test.js) 覆盖无 result 错误、旧 generation 及成功 revision 冲突；[providerUiContracts](../../test/providerUiContracts.test.js) 串联模型目录与协调器的错误呈现。外部 I/O 与 DOM 使用替身，实际服务和浏览器呈现另行验收。
 模型按钮点击更新 select，再调用 `persistPanelInputs`；Speed 先写入 `state.speedTier` 再渲染能力，避免重绘把刚选值还原。
-Provider 显式 Use/Use Built-in 路径切换到不同 Provider 时，会经过 `ProjectProviderSelection.confirmSwitch` 的运行守卫；不能据此推定所有 UI 入口都阻止活动期间切换。
-Save and use 可经 `providerSwitchApproved:true` 跳过该确认，删除当前 Provider 的回退也有独立路径，同 ID 的 revision 变化另行处理。应沿 dialog → coordinator → reconcile → commit 核对，API revision、凭据和运行解析还需检查 Native owner。
+
+[ProjectProviderSelection.assertSwitchAllowed](../../extension/src/content/projectProviderSelection.js) 统一现有的活动运行等待政策；`confirmSwitch` 和最终 `commit` 共用该检查。Use/Use Built-in 保留原确认，Save and use 保留原按钮意图，删除沿用原 Delete 确认。Coordinator 在相关 Native 变更派发前检查，模型目录等待结束与最终项目提交再次核对，不能通过批准标记跳过活动运行保护。实际选择变更给 `ModelPicker.loadModelOptions` 传 `assertCurrent`，在目录重绘前复核；运行期间仅刷新相同 Provider/revision 的目录仍可继续。
+普通 Save 仍可保存共享配置，活动期间不重置当前项目选择和线程。`reconcileProviderSelection` 比较当前项目已绑定 revision 与目录 revision；后续已有 `syncSessionProvider` 在项目空闲时完成延期绑定，尚有活动运行则保持阻止。该路径没有新增计时器或后台自动切换。已派发 Native 操作可以改变共享默认项，随后拒绝项目提交不构成撤回该全局变更；已有运行继续消费原执行快照。
+清密钥或普通 Save 改端点的提示区分 Native Host 默认项与当前项目选择，详见 [Provider 两处选择状态](providers-and-protocols.md#4-savetest-与-use)。[providerUiContracts](../../test/providerUiContracts.test.js) 覆盖临时 Store、真实协调器与项目提交，检查各入口、异步运行开始、延期 revision、文案和原操作对照；真实浏览器与实际在途模型仍需独立验收。
 
 ## 5. 选区、文件上下文与附件
 

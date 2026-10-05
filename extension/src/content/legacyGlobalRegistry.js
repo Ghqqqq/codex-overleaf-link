@@ -116,6 +116,7 @@
     'ProviderProfiles',
     'ProviderSettingsDialog',
     'RunGuidanceView',
+    'RunRecoveryActions',
     'SessionMenuView'
   ]);
 

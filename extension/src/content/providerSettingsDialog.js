@@ -910,6 +910,7 @@
       ,anthropicPromptCaching: Boolean(get('anthropicPromptCaching')?.checked)
       ,impersonateClaudeCode: Boolean(get('impersonateClaudeCode')?.checked)
       ,maxOutputTokens: Number(get('maxOutputTokens')?.value || 65536)
+      ,outputBudgetVersion: 1
     };
     const apiKey = String(get('apiKey')?.value || '');
     const secretMutation = instance.secretAction === 'replace' && apiKey

@@ -293,7 +293,7 @@
         throw new Error(response?.error?.message || 'native host did not remove Codex Overleaf skill');
       }
       const activeSkill = normalizeComposerSkillInvocation(getComposerSkillInvocation());
-      if (activeSkill?.scope === 'codex-overleaf' && activeSkill.skillId === id) {
+      if (activeSkill?.scope === 'codex-overleaf' && activeSkill.id === id) {
         clearComposerSkillInvocation();
       }
       setProjectSettingsStatus(tr('codexOverleafSkillRemoveDone'), 'completed');

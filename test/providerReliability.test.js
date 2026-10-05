@@ -366,9 +366,9 @@ test('unknown custom-model context keeps the 256K product default', () => {
   assert.equal(catalog.models[0].context_window, 262144);
 });
 
-test('custom providers migrate the legacy 8K output budget to the 32K default', () => {
+test('new provider drafts preserve explicit budgets while unmarked legacy catalogs migrate', () => {
   assert.equal(normalizeProviderDraft(makeDraft()).maxOutputTokens, 65536);
-  assert.equal(normalizeProviderDraft(makeDraft({ maxOutputTokens: 8192 })).maxOutputTokens, 65536);
+  assert.equal(normalizeProviderDraft(makeDraft({ maxOutputTokens: 8192 })).maxOutputTokens, 8192);
   assert.equal(normalizeProviderDraft(makeDraft({ maxOutputTokens: 65536 })).maxOutputTokens, 65536);
   assert.equal(ProviderProfiles.buildEmptyDraft().maxOutputTokens, 65536);
   assert.equal(ProviderProfiles.normalizeProvider({

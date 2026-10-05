@@ -47,7 +47,7 @@ flowchart TD
 | 材料或分支 | 当前扫描入口 | 需要保留的限定 |
 | --- | --- | --- |
 | 普通运行的输入任务文本 | `runTask → runSensitivePreflight → scanSensitiveInputs({task,...})` | 只覆盖该入口和检测器能够识别的文字形态 |
-| 运行中即时指导 | `RunQueueScheduler.createCoordinator().guide → codex.steer → turn/steer` | 不经过普通运行预检；Native 检查绑定、轮次、非空和长度，没有补调用 SensitiveScan |
+| 运行中即时指导 | `RunQueueScheduler.createCoordinator().guide → runSensitivePreflight({guidance:true}) → SensitivePreflight.create().run → codex.steer → turn/steer` | 只检查本次 `item.text`；复用当前项目扫描与确认设置，不重扫项目文件、镜像或完整会话 |
 | 显式 skill-installer 任务 | `runTask → runSkillInstallerTask → codex.run` 的早分支 | task/customInstructions 未经过普通项目敏感预检；该模式的文件操作与沙箱约束独立 |
 | 项目文本快照 | `scanSensitiveProjectFiles` | 只扫描本次传入且满足文本判断的文件 |
 | 已有本地镜像 | [scanMirrorSensitiveFiles](../../native-host/src/mirrorSensitiveScan.js) 经 `mirror.scanSensitive` | 扩展名白名单、单文件大小和返回数量限制 |
@@ -61,8 +61,9 @@ Native 扫描普通目录和文件；文本扩展名由 `isSensitiveScanTextPath
 浏览器 `SensitivePreflight` 内部的 `scanNativeMirrorSensitiveFindings` 当前只消费 `result.findings`，未将 `skippedFiles` 转成阻断或完整性警告。因此零发现不能证明全部镜像均已扫描；例如超限文本或白名单外文件仍需单独判断。
 Native 扫描请求失败会生成 `mirror-sensitive-scan-unavailable` 发现，按命中规则处理；扫描主动关闭则直接继续。扫描模块缺失且未复用镜像的兼容分支也会返回未阻止，不能把该路径描述成统一 fail-closed。
 
-即时指导的派发入口在 [runQueueScheduler.js](../../extension/src/content/runQueueScheduler.js) 的 `guide`；[taskRunnerRuntime.handleCodexSteer](../../native-host/src/taskRunnerRuntime.js) 验证活动请求及预期 thread/turn 后，把文本交给 runner 的 `control.steer`。
-这条身份检查不能代替内容扫描。修改扫描策略时，应分别检查首次运行、队列提升和即时指导，不能只修改 `runSensitivePreflight` 就宣称全部模型输入已覆盖。
+即时指导的派发入口在 [runQueueScheduler.js](../../extension/src/content/runQueueScheduler.js) 的 `guide`。runtime 注入的 `preflightGuide` 使用原敏感检查器扫描本次 `item.text`，读取当前项目规则；扫描关闭时沿原政策继续。命中且不允许确认，或使用者拒绝原确认窗口时，不发送指导，仍属于本次尝试的队列项回到 queued；不会用阻止指导的结果结束正在运行的任务。显示只使用原脱敏发现，不写入原始匹配文本。
+
+确认、发送前保存及兼容性 ping 等待后，Guide 校验捕获的账号、项目、路由代次、会话、运行句柄、请求与 thread/turn、队列项文字和取消状态。`sendSteer` 将可选 `assertCurrent` 贯通到 `NativeCompatibilityController`，在实际业务派发前再检查。已知尚未派发的拒绝复用原队列补偿；跨scope或后来修改的条目不被旧回调覆盖。已经发送但结果不明仍沿原暂停策略处理。[taskRunnerRuntime.handleCodexSteer](../../native-host/src/taskRunnerRuntime.js) 继续检查活动请求、预期thread/turn、非空和长度，再交给 `control.steer`。该保护仅覆盖Guide的本次文字，不构成所有模型输入统一扫描。
 
 ### 命中后的行为与重试边界
 
@@ -101,6 +102,7 @@ runtime 的 `createAuditDraftForRun/updateAuditSensitiveFindings/finalizeAuditRe
 
 | 改动 | 必须联动 | 最近已有定义与范围 |
 | --- | --- | --- |
+| Guide文字检查与发送身份 | `guide`、SensitivePreflight、runtime注入、NativeCompatibilityController、handleCodexSteer | [guideSensitivePreflight.test.js](../../test/guideSensitivePreflight.test.js) 串联生产初始化、队列、预检及兼容等待到Native控制入口；模型control和外部I/O使用替身 |
 | 新增检测器、预览或去重 | shared SensitiveScan、Native 镜像复用、审计预览 | [sensitiveScan.test.js](../../test/sensitiveScan.test.js) 直接测试正则及预览，不覆盖全部出站材料 |
 | 改镜像白名单、大小或失败处理 | mirrorSensitiveScan、Native dispatcher、runtime 消费者 | [taskRunner.test.js](../../test/taskRunner.test.js) 含镜像扫描请求；浏览器完整性提示另需接入验证 |
 | 命中确认与数据流 | SensitivePreflight、runtime 首次/恢复派发、prompt 组装、审计 | [runRetrySensitivePreflight.test.js](../../test/runRetrySensitivePreflight.test.js) 串联 runtime、真实检测器、warm-mirror guard 和审计投影，检查阻止/批准/拒绝/关闭及第二次派发参数；Page、Native 和持久化 I/O 使用替身 |

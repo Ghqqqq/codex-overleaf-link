@@ -287,7 +287,8 @@ async function checkForUpdate(context, params = {}, options = {}) {
   }
   const cooldowns = readJsonSafe(path.join(context.updatesRoot, COOLDOWN_FILE), {});
   if (Number(cooldowns[latestVersion]?.until || 0) > Date.now()) {
-    return { managed: true, available: false, reason: 'cooldown', currentVersion, latestVersion, etag: releaseResponse.headers.get('etag') || '' };
+    return { managed: true, available: false, reason: 'cooldown', currentVersion, latestVersion,
+      cooldownUntil: Number(cooldowns[latestVersion].until), etag: releaseResponse.headers.get('etag') || '' };
   }
 
   const manifestBytes = await fetchReleaseAsset(
@@ -913,12 +914,21 @@ function readAlignedManagedVersion(context) {
 }
 
 function supersedeObsoleteJournal(context, journal, activeVersion) {
-  if (!journal || journal.state === 'superseded' || !parseSemver(activeVersion) ||
+  if (!journal || !parseSemver(activeVersion) ||
       !parseSemver(journal.sourceVersion) || !parseSemver(journal.targetVersion) ||
       compareSemver(activeVersion, journal.sourceVersion) <= 0 ||
       compareSemver(activeVersion, journal.targetVersion) <= 0) {
     return journal;
   }
+  // A previous runtime may already have retired the journal without settling
+  // its bound authorization. Never consume an authorization owned elsewhere.
+  const authorization = readAuthorization(context);
+  if (authorization?.state === 'bound' && journal.authorizationId
+      && authorization.id === journal.authorizationId && authorization.transactionId === journal.id
+      && authorization.sourceVersion === journal.sourceVersion && authorization.targetVersion === journal.targetVersion) {
+    settleAuthorization(context, authorization.id, 'revoked');
+  }
+  if (journal.state === 'superseded') return journal;
   const timestamp = new Date().toISOString();
   const superseded = {
     ...journal,

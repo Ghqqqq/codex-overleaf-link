@@ -34,7 +34,7 @@ function buildAnthropicRequest({ requestBody = {}, launch = {}, historyMessages 
     model,
     max_tokens: maxTokens,
     messages,
-    stream: requestBody.stream !== false
+    stream: requestBody.stream !== false && launch.upstreamResponseMode !== 'buffered'
   };
   if (systemParts.length) {
     body.system = launch.anthropicPromptCaching

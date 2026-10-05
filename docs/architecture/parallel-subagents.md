@@ -32,10 +32,10 @@
 技能目录由 [localSkills](../../native-host/src/localSkills.js) 管理，面板打开时的目录预取在 `contentRuntime.primeCodexOverleafSkillsCatalog`。
 运行参数与 UI 技能启用读取应同时核对，避免只修改面板列表却未影响实际 gate。
 
-**首次目录预取的时序边界。** [contentRuntime](../../extension/src/content/contentRuntime.js) 在首次构建面板时以 fire-and-forget 方式启动预取，任务提交不等待该 Promise。
-若 `state.codexOverleafSkills` 仍为空，`getEnabledCodexOverleafSkillIds()` 返回 `[]`，`buildCodexRunParams()` 将其交给 Native，使该次运行的 broker 关闭；目录随后返回不会为已启动的运行补建 broker。
-预取成功填充目录后，后续提交会重新读取启用 ID；预取失败或目录仍为空时，可打开 Skills，由 [projectSettingsCoordinator.openSkillsView](../../extension/src/content/projectSettingsCoordinator.js) 调用 [localSkillsPanel.refreshLocalSkills](../../extension/src/content/localSkillsPanel.js) 刷新，待目录包含已启用的 `parallel-subagents` 后重新提交。
-[目录预取测试](../../test/parallelSubagents.test.js) 中的 `panel open primes the skills catalog so the broker gate works without visiting Skills` 只检查预取函数和调用存在，未覆盖请求尚未返回时的提交及后续恢复。
+**目录准备与提交。** [contentRuntime](../../extension/src/content/contentRuntime.js) 在首次构建面板时以 fire-and-forget 方式预取目录；`primeCodexOverleafSkillsCatalog` 让预取与提交共享在途 Promise，已有目录直接复用。
+普通任务启用官方技能时，`runTask` 等待目录，并用提交时捕获的启用表生成 `enabledCodexOverleafSkillIds`，再交给 Native gate。等待期间的后续设置或草稿变化不会重新定义该次提交；原项目、账号及会话守卫继续在准备后检查归属。
+目录失败或返回空列表时，提交沿现有启动错误提示结束，保留输入并允许重试，不以空 ID 静默派发。关闭官方技能的普通任务不等待目录；队列执行仍使用入队时捕获的 ID，不从后来目录补值。目录随后返回不会为已启动的运行补建 broker。
+[目录提交测试](../../test/skillsCatalogSubmission.test.js) 串联实际 runtime 提交函数、RunController 与 Native session 的 broker gate，覆盖延迟、失败、重试、配置捕获及队列对照；浏览器、网络和模型执行使用替身。[parallelSubagents 测试](../../test/parallelSubagents.test.js) 另检查目录预取装配。
 
 worker 通过 Native Host 创建 sibling runner；父任务和 worker 都传入同一 `mirror.workspacePath`。
 worker 使用新的 thread，`session: null`、`threadId: ''`；继承当前运行的 model、reasoning、speed、mode、provider 和写作风格上下文。
@@ -84,16 +84,16 @@ job 包含 `id`、`task`、非空 `files` 和可选 `title/readOnlyContext`。
 
 **拒绝回执的标识规则。** [subagentBroker.jobIdOrFallback](../../native-host/src/subagentBroker.js) 只复用满足 `JOB_ID_PATTERN` 的原始 ID；非法或缺失 ID 改用合法队列文件名，不截断后继续使用原值。文件名也不合法时，`idFromFileName` 生成符合模式的 `rejected-` 随机标识。
 `writeResult` 在拼接文件路径前再次检查同一模式，非法标识值不能经拒绝路径进入文件名。合法 job 的成功、失败、取消以及正常拒绝仍保持原 ID，JSON 回执与事件使用选定的安全标识。
-[回执身份测试](../../test/subagentReceiptIdentity.test.js) 用真实 broker/workspace 模块及内存文件系统核对目标目录、异常 ID、异常文件名和正常查找；[broker 测试](../../test/subagentBroker.test.js) 覆盖原有工作流。该约束针对标识到文件名的转换，声明文件的路径别名和共享目录权限仍有独立边界。
+[回执身份测试](../../test/subagentReceiptIdentity.test.js) 用真实 broker/workspace 模块及内存文件系统核对目标目录、异常 ID、异常文件名和正常查找；[broker 测试](../../test/subagentBroker.test.js) 覆盖原有工作流。该约束针对标识到文件名的转换，声明文件的符号链接等文件系统身份和共享目录权限仍有独立边界。
 
 [subagentWorkspacePath](../../native-host/src/subagentWorkspacePath.js) 的 `safeWorkspaceRelativePath` 规范化 workspace 相对路径。
-`safeWorkspaceRelativePath` 拒绝直接以队列目录开头的控制路径，`work/` 下切片例外；声明路径须预先存在，通常由主任务先准备切片。
-**静态例外。** helper 只移除一次开头 `./`，未消解内部 `.`。`././.codex-overleaf-subagents/broker.json` 的首段仍为 `.`，可避开该目录判断；路径存在性由 `path.join` 解析后检查。完整控制目录隔离不能只凭这个字符串守卫确认，相关 owner 为 [subagentWorkspacePath.js](../../native-host/src/subagentWorkspacePath.js) 与 broker 的 `validateJob`。
+`safeWorkspaceRelativePath` 先拒绝绝对路径、空段及 `..`，再消除 `.` 段；控制目录检查、存在性、调度、prompt 和 hash 使用同一规范路径。`././.codex-overleaf-subagents/broker.json` 因而仍被识别为禁止声明的控制文件。
+规范路径下的 `work/` 切片保持例外；声明路径须预先存在，通常由主任务先准备切片。该字符串身份规则不建立符号链接、硬链接或单 worker 的 OS 权限隔离。
 `readOnlyContext` 为提供给 worker 的上下文提示，实际读取能力仍受 runner 环境约束。
 
 | 状态 | 权威 owner | 下游投影 |
 |---|---|---|
-| queued/running、并发槽、计时器 | broker 的 `jobs/queued/running` | `broker.json` 的非实时投影、结果文件、subagent events |
+| queued/running、并发槽、计时器 | broker 的 `jobs/queued/running` | 状态变更后写出的 `broker.json`、结果文件、subagent events |
 | 波次前像、所有权并集、违规路径 | broker 的 `waveSnapshot/violationPaths` | `getViolationPaths` 与 unsupported changes |
 | worker 文件变化证据 | [subagentWorkspace](../../native-host/src/subagentWorkspace.js) 的 `hashPaths/hashWorkspace` | `changedFiles`、wave violation |
 | 未完成文件与接管摘要 | broker 的 `quarantined`、`adoptionToken` | adoption result、同步过滤 |
@@ -102,19 +102,18 @@ job 包含 `id`、`task`、非空 `files` 和可选 `title/readOnlyContext`。
 
 队列目录每轮重建；历史子对话必须依赖运行记录，不能从下一轮的 `results/` 目录恢复。
 
-**已知实现限制。** [writeBrokerFile](../../native-host/src/subagentBroker.js) 只在 start、beginWave、endWave、close 写出 `activeWorkers`；`beginWave` 在 `running` 为空时执行，[startWorker](../../native-host/src/subagentBroker.js) 的 `running.set` 后没有刷新文件。
-正常活动波次中，磁盘 `activeWorkers` 因而仍可显示 0，不能单独作为空闲证据。实际调度与 `processAdoptions` 检查内存 `running`，接管还检查当前 token；此计数缺口不证明接管守卫失效。
-[握手测试](../../test/subagentBroker.test.js#L54) 只核对 ready/closed 等字段，未覆盖运行期间的磁盘计数。
+**活动计数与接管证据。** [startWorker](../../native-host/src/subagentBroker.js) 在 `running.set` 后调用 `writeBrokerFile`；worker Promise 结算移除登记后再次刷新，末项同时发布 `endWave` 生成的 token。close 后的迟到结算仍更新计数，并保持 `closed` 状态；写入失败沿既有 broker I/O 错误路径报告和收尾。
+`activeWorkers` 表示 broker 登记数，不能独自证明所有 OS 进程已退出。实际调度与 `processAdoptions` 检查内存 `running`，接管还要求当前非空 token。[准入与状态测试](../../test/subagentAdmissionState.test.js) 使用真实 broker 和临时文件检查计数增减、关闭后迟到结算、token 及握手 I/O 失败。
 
 ## 4. 生命周期、冲突与预算
 
-**当前实现。** 正常路径如下，校验失败的 job 进入 `rejected` 回执路径；回执路径的静态限制见上一节。
+**当前实现。** 正常路径如下，校验失败的 job 进入 `rejected` 回执路径；已排队项在实际启动前仍须满足剩余预算，拒绝回执继续使用同一安全标识规则。
 
 ```mermaid
 flowchart TD
     A[主任务写 job JSON] --> B[intakeJobs / validateJob]
     B --> C[queued]
-    C --> D[fillSlots：路径互斥与空闲槽]
+    C --> D[fillSlots：路径互斥、空闲槽与剩余预算]
     D --> E[startWorker / beginWave]
     E --> F[worker 与父任务并行存活]
     F --> G[finishWorker：runner Promise 结算与 owned hashes]
@@ -128,17 +127,18 @@ flowchart TD
 ```
 
 `fillSlots` 使用带跳过的 FIFO：选择最早且与当前 running 文件集合无交集的 job。
-两个 job 声明相同返回路径字符串时可被接纳，执行被串行化；字符串集合互不相交的其他 job 可继续并行。
-当前未统一内部 `.` 别名，`sections/ch1.tex` 与 `sections/./ch1.tex` 可被集合视为不同路径，实际指向同一文件。即 $s_1\ne s_2$ 不能推出 $path(s_1)\ne path(s_2)$；现有同文件测试只使用相同字符串，物理文件互斥还需规范化与别名测试。
+两个 job 声明相同规范路径时可被接纳，执行被串行化；文件集合互不相交的其他 job 可继续并行。
+`sections/ch1.tex` 与 `sections/./ch1.tex` 在准入前变为同一身份。路径字符串不同不足以证明物理文件不同；当前点段规则与测试覆盖这些字面别名，完整文件系统权限隔离仍有第 2 节的边界。
 同文件真正并行需要主任务先拆成物理切片，worker 修改各自 `work/` 文件，结束后主任务核对边界并整合回正式文件。
 [mirrorWorkspace](../../native-host/src/mirrorWorkspace.js) 的扫描排除整个队列目录，scratch 切片本身不会同步到 Overleaf。
 
 默认常量在 `DEFAULT_SUBAGENT_LIMITS`：3 worker、每轮 8 job、worker 10 分钟、broker budget 30 分钟、500 ms 扫描、30 秒 drain grace。
 Native 环境变量可调整 worker/broker 时间；范围约束在 `createSubagentBroker` 的 `boundedMs`，测试还可注入 `options.limits`。
 
-admission 的估算为 $w=\lceil(q+r+1)/m\rceil$，检查 $now+wT\le start+B$。
-其中 $q,r,m,T,B$ 分别为排队数、运行数、并发上限、worker 时间和 broker 预算。
-**静态边界。** 该估算未按同文件冲突调整串行波数，budget 不能直接表述为整次父运行的绝对截止时间。
+admission 调用 [subagentAdmission.estimateWorkerWaves](../../native-host/src/subagentAdmission.js)，按当前 running 文件集、排队顺序、新 job 文件集和并发上限 $m$ 投影波次 $w$，检查 $now+wT\le start+B$。
+其中 $T,B$ 分别为单 worker 时间和 broker 预算。投影按 FIFO-skip 选择每波文件互不冲突的项，每波预留完整 $T$；同文件任务需要串行波次，无冲突任务保持并行容量。
+同步波次投影无法作为任意异步完成顺序的严格最坏总时长。因此 `fillSlots` 在实际派发前再次检查 $now+T\le start+B$；已排队项若不再能容纳原 worker 预算，返回既有 `rejected/insufficient_time` 回执，不启动 worker。
+该预算约束 worker 准入，父 turn、drain 和 OS 停止各自保留原时序；它不构成整次父运行的绝对截止。
 worker 自有计时器会触发 abort，持续产生输出也不会豁免该计时器。
 
 正常收尾时，父 turn 返回后，`stop({drain:true})` 先取消尚未启动项，给活动 worker 一个 grace 窗口，再 abort 剩余项并有界等待。
@@ -223,9 +223,10 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 | 改动 | 主 owner 与必要联动 | 最窄命令 |
 |---|---|---|
 | 启动 gate、继承、禁递归 | codexSessionRunner、localSkills、技能正文、面板技能目录 | `node scripts/run-tests.mjs test/parallelSubagents.test.js` |
-| 首次目录预取与 Ask 投递边界 | contentRuntime、projectSettingsCoordinator、localSkillsPanel；runner gate、thread 参数与文件队列 | `node scripts/run-tests.mjs test/parallelSubagents.test.js test/codexSessionRunner.test.js`；现有预取装配和线程参数测试不能替代延迟目录响应、恢复提交及真实沙箱投递验证 |
+| 首次目录准备与提交 | contentRuntime、projectSettingsCoordinator、RunController；runner gate | `node scripts/run-tests.mjs test/skillsCatalogSubmission.test.js test/runSubmissionOwnership.test.js test/queueSubmissionContext.test.js`；延迟/失败目录、配置捕获、草稿与队列对照 |
+| Ask 投递边界 | codexSessionRunner thread 参数、技能文件队列与真实沙箱 | `node scripts/run-tests.mjs test/parallelSubagents.test.js test/codexSessionRunner.test.js`；线程参数测试不能替代真实沙箱投递验证 |
 | 共享技能目录与交错准备 | codexHome、codexSessionRunner、writingStyleRuntime、项目锁；installer 映射 | `node scripts/run-tests.mjs test/codexHome.test.js test/codexSessionRunner.test.js`；还需覆盖活跃路径及安装持久性的交错准备场景 |
-| 并发、同文件串行、预算、取消 | subagentBroker、subagentWorkspace 回执写入、runner、codexSessionTiming、taskRunnerRuntime 登记与锁、镜像 dirty | `node scripts/run-tests.mjs test/subagentBroker.test.js test/subagentIoFailure.test.js`；回执失败后的 abort/close、外层释放、并发 stop 与迟到完成 |
+| 并发、同文件串行、预算、活动计数、取消 | subagentBroker、subagentAdmission、subagentWorkspace 回执写入、runner、codexSessionTiming、taskRunnerRuntime 登记与锁、镜像 dirty | `node scripts/run-tests.mjs test/subagentAdmissionState.test.js test/subagentBroker.test.js test/subagentIoFailure.test.js`；规范路径、冲突预算、异步顺序派发前复核、计数及回执失败后的收尾 |
 | 拒绝回执身份与目标目录 | subagentBroker 的 jobIdOrFallback/idFromFileName/writeResult、输入拒绝原因及事件 | `node scripts/run-tests.mjs test/subagentReceiptIdentity.test.js test/subagentBroker.test.js`；保留合法 ID 查找，并检查异常 ID/文件名不会选中结果目录外的目标 |
 | 文件归属、quarantine、adoption | subagentWorkspace、subagentWorkspacePath、broker、最终 syncChanges 过滤 | `node scripts/run-tests.mjs test/subagentBroker.test.js test/parallelSubagents.test.js` |
 | 原生发现、历史与终态 | subagentTelemetry、runner eventScope/getTurnCompletionError、broker、Native取消分类、subagentActivityModel | `node scripts/run-tests.mjs test/subagentTelemetry.test.js test/codexTerminalStatus.test.js` |
@@ -234,7 +235,7 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 具体定义可直接阅读 [subagentBroker 测试](../../test/subagentBroker.test.js)、[parallelSubagents 测试](../../test/parallelSubagents.test.js)、
 [subagentTelemetry 测试](../../test/subagentTelemetry.test.js)、[子对话测试](../../test/subagentActivityView.test.js) 和 [终态计时测试](../../test/subagentTerminalClock.test.js)。
 其中部分测试检查源码装配，部分使用注入的假 worker 或 app-server；真实进程、权限及 Chrome 状态需另取运行证据。
-回执身份专项使用内存文件系统；失败结束帧经真实 runner 到 broker 的隔离和镜像过滤由合成 app-server 组合测试覆盖。运行期间 `activeWorkers` 投影与暂时性历史错误后的恢复仍须核对各自最近定义及边界，不能由相近测试名称推定已完整覆盖。
+回执身份专项使用内存文件系统；失败结束帧经真实 runner 到 broker 的隔离和镜像过滤由合成 app-server 组合测试覆盖。准入和活动计数专项使用真实临时目录、受控 worker Promise 和时钟；目录提交专项的模型执行使用替身。暂时性历史错误后的恢复仍有第 7 节的独立验证缺口，不能由相近测试名称推定已完整覆盖。
 
 ## 9. 边界场景与验证要点
 
@@ -242,12 +243,12 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 2. **超时产物经主任务修复后同步。** 磁盘字节变化不会解除 quarantine；broker 要求 running 清空并持有当前 token、reviewed 和最终哈希，随后读取 adoption 结果。OS 退出仍需独立证据。接管后再改一个字节，资格再次失效。
 3. **派发项完成后的子任务状态。** `subAgentActivity.kind=completed` 只唤醒历史补读；子 turn 的实际终态可能 failed，历史也可能不可用。检查重复通知、旧 turn 的迟到 completed 与父结束后的时钟冻结。
 4. **非法 ID 的拒绝回执。** 检查合法队列文件名回退、非法文件名生成标识及最终 writer 校验，确认错误仍可被发现且目标留在 `results/`；保持合法任务各终态的原 ID 查找能力。
-5. **磁盘 activeWorkers 为 0 时整合文件。** 该计数没有随每次 worker 启动刷新；核对内存 running、波次与 token，避免把非实时字段当成空闲证明。
+5. **磁盘 activeWorkers 为 0 时整合文件。** 计数随登记变化刷新，仍需核对波次与当前 token；实际接管继续检查内存 running。close 后计数尚非零表示仍有未结算 worker，不能将 closed 当作 OS 退出证明。
 6. **worker 失败终态后的部分文件隔离。** 覆盖没有独立 error/abort 的 failed/interrupted 结束帧、矛盾 error 与未知状态；核对 runner 拒绝、停止处理、broker 隔离及差异过滤，同时保留旧无 status 成功兼容。
 7. **历史临时读取失败后的恢复。** 同一 child 的 `readDisabled` 会阻止后续补读；分别检查已保存活动、实时通知与缺失历史，不能由只读视图重新打开推定原生历史重试。
 8. **活跃 worker 期间重建技能目录。** 另一个项目或风格生成会按自身开关准备共享 home；核对父任务与 worker 已发现的路径能否继续读取，以及并行 installer 的目标是否仍为持久技能根。文件路径检查与 app-server 缓存行为分别取证。
-9. **目录预取尚未返回时提交。** 从空技能目录开始，延迟 `skills.list` 响应，检查该次参数中的启用 ID 与 broker gate；再分别覆盖预取成功、预取失败后打开 Skills 刷新并重新提交，确认恢复作用于后续运行。
+9. **目录预取尚未返回时提交。** 从空目录开始延迟 `skills.list`，检查派发先等待且共享同一请求；等待期间修改启用表或草稿，原提交配置保持。分别覆盖失败后原入口重试、关闭技能、cached 目录和队列既有 IDs，确认未知目录不会变成静默禁用。
 10. **Ask 中的 ready 与实际投递。** 分别核对 broker 创建、父 thread 的只读配置、模型写 job 的结果及 worker 是否启动；使用隔离项目验证实际沙箱行为，并把原生 collab 事件与文件 broker 结果分开记录。
 11. **回执错误与停止重入。** 分别注入自然完成和 queued 取消回执故障，检查错误保留、abort/close、重入次数及外层登记；对忽略 abort 或迟到 resolve 的 worker 检查输出隔离，不能把 stop 返回或锁释放当作 OS 退出证据。
 
-**集成验证范围。** 同文件长队列与 admission 预算的实际时长、忽略 abort 的 worker 与 drain/停止确认的交接、波次内跨所有权路径写入，以及真实 app-server 版本的子线程历史字段均需集成验证。拒绝回执路径、活动计数、协议失败终态与暂时性历史错误应分别覆盖；源码中的限制与真实运行后果须保持区分。
+**集成验证范围。** 同文件冲突和异步完成顺序的派发预算由受控 broker 测试覆盖；真实长任务时长、忽略 abort 的 worker 与 drain/停止确认交接、波次内跨所有权路径写入，以及真实 app-server 版本的子线程历史字段仍需相应环境验证。拒绝回执路径、活动计数、协议失败终态与暂时性历史错误应分别覆盖；源码中的限制与真实运行后果须保持区分。

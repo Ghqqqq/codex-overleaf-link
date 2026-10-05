@@ -55,6 +55,7 @@
 
   return Object.freeze({
     MAX_REQUEST_ID_CHARS,
+    validate,
     resolve
   });
 });

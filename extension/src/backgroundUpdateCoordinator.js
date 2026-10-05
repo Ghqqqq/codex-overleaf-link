@@ -170,7 +170,7 @@
       operation.phase = 'checking';
       await setUpdateState({ ...currentState, state: 'checking', operationId: operation.id,
         cancelRequested: false, initiatedBy: manual ? 'manual' : 'automatic',
-        code: '', message: '', blocker: '', blockers: [], postponeUntil: LEGACY_GUARD }, { operation });
+        code: '', message: '', blocker: '', blockers: [], cooldownUntil: 0, postponeUntil: LEGACY_GUARD }, { operation });
       try {
         const result = await withTimeout(requestNative('update.check', {
           operationId: operation.id, currentVersion: currentVersion(), etag: currentState.etag || ''
@@ -188,14 +188,17 @@
           await setUpdateState({ ...currentState, state: 'update_available', operationId: operation.id,
             currentVersion: result.currentVersion || currentVersion(), latestVersion,
             managed: true, etag: result.etag || currentState.etag || '', lastCheckedAt: checkedAt,
-            postponeUntil: LEGACY_GUARD, code: '', message: '', cancelRequested: false
+            postponeUntil: LEGACY_GUARD, code: '', message: '', cooldownUntil: 0, manualReason: {}, cancelRequested: false
           }, { operation });
-        } else if (result.reason === 'manual_install_required'
-          && policy.compareStableVersions(result.latestVersion, currentVersion()) > 0) {
+        } else if ((result.reason === 'manual_install_required'
+          && policy.compareStableVersions(result.latestVersion, currentVersion()) > 0)
+          || (result.reason === 'prerelease_promotion_requires_manual_update'
+            && result.latestVersion === (result.currentVersion || currentVersion()))) {
           await setUpdateState({ ...currentState, state: 'manual_install_required', operationId: operation.id,
             currentVersion: result.currentVersion || currentVersion(), latestVersion: result.latestVersion,
             managed: true, etag: result.etag || currentState.etag || '', lastCheckedAt: checkedAt,
-            postponeUntil: LEGACY_GUARD, code: 'update_bootstrap_upgrade_required', message: '',
+            postponeUntil: LEGACY_GUARD, code: result.reason === 'prerelease_promotion_requires_manual_update'
+              ? result.reason : 'update_bootstrap_upgrade_required', message: '', cooldownUntil: 0,
             manualReason: result.manualInstall?.reason || {}, cancelRequested: false
           }, { operation });
         } else {
@@ -203,7 +206,10 @@
             currentVersion: result.currentVersion || currentVersion(),
             latestVersion: result.latestVersion || result.currentVersion || currentVersion(),
             etag: result.etag || currentState.etag || '', lastCheckedAt: checkedAt,
-            postponeUntil: LEGACY_GUARD, transactionId: '', code: '', message: '', cancelRequested: false
+            postponeUntil: LEGACY_GUARD, transactionId: '',
+            code: result.reason === 'cooldown' ? 'update_cooldown' : '',
+            cooldownUntil: result.reason === 'cooldown' ? Number(result.cooldownUntil || 0) : 0,
+            manualReason: {}, message: '', cancelRequested: false
           }, { operation });
         }
         return getView();
@@ -584,7 +590,9 @@
 
 
   async function reconcileExpiredPhase() {
-    const state = await getUpdateState();
+    const recoveryOwner = await captureRecoveryOwner();
+    const state = recoveryOwner.state;
+    const recoveryOptions = { observed: true, recoveryOwner };
     if (!state.recoveryPending && (!state.deadlineAt || Date.now() <= state.deadlineAt
       || policy.isTerminalState(state.state))) return state;
     if (['checking', 'downloading'].includes(state.state)) {
@@ -597,32 +605,38 @@
       try {
         let status = await withTimeout(requestNative('update.status'), 10000,
           codedError('update_status_timeout', 'Update recovery status is unavailable.'));
+        await assertRecoveryOwner(recoveryOwner);
         let transaction = status.transaction;
         if (state.transactionId && transaction?.id !== state.transactionId) {
           throw codedError('update_transaction_mismatch', 'The update recovery transaction could not be matched.');
         }
+        if (transaction?.state === 'superseded') {
+          return settleSupersededTransaction(status, recoveryOwner);
+        }
         if (transaction?.state === 'staged' || (!transaction && status.installedAligned
           && status.activeVersion === state.currentVersion)) {
           if (state.operationId) await requestNative('update.cancel', { operationId: state.operationId });
+          await assertRecoveryOwner(recoveryOwner);
           const consent = await getConsentState();
           const authorizationId = consent.authorizationId || consent.revokingAuthorizationId;
           const targetVersion = consent.authorizedVersion || consent.revokingVersion || state.latestVersion;
+          await assertRecoveryOwner(recoveryOwner);
           if (authorizationId) await requestNative('update.revoke', { authorizationId, targetVersion });
-          await setConsentState(revocation.clear({ ...consent,
-            authorizedVersion: '', authorizationId: '', authorizedAt: 0
-          }));
-          return setUpdateState({ state: 'failed', recoveryPending: false, cancelRequested: false,
+          const completed = await setUpdateAndConsentState({ state: 'failed', recoveryPending: false, cancelRequested: false,
             operationId: '', code: 'update_not_applied', message: 'The update was stopped before installation. Retry when ready.'
-          }, { observed: true });
+          }, revocation.clear({ ...consent, authorizedVersion: '', authorizationId: '', authorizedAt: 0 }), recoveryOptions);
+          return completed.updateState;
         }
         if (transaction?.state === 'awaiting_health') {
           const rolledBack = await requestNative('update.rollback', {
             transactionId: transaction.id, expectedState: 'awaiting_health', reasonCode: 'update_health_timeout'
           });
+          await assertRecoveryOwner(recoveryOwner);
           if (rolledBack.state !== 'rolled_back' || rolledBack.version !== transaction.sourceVersion) {
             throw codedError('update_rollback_unconfirmed', 'Rollback returned incomplete evidence.');
           }
           status = await requestNative('update.status');
+          await assertRecoveryOwner(recoveryOwner);
           transaction = status.transaction;
         }
         if (transaction?.state === 'committed' && status.installedAligned
@@ -630,7 +644,7 @@
           return setUpdateState({ state: 'committed', currentVersion: transaction.targetVersion,
             latestVersion: transaction.targetVersion, transactionId: transaction.id,
             recoveryPending: false, cancelRequested: false, code: '', message: ''
-          }, { observed: true });
+          }, recoveryOptions);
         }
         if (transaction?.state === 'rolled_back' && status.installedAligned
           && status.activeVersion === transaction.sourceVersion
@@ -638,18 +652,77 @@
           const restored = await setUpdateState({ state: 'rolled_back', currentVersion: transaction.sourceVersion,
             transactionId: transaction.id, recoveryPending: false, cancelRequested: false,
             code: transaction.reasonCode || 'update_rolled_back', message: 'The previous version has been restored.'
-          }, { observed: true });
+          }, recoveryOptions);
           setTimeout(() => chrome.runtime.reload(), 0);
           return restored;
         }
         throw codedError('update_recovery_pending', 'The installed update result has not been confirmed.');
       } catch (error) {
+        if (error.code === 'update_recovery_superseded') return getUpdateState();
         return setUpdateState({ state: 'failed', recoveryPending: true, cancelRequested: false,
           code: safeCode(error), message: safeMessage(error)
-        }, { observed: true });
+        }, recoveryOptions).catch(writeError => {
+          if (writeError.code === 'update_recovery_superseded') return getUpdateState();
+          throw writeError;
+        });
       }
     }
     return state;
+  }
+
+  async function captureRecoveryOwner() {
+    const generation = operationGeneration;
+    const [state, consent] = await Promise.all([getUpdateState(), getConsentState()]);
+    return { generation, state, consent };
+  }
+
+  function matchesRecoveryOwner(owner, state, consent) {
+    return owner && owner.generation === operationGeneration
+      && ['state', 'transactionId', 'operationId', 'currentVersion', 'latestVersion',
+        'recoveryPending', 'cancelRequested', 'lastCheckedAt', 'phaseStartedAt']
+        .every(key => state[key] === owner.state[key])
+      && ['authorizationId', 'authorizedVersion', 'revokingAuthorizationId', 'revokingVersion']
+        .every(key => consent[key] === owner.consent[key]);
+  }
+
+  async function assertRecoveryOwner(owner) {
+    const [state, consent] = await Promise.all([getUpdateState(), getConsentState()]);
+    assertRecoverySnapshot(owner, state, consent);
+  }
+
+  function assertRecoverySnapshot(owner, state, consent) {
+    if (owner && !matchesRecoveryOwner(owner, state, consent)) {
+      throw codedError('update_recovery_superseded', 'A newer update state replaced this recovery request.');
+    }
+  }
+
+  // Both startup recovery and the coordinator retire the same Native journal
+  // through this queue. The snapshot was captured before requesting status.
+  function settleSupersededTransaction(status, owner) {
+    return enqueueStateWrite(async () => {
+      const [previous, consent] = await Promise.all([getUpdateState(), getConsentState()]);
+      if (!matchesRecoveryOwner(owner, previous, consent)) return previous;
+      const transaction = status?.transaction;
+      if (activeOperation || transaction?.state !== 'superseded' || !transaction.id
+        || (previous.transactionId && previous.transactionId !== transaction.id)
+        || status.installedAligned !== true || status.activeVersion !== transaction.supersededByVersion
+        || policy.compareStableVersions(status.activeVersion, transaction.targetVersion) <= 0
+        || policy.compareStableVersions(status.activeVersion, transaction.sourceVersion) <= 0
+        || ['authorized', 'bound'].includes(status.authorization?.state)
+        || (consent.authorizedVersion && consent.authorizedVersion !== transaction.targetVersion)
+        || (consent.revokingVersion && consent.revokingVersion !== transaction.targetVersion)) return previous;
+      const next = projectUpdateState(previous, { state: 'idle', currentVersion: status.activeVersion,
+        latestVersion: status.activeVersion, transactionId: '', operationId: '', recoveryPending: false,
+        cancelRequested: false, blocker: '', blockers: [], code: '', message: '', manualReason: {}, cooldownUntil: 0
+      }, { observed: true });
+      // Invalidate older awaits before yielding to storage, including recovery
+      // responses that describe this same retired transaction.
+      operationGeneration += 1;
+      await chrome.storage.local.set({ [UPDATE_STATE_KEY]: next,
+        [CONSENT_STATE_KEY]: policy.normalizeConsentState({}), [UPDATE_RELOAD_TABS_KEY]: [] });
+      runtimeStatus = null;
+      return next;
+    });
   }
 
 
@@ -784,9 +857,11 @@
   function setUpdateState(value, options = {}) {
     return enqueueStateWrite(async () => {
       assertWriteOwner(options);
-      const stored = await chrome.storage.local.get(UPDATE_STATE_KEY);
+      const stored = await chrome.storage.local.get(options.recoveryOwner
+        ? [UPDATE_STATE_KEY, CONSENT_STATE_KEY] : UPDATE_STATE_KEY);
       assertWriteOwner(options);
       const previous = policy.normalizeUpdateState(stored?.[UPDATE_STATE_KEY], currentVersion());
+      assertRecoverySnapshot(options.recoveryOwner, previous, policy.normalizeConsentState(stored?.[CONSENT_STATE_KEY]));
       const next = projectUpdateState(previous, value, options);
       await chrome.storage.local.set({ [UPDATE_STATE_KEY]: next });
       return next;
@@ -844,6 +919,7 @@
       const stored = await chrome.storage.local.get([UPDATE_STATE_KEY, CONSENT_STATE_KEY]);
       assertWriteOwner(options);
       const previous = policy.normalizeUpdateState(stored?.[UPDATE_STATE_KEY], currentVersion());
+      assertRecoverySnapshot(options.recoveryOwner, previous, policy.normalizeConsentState(stored?.[CONSENT_STATE_KEY]));
       const updateState = projectUpdateState(previous, updateValue, options);
       const consentState = policy.normalizeConsentState(consentValue);
       await chrome.storage.local.set({ [UPDATE_STATE_KEY]: updateState, [CONSENT_STATE_KEY]: consentState });
@@ -894,6 +970,9 @@
   }
 
   function assertWriteOwner(options) {
+    if (options.recoveryOwner && options.recoveryOwner.generation !== operationGeneration) {
+      throw codedError('update_recovery_superseded', 'A newer update state replaced this recovery request.');
+    }
     if (options.operation) assertOperation(options.operation);
     if (options.generation !== undefined && options.generation !== operationGeneration) {
       throw codedError('update_network_cancelled', 'The update request was superseded.');
@@ -970,5 +1049,5 @@
       .slice(0, 300);
   }
 
-  root.CodexOverleafUpdateCoordinator = Object.freeze({ init });
+  root.CodexOverleafUpdateCoordinator = Object.freeze({ init, captureRecoveryOwner, settleSupersededTransaction });
 })(globalThis);

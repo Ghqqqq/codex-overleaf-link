@@ -4,6 +4,16 @@
 })(typeof window !== 'undefined' ? window : globalThis, function () {
   'use strict';
 
+  function formatForceCancelOutcome(response, tx) {
+    if (response?.ok !== true) return tx('Release failed — refresh the tab, then try again.', '释放失败，请刷新页面后重试。');
+    const result = response.result || response;
+    if (result.lockReleased === true) return tx('Force-released — you can retry the run.', '已释放，可以重试本轮任务。');
+    if (result.cancelled === true) return tx('Cancellation requested. Wait for the task to stop before retrying.', '已请求取消，请等待任务停止后再重试。');
+    if (result.cancelled === false) return tx('No active task matched the release request.', '没有发现与释放请求匹配的活动任务。');
+    if (result.sent === true) return tx('Cancellation request sent; release is not yet confirmed.', '取消请求已发送，释放状态尚未确认。');
+    return tx('Release is not yet confirmed. Check the current task before retrying.', '释放状态尚未确认，请检查当前任务后再重试。');
+  }
+
   function create(deps = {}) {
     const { tx, failureNotice, refillComposerForRetry, openProjectFileForFailure, showNativeSetupGuidance,
       openStorageSettings, forceCancelStuckTaskForCurrentProject } = deps;
@@ -112,23 +122,16 @@
     button.dataset.recoveryFor = failureCode;
     button.textContent = tx('Force-release the stuck task', '强制释放卡住的任务');
     button.title = tx(
-      'Sends a force-cancel to the native host that drops the project lock so a new run can start. Use this when refreshing the tab did not free the project.',
-      '向 native host 发送强制取消请求，释放当前 Overleaf 项目的占用，让新的任务可以启动。刷新页面没用时使用。'
+      'Requests cancellation for this project. A sent request does not confirm that the task has stopped. Use this when refreshing the tab did not free the project.',
+      '请求取消当前项目的任务；请求已发送不代表任务已经停止。刷新页面仍未解除占用时使用。'
     );
     button.addEventListener('click', event => {
       event.stopPropagation();
       button.disabled = true;
       button.textContent = tx('Releasing…', '正在释放…');
       forceCancelStuckTaskForCurrentProject().then(result => {
-        if (result?.ok) {
-          button.textContent = tx('Force-released — you can retry the run.', '已释放，可以重试本轮任务。');
-          return;
-        }
-        // The helper resolves (never throws) with a non-ok result when the
-        // request was not delivered. Report the real outcome instead of a
-        // blanket success, and re-enable the button so the user can retry.
-        button.disabled = false;
-        button.textContent = tx('Release failed — refresh the tab, then try again.', '释放失败，请刷新页面后重试。');
+        button.textContent = formatForceCancelOutcome(result, tx);
+        button.disabled = result?.ok === true;
       }).catch(() => {
         button.disabled = false;
         button.textContent = tx('Release failed — refresh the tab, then try again.', '释放失败，请刷新页面后重试。');
@@ -139,5 +142,5 @@
 
     return { buildRecoveryButton, appendRecoveryActionForFailure };
   }
-  return { create };
+  return { create, formatForceCancelOutcome };
 });

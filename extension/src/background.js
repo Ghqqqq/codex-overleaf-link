@@ -89,7 +89,12 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
     'codex.providers.delete',
     'skills.list',
     'skills.install',
-    'skills.remove'
+    'skills.remove',
+    'writing-style.get',
+    'writing-style.set',
+    'codex.thread.fork',
+    'asset.readChunk',
+    'asset.release'
   ]);
   const RECOVERABLE_COMPATIBILITY_METHODS = new Set([
     'bridge.ping',
@@ -112,6 +117,27 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
   const RUN_JOURNAL_MAX_EVENTS = 300;
   const RUN_JOURNAL_MAX_BYTES = 512 * 1024;
   const managedBootstrapRuntime = isManagedBootstrapRuntime();
+  let extensionInstallIdentity = { managed: managedBootstrapRuntime };
+  let installIdentityRead;
+  function readExtensionInstallIdentity() {
+    if (!managedBootstrapRuntime) return Promise.resolve(extensionInstallIdentity);
+    if (!installIdentityRead) installIdentityRead = (async () => {
+      try {
+        const response = await fetch(chrome.runtime.getURL('.codex-overleaf-managed-extension.json'));
+        const marker = response.ok ? await response.json() : null;
+        if (marker?.managedBy === 'codex-overleaf-link' && marker.kind === 'extension'
+          && marker.installIdentity?.extensionId === getCurrentExtensionId())
+          extensionInstallIdentity = { ...marker.installIdentity, managed: true };
+      } catch (_) { /* Old or missing marker: never guess the installation root. */ }
+      return extensionInstallIdentity;
+    })();
+    return installIdentityRead;
+  }
+  async function withExtensionInstallIdentity(request, response) {
+    return request?.method === 'bridge.ping'
+      ? { ...response, extensionInstallIdentity: await readExtensionInstallIdentity() } : response;
+  }
+
   globalThis.CodexOverleafNativeBridge = Object.freeze({
     requestInternal: payload => requestManagedInternal(payload),
     getPendingState: () => ({
@@ -200,13 +226,11 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
     }
 
     sendNativeRequest(message.payload, sender)
+      .then(result => withExtensionInstallIdentity(message.payload, result))
       .then(result => sendResponse(result))
       .catch(error => {
         const userFacingError = toUserFacingNativeError(error);
-        sendResponse({
-          ok: false,
-          error: userFacingError
-        });
+        withExtensionInstallIdentity(message.payload, { ok: false, error: userFacingError }).then(sendResponse);
       });
 
     return true;
@@ -455,6 +479,8 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
   }
 
   async function reconcileManagedUpdateTransaction() {
+    const coordinator = globalThis.CodexOverleafUpdateCoordinator;
+    const recoveryOwner = await coordinator?.captureRecoveryOwner?.();
     const response = await sendNativeRequest({
       id: crypto.randomUUID(),
       method: 'update.status',
@@ -466,22 +492,7 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
 
     const transaction = response.result?.transaction || null;
     if (transaction?.state === 'superseded') {
-      const activeVersion = response.result?.activeVersion || chrome.runtime.getManifest().version;
-      await chrome.storage.local.remove([
-        MANAGED_UPDATE_CONSENT_KEY,
-        MANAGED_UPDATE_TABS_KEY
-      ]);
-      await setManagedUpdateState({
-        state: 'idle',
-        managed: true,
-        currentVersion: activeVersion,
-        latestVersion: activeVersion,
-        transactionId: '',
-        blocker: '',
-        blockers: [],
-        code: '',
-        message: ''
-      });
+      await coordinator?.settleSupersededTransaction?.(response.result, recoveryOwner);
       return;
     }
     const state = await getManagedUpdateState();
@@ -652,12 +663,13 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
     const command = CodexOverleafCompatibility?.buildInstallCommand?.(
       getNativeRecommendedVersion(evidence),
       evidence.native?.platform || evidence.platform,
-      getCurrentExtensionId()
+      getCurrentExtensionId(),
+      extensionInstallIdentity
     );
     if (command) {
       return command;
     }
-    return evidence.updateCommand || evidence.installCommand;
+    return managedBootstrapRuntime ? '' : evidence.updateCommand || evidence.installCommand;
   }
 
   function getCurrentExtensionId() {

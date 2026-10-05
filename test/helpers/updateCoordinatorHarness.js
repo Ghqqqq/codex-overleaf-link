@@ -7,7 +7,7 @@ const UPDATE_KEY = 'codex-overleaf-managed-update-state-v1';
 const CONSENT_KEY = 'codex-overleaf-update-consent-v1';
 
 async function createCoordinatorHarness(options = {}) {
-  const version = '2.4.1';
+  const version = options.version || '2.4.1';
   const data = { [UPDATE_KEY]: { state: 'idle', currentVersion: version, latestVersion: version }, [CONSENT_KEY]: {} };
   const events = [];
   let listener, rejectWrite = false, reloads = 0;
@@ -27,7 +27,7 @@ async function createCoordinatorHarness(options = {}) {
             Object.assign(data, structuredClone(values));
             events.push({ type: 'write', values: structuredClone(values) });
           },
-          async remove(key) { delete data[key]; }
+          async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete data[key]; }
         },
         session: { async get(key) { return { [key]: true }; }, async set() {} },
         onChanged: { addListener() {} }
@@ -60,7 +60,7 @@ async function createCoordinatorHarness(options = {}) {
   await new Promise(setImmediate);
   events.length = 0;
   return {
-    data, events, UPDATE_KEY, CONSENT_KEY,
+    data, events, sandbox, UPDATE_KEY, CONSENT_KEY,
     seed(update, consent = {}) { data[UPDATE_KEY] = structuredClone(update); data[CONSENT_KEY] = structuredClone(consent); events.length = 0; },
     failWrites(value = true) { rejectWrite = value; },
     reloads: () => reloads,

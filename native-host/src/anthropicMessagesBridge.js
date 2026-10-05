@@ -107,7 +107,7 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
   });
   logDebug('provider.anthropic.request', {
     model: translated.body.model,
-    stream: requestBody.stream !== false,
+    stream: translated.body.stream,
     maxTokens: translated.body.max_tokens,
     thinkingType: translated.body.thinking?.type || 'disabled',
     hasPreviousResponse: Boolean(previousResponseId),

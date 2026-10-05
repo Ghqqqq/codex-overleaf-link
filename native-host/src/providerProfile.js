@@ -65,7 +65,8 @@ function normalizeProviderDraft(value = {}) {
     anthropicThinkingMode: normalizeAnthropicThinkingMode(value.anthropicThinkingMode),
     anthropicPromptCaching: value.anthropicPromptCaching === true,
     impersonateClaudeCode: value.impersonateClaudeCode === true,
-    maxOutputTokens: normalizeMaxOutputTokens(value.maxOutputTokens)
+    maxOutputTokens: normalizeMaxOutputTokens(value.maxOutputTokens),
+    outputBudgetVersion: 1
   };
 }
 
@@ -245,6 +246,7 @@ function sanitizeProfile(profile, hasSecret) {
     anthropicPromptCaching: profile.anthropicPromptCaching === true,
     impersonateClaudeCode: profile.impersonateClaudeCode === true,
     maxOutputTokens: normalizeMaxOutputTokens(profile.maxOutputTokens),
+    outputBudgetVersion: 1,
     hasSecret: Boolean(hasSecret),
     secretUpdatedAt: profile.secretUpdatedAt || 0,
     endpointDisclosureHost: profile.endpointDisclosureHost || '',
@@ -419,7 +421,7 @@ function normalizeUpstreamResponseMode(value, allowAuto) {
 
 function normalizeMaxOutputTokens(value) {
   const number = Number(value);
-  if (!Number.isFinite(number) || number === 8192 || number === 32768) return 65536;
+  if (!Number.isFinite(number)) return 65536;
   return Math.min(65536, Math.max(256, Math.floor(number)));
 }
 

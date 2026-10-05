@@ -355,7 +355,14 @@
     let statusText = '';
     let buttonText = tx('Check for updates', '检查更新');
 
-    if (['reload_required', 'reload_tabs_required'].includes(stateName)) {
+    if (stateName === 'idle' && state.code === 'update_cooldown') {
+      const until = Number(state.cooldownUntil || 0);
+      const time = until > 0 && Number.isFinite(until) ? new Date(until).toLocaleString(getLocale() || undefined) : '';
+      statusText = tx(
+        `Update v${latestVersion} is paused after a failed installation. ${time ? `Check again after ${time}.` : 'Check again after its cooldown ends.'}`,
+        `v${latestVersion} 安装失败后已暂停更新。${time ? `请在 ${time} 后再次检查。` : '请在冷却期结束后再次检查。'}`
+      );
+    } else if (['reload_required', 'reload_tabs_required'].includes(stateName)) {
       summaryText = tx(`Installed v${latestVersion}; running extension v${currentVersion}.`, `已安装 v${latestVersion}；扩展当前运行 v${currentVersion}。`);
       statusText = getCopy(state).detail;
       buttonText = stateName === 'reload_required' ? tx('Reload extension', '重新加载扩展') : tx('Refresh Overleaf tabs', '刷新 Overleaf 标签页');
@@ -555,6 +562,10 @@
   }
 
   function manualReasonText(state = {}) {
+    if (state.code === 'prerelease_promotion_requires_manual_update') {
+      return tx('The installed release candidate has the same version number as the stable release. Reinstall to use the stable release.',
+        '已安装的候选版与稳定版使用相同版本号。请重新安装以使用稳定版。');
+    }
     const reason = state.manualReason || {};
     return tx(reason.en || reason.zh || '', reason.zh || reason.en || '');
   }

@@ -117,11 +117,12 @@
       if (generation !== modelLoadGeneration) {
         return { stale: true };
       }
+      options.assertCurrent?.();
       const responseProviderId = response?.result?.providerId || '';
       if (selection?.providerId && responseProviderId && responseProviderId !== selection.providerId) {
         return { stale: true };
       }
-      if (selection?.providerId && selection.providerId !== 'builtin'
+      if (response?.ok && selection?.providerId && selection.providerId !== 'builtin'
         && Number(response?.result?.providerRevision) !== Number(selection.providerRevision)) {
         return { stale: true };
       }
@@ -170,6 +171,7 @@
       if (generation !== modelLoadGeneration) {
         return { stale: true };
       }
+      options.assertCurrent?.();
       applyUnavailableModelOptions(error);
       return { stale: false, error };
     }

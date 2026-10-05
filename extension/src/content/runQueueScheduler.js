@@ -231,13 +231,20 @@
         options.toast?.(options.tr?.('queuedInputGuideUnavailable'), 'warning');
         return;
       }
-      options.setQueue?.(session.id, Queue.markSteering(session.pendingInputs, itemId));
-      render();
-      try {
-        await options.save?.({
-          queueMutation: { type: 'transition', sessionId: session.id, itemId }
-        });
-      } catch (error) {
+      const identity = { requestId: run.nativeRequestId, threadId: binding.threadId, turnId: binding.turnId,
+        text: item.text, clientUserMessageId: item.clientUserMessageId };
+      const assertCurrent = () => {
+        const scope = options.getGuideScope?.(), currentRun = options.getCurrentRun?.();
+        const current = options.getSession?.(session.id)?.pendingInputs?.find(entry => entry.id === itemId);
+        if (options.isGuideCancelled?.() || currentRun !== run || options.getActiveSession?.()?.id !== session.id
+          || currentRun?.nativeRequestId !== identity.requestId
+          || currentRun?.activeTurn?.threadId !== identity.threadId || currentRun?.activeTurn?.turnId !== identity.turnId
+          || (guideScope && ['projectId', 'accountScopeId', 'generation'].some(key => scope?.[key] !== guideScope[key]))
+          || current?.status !== 'steering' || current.text !== identity.text || current.clientUserMessageId !== identity.clientUserMessageId) {
+          throw Object.assign(new Error(options.tr?.('queuedInputGuideUnavailable') || 'Guidance is no longer available for this turn.'), { code: 'codex_turn_mismatch' });
+        }
+      };
+      async function restoreUnsent(error) {
         // No steer was dispatched. Restore only this attempt's still-owned item;
         // a concurrent removal, replacement or scope switch must stay untouched.
         const liveScope = options.getGuideScope?.();
@@ -256,6 +263,20 @@
             if (error && typeof error === 'object') error.persistenceRecoveryError = recoveryError?.message || String(recoveryError);
           }
         }
+      }
+      options.setQueue?.(session.id, Queue.markSteering(session.pendingInputs, itemId));
+      render();
+      try {
+        const preflight = await options.preflightGuide?.({ task: identity.text, assertCurrent });
+        assertCurrent();
+        if (preflight?.blocked) throw Object.assign(new Error('Guidance was blocked before dispatch.'), { guidanceBlocked: true });
+        await options.save?.({
+          queueMutation: { type: 'transition', sessionId: session.id, itemId }
+        });
+        assertCurrent();
+      } catch (error) {
+        await restoreUnsent(error);
+        if (error?.guidanceBlocked) return { ok: false, blocked: true };
         throw error;
       }
       try {
@@ -266,7 +287,7 @@
           expectedTurnId: binding.turnId,
           clientUserMessageId: item.clientUserMessageId,
           input: [{ type: 'text', text: item.text }]
-        });
+        }, { assertCurrent });
         const latest = options.getSession?.(session.id);
         options.setQueue?.(
           session.id,
@@ -295,6 +316,7 @@
             : { type: 'transition', sessionId: session.id, itemId }
         });
       } catch (error) {
+        if (error?.requestDispatched === false) { await restoreUnsent(error); throw error; }
         const latest = options.getSession?.(session.id);
         const paused = (latest?.pendingInputs || []).map(entry => entry.id === itemId
           ? { ...entry, status: 'paused', pauseReason: 'steer_delivery_unknown' }

@@ -2,12 +2,20 @@
   'use strict';
 
   function create(deps = {}) {
-    async function confirmSwitch({ providerName } = {}) {
+    function assertSwitchAllowed() {
       if ((deps.getRunningSessionIds?.() || []).length) {
-        deps.showToast?.(deps.tx(
+        throw Object.assign(new Error(deps.tx(
           'Wait for the running task to finish before switching providers.',
           '请等待正在运行的任务结束后再切换模型服务。'
-        ), { status: 'warning' });
+        )), { code: 'provider_switch_running' });
+      }
+    }
+
+    async function confirmSwitch({ providerName } = {}) {
+      try {
+        assertSwitchAllowed();
+      } catch (error) {
+        deps.showToast?.(error.message, { status: 'warning' });
         return false;
       }
       return deps.showConfirm?.({
@@ -33,6 +41,7 @@
       const providerConfigurationChanged = nextProviderId === (state.providerId || 'builtin')
         && nextProviderRevision !== Number(state.providerRevision || 0);
       const resetProviderThread = providerChanged || providerConfigurationChanged;
+      if (resetProviderThread) assertSwitchAllowed();
       const sessions = (state.sessions || []).map(session => ({
         ...session,
         providerId: nextProviderId,
@@ -53,7 +62,7 @@
       deps.applyStateToPanel?.();
     }
 
-    return { confirmSwitch, commit };
+    return { assertSwitchAllowed, confirmSwitch, commit };
   }
 
   window.CodexOverleafProjectProviderSelection = { create };

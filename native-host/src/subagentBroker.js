@@ -20,6 +20,7 @@ const path = require('node:path');
 
 const { SUBAGENT_QUEUE_DIR } = require('./mirrorWorkspace');
 const { safeWorkspaceRelativePath } = require('./subagentWorkspacePath');
+const { estimateWorkerWaves } = require('./subagentAdmission');
 const { compactEvent, publicText } = require('./subagentTelemetry');
 const { createSubagentWorkspace } = require('./subagentWorkspace');
 
@@ -231,13 +232,11 @@ function createSubagentBroker(options = {}) {
       }
       owned.push(safe);
     }
-    // Overlapping ownership no longer rejects: same-file jobs are admitted
-    // and SERIALIZED by the scheduler (fillSlots never runs two jobs whose
-    // files intersect). Prompt-scoped same-file delegation is then safe —
-    // the physical lost-update race only exists under concurrency (v1.6.1).
-    // Wave-aware admission: the parent turn has no default absolute deadline,
-    // so the broker enforces its own wall-clock envelope across ALL waves.
-    const projectedWaves = Math.ceil((queued.length + running.size + 1) / limits.maxWorkers);
+    // Reserve serial waves for overlapping ownership, matching fillSlots.
+    // The budget covers worker admission; parent/OS cleanup has separate limits.
+    const projectedWaves = estimateWorkerWaves(
+      [...running.keys()].map(id => jobs.get(id).job.files),
+      [...queued.map(id => jobs.get(id).job.files), owned], limits.maxWorkers);
     if (Date.now() + projectedWaves * limits.perWorkerTimeoutMs > startedAt + limits.brokerBudgetMs) {
       return { reason: 'insufficient_time' };
     }
@@ -286,6 +285,11 @@ function createSubagentBroker(options = {}) {
       }
       const [jobId] = queued.splice(index, 1);
       const entry = jobs.get(jobId);
+      if (Date.now() + limits.perWorkerTimeoutMs > startedAt + limits.brokerBudgetMs) {
+        entry.status = 'rejected';
+        writeRejection({ id: jobId, reason: 'insufficient_time' });
+        continue;
+      }
       try {
         startWorker(entry);
       } catch (error) {
@@ -377,10 +381,12 @@ function createSubagentBroker(options = {}) {
       if (running.size === 0) {
         endWave();
       }
+      writeBrokerFile(closed ? 'closed' : 'ready');
       fillSlots();
     }).catch(error => recordFailure(error, job.id));
 
     running.set(job.id, { controller, deadlineTimer, promise });
+    try { writeBrokerFile('ready'); } catch (error) { recordFailure(error, job.id); }
   }
 
   function finishWorker(entry, resultFields, workerResult) {
@@ -472,7 +478,6 @@ function createSubagentBroker(options = {}) {
       // Workers have exited before this capability is published. A worker
       // cannot pre-authorize its own incomplete output while still running.
       adoptionToken = crypto.randomBytes(24).toString('hex');
-      writeBrokerFile('ready');
     }
   }
 

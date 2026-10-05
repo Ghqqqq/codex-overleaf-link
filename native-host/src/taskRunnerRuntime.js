@@ -5,6 +5,7 @@ const { buildCodexRuntimeEvent } = require('./codexRuntimeIdentity');
 const { spawn } = require('node:child_process');
 const { normalizeSafeProjectPath } = require('../../extension/src/shared/projectFiles');
 const { createHash } = require('node:crypto');
+const NativeRequestIdentity = require('../../extension/src/shared/nativeRequestIdentity');
 const { buildOperationSummary, splitDeletePlan } = require('../../extension/src/shared/summary');
 const {
   MIN_COMPATIBLE_EXTENSION_VERSION,
@@ -207,6 +208,8 @@ function quotaErrorResponse(id, violation) {
 }
 
 async function handleCodexRun(request, env, emit) {
+  const identity = NativeRequestIdentity.validate(request.id);
+  if (!identity.ok) return errorResponse(request.id, identity.error.code, identity.error.message, identity.error.details);
   let params = request.params || {};
   if (params.writingStyleBuild != null) {
     if (typeof params.writingStyleBuild !== 'object' || Array.isArray(params.writingStyleBuild)) {
@@ -218,7 +221,7 @@ async function handleCodexRun(request, env, emit) {
       useExistingMirror: false,
       fileOverlays: [],
       writingStyle: null,
-      writingStyleBuild: { ...params.writingStyleBuild, requestId: String(request.id || '') }
+      writingStyleBuild: { ...params.writingStyleBuild, requestId: String(request.id) }
     };
   }
   if (isCodexMissing(env)) {
@@ -241,16 +244,14 @@ async function handleCodexRun(request, env, emit) {
   const abortController = new AbortController();
   const lifetime = runLifecycle.register({ controller: abortController, projectKey, rootDir: env.CODEX_OVERLEAF_MIRROR_ROOT });
   const activeEntry = {
-    id: request.id || '',
+    id: request.id,
     projectKey,
     controller: abortController,
     control: null
   };
-  if (request.id) {
-    activeRunControllers.set(request.id, abortController);
-    activeRunEntries.set(request.id, activeEntry);
-    activeRunByProject.set(projectKey, activeEntry);
-  }
+  activeRunControllers.set(request.id, abortController);
+  activeRunEntries.set(request.id, activeEntry);
+  activeRunByProject.set(projectKey, activeEntry);
   let providerResolution;
   try {
     try {
@@ -354,10 +355,10 @@ async function handleCodexRun(request, env, emit) {
     });
     return errorResponse(request.id, 'codex_run_failed', truncateText(error.message, 12000));
   } finally {
-    if (request.id && activeRunControllers.get(request.id) === abortController) {
+    if (activeRunControllers.get(request.id) === abortController) {
       activeRunControllers.delete(request.id);
     }
-    if (request.id && activeRunEntries.get(request.id) === activeEntry) {
+    if (activeRunEntries.get(request.id) === activeEntry) {
       activeRunEntries.delete(request.id);
     }
     if (activeRunByProject.get(projectKey)?.controller === abortController) {
@@ -409,8 +410,8 @@ async function handleCodexSteer(request) {
 }
 
 function findActiveRunEntry(params = {}) {
-  const targetId = String(params.requestId || params.id || '');
-  if (targetId && activeRunEntries.has(targetId)) {
+  const targetId = params.requestId ?? params.id;
+  if (activeRunEntries.has(targetId)) {
     return activeRunEntries.get(targetId);
   }
   const projectKey = String(params.projectKey || '');
@@ -429,11 +430,11 @@ function findActiveRunEntry(params = {}) {
 //      can't punch through a real live run.
 function handleCodexCancel(request, env = process.env) {
   const params = request.params || {};
-  const targetId = params.requestId || params.id;
+  const targetId = params.requestId ?? params.id;
   const projectKey = typeof params.projectKey === 'string' ? params.projectKey : '';
   const force = params.force === true;
 
-  if (targetId && activeRunControllers.has(targetId)) {
+  if (activeRunControllers.has(targetId)) {
     activeRunControllers.get(targetId).abort(createCancellationError());
     return okResponse(request.id, {
       cancelled: true,
@@ -448,7 +449,7 @@ function handleCodexCancel(request, env = process.env) {
       return okResponse(request.id, {
         cancelled: true,
         projectKey,
-        requestId: entry.id || ''
+        requestId: entry.id
       });
     }
     if (processStopBarrier.isBlocked(projectKey, env.CODEX_OVERLEAF_MIRROR_ROOT)) {

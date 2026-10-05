@@ -64,6 +64,8 @@
   }
 
   function evaluateNativeCompatibility(response, metadata = {}) {
+    if (response?.extensionInstallIdentity) metadata = { ...metadata,
+      installIdentity: { ...(metadata.installIdentity || {}), ...response.extensionInstallIdentity } };
     const native = unwrapNativeResponse(response);
     if (!native) {
       return compatibilityResult('native_missing', response, metadata, 'incompatible');
@@ -86,13 +88,25 @@
     return analyzeNativeCompatibility(native, metadata).classification;
   }
 
-  function buildInstallCommand(version = BUILD_TARGET_VERSION, platform, extensionId) {
+  function buildInstallCommand(version = BUILD_TARGET_VERSION, platform, extensionId, options = {}) {
     const normalized = normalizeReleaseVersion(version) || BUILD_TARGET_VERSION;
     const allowedExtensionId = normalizeInstallExtensionId(extensionId);
     const extensionIdArg = allowedExtensionId && allowedExtensionId !== DEFAULT_CHROME_EXTENSION_ID
-      ? ` --extension-id ${allowedExtensionId}`
-      : '';
-
+      ? ` --extension-id ${allowedExtensionId}` : '';
+    if (options.managed === true) {
+      if (!allowedExtensionId || options.extensionId !== allowedExtensionId) return '';
+      const managedRoot = options.managedRoot;
+      const browser = options.browser === 'auto' ? 'chrome' : options.browser;
+      if (!['chrome', 'chromium'].includes(browser) || typeof managedRoot !== 'string'
+        || !managedRoot || managedRoot.length > 4096 || managedRoot.trim() !== managedRoot
+        || /[\u0000-\u001f\u007f]/.test(managedRoot)
+        || !(/^(?:\/|[a-zA-Z]:[\\/]|\\\\)/.test(managedRoot))) return '';
+      // Windows setup commands are shown for PowerShell; POSIX uses sh quoting.
+      const quotedRoot = platform === 'win32' || options.platform === 'win32'
+        ? "'" + managedRoot.replace(/'/g, "''") + "'"
+        : "'" + managedRoot.replace(/'/g, "'\\''") + "'";
+      return `npm exec --yes codex-overleaf-link@${normalized} -- install-managed --browser ${browser} --managed-root ${quotedRoot}${extensionIdArg}`;
+    }
     return `npm exec --yes codex-overleaf-link@${normalized} -- install-native${extensionIdArg}`;
   }
 
@@ -126,7 +140,7 @@
     const extensionVersion = resolveMetadataVersion(metadata);
     const nativeVersion = native && typeof native === 'object' ? native.version : undefined;
     const platform = native && typeof native === 'object' ? native.platform : undefined;
-    const updateCommand = buildInstallCommand(BUILD_TARGET_VERSION, platform, metadata.extensionId);
+    const updateCommand = buildInstallCommand(BUILD_TARGET_VERSION, platform, metadata.extensionId, metadata.installIdentity);
     const updateAvailable = isOlderReleaseVersion(nativeVersion, BUILD_TARGET_VERSION);
     return {
       status,
@@ -139,6 +153,7 @@
       requiredVersion: MIN_COMPATIBLE_NATIVE_VERSION,
       recommendedVersion: BUILD_TARGET_VERSION,
       updateAvailable,
+      ...(metadata.installIdentity ? { installIdentity: metadata.installIdentity } : {}),
       installCommand: updateCommand,
       updateCommand,
       releaseUrl: buildReleaseUrl(BUILD_TARGET_VERSION),

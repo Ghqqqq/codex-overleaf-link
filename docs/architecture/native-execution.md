@@ -73,7 +73,7 @@ Native 的 `emitCodexEvent` 创建 `type/title/status/detail/timestamp`；单调
 ## 3. codex.run 的准入与结果收集
 
 `handleRequest` 先调用信封的 `getRequestQuotaViolation`；超额返回 `native_request_quota_exceeded`，再进入具体方法。
-`handleCodexRun` 检查 Codex 可发现性，派发运行时身份事件，获取项目锁并创建 controller；通过 `nativeRunLifecycle.register` 登记断连收尾，另在 `request.id` 为真值时登记取消/steer 的三个活动索引，再解析执行 Provider。
+`handleCodexRun` 先用共享 `NativeRequestIdentity.validate` 验证请求ID：接受有限数字（含0）或1–160字符的非空字符串；缺失、空串、非有限数字及其他类型在获取项目锁和执行前返回 `native_request_id_invalid`。随后检查Codex可发现性，派发运行时身份事件，持项目锁创建controller；所有已接纳运行均登记取消/steer的三个活动索引及 `nativeRunLifecycle` 断连收尾，再解析Provider。
 Provider revision、地址披露、模型和 Auto 协议协商由 `providerRuntime.resolveRunProviderForRun` 决定，详见 [Provider 与协议](providers-and-protocols.md)。
 普通非 `useExistingMirror` 请求的完整快照或聚焦部分快照须通过 `hasRunnableProjectSnapshotEvidence`；`useExistingMirror` 路径另查 freshness，OT 聚焦复用另查覆盖；有 overlays 时，必须恰好覆盖聚焦路径且内容 SHA-256 与可信 OT-fresh 文本基线一致。获准的 OT overlays 仅作相等证明，不再次写盘；不一致走 `mirror_stale` 回退。
 技能安装和风格生成有独立入口例外，不能把普通项目快照前置条件套到所有运行。
@@ -134,7 +134,7 @@ Provider revision、地址披露、模型和 Auto 协议协商由 `providerRunti
 | 机制 | 当前作用 | 不能推出的保证 |
 | --- | --- | --- |
 | `activeProjectLocks` | `acquireProjectLock/releaseProjectLock` 用 token 防止旧 finally 释放新锁 | 同一进程的 Map 不能证明跨 Native 进程互斥 |
-| `activeRunControllers/activeRunEntries/activeRunByProject` | 对 `request.id` 为真值的普通 codex.run，以 requestId 或 projectKey 定位取消与 steer | 无真值 ID 的运行不进入三个索引；登记表也不包含所有本机子进程 |
+| `activeRunControllers/activeRunEntries/activeRunByProject` | 所有已接纳的codex.run以原类型ID及projectKey登记，取消与steer可定位数值0 | 仅覆盖已接纳的codex.run，未登记全部本机子进程；finally仍按原controller/entry身份清理 |
 | `nativeRunLifecycle` | 每个 codex.run 的独立生命周期登记，断连时中止并等待完成，已启动进程身份用于持久隔离 | 与按 RPC ID 查询的 cancel/steer 索引分开；没有统一登记全部 Native 方法 |
 | `processStopBarrier` | 退出未确认或 transport 收尾期间阻止特定入口继续修改该项目 | 屏障不等于关闭操作系统中的所有相关进程 |
 
@@ -144,8 +144,7 @@ Provider revision、地址披露、模型和 Auto 协议协商由 `providerRunti
 `handleMirrorConfirmWriteback` 将页面已验证文本的 `expectedFiles` 哈希传入 `mirrorWorkspace.confirmWritebackFiles`。全部目标的本地字节与证明一致后才推进基线；缺证明或不匹配时拒绝，由 Content 完整快照同步回退。项目锁协调本桥的请求，无法排他阻止其他本地进程写盘；页面内容证明与锁承担不同约束，详见[镜像与保存确认](auto-edit-undo.md)。
 `handleCodexRun` 在 finally 移除所属活动索引并释放 token 锁，再调用生命周期句柄 `complete()` 结束断连等待。该句柄的 `trackProcess` 由 runner 的 `onProcessStarted` 报告父任务、worker 及写作风格执行中的有效 PID 身份；无进程或无有效 PID 不创建未知屏障。异常停止时即使锁释放，持久屏障仍可独立阻止下次准入。
 
-`Known gap / 静态参数边界`：Native `getRequestQuotaViolation` 限制字符串 ID 长度，却未要求 ID 存在；缺失 ID 或 `id:0` 的请求仍可持锁执行，但其 controller 不进入三个 RPC 活动索引，按项目取消和 steer 无法通过该表找到它。断连收尾另由 `nativeRunLifecycle` 的 Set 登记覆盖，不依赖这些 ID。
-浏览器 [nativeChannel.js](../../extension/src/content/nativeChannel.js) 通常生成 UUID，后台 `sendNativeRequest` 还调用 [nativeRequestIdentity.js](../../extension/src/shared/nativeRequestIdentity.js) 的 `resolve` 补齐或校验 ID；显式 `id:0` 仍按有限数字保留。这些入口行为不能作为 Native 自身要求真值 ID 的证据。该登记缺口由 Native 参数与控制流决定；常规浏览器运行是否会失去登记，仍需验证完整请求链。
+浏览器 [nativeChannel.js](../../extension/src/content/nativeChannel.js) 通常生成UUID，后台 `sendNativeRequest` 使用 [nativeRequestIdentity.js](../../extension/src/shared/nativeRequestIdentity.js) 的 `resolve` 补齐或校验ID；Native直达codex.run使用同模块的 `validate`，不另造请求ID。数字0在响应、活动索引及cancel/steer查找中保持数值类型，字符串ID仍保持字符串类型。该身份约束不提供重复请求去重；断连生命周期仍独立于RPC索引。
 
 ### 取消调用链与回执强度
 
@@ -156,9 +155,10 @@ Native `handleCodexCancel` 命中 controller 后调用 abort，并返回 `{cance
 由此可写为 \(sent \not\Rightarrow cancelled \not\Rightarrow exited\)：各箭头左侧证据不足以推出右侧事实。
 
 无活动 controller 时，`force:true` 仅在项目未被 stop barrier 阻断、且内存锁存在时删除锁；它不执行额外 OS kill。
-“没有登记 controller”不能证明工作已经结束：上述无真值 ID 的运行可继续执行，而 force 分支释放其锁；使用同一项目锁的镜像操作也有独立寿命。锁 token 仅防止旧 finally 删除新锁，不能终止仍在进行的操作。
-`Known gap`：`forceCancelStuckTaskForCurrentProject` 读取 `cancelled/lockReleased` 生成日志，但正常后台取消通道只返回 `sent`；[RunTimelineView](../../extension/src/content/runTimelineView.js) 的恢复按钮又仅按 `result.ok` 显示“已释放”。同一请求可出现“没有发现卡住任务”的日志与“已释放”的按钮状态。
-因此该按钮的文字与调用成功均不足以证明 Native 已释放锁，需核对原运行终态、后续准入及实际进程证据。
+合法ID的codex.run始终有项目controller登记；对仍在执行的运行，force同样请求abort，锁保留至原finally完成，不能因数值0漏登记而提前删除活锁。使用同一项目锁的其他镜像操作有独立寿命；锁token只能防旧finally删除新锁，不能终止进行中的操作。
+
+`forceCancelStuckTaskForCurrentProject` 的日志与 [RunRecoveryActions](../../extension/src/content/runRecoveryActions.js) 的原恢复按钮共用 `formatForceCancelOutcome`。`sent:true`只显示请求已发送、释放尚未确认；`cancelled:true`仅表示取消已接纳，仍需等待停止；只有 `lockReleased:true`可以显示已释放。明确 `cancelled:false`表示没有匹配活动任务，空成功回应保持未确认；错误仍显示失败。正常后台通道继续立即返回sent，没有新增等待Native回执的流程；该显示不能证明进程已经退出。
+正常sent通道下仍需核对原运行终态、后续准入及实际进程证据，不能把请求接纳当作停止完成。
 
 ### 正常完成、失败与取消的有界停止
 
@@ -295,8 +295,8 @@ node scripts/run-tests.mjs test/nativeTransportEnvelope.test.js test/nativeTrans
 ```
 
 `readProgressGuard.test.js` 覆盖用户取消、POSIX 后代进程、Windows taskkill 注入、发信号不算退出等场景，覆盖范围受上表的依赖替换限制。
-`nativeDisconnectSettlement` 检查断连时、停止前建立隔离、drain 与有界退出，含独立进程读取、第二 Host 准入和无真值 requestId 的断连路径；`nativeRunLifecycle` 检查屏障的进程身份与持久失败边界。真实跨重启和跨平台行为仍需集成验证。
-普通运行直达 `skipMirrorSync` 仍缺少专项断言；无真值 ID 的 cancel/steer 索引边界与已有断连覆盖分别判断。`projectLock` 中题为 force-release zombie lock 的用例实际检查无锁及正常取消后的无锁状态，不能作为“有锁但无 controller”删除分支的直接覆盖。
+`nativeDisconnectSettlement` 检查断连时、停止前建立隔离、drain 与有界退出，含独立进程读取、第二 Host 准入和数值0 requestId的断连路径；`nativeRunLifecycle` 检查屏障的进程身份与持久失败边界。真实跨重启和跨平台行为仍需集成验证。
+普通运行直达 `skipMirrorSync` 仍缺少专项断言。[nativeRunControlIdentity.test.js](../../test/nativeRunControlIdentity.test.js) 覆盖数值0、其他合法ID的cancel/steer、活锁保持和无效ID执行前拒绝；[forceCancelOutcome.test.js](../../test/forceCancelOutcome.test.js) 串联实际后台sent与原runtime/按钮投影，区分取消、释放及未知结果。模型control与Chrome I/O采用替身，不代表真实进程退出已验收。`projectLock` 中题为 force-release zombie lock 的用例实际检查无锁及正常取消后的无锁状态，不能作为“有锁但无 controller”删除分支的直接覆盖。
 遗留 `task.run → runExternalAgent` 在 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js) 另走 stdout 整体 JSON/stderr 事件路径，timeout 和 kill 实现独立；修改普通 runner 时须明确是否覆盖它。
 
 ## 9. 边界场景与验证要点
@@ -309,7 +309,7 @@ node scripts/run-tests.mjs test/nativeTransportEnvelope.test.js test/nativeTrans
 4. **只读 RPC 重连与重复请求。** 检查显式重试分类、默认禁止重放和 requestId 关联；当前没有通用的重复请求去重协议。
 5. **匹配的 turn/completed 到页面保存。** 分别检查协议通知 status、runner resolve、差异收集、页面写回、保存、镜像、编译及最终 settlement，避免将某一阶段的完成投影为全部成功。
 6. **完整快照准入与镜像复用。** 沿 `useExistingMirror` 与独立 `skipMirrorSync` 两个字段检查同步和 freshness 条件，并分别验证常规 Content 生成参数与直达 Native 的参数组合。
-7. **没有 controller 时 force 释放项目锁。** 核对 `if(request.id)` 登记条件、镜像操作的锁寿命，以及后台补 ID 与 Native 自身准入的差别；缺少登记不证明持锁操作已结束。
+7. **force与项目锁。** 核对合法ID的活动controller、finally锁token、镜像操作独立寿命和stop barrier；保持已接纳cancel与进程停止的证据差别。
 8. **错误后重发与取消链装配。** 分别检查 app-server 兼容重试、后台传输重试和 Content 业务恢复；按第 8 节确认测试入口、替换依赖及尚缺的集成覆盖。
 9. **后台重建与 journal 淘汰。** 分别检查旧存储记录能否补记 ownerLost，以及淘汰后旧写链是否重新创建记录；内存登记、持久记录和恢复列表的数量与寿命分别取证，见[后台重建与 journal 的寿命](#journal-lifecycle)。
 

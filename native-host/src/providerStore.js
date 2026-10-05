@@ -541,11 +541,16 @@ function normalizeStoredProfile(value) {
   if (!value || typeof value !== 'object' || !normalizeId(value.id)) {
     throw providerError('provider_store_corrupt', 'Provider store contains an invalid profile.');
   }
-  const normalized = normalizeProviderDraft(value);
+  const legacyOutputBudget = value.outputBudgetVersion !== 1
+    && [8192, 32768].includes(Number(value.maxOutputTokens));
+  const normalized = normalizeProviderDraft(legacyOutputBudget ? { ...value, maxOutputTokens: 65536 } : value);
   return {
     id: normalizeId(value.id),
     revision: Math.max(1, normalizeRevision(value.revision)),
     ...normalized,
+    // Keep the old provenance until an explicit upsert persists the new value.
+    // Unrelated mutations must not mark an unmigrated raw record as current.
+    outputBudgetVersion: value.outputBudgetVersion === 1 ? 1 : 0,
     resolvedWireApi: isResolvedWireApi(value.resolvedWireApi) ? value.resolvedWireApi : '',
     endpointDisclosureHost: String(value.endpointDisclosureHost || ''),
     endpointDisclosureBaseUrl: String(value.endpointDisclosureBaseUrl || ''),

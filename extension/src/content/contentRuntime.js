@@ -56,7 +56,12 @@
     'codex.history.clearPlugin',
     'skills.list',
     'skills.install',
-    'skills.remove'
+    'skills.remove',
+    'writing-style.get',
+    'writing-style.set',
+    'codex.thread.fork',
+    'asset.readChunk',
+    'asset.release'
   ]);
   const PageRpcContract = Modules.PageRpcContract;
   const PANEL_DEFAULT_WIDTH = 380;
@@ -64,7 +69,9 @@
   const PANEL_MAX_WIDTH = 760;
   const PAGE_MIN_WIDTH = 520;
   const CodexOverleafCompatibility = Modules.Compatibility;
-  const INSTALL_COMMAND = CodexOverleafCompatibility?.buildInstallCommand?.(
+  const MANAGED_INSTALLATION = chrome.runtime.getManifest?.()?.background?.service_worker === 'bootstrap/background.js'
+    || root.__CODEX_OVERLEAF_RUNTIME_PREFIX__ === 'runtime/';
+  const INSTALL_COMMAND = MANAGED_INSTALLATION ? '' : CodexOverleafCompatibility?.buildInstallCommand?.(
     undefined,
     undefined,
     getCurrentExtensionId()
@@ -773,8 +780,10 @@
     window,
     getSettingsPanelInstance: () => settingsPanelInstance,
     getSelectedModel: () => state?.model || '', getSelectedProviderId: () => state?.providerId || 'builtin',
+    getSelectedProviderRevision: () => state?.providerRevision,
     setSelectedProviderId: projectProviderSelection.commit,
     confirmProviderSwitch: projectProviderSelection.confirmSwitch,
+    assertProviderSwitchAllowed: projectProviderSelection.assertSwitchAllowed,
     refreshModelOptions: loadModelOptions, persistInputs: persistPanelInputs
   });
   // v1.8.1 D3: the dashboard was a one-shot render — another tab finishing a
@@ -1177,7 +1186,8 @@
       version: CodexOverleafCompatibility?.BUILD_TARGET_VERSION ||
         chrome.runtime.getManifest?.().version ||
         '',
-      extensionId: getCurrentExtensionId()
+      extensionId: getCurrentExtensionId(),
+      installIdentity: { managed: MANAGED_INSTALLATION }
     };
   }
 
@@ -1352,29 +1362,27 @@
     PanelRenderer.setVisible(panel, true);
   }
 
-  // One-shot catalog prime: the parallel-subagents broker gate reads
-  // state.codexOverleafSkills at run time. The catalog persists once filled
-  // (v1.6.1), but states saved by older builds have it stripped — without
-  // this prime, the gate stays silently off until the user happens to open
-  // the Skills page. Fire-and-forget on panel open; only fetches when the
-  // catalog is empty.
-  async function primeCodexOverleafSkillsCatalog() {
+  // Panel prefetch and first submission share the same official catalog read.
+  // A required read fails through the existing task-start error presentation.
+  let codexOverleafSkillsCatalogPromise = null;
+  async function primeCodexOverleafSkillsCatalog({ required = false } = {}) {
     if (Array.isArray(state?.codexOverleafSkills) && state.codexOverleafSkills.length) {
-      return;
+      return state.codexOverleafSkills;
     }
-    if (getSkillLoadingSettings().loadCodexOverleafSkills === false) {
-      return;
+    if (!required && getSkillLoadingSettings().loadCodexOverleafSkills === false) return [];
+    if (!codexOverleafSkillsCatalogPromise) {
+      codexOverleafSkillsCatalogPromise = sendBackgroundNative({
+        method: 'skills.list', params: { scope: 'codex-overleaf' }
+      }).then(response => {
+        const skills = Array.isArray(response?.result?.skills) ? response.result.skills : [];
+        if (!response?.ok || !skills.length) throw new Error(tx(
+          'Could not load Codex Overleaf skills. Try again.', '无法加载 Codex Overleaf 技能，请重试。'));
+        state = { ...state, codexOverleafSkills: skills };
+        saveStateSoon();
+        return skills;
+      }).finally(() => { codexOverleafSkillsCatalogPromise = null; });
     }
-    const response = await sendBackgroundNative({
-      method: 'skills.list',
-      params: { scope: 'codex-overleaf' }
-    });
-    const skills = Array.isArray(response?.result?.skills) ? response.result.skills : [];
-    if (!response?.ok || !skills.length) {
-      return;
-    }
-    state = { ...state, codexOverleafSkills: skills };
-    saveStateSoon();
+    return codexOverleafSkillsCatalogPromise;
   }
 
   function closePanel() {
@@ -1728,8 +1736,14 @@
     const submittedSkillLoadingSettings = queuedContext ? queuedContext.skillLoadingSettings : getSkillLoadingSettings();
     const submittedAttachments = queuedInput ? [] : getComposerAttachmentsForRun();
     const submittedSkillInvocation = queuedContext ? queuedContext.skillInvocation : getComposerSkillInvocationForRun();
-    const submittedEnabledSkillIds = queuedContext ? queuedContext.enabledCodexOverleafSkillIds : getEnabledCodexOverleafSkillIds();
+    let submittedEnabledSkillIds = queuedContext ? queuedContext.enabledCodexOverleafSkillIds : getEnabledCodexOverleafSkillIds();
+    const submittedSkillEnabled = { ...state.codexOverleafSkillEnabled };
     const submittedSelectionRevision = selectionContextView.getRevision?.();
+    if (!queuedInput && submittedSkillLoadingSettings.loadCodexOverleafSkills !== false) {
+      const skills = await primeCodexOverleafSkillsCatalog({ required: true });
+      submittedEnabledSkillIds = skills.map(skill => String(skill?.id || '').trim())
+        .filter(id => id && submittedSkillEnabled[id] !== false);
+    }
     // Keep the previous mirror's completion events on its own run.
     const pendingMirror = getPendingMirrorRefresh?.();
     if (pendingMirror) await pendingMirror.catch(() => {});
@@ -2765,7 +2779,12 @@
       },
       run: item => runTask({ queuedInput: item }),
       getGuideScope: () => ({ projectId: getCurrentProjectId(), accountScopeId: cachedAccountScopeId, generation: spaRouteGeneration }),
-      sendSteer: params => sendBackgroundNative({ method: 'codex.steer', params }),
+      isGuideCancelled: () => runCancellationRequested || runCancellationController?.signal?.aborted === true,
+      preflightGuide: ({ task, assertCurrent }) => runSensitivePreflight({
+        task, project: { files: [] }, rules: getGovernanceRulesForCurrentProject(),
+        guidance: true, useExistingMirror: false, assertCurrent
+      }),
+      sendSteer: (params, context) => nativeCompatibilityController.sendBackgroundNative({ method: 'codex.steer', params }, context),
       getContainer: () => panel?.querySelector('[data-pending-inputs]'),
       createView: options => PendingInputView.create(options),
       appendEvent: (title, status) => appendRunEvent({ title, status }),
@@ -2899,25 +2918,8 @@
         force: true
       }
     });
-    if (response?.ok) {
-      const result = response.result || response;
-      const released = result.lockReleased === true || result.cancelled === true;
-      appendPlainLog(released
-        ? tx(
-          `Force-released the stuck Codex run for project ${projectKey}. You can retry now.`,
-          `已强制释放项目 ${projectKey} 的 Codex 占用，可以重试了。`
-        )
-        : tx(
-          `No stuck run was found for project ${projectKey}.`,
-          `没有发现项目 ${projectKey} 上的卡住任务。`
-        ));
-      return response;
-    }
-    const message = response?.error?.message || tx('native host did not respond', 'native host 没有响应');
-    appendPlainLog(tx(
-      `Force-release request was not delivered: ${message}`,
-      `强制释放请求没有送达：${message}`
-    ));
+    appendPlainLog(Modules.RunRecoveryActions.formatForceCancelOutcome(response, tx));
+    if (response?.ok !== true && response?.error?.message) appendPlainLog(response.error.message);
     return response;
   }
 

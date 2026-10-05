@@ -12,20 +12,39 @@
     const tx = options.tx;
     const tr = options.tr;
 
+    let installIdentity = options.getExtensionCompatibilityMetadata?.()?.installIdentity || {};
+    function resolveInstallCommand(compatibility = {}) {
+      const metadata = options.getExtensionCompatibilityMetadata?.() || {};
+      installIdentity = { ...installIdentity, ...(metadata.installIdentity || {}), ...(compatibility.installIdentity || {}) };
+      if (installIdentity.managed) return Compatibility?.buildInstallCommand?.(
+        compatibility.recommendedVersion || Compatibility?.BUILD_TARGET_VERSION,
+        compatibility.native?.platform || compatibility.platform || installIdentity.platform,
+        metadata.extensionId, installIdentity
+      ) || '';
+      return compatibility.updateCommand || compatibility.installCommand || options.installCommand || '';
+    }
+
     function sendNative(payload) {
       return dispatch(payload, 'sendNative');
     }
 
-    function sendBackgroundNative(payload) {
-      return dispatch(payload, 'sendBackgroundNative');
+    function sendBackgroundNative(payload, context = {}) {
+      return dispatch(payload, 'sendBackgroundNative', context);
     }
 
-    async function dispatch(payload, channelMethod) {
-      const compatibilityGate = await ensureForMethod(payload?.method);
-      if (!compatibilityGate.ok) return compatibilityGate.response;
-      // Post-Undo cache bookkeeping must survive the ended run's cancellation.
-      if (gatedMethods.has(payload?.method) && payload.method !== 'mirror.invalidate') {
-        options.throwIfCancellationRequested?.();
+    async function dispatch(payload, channelMethod, context = {}) {
+      let compatibilityGate;
+      try {
+        compatibilityGate = await ensureForMethod(payload?.method, context);
+        if (!compatibilityGate.ok) return compatibilityGate.response;
+        // Post-Undo cache bookkeeping must survive the ended run's cancellation.
+        if (gatedMethods.has(payload?.method) && payload.method !== 'mirror.invalidate') {
+          options.throwIfCancellationRequested?.();
+        }
+        context.assertCurrent?.();
+      } catch (error) {
+        if (context.assertCurrent && error && typeof error === 'object') error.requestDispatched = false;
+        throw error;
       }
       return nativeChannel[channelMethod](
         attachEvidence(payload, compatibilityGate.compatibility)
@@ -46,6 +65,7 @@
       const compatibility = Compatibility?.evaluateNativeCompatibility
         ? Compatibility.evaluateNativeCompatibility(response, metadata)
         : options.fallbackNativeCompatibility(response);
+      const installCommand = resolveInstallCommand(compatibility);
       const allowed = !gatedMethods.has(method) ||
         (Compatibility?.isNativeMethodAllowed
           ? Compatibility.isNativeMethodAllowed(method, compatibility)
@@ -53,14 +73,14 @@
       if (allowed) return { ok: true, compatibility };
 
       const message = formatBlockedMessage(method, compatibility);
-      const installCommand = options.installCommand;
       const error = {
         code: 'native_update_required',
         message,
         status: compatibility.status || 'unknown_native',
         classification: options.getNativeCompatibilityClassification(compatibility),
-        installCommand: compatibility.installCommand || installCommand,
-        updateCommand: compatibility.updateCommand || compatibility.installCommand || installCommand,
+        installIdentity,
+        installCommand,
+        updateCommand: installCommand,
         currentNativeVersion: compatibility.currentNativeVersion
           || compatibility.nativeVersion
           || compatibility.native?.version
@@ -104,6 +124,7 @@
           : {};
         const response = await sendBackgroundNative({ method: 'bridge.ping', params });
         const compatibility = Compatibility.evaluateNativeCompatibility(response, metadata);
+        resolveInstallCommand(compatibility);
         const classification = options.getNativeCompatibilityClassification(compatibility);
         if (classification === 'compatible') {
           options.setBadge?.(renderer.headerEl, { type: 'none' });
@@ -160,9 +181,7 @@
         || compatibility.nativeVersion
         || native.version
         || tx('missing', '未安装');
-      const command = compatibility.updateCommand
-        || compatibility.installCommand
-        || options.installCommand;
+      const command = resolveInstallCommand(compatibility);
       const releaseUrl = compatibility.releaseUrl || '';
       const overlay = options.document.createElement('div');
       overlay.className = 'codex-plugin-confirm';
@@ -195,10 +214,12 @@
             `Extension v${extensionVersion} / Native v${nativeVersion}`,
             `扩展 v${extensionVersion} / Native v${nativeVersion}`
           ),
-        tx(
-          'Run the platform-specific command below, reload the extension, then refresh Overleaf.',
-          '运行下面的平台命令，重新加载扩展，然后刷新 Overleaf。'
-        )
+        !command && installIdentity.managed
+          ? tx('Repair Managed using the original managed root, browser and extension ID with install-managed.',
+            '请使用原管理根目录、浏览器及扩展 ID，通过 install-managed 修复托管安装。')
+          : tx('Run the command below, reload the extension, then refresh Overleaf.', '运行下面的命令，重新加载扩展，然后刷新 Overleaf。')
+            + (installIdentity.managed && (native.platform || installIdentity.platform) === 'win32'
+              ? tx(' Use PowerShell.', ' 请使用 PowerShell。') : '')
       ].join('\n\n');
       const commandCode = options.document.createElement('code');
       commandCode.textContent = command;
@@ -223,7 +244,9 @@
       copy.type = 'button';
       copy.className = 'codex-plugin-confirm-confirm';
       copy.textContent = tx('Copy command', '复制命令');
+      copy.disabled = !command;
       copy.addEventListener('click', async () => {
+        if (!command) return;
         await options.navigator.clipboard.writeText(command);
         copy.textContent = tx('Copied', '已复制');
       });
@@ -239,7 +262,7 @@
         if (event.target === overlay) overlay.remove();
       });
       panel.append(overlay);
-      copy.focus();
+      (command ? copy : close).focus();
     }
 
     function scheduleFirstUseOnboardingTip() {

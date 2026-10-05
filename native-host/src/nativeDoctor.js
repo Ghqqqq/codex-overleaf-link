@@ -10,6 +10,7 @@ const {
   getNativeHostPlatform,
   getNativeHostRegistrationTarget
 } = require('./nativeHostPlatform');
+const { queryWindowsNativeHostRegistration } = require('./nativeHostRegistration');
 const { decodeFrames, encodeMessage } = require('./nativeMessaging');
 const {
   buildBridgePingParams,
@@ -67,6 +68,12 @@ async function runDoctor(options = {}) {
       manifestPath: normalizeDiagnosticPath(registrationTarget.manifestPath, pathOptions)
     }
   };
+
+  if (registrationTarget.kind === 'registry') {
+    const observed = queryWindowsNativeHostRegistration(registrationTarget, { env, spawnSync: options.spawnSync });
+    body.registration = { ...body.registration, ...observed,
+      ...(observed.registeredManifestPath ? { registeredManifestPath: normalizeDiagnosticPath(observed.registeredManifestPath, pathOptions) } : {}) };
+  }
 
   if (runtimeRoot) {
     body.runtimeRoot = runtimeRoot;
@@ -160,6 +167,10 @@ function classifyDoctorResult(body = {}) {
     };
   }
 
+  if (body.registration?.kind === 'registry' && body.registration.verified !== true) {
+    return { exitCode: 2, ok: false, status: 'registration_unverified' };
+  }
+
   if (body.compatibility?.classification === 'compatible') {
     return {
       exitCode: 0,
@@ -197,6 +208,10 @@ function formatDoctorHuman(body = {}) {
   }
   if (body.registration?.registryKey) {
     lines.push(`Registry key: ${body.registration.registryKey}`);
+  }
+  if (body.registration?.kind === 'registry') {
+    lines.push(`Registry discovery: ${body.registration.status || 'unverified'}`);
+    if (body.registration.registeredManifestPath) lines.push(`Registered manifest: ${body.registration.registeredManifestPath}`);
   }
   if (body.bridge?.path) {
     lines.push(`Bridge: ${body.bridge.path}`);

@@ -211,6 +211,7 @@ Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元�
 插件技能 scope 没有按 Overleaf 账号或项目进一步隔离；项目技能则依附具体镜像根。
 
 官方 `annotated-rewrite` 和 `parallel-subagents` 由 `ensureDefaultCodexOverleafSkills()` 补装，删除接口禁止移除官方项。
+面板预取和普通提交共用 [contentRuntime.primeCodexOverleafSkillsCatalog](../../extension/src/content/contentRuntime.js) 的在途 Promise。普通提交启用插件技能且目录尚未读到时，等待所需目录，随后按点击时捕获的逐项开关筛选启用 ID；读取失败或空目录走已有任务启动失败提示，保留输入并停止 Native 任务派发。关闭插件技能的提交不强制读取；队列继续采用入队保存的上下文。已有非空缓存维持原复用边界，未建立运行中的目录快照。[skillsCatalogSubmission](../../test/skillsCatalogSubmission.test.js) 验证首次提交等待、失败、开关与提交归属。
 现有正常 `SKILL.md` 会保留；升级 bundled 文件不自动覆盖该已安装文件。安装接口的覆盖行为与补装行为分别核对。
 安装时的文本和路径校验不审查技能语义，也没有风格画像所用的证据验证和不可变版本发布。
 
@@ -234,9 +235,8 @@ Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元�
 `loadSelectedCodexOverleafSkill()` 按主开关及 enabled IDs 检查显式调用；未提供 enabled IDs 的兼容请求默认允许所有项。
 `composePluginSkillsDirectory()` 不按该 ID 列表筛选整个注册目录；单技能开关的效力不能直接推广为全目录不可发现。
 
-`Known gap`：删除技能涉及持久目录与列表更新、Composer 调用清理两部分。[LocalSkillsPanel.removeCodexOverleafSkill()](../../extension/src/content/localSkillsPanel.js) 在 `skills.remove` 成功后，以 `activeSkill.skillId === id` 判断是否清除当前选择；[contentRuntime.normalizeComposerSkillInvocation()](../../extension/src/content/contentRuntime.js) 实际返回 `{ id, title, scope }`，字段形状不匹配。因此磁盘删除及列表刷新可以成功，输入框上方仍保留该技能标签。
-列表刷新成功后，普通 UI 下一次提交仍可携带该旧 invocation，但 `getEnabledCodexOverleafSkillIds()` 已不再包含它。[localSkills.loadSelectedCodexOverleafSkill()](../../native-host/src/localSkills.js) 将其归为 `codex_overleaf_skill_disabled`；[codexSessionRunner.loadCodexSkillInvocationContext/getEffectiveSkillInvocation](../../native-host/src/codexSessionRunner.js) 发出 ignored 事件并清空有效显式调用。残留标签不证明该技能仍在执行，也不能由此推导发现目录或既有运行已同步清理。
-恢复时，点击 Composer 技能标签旁的 `×`，经 [ComposerPanel](../../extension/src/content/composerPanel.js) 的 `onClearSkillInvocation` 调用 `clearComposerSkillInvocation()` 清除残留选择；列表刷新与标签消失应分别确认。
+删除技能涉及持久目录与列表更新、Composer 调用清理两部分。[LocalSkillsPanel.removeCodexOverleafSkill()](../../extension/src/content/localSkillsPanel.js) 在 `skills.remove` 成功后，以生产 normalizer 的 `{ id, title, scope }` 形状核对当前调用；只有 scope 为 `codex-overleaf` 且 id 与删除目标相同，才执行 `clearComposerSkillInvocation()` 并立即重绘标签。删除失败保留选择；等待期间改选其他技能时，新的选择保持。随后刷新技能列表并保存状态。
+原生 `loadSelectedCodexOverleafSkill()` 仍按主开关、启用 ID 和实际文件存在性过滤显式调用。标签清除不取消已在执行的技能，也不证明整个发现目录或其他进程已经同步清理。Composer 标签旁的 `×` 继续提供原有手动清除入口。
 
 `skill-installer` 是特殊调用：工作目录改为插件技能根、沙箱为 workspace-write、`approvalPolicy: never`，拒绝附件和选区，并返回空项目 sync changes。
 准备 installer 时，`$CODEX_HOME/skills` 映射至持久插件技能目录；风格生成使用独立 staging，不走这条安装路径。
@@ -260,7 +260,7 @@ installer 完成由模型运行结果汇总，当前路径未统一核验是否�
 | 配置保存与异常资产恢复 | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) 的 `get/set/build/saveConfig/writeJson/safeBundleText`；[writingStyleSettings](../../extension/src/content/writingStyleSettings.js) 的 `toggle/ensureLoaded`、[contentRuntime](../../extension/src/content/contentRuntime.js) 的 `runTask` | [writingStyleLimits](../../test/writingStyleLimits.test.js) 仅覆盖输入配额与编码预算；[p2UiRegression](../../test/p2UiRegression.test.js) 的风格依赖为同步刷新 stub。需增加关闭保存后读取失败、索引超限、初始化清理及跨进程竞争的合成故障验证 |
 | 普通技能安装和开关 | `localSkills`、`codexHome`；panel、偏好、runner、command approval | [localSkills](../../test/localSkills.test.js)、[codexHome](../../test/codexHome.test.js)、[contentPanelModules](../../test/contentPanelModules.test.js)、[codexSessionRunner](../../test/codexSessionRunner.test.js)；共享 home 还需覆盖不同项目、worker、风格生成和 installer 交错准备后的路径稳定性与安装持久性 |
 | Codex 配置继承与过滤 | `codexHome.copyUserCodexFile/stripPersonalizationFromCodexConfig/sanitizeCodexConfigForLocalSkillIsolation`；[tomlStatements.splitTomlStatements](../../native-host/src/tomlStatements.js) 负责语句边界，runner 传入技能开关 | [codexConfigIsolation](../../test/codexConfigIsolation.test.js)、[codexHome](../../test/codexHome.test.js)；核对完整值删除、未选字段/文本保留、结构错误时旧配置保持、同 home 分支与等价写法范围 |
-| 删除当前选中的技能 | `LocalSkillsPanel.removeCodexOverleafSkill`、`contentRuntime.normalizeComposerSkillInvocation/clearComposerSkillInvocation/getEnabledCodexOverleafSkillIds`、Native 显式调用过滤 | [contentPanelModules](../../test/contentPanelModules.test.js) 的删除用例令 `getComposerSkillInvocation()` 返回 null，未覆盖生产 `{ id, title, scope }` 形状。需将真实 controller、生产 normalizer 与隔离技能库串联，分别验证磁盘删除、列表刷新、Composer 标签清理和再次提交的 disabled/ignored 结果；浏览器按钮呈现与点击另行验收 |
+| 删除当前选中的技能 | `LocalSkillsPanel.removeCodexOverleafSkill`、`contentRuntime.normalizeComposerSkillInvocation/clearComposerSkillInvocation/getEnabledCodexOverleafSkillIds`、Native 显式调用过滤 | [removedComposerSkill](../../test/removedComposerSkill.test.js) 串联真实 controller、生产 normalizer/标签重绘及临时技能库，覆盖匹配删除、失败、其他技能、installer、等待期间改选及原文件缺失检查；[contentPanelModules](../../test/contentPanelModules.test.js) 保留原删除按钮确认行为。浏览器呈现与实际点击另行验收 |
 
 现有定义覆盖配额、RPC、快照、技能库与安装命令等契约；部分集成 harness 也加载参考模块。
 profile/evidence/build 的专项验证需覆盖 JSON 修复、引用匹配、资产发布及失败恢复，不能仅由配额或 UI 协调用例推导完整生成行为。

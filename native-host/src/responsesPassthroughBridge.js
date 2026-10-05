@@ -103,7 +103,7 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
   const prepared = route === 'responses'
     ? prepareResponsesRequest({ requestBody, launch, history, previous, originalPreviousResponseId })
     : {
-        body: { ...requestBody },
+        body: { ...(launch.bodyOverrides || {}), ...requestBody, previous_response_id: requestBody.previous_response_id },
         currentInput: normalizeInputItems(requestBody.input),
         replayed: false
       };
@@ -176,7 +176,8 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
       }
       lifecycle.touch();
       sanitizeProtocolErrors(response, launch.apiKey, hasDuplicateJsonKeys(text));
-      sendJson(res, 200, response);
+      if (requestBody.stream !== false) writeBufferedResponseAsSse(res, response);
+      else sendJson(res, 200, response);
     }
     if (response?.id) {
       rememberResponse(history, {
@@ -235,7 +236,10 @@ async function handleRequest({ req, res, launch, clientToken, activeRequests, hi
 function prepareResponsesRequest({ requestBody, launch, history, previous, originalPreviousResponseId }) {
   const currentInput = normalizeInputItems(requestBody.input);
   const body = {
+    ...(launch.bodyOverrides || {}),
     ...requestBody,
+    previous_response_id: requestBody.previous_response_id,
+    stream: requestBody.stream !== false && launch.upstreamResponseMode !== 'buffered',
     max_output_tokens: resolveMaxOutputTokens(launch.maxOutputTokens, requestBody.max_output_tokens)
   };
   if (!previous?.continuationRequired) {
@@ -410,6 +414,74 @@ function resolveMaxOutputTokens(configured, requested) {
   const value = Number(configured ?? requested ?? DEFAULT_MAX_OUTPUT_TOKENS);
   if (!Number.isFinite(value) || value <= 0) return DEFAULT_MAX_OUTPUT_TOKENS;
   return Math.max(1, Math.floor(value));
+}
+
+function writeBufferedResponseAsSse(res, response) {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    throw providerError('provider_response_invalid', 'The provider returned an invalid Responses JSON response.');
+  }
+  if (!response.error && !['completed', 'incomplete', 'failed'].includes(response.status)) {
+    throw providerError('provider_response_invalid', 'The buffered Responses request did not return a terminal response.');
+  }
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-store' });
+  let sequence = 0;
+  const emit = (type, detail) => {
+    const frame = `event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: sequence++, ...detail })}\n\n`;
+    if (Buffer.byteLength(frame, 'utf8') > MAX_STREAM_BUFFER_BYTES) {
+      throw providerError('provider_stream_frame_too_large', 'Provider stream frame exceeded the local bridge limit.');
+    }
+    res.write(frame);
+  };
+  if (response.error && !Array.isArray(response.output)) {
+    emit('error', { ...response, type: 'error' });
+    res.end();
+    return;
+  }
+  const pending = { ...response, status: 'in_progress', output: [], usage: null, error: null, incomplete_details: null };
+  emit('response.created', { response: pending });
+  emit('response.in_progress', { response: pending });
+  for (const [output_index, item] of (response.output || []).entries()) {
+    const identity = { item_id: item.id, output_index };
+    const added = { ...item, status: 'in_progress' };
+    if (item.type === 'message') added.content = [];
+    if (item.type === 'reasoning') added.summary = [];
+    if (item.type === 'function_call') added.arguments = '';
+    if (item.type === 'custom_tool_call') added.input = '';
+    emit('response.output_item.added', { output_index, item: added });
+    for (const [content_index, part] of (item.content || []).entries()) {
+      const detail = { ...identity, content_index };
+      const emptyPart = part.type === 'refusal' ? { ...part, refusal: '' }
+        : { ...part, ...(typeof part.text === 'string' ? { text: '' } : {}) };
+      emit('response.content_part.added', { ...detail, part: emptyPart });
+      if (part.type === 'output_text') {
+        if (part.text) emit('response.output_text.delta', { ...detail, delta: part.text, logprobs: [] });
+        emit('response.output_text.done', { ...detail, text: part.text || '', logprobs: [] });
+      } else if (part.type === 'refusal') {
+        if (part.refusal) emit('response.refusal.delta', { ...detail, delta: part.refusal });
+        emit('response.refusal.done', { ...detail, refusal: part.refusal || '' });
+      }
+      emit('response.content_part.done', { ...detail, part });
+    }
+    for (const [summary_index, part] of (item.summary || []).entries()) {
+      const detail = { ...identity, summary_index };
+      emit('response.reasoning_summary_part.added', { ...detail, part: { ...part, text: '' } });
+      if (part.text) emit('response.reasoning_summary_text.delta', { ...detail, delta: part.text });
+      emit('response.reasoning_summary_text.done', { ...detail, text: part.text || '' });
+      emit('response.reasoning_summary_part.done', { ...detail, part });
+    }
+    if (item.type === 'function_call' || item.type === 'custom_tool_call') {
+      const custom = item.type === 'custom_tool_call';
+      const value = custom ? item.input : item.arguments;
+      const event = custom ? 'response.custom_tool_call_input' : 'response.function_call_arguments';
+      if (value) emit(event + '.delta', { ...identity, delta: value });
+      emit(event + '.done', { ...identity, [custom ? 'input' : 'arguments']: value || (custom ? '' : '{}') });
+    }
+    emit('response.output_item.done', { output_index, item });
+  }
+  const status = response.error || response.status === 'failed' ? 'failed'
+    : response.status === 'incomplete' ? 'incomplete' : 'completed';
+  emit('response.' + status, { response });
+  res.end();
 }
 
 async function forwardResponsesSse(upstream, res, onActivity, apiKey) {

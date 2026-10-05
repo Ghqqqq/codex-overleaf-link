@@ -182,7 +182,7 @@
         status: 'failed',
         summary: tx('The extension is not connected to the local service, so it cannot run local Codex or sync the local workspace yet.', '插件没有连上本机服务，所以暂时不能调用本地 Codex 或同步本地 workspace。'),
         nextStep: tx('Make sure the native host is installed, reload the Chrome extension, then try again.', '确认 native host 已安装，并重新加载 Chrome 扩展后再试。'),
-        installCommand: INSTALL_COMMAND,
+        installCommand: compatibility.installCommand ?? INSTALL_COMMAND,
         technical: response?.error?.message || tx('native host did not respond', 'native host 没有响应')
       };
     }
@@ -262,8 +262,10 @@
         subtitle: tx('The extension could not connect to the local service.', '插件没有连上本机服务。'),
         status: 'failed',
         summary: tx('The extension is not connected to the local service, so it cannot run local Codex or sync the local workspace yet.', '插件没有连上本机服务，所以暂时不能调用本地 Codex 或同步本地 workspace。'),
-        nextStep: tx('Make sure the native host is installed, reload the Chrome extension, then try again.', '确认 native host 已安装，并重新加载 Chrome 扩展后再试。'),
-        installCommand: INSTALL_COMMAND,
+        nextStep: compatibility.installIdentity?.managed && !compatibility.installCommand
+          ? tx('Repair Managed using the original managed root, browser and extension ID with install-managed.', '请使用原管理根目录、浏览器及扩展 ID，通过 install-managed 修复托管安装。')
+          : tx('Make sure the native host is installed, reload the Chrome extension, then try again.', '确认 native host 已安装，并重新加载 Chrome 扩展后再试。'),
+        installCommand: compatibility.installCommand ?? INSTALL_COMMAND,
         technical: response?.error?.message || tx('native host did not respond', 'native host 没有响应')
       };
     }

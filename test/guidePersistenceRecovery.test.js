@@ -17,6 +17,8 @@ const Storage = req('extension/src/shared/storageDb.js');
 const Scoped = req('extension/src/content/scopedPersistenceCoordinator.js');
 const Transaction = req('extension/src/shared/scopedPersistenceTransaction.js');
 const Persistence = req('extension/src/content/sessionPersistence.js');
+const Compatibility = req('extension/src/shared/compatibility.js');
+const CompatibilityController = req('extension/src/content/nativeCompatibilityController.js');
 const source = read('extension/src/content/contentRuntime.js');
 const P1 = '111111111111111111111111', P2 = '222222222222222222222222';
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -82,6 +84,15 @@ function setup({ providerGate = false, commitGate = '', storageFailure = false }
     sendBackgroundNative: async request => { logs.native.push(clone(request)); return { ok: true }; }
   });
   c.nativeChannel.getActiveRequestId = () => c.currentRunView?.nativeRequestId || '';
+  c.nativeCompatibilityController = CompatibilityController.create({ compatibility: Compatibility,
+    gatedMethods: new Set(['codex.steer']), getExtensionCompatibilityMetadata: () => ({ version: Compatibility.BUILD_TARGET_VERSION }),
+    getNativeCompatibilityClassification: value => value.classification, tx: en => en, tr: key => key,
+    nativeChannel: { sendBackgroundNative: request => request.method === 'bridge.ping'
+      ? Promise.resolve({ ok: true, result: { version: Compatibility.BUILD_TARGET_VERSION, protocolVersion: 2,
+        supportedProtocol: { min: 1, max: 2 }, minExtensionVersion: '1.0.0',
+        capabilities: Object.fromEntries(Compatibility.REQUIRED_CAPABILITIES.map(key => [key, true])), environment: { codex: { ok: true } } } })
+      : c.sendBackgroundNative(request) }
+  });
   c.window.location.pathname = '/project/' + P1; c.window.location.href = 'https://synthetic.invalid/project/' + P1;
   c.activeProjectId = P1;
   c.window.codexOverleafDeriveAccountScopeId = () => c.cachedAccountScopeId;
@@ -145,7 +156,9 @@ test('normal Guide persists the transition, sends once with original binding, an
   });
   await guideButton(f).click();
   assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0], { requestId: 'native-active', projectKey: P1, threadId: 'thread-A', expectedTurnId: 'turn-A',
+  const { nativeCompatibility, ...sentBinding } = sent[0];
+  assert.equal(nativeCompatibility.classification, 'compatible');
+  assert.deepEqual(sentBinding, { requestId: 'native-active', projectKey: P1, threadId: 'thread-A', expectedTurnId: 'turn-A',
     clientUserMessageId: f.itemId, input: [{ type: 'text', text: 'synthetic queued instruction' }] });
   assert.equal(f.queue.length, 0); assert.equal(storedQueue(f).length, 0); assert.equal(ui(f.container).hidden, true);
   assert.equal(f.logs.guidance.length, 1);

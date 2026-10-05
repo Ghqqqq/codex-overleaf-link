@@ -81,7 +81,7 @@ export function verifyReleaseArtifacts(options = {}) {
     verifyUpdateBundle(path.join(releaseDir, updateBundleName), errors);
   }
   if (options.requireSignature || signaturePresent) {
-    verifyReleaseSignature(releaseDir, errors);
+    verifyReleaseSignature(releaseDir, errors, { version, updateBundleName });
   }
   verifyChecksums(releaseDir, expectedAssets.filter(name => name !== 'SHA256SUMS'), errors);
 
@@ -206,7 +206,7 @@ function verifyKatexFontUrls(css, label, expectedPrefix, errors) {
   }
 }
 
-function verifyReleaseSignature(releaseDir, errors) {
+function verifyReleaseSignature(releaseDir, errors, options = {}) {
   try {
     const manifestBytes = fs.readFileSync(path.join(releaseDir, 'release-manifest.json'));
     const manifest = JSON.parse(manifestBytes.toString('utf8'));
@@ -224,6 +224,13 @@ function verifyReleaseSignature(releaseDir, errors) {
       fs.readFileSync(path.join(releaseDir, 'release-manifest.sig')),
       { channel, tag: manifest.tag }
     );
+    if (options.version && manifest.version !== options.version) throw new Error('Signed release version differs from the candidate.');
+    const bundle = manifest.updateBundle;
+    if (options.updateBundleName && bundle.name !== options.updateBundleName) throw new Error('Signed update bundle name differs from the candidate.');
+    const bundlePath = path.join(releaseDir, bundle.name);
+    if (fs.statSync(bundlePath).size !== bundle.size) throw new Error('Update bundle size differs from the signed manifest.');
+    const digest = crypto.createHash('sha256').update(fs.readFileSync(bundlePath)).digest('hex');
+    if (digest !== bundle.sha256) throw new Error('Update bundle digest differs from the signed manifest.');
   } catch (error) {
     errors.push(`Release manifest signature is invalid: ${error.message}`);
   }
