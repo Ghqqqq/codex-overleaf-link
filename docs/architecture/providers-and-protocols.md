@@ -248,6 +248,7 @@ supportsParallelToolCalls、supportsStreamOptions 等字段也有具体 adapter 
 相关消费符号为 [chatBridgeRequest.js](../../native-host/src/chatBridgeRequest.js) 的 `buildChatRequest`、[anthropicBridgeRequest.js](../../native-host/src/anthropicBridgeRequest.js) 的 `buildAnthropicRequest` 及 [responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js) 的 `prepareResponsesRequest/resolveMaxOutputTokens`；Responses compact 合并允许配置与原 body，不经过普通请求的输出预算覆盖；响应另经 `forwardCompactResponse` 检查。
 Chat 的 [providerReasoning.js](../../native-host/src/providerReasoning.js) `resolveReasoningMaxOutputTokens` 还会对 DeepSeek 的 xhigh/max 抬升预算：\(T_{wire}=\max(T_{launch},65536)\)。
 例如模型配置4096并选择 max，发出的 Chat max_tokens 可变为65536；结合前述 Anthropic 400 修正，配置值不能统一解释为三协议均遵守的硬上限。
+界面仍把该字段称为“Maximum output tokens”。显式配置经Store和launch保持后在这些协议分支被抬升，属于配置含义与实际请求不一致的已知缺口；显式保存修复没有消除它。这里的请求预算与实际生成长度、服务端计费分别取证。
 [providerWireSettings.test.js](../../test/providerWireSettings.test.js) 沿表单捕获、临时 Store 保存/重载、目录与 launch 检查新显式值及旧记录迁移；同时检查旧记录的无关清密钥修改和模型级覆盖。[providerReliability.test.js](../../test/providerReliability.test.js) 保留默认预算、旧未标记目录及 Chat launch 预算优先级的对照。
 
 ## 7. 续传、请求中断与超时
@@ -325,7 +326,7 @@ Anthropic 对特定 HTTP 400 最多修正一次并重新 fetch；普通错误无
 **网络目的地限定**：上述 URL 校验和 `resolveRunProvider` 的披露比较均作用于配置值；三桥没有固定 DNS 解析地址，也没有逐跳重定向目的地校验。
 [Responses](../../native-host/src/responsesPassthroughBridge.js) 和 [Chat](../../native-host/src/chatCompletionsBridge.js) 的 `handleRequest`、[Anthropic](../../native-host/src/anthropicMessagesBridge.js) 的 `fetchWithRectification` 调用 fetch 时未显式设置 redirect 策略，也未在返回后检查最终 URL。
 例如已披露端点返回指向另一主机的307/308，源码没有将下一跳与已披露 hostname/baseUrl 再次比较；不能据端点披露推定每次网络连接都到同一主机或 IP。
-目的地守卫缺失构成当前网络边界的限制；重定向后的正文与不同认证 header 传播、DNS 变化的实际影响仍需受控端点验证，不能仅据守卫缺失判断已发生凭据泄漏。
+不同认证header的传播不能合并判断：在Node 25.8.1内置fetch跟随跨origin 307/308时，三桥的`x-api-key`、`api-key`或自定义专用认证头可继续到达新origin，Bearer `Authorization`则被剥离。同origin重定向保持原用途。该行为可超出已配置端点的凭据范围；真实服务的重定向、DNS/IP变化和服务商内部转发仍需各自取证，不能一并宣称已发生泄漏。
 
 headers/queryParams 通过 credential-like 键名 guard；bodyOverrides 递归检查敏感键，且禁止替换核心协议字段。
 guard 允许 cache key 等例外；`sanitizeProfile` 会复制允许的 headers/query/body 配置，不能将其统称为已脱敏秘密值。

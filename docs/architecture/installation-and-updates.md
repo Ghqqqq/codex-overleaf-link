@@ -101,6 +101,7 @@ Doctor继续读取manifest并直接启动bridge完成ping，因此注册异常�
 [installReleaseSafety.test.js](../../test/installReleaseSafety.test.js)使用注册表与进程替身，覆盖有效、缺失和错误指向在相同健康bridge下的不同结果；[nativeInstallScripts.test.js](../../test/nativeInstallScripts.test.js)保留平台命令及直接桥接测试。真实Windows Chrome发现注册及连接仍需实机验收。
 
 失败恢复的范围需要准确限定：Native 安装/注册抛错时，外层 catch 恢复扩展目录；代码未提供跨所有 Native 指针和系统注册写入的统一回滚事务。
+若注册manifest写入失败发生在Native active指针切换之后，可留下旧扩展与新Native并存的配对；后续`update.check`的管理布局检查会拒绝该失配。较早的复制或指针写入失败有不同结果，应按失败阶段核对。
 因此安装失败后需核查两端标记、指针和注册结果，不能宣称每个失败点都使磁盘自动恢复成原样。
 `selectRunnableVersion()`位于 [managedLauncherRuntime.js](../../native-host/src/managedLauncherRuntime.js)，优先选择 active，缺少入口文件时尝试 previous。
 该 fallback 检查入口文件存在性；它不执行完整健康诊断，也不保证扩展 runtime 与 fallback Native 版本自动匹配。
@@ -195,7 +196,7 @@ Native `getApplyGate()`只检查 `projectLocks`和`runControllers`；生产入�
 | 已进入安装/健康确认 | 前端或Native返回`update_revoke_too_late` | 撤销授权与回滚安装采用不同协议 |
 | 安装结果未知或阶段过期 | `reconcileExpiredPhase()`读取 Native事务、校验身份和磁盘一致性 | 可能确认提交、确认回滚或保持`recoveryPending` |
 | Native重启见`activation_pending` | `recoverAndReadStatus()`恢复为staged | 重新等待协调，不擅自继续旧定时激活 |
-| Native重启见`applying` | 按journal调用`rollbackFiles()`后登记rolled_back | 依赖磁盘恢复成功；异常不能被描述成已回滚 |
+| Native重启见`applying` | 按journal调用`rollbackFiles()`后登记rolled_back | 恢复槽缺失时仍可能返回成功，标签和指针对齐不能代替旧runtime实际恢复 |
 | 协调器处理阶段超时 | `reconcileExpiredPhase()`携带事务身份调用`update.rollback`，核对来源版本并回读`update.status` | 检查安装对齐后才报告恢复完成 |
 | Bootstrap 健康失败 | `rollbackBrokenRuntime()`仅传 reasonCode，收到 Native ok 即写 rolled_back 并重载 | 当前未执行与协调器相同的事务、来源版本及回读核验；Native仅在请求提供相应字段时检查身份 |
 
@@ -210,8 +211,8 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 [updateStateReasonRecovery.test.js](../../test/updateStateReasonRecovery.test.js)串联真实 Native rollback/check、协调器及现有设置消费者，覆盖冷却中的原因/期限保留、双语文字和到期后重新发现更新；文件、网络及浏览器 I/O 为隔离替身。[updateCenter.test.js](../../test/updateCenter.test.js)与[updateConsent.test.js](../../test/updateConsent.test.js)分别保留原恢复装配和视图规则验证。
 
 `supersedeObsoleteJournal()`仅在安装对齐且active版本同时严格高于journal的source和target版本时淘汰旧journal；同target版本重装不满足该条件。
-`installManagedNativeVersion()`保留`native/updates`，完整扩展重装则建立新树。静态恢复反例是旧journal停在`applying`后重装同target：后续`update.status`仍可进入`recoverAndReadStatus()`的`rollbackFiles()`分支，重写source指针及旧manifest，而新扩展树可能已无旧runtime槽。
-该静态恢复路径的实际结果需要故障演练确认；重装不能直接作为账本已清理的证据，应核对journal、指针、manifest与实际runtime内容。
+`installManagedNativeVersion()`保留`native/updates`，完整扩展重装则建立新树。旧journal停在`applying`后重装同target时，后续`update.status`仍可进入`recoverAndReadStatus()`的`rollbackFiles()`分支；新扩展树已无旧runtime槽时，目标runtime可以保留，但manifest、marker和指针被改回source，目标Native版本目录还可能被清理。
+旧`awaiting_health`事务下同target重装也可能缺少恢复槽；Bootstrap健康失败后仍可收到回滚成功应答并重载。`installedAligned`比较布局标签，不能独自证明runtime字节来自所标版本；重装后需分别核对journal、指针、manifest、恢复槽和实际内容。
 
 严格更高且安装对齐的重装会通过`supersedeObsoleteJournal()`结算旧事务的授权：仅当授权为`bound`，且authorization ID、transaction ID、source和target均与旧journal一致时调用`settleAuthorization()`。不同身份、来源或目标的授权，以及尚未绑定的新`authorized`授权均保留；已经`superseded`的旧journal也按相同严格条件补清遗留授权。该处理不改变两小时authorized期限、bound绑定条件或同target重装边界。
 
@@ -249,8 +250,9 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 
 普通`candidate.json`保存原始manifest与签名，304分支会调用`verifySignedReleaseManifest()`重新验证。手动提示的`manual-candidate.json`只保存派生字段；304分支的`readManualCandidate()`检查重装原因、目标版本高于当前版本及所需协议不同，未保存或重新验证签名，也未将缓存ETag与本次请求匹配，`checkedAt`不参与有效期判断。
 因此缓存恢复的说明依赖本地派生数据，首次联网验签的保证不能推广到每次304恢复。[backgroundUpdateCoordinator.js](../../extension/src/backgroundUpdateCoordinator.js) 的 `checkOnly()` 将目标和 `manualInstall.reason` 写入浏览器更新状态；当前面板由 [updateNotice.js](../../extension/src/content/updateNotice.js) 的 `manualUpdateCommand/manualReasonText` 生成重装命令和原因说明。
+缓存失效还存在自然顺序问题：先得到较新版本A的已签名手动重装提示，随后上游latest回到当前版本并返回新的ETag B，200分支返回`up_to_date`，协调器转为`idle`并记录ETag B，但保留旧manual缓存；下一次304(B)仍可恢复A的旧提示及固定版本复制命令。该路径不要求修改本地缓存，问题在于缓存与当前检查结果、ETag没有绑定。
 该缓存用于手动操作提示；`stageCandidate()`仍从`candidate.json`读取原始manifest与签名，执行验签、协议及下载字节校验。手动提示缓存的验证缺口不能作为staging签名校验被绕过的证据。
-[updateManualInstall.test.js](../../test/updateManualInstall.test.js)覆盖首次签名候选、后续304保留提示及重装后的版本判断；缓存内容损坏、ETag不匹配、检查时间过旧与UI目标命令的组合需另行覆盖。
+[updateManualInstall.test.js](../../test/updateManualInstall.test.js)覆盖首次签名候选、后续304保留提示及重装后的版本判断；缓存内容损坏、ETag不匹配、检查时间过旧与UI目标命令的组合尚未纳入该正式测试，维护时需补充对应回归。
 
 `checkForUpdate()`另有RC晋升例外：已安装标记为`prerelease`且最新stable具有相同数字版本时，返回`prerelease_promotion_requires_manual_update`、`available: false`，需要手动重装，不能按数字版本相等认定stable内容已经加载。
 `backgroundUpdateCoordinator.checkOnly()`将该专用原因映射到已有`manual_install_required`状态并保留code；`updateConsent.deriveViewModel()`仅在这个原因下允许目标与运行版本相同的重装提示，其他手动候选仍要求目标版本更高。

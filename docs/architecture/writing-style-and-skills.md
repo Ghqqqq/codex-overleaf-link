@@ -182,7 +182,7 @@ TeX 引用正文也有约 60,000 字符及 80 个文件遍历界限；目录与�
 输出资产另受 [writingStyleRuntime.safeBundleText()](../../native-host/src/writingStyleRuntime.js) 的单文件 `text.length <= 800000` 限制；这里按 JavaScript 字符串长度计数，与输入的 UTF-8 字节配额不同。
 `build()` 将全部 documents（包括正文及逐行 origins）序列化到 `references/source-index.json`，发布前未调用同一消费校验。
 出处路径逐行重复会放大索引：例如三份各约 3,000 行、每行 20 字符、出处路径约 100 字符的 TeX，仅正文加重复路径就约为 \(3\times3000\times(20+100)=1{,}080{,}000\) 字符，尚未计 JSON 字段。
-该估算说明合规输入可能生成超限资产，实际输出大小需用合成资料验证。普通 `get()` 仍可能返回 ready，而 `forRun()` 的全资产检查及 `prepareSources()` 的 saved 来源复用会在读取该索引时拒绝。
+短行与重复长出处路径可使符合输入配额的参考资料生成超限索引；发布本身仍可完成，普通 `get()` 也可返回 ready，而 `forRun()` 的全资产检查及 `prepareSources()` 的 saved 来源复用会在读取该索引时拒绝。输入预算、发布成功和消费可用性因此需要分别检查。
 `Known gap`：发布前缺少与消费层一致的全资产可读性及大小检查；正文采样上限不能单独证明版本包可消费。
 
 Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元数据。

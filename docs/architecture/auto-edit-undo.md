@@ -24,7 +24,7 @@
 
 运行归属可记为 $I=(projectId,sessionId,runId)$；持久化恢复记录还带 `accountScopeId`。
 首次执行按提交配置运行；后续 Undo 仍绑定原项目，并从原运行记录决定 Track 语义。
-恢复入口需逐字段核对：显式 Retry sync 保留恢复意图中的 Track，但自动编译当前会回退面板设置，具体例外见第 7 节。
+恢复入口需逐字段核对：显式 Retry sync 保留恢复意图中的 Track，自动编译优先使用原执行快照中的有效布尔值；旧记录缺少该值时才回退当前面板设置，详见第 7 节。
 详细会话与持久化路线见 [运行状态与恢复](run-state-and-recovery.md)。
 
 **当前实现的边界。** [pageRpcContract](../../extension/src/shared/pageRpcContract.js) 的 `METHODS` 声明每个 RPC 的身份策略。
