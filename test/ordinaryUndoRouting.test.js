@@ -17,6 +17,9 @@ const snapshotCodec = require('../extension/src/shared/runExecutionSnapshotCodec
 const reviewControllerModule = require('../extension/src/content/runReviewController');
 const panelStateModule = require('../extension/src/content/scopedPersistencePanelState');
 const FailureReasons = require('../extension/src/shared/failureReasons');
+const I18n = require('../extension/src/shared/i18n');
+const Activity = require('../extension/src/shared/runActivityModel');
+const Notice = require('../extension/src/content/runFailureNotice');
 const directoryRecoveryModule = require('../extension/src/content/directoryCleanupRecovery');
 const { extractFunction } = require('./_helpers/extractFunction');
 
@@ -173,6 +176,20 @@ function createHarness(spec = {}) {
       state.status = currentRun.trackedChangeStatus || currentRun.undoStatus;
     }
   };
+  if (spec.displayLocale) {
+    context.tr = (key, values) => I18n.t(spec.displayLocale, key, values);
+    context.tx = (en, zh) => spec.displayLocale === 'zh' ? zh : en;
+    const formatting = { window: {} };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../extension/src/content/applyResultFormatters.js'), 'utf8'), formatting);
+    context.formatBridgeResultReason = formatting.window.CodexOverleafApplyResultFormatters.create({
+      i18n: I18n, FailureReasons, getLocale: () => spec.displayLocale, tr: context.tr, tx: context.tx
+    }).formatBridgeResultReason;
+    const eventDeps = { findRunRecord: () => currentRun, Modules: { RunActivityModel: Activity }, MAX_RUN_EVENTS: 300,
+      sanitizeAssistantVisibleText: value => String(value || ''), sanitizeAssistantVisibleValue: value => value,
+      saveStateSoon() {}, panel: null };
+    context.appendRunRecordEvent = Function(...Object.keys(eventDeps),
+      extractFunction(runtimeSource, 'appendRunRecordEvent') + '; return appendRunRecordEvent')(...Object.values(eventDeps));
+  }
   // Bind the production facade to its new owner; only storage I/O remains synthetic.
   vm.createContext(context);
   let controller;
@@ -321,6 +338,109 @@ test('ordinary Undo refuses a file with another pending native change', async ()
   await h.undo();
   assert.equal(h.state.result.skipped[0].result.code, 'native_untracked_undo_pending_changes');
   assertUnchanged(h);
+});
+
+function displayUndoFailure(run, locale) {
+  const node = () => ({ children: [], dataset: {}, value: '',
+    set textContent(value) { this.value = String(value); this.children = []; },
+    get textContent() { return this.value + this.children.map(child => child.textContent).join(' '); },
+    append(...children) { this.children.push(...children); }, setAttribute() {} });
+  const tr = (key, values) => I18n.t(locale, key, values);
+  const report = node(); report.dataset.status = 'failed';
+  Notice.create({ document: { createElement: node }, tr,
+    projectRunSettlement: settlementModule.projectRunSettlement }).append(report, {}, run);
+  const summarySource = fs.readFileSync(path.join(__dirname, '../extension/src/content/runActivitySummary.js'), 'utf8');
+  const timelineSource = fs.readFileSync(path.join(__dirname, '../extension/src/content/runTimelineView.js'), 'utf8');
+  const formatting = { window: {} };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../extension/src/content/applyResultFormatters.js'), 'utf8'), formatting);
+  const formatters = formatting.window.CodexOverleafApplyResultFormatters.create({
+    i18n: I18n, FailureReasons, getLocale: () => locale, tr, tx: (en, zh) => locale === 'zh' ? zh : en
+  });
+  const production = (name, deps) => Function(...Object.keys(deps), extractFunction(timelineSource, name) + '; return ' + name)(...Object.values(deps));
+  const localeDeps = { I18n, tr, localizeVisibleReason: formatters.localizeVisibleReason, localizeCompileReason: String };
+  const projectEvent = production('sanitizeRunEventForRender', {
+    ...localeDeps, localizeProductActivity: production('localizeProductActivity', localeDeps),
+    sanitizeAssistantVisibleText: String, sanitizeAssistantVisibleValue: value => value,
+    stripEmptyHtmlCommentPlaceholders: String
+  });
+  const format = Function('FailureReasons', 'getLocale', 'tr',
+    extractFunction(timelineSource, 'formatReviewResultFailure') + '; return formatReviewResultFailure')(FailureReasons, () => locale, tr);
+  const lines = Function('plain', 'projectReviewResultEvent', 'formatReviewResultFailure',
+    extractFunction(summarySource, 'reviewResultLines') + '; return reviewResultLines')(String, projectEvent, format);
+  const event = run.events.find(value => value.failure);
+  return { notice: report.children[0].children[1].textContent,
+    details: lines({ kind: 'notice', meta: {}, event }), event };
+}
+
+for (const locale of ['en', 'zh']) test('pending native changes explain ordinary Undo refusal through Page, content, storage and display: ' + locale, async () => {
+  const h = createHarness({ displayLocale: locale,
+    files: [{ path: 'main.tex', before: 'a', post: 'ab', changes: [{ id: 'unrelated', op: { p: 0, d: 'x' } }] }] });
+  const checkpoint = JSON.stringify([h.run.undoOperations, h.run.undoBaseFiles, h.run.undoExpectedFiles]);
+  await h.undo();
+  assertUnchanged(h);
+  const result = h.state.result.skipped[0].result;
+  assert.match(result.reason, /unresolved tracked changes/i);
+  assert.equal(result.failure.code, 'tracked_changes_remain');
+  assert.equal(result.failure.retryable, true);
+  assert.equal(result.failure.changedDocument, false);
+  assert.equal(result.failure.terminalState, 'blocked');
+  assert.equal(h.run.undoStatus, 'partial');
+  assert.equal(JSON.stringify([h.run.undoOperations, h.run.undoBaseFiles, h.run.undoExpectedFiles]), checkpoint);
+  const restored = persistAndRestoreRun(h.run);
+  for (const run of [h.run, restored]) for (const activeLocale of ['en', 'zh', 'en']) {
+    const expected = 'main.tex: ' + (activeLocale === 'en'
+      ? 'This file has unresolved tracked changes. Undo without track changes was stopped to preserve them; no document changes were made.'
+      : '此文件仍有未处理的留痕改动。为保留这些改动，本次无留痕撤销已停止，文档未改动。');
+    const display = displayUndoFailure(run, activeLocale);
+    assert.equal(display.event.failure.code, 'tracked_changes_remain');
+    assert.equal(display.event.failure.evidence.originalCode, 'native_untracked_undo_pending_changes');
+    assert.equal(display.notice, expected);
+    assert.deepEqual(display.details, [expected]);
+  }
+  h.docs.get('main.tex').changes = [];
+  await h.undo(restored);
+  assert.equal(h.state.status, 'applied', 'the retained checkpoint remains retryable once pending changes are resolved');
+  assert.equal(h.docs.get('main.tex').text, 'a');
+});
+
+test('other native Undo guards never imply pending tracked changes', async () => {
+  for (const spec of [{ ledgerUnavailable: true }, { snapshot: { requireReviewing: true, source: 'submitted' } }]) {
+    const h = createHarness({ ...spec, displayLocale: 'en' });
+    await h.undo();
+    assertUnchanged(h);
+    for (const run of [h.run, persistAndRestoreRun(h.run)]) for (const locale of ['en', 'zh']) {
+      const ui = displayUndoFailure(run, locale);
+      assert.doesNotMatch(ui.notice + ui.details.join(' '), /unresolved tracked changes|此文件仍有未处理的留痕改动/);
+    }
+  }
+});
+
+test('only exact unmutated pending-change evidence survives compact settlement display', () => {
+  const pending = 'native_untracked_undo_pending_changes';
+  const generic = 'The native tracked-change scope could not be safely isolated. No review mutation was attempted. Use Overleaf Review to handle the changes individually.';
+  const base = { code: 'tracked_changes_remain', stage: 'reviewing', severity: 'blocked', terminalState: 'blocked',
+    retryable: true, changedDocument: false, userMessage: generic, file: 'main.tex' };
+  for (const [evidence, extra, expected] of [
+    [{ originalCode: pending }, {}, true],
+    [{}, {}, false],
+    [{ originalCode: 'native_ledger_not_ready' }, {}, false],
+    [{ originalCode: pending, writeStarted: true }, {}, false],
+    [{ originalCode: pending }, { changedDocument: true }, false],
+    [{ originalCode: pending }, { mayHaveMutated: true }, false]
+  ]) {
+    const failure = { ...base, evidence: { ...evidence, privatePayload: 'must-not-persist' }, ...extra };
+    const facts = settlementModule.compactSettlementFacts({ failures: [failure] });
+    assert.equal(facts.failures[0].evidence?.originalCode === pending, expected);
+    assert.equal(facts.failures[0].evidence?.privatePayload, undefined);
+    for (const input of [failure, facts.failures[0]]) for (const locale of ['en', 'zh']) {
+      const ui = FailureReasons.formatFailureReasonForDisplay(input, locale, key => I18n.t(locale, key));
+      assert.equal(/unresolved tracked changes|此文件仍有未处理的留痕改动/.test(ui.message), expected);
+      if (expected) assert.equal(ui.nextAction, I18n.t(locale, 'failureReason_' + pending + '_next'));
+    }
+    assert.equal(facts.failures[0].code, base.code);
+    assert.equal(facts.failures[0].retryable, true);
+    assert.equal(facts.failures[0].terminalState, 'blocked');
+  }
 });
 
 test('ordinary Undo refuses an unavailable native ledger', async () => {

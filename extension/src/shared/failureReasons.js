@@ -644,7 +644,8 @@
     'accept_replay_rollback_missing_content', 'review_scope_unavailable', 'review_request_unverified',
     'review_owner_disconnected', 'review_deadline_exceeded', 'review_cancelled',
     'review_project_changed', 'tracked_change_not_found', 'snapshot_undo_current_mismatch',
-    'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'file_tree_controls_unavailable'
+    'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'file_tree_controls_unavailable',
+    'native_untracked_undo_pending_changes'
   ]);
   const REVIEW_DISPLAY_TEMPLATES = [
     ['governance_readonly', 'Project governance marked this path read-only, so Codex did not write it.'],
@@ -783,8 +784,11 @@
   function recoverDisplayFailure(failure, allowFilePrefix = true) {
     if (!failure || typeof failure !== 'object') return failure;
     const originalCode = failure.evidence?.originalCode;
-    const explicitCode = REVIEW_DISPLAY_CODES.has(originalCode) ? originalCode
-      : REVIEW_DISPLAY_CODES.has(failure.code) ? failure.code : '';
+    const displayCodeAllowed = code => REVIEW_DISPLAY_CODES.has(code)
+      && (code !== 'native_untracked_undo_pending_changes'
+        || (failure.changedDocument !== true && failure.mayHaveMutated !== true && failure.evidence?.writeStarted !== true));
+    const explicitCode = displayCodeAllowed(originalCode) ? originalCode
+      : displayCodeAllowed(failure.code) ? failure.code : '';
     const message = String(failure.userMessage || '');
     for (const { code, pattern } of REVIEW_DISPLAY_TEMPLATES) {
       if (explicitCode && code !== explicitCode) continue;

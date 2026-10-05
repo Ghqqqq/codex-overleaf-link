@@ -213,6 +213,9 @@
         operationType: text(item.operationType).slice(0, 80),
         changedDocument: item.changedDocument === true,
         ...(item.mayHaveMutated === true ? { mayHaveMutated: true } : {}),
+        ...(item.evidence?.originalCode === 'native_untracked_undo_pending_changes'
+          && item.changedDocument !== true && item.mayHaveMutated !== true && item.evidence.writeStarted !== true
+          ? { evidence: { originalCode: 'native_untracked_undo_pending_changes' } } : {}),
         terminalState: normalizeTerminalState(item.terminalState)
       }));
   }

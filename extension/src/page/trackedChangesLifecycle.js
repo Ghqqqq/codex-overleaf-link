@@ -6,7 +6,6 @@
   }
 })(typeof window !== 'undefined' ? window : globalThis, function trackedChangesLifecycleFactory(Replay, ReviewContext) {
   'use strict';
-
   function create(deps = {}) {
     const base = createCore(deps);
     const run = (method, params) => ReviewContext.create(deps, params).run((scoped, input) => createCore(scoped)[method](input));
@@ -51,7 +50,6 @@
     const { buildAcceptReplayOperations, rebaseCheckpointPair, prepareSnapshotUndoCheckpoints, buildSnapshotUndoResult } = Replay.create({
       normalizeSafeProjectPath, applyTextPatches
     });
-
   function openFileByPath(path, ...options) {
     if (path !== getActiveFilePath()) rememberTrackedChangeNodeContext(getActiveFilePath());
     return openReviewFileByPath(path, ...options);
@@ -60,6 +58,8 @@
   function nativeReviewBlocked(path, code, applied = [], requestStarted = false) {
     const reason = requestStarted
       ? 'The native review request could not be fully verified; some target changes may already be accepted. No text replay was attempted. Check Overleaf Review before retrying.'
+      : code === 'native_untracked_undo_pending_changes'
+      ? 'This file has unresolved tracked changes. Undo without track changes was stopped to preserve them; no document changes were made.'
       : 'The native tracked-change scope could not be safely isolated. No review mutation was attempted. Use Overleaf Review to handle the changes individually.';
     return { ok: false, applied, skipped: [{ trackedChange: { path }, result: {
       ok: false, code, reason, failure: {
