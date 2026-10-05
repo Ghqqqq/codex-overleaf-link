@@ -85,9 +85,9 @@ test('diagnostics render in a floating result panel instead of the task transcri
   assert.doesNotMatch(nativeBody, /appendLog\(/);
   assert.doesNotMatch(pageBody, /appendLog\(/);
   assert.doesNotMatch(snapshotBody, /appendLog\(/);
-  assert.match(nativeBody, /beginDiagnostics\(tr\('diagnosticsNativeTitle'\)/);
-  assert.match(pageBody, /beginDiagnostics\(tr\('diagnosticsPageTitle'\)/);
-  assert.match(snapshotBody, /beginDiagnostics\(tr\('diagnosticsSnapshotTitle'\)/);
+  assert.match(nativeBody, /beginDiagnostics\('diagnosticsNativeTitle'/);
+  assert.match(pageBody, /beginDiagnostics\('diagnosticsPageTitle'/);
+  assert.match(snapshotBody, /beginDiagnostics\('diagnosticsSnapshotTitle'/);
   // Each check builds its structured result via its formatter and renders it
   // through the request guard (the collectOnly path returns it for Run all).
   assert.match(nativeBody, /formatNativeEnvironmentResult/);
@@ -144,18 +144,18 @@ test('experimental OT diagnostics read metadata without draining project content
   );
   const menuBody = diagnosticsPanel.match(/function bindStaticActions\(instance\) \{[\s\S]*?\n  \}/)?.[0] || '';
   const inspectBody = extractFunction(diagnosticsController, 'inspectOtWarmMirrorDiagnostics');
-  const formatBody = diagnosticsController.match(/function formatOtDiagnosticsResult\(\{ otStatus, mirrorStatus \}\) \{[\s\S]*?\n  function /)?.[0] || '';
+  const formatBody = diagnosticsController.match(/function formatOtDiagnosticsResult\(\{ otStatus, mirrorStatus, context = \{\} \}\) \{[\s\S]*?\n  function /)?.[0] || '';
   const technicalBody = diagnosticsController.match(/function formatOtDiagnosticsTechnicalDetails\(metadata = \{\}\) \{[\s\S]*?\n  function formatOtChannelCandidates/)?.[0] || '';
 
   assert.match(menuBody, /\[data-diagnostics-ot\]/);
   assert.match(menuBody, /onOtDiagnostics/);
-  assert.match(inspectBody, /beginDiagnostics\(tr\('diagnosticsOtTitle'\)/);
+  assert.match(inspectBody, /beginDiagnostics\('diagnosticsOtTitle'/);
   assert.match(inspectBody, /callPageBridge\('getOtStatus'/);
   assert.match(inspectBody, /getMirrorFreshness\(\)/);
   assert.doesNotMatch(inspectBody, /drainOtEvents/);
   // The metadata result is built from formatOtDiagnosticsResult and rendered
   // (or returned for Run all via collectOnly).
-  assert.match(inspectBody, /formatOtDiagnosticsResult\(\{ otStatus, mirrorStatus \}\)/);
+  assert.match(inspectBody, /formatOtDiagnosticsResult\(\{ otStatus, mirrorStatus, context \}\)/);
   assert.match(inspectBody, /showCurrentDiagnosticsResult\(request, result\)/);
   assert.match(inspectBody, /status:\s*'warning'/);
   assert.doesNotMatch(inspectBody, /'warnings:'/);
@@ -168,7 +168,7 @@ test('experimental OT diagnostics read metadata without draining project content
   assert.match(formatBody, /channelCandidates/);
   assert.match(formatBody, /diagnosticsOtSummaryEnabled/);
   assert.match(formatBody, /diagnosticsOtSummaryDisabled/);
-  assert.match(formatBody, /const focusFiles = getActiveFocusFiles\(\)/);
+  assert.match(formatBody, /const focusFiles = context\.focusFiles \|\| getActiveFocusFiles\(\)/);
   assert.match(formatBody, /otWarmMirrorController\?\.canUseOtWarmStart\?\.\(\{\s*enabled,\s*focusFiles,\s*mirrorStatus\s*\}\)/);
   assert.match(formatBody, /otWarmStart\?\.ok !== true/);
   assert.doesNotMatch(formatBody, /otFreshFileCount <= 0/);

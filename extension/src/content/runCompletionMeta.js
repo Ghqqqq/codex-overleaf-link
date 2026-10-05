@@ -1,7 +1,7 @@
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.CodexOverleafModuleRegistry.define('RunCompletionMeta', [], factory);
-})(typeof window !== 'undefined' ? window : globalThis, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('../shared/failureReasons'), require('../shared/i18n'), require('../shared/agentTranscript'));
+  else root.CodexOverleafModuleRegistry.define('RunCompletionMeta', ['FailureReasons', 'I18n', 'AgentTranscript'], factory);
+})(typeof window !== 'undefined' ? window : globalThis, function (FailureReasons, I18n, AgentTranscript) {
   'use strict';
 
   const FLAT_REPORT_STATUS_SECTIONS = [
@@ -11,6 +11,122 @@
     { key: 'undo', prefixes: ['Undo:', '可撤销：'], en: 'Undo', zh: '可撤销' },
     { key: 'nextStep', prefixes: ['Next:', '下一步：'], en: 'Next', zh: '下一步' }
   ];
+
+  // Reports persist the language used when the run finished. Re-project only
+  // product-owned metadata; model conclusions and custom reasons stay intact.
+  const META_COPY = {
+    unchangedReason: [
+      ['This run was Ask mode.', '这轮是只问不改。'],
+      ['You cancelled this change.', '你取消了这轮修改。'],
+      ['No file changes need to sync back to Overleaf.', '没有产生需要同步回 Overleaf 的文件改动。'],
+      ['No approved file changes remain to sync back to Overleaf.', '没有剩余已确认的文件改动需要同步回 Overleaf。']
+    ],
+    undo: [['this run has no reversible writes', '本轮没有可撤销的写入']],
+    saveState: [['Saved', '已确认保存'],
+      ['Pending confirmation; check save status', '待确认，可检查保存状态']],
+    nextStep: [
+      ['Review the skipped items in this report, then retry after resolving them.', '请查看本轮报告中的跳过项，处理后可以重试。'],
+      ['Resolve the issue above, then retry.', '请处理上面的原因后重试。'],
+      ['You can continue asking, or add more @context and run another check.', '可以继续追问，或加入更多 @context 后再检查。'],
+      ['Review these tracked changes in Overleaf.', '请在 Overleaf 中查看这些文件的留痕修改。'],
+      ['You can continue the conversation, or adjust @context and run again.', '可以继续追问，或调整 @context 后重新运行。'],
+      ['The first queued follow-up will start next.', '接下来会自动启动队首的后续任务。'],
+      ['Edit the task and run again.', '可以修改任务后重新运行。'],
+      ['Continue the conversation, or switch to Auto to let Codex edit files.', '可以继续追问，或切换到自动写入后让 Codex 修改文件。'],
+      ['Switch to Auto only when you want Codex to edit files.', '只有希望 Codex 修改文件时，才需要切换到自动写入。'],
+      ['Review the synced file in Overleaf.', '请在 Overleaf 中查看同步后的文件。'],
+      ['Check Overleaf manually before running again. Local mirror refresh and auto compile were skipped.', '再次运行前请先手动检查 Overleaf。本地 mirror 刷新和自动编译已跳过。'],
+      ['Switch Overleaf to Reviewing/Track Changes manually and rerun, or turn off Track before writing.', '请在 Overleaf 手动切到 Reviewing/Track Changes 后重新运行，或关闭“留痕”再写入。'],
+      ['The main agent must review and adopt the withheld files before syncing them.', '主代理需核对并接管未同步文件后再写回。'],
+      ['Select the intended region again and request only changes within it. Valid written parts can be undone.', '请重新选择目标范围，仅请求修改该范围。已写入的合法部分可撤销。'],
+      ['Reload the Overleaf project or reopen the .tex file you want to process, then retry.', '请刷新 Overleaf 项目或重新打开要处理的 .tex 文件后再试。'],
+      ['Retry with an explicit target such as @file:main.tex and the exact section to edit; if this repeats, open Technical Details.', '请带上明确目标重试，例如 @file:main.tex 和具体要修改的小节；如果重复出现，请打开 Technical Details。'],
+      ['Restart Codex Overleaf or start a new run if the installed skill is not visible immediately.', '如果新安装的 skill 没有立刻出现，请重启 Codex Overleaf 或开始新一轮运行。'],
+      ['If files still need to be deleted, rerun and confirm deletion separately.', '如果仍需要删除文件，请重新运行并单独确认删除。'],
+      ['Expand the write result, review the skipped reasons, then retry after fixing them.', '请展开写入结果查看跳过原因，处理后可以重试。'],
+      ['Adjust the task description and run again.', '可以调整任务描述后重新运行。'],
+      ['Continue the conversation or run the next task.', '可以继续追问，或运行下一项任务。']
+    ]
+  };
+
+  let errorNextSteps;
+  const errorNextStepTemplates = [];
+  function localizeErrorNextStep(value, tx) {
+    if (!errorNextSteps) {
+      errorNextSteps = new Map();
+      const add = pair => {
+        if (!pair.every(text => typeof text === 'string' && text)) return;
+        if (pair.every(text => text.includes('{file}'))) {
+          for (const template of pair) {
+            const parts = template.split('{file}');
+            if (parts.length === 2) errorNextStepTemplates.push({ pair,
+              pattern: new RegExp('^' + parts.map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('([^\\r\\n]*?)') + '$') });
+          }
+        }
+        for (const text of pair) if (!errorNextSteps.has(text)) errorNextSteps.set(text, pair);
+      };
+      // Reuse the producer's own bilingual copy rather than maintain another
+      // translation catalog. Only exact, known next-step prose is accepted.
+      for (const key of Object.keys(I18n?.MESSAGES?.en || {})) {
+        if (/^failureReason_.+_next$/.test(key)) add([I18n.MESSAGES.en[key], I18n.MESSAGES.zh[key]]);
+      }
+      const catalog = FailureReasons?.FAILURE_CODE_CATALOG || {};
+      for (const [code, entry] of Object.entries(catalog)) {
+        const key = `failureReason_${code}_next`;
+        const pair = [I18n?.MESSAGES?.en?.[key], I18n?.MESSAGES?.zh?.[key]];
+        if (entry.fallbackNextAction && pair.every(Boolean)) errorNextSteps.set(entry.fallbackNextAction, pair);
+      }
+      const legacyInputs = ['Mode must be "ask" or "auto"', 'Agent returned invalid JSON',
+        'Could not parse Codex output', 'timed out', 'output limit exceeded',
+        'unsupported_parameter reasoning.summary', 'quota', 'checkpoint', 'changed while Codex was working'];
+      if (AgentTranscript?.translateRawError) {
+        for (const message of [...Object.keys(catalog), ...legacyInputs]) {
+          add(['en', 'zh'].map(locale => AgentTranscript.translateRawError(message, { locale }).nextStep));
+        }
+        add(['en', 'zh'].map(locale => AgentTranscript.translateRawError('', { locale, codexReturned: true }).nextStep));
+      }
+    }
+    const pair = errorNextSteps.get(value);
+    if (pair) return tx(...pair);
+    for (const entry of errorNextStepTemplates) {
+      const match = entry.pattern.exec(String(value || ''));
+      if (match) return tx(...entry.pair).replace('{file}', () => match[1]);
+    }
+    return value;
+  }
+
+  function localizeMetaRow(row, options) {
+    if (!row || typeof row !== 'object') return row;
+    const entry = FLAT_REPORT_STATUS_SECTIONS.find(item => item.key === row.key);
+    if (!entry) return row;
+    const { tx } = options;
+    let value = row.value;
+    const pair = (META_COPY[row.key] || []).find(values => values.includes(value));
+    if (pair) value = tx(...pair);
+    if (row.key === 'nextStep') value = localizeErrorNextStep(value, tx);
+    if (row.key === 'writeResult') {
+      const counts = /^(?:已写入 (\d+) 项，跳过 (\d+) 项|wrote (\d+) items?, skipped (\d+) items?)$/.exec(String(value || ''));
+      if (counts) {
+        const written = Number(counts[1] ?? counts[3]), skipped = Number(counts[2] ?? counts[4]);
+        value = tx(`wrote ${written} item${written === 1 ? '' : 's'}, skipped ${skipped} item${skipped === 1 ? '' : 's'}`,
+          `已写入 ${written} 项，跳过 ${skipped} 项`);
+      }
+    }
+    if (row.key === 'undo') {
+      const count = /^(?:可撤销本轮 (\d+) 项写入|this run has (\d+) reversible writes?)$/.exec(String(value || ''));
+      if (count) {
+        const n = Number(count[1] ?? count[2]);
+        value = tx(`this run has ${n} reversible write${n === 1 ? '' : 's'}`, `可撤销本轮 ${n} 项写入`);
+      }
+    }
+    if (['nextStep', 'unchangedReason'].includes(row.key) && options.getLocale && options.tr) {
+      value = FailureReasons?.localizeFailureMessage?.(value, options.getLocale(), key => {
+        const translated = options.tr(key);
+        return translated === key ? undefined : translated;
+      }) ?? value;
+    }
+    return { ...row, label: tx(entry.en, entry.zh), value };
+  }
 
   function splitFlatCompletionReport(text, tx = value => value) {
     const raw = typeof text === 'string' ? text : '';
@@ -34,11 +150,50 @@
     return { body: bodySections.join('\n\n'), meta };
   }
 
+  function projectCompletionBody(body, tx = value => value) {
+    if (typeof body !== 'string' || !body) return body;
+    const sections = [['Checked', '检查范围'], ['Findings', '发现'], ['Planned changes', '计划修改'],
+      ['Changes', '修改'], ['Skipped', '跳过原因']];
+    let rest = body, previous = -1, language;
+    const projected = [];
+    while (rest) {
+      let found;
+      for (let index = previous + 1; index < sections.length && !found; index++) {
+        for (const locale of [0, 1]) {
+          const prefix = sections[index][locale] + (locale ? '：\n' : ':\n');
+          if ((language === undefined || locale === language) && rest.startsWith(prefix)) {
+            found = { index, locale, prefix }; break;
+          }
+        }
+      }
+      if (!found) return body;
+      language = found.locale;
+      previous = found.index;
+      rest = rest.slice(found.prefix.length);
+      const heading = tx(sections[previous][0] + ':', sections[previous][1] + '：');
+      // Skipped is the producer's final section and may contain arbitrary
+      // multiline model/error prose. Its entire payload remains opaque.
+      if (previous === sections.length - 1) {
+        if (!/^- [^\r\n]+/.test(rest)) return body;
+        projected.push(heading + '\n' + rest);
+        return projected.join('\n\n');
+      }
+      const boundary = rest.indexOf('\n\n');
+      const items = boundary < 0 ? rest : rest.slice(0, boundary);
+      if (!/^- [^\r\n]+(?:\n- [^\r\n]+)*$/.test(items)) return body;
+      projected.push(heading + '\n' + items);
+      if (boundary < 0) return projected.join('\n\n');
+      rest = rest.slice(boundary + 2);
+      if (!rest) return body;
+    }
+    return body;
+  }
+
   function projectCompletionMeta(meta, run, options) {
     const { tx, trackedChangeInFlight, isTrackedChangeLifecycleRun, projectRunSettlement } = options;
     if (!Array.isArray(meta) || !run) return meta;
     const undone = run.undoStatus === 'applied' || run.trackedChangeStatus === 'rejected';
-    const rows = (undone ? meta.filter(row => row?.key !== 'saveState') : meta)
+    const rows = (undone ? meta.filter(row => row?.key !== 'saveState') : meta).map(row => localizeMetaRow(row, options))
       .filter(row => row?.key !== 'recoveryRetention' && row?.key !== 'directoryObservation');
     const pending = run.pendingDirectoryCleanup;
     if (!run.forkSnapshot && pending?.v === 1 && pending.runId === run.id
@@ -162,5 +317,5 @@
     return { facts, open: attention, warnKeys };
   }
 
-  return { splitFlatCompletionReport, projectCompletionMeta, summarizeCompletionMeta };
+  return { splitFlatCompletionReport, projectCompletionBody, projectCompletionMeta, summarizeCompletionMeta };
 });

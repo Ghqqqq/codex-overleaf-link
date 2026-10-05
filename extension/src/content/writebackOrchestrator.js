@@ -766,12 +766,13 @@
         }
         return buildPostWriteCompileSummary({ result, logResult });
       } else {
-        const reason = result?.reason || tx('unknown reason', '未知原因');
+        const reason = CompileAdapter.localizeCompileReason(result?.reason, getLocale()) || tx('unknown reason', '未知原因');
         appendRunEvent({ title: tx(`Post-write compile did not succeed: ${reason}`, `写后编译未成功：${reason}`), status: 'failed', activity: activity('failed', reason) });
         return buildPostWriteCompileSummary({ result });
       }
     } catch (error) {
-      appendRunEvent({ title: tx(`Post-write compile failed: ${error.message}`, `写后编译出错：${error.message}`), status: 'failed', activity: activity('failed', error.message) });
+      const reason = CompileAdapter.localizeCompileReason(error.message, getLocale());
+      appendRunEvent({ title: tx(`Post-write compile failed: ${reason}`, `写后编译出错：${reason}`), status: 'failed', activity: activity('failed', reason) });
       return buildPostWriteCompileSummary({ error });
     }
   }
@@ -814,9 +815,10 @@
         )
         : tx('Post-write compile was triggered; Overleaf may still be updating the result.', '已触发写后编译；Overleaf 可能仍在更新结果。');
     } else if (compileSummary.status === 'failed') {
+      const reason = compileAdapter.localizeCompileReason(compileSummary.reason, getLocale());
       summary = tx(
-        `Post-write compile check failed: ${compileSummary.reason || 'unknown reason'}`,
-        `写后编译检查失败：${compileSummary.reason || '未知原因'}`
+        `Post-write compile check failed: ${reason || 'unknown reason'}`,
+        `写后编译检查失败：${reason || '未知原因'}`
       );
     } else {
       summary = tx(

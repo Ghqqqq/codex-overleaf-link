@@ -253,7 +253,7 @@
       }
       const option = document.createElement('option');
       option.value = id;
-      option.textContent = model.label;
+      option.textContent = model.unverified && model.label === `${id} (custom)` ? tx(`${id} (custom)`, `${id}（自定义）`) : model.label;
       option.dataset.reasoningEfforts = normalizeReasoningEffortsForSelect(model.reasoningEfforts).join(',');
       option.dataset.defaultReasoningEffort = model.defaultReasoningEffort || '';
       option.dataset.reasoningPresentation = model.reasoningPresentation || '';
@@ -271,7 +271,7 @@
     if (selectedId && !renderedSelected && options.allowUnknownSelected !== false) {
       const option = document.createElement('option');
       option.value = selectedId;
-      option.textContent = `${selectedId} (custom)`;
+      option.textContent = tx(`${selectedId} (custom)`, `${selectedId}（自定义）`);
       option.dataset.reasoningEfforts = '';
       option.dataset.defaultReasoningEffort = '';
       option.dataset.reasoningPresentation = 'none';
@@ -372,7 +372,7 @@
     for (const option of Array.from(reasoningSelect.options || [])) {
       list.append(createModelConfigChoice({
         value: option.value,
-        label: option.textContent || formatReasoningEffortLabel(option.value, reasoningSelect.dataset.presentation),
+        label: formatReasoningEffortLabel(option.value, reasoningSelect.dataset.presentation),
         datasetName: 'reasoningChoice'
       }));
     }
@@ -386,6 +386,7 @@
     }
     list.textContent = '';
     for (const option of Array.from(modelSelect.options || [])) {
+      if (option.dataset.unverified === 'true' && [`${option.value} (custom)`, `${option.value}（自定义）`].includes(option.textContent)) option.textContent = tx(`${option.value} (custom)`, `${option.value}（自定义）`);
       const choice = createModelConfigChoice({
         value: option.value,
         label: option.textContent || option.value,

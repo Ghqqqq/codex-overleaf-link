@@ -48,6 +48,8 @@ test('builds a loadable managed extension with stable Bootstrap and replaceable 
     assert.equal(fs.existsSync(path.join(root, 'bootstrap/update.html')), true);
     assert.equal(fs.existsSync(path.join(root, 'bootstrap/update.css')), true);
     assert.equal(fs.existsSync(path.join(root, 'bootstrap/update.js')), true);
+    assert.equal(fs.readFileSync(path.join(root, 'bootstrap/popupFallback.js'), 'utf8'),
+      fs.readFileSync(path.join(__dirname, '../extension/bootstrap/popupFallback.js'), 'utf8'));
     const marker = JSON.parse(fs.readFileSync(path.join(root, EXTENSION_MARKER), 'utf8'));
     assert.equal(marker.bootstrapProtocol, BOOTSTRAP_PROTOCOL);
   } finally {

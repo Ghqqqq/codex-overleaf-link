@@ -7,9 +7,14 @@
     if (!Profiles || !Dialog?.create) {
       throw new Error('Provider settings require explicit profile and dialog dependencies.');
     }
+    const statusTranslations = new Map();
+    const translate = options.tx || (english => english);
     const instance = {
       Profiles,
-      tx: options.tx || ((english) => english),
+      tx: (english, chinese) => {
+        statusTranslations.set(english, [english, chinese]); statusTranslations.set(chinese, [english, chinese]);
+        return translate(english, chinese);
+      },
       sendBackgroundNative: options.sendBackgroundNative,
       getSettingsPanelInstance: options.getSettingsPanelInstance || (() => null),
       getSelectedModel: options.getSelectedModel || (() => ''),
@@ -44,6 +49,7 @@
     instance.dialog = Dialog.create({
       document: options.document || document,
       tx: instance.tx,
+      translateStatusText: text => statusTranslations.has(text) ? translate(...statusTranslations.get(text)) : text,
       ProviderProfiles: Profiles,
       callbacks: {
         hasCurrentProject: instance.hasCurrentProject,
@@ -63,6 +69,7 @@
       open: () => open(instance),
       refreshSummary: () => refreshSummary(instance),
       renderSummary: () => updateSettingsSummary(instance),
+      refreshLocale: () => instance.dialog.refreshLocale?.(),
       ensureLoaded: () => ensureLoaded(instance),
       getRunSelection: providerId => instance.loaded
         ? Profiles.buildRunSelection(instance.catalog, providerId || instance.getSelectedProviderId())
@@ -679,6 +686,23 @@
       provider_revision_conflict: instance.tx('This provider changed in another tab. Reload it and retry.', '此模型服务已在其他标签页发生变化，请刷新后重试。'),
       provider_protocol_negotiation_required: instance.tx('The Auto protocol could not be negotiated for this model.', '无法为此模型自动协商 API 协议。')
     };
+    Object.assign(messages, {
+      provider_store_busy: instance.tx('Provider settings are being updated by another Native Host. Retry shortly.', '其他 Native Host 正在更新模型服务设置，请稍后重试。'),
+      provider_store_too_large: instance.tx('Provider settings exceed the storage limit. Reduce the configuration and retry.', '模型服务设置超过存储上限，请精简配置后重试。'),
+      provider_store_unavailable: instance.tx('Provider settings could not be read or saved. Check the local service and retry.', '无法读取或保存模型服务设置，请检查本机服务后重试。'),
+      provider_store_corrupt: instance.tx('Stored provider settings are inconsistent or invalid. Repair the local configuration before retrying.', '已存储的模型服务设置不一致或无效，请修复本机配置后重试。'),
+      provider_not_found: instance.tx('The selected provider no longer exists. Refresh the provider list.', '所选模型服务已不存在，请刷新服务列表。'),
+      provider_dns_failed: instance.tx('The provider hostname could not be resolved. Check the endpoint and network.', '无法解析模型服务域名，请检查端点和网络。'),
+      provider_tls_failed: instance.tx('A secure connection to the provider could not be established. Check the endpoint certificate.', '无法与模型服务建立安全连接，请检查端点证书。'),
+      provider_rate_limited: instance.tx('The provider is rate limiting requests. Retry later.', '模型服务已限制请求频率，请稍后重试。'),
+      provider_model_not_configured: instance.tx('The selected model is not configured for this provider.', '当前模型服务未配置所选模型。'),
+      provider_selection_unavailable: instance.tx('The selected provider or model is unavailable. Review the project selection.', '所选模型服务或模型不可用，请检查当前项目的选择。'),
+      provider_disclosure_required: instance.tx('Confirm the provider endpoint before activation.', '启用前请确认模型服务端点。'),
+      provider_secret_invalid: instance.tx('The API key change could not be accepted. Review the key settings.', '无法接受此次 API 密钥变更，请检查密钥设置。'),
+      provider_model_catalog_unavailable: instance.tx('The provider model catalog could not be loaded. Retry shortly.', '无法加载模型服务的模型目录，请稍后重试。'),
+      native_unavailable: instance.tx('The local service is unavailable. Check the Native Host connection.', '本机服务不可用，请检查 Native Host 连接。'),
+      provider_request_failed: instance.tx('The provider operation failed. Review the settings and retry.', '模型服务操作失败，请检查设置后重试。')
+    });
     return messages[code] || error?.message || instance.tx('Provider operation failed.', '模型服务操作失败。');
   }
 

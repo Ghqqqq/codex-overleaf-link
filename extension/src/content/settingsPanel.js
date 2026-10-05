@@ -338,6 +338,7 @@
       setSkillsSummary: text => setSkillsSummary(instance, text),
       setProviderSummary: summary => setProviderSummary(instance, summary),
       refreshNotes: () => updateGovernanceNotes(instance),
+      refreshLocale: () => instance.workbench?.refresh(),
       destroy: () => destroy(instance),
       _instance: instance
     };

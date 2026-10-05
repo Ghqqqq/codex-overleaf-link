@@ -615,13 +615,191 @@
     return out;
   }
 
-  // Older builds classified these Page codes as unknown. Their explicit
-  // original code can select display copy without changing stored semantics.
-  function recoverDisplayFailureCode(failure) {
-    const code = failure?.evidence?.originalCode;
-    if (failure?.code !== 'unknown_legacy_failure'
-      || !['snapshot_undo_current_mismatch', 'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'tracked_change_not_found', 'file_tree_controls_unavailable'].includes(code)) return failure;
-    return { ...failure, code };
+  // Display projection only: these aliases and exact historical templates do
+  // not enter the canonical catalog, persistence, retry or recovery decisions.
+  const REVIEW_DISPLAY_CODES = new Set([
+    'missing_tracked_changes', 'tracked_change_file_open_failed', 'tracked_change_reject_control_not_found',
+    'tracked_change_reject_not_confirmed', 'tracked_change_accept_control_not_found', 'tracked_change_accept_not_confirmed',
+    'tracked_change_editor_undo_open_failed', 'tracked_change_editor_undo_current_mismatch', 'editor_undo_control_not_found',
+    'editor_undo_no_progress', 'editor_undo_max_iterations', 'tracked_change_undo_max_iterations',
+    'tracked_change_undo_verify_open_failed', 'tracked_change_undo_verify_failed', 'accept_missing_run_content',
+    'accept_editor_undo_unavailable', 'accept_editing_not_confirmed', 'accept_editing_not_stable',
+    'accept_replay_rollback_missing_content', 'review_scope_unavailable', 'review_request_unverified',
+    'review_owner_disconnected', 'review_deadline_exceeded', 'review_cancelled',
+    'review_project_changed', 'tracked_change_not_found', 'snapshot_undo_current_mismatch',
+    'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'file_tree_controls_unavailable'
+  ]);
+  const REVIEW_DISPLAY_TEMPLATES = [
+    ["missing_tracked_changes", "这轮写入没有可识别的 Overleaf 留痕记录；为避免制造新的红线，Codex 没有执行文本补丁撤销。"],
+    ["missing_tracked_changes", "No matching Overleaf tracked-change records were found for this run, so Codex did not undo with text patches."],
+    ["missing_tracked_changes", "No matching Overleaf tracked-change records were found for this run. Codex did not undo with text patches."],
+    ["missing_tracked_changes", "这轮写入没有可识别的 Overleaf 留痕记录；Codex 没有执行文本补丁撤销。"],
+    ["tracked_change_file_open_failed", "无法打开 {file} 来查找这轮写入的留痕记录；Codex 没有用文本补丁伪撤销。"],
+    ["tracked_change_file_open_failed", "无法打开 {file} 来继续拒绝这轮留痕记录；请在 Overleaf 审阅面板手动处理。"],
+    ["tracked_change_file_open_failed", "Could not open {file} to find this run's tracked changes. Handle them manually in the Overleaf review tools."],
+    ["tracked_change_file_open_failed", "Could not open the file to find this run's tracked changes. Handle them manually in the Overleaf review tools."],
+    ["tracked_change_file_open_failed", "Could not open the file to find this run's tracked changes. Check it in the Overleaf review panel."],
+    ["tracked_change_file_open_failed", "无法打开文件来查找这轮写入的留痕记录；请在 Overleaf 审阅面板检查。"],
+    ["tracked_change_reject_control_not_found", "找到了这轮写入的留痕记录，但没有找到对应的 Reject/拒绝按钮；Codex 没有用文本补丁伪撤销。"],
+    ["tracked_change_reject_control_not_found", "还有 {file} 的留痕记录未处理，但没有找到对应的 Reject/拒绝按钮；请在 Overleaf 审阅面板手动拒绝。"],
+    ["tracked_change_reject_control_not_found", "Some tracked changes in {file} remain, but the matching Reject button was not found. Reject them manually in Overleaf."],
+    ["tracked_change_reject_control_not_found", "Some tracked changes remain, but the matching Reject button was not found. Reject them manually in Overleaf."],
+    ["tracked_change_reject_control_not_found", "Some tracked changes remain, but the matching Reject button was not found. Check them in the Overleaf review panel."],
+    ["tracked_change_reject_control_not_found", "仍有留痕记录未处理，但未找到对应的拒绝按钮；请在 Overleaf 审阅面板检查。"],
+    ["tracked_change_reject_not_confirmed", "Codex 点击了 Reject/拒绝，但 Overleaf 页面仍显示这条留痕记录；请在 Overleaf 审阅面板手动拒绝。"],
+    ["tracked_change_reject_not_confirmed", "Codex clicked Reject, but Overleaf still shows this tracked change. Reject it manually in the Overleaf review panel."],
+    ["tracked_change_reject_not_confirmed", "Codex clicked Reject, but Overleaf still shows this tracked change. Check it in the Overleaf review panel."],
+    ["tracked_change_reject_not_confirmed", "Codex 已点击拒绝，但 Overleaf 仍显示该留痕记录；请在审阅面板检查。"],
+    ["tracked_change_accept_control_not_found", "Some tracked changes in {file} remain, but the matching Accept button was not found. Accept them manually in Overleaf."],
+    ["tracked_change_accept_control_not_found", "Some tracked changes remain, but the matching Accept button was not found. Accept them manually in Overleaf."],
+    ["tracked_change_accept_control_not_found", "Some tracked changes remain, but the matching Accept button was not found. Check them in the Overleaf review panel."],
+    ["tracked_change_accept_control_not_found", "仍有留痕记录未处理，但未找到对应的接受按钮；请在 Overleaf 审阅面板检查。"],
+    ["tracked_change_accept_not_confirmed", "Codex clicked Accept, but Overleaf still shows this tracked change. Accept it manually in the Overleaf review panel."],
+    ["tracked_change_accept_not_confirmed", "Codex clicked Accept, but Overleaf still shows this tracked change. Check it in the Overleaf review panel."],
+    ["tracked_change_accept_not_confirmed", "Codex 已点击接受，但 Overleaf 仍显示该留痕记录；请在审阅面板检查。"],
+    ["tracked_change_editor_undo_open_failed", "无法打开 {file} 来执行 Overleaf 原生撤销。"],
+    ["tracked_change_editor_undo_open_failed", "Could not open {file} for Overleaf native undo."],
+    ["tracked_change_editor_undo_open_failed", "Could not open the file for Overleaf native undo."],
+    ["tracked_change_editor_undo_open_failed", "Could not open the file for Overleaf native Undo."],
+    ["tracked_change_editor_undo_open_failed", "无法打开文件来执行 Overleaf 原生撤销。"],
+    ["tracked_change_editor_undo_current_mismatch", "{file} 当前内容已经不是本轮写入后的内容；为避免撤掉你的后续修改，Codex 不使用 Overleaf 原生撤销。"],
+    ["tracked_change_editor_undo_current_mismatch", "{file} no longer matches this run's written content, so Codex did not use Overleaf native undo."],
+    ["tracked_change_editor_undo_current_mismatch", "The current content no longer matches this run's written content, so Codex did not use Overleaf native undo."],
+    ["tracked_change_editor_undo_current_mismatch", "The current content no longer matches this run's written content. Codex stopped native Undo to preserve later edits."],
+    ["tracked_change_editor_undo_current_mismatch", "当前内容与本轮写入后的内容不一致；Codex 已停止原生撤销，以保留后续编辑。"],
+    ["editor_undo_control_not_found", "没有找到 Overleaf 编辑器自己的 Undo/撤销按钮，无法一次性撤销 {file} 的本轮留痕。"],
+    ["editor_undo_control_not_found", "Could not find Overleaf's editor Undo button to undo this run in {file}."],
+    ["editor_undo_control_not_found", "Could not find Overleaf's editor Undo button to undo this run."],
+    ["editor_undo_control_not_found", "未找到 Overleaf 编辑器的撤销按钮，无法撤销本轮改动。"],
+    ["editor_undo_no_progress", "Codex 点击了 Overleaf Undo/撤销，但 {file} 内容没有变化。"],
+    ["editor_undo_no_progress", "Codex clicked Overleaf Undo, but {file} did not change."],
+    ["editor_undo_no_progress", "Codex clicked Overleaf Undo, but the file did not change."],
+    ["editor_undo_no_progress", "Codex 已点击 Overleaf 撤销，但文件内容没有变化。"],
+    ["editor_undo_max_iterations", "{file} 经过多次 Overleaf 原生撤销后仍未回到本轮写入前内容，已停止以避免撤销其它修改。"],
+    ["editor_undo_max_iterations", "{file} did not return to its pre-run content after repeated Overleaf native undo steps. Codex stopped to avoid undoing other edits."],
+    ["editor_undo_max_iterations", "The file did not return to its pre-run content after repeated Overleaf native undo steps. Codex stopped to avoid undoing other edits."],
+    ["editor_undo_max_iterations", "The file did not return to its pre-run content after repeated native Undo steps. Codex stopped to avoid undoing other edits."],
+    ["editor_undo_max_iterations", "经过多次原生撤销后，文件仍未恢复到本轮写入前的内容；Codex 已停止，以免撤销其他编辑。"],
+    ["tracked_change_undo_max_iterations", "{file} 仍有未完成的留痕记录；Codex 已停止以避免误拒绝其它改动。"],
+    ["tracked_change_undo_max_iterations", "{file} still has tracked changes after the reject sweep, so Codex stopped to avoid mis-rejecting other edits."],
+    ["tracked_change_undo_max_iterations", "{file} still has tracked changes after the per-expected-file reject sweep, so Codex stopped to avoid mis-rejecting other edits."],
+    ["tracked_change_undo_max_iterations", "{file} still has tracked changes left. Codex stopped to avoid rejecting unrelated edits."],
+    ["tracked_change_undo_max_iterations", "Tracked changes are still left. Codex stopped to avoid rejecting unrelated edits."],
+    ["tracked_change_undo_max_iterations", "仍有未处理的留痕记录；Codex 已停止，以免误拒绝其他编辑。"],
+    ["tracked_change_undo_verify_open_failed", "撤销后无法打开 {file} 验证内容；请刷新 Overleaf 后检查。"],
+    ["tracked_change_undo_verify_open_failed", "Could not open {file} after undo to verify content. Reload Overleaf and check manually."],
+    ["tracked_change_undo_verify_open_failed", "Could not open the file after undo to verify content. Reload Overleaf and check manually."],
+    ["tracked_change_undo_verify_open_failed", "Could not open the file after Undo to verify its content. Reload Overleaf and check it."],
+    ["tracked_change_undo_verify_open_failed", "撤销后无法打开文件验证内容；请刷新 Overleaf 后检查。"],
+    ["tracked_change_undo_verify_failed", "{file} 拒绝留痕后内容没有回到写入前状态；请在 Overleaf 审阅面板检查这轮修改。"],
+    ["tracked_change_undo_verify_failed", "{file} did not return to its pre-run content after rejecting tracked changes. Check this run's changes in the Overleaf review panel."],
+    ["tracked_change_undo_verify_failed", "The file did not return to its pre-run content after rejecting tracked changes. Check this run's changes in the Overleaf review panel."],
+    ["tracked_change_undo_verify_failed", "拒绝留痕后，文件内容仍未恢复到写入前状态；请在 Overleaf 审阅面板检查本轮修改。"],
+    ["accept_missing_run_content", "这轮写入没有可识别的写入前/写入后内容；Codex 没有把留痕改动接受为永久文本。"],
+    ["accept_missing_run_content", "{file} 缺少写入前/写入后内容；Codex 没有重放本轮改动。"],
+    ["accept_missing_run_content", "The pre-write or post-write content is unavailable. Codex did not replay or accept the tracked changes."],
+    ["accept_missing_run_content", "缺少写入前或写入后的内容；Codex 未重放或接受留痕改动。"],
+    ["accept_editor_undo_unavailable", "没有可执行的 Overleaf 原生撤销或安全快照回滚来清掉本轮留痕；Codex 没有接受这轮改动。"],
+    ["accept_editor_undo_unavailable", "Native Undo and a safe checkpoint rollback are unavailable. Codex did not accept this run."],
+    ["accept_editor_undo_unavailable", "原生撤销及安全的检查点回滚均不可用；Codex 未接受本轮改动。"],
+    ["accept_editing_not_confirmed", "无法确认 Overleaf 已切换到 Editing 模式；Codex 没有把本轮改动重写为永久文本。"],
+    ["accept_editing_not_confirmed", "切换后仍未能确认 Overleaf 处于 Editing 模式；为避免重写又留下留痕，Codex 没有重放本轮改动。"],
+    ["accept_editing_not_confirmed", "本次操作前未能确认 Overleaf 处于 Editing 模式；为避免重写又留下留痕，Codex 没有继续重放本轮剩余改动。"],
+    ["accept_editing_not_confirmed", "Codex could not re-confirm Editing mode before replaying {file}; Codex stopped to avoid landing a tracked write."],
+    ["accept_editing_not_confirmed", "Codex could not confirm Editing mode for the untracked Accept replay, so the run was not finalized."],
+    ["accept_editing_not_confirmed", "Codex could not switch Overleaf to Editing mode for the untracked Accept replay, so the run was not finalized."],
+    ["accept_editing_not_confirmed", "Codex toggled Overleaf to Editing, but the post-toggle state did not positively confirm Editing — Codex did not replay the run."],
+    ["accept_editing_not_confirmed", "Codex could not confirm Overleaf Editing mode. It stopped replaying this run to avoid creating new tracked changes."],
+    ["accept_editing_not_confirmed", "无法确认 Overleaf 已进入编辑模式；Codex 已停止重放本轮改动，以免产生新的留痕。"],
+    ["accept_editing_not_stable", "Overleaf Editing mode did not remain stable long enough for an untracked Accept All replay; Codex did not replay this write."],
+    ["accept_editing_not_stable", "Overleaf Editing mode did not remain stable long enough for an untracked Accept replay. Codex did not replay this write."],
+    ["accept_editing_not_stable", "Overleaf 编辑模式未保持稳定，无法无留痕地重放接受的改动；Codex 未重放此次写入。"],
+    ["accept_replay_rollback_missing_content", "Accept All detected fresh tracked changes, but could not roll back because the pre/post content was unavailable."],
+    ["accept_replay_rollback_missing_content", "Accept created fresh tracked changes, but rollback could not run because the pre-write or post-write content was unavailable."],
+    ["accept_replay_rollback_missing_content", "接受改动时产生了新的留痕，但缺少写入前或写入后的内容，无法回滚。"],
+    ["review_scope_unavailable", "The native tracked-change scope could not be safely isolated. No review mutation was attempted. Use Overleaf Review to handle the changes individually."],
+    ["review_scope_unavailable", "The native tracked-change scope could not be safely isolated. No review mutation was attempted. Check the changes individually in Overleaf Review."],
+    ["review_scope_unavailable", "无法安全确认本轮原生留痕的范围；尚未尝试审阅写入。请在 Overleaf 审阅面板逐项检查。"],
+    ["review_request_unverified", "The native review request could not be fully verified; some target changes may already be accepted. No text replay was attempted. Check Overleaf Review before retrying."],
+    ["review_request_unverified", "原生审阅请求未能完全核实，部分目标改动可能已接受；未尝试文本重放。请先在 Overleaf 审阅面板检查，再决定是否重试。"],
+    ["review_owner_disconnected", "The Undo owner disconnected; no further review writes were started."],
+    ["review_owner_disconnected", "撤销操作的连接已断开；未再启动后续审阅写入。"],
+    ["review_deadline_exceeded", "The review time budget expired; no further review writes were started."],
+    ["review_deadline_exceeded", "The review time budget expired."],
+    ["review_deadline_exceeded", "审阅操作已超时；未再启动后续审阅写入。"],
+    ["review_cancelled", "The review was cancelled; no further review writes were started."],
+    ["review_cancelled", "审阅操作已取消；未再启动后续审阅写入。"],
+    ["review_project_changed", "The original review project is no longer active."],
+    ["review_project_changed", "原审阅项目已不再处于活动状态。"],
+    ["tracked_change_not_found", "没有在 Overleaf 页面里找到这轮写入对应的留痕记录；Codex 没有用文本补丁伪撤销。"],
+    ["tracked_change_not_found", "No matching tracked changes were found on the Overleaf page for this run."],
+    ["tracked_change_not_found", "No matching tracked changes were found on the Overleaf page for this run. Codex did not undo with text patches."],
+    ["snapshot_undo_current_mismatch", "{file} 当前内容或文档身份与本轮撤销检查点不一致；Codex 保留恢复材料并停止撤销。"],
+    ["snapshot_undo_current_mismatch", "{file} 当前内容已经不是本轮写入后的内容；为避免覆盖你的后续修改，Codex 不执行快照撤销。"],
+    ["snapshot_undo_current_mismatch", "The current content or document identity does not match this run's undo checkpoint. Codex stopped Undo and kept the recovery data."],
+    ["snapshot_undo_current_mismatch", "当前内容或文档身份与本轮撤销检查点不一致；Codex 已停止撤销并保留恢复材料。"],
+    ["snapshot_undo_open_failed", "无法打开 {file} 来执行快照撤销。"],
+    ["snapshot_undo_open_failed", "Codex could not open the file to restore its saved checkpoint."],
+    ["snapshot_undo_open_failed", "Codex 无法打开文件来恢复已保存的检查点。"],
+    ["snapshot_undo_unavailable", "The saved checkpoint is unavailable for this undo."],
+    ["snapshot_undo_unavailable", "The saved checkpoint is unavailable for this Undo. Codex kept the remaining recovery data."],
+    ["snapshot_undo_unavailable", "本次撤销所需的检查点不可用；Codex 已保留剩余恢复材料。"]
+  ].sort((a, b) => Number(a[1].includes('{file}')) - Number(b[1].includes('{file}')))
+    .map(([code, template]) => ({ code, template,
+      pattern: new RegExp('^' + template.split('{file}').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('(.+)') + '$') }));
+
+  function safeDisplayProjectPath(value) {
+    if (typeof value !== 'string' || !value || value.length > 300 || /[\r\n]/.test(value)) return '';
+    const path = value.replace(/\\/g, '/');
+    return !path.startsWith('/') && !/^[A-Za-z]:/.test(path) && !path.split('/').includes('..') ? path : '';
+  }
+
+  function recoverDisplayFailure(failure, allowFilePrefix = true) {
+    if (!failure || typeof failure !== 'object') return failure;
+    const originalCode = failure.evidence?.originalCode;
+    const explicitCode = REVIEW_DISPLAY_CODES.has(originalCode) ? originalCode
+      : REVIEW_DISPLAY_CODES.has(failure.code) ? failure.code : '';
+    const message = String(failure.userMessage || '');
+    for (const { code, pattern } of REVIEW_DISPLAY_TEMPLATES) {
+      if (explicitCode && code !== explicitCode) continue;
+      const match = pattern.exec(message);
+      if (!match) continue;
+      const captured = ['当前文件', 'The target file', 'the next file'].includes(match[1]) ? '' : match[1];
+      if (captured && safeDisplayProjectPath(captured) !== captured) continue;
+      return { ...failure, code, file: failure.file || captured || '' };
+    }
+    // Catalog defaults are also product-owned exact messages in older compact
+    // records. Recover only a display code; their old retry semantics stay put.
+    const catalogCode = Object.keys(FAILURE_CODE_CATALOG).find(code => code !== 'unknown_legacy_failure'
+      && FAILURE_CODE_CATALOG[code].fallbackUserMessage === message);
+    if (!explicitCode && catalogCode) return { ...failure, code: catalogCode };
+    // Earlier formatters persisted "file: message". Only accept one safe file
+    // prefix whose complete remaining body resolves to a known product message.
+    const prefixed = allowFilePrefix && /^([^:\r\n]+): (.+)$/.exec(message);
+    if (prefixed && safeDisplayProjectPath(prefixed[1]) === prefixed[1]) {
+      const body = { ...failure, userMessage: prefixed[2], file: failure.file || prefixed[1] };
+      const recovered = recoverDisplayFailure(body, false);
+      if (recovered !== body && recovered.code !== 'unknown_legacy_failure') return recovered;
+    }
+    return explicitCode ? { ...failure, code: explicitCode } : failure;
+  }
+
+  // A single renderer prevents the Notice and expanded results from using
+  // different code lists or emitting a dynamic filename twice.
+  function formatFailureReasonForDisplay(failure, locale, i18nLookup) {
+    const display = recoverDisplayFailure(failure);
+    const lookup = typeof i18nLookup === 'function' ? i18nLookup : () => undefined;
+    const key = display?.code ? 'failureReason_' + display.code + '_user' : '';
+    const template = key ? lookup(key) : '';
+    const file = safeDisplayProjectPath(display?.file);
+    const localized = localizeFailureReason(display ? { ...display, file } : display, locale, lookup);
+    const message = template?.includes('{file}') ? localized.userMessage
+      : [file, localized.userMessage].filter(Boolean).join(': ');
+    return { ...localized, message, file, localized: Boolean(template && template !== key) };
+  }
+
+  function localizeFailureMessage(message, locale, i18nLookup) {
+    return formatFailureReasonForDisplay({ code: 'unknown_legacy_failure', userMessage: message }, locale, i18nLookup).message;
   }
 
   // Writeback consumers share catalog normalization, including file context,
@@ -726,11 +904,15 @@
    */
   function localizeFailureReason(failure, locale, i18nLookup) {
     void locale;
-    failure = recoverDisplayFailureCode(failure);
-    const lookup = i18nLookup instanceof Function ? i18nLookup : function noopLookup() { return undefined; };
+    failure = recoverDisplayFailure(failure);
+    const lookup = key => {
+      const value = typeof i18nLookup === 'function' ? i18nLookup(key) : undefined;
+      return value && value !== key ? value : undefined;
+    };
     const code = failure && typeof failure.code === 'string' ? failure.code : '';
     const userTemplate = code ? lookup('failureReason_' + code + '_user') : undefined;
-    const nextTemplate = code ? lookup('failureReason_' + code + '_next') : undefined;
+    const nextTemplate = (code ? lookup('failureReason_' + code + '_next') : undefined)
+      || (REVIEW_DISPLAY_CODES.has(code) ? lookup('failureReason_review_detail_next') : undefined);
     const userMessage = userTemplate
       ? interpolateFailureTemplate(userTemplate, failure)
       : (failure && failure.userMessage) || '';
@@ -765,6 +947,8 @@
     isUnconfirmedWriteFailure,
     selectPrimaryWritebackFailure,
     selectPrimaryFailure,
-    localizeFailureReason
+    localizeFailureReason,
+    formatFailureReasonForDisplay,
+    localizeFailureMessage
   };
 });

@@ -201,7 +201,7 @@
         }
       });
       if (!response?.ok) {
-        showPluginToast(tr('deleteSessionHistoryFailedToast', { message: response?.error?.message || 'native host did not return success' }), { status: 'warning', sticky: true });
+        showPluginToast(tr('deleteSessionHistoryFailedToast', { message: response?.error?.message || tr('deleteSessionNativeFailureDetail') }), { status: 'warning', sticky: true });
       } else if (response.result?.skipped) {
         showPluginToast(tr('deleteSessionNoThreadToast'), { status: 'info' });
       } else {

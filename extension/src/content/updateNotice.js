@@ -245,6 +245,7 @@
     if (!currentView) return;
     renderSettings();
     if (!notice) return;
+    notice.setAttribute('aria-label', tx('Stable update', '稳定版更新'));
     if (!currentView.showPanel) {
       notice.hidden = true;
       notice.replaceChildren();
@@ -380,7 +381,7 @@
       statusText = getCopy(state).detail;
       buttonText = tx('Update in progress', '更新进行中');
     } else if (stateName === 'failed' || stateName === 'rolled_back') {
-      statusText = state.message || getCopy(state).detail;
+      statusText = formatUpdateMessage(state) || getCopy(state).detail;
       buttonText = tx('Retry', '重试');
     } else if (stateName === 'committed') {
       summaryText = tx(`Current v${currentVersion}. Update completed successfully.`, `当前版本 v${currentVersion}。更新已成功完成。`);
@@ -450,11 +451,11 @@
     const target = state.latestVersion ? 'v' + state.latestVersion : '';
     if (state.cancelRequested) return {
       eyebrow: tx('Cancelling update', '正在取消更新'), title: target,
-      detail: state.message || tx('Stopping this update and clearing its authorization.', '正在停止本次更新并清理更新授权。')
+      detail: formatUpdateMessage(state) || tx('Stopping this update and clearing its authorization.', '正在停止本次更新并清理更新授权。')
     };
     if (state.recoveryPending) return {
       eyebrow: tx('Checking update recovery', '正在确认更新恢复状态'), title: target,
-      detail: state.message || tx('Waiting for the installed version to be confirmed.', '正在确认实际安装的版本。')
+      detail: formatUpdateMessage(state) || tx('Waiting for the installed version to be confirmed.', '正在确认实际安装的版本。')
     };
     const blocker = blockersCopy(state.blockers?.length ? state.blockers : [state.blocker]);
     return {
@@ -462,11 +463,11 @@
         detail: tx('Reading the latest signed release.', '正在读取最新签名版本。') },
       reload_required: {
         eyebrow: tx('Installed, awaiting reload', '已安装，等待加载'), title: target,
-        detail: state.message || tx('The new files are installed. Reload the extension when Overleaf is saved and idle.', '新版文件已安装，请在 Overleaf 保存并空闲后重新加载扩展。')
+        detail: formatUpdateMessage(state) || tx('The new files are installed. Reload the extension when Overleaf is saved and idle.', '新版文件已安装，请在 Overleaf 保存并空闲后重新加载扩展。')
       },
       reload_tabs_required: {
         eyebrow: tx('Updated runtime is ready', '新版运行组件已就绪'), title: target,
-        detail: state.message || tx('Refresh the saved, idle Overleaf tabs to load the updated panel.', '刷新已保存且空闲的 Overleaf 标签页以加载新版面板。')
+        detail: formatUpdateMessage(state) || tx('Refresh the saved, idle Overleaf tabs to load the updated panel.', '刷新已保存且空闲的 Overleaf 标签页以加载新版面板。')
       },
       manual_install_required: {
         eyebrow: tx('Reinstall needed for this update', '这次更新需要重新安装'),
@@ -516,7 +517,7 @@
       failed: {
         eyebrow: tx('Update could not continue', '更新无法继续'),
         title: target,
-        detail: state.message || tx('Review the update details and retry.', '请查看更新详情后重试。')
+        detail: formatUpdateMessage(state) || tx('Review the update details and retry.', '请查看更新详情后重试。')
       }
     }[state.state] || { eyebrow: '', title: '', detail: '' };
   }
@@ -526,6 +527,37 @@
       ? state.latestVersion
       : 'latest';
     return `npm exec --yes codex-overleaf-link@${version} -- install-managed`;
+  }
+
+  function formatUpdateMessage(state = {}) {
+    const code = state.code || '';
+    const messages = {
+      update_phase_timeout: ['The update timed out and its download was stopped. Retry when the connection is available.', '更新超时，下载已停止。连接恢复后请重试。'],
+      update_not_applied: ['The update was stopped before installation. Retry when ready.', '更新已在安装前停止，可准备就绪后重试。'],
+      update_recovery_pending: ['The update reached installation before cancellation. Checking its result.', '取消时更新已进入安装，正在确认安装结果。'],
+      update_rolled_back: ['The previous version has been restored.', '已恢复上一版本。'],
+      update_not_managed: ['Run install-managed once to enable coordinated automatic updates.', '请先运行一次 install-managed，以启用扩展与本机服务的协调更新。'],
+      update_native_busy: ['Native Host is still processing a Codex task.', 'Native Host 仍在处理 Codex 任务。'],
+      update_revoke_too_late: ['The update is already being installed. Wait for its result.', '更新已进入安装，请等待结果。'],
+      update_cancel_unconfirmed: ['Update cancellation is unconfirmed. Check recovery before retrying.', '尚未确认更新已取消，请先检查恢复状态。'],
+      update_apply_unconfirmed: ['Update installation is unconfirmed. Check recovery before retrying.', '尚未确认更新安装结果，请先检查恢复状态。'],
+      update_rollback_unconfirmed: ['Restoring the previous version is unconfirmed. Check recovery before retrying.', '尚未确认旧版本已恢复，请先检查恢复状态。'],
+      update_reload_unavailable: ['No verified installed update is awaiting reload.', '当前没有已验证且等待重载的更新。'],
+      update_network_cancelled: ['The update download was cancelled.', '更新下载已取消。'],
+      update_apply_failed: ['The update could not be installed. Check recovery and retry.', '无法安装更新，请检查恢复状态后重试。']
+    };
+    if (messages[code]) return tx(...messages[code]);
+    if (['update_reload_required', 'update_reload_busy'].includes(code)) {
+      const match = /^Reload is waiting for Overleaf to be saved and idle \(([^)]+)\)\.$/.exec(state.message || '');
+      if (match) return blockersCopy(match[1].split(', '));
+    }
+    if (['update_check_timeout', 'update_activation_timeout', 'update_status_timeout'].includes(code)) return tx('The update operation timed out. Check recovery or retry when the connection is available.', '更新操作超时，请检查恢复状态，或在连接恢复后重试。');
+    if (['update_candidate_missing', 'update_candidate_stale', 'update_not_staged', 'update_staged_archive_invalid', 'update_recovery_superseded'].includes(code)) return tx('No current verified update is ready. Check for updates again.', '当前没有已验证且可安装的更新，请重新检查更新。');
+    if (['update_authorization_in_progress', 'update_transaction_in_progress', 'update_transaction_locked'].includes(code)) return tx('Another update operation is in progress. Wait for it to finish.', '另一项更新操作正在进行，请等待其完成。');
+    if (['update_authorization_invalid', 'update_consent_required', 'update_consent_mismatch', 'update_transaction_mismatch', 'update_transaction_state_changed'].includes(code)) return tx('The update authorization or transaction changed. Check for updates and authorize the current candidate again.', '更新授权或事务已变化，请重新检查更新并确认当前候选版本。');
+    if (['update_archive_checksum_invalid', 'update_archive_compressed_limit', 'update_archive_duplicate_path', 'update_archive_file_count_limit', 'update_archive_file_limit', 'update_archive_invalid', 'update_archive_path_forbidden', 'update_archive_path_too_long', 'update_archive_required_file_missing', 'update_archive_total_limit', 'update_archive_truncated', 'update_archive_type_forbidden', 'update_staging_not_empty', 'update_operation_invalid', 'update_bundle_hash_invalid', 'update_bundle_name_invalid', 'update_bundle_size_invalid', 'update_manifest_artifacts_invalid', 'update_manifest_commit_invalid', 'update_manifest_invalid', 'update_manifest_manual_install_invalid', 'update_manifest_origin_mismatch', 'update_manifest_protocol_invalid', 'update_manifest_schema_unsupported', 'update_manifest_timestamp_invalid', 'update_manifest_too_large', 'update_manifest_version_invalid', 'update_signature_algorithm_unsupported', 'update_signature_invalid', 'update_signature_key_invalid', 'update_signature_key_unknown', 'update_signature_too_large', 'update_version_invalid'].includes(code)) return tx('The signed update or archive could not be verified. Check the release details and retry.', '无法验证更新签名或压缩包，请检查发布详情后重试。');
+    if (['update_github_http_error', 'update_github_response_invalid', 'update_asset_missing', 'update_asset_url_forbidden', 'update_release_asset_invalid', 'update_release_manifest_mismatch', 'update_bundle_size_mismatch', 'update_bundle_hash_mismatch', 'update_native_version_mismatch', 'update_extension_version_mismatch', 'update_runtime_manifest_invalid', 'update_runtime_asset_missing', 'update_bootstrap_manifest_invalid', 'update_managed_layout_invalid', 'update_marker_invalid', 'update_current_version_invalid', 'update_health_version_mismatch', 'update_confirmation_unexpected', 'update_rollback_unavailable'].includes(code)) return tx('The update or installed files could not be verified. Check the update details and repair or retry.', '无法验证更新或已安装文件，请检查更新详情后修复或重试。');
+    return state.message || '';
   }
 
   function blockerCopy(value) {
@@ -576,5 +608,5 @@
     return /^zh\b/i.test(locale) ? chinese : english;
   }
 
-  return Object.freeze({ mount });
+  return Object.freeze({ mount, refreshLocale: render });
 });

@@ -110,7 +110,7 @@ for (const fault of ['empty', 'too-large', 'read-failure']) {
     assert.equal(prevented, true);
     assert.equal(f.logs.length, 1);
     assert.match(f.logs[0], /Attachment was not added/);
-    assert.match(f.logs[0], fault === 'empty' ? /Empty attachments/ : fault === 'too-large' ? /too large/ : /Synthetic read failure/);
+    assert.match(f.logs[0], fault === 'empty' ? /Empty attachments/ : fault === 'too-large' ? /too large/ : /Could not read selected file/);
     assert.deepEqual(f.readers.map(reader => reader.file.name), fault === 'read-failure'
       ? ['first.txt', 'bad.txt'] : ['first.txt']);
     assert.equal(f.usage().pending, 0);
@@ -162,7 +162,8 @@ test('a partial failure preserves previously visible attachments and permits the
   f.settle(0);
   await first;
   const adding = f.controller.addFiles([file('accepted.txt'), file('retry.txt')]);
-  const rejected = assert.rejects(adding, /Synthetic read failure/);
+  const rejected = assert.rejects(adding, error => error.message === 'Could not read selected file.'
+    && error.cause?.message === 'Synthetic read failure');
   f.settle(1);
   await flush();
   f.settle(2, true);

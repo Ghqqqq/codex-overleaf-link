@@ -240,91 +240,51 @@
   }
 
   function formatCatalogFailureReason(result, path) {
-    const code = result.failure?.code || result.code;
-    const originalCode = code === 'unknown_legacy_failure' ? result.failure?.evidence?.originalCode : '';
-    if (!['snapshot_undo_current_mismatch', 'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'tracked_change_not_found', 'file_tree_controls_unavailable'].includes(originalCode || code)) return '';
-    const failure = normalizeSkippedFailure({ result, operation: { path: result.file || path } });
-    return failure ? [failure.file, failure.userMessage].filter(Boolean).join(': ') : '';
+    if (!FailureReasons?.formatFailureReasonForDisplay) return '';
+    // Compact historical settlements can omit canonical validation fields.
+    // Their display is still recoverable without re-normalizing stored facts.
+    const failure = result.failure && typeof result.failure === 'object'
+      ? { ...result.failure, file: result.failure.file || result.file || path }
+      : FailureReasons.normalizeFailureReason(result, { path: result.file || path });
+    const display = FailureReasons.formatFailureReasonForDisplay(failure, getLocale(), failureReasonI18nLookup);
+    return display.localized ? display.message : '';
   }
 
   function formatBridgeResultReason(result = {}, fallbackPath = '') {
-    const code = result.code || '';
     const path = result.file || result.path || fallbackPath || '';
-    const catalogReason = formatCatalogFailureReason(result, path);
-    if (catalogReason) return catalogReason;
-    if (getLocale() !== 'en') {
-      return localizeVisibleReason(result.reason || result.error || result.code || tr('unknownReason'));
-    }
-    if (code === 'missing_tracked_changes') {
-      return 'No matching Overleaf tracked-change records were found for this run, so Codex did not undo with text patches.';
-    }
-    if (code === 'tracked_change_file_open_failed') {
-      return path
-        ? `Could not open ${path} to find this run's tracked changes. Handle them manually in the Overleaf review tools.`
-        : 'Could not open the file to find this run\'s tracked changes. Handle them manually in the Overleaf review tools.';
-    }
-    if (code === 'tracked_change_not_found') {
-      return 'No matching tracked changes were found on the Overleaf page for this run.';
-    }
-    if (code === 'tracked_change_reject_control_not_found') {
-      return path
-        ? `Some tracked changes in ${path} remain, but the matching Reject button was not found. Reject them manually in Overleaf.`
-        : 'Some tracked changes remain, but the matching Reject button was not found. Reject them manually in Overleaf.';
-    }
-    if (code === 'tracked_change_reject_not_confirmed') {
-      return 'Codex clicked Reject, but Overleaf still shows this tracked change. Reject it manually in the Overleaf review panel.';
-    }
-    if (code === 'tracked_change_accept_control_not_found') {
-      return path
-        ? `Some tracked changes in ${path} remain, but the matching Accept button was not found. Accept them manually in Overleaf.`
-        : 'Some tracked changes remain, but the matching Accept button was not found. Accept them manually in Overleaf.';
-    }
-    if (code === 'tracked_change_accept_not_confirmed') {
-      return 'Codex clicked Accept, but Overleaf still shows this tracked change. Accept it manually in the Overleaf review panel.';
-    }
-    if (code === 'tracked_change_editor_undo_open_failed') {
-      return path ? `Could not open ${path} for Overleaf native undo.` : 'Could not open the file for Overleaf native undo.';
-    }
-    if (code === 'tracked_change_editor_undo_current_mismatch') {
-      return path
-        ? `${path} no longer matches this run's written content, so Codex did not use Overleaf native undo.`
-        : 'The current content no longer matches this run\'s written content, so Codex did not use Overleaf native undo.';
-    }
-    if (code === 'editor_undo_control_not_found') {
-      return path
-        ? `Could not find Overleaf's editor Undo button to undo this run in ${path}.`
-        : 'Could not find Overleaf\'s editor Undo button to undo this run.';
-    }
-    if (code === 'editor_undo_no_progress') {
-      return path
-        ? `Codex clicked Overleaf Undo, but ${path} did not change.`
-        : 'Codex clicked Overleaf Undo, but the file did not change.';
-    }
-    if (code === 'editor_undo_max_iterations') {
-      return path
-        ? `${path} did not return to its pre-run content after repeated Overleaf native undo steps. Codex stopped to avoid undoing other edits.`
-        : 'The file did not return to its pre-run content after repeated Overleaf native undo steps. Codex stopped to avoid undoing other edits.';
-    }
-    if (code === 'tracked_change_undo_max_iterations') {
-      return path
-        ? `${path} still has tracked changes left. Codex stopped to avoid rejecting unrelated edits.`
-        : 'Tracked changes are still left. Codex stopped to avoid rejecting unrelated edits.';
-    }
-    if (code === 'tracked_change_undo_verify_open_failed') {
-      return path
-        ? `Could not open ${path} after undo to verify content. Reload Overleaf and check manually.`
-        : 'Could not open the file after undo to verify content. Reload Overleaf and check manually.';
-    }
-    if (code === 'tracked_change_undo_verify_failed') {
-      return path
-        ? `${path} did not return to its pre-run content after rejecting tracked changes. Check this run's changes in the Overleaf review panel.`
-        : 'The file did not return to its pre-run content after rejecting tracked changes. Check this run\'s changes in the Overleaf review panel.';
-    }
-    return localizeVisibleReason(result.reason || result.error || result.code || tr('unknownReason'));
+    return formatCatalogFailureReason(result, path)
+      || localizeVisibleReason(result.reason || result.error || result.code || tr('unknownReason'));
   }
+
+  const runtimeOwnedReasonPairs = [
+  ['The selected provider no longer exists.', '所选模型服务已不存在。'],
+  ['The selected provider has no usable revision.', '所选模型服务没有可用的配置版本。'],
+  ['The selected provider revision was not captured for this run.', '本轮任务未记录所选模型服务的配置版本。'],
+  ['The selected provider changed after this run was submitted.', '本轮任务提交后，所选模型服务的配置已发生变化。'],
+  ['The captured selection is invalid. Attach it again.', '已记录的选区无效，请重新添加。'],
+  ['Provider revision must be a finite non-negative integer.', '模型服务配置版本必须是有效的非负整数。'],
+  ['A stable matching Overleaf account is required for shared history.', '共享历史需要稳定且匹配的 Overleaf 账号。'],
+  ['The background storage connection was lost.', '后台存储连接已断开。'],
+  ['Shared history is unavailable. Reload the extension and this page.', '共享历史不可用，请重新加载扩展和当前页面。'],
+  ['The shared history lock disconnected.', '共享历史的存储锁连接已断开。'],
+  ['Another page is saving history. Retry after it finishes.', '其他页面正在保存历史，请待保存完成后重试。'],
+  ['The shared history lock was lost before completion.', '操作完成前，共享历史的存储锁已丢失。'],
+  ['A stable account scope is required for durable persistence.', '持久保存需要稳定的账号范围。'],
+  ['A cross-realm browser lock is required for durable persistence.', '持久保存需要能够跨页面协调的浏览器锁。'],
+  ['Shared session storage is unavailable.', '共享会话存储不可用。'],
+  ['Native host request failed.', '本地主机请求失败。'],
+  ['Native host disconnected', '本地主机连接已断开。']
+];
 
   function localizeVisibleReason(reason) {
     const text = String(reason || '').trim();
+    for (const [en, zh] of runtimeOwnedReasonPairs) {
+      if (text === en || text === zh) return tx(en, zh);
+    }
+    const scoped = /^(?:Scoped persistence failed: |限定范围的持久保存失败：)(invalid_commit|stale_view|revision_conflict|queue_revision_conflict|invalid_queue_mutation|queue_claim_conflict)$/.exec(text);
+    if (scoped) return tx(`Scoped persistence failed: ${scoped[1]}`, `限定范围的持久保存失败：${scoped[1]}`);
+    const localized = FailureReasons?.localizeFailureMessage?.(text, getLocale(), failureReasonI18nLookup);
+    if (localized && localized !== text) return localized;
     if (!text || getLocale() !== 'en') {
       return text;
     }

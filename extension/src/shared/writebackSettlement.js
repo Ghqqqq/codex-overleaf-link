@@ -472,10 +472,12 @@
     if (entry?.operation?.type === 'edit' && operationPath === normalizedPath) {
       return inner.verifiedContent === expectedContent;
     }
-
     const trackedPath = normalizeSettlementPath(entry?.trackedChange?.path);
     if (trackedPath !== normalizedPath) return false;
     const key = String(entry?.trackedChange?.key || '');
+    if (['overleaf-review-reject', 'overleaf-review-reject-sweep'].includes(inner.method))
+      return /^(?:id:|pos:|sig:)/.test(key) && inner.verified === true
+        && inner.verifiedContent === expectedContent;
     if (key === `editor-undo:${normalizedPath}`) {
       return inner.method === 'overleaf-editor-undo'
         && inner.verified === true
@@ -497,14 +499,12 @@
     }
     return false;
   }
-
   function normalizeSettlementPath(value) {
     return String(value || '')
       .replace(/\\/g, '/')
       .replace(/\/+/g, '/')
       .replace(/^\/+|\/+$/g, '');
   }
-
   function attachAcceptNotVerifiedFailure(run, result, options = {}) {
     if (!result || typeof result !== 'object' || result.ok === false) return result;
     if (Array.isArray(result.skipped) && result.skipped.length > 0) return result;

@@ -210,5 +210,7 @@ test('a locale refresh re-renders the empty state instead of overwriting the mar
   const body = runtime.slice(start, runtime.indexOf('\n  }\n', start));
   // '.empty-runs div' matched the first div, which is the animated mark.
   assert.doesNotMatch(body, /\.empty-runs div/);
-  assert.match(body, /querySelector\('\.empty-runs'\)\) renderRunHistory\(\)/);
+  assert.match(body, /runTimelineView\.refreshLocale/);
+  const timeline = fs.readFileSync(path.join(__dirname, '../extension/src/content/runTimelineView.js'), 'utf8');
+  assert.match(timeline, /!getState\(\)\.runs\?\.length\) \{ renderRunHistory\(\{ preserveScroll: true \}\)/);
 });

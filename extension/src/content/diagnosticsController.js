@@ -1,11 +1,8 @@
 (function initCodexOverleafDiagnosticsController() {
   'use strict';
 
-  // Diagnostics controller — the check runners (inspect*) and result formatters
-  // carved out of contentRuntime.js (v1.4.5 structural-debt phase 1). The code
-  // below moved verbatim (original indentation kept); runtime collaborators are
-  // factory-injected so behavior is unchanged. Mutable runtime state (panel
-  // state, OT status) is read through injected getters.
+  // Check runners own observations; result formatters project those observations
+  // into the current UI language. Runtime collaborators are factory-injected.
   function create(deps = {}) {
     const {
       Compatibility: CodexOverleafCompatibility,
@@ -29,7 +26,6 @@
       formatOtStatusLabel,
       normalizeOtStatus,
       formatProbeStatusBar,
-      getProbeRunReadiness,
       getMirrorFreshness,
       formatProjectSnapshotLog,
       formatProjectSnapshotWarning,
@@ -43,6 +39,18 @@
   // must not supersede their own parent, and a later single check supersedes
   // an older aggregate just as a later aggregate does.
   let requestGeneration = 0;
+  let currentProjection = null;
+  const resultProjections = new WeakMap();
+  // Preserve the observed status and raw technical evidence across UI refreshes.
+  function projectableResult(project) {
+    const result = project();
+    resultProjections.set(result, () => ({ ...project(), status: result.status, technical: result.technical }));
+    return result;
+  }
+  function refreshLocale() {
+    return currentProjection && isCurrentDiagnosticsRequest(currentProjection.request)
+      ? currentProjection.project() : null;
+  }
   function captureDiagnosticsScope() {
     const scope = getScope?.() || { projectId: getCurrentProjectId?.() };
     return { accountScopeId: scope.accountScopeId, projectId: scope.projectId, generation: scope.generation };
@@ -50,7 +58,9 @@
 
   function beginDiagnostics(title, subtitle) {
     const request = { generation: ++requestGeneration, scope: captureDiagnosticsScope() };
-    showDiagnosticsLoading(title, subtitle);
+    currentProjection = { request, project: () => ({ title: tr(title), subtitle: tr(subtitle),
+      status: 'running', summary: tr('diagnosticsLoadingSummary') }) };
+    showDiagnosticsLoading(tr(title), tr(subtitle));
     return request;
   }
 
@@ -61,7 +71,10 @@
   }
 
   function showCurrentDiagnosticsResult(request, result) {
-    if (isCurrentDiagnosticsRequest(request)) showDiagnosticsResult(result);
+    if (isCurrentDiagnosticsRequest(request)) {
+      currentProjection = { request, project: resultProjections.get(result) || (() => result) };
+      showDiagnosticsResult(result);
+    }
   }
 
   // Reduce a result status to a health bucket. 'completed' is a pass; a hard
@@ -76,12 +89,12 @@
   // report (a status row per check) instead of four separate result screens.
   // The overall bucket also updates the trigger dot.
   async function runAllDiagnostics() {
-    const request = beginDiagnostics(tr('diagnosticsHealthTitle'), tr('diagnosticsRunningAll'));
+    const request = beginDiagnostics('diagnosticsHealthTitle', 'diagnosticsRunningAll');
     const specs = [
-      { label: tr('diagnosticsNativeShort'), run: inspectNativeEnvironment },
-      { label: tr('diagnosticsPageShort'), run: inspectPageStateDiagnostics },
-      { label: tr('diagnosticsSnapshotShort'), run: inspectProjectSnapshot },
-      { label: tr('diagnosticsOtShort'), run: inspectOtWarmMirrorDiagnostics }
+      { label: 'diagnosticsNativeShort', run: inspectNativeEnvironment },
+      { label: 'diagnosticsPageShort', run: inspectPageStateDiagnostics },
+      { label: 'diagnosticsSnapshotShort', run: inspectProjectSnapshot },
+      { label: 'diagnosticsOtShort', run: inspectOtWarmMirrorDiagnostics }
     ];
     const checks = [];
     let worst = 'ok';
@@ -90,7 +103,7 @@
       try {
         result = await spec.run({ collectOnly: true });
       } catch (error) {
-        result = { status: 'failed', summary: tr('diagnosticsCheckErrored'), technical: error?.message || String(error) };
+        result = projectableResult(() => ({ status: 'failed', summary: tr('diagnosticsCheckErrored'), technical: error?.message || String(error) }));
       }
       const bucket = diagnosticsHealthBucket(result?.status);
       if (bucket === 'fail') {
@@ -98,33 +111,32 @@
       } else if (bucket === 'warn' && worst !== 'fail') {
         worst = 'warn';
       }
-      checks.push({
-        status: result?.status || 'info',
-        title: spec.label,
-        summary: result?.summary || result?.subtitle || '',
-        nextStep: bucket === 'ok' ? '' : (result?.nextStep || '')
+      const project = resultProjections.get(result) || (() => result);
+      checks.push(() => {
+        const translated = project();
+        return {
+          status: result?.status || 'info',
+          title: tr(spec.label),
+          summary: translated?.summary || translated?.subtitle || '',
+          nextStep: bucket === 'ok' ? '' : (translated?.nextStep || '')
+        };
       });
     }
     const overallSubtitleKey = worst === 'ok'
       ? 'diagnosticsHealthOk'
       : worst === 'fail' ? 'diagnosticsHealthFail' : 'diagnosticsHealthWarn';
-    showCurrentDiagnosticsResult(request, {
+    showCurrentDiagnosticsResult(request, projectableResult(() => ({
       title: tr('diagnosticsHealthTitle'),
       subtitle: tr(overallSubtitleKey),
       status: worst === 'ok' ? 'completed' : worst === 'fail' ? 'failed' : 'warning',
-      checks
-    });
+      checks: checks.map(project => project())
+    })));
     if (isCurrentDiagnosticsRequest(request)) setDiagnosticsHealth(worst);
   }
 
-
-
-
-
-
   async function inspectProjectSnapshot(options = {}) {
     const request = options.collectOnly ? null
-      : beginDiagnostics(tr('diagnosticsSnapshotTitle'), tr('diagnosticsSnapshotLoading'));
+      : beginDiagnostics('diagnosticsSnapshotTitle', 'diagnosticsSnapshotLoading');
     let result;
     try {
       const project = await callPageBridge('getProjectSnapshot', {
@@ -136,16 +148,16 @@
         zipOnly: true,
         zipTimeoutMs: RUN_SNAPSHOT_ZIP_TIMEOUT_MS
       });
-      result = formatProjectSnapshotDiagnosticsResult(project);
+      result = projectableResult(() => formatProjectSnapshotDiagnosticsResult(project));
     } catch (error) {
-      result = {
+      result = projectableResult(() => ({
         title: tx('Project Read Failed', '项目读取失败'),
         subtitle: tx('The extension did not receive Overleaf project content.', '插件没有拿到 Overleaf 项目内容。'),
         status: 'failed',
         summary: tr('diagnosticsSnapshotErrorSummary'),
         nextStep: tx('Reload Overleaf, wait for the left file tree to finish loading, then retry.', '刷新 Overleaf 页面，等左侧文件树加载完成后重试。'),
         technical: error?.stack || error?.message || String(error)
-      };
+      }));
     }
     if (options.collectOnly) {
       return result;
@@ -155,12 +167,12 @@
 
   async function inspectNativeEnvironment(options = {}) {
     const request = options.collectOnly ? null
-      : beginDiagnostics(tr('diagnosticsNativeTitle'), tr('diagnosticsNativeLoading'));
+      : beginDiagnostics('diagnosticsNativeTitle', 'diagnosticsNativeLoading');
     const params = CodexOverleafCompatibility?.buildBridgePingParams
       ? CodexOverleafCompatibility.buildBridgePingParams(getExtensionCompatibilityMetadata())
       : {};
     const response = await sendBackgroundNative({ method: 'bridge.ping', params });
-    const result = formatNativeEnvironmentResult(response);
+    const result = projectableResult(() => formatNativeEnvironmentResult(response));
     if (options.collectOnly) {
       return result;
     }
@@ -174,7 +186,6 @@
     if (compatibility.status !== 'ok' && compatibility.status !== 'native_unhealthy') {
       return formatNativeCompatibilityResult(compatibility, response);
     }
-
     if (!response?.ok) {
       return {
         title: tx('Local Connection Problem', '本机连接异常'),
@@ -186,7 +197,6 @@
         technical: response?.error?.message || tx('native host did not respond', 'native host 没有响应')
       };
     }
-
     const environment = response.result?.environment;
     if (!environment) {
       return {
@@ -198,7 +208,6 @@
         technical: JSON.stringify(response.result || {}, null, 2)
       };
     }
-
     const codexOk = environment.codex?.ok === true;
     const latexTools = environment.latex?.available || [];
     const latexOk = latexTools.length > 0;
@@ -210,7 +219,6 @@
         ? tx(`LaTeX tools available: ${latexTools.join(', ')}`, `LaTeX 工具可用：${latexTools.join(', ')}`)
         : tx('LaTeX tools were not found: text editing works, but local compile checks are limited.', 'LaTeX 工具没有找到：可以编辑文本，但不能在本地编译验证。')
     ];
-
     if (codexOk && latexOk) {
       return {
         title: tx('Local Connection OK', '本机连接正常'),
@@ -221,7 +229,6 @@
         technical: JSON.stringify(environment, null, 2)
       };
     }
-
     return {
       title: codexOk ? tx('Local Connection Partially Available', '本机连接部分可用') : tx('Codex Unavailable', 'Codex 不可用'),
       subtitle: codexOk ? tx('Codex is available, but compile tools are incomplete.', 'Codex 可用，但编译工具不完整。') : tx('Local Codex was not found.', '没有找到本机 Codex。'),
@@ -236,7 +243,6 @@
       technical: JSON.stringify(environment, null, 2)
     };
   }
-
   function fallbackNativeCompatibility(response) {
     return response?.ok
       ? { status: 'ok', classification: 'compatible', native: response.result, installCommand: INSTALL_COMMAND }
@@ -269,7 +275,6 @@
         technical: response?.error?.message || tx('native host did not respond', 'native host 没有响应')
       };
     }
-
     const messages = getNativeCompatibilityMessages(statusValue);
     return {
       title: messages.title,
@@ -282,7 +287,6 @@
       technical: formatNativeCompatibilityTechnicalDetails(compatibility, response)
     };
   }
-
   function getNativeCompatibilityMessages(statusValue) {
     switch (statusValue) {
       case 'native_too_old':
@@ -356,22 +360,23 @@
 
   async function inspectPageStateDiagnostics(options = {}) {
     const request = options.collectOnly ? null
-      : beginDiagnostics(tr('diagnosticsPageTitle'), tr('diagnosticsPageLoading'));
+      : beginDiagnostics('diagnosticsPageTitle', 'diagnosticsPageLoading');
     let result;
     try {
       const probe = await callPageBridge('probe', {
         manualOverride: getState()?.requireReviewing === false
       });
-      result = formatPageStateDiagnosticsResult(probe);
+      const mode = getState()?.mode;
+      result = projectableResult(() => formatPageStateDiagnosticsResult(probe, mode));
     } catch (error) {
-      result = {
+      result = projectableResult(() => ({
         title: tx('Overleaf Page Check Failed', 'Overleaf 页面检查失败'),
         subtitle: tx('The extension did not read the current page state.', '插件没有读到当前页面状态。'),
         status: 'failed',
         summary: tx('This usually means Overleaf is still loading, or the page script is temporarily unavailable.', '这通常表示 Overleaf 页面还在加载，或者页面脚本暂时不可用。'),
         nextStep: tx('Reload Overleaf, open the .tex file you want to work on, then try again.', '刷新 Overleaf 页面，点开要处理的 .tex 文件后再试。'),
         technical: error?.stack || error?.message || String(error)
-      };
+      }));
     }
     if (options.collectOnly) {
       return result;
@@ -381,30 +386,28 @@
 
   async function inspectOtWarmMirrorDiagnostics(options = {}) {
     const request = options.collectOnly ? null
-      : beginDiagnostics(tr('diagnosticsOtTitle'), tr('diagnosticsLoading'));
+      : beginDiagnostics('diagnosticsOtTitle', 'diagnosticsLoading');
     // OT warm mirror is opt-in and off by default. When it is disabled
     // there is nothing live to probe, so report a clean, healthy "disabled"
     // state instead of querying (then warning about) absent OT metadata — or
     // degrading to the generic "could not run" error if a probe throws. A
     // turned-off feature must never read as a failure.
     if (!isExperimentalOtEnabled()) {
-      const disabledResult = {
-        title: tr('diagnosticsOtTitle'),
-        subtitle: tr('diagnosticsOtSubtitle'),
-        status: 'completed',
-        summary: tr('diagnosticsOtSummaryDisabled'),
-        bullets: [],
-        nextStep: '',
-        technical: ''
-      };
       const mirrorState = getOtWarmMirrorState?.() || {};
-      if (mirrorState.failureActive && mirrorState.lastFailure) {
-        const failure = mirrorState.lastFailure;
-        disabledResult.status = 'warning';
-        disabledResult.summary = tr(otWarmMirrorController.getFailureMessageKey(failure.code));
-        disabledResult.nextStep = tr('otFailureNextStep');
-        disabledResult.technical = `lastErrorCode: ${failure.code}\nphase: ${failure.phase}\nfailedAt: ${new Date(failure.at).toISOString()}`;
-      }
+      const failure = mirrorState.failureActive && mirrorState.lastFailure ? { ...mirrorState.lastFailure } : null;
+      const disabledResult = projectableResult(() => {
+        const result = {
+          title: tr('diagnosticsOtTitle'), subtitle: tr('diagnosticsOtSubtitle'), status: 'completed',
+          summary: tr('diagnosticsOtSummaryDisabled'), bullets: [], nextStep: '', technical: ''
+        };
+        if (failure) {
+          result.status = 'warning';
+          result.summary = tr(otWarmMirrorController.getFailureMessageKey(failure.code));
+          result.nextStep = tr('otFailureNextStep');
+          result.technical = `lastErrorCode: ${failure.code}\nphase: ${failure.phase}\nfailedAt: ${new Date(failure.at).toISOString()}`;
+        }
+        return result;
+      });
       if (options.collectOnly) {
         return disabledResult;
       }
@@ -445,26 +448,30 @@
       mirrorStatus = { lastOtErrorCode: 'mirror_status_failed' };
     }
 
-    const baseResult = formatOtDiagnosticsResult({ otStatus, mirrorStatus });
-    const result = metadataWarning
-      ? {
+    const context = { enabled: isExperimentalOtEnabled(), status: getCurrentOtStatus(),
+      warmMirrorState: { ...(getOtWarmMirrorState() || {}) }, focusFiles: getActiveFocusFiles() };
+    context.warmStart = otWarmMirrorController?.canUseOtWarmStart?.({ enabled: context.enabled, focusFiles: context.focusFiles, mirrorStatus }) || { ok: false };
+    const result = projectableResult(() => {
+      const baseResult = formatOtDiagnosticsResult({ otStatus, mirrorStatus, context });
+      return metadataWarning ? {
           ...baseResult,
           status: 'warning',
           summary: `${baseResult.summary} ${tx('Some OT diagnostic metadata is unavailable.', '部分 OT 诊断元数据暂时不可用。')}`
         }
-      : baseResult;
+        : baseResult;
+    });
     if (options.collectOnly) {
       return result;
     }
     showCurrentDiagnosticsResult(request, result);
   }
 
-  function formatOtDiagnosticsResult({ otStatus, mirrorStatus }) {
-    const enabled = isExperimentalOtEnabled();
-    const statusValue = normalizeOtStatus(otStatus ? readOtBridgeStatus(otStatus) : getCurrentOtStatus());
+  function formatOtDiagnosticsResult({ otStatus, mirrorStatus, context = {} }) {
+    const enabled = context.enabled ?? isExperimentalOtEnabled();
+    const statusValue = normalizeOtStatus(otStatus ? readOtBridgeStatus(otStatus) : context.status ?? getCurrentOtStatus());
     const queuedEventCount = normalizeOtDiagnosticsCount(otStatus?.queuedEventCount);
     const lastEventAt = formatOtDiagnosticValue(otStatus?.lastEventAt, tr('noneValue'));
-    const warmMirrorState = getOtWarmMirrorState() || {};
+    const warmMirrorState = context.warmMirrorState || getOtWarmMirrorState() || {};
     const failureActive = warmMirrorState.failureActive === true;
     const lastOtPatchAt = formatOtDiagnosticValue(mirrorStatus?.lastOtPatchAt || warmMirrorState.lastPatchAt, tr('noneValue'));
     const lastOtErrorCode = formatOtDiagnosticValue(mirrorStatus?.lastOtErrorCode || warmMirrorState.lastErrorCode, tr('noneValue'));
@@ -475,10 +482,9 @@
       Array.isArray(mirrorStatus?.otFreshFiles) ? mirrorStatus.otFreshFiles.length : 0
     );
     const bridgeFailed = otStatus?.ok === false;
-    const focusFiles = getActiveFocusFiles();
-    const otWarmStart = otWarmMirrorController?.canUseOtWarmStart?.({ enabled, focusFiles, mirrorStatus }) || { ok: false };
+    const focusFiles = context.focusFiles || getActiveFocusFiles();
+    const otWarmStart = context.warmStart || otWarmMirrorController?.canUseOtWarmStart?.({ enabled, focusFiles, mirrorStatus }) || { ok: false };
     const fallback = !enabled || failureActive || statusValue !== 'observing' || bridgeFailed || otWarmStart?.ok !== true;
-
     return {
       title: tr('diagnosticsOtTitle'),
       subtitle: tr('diagnosticsOtSubtitle'),
@@ -502,7 +508,6 @@
       })
     };
   }
-
   function formatOtDiagnosticsTechnicalDetails(metadata = {}) {
     const lines = [
       `strategy: ${metadata.strategy || 'unknown'}`,
@@ -554,8 +559,7 @@
     return text.length > 160 ? `${text.slice(0, 157)}...` : text;
   }
 
-  function formatPageStateDiagnosticsResult(probe) {
-    const readiness = getProbeRunReadiness(probe || {});
+  function formatPageStateDiagnosticsResult(probe, mode = getState()?.mode) {
     const reviewingOk = probe?.reviewing?.ok === true;
     const writable = probe?.capabilities?.editor?.write !== false;
     const readable = probe?.editor?.ok === true;
@@ -569,10 +573,10 @@
       return {
         title: tx('Overleaf Page Ready', 'Overleaf 页面可用'),
         subtitle: formatProbeStatusBar(probe),
-        status: reviewingOk || getState()?.mode === 'ask' ? 'completed' : 'warning',
+        status: reviewingOk || mode === 'ask' ? 'completed' : 'warning',
         summary: tx('The current Overleaf file can be read and written. The extension still verifies before writing to avoid overwriting new user or collaborator edits.', '当前 Overleaf 文件可以读取和写入。写入前插件仍会再次验证，避免覆盖用户或协作者的新改动。'),
         bullets,
-        nextStep: reviewingOk || getState()?.mode === 'ask' ? '' : tx('If you need tracked writes, turn on Overleaf Reviewing/Track Changes first.', '如果需要留痕写入，请先在 Overleaf 开启 Reviewing/Track Changes。'),
+        nextStep: reviewingOk || mode === 'ask' ? '' : tx('If you need tracked writes, turn on Overleaf Reviewing/Track Changes first.', '如果需要留痕写入，请先在 Overleaf 开启 Reviewing/Track Changes。'),
         technical: formatPageDiagnosticsTechnicalDetails(probe)
       };
     }
@@ -603,7 +607,6 @@
       tx(`Asset files: ${binaryCount}`, `资源文件：${binaryCount} 个`),
       project?.activePath ? tx(`Current file: ${project.activePath}`, `当前文件：${project.activePath}`) : tx('Current file: not detected', '当前文件：未识别')
     ];
-
     if (fullProject && files.length) {
       return {
         title: tx('Project Read OK', '项目读取正常'),
@@ -617,7 +620,6 @@
         technical: formatProjectSnapshotLog(project)
       };
     }
-
     return {
       title: files.length ? tx('Full Project Not Read', '没有读到完整项目') : tx('No Project Files Read', '没有读到项目文件'),
       subtitle: tx(`Read source: ${source}`, `读取来源：${source}`),
@@ -633,7 +635,6 @@
       technical: formatProjectSnapshotLog(project)
     };
   }
-
   function formatPageDiagnosticsTechnicalDetails(probe) {
     const lines = [];
     lines.push(tx(`Status: ${formatProbeStatusBar(probe || {})}`, `状态：${formatProbeStatusBar(probe || {})}`));
@@ -680,6 +681,7 @@
 
 
     return {
+      refreshLocale,
       runAllDiagnostics,
       inspectProjectSnapshot,
       inspectNativeEnvironment,

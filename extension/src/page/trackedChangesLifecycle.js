@@ -992,25 +992,9 @@
     };
   }
 
-  // Robustly switch Overleaf to Editing (Track Changes OFF) for the Accept
-  // replay.
-  //
-  // Bug B root cause: the accept flow used ensureEditing, which short-circuits
-  // on isEditingConfirmedForNoTraceUndo. That detector is negation-based — it
-  // returns true whenever Reviewing is not *positively* confirmed-for-write
-  // (which requires an active aria attribute the real Overleaf reviewing
-  // control does not always carry) AND a control loosely matches an Editing
-  // pattern. So while Track Changes was actually ON, it false-positived
-  // "already Editing", ensureEditing returned activated:false without toggling,
-  // and the replay landed as tracked changes.
-  //
-  // The fix here does NOT trust that lenient short-circuit: it reads the
-  // reviewing state explicitly and treats Editing as confirmed only when it is
-  // *positively* confirmed (Editing detected AND Reviewing not confirmed on).
-  // Whenever that strict gate is not met it forces setReviewingEnabled(false),
-  // then positively re-confirms Editing before returning ok; if it still cannot
-  // confirm Editing it returns not-ok so the caller bails instead of replaying
-  // while tracked.
+  // Accept replay requires positively confirmed Editing. The legacy detector
+  // can misclassify Reviewing controls without aria state; force the toggle
+  // and recheck before replaying untracked text.
   async function forceEditingForAcceptReplay() {
     const initial = getReviewingState({});
     if (isEditingPositivelyConfirmed(initial)) {
@@ -1068,10 +1052,6 @@
 
     return { ok: true, activated: true };
   }
-
-
-
-
 
   async function rejectTrackedChangesViaEditorUndo(expectedFiles, postFiles, applied) {
     const expectedByPath = new Map((expectedFiles || [])
@@ -1273,7 +1253,6 @@
     };
   }
 
-
   async function waitForActiveEditorExpectedText(filePath, expectedContent, timeoutMs) {
     const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
     let actual = readActiveEditorText();
@@ -1300,34 +1279,48 @@
     const maxClicks = 200;
     for (let clicks = 0; clicks <= maxClicks; clicks += 1) {
       if (readActiveEditorText() === expectedContent) {
-        return {
-          ok: true,
-          attempted: clicks > 0,
-          clicks
-        };
+        return { ok: true, attempted: clicks > 0, clicks };
       }
       if (clicks === maxClicks) {
         break;
       }
 
-      const undoControl = findEditorUndoControl();
+      const beforeText = readActiveEditorText();
+      let undoControl = findEditorUndoControl();
       if (!undoControl) {
-        return {
-          ok: false,
-          attempted: clicks > 0,
-          code: 'editor_undo_control_not_found',
+        // Text and the native ledger can be ready before the toolbar updates.
+        // Wait only before dispatch, keeping this click's scope fixed.
+        const scopeKey = () => {
+          const snapshot = prepareTrackedChangeCapture(path);
+          return snapshot.source !== 'native' ? '' : !snapshot.ready ? null
+            : JSON.stringify([snapshot.nativeDocId, snapshot.refs.map(ref => ref.key).sort()]);
+        };
+        const beforeScope = scopeKey(), until = Date.now() + 1500;
+        const assertStable = () => {
+          if (getActiveFilePath() !== path || readActiveEditorText() !== beforeText
+            || beforeScope === null || scopeKey() !== beforeScope) {
+            const failure = nativeReviewBlocked(path, 'native_review_scope_changed').skipped[0].result;
+            throw Object.assign(new Error(failure.reason), { reviewFailure: failure });
+          }
+        };
+        while (!undoControl && Date.now() < until) {
+          assertStable();
+          await delay(Math.min(60, until - Date.now()));
+          assertStable();
+          undoControl = findEditorUndoControl();
+        }
+        assertStable();
+      }
+      if (!undoControl) {
+        return { ok: false, attempted: clicks > 0, code: 'editor_undo_control_not_found',
           reason: `没有找到 Overleaf 编辑器自己的 Undo/撤销按钮，无法一次性撤销 ${path} 的本轮留痕。`
         };
       }
 
-      const beforeText = readActiveEditorText();
       clickNode(undoControl);
       await waitForEditorTextProgress(beforeText, expectedContent, 1000);
       if (readActiveEditorText() === beforeText) {
-        return {
-          ok: false,
-          attempted: clicks > 0,
-          code: 'editor_undo_no_progress',
+        return { ok: false, attempted: clicks > 0, code: 'editor_undo_no_progress',
           reason: `Codex 点击了 Overleaf Undo/撤销，但 ${path} 内容没有变化。`
         };
       }
@@ -1473,7 +1466,13 @@
       const node = findLastTrackedChangeNodeForPath(file.path);
       if (!node) {
         const verified = await verifyActiveEditorText(file.content, file.path, 800);
+        if (getActiveFilePath() !== file.path) verified.ok = false;
         if (verified.ok) {
+          for (const entry of applied) {
+            if (entry.trackedChange?.path === file.path && entry.result?.ok === true
+              && ['overleaf-review-reject', 'overleaf-review-reject-sweep'].includes(entry.result.method))
+              Object.assign(entry.result, { verified: true, verifiedContent: file.content });
+          }
           return { ok: true };
         }
         const rejectedAnyForFile = applied.length > appliedCountBefore;
@@ -1541,9 +1540,6 @@
     }
     return false;
   }
-
-
-
 
   const captureModule = window?.CodexOverleafTrackedChangeCapture
     || (typeof module === 'object' && module.exports ? require('./trackedChangeCapture.js') : null);
@@ -1618,11 +1614,13 @@
     if (/^(true|disabled)$/i.test(node.getAttribute?.('aria-disabled') || '')) {
       return false;
     }
-    const signal = normalizeReviewingSignalText(readNodeSignalText(node));
-    if (/\b(?:accept|approve|apply|resolve|接受|批准|应用)\b/i.test(signal)) {
+    const signal = normalizeReviewingSignalText([readNodeSignalText(node),
+      ...Array.from(node.querySelectorAll?.('.visually-hidden') || [])
+        .map(label => label.textContent || '')].join(' '));
+    if (/\b(?:accept|approve|apply|resolve)\b|接受|批准|应用/i.test(signal)) {
       return false;
     }
-    return /\b(?:reject|decline|discard|revert|拒绝|丢弃|还原)\b/i.test(signal);
+    return /\b(?:reject|decline|discard|revert)\b|拒绝|丢弃|还原/i.test(signal);
   }
     return {
       acceptTrackedChanges,

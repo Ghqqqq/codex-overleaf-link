@@ -117,6 +117,12 @@
       sessionSlot: instance.sessionSlot,
       composerSlot: instance.composerSlot,
       setView: view => { panelEl.dataset.view = view; },
+      setLocale: labels => {
+        launcherEl.title = labels.launcher;
+        launcherEl.setAttribute('aria-label', labels.launcher);
+        const close = panelEl.querySelector('[data-close-panel]');
+        if (close) { close.title = labels.close; close.setAttribute('aria-label', labels.close); }
+      },
       destroy: () => destroy(instance),
       _instance: instance
     };

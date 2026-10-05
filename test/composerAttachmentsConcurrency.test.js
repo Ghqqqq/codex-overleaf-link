@@ -238,7 +238,8 @@ test('current read failure releases its reservation and permits same-file retry'
   const f = fixture({ maxAttachmentTotalBytes: 8, maxAttachmentBytes: 8 });
   const value = file('retry.txt', 8);
   const adding = f.controller.addFiles([value]);
-  const rejected = assert.rejects(adding, /Synthetic read failure/);
+  const rejected = assert.rejects(adding, error => error.message === 'Could not read selected file.'
+    && error.cause?.message === 'Synthetic read failure');
   f.fail(f.readers[0]);
   await rejected;
   assert.deepEqual(f.usage(), { committed: 0, pending: 0, limit: 8 });

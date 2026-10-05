@@ -278,6 +278,8 @@ Track-off 且有前后像的记录，可通过 `untrackedUndo: true` 进入
 
 Track-on 的恢复使用捕获的 refs、原生 ownership 和前后像。
 `rejectTrackedChanges` 可尝试受前后像保护的 editor Undo、快照恢复或变更节点操作。
+原生 editor Undo 在文件正文就绪后，若控件暂时缺失或 disabled，会最多等待1.5秒、每60毫秒重新查询可用控件；等待继续消费 ReviewContext 的原总期限与取消状态。每次等待固定该次点击前的文件路径、完整正文、原生文档ID及完整留痕 refs；任何漂移立即停止整条审阅请求并保留先前成功结果，不进入快照或DOM回退。已点击但正文无进展时沿原逻辑停止，不因新增等待再次点击。永久缺失控件仍可能部分失败；该有界等待不增加丢失原生历史后的恢复权限。[trackedUndoControlReadiness.test.js](../../test/trackedUndoControlReadiness.test.js) 通过生产 Page RPC 与隔离编辑器验证第二文件控件延迟、永久缺失、取消/截止、路径/正文/文档/账本漂移及无进展对照。
+既有 Review DOM 回退识别 Reject 控件时，同时读取当前候选控件内 `.visually-hidden` 的独立文本标签。Overleaf 图标文字与辅助标签可在 `innerText/textContent` 中黏连为 `closeReject change`，因此只对整串做单词边界匹配会漏掉真实按钮。中文“拒绝/接受”等标签独立于英文单词边界匹配。补读标签不扩展节点搜索范围；disabled、aria-disabled、包含 Accept 与 Reject 的歧义控件及原生归属守卫仍有效。[trackedUndoRejectLabels.test.js](../../test/trackedUndoRejectLabels.test.js) 重放实际按钮文本，串联两文件 Page RPC、原生留痕前检和精确前像读回，并包含他人留痕与禁用/歧义控件对照。每个文件的 sweep 只在实际 DOM 拒绝后、目标活动路径一致且完整前像读回成功时，为该文件已有 DOM 回执附加 `verified/verifiedContent`；保留原节点 key 和 DOM method。[writebackSettlement.isVerifiedUndoEntryForPath](../../extension/src/shared/writebackSettlement.js) 严格核对 DOM method、节点 key 类型、路径及精确前像后，才允许结算和消费该文件检查点。无验证、错误内容或其他文件回执继续保留恢复材料；同一测试也覆盖真实 Controller、完整两文件后像、Page RPC、存储重载及空前像。
 归属读取和捕获联动 [trackedChangeOwnership](../../extension/src/page/trackedChangeOwnership.js)、
 [trackedChangeCapture](../../extension/src/page/trackedChangeCapture.js)、[trackedChangeCaptureController](../../extension/src/content/trackedChangeCaptureController.js)。
 

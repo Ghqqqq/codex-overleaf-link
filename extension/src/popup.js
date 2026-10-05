@@ -1,6 +1,10 @@
 (function initPopup() {
   'use strict';
 
+  // Keep only copy produced by this popup eligible for a language refresh.
+  const popupCopyPairs = new Map();
+  let newSiteCopyNodes = [];
+
   const popupScriptUrl = document.currentScript?.src || chrome.runtime.getURL('src/popup.js');
   ensureMinimalPopupShell();
   const CodexOverleafCompatibility = window.CodexOverleafCompatibility;
@@ -161,6 +165,7 @@
       const granted = await chrome.permissions.request({ origins: missing }).catch(() => false);
       if (granted) section.remove();
     });
+    newSiteCopyNodes = [title, detail, button];
     section.append(title, detail, button);
     document.getElementById('popup-shell')?.append(section);
   }
@@ -176,10 +181,10 @@
     connectionDetails.setAttribute('aria-label', utx('Version details', '版本信息'));
     connectionToggle.title = utx('Show or hide version details', '展开或收起版本信息');
     copyInstallCommand.textContent = utx('Copy install command', '复制安装命令');
+    [status, copyFeedback, ...newSiteCopyNodes].forEach(refreshPopupCopy);
     if (lastCompatibility) {
       setVersionStatus(lastCompatibility);
-      if (!nativeInstall.hidden) nativeStatusMessage.textContent = getNativeStatusMessage(
-        lastCompatibility.status, getCompatibilityClassification(lastCompatibility));
+      if (!nativeInstall.hidden) showNativeInstallGuide(lastCompatibility);
     }
   }
 
@@ -713,7 +718,15 @@ async function sendConsentAction(action) {
     return labels[blocker] || utx('Waiting until every Overleaf tab is saved and idle.', '正在等待所有 Overleaf 标签页完成保存并进入空闲状态。');
   }
 
+  function refreshPopupCopy(element) {
+    const pair = popupCopyPairs.get(element?.textContent);
+    if (pair) element.textContent = utx(...pair);
+  }
+
   function utx(english, chinese) {
+    const pair = [english, chinese];
+    popupCopyPairs.set(english, pair);
+    popupCopyPairs.set(chinese, pair);
     const locale = document.documentElement?.lang || 'en';
     return /^zh\b/i.test(locale) ? chinese : english;
   }

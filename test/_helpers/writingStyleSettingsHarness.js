@@ -26,7 +26,7 @@ class Element {
   focus() { document.activeElement = this; }
 }
 async function flush() { for (let i = 0; i < 12; i++) await new Promise(r => setImmediate(r)); }
-async function harness(t, { rules = {}, marker = '', approve = false, locale = 'en', onConfirm, metadata, initializeOnly = false, buildError } = {}) {
+async function harness(t, { rules = {}, marker = '', approve = false, locale = 'en', onConfirm, metadata, initializeOnly = false, buildError, overrides = {} } = {}) {
   const saved = Object.fromEntries(['document', 'chrome', 'MutationObserver'].map(k => [k, global[k]]));
   t.after(() => { for (const [k, v] of Object.entries(saved)) v === undefined ? delete global[k] : global[k] = v; });
   global.document = { activeElement: null, createElement: tag => new Element(tag), createElementNS: (_ns, tag) => new Element(tag) };
@@ -51,12 +51,13 @@ async function harness(t, { rules = {}, marker = '', approve = false, locale = '
     listProjects: async () => [{ projectId: 'reference-one', name: 'Reference one', archived: false }],
     getReferenceSnapshot: async () => ({ projectId: 'reference-one', capturedAt: new Date().toISOString(), capabilities: { referenceTextComplete: true },
       files: [{ path: 'main.tex', content: 'Synthetic prose.\n' + marker }] }),
-    startBuild: async value => { sent.push(value); return { id: 'synthetic-request', promise: Promise.resolve({ ok: false, error: buildError || { message: 'Synthetic model boundary reached.' } }) }; } });
+    startBuild: async value => { sent.push(value); return { id: 'synthetic-request', promise: Promise.resolve({ ok: false, error: buildError || { message: 'Synthetic model boundary reached.' } }) }; }, ...overrides });
   ctl.mount(panel); await ctl.ensureLoaded();
-  if (initializeOnly) return { ctl, host };
+  const changeLocale = value => { locale = value; ctl.sync(); };
+  if (initializeOnly) return { ctl, host, changeLocale };
   const toggle = host.querySelector('[data-style-focus="enable-style"]'); toggle.checked = true; toggle.dispatch('change'); await flush();
   const checkbox = host.querySelector('[data-style-focus="project-reference-one"]'); checkbox.checked = true; checkbox.dispatch('change');
-  return { ctl, host, sent, confirmations, scope: value => { scope = value; },
+  return { ctl, host, sent, confirmations, changeLocale, scope: value => { scope = value; },
     generate: async () => { host.querySelector('[data-style-focus="generate-style"]').dispatch('click'); await flush(); } };
 }
 module.exports = { harness, flush };

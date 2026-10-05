@@ -17,6 +17,9 @@
       RunResultActions,
       RunScrollLayout,
       RunFailureNotice,
+      I18n,
+      localizeVisibleReason = value => value,
+      localizeCompileReason = value => value,
       tr,
       tx,
       getLocale,
@@ -82,7 +85,11 @@
   });
   const presence = RunPresence?.create({ tx, getLocale, formatElapsed });
   const displayRun = run => RunFailureNotice?.projectResolvedUndo?.(run) || run;
-  const activitySummary = RunActivitySummary?.create({ RunActivityModel, SubagentActivityView, tx, findRunRecord: (...args) => displayRun(findRunRecord(...args)), getPanel, cssEscape,
+  const displayLocalizedRun = run => {
+    const displayed = displayRun(run);
+    return displayed ? { ...displayed, events: (displayed.events || []).map(sanitizeRunEventForRender) } : displayed;
+  };
+  const activitySummary = RunActivitySummary?.create({ RunActivityModel, SubagentActivityView, tx, findRunRecord: (...args) => displayLocalizedRun(findRunRecord(...args)), getPanel, cssEscape,
     formatEventTime, formatElapsed, renderMarkdownBlockText, renderRunEvent, formatEventDetail,
     presence, classifyStatus: classifyRunPresence, getProjectId: () => getCurrentProjectId?.() || '',
     summarizeCommand: RunPresence?.commandSummary,
@@ -368,7 +375,7 @@
   }
 
   function renderRunCard(run) {
-    run = displayRun(run);
+    run = displayLocalizedRun(run);
     const root = document.createElement('section');
     root.className = 'transcript-turn run-card';
     root.dataset.status = run.status || 'completed';
@@ -469,6 +476,14 @@
 
   function getRunStatusText(run = {}) {
     if (run.retryingWriteback) return tx('Checking file sync', '正在检查文件同步');
+    if (['Stopped tracking after a page refresh', '页面刷新后已停止跟踪'].includes(run.statusText)) return tr('restoredRunStoppedStatus');
+    const knownStatus = /^(?:Done|Failed|Cancelled|Running|已处理|处理失败|已取消|处理中)(?:\s+[\d.]+(?:ms|s|m|h|秒|分钟)(?:\s+[\d.]+(?:ms|s|m|h|秒|分钟))*)?$/.test(run.statusText || '');
+    if (knownStatus) {
+      const elapsed = String(run.statusText).replace(/^(?:Done|Failed|Cancelled|Running|已处理|处理失败|已取消|处理中)\s*/, '');
+      const key = run.status === 'running' ? 'processing' : run.status === 'failed' ? 'processedFailed'
+        : ['rejected', 'cancelled'].includes(run.status) ? 'processedCancelled' : 'processed';
+      return tr(key, { elapsed }).trim();
+    }
     if (run.statusText) {
       return run.statusText;
     }
@@ -545,17 +560,43 @@
   function sanitizeRunEventForRender(event = {}) {
     const streamRole = sanitizeAssistantVisibleText(event.streamRole);
     const title = sanitizeAssistantVisibleText(event.title);
+    const activity = !streamRole && (!event.kind || event.kind === 'activity') && !event.guidanceId;
+    const localized = activity ? localizeProductActivity(title, sanitizeAssistantVisibleValue(event.detail)) : null;
     return {
       ...event,
+      ...(activity && event.activity?.kind === 'compile' ? { activity: { ...event.activity, output: localizeCompileReason(event.activity.output) } } : {}),
       title: streamRole === 'reasoning'
         ? stripEmptyHtmlCommentPlaceholders(title)
-        : title,
+        : localized?.title || title,
       status: sanitizeAssistantVisibleText(event.status),
-      detail: sanitizeAssistantVisibleValue(event.detail),
+      detail: localized?.detail ?? sanitizeAssistantVisibleValue(event.detail),
       technicalDetail: sanitizeAssistantVisibleValue(event.technicalDetail),
       streamKey: sanitizeAssistantVisibleText(event.streamKey),
       streamRole
     };
+  }
+
+  function localizeProductActivity(title, detail) {
+    let known = false, nextTitle = title;
+    const keys = ['undoUnsafeFullFileTitle', 'undoNoTraceTitle', 'undoFileSelectTitle', 'undoNoTraceStarted', 'undoTrackedTitle', 'undoNativeTitle', 'undoTrackedStarted', 'undoNativeStarted', 'undoSwitchedEditing', 'undoReviewingRestoreUnverified', 'runAcceptTrackedStarted', 'runAcceptTrackedFailed', 'undoResult', 'undoTrackedResult', 'undoNativeResult', 'runAcceptTrackedResult'];
+    if (I18n?.t) outer: for (const key of keys) for (const locale of ['en', 'zh']) {
+      const template = I18n.t(locale, key, { applied: '__APPLIED__', skipped: '__SKIPPED__' });
+      const pattern = template.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('__APPLIED__', '(\\d+)').replace('__SKIPPED__', '(\\d+)');
+      const match = new RegExp('^' + pattern + '$').exec(title);
+      if (match) { known = true; nextTitle = tr(key, { applied: match[1], skipped: match[2] }); break outer; }
+    }
+    const labels = ['detailAccepted', 'detailRejected', 'detailUndone', 'detailSkipped', 'detailFile', 'detailRecord', 'detailReason'];
+    const project = (value, reason = false) => {
+      if (typeof value === 'string') return reason ? localizeVisibleReason(value) : value;
+      if (Array.isArray(value)) return value.map(item => project(item, reason));
+      if (!value || typeof value !== 'object') return value;
+      return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+        const label = labels.find(id => ['en', 'zh'].some(locale => I18n?.t?.(locale, id) === key));
+        return [label ? tr(label) : key, project(child, label === 'detailReason')];
+      }));
+    };
+    return { title: known ? nextTitle : localizeCompileReason(localizeVisibleReason(title)),
+      detail: typeof detail === 'string' ? localizeVisibleReason(detail) : known ? project(detail) : detail };
   }
   function renderActivityLine(input) {
     const event = sanitizeRunEventForRender(input);
@@ -597,7 +638,7 @@
   // The result presenter owns parsing and current lifecycle metadata.
   const splitFlatCompletionReport = text => RunResultActions.splitFlatCompletionReport(text, tx);
   const projectCompletionMeta = (meta, run) => RunResultActions.projectCompletionMeta(meta, run, {
-    tx, trackedChangeInFlight, isTrackedChangeLifecycleRun, projectRunSettlement,
+    tx, getLocale, tr, trackedChangeInFlight, isTrackedChangeLifecycleRun, projectRunSettlement,
     projectId: getCurrentProjectId?.(), accountScopeId: getAccountScopeId?.()
   });
 
@@ -724,7 +765,7 @@
         mainSections.push(String(structured.conclusion));
       }
       if (structured.body) {
-        mainSections.push(structured.body);
+        mainSections.push(RunResultActions.projectCompletionBody?.(structured.body, tx) ?? structured.body);
       }
       if (mainSections.length) {
         renderMarkdownBlockText(main, mainSections.join('\n\n'));
@@ -1047,7 +1088,41 @@
     return true;
   }
 
+  function refreshLocale() {
+    const log = getPanel()?.querySelector('[data-log]');
+    if (!log) return;
+    if (!getState().runs?.length) { renderRunHistory({ preserveScroll: true }); return; }
+    const reading = scrollLayout?.snapshot() || { scrollTop: log.scrollTop };
+    for (const run of getState().runs) {
+      const existing = log.querySelector(`[data-run-id="${cssEscape(run.id)}"]`);
+      if (!existing) continue;
+      const current = getCurrentRunView();
+      if (current?.root === existing) {
+        // Streaming owners retain their DOM references and buffered model text.
+        const status = existing.querySelector('[data-run-status]');
+        if (status) status.textContent = getRunStatusText(run);
+        configureAcceptButton(existing, run); configureUndoButton(existing, run);
+        configureEditButton(existing, run); configureWritebackButton(existing, run);
+        RunResultActions.configureResultActions(existing, run);
+        const reportEvent = (run.events || []).filter(event => event.kind === 'report').at(-1);
+        const report = current.report || existing.querySelector('[data-run-report]');
+        if (reportEvent && report) report.replaceChildren(renderCompletionReport(reportEvent, displayLocalizedRun(run)));
+        activitySummary?.update(current);
+        continue;
+      }
+      const open = existing.querySelector('[data-run-process]')?.open;
+      const next = renderRunCard(run);
+      const process = next.querySelector('[data-run-process]');
+      if (process && typeof open === 'boolean') process.open = open;
+      existing.replaceWith(next);
+    }
+    log.scrollTop = reading.scrollTop;
+    scrollLayout?.restore(reading);
+    updateJumpToLatestButton(log);
+  }
+
     return {
+      refreshLocale,
       refreshResolvedUndo: refreshRunCard,
       refreshActivitySummary: activitySummary?.update,
       appendActivityDetail,

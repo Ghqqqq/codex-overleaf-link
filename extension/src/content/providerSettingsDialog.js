@@ -47,10 +47,16 @@
     if (!Profiles) {
       throw new Error('Provider settings dialog requires provider profiles.');
     }
+    const translations = new Map();
+    const translate = options.tx || (english => english);
     const instance = {
       Profiles,
       document: options.document || document,
-      tx: options.tx || ((english) => english),
+      tx: (english, chinese) => {
+        translations.set(english, [english, chinese]); translations.set(chinese, [english, chinese]);
+        return translate(english, chinese);
+      },
+      translateStatusText: text => translations.has(text) ? translate(...translations.get(text)) : options.translateStatusText?.(text) || text,
       callbacks: options.callbacks || {},
       catalog: Profiles.normalizeCatalog({}),
       selectedId: 'builtin',
@@ -83,6 +89,7 @@
       setVerification: verification => setVerification(instance, verification),
       setVerificationFailure: failure => setVerificationFailure(instance, failure),
       setTestProgress: progress => setTestProgress(instance, progress),
+      refreshLocale: () => refreshLocale(instance),
       hasUnsavedChanges: () => instance.dirty || Boolean(instance.modelEditor || instance.confirmation),
       isOpen: () => Boolean(instance.root && !instance.root.hidden),
       destroy: () => destroy(instance),
@@ -245,6 +252,7 @@
 
   function render(instance) {
     const tx = instance.tx;
+    instance.root.querySelector('[data-provider-action="close"]')?.setAttribute('aria-label', tx('Close', '关闭'));
     const reload = instance.root.querySelector('[data-provider-action="reload"]');
     if (reload) {
       reload.hidden = !instance.embedded;
@@ -290,6 +298,45 @@
           + escapeHtml(subtitle) + '</span></span></button>';
       }).join('') + '</div><button type="button" class="codex-provider-add" data-provider-action="add">+ '
       + escapeHtml(tx('Add provider', '添加模型服务')) + '</button>';
+  }
+
+  // Render a detached reference, then change only owned copy in the live DOM.
+  // Inputs, focus, selection, modal ownership, listeners and secret values stay put.
+  function refreshLocale(instance) {
+    if (!instance.root || instance.root.hidden) return;
+    const reference = { ...instance, root: instance.root.cloneNode(true) };
+    if (instance.root.querySelector('[data-provider-field="name"]')) reference.draft = readContext(instance).draft;
+    render(reference);
+    if (instance.modelEditor) openModelEditor(reference, instance.modelEditor.id, { show: false });
+    patchLocaleCopy(instance.root, reference.root);
+    if (instance.lastStatus) setStatus(instance, instance.lastStatus);
+    const confirmation = instance.root.querySelector('[data-provider-confirmation]');
+    if (instance.confirmation && confirmation) {
+      for (const node of confirmation.querySelectorAll('h3, p, button')) node.textContent = instance.translateStatusText(node.textContent);
+    }
+    const secret = instance.root.querySelector('[data-provider-field="apiKey"]');
+    const toggle = instance.root.querySelector('[data-provider-action="toggle-secret"]');
+    if (toggle) toggle.textContent = instance.tx(secret?.type === 'text' ? 'Hide' : 'Show', secret?.type === 'text' ? '隐藏' : '显示');
+    refreshTestState(instance); updateDisclosureText(instance);
+    if (instance.modelEditor) {
+      updateModelReasoningSummary(instance);
+      const error = instance.root.querySelector('[data-model-error]');
+      if (error && instance.modelEditor.error) error.textContent = formatModelEditorError(instance, instance.modelEditor.error);
+    }
+  }
+
+  function patchLocaleCopy(current, reference) {
+    if (!current || !reference || current.nodeType !== reference.nodeType) return;
+    if (current.nodeType === 3) { if (current.nodeValue !== reference.nodeValue) current.nodeValue = reference.nodeValue; return; }
+    if (current.nodeType !== 1 || current.tagName !== reference.tagName) return;
+    for (const attr of ['title', 'aria-label', 'placeholder']) {
+      const next = reference.getAttribute(attr);
+      if (next !== null && current.getAttribute(attr) !== next) current.setAttribute(attr, next);
+    }
+    if (['INPUT', 'TEXTAREA'].includes(current.tagName)) return;
+    const actual = current.childNodes, expected = reference.childNodes;
+    if (actual.length !== expected.length) return;
+    for (let index = 0; index < actual.length; index++) patchLocaleCopy(actual[index], expected[index]);
   }
 
   function renderDetail(instance) {
@@ -444,12 +491,12 @@
             <small>${escapeHtml(tx('Vendor-specific fields only; core model, messages, tools, and stream fields are protected.', '仅填写服务商特有字段；model、messages、tools 和 stream 等核心字段不可覆盖。'))}</small>
           </label>
           <label class="codex-provider-field">
-            <span>Anthropic version</span>
+            <span>${escapeHtml(tx('Anthropic version', 'Anthropic 版本'))}</span>
             <input type="text" data-provider-field="anthropicVersion" value="${escapeAttr(draft.anthropicVersion || '2023-06-01')}" spellcheck="false">
           </label>
           <label class="codex-provider-field">
             <span>Anthropic beta</span>
-            <input type="text" data-provider-field="anthropicBeta" value="${escapeAttr(draft.anthropicBeta || '')}" placeholder="optional" spellcheck="false">
+            <input type="text" data-provider-field="anthropicBeta" value="${escapeAttr(draft.anthropicBeta || '')}" placeholder="${escapeAttr(tx('optional', '可选'))}" spellcheck="false">
           </label>
           <label class="codex-provider-field">
             <span>${escapeHtml(tx('Anthropic thinking mode', 'Anthropic 思考模式'))}</span>
@@ -993,9 +1040,10 @@
   }
 
   function setStatus(instance, status = {}) {
+    instance.lastStatus = status;
     const element = instance.root.querySelector('[data-provider-status]');
     element.dataset.tone = status.tone || '';
-    element.textContent = [status.title, status.detail].filter(Boolean).join(' ');
+    element.textContent = [status.title, status.detail].filter(Boolean).map(text => instance.translateStatusText?.(text) || text).join(' ');
   }
 
   function setVerification(instance, verification = {}) {
@@ -1380,7 +1428,7 @@
     }
   }
 
-  function openModelEditor(instance, id) {
+  function openModelEditor(instance, id, options = {}) {
     const provider = readContext(instance).draft;
     const existing = provider.models.find(model => model.id === id);
     if (id && !existing) return;
@@ -1451,7 +1499,7 @@
       + escapeHtml(tx('Cancel', '取消')) + '</button><button type="button" class="codex-provider-primary-button" data-provider-model-action="apply-editor">'
       + escapeHtml(id ? tx('Apply', '应用') : tx('Add model', '添加模型')) + '</button></footer>';
     updateModelReasoningSummary(instance);
-    if (modal.showModal) modal.showModal(); else modal.setAttribute('open', '');
+    if (options.show !== false) { if (modal.showModal) modal.showModal(); else modal.setAttribute('open', ''); }
   }
 
   function updateModelReasoningSummary(instance) {
@@ -1500,14 +1548,19 @@
       closeModelEditor(instance, false);
       if (!unchanged) replaceModelDraft(instance, next);
     } catch (error) {
-      const translated = {
-        id: instance.tx(error.message, '请检查模型 ID：必填、最多 200 字符、不可重复，且单个服务最多 32 个模型。'),
-        contextWindow: instance.tx(error.message, '上下文窗口必须为 8192 至 4000000 之间的整数。'),
-        maxOutputTokens: instance.tx(error.message, '输出上限须为 256 至 65536 之间的整数，并小于上下文窗口。')
-      };
-      modal.querySelector('[data-model-error]').textContent = translated[error.field] || error.message;
+      editor.error = { field: error.field, message: error.message };
+      modal.querySelector('[data-model-error]').textContent = formatModelEditorError(instance, editor.error);
       if (error.field) get(error.field)?.focus();
     }
+  }
+
+  function formatModelEditorError(instance, error) {
+    const chinese = {
+      id: '请检查模型 ID：必填、最多 200 字符、不可重复，且单个服务最多 32 个模型。',
+      contextWindow: '上下文窗口必须为 8192 至 4000000 之间的整数。',
+      maxOutputTokens: '输出上限须为 256 至 65536 之间的整数，并小于上下文窗口。'
+    }[error.field];
+    return chinese ? instance.tx(error.message, chinese) : error.message;
   }
 
   function validateConnectionForm(instance) {

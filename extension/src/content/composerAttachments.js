@@ -88,7 +88,7 @@
           pendingAttachmentKeys.add(dedupeKey);
           pendingAttachmentBytes += fileSize;
           try {
-            const dataUrl = await readFileAsDataUrl(file);
+            const dataUrl = await readFileAsDataUrl(file, tx);
             if (generation !== attachmentGeneration) return;
             const preview = await buildAttachmentPreviewData(file, dataUrl);
             if (generation !== attachmentGeneration) return;
@@ -518,13 +518,13 @@
       /\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(String(attachment.name || ''));
   }
 
-  function readFileAsDataUrl(file) {
+  function readFileAsDataUrl(file, tx = en => en) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => {
         resolve(String(reader.result || ''));
       };
-      reader.onerror = () => reject(reader.error || new Error('Could not read selected file'));
+      reader.onerror = () => reject(new Error(tx('Could not read selected file.', '无法读取所选文件。'), { cause: reader.error }));
       reader.readAsDataURL(file);
     });
   }

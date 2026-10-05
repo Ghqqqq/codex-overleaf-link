@@ -206,7 +206,7 @@ function incompatibleWindowsNativeResponse() {
   };
 }
 
-async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessage, onTabMessage, onClipboardWrite, managed = false, marker = null } = {}) {
+async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessage, onTabMessage, onClipboardWrite, managed = false, marker = null, locale = 'en', newSiteMatches = [] } = {}) {
   const compatibilitySource = fs.readFileSync(
     path.join(__dirname, '../extension/src/shared/compatibility.js'),
     'utf8'
@@ -223,7 +223,7 @@ async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessag
     installCommand: 'install-command', copyInstallCommand: 'copy-install-command', copyFeedback: 'copy-feedback',
     launcherLabel: 'launcher-label', launcherDescription: 'launcher-description',
     extensionVersionLabel: 'extension-version-label', nativeInstallTitle: 'native-install-title',
-    brandIcon: 'brand-icon', popupStyles: 'popup-styles'
+    brandIcon: 'brand-icon', popupStyles: 'popup-styles', popupShell: 'popup-shell'
   };
   const elements = Object.fromEntries(Object.entries(ids).map(([key, id]) => [key, createPopupElement(id)]));
   elements.nativeInstall.hidden = true;
@@ -231,7 +231,7 @@ async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessag
   elements.copyFeedback.hidden = true;
   const elementById = Object.fromEntries(Object.values(elements).map(element => [element.id, element]));
 
-  const harness = { closed: false };
+  const harness = { closed: false, permissionRequests: 0 };
   const sandbox = {
     chrome: {
       runtime: {
@@ -247,7 +247,10 @@ async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessag
           return Promise.resolve(nativeResponse);
         }
       },
-      storage: { local: { get: async () => ({ codexOverleafGlobalPrefsV1: { values: { locale: 'en', theme: 'dark' } } }) }, onChanged: { addListener() {} } },
+      storage: { local: { get: async () => ({ codexOverleafGlobalPrefsV1: { values: { locale, theme: 'dark' } } }) }, onChanged: { addListener(listener) {
+        harness.changeLocale = nextLocale => listener({ codexOverleafGlobalPrefsV1: { newValue: { values: { locale: nextLocale, theme: 'dark' } } } }, 'local');
+      } } },
+      ...(newSiteMatches.length ? { permissions: { contains: async () => false, request: async () => { harness.permissionRequests += 1; return false; } } } : {}),
       tabs: {
         query() {
           return Promise.resolve(activeTab ? [activeTab] : []);
@@ -261,6 +264,7 @@ async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessag
       }
     },
     fetch: async url => {
+      if (String(url).endsWith('/runtime-manifest.json')) return { ok: true, json: async () => ({ matches: newSiteMatches }) };
       assert.equal(url, 'chrome-extension://' + TEST_EXTENSION_ID + '/.codex-overleaf-managed-extension.json');
       return { ok: Boolean(marker), json: async () => marker };
     },
@@ -274,6 +278,7 @@ async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessag
       documentElement: createPopupElement('html'),
       body: createPopupElement('body'),
       querySelector() { return null; },
+      createElement(tag) { return createPopupElement(tag); },
       getElementById(id) {
         return elementById[id] || null;
       }
@@ -313,7 +318,8 @@ async function loadPopupHarness({ nativeResponse, activeTab = null, onSendMessag
 function createPopupElement(id, options = {}) {
   const listeners = new Map();
   return {
-    id,
+    id, children: [],
+    append(...children) { this.children.push(...children); },
     hidden: options.hidden === true,
     textContent: '',
     className: '',
@@ -363,3 +369,54 @@ for (const marker of [null, { managedBy: 'codex-overleaf-link', kind: 'extension
     await h.elements.copyInstallCommand.click(); assert.equal(copied, false);
   });
 }
+
+
+test('popup refreshes existing launcher and clipboard failure copy in both locale directions', async () => {
+  const h = await loadPopupHarness({ locale: 'zh', nativeResponse: { ok: false }, onClipboardWrite() { throw new Error('clipboard unavailable'); } });
+  await h.elements.copyInstallCommand.click();
+  assert.equal(h.elements.status.textContent, '打开 Overleaf 项目页后可设置侧边入口。');
+  assert.match(h.elements.copyFeedback.textContent, /复制失败/);
+  h.changeLocale('en');
+  assert.equal(h.elements.status.textContent, 'Open an Overleaf project to change this preference.');
+  assert.equal(h.elements.copyFeedback.textContent, 'Copy failed. Select the command above to copy it.');
+  h.changeLocale('zh');
+  assert.equal(h.elements.status.textContent, '打开 Overleaf 项目页后可设置侧边入口。');
+  assert.match(h.elements.copyFeedback.textContent, /复制失败/);
+});
+
+test('popup refreshes an existing new-site permission prompt without changing its hosts or requesting permission', async () => {
+  const h = await loadPopupHarness({ locale: 'zh', nativeResponse: compatibleNativeResponse(), newSiteMatches: ['https://new.overleaf.com/project/*'] });
+  const [title, detail, button] = h.elements.popupShell.children[0].children;
+  assert.equal(button.textContent, '允许');
+  h.changeLocale('en');
+  assert.equal(title.textContent, 'This version supports another Overleaf site');
+  assert.equal(button.textContent, 'Allow');
+  assert.equal(detail.textContent, 'Allow access to new.overleaf.com to use Codex there. Chrome will ask you to confirm.');
+  h.changeLocale('zh');
+  assert.equal(button.textContent, '允许');
+  assert.match(detail.textContent, /允许访问 new.overleaf.com/);
+  assert.equal(h.permissionRequests, 0);
+});
+
+test('popup locale refresh retains Managed repair guidance and Windows shell instructions', async () => {
+  const missing = await loadPopupHarness({ locale: 'en', managed: true, nativeResponse: { ok: false } });
+  missing.changeLocale('zh');
+  assert.match(missing.elements.nativeStatusMessage.textContent, /原管理根目录、浏览器和扩展 ID/);
+  assert.equal(missing.elements.installCommand.textContent, '');
+  const win = await loadPopupHarness({ locale: 'zh', managed: true, nativeResponse: { ok: false }, marker: {
+    managedBy: 'codex-overleaf-link', kind: 'extension', installIdentity: { managedRoot: 'C:\\Managed', browser: 'chrome', extensionId: TEST_EXTENSION_ID, platform: 'win32' }
+  } });
+  win.changeLocale('en');
+  assert.match(win.elements.nativeStatusMessage.textContent, /Run the command in PowerShell/);
+});
+
+test('popup locale refresh preserves unknown external failure details', async () => {
+  const detail = '诊断原文：unrecognized external failure';
+  const h = await loadPopupHarness({ locale: 'zh', nativeResponse: compatibleNativeResponse(), activeTab: { id: 42, url: 'https://www.overleaf.com/project/example' },
+    onTabMessage(_id, message) { return message.type === 'codex-overleaf/toggle-launcher' ? { ok: false, error: { message: detail } } : { launcherVisible: false }; }
+  });
+  await h.elements.launcherToggle.change(true);
+  assert.equal(h.elements.status.textContent, detail);
+  h.changeLocale('en');
+  assert.equal(h.elements.status.textContent, detail);
+});

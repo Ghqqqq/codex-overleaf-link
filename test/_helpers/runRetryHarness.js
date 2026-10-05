@@ -138,6 +138,7 @@ function harness(options = {}) {
     runQueueScheduler: null, isExperimentalOtEnabled: () => false,
     showPluginConfirm: async prompt => { io.prompts.push(clone(prompt)); return stage('confirm', options.approve === true); }, showPluginToast: no,
     translateRawError: message => { io.errors.push('unexpected-run-error: ' + message); return { conclusion: message, nextStep: '' }; },
+    localizeVisibleReason: message => message,
     ...Object.fromEntries(['resetAutoFollow','removeEmptyRunsMessage','scrollLogToBottom','startRunElapsedTick','stopRunElapsedTick',
       'autosizeTaskTextarea','syncComposerSendAvailability','renderComposerSkillInvocation','setExperimentalOtEnabledForProject',
       'syncExperimentalOtToggleForProject','applyPanelTheme','renderReasoningOptions','renderSpeedOptions',

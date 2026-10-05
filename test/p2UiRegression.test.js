@@ -68,7 +68,9 @@ function localeHarness() {
     state: { mode: 'ask' }, currentRunView: null, probeStatusSnapshot: null, runCancellationRequested: false,
     settingsPanelInstance: { refreshNotes: noop, container: { querySelector: () => ({ open: true }) } },
     providerSettingsCoordinator: provider.api,
+    panelRendererInstance: null, runTimelineView: {}, Modules: {}, DiagnosticsPanel: {}, diagnosticsPanelInstance: null, diagnosticsController: {}, localSkillsPanel: {},
     writingStyleSettings: { sync() { styleRefreshes += 1; } },
+    tx: (en, zh) => locale === 'zh' ? zh : en,
     tr: (key, params) => I18n.t(locale, key, params),
     getCurrentProjectId: () => 'example', getActiveFocusFiles: () => [],
     isExperimentalOtEnabled: () => false,
@@ -78,7 +80,8 @@ function localeHarness() {
   };
   for (const name of ['setElementTitleAndAria', 'setDiagnosticsHealth', 'updateOtStatusDisplay',
     'updateExperimentalOtMenuStatus', 'renderModelConfigChoices', 'updateModelDisplay', 'renderSessionList',
-    'renderContextSelection', 'updateExistingProbeNotice', 'appendProbeUserStatus', 'setRefreshProbeLoading']) context[name] = noop;
+    'renderContextSelection', 'renderContextSummary', 'renderContextFiles', 'renderPendingInputs', 'renderComposerAttachments', 'renderComposerSkillInvocation',
+    'updateExistingProbeNotice', 'appendProbeUserStatus', 'setRefreshProbeLoading']) context[name] = noop;
   vm.createContext(context);
   for (const name of ['syncModeControls', 'syncProbeStatus', 'applyLocaleToPanel', 'syncComposerSendAvailability', 'refreshProbe', 'formatProbeStatusBar', 'appendOtStatusToProbeStatus',
     'getProbeRunReadiness', 'formatModeLabel', 'isProbeReadyForCurrentMode']) {

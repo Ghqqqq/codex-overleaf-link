@@ -71,6 +71,7 @@
       const placeholder = document.createElement('div');
       placeholder.className = 'codex-project-settings-empty';
       placeholder.textContent = tr('codexOverleafSkillsLoading');
+      placeholder.dataset.i18n = 'codexOverleafSkillsLoading';
       list.append(placeholder);
     }
 
@@ -93,10 +94,10 @@
       const codexOverleafEnabled = getSkillLoadingSettings().loadCodexOverleafSkills !== false;
       list.textContent = '';
       if (!codexOverleafEnabled) {
-        appendLocalSkillEmpty(list, tr('codexOverleafSkillsDisabled'));
+        appendLocalSkillEmpty(list, 'codexOverleafSkillsDisabled');
       }
       if (!codexOverleafSkills.length) {
-        appendLocalSkillEmpty(list, tr('codexOverleafSkillsEmpty'));
+        appendLocalSkillEmpty(list, 'codexOverleafSkillsEmpty');
         return;
       }
       for (const skill of codexOverleafSkills) {
@@ -174,6 +175,13 @@
       toggle.addEventListener('change', event => {
         setCodexOverleafSkillEnabled(id, event.target.checked);
       });
+      row._refreshLocale = () => {
+        toggle.setAttribute('aria-label', (trimmedTitle || id) + ': ' + tr('codexOverleafSkillEnableToggle'));
+        const label = id === 'annotated-rewrite' ? tx('Guided editing for document revisions.', '用于文稿修订的编辑流程。')
+          : id === 'parallel-subagents' ? tx('Split independent subtasks across multiple agents.', '将相互独立的子任务分配给多个 agent。') : '';
+        const help = copy.querySelector('.codex-local-skill-description');
+        if (label && help) { help.textContent = label; help.title = label; }
+      };
 
       if (skill.removable !== false) {
         // The Remove / Confirm / Cancel controls share an actions container so
@@ -198,6 +206,11 @@
         cancelBtn.type = 'button';
         cancelBtn.className = 'codex-set-btn';
         cancelBtn.textContent = tr('localSkillRemoveCancel');
+        const refreshRow = row._refreshLocale;
+        row._refreshLocale = () => {
+          refreshRow(); removeBtn.textContent = tr('localSkillRemove'); cancelBtn.textContent = tr('localSkillRemoveCancel');
+          confirmBtn.textContent = tr(confirmBtn.disabled ? 'localSkillRemoving' : 'localSkillRemoveConfirm');
+        };
 
         function enterConfirming() {
           // Reset any previously confirming row back to its Remove button state.
@@ -274,10 +287,11 @@
       }
     }
 
-    function appendLocalSkillEmpty(list, text) {
+    function appendLocalSkillEmpty(list, key) {
       const empty = document.createElement('div');
       empty.className = 'codex-project-settings-empty';
-      empty.textContent = text;
+      empty.textContent = tr(key);
+      empty.dataset.i18n = key;
       list.append(empty);
     }
 
@@ -304,6 +318,7 @@
 
     return {
       refreshLocalSkills,
+      refreshLocale: () => { for (const row of getPanel()?.querySelector('[data-local-skill-list]')?.children || []) row._refreshLocale?.(); },
       renderLocalSkillList,
       removeCodexOverleafSkill
     };

@@ -37,8 +37,8 @@
 
 - 入口：[i18n](../../extension/src/shared/i18n.js)、[ThemeController](../../extension/src/content/themeController.js)、共享 [popup.js](../../extension/src/popup.js)。
 - 状态 owner：[globalPreferences](../../extension/src/shared/globalPreferences.js) 的 `locale/theme`；panel、popup 分别应用偏好。
-- 必须联动：[direct popup](../../extension/popup.html)、[managed popup](../../extension/bootstrap/popup.html)、[popup.css](../../extension/styles/popup.css)，以及 runtime 的 `tr/tx`、popup 的 `utx`。当前 managed HTML 加载 runtime popup，未引用同目录旧 `popup.js`。
-- 最近测试：[i18n](../../test/i18n.test.js)、[themeController](../../test/themeController.test.js)、[popupInstallGuidance](../../test/popupInstallGuidance.test.js)、[popupUpdateExperience](../../test/popupUpdateExperience.test.js)。
+- 必须联动：runtime 的 `applyLocaleToPanel/tr/tx`、`RunTimelineView.refreshLocale`、`RunCompletionMeta`、`FailureReasons.formatFailureReasonForDisplay`，以及 Popup 的 `utx` 和动态提示投影；修改显示不得重解释恢复权限或翻译用户、模型原文。核对 [direct popup](../../extension/popup.html)、[managed popup](../../extension/bootstrap/popup.html)、[popup.css](../../extension/styles/popup.css)。Managed HTML 加载 runtime popup 及固定 [popupFallback.js](../../extension/bootstrap/popupFallback.js)，未引用同目录旧 `popup.js`。
+- 最近测试：[i18n](../../test/i18n.test.js)、[uiLocaleProjection](../../test/uiLocaleProjection.test.js)、[runtimeStatusLocale](../../test/runtimeStatusLocale.test.js)、[undoNoticeRecovery](../../test/undoNoticeRecovery.test.js)、[diagnosticsLocaleRefresh](../../test/diagnosticsLocaleRefresh.test.js)、[themeController](../../test/themeController.test.js)、[popupInstallGuidance](../../test/popupInstallGuidance.test.js)、[popupFallbackLocale](../../test/popupFallbackLocale.test.js)。
 
 ### 改回答 Markdown、公式或文件行号跳转
 

@@ -124,7 +124,17 @@ Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并
 
 `persistPanelInputs` 先交给全局 controller；识别到全局字段就返回该 patch Promise。普通 task 输入走 debounce 保存，明确控件变更继续读取并持久化。
 全局 controller 将 pending patch 投影到本地视图，再接收递增 revision；失败时移除 pending patch 并报告错误。此结构旨在阻止旧会话 autosave 回滚全局偏好。
-语言存在三条呈现通路：[i18n](../../extension/src/shared/i18n.js) 的 `tr` 键、runtime 的 `tx(en, zh)`、Popup 的 `utx`。修改翻译需同时检查实际消费者。已知失败码由 `FailureReasons.localizeFailureReason` 在 Notice 和既有详情渲染时读取当前面板语言，原诊断继续保留。旧记录丢失原始错误码时，`RunFailureNotice.snapshotUndoDisplayFailure` 只对精确匹配的已知 Snapshot Undo 及留痕缺失模板生成临时展示描述；`tracked_change_not_found` 的展示兼容继续保留原 `unknown_legacy_failure` 分类、重试标志、持久状态与恢复动作权限。未知诊断保留原文。
+语言存在三条呈现通路：[i18n](../../extension/src/shared/i18n.js) 的 `tr` 键、runtime 的 `tx(en, zh)`、Popup 的 `utx`。修改翻译需同时检查实际消费者。Notice、Bridge 和 apply 详情共用 `FailureReasons.formatFailureReasonForDisplay`，已知错误及下一步文案在渲染时读取当前面板语言；历史记录的 Undo、Accept、Review 自产精确模板由同一显示投影识别，覆盖丢失原始错误码及已包装为通用错误码的情况。动态文件路径只展示一次，从旧文案解析出的路径仅用于显示，恢复按钮仍只消费原 failure 的可信路径。原生审阅尚未写入与可能已写入的提示分别保留对应语义。`localizeFailureMessage` 为只有历史文案的消费者提供同一精确模板匹配，未知诊断、模型回答及用户原文保留原文。现有 canonical 错误（`unknown_legacy_failure` 除外）的用户说明与下一步均有中英词条；旧记录中的精确 catalog 默认正文及单层 `文件: 已知正文` 也可恢复显示语言。显示投影不改变 canonical 错误分类、重试标志、持久状态及恢复动作权限；相关回归见 [undoNoticeRecovery](../../test/undoNoticeRecovery.test.js)。
+
+[RunCompletionMeta](../../extension/src/content/runCompletionMeta.js) 根据稳定的 `meta.key`、自产固定模板、计数字段及既有 FailureReason／AgentTranscript 错误建议生成当前语言的元信息显示，不改运行记录及保存的报告。[RunQueueScheduler](../../extension/src/content/runQueueScheduler.js) 按已知 Native 指导错误码生成本地化提示；[ComposerAttachments](../../extension/src/content/composerAttachments.js) 的 `FileReader` 失败使用自产本地化摘要，浏览器原始错误保留在 `cause`。runtime 的自产执行快照、选区、存储和 Native 连接异常通过 `ApplyResultFormatters.localizeVisibleReason` 精确匹配；任意外部异常不做推测翻译。
+
+[CompileAdapter.localizeCompileReason](../../extension/src/shared/compileAdapter.js) 处理产品自产的编译与保存说明，保留原编译摘要和 TeX 日志。
+
+语言变化由 `contentRuntime.applyLocaleToPanel` 刷新已有界面。`RunTimelineView.refreshLocale` 重新呈现历史卡片，并保留展开与滚动位置；活动运行保留流式节点和缓冲引用，只更新产品控件及已生成报告的显示。队列、附件、模型选项、Provider 对话框和更新提示各自刷新自产文案；对话框输入与用户草稿保持原位。已知过程提示可通过精确模板投影，命令输出、技术详情和模型流不作推测翻译。
+[WritingStyleSettings](../../extension/src/content/writingStyleSettings.js) 的 `sync` 也会重新投影缓存的自产状态及目录错误；参考资料标题和模型风格预览保留原内容。缓存文案的语言变化不重新生成风格、不改变所选资料或启用状态，见 [writingStyleLocale](../../test/writingStyleLocale.test.js)。
+
+`RunCompletionMeta.projectCompletionBody` 只识别 `AgentTranscript.buildStructuredHumanReport` 的完整有序章节格式：前四节为单行列表，最后的跳过原因允许多行内容。它只翻译五个产品章节名，保留列表内容、模型结论及跳过原因正文；不符合该格式的历史正文保持原样。相关回归见 [runtimeStatusLocale](../../test/runtimeStatusLocale.test.js) 和 [uiLocaleProjection](../../test/uiLocaleProjection.test.js)。
+
 [ThemeController.applyTheme/watchAuto](../../extension/src/content/themeController.js) 负责主题效果；全局存储拥有偏好，CSS 与 dialog/浮动工具栏负责正确继承和显示。
 
 ### 已提交输入、运行中草稿与编辑重发
@@ -297,6 +307,7 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 ## 7. 诊断与 Popup 的真实入口
 
 [DiagnosticsController.runAllDiagnostics](../../extension/src/content/diagnosticsController.js) 依次收集 Native、页面、快照和 OT 检查，并按最差 health 汇总；DiagnosticsPanel 负责菜单、loading 与结果 DOM。
+`DiagnosticsController.refreshLocale` 从当前请求已经取得的观察结果重建显示，不重新发起检查；`DiagnosticsPanel.refreshLocale` 保留已关闭状态、展开项和滚动位置，技术证据仍是原始结果。请求代次与账号、项目、路由约束继续适用，见 [diagnosticsLocaleRefresh](../../test/diagnosticsLocaleRefresh.test.js)。
 [DiagnosticsPanel.closeResult](../../extension/src/content/diagnosticsPanel.js) 隐藏结果并设置 `resultDismissed`，`showResult` 在该布尔屏障为真时忽略结果；关闭按钮、Escape 和外部点击均可进入此路径。关闭没有取消底层检查，全检仍可继续并更新 health。
 每次可见的全检或单项检查由 `DiagnosticsController.beginDiagnostics` 建立新请求代次，并捕获账号、项目及路由代次；只有仍匹配的请求可发布结果，全检更新 health 也受同一检查约束。全检内部的 `collectOnly` 子检查沿用其父请求，不争夺可见结果。下一次 `showLoading` 清除 `resultDismissed` 后，旧检查仍不能覆盖新检查；仅关闭且未启动新检查时，原检查仍可更新 health。该机制过滤迟到结果，不取消已经发出的底层读取。
 [diagnosticsRequestOwnership.test.js](../../test/diagnosticsRequestOwnership.test.js) 串联真实 Panel、Controller 和 runtime 绑定，覆盖全检/单项交错、账号项目及路由变化；[diagnosticsViewport](../../test/diagnosticsViewport.test.js) 另检查关闭及布局。DOM 和通信替身不构成真实浏览器验收。
@@ -305,6 +316,7 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 AuditRecords 构造摘要字段并使用 secret-like 文本处理。维护约束是避免正文、完整附件或凭据进入诊断；新增字段须沿采集、摘要和导出链检查，已有字段的处理不能作为其他出口的无泄漏保证。
 [Direct popup HTML](../../extension/popup.html) 和 [Managed popup HTML](../../extension/bootstrap/popup.html) 共用 [src/popup.js](../../extension/src/popup.js)；后者通过 runtime 路径加载可替换代码和 CSS。
 `ensureMinimalPopupShell` 可改造旧 managed HTML 外壳；`initPopupState/applyPopupPreferences` 读取全局语言主题、监听变化，并设置 `<html lang>`。
+Popup 的自产动态状态、复制反馈和站点授权说明随语言重画；Managed 修复指引继续使用原安装身份及平台信息，语言变化不重新申请权限。Managed HTML 先加载固定的 [popupFallback.js](../../extension/bootstrap/popupFallback.js)，使 runtime 无法加载时的原有修复提示也可读取语言偏好。该脚本只更新仍存在的 fallback 外壳，正常 runtime 替换外壳后的迟到回调不覆盖界面。修改此固定资产须完整 Managed 安装，见 [popupFallbackLocale](../../test/popupFallbackLocale.test.js) 及[安装边界](installation-and-updates.md#9-手动升级与-bootstrap-边界)。
 launcher 开关先读 `get-panel-state`，按需发 `toggle-launcher`，再读回验证；该开关只控制侧边入口可见性，面板开合有自己的动作。
 [bootstrap/popup.js](../../extension/bootstrap/popup.js) 未被当前 managed HTML 引用；[contentScript.js](../../extension/src/contentScript.js) 也未列入当前 canonical content entry。旧文件存在与当前执行是两种证据。
 

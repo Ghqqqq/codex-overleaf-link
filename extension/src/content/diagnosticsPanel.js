@@ -153,6 +153,35 @@
     });
   }
 
+  // Repaint an already-visible observation without rerunning checks or
+  // reopening a dismissed result. User disclosure and scroll choices survive.
+  function refreshLocale(target, result) {
+    const instance = target?._instance || target;
+    if (!instance?.container) return;
+    for (const node of instance.container.querySelectorAll('[data-i18n]')) {
+      node.textContent = t(instance, node.getAttribute('data-i18n'));
+    }
+    const close = instance.container.querySelector('[data-diagnostics-result-close]');
+    if (close) {
+      close.title = t(instance, 'close');
+      close.setAttribute('aria-label', t(instance, 'closeDiagnostics'));
+    }
+    const health = instance.container.querySelector('[data-diagnostics-health-dot]')?.dataset.health;
+    updateStatus(instance, { health });
+    const root = instance.container.querySelector('[data-diagnostics-result]');
+    if (!result || !root || root.hidden || instance.resultDismissed) return;
+    const details = root.querySelector('[data-diagnostics-result-details]');
+    const scroll = root.querySelector('.codex-diagnostics-result-scroll');
+    const open = details?.open, scrollTop = scroll?.scrollTop;
+    const checks = Array.from(root.querySelectorAll('.codex-diagnostics-check'), node => node.open);
+    showResult(instance, result);
+    if (details) details.open = open;
+    root.querySelectorAll('.codex-diagnostics-check').forEach((node, index) => {
+      if (index < checks.length) node.open = checks[index];
+    });
+    if (scroll) scroll.scrollTop = scrollTop;
+  }
+
   function showResult(target, result = {}) {
     const instance = target?._instance || target;
     if (instance?.resultDismissed) return;
@@ -621,6 +650,7 @@
     closeResult,
     showLoading,
     showResult,
+    refreshLocale,
     uniqueContentSignatures
   };
 })();

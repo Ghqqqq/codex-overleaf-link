@@ -443,6 +443,9 @@
     RunResultActions: runResultActions,
     RunScrollLayout: Modules.RunScrollLayout,
     RunFailureNotice: Modules.RunFailureNotice,
+    I18n: i18n,
+    localizeVisibleReason: value => localizeVisibleReason(value),
+    localizeCompileReason: value => Modules.CompileAdapter.localizeCompileReason(value, getLocale()),
     tr,
     tx,
     getLocale,
@@ -1473,6 +1476,10 @@
     panel.querySelectorAll('[data-i18n]').forEach(element => {
       element.textContent = tr(element.dataset.i18n);
     });
+    panel.querySelectorAll('[data-i18n-aria-label]').forEach(element => {
+      element.setAttribute('aria-label', tr(element.dataset.i18nAriaLabel));
+    });
+    panelRendererInstance?.setLocale?.({ launcher: tx('Show or hide Codex panel', '显示或隐藏 Codex 边栏'), close: tx('Close Codex panel', '关闭 Codex 边栏') });
 
     setElementTitleAndAria('[data-panel-resize-handle]', tr('resizePanel'), tr('resizePanel'));
     setElementTitleAndAria('[data-refresh]', tr('refreshProbe'), tr('refreshProbe'));
@@ -1542,7 +1549,7 @@
       contextStatus.textContent = tr('contextStatus');
     }
     // Re-render rather than patch text: the first div is the animated mark.
-    if (panel.querySelector('.empty-runs')) renderRunHistory();
+    if (arguments[0]?.reprojectDynamic !== false) runTimelineView.refreshLocale?.();
 
     syncModeControls();
     updateOtStatusDisplay();
@@ -1551,9 +1558,19 @@
     updateModelDisplay();
     renderSessionList();
     renderContextSelection();
+    renderContextSummary();
+    renderPendingInputs();
+    renderComposerAttachments();
+    renderComposerSkillInvocation();
     writingStyleSettings.sync();
     updateSkillsEntrySummary();
+    localSkillsPanel.refreshLocale?.();
     providerSettingsCoordinator.renderSummary();
+    providerSettingsCoordinator.refreshLocale?.();
+    settingsPanelInstance?.refreshLocale?.();
+    Modules.UpdateNotice?.refreshLocale?.();
+    DiagnosticsPanel.refreshLocale?.(diagnosticsPanelInstance, diagnosticsController.refreshLocale?.());
+    if (!panel.querySelector('[data-context-tray]')?.hidden) renderContextFiles();
     if (settingsPanelInstance?.container?.querySelector('[data-storage-card]')?.open) refreshStorageUsageSummary();
   }
 
@@ -2013,7 +2030,7 @@
             }
           });
           appendRunEvent({
-            title: tx(`Compile log unavailable: ${compileLogContext.reason}`, `编译日志不可用：${compileLogContext.reason}`),
+            title: tx(`Compile log unavailable: ${Modules.CompileAdapter.localizeCompileReason(compileLogContext.reason, getLocale())}`, `编译日志不可用：${Modules.CompileAdapter.localizeCompileReason(compileLogContext.reason, getLocale())}`),
             status: 'failed',
             failure: contextFailure
           });
@@ -2740,7 +2757,7 @@
         runCancellationController = null;
       }
       console.error('[codex-overleaf] failed to start task', error);
-      appendPlainLog(tx(`Could not start Codex task: ${error.message}`, `无法启动 Codex 任务：${error.message}`));
+      appendPlainLog(tx(`Could not start Codex task: ${localizeVisibleReason(error.message)}`, `无法启动 Codex 任务：${localizeVisibleReason(error.message)}`));
     }).finally(() => { runSubmissionPending = false; });
   }
 
@@ -2884,7 +2901,7 @@
       const nativeResult = results[0];
       const nativeResponse = nativeResult?.status === 'fulfilled' ? nativeResult.value : null;
       if (nativeResponse && !nativeResponse.ok) {
-        const message = nativeResponse?.error?.message || tx('native host did not respond', 'native host 没有响应');
+        const message = localizeVisibleReason(nativeResponse?.error?.message || tx('native host did not respond', 'native host 没有响应'));
         appendRunEvent({
           title: tx(`Cancel request was not delivered: ${message}`, `中断请求没有送达：${message}`),
           status: 'failed'
@@ -2927,7 +2944,7 @@
       }
     });
     appendPlainLog(Modules.RunRecoveryActions.formatForceCancelOutcome(response, tx));
-    if (response?.ok !== true && response?.error?.message) appendPlainLog(response.error.message);
+    if (response?.ok !== true && response?.error?.message) appendPlainLog(localizeVisibleReason(response.error.message));
     return response;
   }
 
@@ -5531,7 +5548,7 @@
         emitStorageQuotaFailure(error, fallbackError);
       }
       if (typeof appendStorageNoticeOnce === 'function') {
-        appendStorageNoticeOnce('save-failed', tx(`Failed to save session state: ${error.message}`, `保存会话状态失败：${error.message}`));
+        appendStorageNoticeOnce('save-failed', tx(`Failed to save session state: ${localizeVisibleReason(error.message)}`, `保存会话状态失败：${localizeVisibleReason(error.message)}`));
       } else {
         throw error;
       }
@@ -5714,7 +5731,7 @@
     if (isStorageQuotaError(error)) {
       return tx('Local session history is too large. Delete some old tasks and retry.', '本地会话记录太大，请删除一些旧任务后重试。');
     }
-    return error?.message || String(error);
+    return localizeVisibleReason(error?.message || String(error));
   }
 
   async function persistPanelInputs(event) {
@@ -5939,7 +5956,7 @@
     getComposerDraftPersistence().hydrate(state.composerAttachments);
     renderComposerAttachments();
     renderComposerSkillInvocation();
-    applyLocaleToPanel();
+    applyLocaleToPanel({ reprojectDynamic: false });
     if (!panel.querySelector('[data-context-tray]')?.hidden) {
       renderContextFiles();
     }

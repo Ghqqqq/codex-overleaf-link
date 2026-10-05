@@ -37,7 +37,7 @@ for (const [name, response, expected] of [
   ['failed', { ok: false, error: { message: 'Synthetic failure' } }, /failed|失败/]
 ]) test('existing force-release button and runtime agree on ' + name, async () => {
   const logs = [], context = vm.createContext({ currentRunView: null, getCurrentProjectId: () => 'project-one',
-    tx: en => en, appendPlainLog: text => logs.push(text), sendBackgroundNative: async () => response,
+    tx: en => en, localizeVisibleReason: value => value, appendPlainLog: text => logs.push(text), sendBackgroundNative: async () => response,
     Modules: productionModules() });
   vm.runInContext(extractFunction(source, 'forceCancelStuckTaskForCurrentProject'), context);
   const actions = Actions.create({ document: { createElement: () => new Element() }, tx: en => en,

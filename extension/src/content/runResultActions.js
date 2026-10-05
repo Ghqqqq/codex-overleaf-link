@@ -4,7 +4,7 @@
 })(typeof window !== 'undefined' ? window : globalThis, function (RunCompletionMeta) {
   'use strict';
 
-  const { splitFlatCompletionReport, projectCompletionMeta, summarizeCompletionMeta } = RunCompletionMeta;
+  const { splitFlatCompletionReport, projectCompletionBody, projectCompletionMeta, summarizeCompletionMeta } = RunCompletionMeta;
 
 
   function create(deps = {}) {
@@ -109,7 +109,7 @@
       if (!copied) throw new Error('clipboard_copy_failed');
     }
 
-    return Object.freeze({ configureResultActions, projectUndoAvailability, splitFlatCompletionReport, projectCompletionMeta, summarizeCompletionMeta });
+    return Object.freeze({ configureResultActions, projectUndoAvailability, splitFlatCompletionReport, projectCompletionBody, projectCompletionMeta, summarizeCompletionMeta });
   }
 
 

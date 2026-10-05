@@ -16,7 +16,18 @@
     let pickerOpen = false, query = '', filter = 'all';
     let activeGeneration = null, cancelling = false;
     let preview = null, previewBusy = false, previewFile = 'references/writing-style.md';
-    const tx = (en, zh) => deps.tx(en, zh);
+    const ownMessagePairs = new Map();
+    const tx = (en, zh) => {
+      const pair = [en, zh];
+      ownMessagePairs.set(en, pair); ownMessagePairs.set(zh, pair);
+      return deps.tx(en, zh);
+    };
+    // Cached status text keeps its diagnostic value; only known copy is
+    // projected again when sync renders under a different language.
+    const displayMessage = value => {
+      const pair = ownMessagePairs.get(value);
+      return pair ? deps.tx(...pair) : value;
+    };
     const node = (tag, className, text) => {
       const element = document.createElement(tag);
       if (className) element.className = className;
@@ -225,10 +236,10 @@
             const snapshot = await deps.getReferenceSnapshot(source.projectId, operation.readId);
             operation.readId = ''; stillActive();
             if (snapshot?.projectId !== source.projectId || snapshot?.capabilities?.referenceTextComplete !== true) {
-              throw new Error(tx('The reference project could not be read completely: ', '参考项目未能完整读取：') + source.name);
+              throw new Error(tx('The reference project could not be read completely: ' + source.name, '参考项目未能完整读取：' + source.name));
             }
             const body = new Blob([JSON.stringify(snapshot)], { type: 'application/json' });
-            if (body.size > LIMITS.maxProjectBytes) throw new Error(tx('Reference project is too large: ', '参考项目过大：') + source.name);
+            if (body.size > LIMITS.maxProjectBytes) throw new Error(tx('Reference project is too large: ' + source.name, '参考项目过大：' + source.name));
             projectFiles.push(...(snapshot.files || []).map(file => ({ ...file, path: source.projectId + '/' + file.path })));
             const id = crypto.randomUUID();
             attachments.push({ id, name: source.projectId + '.writing-reference.json', size: body.size,
@@ -353,7 +364,7 @@
         list.append(loading);
       } else if (projectError) {
         const error = node('div', 'ws2-picker-state ws2-picker-error');
-        error.append(node('strong', '', tx('Projects could not be loaded', '项目列表未能加载')), node('p', '', projectError),
+        error.append(node('strong', '', tx('Projects could not be loaded', '项目列表未能加载')), node('p', '', displayMessage(projectError)),
           button(tx('Retry', '重试'), () => { void loadProjects(true); }, 'ws2-button', 'retry-projects'));
         list.append(error);
       } else {
@@ -553,7 +564,7 @@
         }
       }
       if (message || !meta) {
-        const status = node('div', 'ws2-status', message || tx('Loading writing-style settings…', '正在加载写作风格设置…'));
+        const status = node('div', 'ws2-status', displayMessage(message) || tx('Loading writing-style settings…', '正在加载写作风格设置…'));
         status.dataset.tone = messageTone;
         status.setAttribute('role', messageTone === 'error' ? 'alert' : 'status');
         if (!meta && message) status.append(button(tx('Retry', '重试'), () => {

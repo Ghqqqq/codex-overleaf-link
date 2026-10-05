@@ -39,6 +39,7 @@ V_{installed}=V_{native}=V_{extension}=V_{runtime}.
 
 两条 content 路径使用相同生成 bundle；源码纳入由 [content-entry.mjs](../../extension/entries/content-entry.mjs) 决定。
 Managed 的 `registerManagedRuntime()`读取 [runtime-manifest.json](../../extension/runtime-manifest.json)，动态注册 JS/CSS，见 [bootstrap/background.js](../../extension/bootstrap/background.js)。
+Managed Popup 的 [popupFallback.js](../../extension/bootstrap/popupFallback.js) 属于固定 Bootstrap，独立读取既有语言偏好，为 runtime 失载时的原有提示选择语言；正常 runtime 接管后不再改动其界面。该资产随 `buildManagedExtensionTree()` 复制，修改时须走完整安装，不能仅替换 runtime 目录。
 页面主世界资源仍由 `PAGE_WORLD_SCRIPTS`及资源公开清单决定，新增 page 能力不能仅修改 content bundle。
 runtime manifest 可扩展 Overleaf 站点范围，但实际注册受已授予 host permission 约束；可选权限的申请另由 UI 发起。
 当前 manifest 仅列 `overleaf.com`、`www.overleaf.com` 和 `cn.overleaf.com`。增加其他 Overleaf 子域时，[Popup.offerNewSites](../../extension/src/popup.js) 可申请新增 host 权限，Bootstrap 可扩大动态注入范围；完整能力还需同步后台 Native sender、[SharedSessionBridge.enabled](../../extension/src/shared/sharedSessionBridge.js)、后台共享历史准入、更新协调器及安全点枚举的固定主机集合。授权和注入成功不能单独证明新站点可以运行、共享历史或参与更新保护。

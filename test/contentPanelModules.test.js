@@ -613,8 +613,8 @@ function buildSkillRowWithRemove(doc, listEl, deps = {}) {
     isCodexOverleafSkillEnabled: () => true,
     setCodexOverleafSkillEnabled: () => {},
     setProjectSettingsStatus: () => {},
-    tr: key => key,
-    tx: (en) => en,
+    tr: deps.tr || (key => key),
+    tx: deps.tx || ((en) => en),
     sendBackgroundNative(req) {
       nativeCalls.push(req);
       return deps.nativeResolve
@@ -631,6 +631,26 @@ function buildSkillRowWithRemove(doc, listEl, deps = {}) {
   controller.renderLocalSkillList();
   return { controller, nativeCalls };
 }
+
+test('skill locale refresh preserves an open removal confirmation and its existing controls', () => {
+  const { doc } = buildFakeDocument();
+  const listEl = doc.createElement('div');
+  let locale = 'en';
+  const I18n = require('../extension/src/shared/i18n');
+  const { controller, nativeCalls } = buildSkillRowWithRemove(doc, listEl, {
+    tr: key => I18n.t(locale, key), tx: (en, zh) => locale === 'zh' ? zh : en
+  });
+  const row = listEl.children[0];
+  findRowButton(row, I18n.t('en', 'localSkillRemove'))._fire('click', { preventDefault() {} });
+  const confirm = findRowButton(row, I18n.t('en', 'localSkillRemoveConfirm'));
+  locale = 'zh'; controller.refreshLocale();
+  assert.equal(listEl.children[0], row);
+  assert.equal(row.dataset.confirming, 'true');
+  assert.equal(findRowButton(row, I18n.t('zh', 'localSkillRemoveConfirm')), confirm);
+  assert.equal(nativeCalls.length, 0);
+  locale = 'en'; controller.refreshLocale();
+  assert.equal(findRowButton(row, I18n.t('en', 'localSkillRemoveConfirm')), confirm);
+});
 
 test('clicking Remove button shows Confirm/Cancel and does NOT call skills.remove', () => {
   const { doc } = buildFakeDocument();

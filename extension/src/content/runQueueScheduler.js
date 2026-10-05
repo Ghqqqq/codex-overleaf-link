@@ -171,6 +171,16 @@
 
   function createCoordinator(options = {}) {
     let view = null;
+    const guideErrorKeys = {
+      codex_turn_not_ready: 'queuedInputGuideNotReady',
+      codex_turn_mismatch: 'queuedInputGuideTurnChanged',
+      codex_steer_empty: 'queuedInputGuideEmpty',
+      codex_steer_too_large: 'queuedInputGuideTooLarge'
+    };
+    function formatGuideError(error) {
+      const key = guideErrorKeys[error?.code];
+      return (key && options.tr?.(key)) || error?.message || options.tr?.('queuedInputGuideFailed');
+    }
     const scheduler = create({
       getQueue: sessionId => options.getSession?.(sessionId)?.pendingInputs || [],
       setQueue: (sessionId, pendingInputs) => options.setQueue?.(sessionId, pendingInputs),
@@ -307,7 +317,7 @@
             options.appendEvent?.(options.tr?.('queuedInputGuided'), 'completed');
           }
         } else {
-          options.toast?.(response?.error?.message || options.tr?.('queuedInputGuideFailed'), 'warning');
+          options.toast?.(formatGuideError(response?.error), 'warning');
         }
         render();
         await options.save?.({
@@ -322,7 +332,7 @@
           ? { ...entry, status: 'paused', pauseReason: 'steer_delivery_unknown' }
           : entry);
         options.setQueue?.(session.id, Queue.normalizeQueue(paused));
-        options.toast?.(error?.message || options.tr?.('queuedInputGuideFailed'), 'warning');
+        options.toast?.(formatGuideError(error), 'warning');
         render();
         await options.save?.({
           queueMutation: { type: 'transition', sessionId: session.id, itemId }
@@ -365,7 +375,7 @@
         view = options.createView?.({
           container,
           tr: options.tr,
-          onGuide: itemId => guide(itemId).catch(error => options.toast?.(error.message, 'warning')),
+          onGuide: itemId => guide(itemId).catch(error => options.toast?.(formatGuideError(error), 'warning')),
           onRemove: remove,
           onResume: resume,
           onToast: message => options.toast?.(message, 'warning')

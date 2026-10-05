@@ -140,7 +140,8 @@ function createReviewFixture(t, options = {}) {
       getActiveFilePathFromEditorStore: () => state.active, readActiveEditorText: readText,
       getActiveEditorIdentity: identity, activeEditorIdentityChanged: previous => previous !== identity() });
   }
-  const undoControl = { tagName: 'BUTTON', disabled: false,
+  const undoControl = { tagName: 'BUTTON',
+    get disabled() { return options.editorUndoDisabled?.({ state, docs, timer }) === true; },
     getAttribute: name => name === 'aria-label' ? 'Undo' : null };
   const router = Router.create({ window, now: () => timer.now, treeOperations: tree, writebackOpenSettleMs: 0,
     normalizeSafeProjectPath: ProjectFiles.normalizeSafeProjectPath,
@@ -157,11 +158,14 @@ function createReviewFixture(t, options = {}) {
     setReviewingEnabled: async enabled => { state.reviewing = enabled; return { ok: true, enabled }; },
     ensureEditing: async () => { state.reviewing = false; return { ok: true }; },
     ensureReviewing: async () => { state.reviewing = true; return { ok: true }; },
-    collectElements: selector => /button/i.test(selector) && options.editorUndoPaths?.includes(state.active) ? [undoControl] : [],
-    isInsideCodexPanel: () => false, readNodeSignalText: node => node === undoControl ? 'Undo' : node.textContent || '',
+    collectElements: selector => options.collectReviewNodes?.({ selector, state, docs, timer }) || (/button/i.test(selector) && options.editorUndoPaths?.includes(state.active)
+      && options.editorUndoPresent?.({ state, docs, timer }) !== false ? [undoControl] : []),
+    isInsideCodexPanel: () => false, readNodeSignalText: options.readNodeSignalText || (node => node === undoControl ? 'Undo' : node.textContent || ''),
     clickNode(node) {
+      if (node !== undoControl && options.clickReviewNode) return options.clickReviewNode({ node, state, docs, timer });
       assert.equal(node, undoControl);
       (state.editorUndos ||= []).push(state.active);
+      if (options.editorUndoNoProgressPaths?.includes(state.active)) return;
       current().content = current().before;
       current().changes = [];
     },
