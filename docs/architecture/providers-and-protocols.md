@@ -128,6 +128,7 @@ Speed 从 `ModelPicker` 经 `persistPanelInputs` 和运行快照进入 `params.s
 ### 3.4 快捷预设与协议切换
 
 [providerProfiles.js](../../extension/src/shared/providerProfiles.js) 的 `PROVIDER_CONNECTIONS/PROVIDER_PRESETS` 定义快捷入口，`buildPresetDraft` 生成尚未保存的草稿，不直接改变活动服务。
+[ProviderSettingsDialog.renderDetail](../../extension/src/content/providerSettingsDialog.js) 按配置身份显示状态：无持久 ID 的新草稿显示“尚未保存的模型服务配置”，已保存且被当前项目选用的配置显示使用状态，其余已保存配置显示保存状态；中英文切换保留原表单草稿。
 Kimi、GLM 和 DeepSeek 快捷入口默认采用 Anthropic Messages；端点、协议、authMode 和 reasoningAdapter 按预设填写，API key 与 model ID 仍需单独配置。
 [ProviderSettingsDialog.syncPresetProtocol](../../extension/src/content/providerSettingsDialog.js) 仅在 `fullEndpoint=false`、当前 URL 匹配已知预设且目标协议有对应地址时切换 URL。
 authMode 与 reasoningAdapter 只有在仍等于旧预设值时才跟随新协议更新，以保留手动覆盖；自定义地址、完整端点和没有对应地址的协议不获得这一联动。

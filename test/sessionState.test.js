@@ -55,17 +55,6 @@ const COMMON_SECRET_TEXT = [
   `token: ${TOKEN_VALUE}`,
   `password=${PASSWORD_VALUE}`
 ].join(' ');
-const COMMON_SECRET_FORBIDDEN_VALUES = [
-  GITHUB_PAT,
-  GITHUB_FINE_GRAINED_PAT,
-  SLACK_TOKEN,
-  AWS_ACCESS_KEY,
-  BEARER_TOKEN_VALUE,
-  'MIIEvCOMMONSECRETKEYDATA',
-  API_KEY_VALUE,
-  TOKEN_VALUE,
-  PASSWORD_VALUE
-];
 const RAW_LOCAL_PATH = '/Users/alice/.codex-overleaf/projects/project-a/workspace/main.tex:117';
 const RAW_LOCAL_PATH_COLUMN = '/Users/alice/.codex-overleaf/projects/project-a/workspace/main.tex:117:9';
 const RAW_LOCAL_DIR = '/Users/alice/.codex-overleaf/projects/project-a/workspace/sections';
@@ -447,7 +436,7 @@ test('normalizes run attachment previews in memory and omits raw previews from c
   assert.equal(JSON.stringify(compact).includes('raw-file-content-must-not-persist'), false);
 });
 
-test('prepareStateForStorage redacts seeded secrets from persisted session state', () => {
+test('compact fallback omits body fields without rewriting instruction or relative-path examples', () => {
   const state = normalizePanelState({
     task: TASK_PROMPT,
     focusFiles: [SECRET_PATH],
@@ -506,23 +495,23 @@ test('prepareStateForStorage redacts seeded secrets from persisted session state
   const serialized = JSON.stringify(compact);
 
   for (const forbidden of [
-    SECRET,
     PROJECT_TEXT,
     TASK_PROMPT,
     COMPILE_LOG,
-    COMMAND_OUTPUT,
-    SECRET_PATH
+    COMMAND_OUTPUT
   ]) {
     assert.equal(serialized.includes(forbidden), false, `persisted state leaked ${forbidden}`);
   }
 
   const run = compact.sessions[0].runs[0];
+  assert.equal(compact.customInstructionsByProject[`project-${SECRET}`], `Prefer concise edits ${SECRET}`);
+  assert.deepEqual(run.undoTrackedChanges, []);
   assert.equal(run.undoOperations.length, 0);
   assert.equal(run.undoBaseFiles.length, 0);
   assert.equal(run.undoExpectedFiles.length, 0);
 });
 
-test('prepareStateForStorage redacts common secret formats from persisted session state', () => {
+test('compact fallback summarizes full conversation bodies while preserving configured user instructions', () => {
   const state = normalizePanelState({
     task: `Rotate leaked credentials ${COMMON_SECRET_TEXT}`,
     focusFiles: [`sections/${GITHUB_PAT}/main.tex`],
@@ -579,9 +568,9 @@ test('prepareStateForStorage redacts common secret formats from persisted sessio
   const compact = prepareStateForStorage(state);
   const serialized = JSON.stringify(compact);
   assert.match(compact.task, /^\[task omitted; chars=\d+; hash=[a-f0-9]{8}\]$/);
-  for (const forbidden of COMMON_SECRET_FORBIDDEN_VALUES) {
-    assert.equal(serialized.includes(forbidden), false, `persisted state leaked ${forbidden}`);
-  }
+  assert.equal(serialized.includes(COMMON_SECRET_TEXT), false);
+  assert.equal(compact.customInstructionsByProject[`project-${GITHUB_FINE_GRAINED_PAT}`], `Use replacement token: ${TOKEN_VALUE}`);
+  assert.match(compact.sessions[0].history[0].result, /^\[history result omitted;/);
 
   const run = compact.sessions[0].runs[0];
   assert.equal(run.undoOperations.length, 0);

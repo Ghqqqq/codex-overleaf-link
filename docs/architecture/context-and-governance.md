@@ -85,6 +85,7 @@ rename/move 同时检查来源与目标。对有效写操作，判定顺序为�
 `matchesGovernancePattern/globToRegex` 中 `*` 不跨 `/`，`**` 可跨目录。应使用该模块的真实语义，不能直接套用 shell glob 的所有规则。
 
 `WritebackPlan.evaluateGovernedOperations` 调用项目规则并把阻止项转成 `governance_blocked`；主 Auto orchestrator 保留 skipped 和审计摘要。
+该错误由 [FailureReasons](../../extension/src/shared/failureReasons.js) 的已知分类承接，保留治理阶段与实际原因；当前界面语言决定说明和下一步文案。只读命中与可写清单不匹配分别解释，显示映射不改变允许写入的路径。
 治理检查位于这条主写回链，直接页面 RPC、Undo 或其他恢复入口是否经过同一检查须分别跟踪，不能由 helper 支持的类型推导所有调用都已经受它约束。
 
 ## 5. 审计和诊断消费
@@ -92,6 +93,8 @@ rename/move 同时检查来源与目标。对有效写操作，判定顺序为�
 runtime 的 `createAuditDraftForRun/updateAuditSensitiveFindings/finalizeAuditRecord` 及 [AuditRecords](../../extension/src/shared/auditRecords.js) 构建摘要并写入 `auditLogs`。
 审计包含选择、发现、允许/阻止/跳过项及保存证据的投影；当前传入的摘要来源是 task，`promptSummary` 保存处理后的长度与哈希标记，不代表完整模型输入的摘要。实际诊断导出还沿 [DiagnosticsExport](../../extension/src/content/diagnosticsExport.js) 及 UI 入口检查身份和字段。
 不同模块的脱敏规则有不同输入范围，不能把一份审计摘要视作所有网络、日志或资产都不会包含敏感值的证明；Provider 凭据存储另见[Provider 与协议](providers-and-protocols.md)。
+
+**聊天正文与诊断摘要。** 用户任务、模型回答、会话历史和后台 journal 恢复正文不按 `token:`、`password=` 或密钥样式自动替换。普通示例文字可在输入捕获、会话保存及恢复后保留；主会话仍受原有容量与保留预算约束，本地路径显示规则也继续适用。发送前的 `SensitivePreflight` 消费捕获后的任务原文并按当前设置决定是否派发，不以静默改写正文代替检查。`AuditRecords` 和显式诊断导出继续构造处理后的摘要，不将完整聊天正文写入导出包。旧记录中已经保存的替换标记没有原文，不能通过新版显示投影自动还原。
 
 **辅助存储的账号边界。** runtime 从已捕获的运行账号/项目建立审计，`AuditRecords` 和 [StorageDb.buildAuditLogRecord](../../extension/src/shared/storageDb.js) 保留 `accountScopeId`，后续审计更新不能改写该归属。`DiagnosticsExport` 捕获当前账号与项目，按两者过滤 audit，并在异步采集后再次核对身份；缺少账号时拒绝导出。旧无账号 audit 保留在存储中，但不由下一位导出者认领，也不进入诊断摘要。
 [ChangeHistoryModel.project](../../extension/src/shared/changeHistoryModel.js) 继续要求关联当前可见会话，并排除明确属于其他账号的审计；旧无账号记录仍可按关联会话投影到历史视图，其兼容规则与诊断导出不同。诊断中的运行摘要也排除已知 owner 不匹配项；旧归一化运行缺少独立账号字段时仍依赖视图加载的身份边界，不能将 audit 的严格账号过滤推广为所有诊断来源均有相同证明。
@@ -108,7 +111,8 @@ runtime 的 `createAuditDraftForRun/updateAuditSensitiveFindings/finalizeAuditRe
 | 改镜像白名单、大小或失败处理 | mirrorSensitiveScan、Native dispatcher、runtime 消费者 | [taskRunner.test.js](../../test/taskRunner.test.js) 含镜像扫描请求；浏览器完整性提示另需接入验证 |
 | 命中确认与数据流 | SensitivePreflight、runtime 首次/恢复派发、prompt 组装、审计 | [runRetrySensitivePreflight.test.js](../../test/runRetrySensitivePreflight.test.js) 串联 runtime、真实检测器、warm-mirror guard 和审计投影，检查阻止/批准/拒绝/关闭及第二次派发参数；Page、Native 和持久化 I/O 使用替身 |
 | 风格生成的项目参考检查 | WritingStyleSettings、组合根 `preflightProjectReferences`、SensitivePreflight、Native build | [writingStylePreflight.test.js](../../test/writingStylePreflight.test.js) 检查现有政策、取消和作用域变化；PDF/OCR 与通用出站检测不在该入口范围 |
-| 只读与可写路径规则 | GovernanceRules、WritebackPlan、orchestrator、错误展示和审计 | [governanceRules.test.js](../../test/governanceRules.test.js) 的路径和优先级行为；[writebackOrchestratorInitialization.test.js](../../test/writebackOrchestratorInitialization.test.js) 的装配 |
+| 只读与可写路径规则 | GovernanceRules、WritebackPlan、orchestrator、错误展示和审计 | [governanceRules.test.js](../../test/governanceRules.test.js) 的路径和优先级行为；[writebackOrchestratorInitialization.test.js](../../test/writebackOrchestratorInitialization.test.js) 的装配；[governanceFailureDisplay.test.js](../../test/governanceFailureDisplay.test.js) 的已知分类与新旧报告双语投影 |
+| 聊天正文保存与恢复 | SessionState、SessionManager、StorageDb、后台 journal、Native subagentTelemetry | [conversationTextPreservation.test.js](../../test/conversationTextPreservation.test.js) 检查输入、回答、指令、排队、分叉及重载不按秘密样式替换；敏感预检与诊断摘要分别断言 |
 | 新增诊断或历史字段 | auditRecords、storageDb、diagnosticsExport、历史视图 | [auditRecords.test.js](../../test/auditRecords.test.js) 的摘要与处理规则；真实导出另行验证 |
 
 最窄命令示例为 `node scripts/run-tests.mjs test/sensitiveScan.test.js test/governanceRules.test.js`。

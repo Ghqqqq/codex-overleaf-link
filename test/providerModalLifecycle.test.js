@@ -126,6 +126,35 @@ test('dashboard provider management retains Save but hides project activation', 
   assert.equal(footer({ isNew: true, hasProject: false, canSave: true }).showSave, true);
 });
 
+test('provider detail distinguishes a new unsaved draft from saved and active profiles in both languages', () => {
+  const detail = { innerHTML: '', querySelector: () => null };
+  const methods = ['getSelectedProvider', 'getCurrentProjectProviderId', 'escapeHtml', 'escapeAttr', 'renderDetail']
+    .map(name => extractFunction(source, name)).join('\n');
+  const render = Function('getEndpointHost', 'formatSecretSavedAt', 'formatJsonRecord', 'formatVerification',
+    'updatePresetConnectionHint', 'renderModelList', methods + '\nreturn renderDetail;')(
+    () => '', () => '', () => '{}', () => '', () => {}, () => {}
+  );
+  const draft = require('../extension/src/shared/providerProfiles').buildEmptyDraft();
+  const provider = { ...draft, id: 'saved', name: 'Saved configuration', revision: 1 };
+  const instance = { root: { querySelector: () => detail }, draft,
+    catalog: { providers: [provider] }, callbacks: { getCurrentProjectProviderId: () => 'builtin' }, selectedId: '__new__' };
+  for (const locale of ['en', 'zh', 'en']) {
+    instance.tx = (en, zh) => locale === 'zh' ? zh : en;
+    render(instance);
+    assert.match(detail.innerHTML, locale === 'en' ? /<p>Unsaved provider profile<\/p>/ : /<p>尚未保存的模型服务配置<\/p>/);
+    assert.doesNotMatch(detail.innerHTML, /<p>Saved provider profile<\/p>|<p>已保存的模型服务配置<\/p>/);
+    instance.selectedId = 'saved'; instance.draft = provider;
+    render(instance);
+    assert.match(detail.innerHTML, locale === 'en' ? /<p>Saved provider profile<\/p>/ : /<p>已保存的模型服务配置<\/p>/);
+    instance.callbacks.getCurrentProjectProviderId = () => 'saved';
+    render(instance);
+    assert.match(detail.innerHTML, locale === 'en' ? /Used by new runs in this project/ : /当前项目的新任务将使用此服务/);
+    instance.callbacks.getCurrentProjectProviderId = () => 'builtin';
+    instance.selectedId = '__new__'; instance.draft = draft;
+  }
+  assert.equal(instance.draft, draft);
+});
+
 test('dashboard activation is rejected before confirmation, model loading or a native mutation', async () => {
   const requireCurrentProject = production(coordinatorSource, 'requireCurrentProject', {
     createClientError: (code, message) => Object.assign(new Error(message), { code })

@@ -350,6 +350,10 @@
     const tx = instance.tx;
     const draft = instance.draft || provider;
     const active = provider.id && provider.id === getCurrentProjectProviderId(instance);
+    const profileStatus = !provider.id
+      ? tx('Unsaved provider profile', '尚未保存的模型服务配置')
+      : active ? tx('Used by new runs in this project', '当前项目的新任务将使用此服务')
+        : tx('Saved provider profile', '已保存的模型服务配置');
     const acceptedHost = getEndpointHost(draft.baseUrl);
     const secretSavedAt = formatSecretSavedAt(instance, provider.secretUpdatedAt);
     const disclosureSatisfied = Boolean(
@@ -361,7 +365,7 @@
       <div class="codex-provider-detail-titleline">
         <div>
           <h3>${escapeHtml(draft.name || tx('Custom provider', '自定义模型服务'))}</h3>
-          <p>${escapeHtml(active ? tx('Used by new runs in this project', '当前项目的新任务将使用此服务') : tx('Saved provider profile', '已保存的模型服务配置'))}</p>
+          <p>${escapeHtml(profileStatus)}</p>
         </div>
         ${active ? `<span class="codex-provider-active-badge">${escapeHtml(tx('Current project', '当前项目'))}</span>` : ''}
       </div>

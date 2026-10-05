@@ -198,7 +198,7 @@ worker `completed` 表示 runner Promise 正常返回；真实 runner 要求 com
 
 终态证据优先级为 `history < agent < turn`。
 父任务上的“派发完成”或外层 `item/completed` 不能单独证明子任务成功；历史读取不支持时保留 `historyUnavailable`。
-`compactEvent` 限定字段、长度并遮盖常见 secret；原始私有 reasoning 和任意请求体不会直接进入子任务展示通道。
+`compactEvent` 限定字段和长度，`metadataText` 继续处理元数据中的本地路径；`publicText` 不按秘密格式替换子任务提示、回答及工具输出。原始私有 reasoning 和任意请求体不会直接进入子任务展示通道。
 
 **历史错误与恢复。** [subagentTelemetry.snapshot](../../native-host/src/subagentTelemetry.js) 对明确的 `-32601` 或不支持 `thread/read` 的错误设置 `readDisabled`，同一 observer 内保持降级。其他错误标记历史暂不可用，允许后续真实活动触发补读；连续失败达到 `MAX_HISTORY_READ_FAILURES`（当前为 3）后暂停该 child 当前代次的补读。有效成功读取或新的 child turn 都会清除连续失败计数；新 turn 不解除明确 unsupported 的禁用。
 `runCodexAppServerProcess` 保留 JSON-RPC error.code 的数字/字符串分类。只有通过 thread、parent、turn、generation 检查的成功历史读取才发布 `historyUnavailable: false`；旧代次的迟到错误不禁用新代次。没有新增计时轮询、无限重试或执行控制，实时子线程通知继续独立更新记录。

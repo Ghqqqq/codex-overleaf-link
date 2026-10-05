@@ -85,7 +85,7 @@ flowchart TD
 
 当前快照的执行字段为 mode、Provider ID/revision、model、reasoning、speed、自动编译、Track、focusFiles、选区和写作风格，另含 schemaVersion、capturedAt、source 等元数据。
 schema 与入口见 [runExecutionSnapshot.js](../../extension/src/shared/runExecutionSnapshot.js)，内部归一化见 [runExecutionSnapshotCodec.js](../../extension/src/shared/runExecutionSnapshotCodec.js)。
-[RunInputQueue](../../extension/src/shared/runInputQueue.js) 在新任务入队时另存 `payload.submissionContext`：项目指令、技能加载开关、单次技能调用和已启用插件技能 ID。该白名单经 normalize、claim 与持久化压缩保留，文字在持久化时经过既有脱敏；字段与正文一起计入队列容量预算。项目文件仍在任务执行时读取。
+[RunInputQueue](../../extension/src/shared/runInputQueue.js) 在新任务入队时另存 `payload.submissionContext`：项目指令、技能加载开关、单次技能调用和已启用插件技能 ID。该白名单经 normalize、claim 与持久化压缩保留，文字不按秘密样式替换；既有本地路径显示规则与长度预算分别执行，字段与正文一起计入队列容量预算。项目文件仍在任务执行时读取。
 队列提升调用 `runTask({ queuedInput })` 时只消费排队项捕获的额外上下文，附件固定为空；入队入口继续拒绝带附件输入。因此后来 composer 的附件或技能不会被旧任务采用，也不会把原任务转入后来选择的 installer 分支。普通提交在首次 await 前捕获技能启用表，目录准备完成后生成本次 ID，与指令及技能开关一起供首次请求和重试使用；队列提升保持原捕获 ID。
 旧队列缺少 `submissionContext` 时在存储中保留缺失形式，避免默认对象增加字节后裁掉接近容量上限的旧项；执行时采用空指令、无单次技能、关闭额外技能加载和空启用列表，不从后来草稿补值。真实装配见 [contentRuntime.js](../../extension/src/content/contentRuntime.js) 的 `initializeRunQueueScheduler/runTask/buildCodexRunParams`。
 Provider revision 标识同一个服务配置的版本；排队后配置被修订或删除，执行校验可报冲突或不可用，避免悄悄换用后来的配置。
@@ -218,6 +218,8 @@ fence 像“提交处理中”的凭证，receipt 标记配套数据写入已完
 | [StorageRunActions.compactRunsForStorage/compactRunActionPayload](../../extension/src/shared/storageRunActions.js) | 启用 `preserveRunActionPayload` 后，在保留的20个 run 内按新到旧分配每会话16 MiB核心动作总预算；完整 record 的传输余量可进一步收紧，可选 captures 在核心材料分配完成后使用余量 | 主 session 中的 Undo/Accept 恢复能力；保留 run 的显示记录不代表其动作材料仍在 |
 
 **当前容量边界。** compactState 的摘要与激进压缩提示仍服务于各自消费者，主 sessions 的较长历史文字不通过它做额外有损裁剪。排查主保存容量应检查真实 `putRecords` 的 record/base 及传输编码；`StorageValuePruning` 只删除摘要空字段，保留 `false/0`，不执行容量回收。
+
+`SessionState` 的活动投影、`StorageDb` 的主会话正文及后台 journal 的恢复文字不再按凭据形状替换用户/模型内容。排查回答或示例在刷新后丢字时，应分别检查这三条链和 Native 子代理的 `subagentTelemetry.publicText`；本地路径投影、字段长度限制、fallback 摘要与显式审计仍有各自范围，不能把保留正文解释为无限保存。已持久化为 `[REDACTED_SECRET]` 的旧文字不具备自动恢复原值的材料。
 
 [SharedSessionTransfer](../../extension/src/shared/sharedSessionTransfer.js) 为 bridge 和后台提供同一份传输预算。UTF-8 字节数描述序列化数据的大小，JavaScript `string.length` 统计 UTF-16 码元；汉字等字符使两者不同。旧规则按 `JSON.stringify(entries).length * 2` 估算24 MiB，其合法输入实际可达36 MiB UTF-8，因此当前同时保留旧窗口。
 

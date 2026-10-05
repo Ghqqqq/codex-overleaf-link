@@ -533,7 +533,7 @@
         continue;
       }
       result[key] = typeof value[rawKey] === 'string'
-        ? normalizeTextField(value[rawKey], CUSTOM_INSTRUCTIONS_MAX_CHARS)
+        ? normalizeDisplayTextForStorage(value[rawKey], CUSTOM_INSTRUCTIONS_MAX_CHARS)
         : '';
     }
     return result;
@@ -654,9 +654,9 @@
   function normalizeSessionTitleForStorage(value, titleSource) {
     var title = typeof value === 'string' ? value.trim() : '';
     if (titleSource === 'manual') {
-      return normalizeTextField(title === LEGACY_DEFAULT_SESSION_TITLE ? '' : title, SESSION_STORAGE_LIMITS.sessionTitleChars);
+      return normalizeDisplayTextForStorage(title === LEGACY_DEFAULT_SESSION_TITLE ? '' : title, SESSION_STORAGE_LIMITS.sessionTitleChars);
     }
-    return normalizeTextField(title === LEGACY_DEFAULT_SESSION_TITLE ? '' : title, SESSION_STORAGE_LIMITS.sessionTitleChars);
+    return normalizeDisplayTextForStorage(title === LEGACY_DEFAULT_SESSION_TITLE ? '' : title, SESSION_STORAGE_LIMITS.sessionTitleChars);
   }
 
   function compactHistoryForStorage(history) {
@@ -779,7 +779,7 @@
 
   // Deep-copies a known-safe structured event value (the completion-report
   // {conclusion, body, meta[]} payload, or a FailureReason object) preserving
-  // its shape while redacting + truncating every string field. Bounded depth +
+  // its shape while applying display-path rules and string limits. Bounded depth +
   // breadth so a pathological value can't blow up the stored record.
   function compactStructuredEventValueForStorage(value, depth) {
     return StorageRunActions.compactStructuredEventValue(value, {
@@ -822,7 +822,11 @@
   }
 
   function normalizeDisplayTextForStorage(value, maxChars) {
-    return normalizeTextField(value, maxChars);
+    var text = sanitizeAssistantVisibleText(value);
+    if (!Number.isFinite(maxChars) || maxChars <= 0 || text.length <= maxChars) {
+      return text;
+    }
+    return text.slice(0, Math.max(0, maxChars - 1)) + '…';
   }
 
   function summarizeStructuredValueForStorage(value, maxChars) {
@@ -1032,7 +1036,7 @@
   }
 
   function normalizeTextField(value, maxChars) {
-    var text = sanitizeAssistantVisibleText(value);
+    var text = sanitizeAssistantVisibleText(redactSecretLikeText(value));
     if (!Number.isFinite(maxChars) || maxChars <= 0 || text.length <= maxChars) {
       return text;
     }
@@ -1043,7 +1047,8 @@
     if (typeof value !== 'string' || !value) {
       return '';
     }
-    var text = redactSecretLikeText(value);
+    // Preserve conversation examples and quotations through save/reload.
+    var text = value;
     if (!mightContainLocalReferenceText(text)) {
       return text;
     }

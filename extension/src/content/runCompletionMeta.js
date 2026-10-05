@@ -171,11 +171,11 @@
       previous = found.index;
       rest = rest.slice(found.prefix.length);
       const heading = tx(sections[previous][0] + ':', sections[previous][1] + '：');
-      // Skipped is the producer's final section and may contain arbitrary
-      // multiline model/error prose. Its entire payload remains opaque.
+      // Skipped may contain arbitrary model/error prose. Only a complete,
+      // exact product-owned governance block can be re-projected.
       if (previous === sections.length - 1) {
         if (!/^- [^\r\n]+/.test(rest)) return body;
-        projected.push(heading + '\n' + rest);
+        projected.push(heading + '\n' + projectGovernanceSkippedBody(rest, tx));
         return projected.join('\n\n');
       }
       const boundary = rest.indexOf('\n\n');
@@ -187,6 +187,27 @@
       if (!rest) return body;
     }
     return body;
+  }
+
+  function projectGovernanceSkippedBody(body, tx) {
+    const locale = tx('en', 'zh');
+    const lookup = key => I18n.t(locale, key);
+    const operationLabels = { edit: '编辑', create: '新建', delete: '删除', move: '移动', rename: '重命名' };
+    const pattern = /(^|\n)- ([^\r\n]+?)(?:: (edit|create|delete|move|rename|binary-create|overwrite-binary) was not written|：(编辑|新建|删除|移动|重命名|binary-create|overwrite-binary)没有写入)\n([ \t]*)(?:Reason|原因): ([^\r\n]+)\n\5(?:Stage|阶段): (?:unknown|preflight)\n\5(?:Code|代码): (unknown_legacy_failure|governance_blocked|governance_readonly|governance_writable_allowlist)\n\5(?:Next|下一步): ([^\r\n]+)(?=\n- |$)/g;
+    return body.replace(pattern, (block, prefix, file, enOperation, zhOperation, indent, message, code, next) => {
+      const display = FailureReasons.formatFailureReasonForDisplay({ code: 'unknown_legacy_failure', userMessage: message }, locale, lookup);
+      if (!['governance_blocked', 'governance_readonly', 'governance_writable_allowlist'].includes(display.code)) return block;
+      if (code !== 'unknown_legacy_failure' && code !== 'governance_blocked' && code !== display.code) return block;
+      const nextKeys = [display.code, 'unknown_legacy_failure'].flatMap(value => [
+        FailureReasons.FAILURE_CODE_CATALOG[value]?.fallbackNextAction,
+        I18n.t('en', `failureReason_${value}_next`), I18n.t('zh', `failureReason_${value}_next`)
+      ]);
+      if (!nextKeys.includes(next)) return block;
+      const operation = enOperation || Object.keys(operationLabels).find(key => operationLabels[key] === zhOperation) || zhOperation;
+      const header = tx(`${file}: ${operation} was not written`, `${file}：${operationLabels[operation] || operation}没有写入`);
+      const failure = { code: display.code, stage: 'preflight', userMessage: display.userMessage, nextAction: display.nextAction };
+      return `${prefix}- ${header}\n${AgentTranscript.formatFailureBlock(failure, locale, indent)}`;
+    });
   }
 
   function projectCompletionMeta(meta, run, options) {

@@ -1235,7 +1235,7 @@ test('buildSessionRecord preserves canonical run settlement projections across r
   assert.equal(projection.primaryFailure.code, 'accept_not_verified');
 });
 
-test('buildSessionRecord redacts secrets and absolute local paths inside canonical settlement', () => {
+test('buildSessionRecord preserves quoted values and hides absolute local paths inside canonical settlement', () => {
   const record = buildSessionRecord({
     id: 'ses_private_settlement',
     projectId: 'proj_private_settlement',
@@ -1255,7 +1255,7 @@ test('buildSessionRecord redacts secrets and absolute local paths inside canonic
   });
   const serialized = JSON.stringify(record.runs[0].settlement);
 
-  assert.doesNotMatch(serialized, /sk-proj-12345678901234567890/);
+  assert.match(serialized, /sk-proj-12345678901234567890/);
   assert.doesNotMatch(serialized, /\/Users\/alice\/private/);
   assert.equal(record.runs[0].settlement.failures[0].code, 'write_failed');
 });

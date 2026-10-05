@@ -8,11 +8,9 @@ const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const EVIDENCE = { history: 1, agent: 2, turn: 3 };
 
 function publicText(value, limit = 4096) {
-  return String(value ?? '')
-    .replace(/\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{12,}/g, '[REDACTED_SECRET]')
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [REDACTED_SECRET]')
-    .replace(/((?:api[_-]?key|access[_-]?token|secret|password|authorization)\s*[:=]\s*["']?)[^\s"',;]+/gi, '$1[REDACTED_SECRET]')
-    .slice(0, limit);
+  // Preserve the delegated task and model/tool text. The event allowlist
+  // excludes credential fields; metadataText separately hides local paths.
+  return String(value ?? '').slice(0, limit);
 }
 
 function fields(value, names, limit = 4096) {

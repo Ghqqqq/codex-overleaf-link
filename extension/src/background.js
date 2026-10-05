@@ -1028,9 +1028,9 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
   }
 
   function sanitizeJournalString(value) {
+    // Journal replay is conversation recovery. Credential configuration is not
+    // copied by createRunJournal; quoted values in model events stay intact.
     return String(value || '')
-      .replace(/\b(?:sk|hf|glpat|npm|ghp|github_pat|AKIA|AIza)[_-]?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED]')
-      .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[REDACTED]')
       .replace(/(?:file:\/\/)?\/(?:Users|home|private|var|opt|Library)\/[^\s"'<>]+/g, '[local path]')
       .slice(0, 131072);
   }

@@ -106,6 +106,21 @@
     },
 
     // 9.2 Preflight
+    governance_blocked: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'Project file rules blocked this write. Codex did not write the affected path.',
+      fallbackNextAction: 'Review the project file rules in Settings > Protection & privacy, then request changes within the allowed paths.'
+    },
+    governance_readonly: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'Project file rules marked a path in this operation read-only. Codex did not apply this operation.',
+      fallbackNextAction: 'Review the read-only paths in Settings > Protection & privacy, then request changes within the allowed paths.'
+    },
+    governance_writable_allowlist: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'A path in this operation is outside the configured writable paths. Codex did not apply this operation.',
+      fallbackNextAction: 'Review the writable paths in Settings > Protection & privacy, then request changes within those paths.'
+    },
     missing_base_file: {
       stage: 'preflight', severity: 'blocked', defaultRetryable: true,
       fallbackUserMessage: 'A write safety check needed a base file that is missing from the run snapshot.',
@@ -480,6 +495,8 @@
    * @type {Record<string, string | ((result: any) => string)>}
    */
   const LEGACY_CODE_MAP = {
+    governance_blocked: result => result.reasonKey === 'readonly' ? 'governance_readonly'
+      : result.reasonKey === 'writable_allowlist' ? 'governance_writable_allowlist' : 'governance_blocked',
     path_not_found: 'target_file_not_found',
     file_open_failed: 'target_file_open_failed',
     editor_not_ready: 'target_editor_not_ready',
@@ -630,6 +647,15 @@
     'snapshot_undo_open_failed', 'snapshot_undo_unavailable', 'file_tree_controls_unavailable'
   ]);
   const REVIEW_DISPLAY_TEMPLATES = [
+    ['governance_readonly', 'Project governance marked this path read-only, so Codex did not write it.'],
+    ['governance_readonly', '项目治理规则将此路径标记为只读，因此 Codex 没有写入。'],
+    ['governance_readonly', '项目文件规则将此操作涉及的路径标记为只读。Codex 未执行此操作。'],
+    ['governance_writable_allowlist', 'Project governance allows writes only to configured writable patterns, and this path is outside that allowlist.'],
+    ['governance_writable_allowlist', '项目治理规则只允许写入配置的可写路径，此路径不在允许范围内。'],
+    ['governance_writable_allowlist', '此操作涉及的路径不在配置的可写路径范围内。Codex 未执行此操作。'],
+    ['governance_blocked', 'Project governance blocked this write.'],
+    ['governance_blocked', '项目治理规则阻止了此写入。'],
+    ['governance_blocked', '项目文件规则阻止了此次写入。Codex 未写入受影响的路径。'],
     ["missing_tracked_changes", "这轮写入没有可识别的 Overleaf 留痕记录；为避免制造新的红线，Codex 没有执行文本补丁撤销。"],
     ["missing_tracked_changes", "No matching Overleaf tracked-change records were found for this run, so Codex did not undo with text patches."],
     ["missing_tracked_changes", "No matching Overleaf tracked-change records were found for this run. Codex did not undo with text patches."],
@@ -795,7 +821,7 @@
     const localized = localizeFailureReason(display ? { ...display, file } : display, locale, lookup);
     const message = template?.includes('{file}') ? localized.userMessage
       : [file, localized.userMessage].filter(Boolean).join(': ');
-    return { ...localized, message, file, localized: Boolean(template && template !== key) };
+    return { ...localized, code: display?.code, message, file, localized: Boolean(template && template !== key) };
   }
 
   function localizeFailureMessage(message, locale, i18nLookup) {

@@ -59,7 +59,7 @@ function createHarness(options = {}) {
     events: [
       { sequence: 1, event: { type: 'codex.turn.bound', detail: { threadId: 'thread-036', turnId: 'turn-036' } } },
       { sequence: 2, event: { type: 'codex.session.event', timestamp: fixedTime,
-        detail: { method: 'item/agentMessage/delta', params: { itemId: 'item-036', delta: MARKER } } } }
+        detail: { method: 'item/agentMessage/delta', params: { itemId: 'item-036', delta: options.message || MARKER } } } }
     ] };
   sessionStorage.set(journalKey, clone(journal));
   const runJournals = new Map([[requestId, clone(journal)]]);
@@ -235,6 +235,18 @@ test('control: successful recovery persists replay before acknowledging journal'
   assert.equal(f.trace.indexOf('main-sessions-write-success') < f.trace.indexOf('ack-request'), true);
   assert.equal(f.runJournals.has(requestId), false);
   assert.equal(f.sessionStorage.has(journalKey), false);
+});
+
+test('recovery runtime saves and reloads quoted token/password examples unchanged', async t => {
+  const message = 'PDF token: QA_PDF_20261006_7319\ntoken: 120\npassword="example"\nsk-' + 'synthetic'.repeat(3);
+  const fixture = createHarness({ message });
+  t.after(fixture.close);
+  await fixture.run();
+  const restored = await fixture.reload();
+  const event = restored.sessions[0].runs[0].events.find(item => item.kind === 'stream');
+  assert.equal(event.title, message);
+  assert.equal(fixture.trace.indexOf('main-sessions-write-success') < fixture.trace.indexOf('ack-request'), true);
+  assert.equal(fixture.runJournals.has(requestId), false);
 });
 
 test('control: terminal journal with live shared owner is retained and not replayed', async t => {

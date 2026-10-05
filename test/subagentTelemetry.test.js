@@ -234,7 +234,7 @@ test('foreign parents, stale turns, invalid child IDs and unknown activity kinds
   assert.equal(s.run.subagents.length, 0);
 });
 
-test('native registration retains the sixteen-child bound and sanitized labels', async t => {
+test('native registration retains the sixteen-child bound and verbatim text labels', async t => {
   const s = setup();
   t.after(() => s.observer.close());
   for (let index = 0; index < 17; index++) {
@@ -246,7 +246,7 @@ test('native registration retains the sixteen-child bound and sanitized labels',
   await tick();
   assert.equal(s.run.subagents.length, 16);
   assert.equal(s.requests.length, 16);
-  assert.ok(s.run.subagents.every(child => child.title === 'Bearer [REDACTED_SECRET]'));
+  assert.ok(s.run.subagents.every(child => child.title === 'Bearer abcdefghijklmnop'));
 });
 
 test('history cannot replay a different thread or the inherited parent turn', async t => {
@@ -571,7 +571,7 @@ test('a real child task is recoverable after non-task input wrappers', async t =
   assert.equal(s.run.subagents[0].task, 'Inspect main.tex without changes.');
 });
 
-test('both dispatch and recovered task metadata redact secrets and local paths and stay bounded', async t => {
+test('both dispatch and recovered task metadata preserve text, hide local paths and stay bounded', async t => {
   const text = 'Read "/Users/private folder/input.tex", C:\\Users\\private\\input.tex, '
     + '\\\\private-server\\share\\input.tex and file:///tmp/input.tex. '
     + 'Keep main.tex project-relative. Authorization: Bearer abcdefghijklmnop. ' + 'x'.repeat(5000);
@@ -590,8 +590,50 @@ test('both dispatch and recovered task metadata redact secrets and local paths a
     assert.equal(task.length, 4096);
     assert.match(task, /\[local path\]/);
     assert.match(task, /main\.tex project-relative/);
-    assert.doesNotMatch(task, /private|input\.tex|abcdefghijklmnop|file:\/\//);
+    assert.match(task, /Authorization: Bearer abcdefghijklmnop/);
+    assert.doesNotMatch(task, /private|input\.tex|file:\/\//);
   }
+});
+
+test('child messages and tool output retain token examples while unknown credential fields stay excluded', () => {
+  const text = [
+    'PDF token: QA_PDF_20261006_7319', 'token: 120', 'password=example',
+    'sk-proj-abcdefghijklmnop', 'Bearer abcdefghijklmnop',
+    'eyJabcdefghijk.abcdefghijklmnop.abcdefghijklmnop'
+  ].join('\n');
+  for (const item of [
+    { type: 'agentMessage', text },
+    { type: 'commandExecution', command: text, aggregatedOutput: text }
+  ]) {
+    const event = Telemetry.compactEvent({ type: 'codex.session.event', detail: {
+      method: 'item/completed', params: { ...ROOT, item: { id: 'example', ...item,
+        apiKey: 'provider-field-must-stay-private', secretMutation: { value: 'private-field' } } }
+    } });
+    const exposed = event.detail.params.item;
+    if (item.type === 'agentMessage') assert.equal(exposed.text, text);
+    else {
+      assert.equal(exposed.command, text);
+      assert.equal(exposed.aggregatedOutput, text);
+    }
+    assert.equal(Object.hasOwn(exposed, 'apiKey'), false);
+    assert.equal(Object.hasOwn(exposed, 'secretMutation'), false);
+  }
+  const delta = Telemetry.compactEvent({ type: 'codex.session.event', detail: {
+    method: 'item/agentMessage/delta', params: { ...ROOT, itemId: 'example', delta: text }
+  } });
+  assert.equal(delta.detail.params.delta, text);
+});
+
+test('recovered child answers retain ordinary token and password text in the displayed transcript', async t => {
+  const text = 'token: 120; password=example; sk-proj-abcdefghijklmnop; Bearer abcdefghijklmnop';
+  const s = setup(() => history('child-a', 'completed', [
+    { type: 'agentMessage', id: 'answer', phase: 'final_answer', text }
+  ]));
+  t.after(() => s.observer.close());
+  s.observer.observe(activity());
+  await tick();
+  const answers = s.run.subagents[0].events.filter(event => event.title === text);
+  assert.equal(answers.length, 1);
 });
 
 test('encrypted legacy prompt strings remain unavailable', async t => {

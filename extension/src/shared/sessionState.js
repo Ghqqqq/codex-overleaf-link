@@ -124,7 +124,6 @@
     statusTextChars: 400,
     attachmentPreviewChars: 160 * 1024
   };
-  const REDACTED_SECRET = '[REDACTED_SECRET]';
   const SECRET_REDACTION_PATTERNS = [
     /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
     /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/gi,
@@ -1616,21 +1615,22 @@
     if (typeof value !== 'string' || !value) {
       return '';
     }
-    const secretRedacted = redactSecretLikeText(value);
-    if (!mightContainLocalReferenceText(secretRedacted)) {
-      return secretRedacted;
+    // Conversation text is user/model content, not a credential field. Keep
+    // examples and quoted values intact; local-reference display rules remain.
+    if (!mightContainLocalReferenceText(value)) {
+      return value;
     }
     if (LineReferences?.sanitizeLocalReferences) {
       try {
-        return LineReferences.sanitizeLocalReferences(secretRedacted, {
+        return LineReferences.sanitizeLocalReferences(value, {
           projectFiles: [],
           context: 'persist'
         });
       } catch (_error) {
-        return fallbackSanitizeLocalReferences(secretRedacted);
+        return fallbackSanitizeLocalReferences(value);
       }
     }
-    return fallbackSanitizeLocalReferences(secretRedacted);
+    return fallbackSanitizeLocalReferences(value);
   }
 
   function mightContainLocalReferenceText(value) {
@@ -1656,18 +1656,6 @@
       const line = String(rawPath || '').match(/:(\d+)(?::\d+)?(?:[.,;!?])?$/)?.[1];
       return line ? `[local path:${line}]` : '[local path]';
     });
-  }
-
-  function redactSecretLikeText(value) {
-    if (typeof value !== 'string') {
-      return '';
-    }
-    let redacted = value;
-    for (const pattern of SECRET_REDACTION_PATTERNS) {
-      pattern.lastIndex = 0;
-      redacted = redacted.replace(pattern, REDACTED_SECRET);
-    }
-    return redacted;
   }
 
   function containsSecretLikeText(value) {

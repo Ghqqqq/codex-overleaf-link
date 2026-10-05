@@ -117,6 +117,7 @@
 - 入口：[SessionManager](../../extension/src/content/sessionManager.js)、[SessionForkController](../../extension/src/content/sessionForkController.js)、[SharedSessionViewSync.install](../../extension/src/content/sharedSessionViewSync.js)；runtime `applyStateToPanel → renderPendingInputs` 同步恢复或切换后的队列视图。
 - 状态 owner：[backgroundSharedSessions.createService](../../extension/src/backgroundSharedSessions.js) 管理共享持久存储；[ScopedPersistenceTransaction](../../extension/src/shared/scopedPersistenceTransaction.js) 管理作用域提交；content 保留当前视图。
 - 必须联动：[scopedPersistenceCoordinator](../../extension/src/content/scopedPersistenceCoordinator.js)、[storageSessionClaims](../../extension/src/shared/storageSessionClaims.js)、[sessionState](../../extension/src/shared/sessionState.js)、Native [codexThreadFork](../../native-host/src/codexThreadFork.js)。详细链路见[运行状态与恢复](run-state-and-recovery.md)。
+- 聊天文字保真需联动 `SessionState`、`StorageDb`、background journal 与 Native `subagentTelemetry.publicText`：不按秘密样式替换正文；发送前敏感检查、路径投影、容量摘要和诊断导出单独核对，见[上下文与治理](context-and-governance.md)及 [conversationTextPreservation](../../test/conversationTextPreservation.test.js)。
 - 最近测试：[pendingQueuePanelRestore](../../test/pendingQueuePanelRestore.test.js)、[sharedSessionRefreshRecovery](../../test/sharedSessionRefreshRecovery.test.js)、[backgroundJournalLifecycle](../../test/backgroundJournalLifecycle.test.js)、[runJournalRecoveryDurability](../../test/runJournalRecoveryDurability.test.js)、[scopedPersistenceTransaction](../../test/scopedPersistenceTransaction.test.js)、[crossTabRuntimeRegression](../../test/crossTabRuntimeRegression.test.js)、[sessionTombstones](../../test/sessionTombstones.test.js)、[sessionForkController](../../test/sessionForkController.test.js)、[sessionForkConcurrency](../../test/sessionForkConcurrency.test.js)。
 
 ### 改新建、重命名、最后会话或清空历史
@@ -227,7 +228,7 @@
 - 入口：runtime `runSensitivePreflight` → [SensitivePreflight.create().run](../../extension/src/content/sensitivePreflight.js)，组合 [SensitiveScan](../../extension/src/shared/sensitiveScan.js)、[mirrorSensitiveScan](../../native-host/src/mirrorSensitiveScan.js)；写回时走 [WritebackPlan](../../extension/src/content/writebackPlan.js) 与 [GovernanceRules](../../extension/src/shared/governanceRules.js)。
 - 状态 owner：[ProjectSettingsCoordinator](../../extension/src/content/projectSettingsCoordinator.js) 保存项目规则；扫描发现、跳过项和审计摘要有各自的消费范围。
 - 必须联动：首次与业务重试的实际输入、[codexPromptAssembly](../../native-host/src/codexPromptAssembly.js)、写入类型及来源/目标路径、[AuditRecords](../../extension/src/shared/auditRecords.js)。规则不等同模型本地文件权限，零发现不等同全部材料已扫描。
-- 最近测试：[runRetrySensitivePreflight](../../test/runRetrySensitivePreflight.test.js)、[sensitiveScan](../../test/sensitiveScan.test.js)、[governanceRules](../../test/governanceRules.test.js)、[taskRunner](../../test/taskRunner.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js)。
+- 最近测试：[runRetrySensitivePreflight](../../test/runRetrySensitivePreflight.test.js)、[sensitiveScan](../../test/sensitiveScan.test.js)、[governanceRules](../../test/governanceRules.test.js)、[governanceFailureDisplay](../../test/governanceFailureDisplay.test.js)、[taskRunner](../../test/taskRunner.test.js)、[p0ProductExperience](../../test/p0ProductExperience.test.js)。
 - 即时指导另走同一预检的 guidance 分支，仅扫描 `item.text`，保留既有确认策略并核对等待后的运行归属；见 [guideSensitivePreflight](../../test/guideSensitivePreflight.test.js)。
 
 ## 安装、更新与发布

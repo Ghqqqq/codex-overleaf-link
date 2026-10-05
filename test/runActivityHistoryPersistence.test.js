@@ -95,7 +95,7 @@ test('message phases survive storage so commentary remains and the final answer 
   assert.deepEqual(Model.project(restored).blocks.map(block => block.kind), ['message', 'tool']);
 });
 
-test('persisted activity remains bounded and redacted without retaining unknown tool fields', () => {
+test('persisted activity preserves quoted values while bounding text, hiding paths and dropping unknown tool fields', () => {
   const secret = 'sk-abcdefghijklmnopqrstuvwxyz123456';
   const raw = {
     v: 1, kind: 'command', id: 'safe-id', scope: 'thread/turn', state: 'completed',
@@ -118,8 +118,9 @@ test('persisted activity remains bounded and redacted without retaining unknown 
   assert.ok(meta.output.length <= 1200);
   assert.ok(meta.files.every(file => file.preview.length <= 1800));
   assert.equal(meta.clipped, true);
-  assert.match(serialized, /REDACTED_SECRET/);
-  for (const excluded of [secret, '/Users/demo/', 'abcdefghijklmnopqrstuvwxyz', 'do-not-persist', '"arguments"', '"technicalDetail"']) {
+  assert.match(serialized, /sk-abcdefghijklmnopqrstuvwxyz123456/);
+  assert.match(serialized, /Bearer abcdefghijklmnopqrstuvwxyz/);
+  for (const excluded of ['/Users/demo/', 'do-not-persist', '"arguments"', '"technicalDetail"']) {
     assert.equal(serialized.includes(excluded), false, excluded);
   }
 });
