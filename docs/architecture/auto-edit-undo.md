@@ -416,7 +416,7 @@ router 可以返回已发生修改的逐项结果并跳过未开始项；content
 `writebackReceiptRecovery` 检查模式参数、原请求回执恢复和去重；[retryCreatedFile](../../test/retryCreatedFile.test.js) 通过公开 [retryCreateHarness](../../test/_helpers/retryCreateHarness.js) 串联真实 runtime Retry/recovery/Undo 函数、orchestrator、broker、journal、Page wrapper、router 和 creator，覆盖 `retryCreates` 完整传递、同内容与空内容确认、异内容拒绝及 Undo 证据保留。其合成 DOM、上传与 ZIP 夹具和 [textFileCreator](../../test/textFileCreator.test.js) 共用；UI、Native 与持久化 I/O 使用替身，不能由此推定真实 Chrome 传输、服务器上传或 IndexedDB 落盘已验收。
 `undoMirrorInvalidation` 的相关 harness 将 settlement 替换为成功 stub；`undoPersistenceFailure` 串联 runtime、Page Undo、review transition 与 orchestrator，在保存回调注入异常，检查失效登记、下一次 Undo 等待屏障，以及冲突/抛错不虚构结果。编辑器、保存与 Native I/O 使用替身。
 `writebackCancellationRecovery` 串联 client、journal、Page router/editor、orchestrator、Undo 和 StorageDb 投影；`assetTransferCancellation` 检查混合批次、二进制状态、项目拒绝和 Page stage 清理。网络、真实编辑器及 IndexedDB 重载仍在替换边界之外。
-`mirrorWorkspace` 覆盖独立二进制删除上报、支持资产及生成 PDF 过滤；`fileMovePipeline` 串联真实 Native 差异、整份计划确认、Broker、Page 元数据移动和逆向 Undo，外部文件树与 API 为替身。
+`mirrorWorkspace` 覆盖独立二进制删除上报、支持资产及生成 PDF 过滤；`fileMovePipeline` 串联真实 Native 差异、原删除/资源确认与 Broker/Page 写回，并检查旧正向 move 被拒绝、普通创建不增加确认。历史有证明的逆向 move 由 `fileMoveProtocol` 和 `fileMover` 覆盖，外部文件树与 API 为替身。
 `deletedFileUndo` 从正向记录进入删除恢复与重载重试；`ordinaryUndoRouting` 和 `createdFileUndo` 继续覆盖普通文本与新建组合。这些模块组合验证不能替代真实 Overleaf 文件树、服务器保存与浏览器重载验收。
 这些范围各自提供定位依据；真实服务端协议、DOM、取消与立即刷新仍需相应执行证据。
 
