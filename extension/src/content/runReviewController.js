@@ -18,6 +18,34 @@
       getState, getCurrentProjectId, getAccountScopeId, getRouteGeneration, notify, tx,
     } = deps;
     const reviewOwners = new Map();
+    function reviewEventFailure(run, result) {
+      const reasons = deps.FailureReasons || Modules.FailureReasons;
+      if (!reasons?.normalizeFailureReason) return undefined;
+      const primary = reasons.selectPrimaryWritebackFailure(WritebackSettlement.collectFailuresFromResult(result, reasons));
+      if (!primary) return undefined;
+      const paths = new Set(['appliedOperations', 'undoOperations', 'undoBaseFiles', 'undoExpectedFiles', 'undoTrackedChanges']
+        .flatMap(key => (Array.isArray(run?.[key]) ? run[key] : []).map(item => item?.path)));
+      const candidate = typeof primary.file === 'string' ? primary.file : '';
+      const file = paths.has(candidate) && candidate.length <= 300 && !/[\r\n]/.test(candidate)
+        && !candidate.replace(/\\/g, '/').startsWith('/') && !/^[A-Za-z]:/.test(candidate) && !candidate.replace(/\\/g, '/').split('/').includes('..') ? candidate : '';
+      const code = Object.hasOwn(reasons.FAILURE_CODE_CATALOG, primary.code) ? primary.code : 'unknown_legacy_failure';
+      let displayCode = code;
+      reasons.formatFailureReasonForDisplay({ ...primary, userMessage: String(primary.userMessage || '').slice(0, 2000) }, undefined, key => {
+        const value = tr(key), match = /^failureReason_([a-z0-9_]+)_user$/.exec(key);
+        if (value && value !== key) { if (match) displayCode = match[1]; return value; }
+      });
+      // This event keeps only machine facts and owned UI copy, never the Page's
+      // arbitrary reason, technical message or evidence payload.
+      const safe = reasons.normalizeFailureReason({ code }, file ? { path: file } : undefined);
+      if (displayCode !== code) safe.evidence = { originalCode: displayCode };
+      const localized = reasons.localizeFailureReason(safe, undefined, key => { const value = tr(key, file ? undefined : { file: tr('unknownFile'), activeFile: tr('unknownFile') }); return value && value !== key ? value : undefined; });
+      safe.userMessage = localized.userMessage;
+      safe.nextAction = localized.nextAction || safe.nextAction;
+      if (displayCode === 'unknown_legacy_failure') {
+        safe.userMessage = tr('unknownReason'); safe.nextAction = tr('failureReason_review_detail_next');
+      }
+      return safe;
+    }
     let undoRecoveryTimer = null, undoRecoveryView = null, undoRecoveryGeneration = 0;
     const undoRecoveryFailures = new Map();
     async function prepareUndoDispatch(runId) {
@@ -267,6 +295,7 @@ async function executeUndo(runId) {
       appendUndoReviewingPolicyEvent(runId, result.reviewingPolicy);
       appendRunRecordEvent(runId, {
         title: tr('undoResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
+        failure: reviewEventFailure(run, result),
         status: undoApplied ? 'completed' : 'failed',
         detail: {
           [tr('detailUndone')]: (result.applied || []).map(item => ({
@@ -377,6 +406,7 @@ async function executeTrackedUndo(runId, run) {
         title: fileUndoOperations.length ? tr('undoResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }) : trackedUndo
           ? tr('undoTrackedResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 })
           : tr('undoNativeResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
+        failure: reviewEventFailure(run, result),
         status: result.ok === true && !result.skipped?.length ? 'completed' : 'failed',
         detail: {
           [trackedUndo && !fileUndoOperations.length ? tr('detailRejected') : tr('detailUndone')]: (result.applied || []).map(item => ({
@@ -462,6 +492,7 @@ async function executeAcceptRun(runId) {
       appendAcceptDiagnosticEvents(runId, Array.isArray(result.diagnostics) ? result.diagnostics : []);
       appendRunRecordEvent(runId, {
         title: tr('runAcceptTrackedResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
+        failure: reviewEventFailure(run, result),
         status: result.ok === true && !result.skipped?.length ? 'completed' : 'failed',
         detail: {
           [tr('detailAccepted')]: (result.applied || []).map(item => ({

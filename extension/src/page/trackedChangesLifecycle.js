@@ -40,7 +40,7 @@
       normalizeOperationPaths,
       normalizeReviewingSignalText,
       normalizeSafeProjectPath,
-      openFileByPath,
+      openFileByPath: openReviewFileByPath,
       readActiveEditorText,
       readNodeSignalText,
       setReviewingEnabled,
@@ -51,6 +51,11 @@
     const { buildAcceptReplayOperations, rebaseCheckpointPair, prepareSnapshotUndoCheckpoints, buildSnapshotUndoResult } = Replay.create({
       normalizeSafeProjectPath, applyTextPatches
     });
+
+  function openFileByPath(path, ...options) {
+    if (path !== getActiveFilePath()) rememberTrackedChangeNodeContext(getActiveFilePath());
+    return openReviewFileByPath(path, ...options);
+  }
 
   function nativeReviewBlocked(path, code, applied = [], requestStarted = false) {
     const reason = requestStarted
@@ -285,13 +290,9 @@
     return { ok: true, verified: true, applied, skipped: [] };
   }
 
+  let nativeRejectPlan = null;
   async function rejectTrackedChanges(params = {}) {
-    // Welcome-panel + write-guard: defense-in-depth.
-    // The pageBridge wrapper already runs the runProjectId guard, but a
-    // future caller could reach the router directly. A missing or empty
-    // `runProjectId` blocks the reject with the same shape the page-side
-    // guard uses. Existing tests that target individual reject behaviors set
-    // `runProjectId` on params; tests that intentionally omit it land here.
+    // Direct router callers also require the original run project identity.
     const writeGuardBlock = checkWritebackRunProjectId(params);
     if (writeGuardBlock) return writeGuardBlock;
     const trackedChanges = normalizeTrackedChangeRefs(params.trackedChanges || []);
@@ -313,6 +314,7 @@
     }
 
     const nativeReview = await prepareNativeReview(params, true);
+    nativeRejectPlan = nativeReview;
     if (nativeReview && !nativeReview.ok) return nativeReview;
     if (nativeReview?.files.some(file => file.scope.merged))
       return rejectPlanWithMergedInsertions(params, nativeReview);
@@ -430,7 +432,7 @@
         continue;
       }
 
-      const rejectControl = findRejectControlForTrackedChangeNode(node);
+      const rejectControl = isTrackedChangeNodeInNativeScope(node, trackedChange.path || getActiveFilePath()) ? findRejectControlForTrackedChangeNode(node) : null;
       if (!rejectControl) {
         if (expectedFiles.length || trackedChange.path) {
           continue;
@@ -508,11 +510,7 @@
   // Native-ledger browsers accept exact IDs without changing document text.
   // The original undo/replay flow remains only for legacy adapter callers.
   async function acceptTrackedChanges(params = {}) {
-    // Welcome-panel + write-guard: defense-in-depth.
-    // The pageBridge wrapper already runs the runProjectId guard, but a
-    // future caller could reach the router directly. A missing or empty
-    // `runProjectId` blocks the accept with the same shape the page-side
-    // guard uses.
+    // Direct router callers also require the original run project identity.
     const writeGuardBlock = checkWritebackRunProjectId(params);
     if (writeGuardBlock) return writeGuardBlock;
     if (params.verifyManualReview === true) return nativeReviewBlocked('', 'native_accept_protocol_unsupported');
@@ -563,12 +561,8 @@
     const editorUndo = await rejectTrackedChangesViaEditorUndo(expectedFiles, postFiles, applied);
     let undoReady = editorUndo.ok === true;
     let snapshotUndo = null;
-    // A page refresh preserves the run checkpoint but clears CodeMirror's
-    // in-memory undo history. When the native editor undo made no progress,
-    // reuse Undo's guarded snapshot path: it first verifies that every file is
-    // still exactly at this run's post-write content, then restores the
-    // persisted pre-write content with Track Changes disabled. The normal
-    // Accept replay below can then apply the post-write patch untracked.
+    // After a refresh clears native history, guarded snapshot rollback can
+    // restore exact checkpoints in Editing before the legacy Accept replay.
     if (!undoReady && applied.length === appliedBeforeUndo) {
       snapshotUndo = await restoreExpectedFilesWithNoTraceUndo(expectedFiles, postFiles, {
         runProjectId: params.runProjectId
@@ -634,10 +628,8 @@
       reason: editingSwitch.reason || ''
     });
     if (!editingSwitch.ok) {
-      // The undo already reverted the writeback; without a *confirmed* Editing
-      // mode the replay would itself be tracked. Bail rather than re-introduce
-      // tracked changes. The structured failure from forceEditingForAcceptReplay
-      // (editing_not_confirmed, changedDocument:true) is preserved verbatim.
+      // Undo already changed the document. Preserve that evidence and stop
+      // when Editing cannot be confirmed for an untracked replay.
       return {
         ok: false,
         applied: [],
@@ -680,12 +672,8 @@
       };
     }
 
-    // Step 3: re-apply each file's changed fragments as a plain edit. With
-    // tracking off these land as permanent, untracked text. The replay must
-    // write only the minimal changed fragments via the `patches` path of
-    // applyOperationsCore — never a whole-file replaceAll, which would clobber
-    // any unrelated content and produce one giant tracked change if anything
-    // about the mode switch were imperfect.
+    // Replay only the changed fragments in Editing; whole-file replacement
+    // would overwrite unrelated text or create one large tracked change.
     const operationsResult = buildAcceptReplayOperations(
       paths,
       expectedByPath,
@@ -707,18 +695,9 @@
       };
     }
     const operations = operationsResult.operations;
-    // Per-op replay loop with sticky-Editing re-confirm and a short stable
-    // window before every actual CodeMirror write.
-    //
-    // Bug C: even after forceEditingForAcceptReplay confirmed Editing once,
-    // Overleaf has been observed flipping back to Reviewing between the
-    // confirm and the next CodeMirror write (Overleaf-side override, per-user
-    // "Track Changes for me" setting, or a positive-confirm false-positive
-    // window). The fix: re-verify Editing immediately BEFORE every single
-    // operation, and if Reviewing has slipped back on, force the toggle off
-    // again and positively re-confirm before writing. If Editing still cannot
-    // be positively confirmed after the re-toggle, bail the rest of the loop
-    // so we never land a tracked write.
+    // Overleaf may return to Reviewing between confirmation and a write.
+    // Reconfirm stable Editing before every operation, force it off again
+    // if needed, and stop the tail whenever confirmation fails.
     let bailedReason = null;
     for (const operation of operations) {
       const opPath = operation?.path || '';
@@ -872,12 +851,8 @@
       }
     }
 
-    // Step 4 intentionally does NOT restore Reviewing. Accept replay is a
-    // no-trace write transaction: restoring Track Changes immediately after the
-    // CodeMirror dispatch can race with Overleaf's collaboration/reviewing
-    // settlement and cause the replay itself to land as fresh tracked changes.
-    // Leave the editor in Editing after a successful replay; the user can turn
-    // Reviewing back on manually after Overleaf has saved the accepted text.
+    // Leave Editing active: restoring Reviewing before collaboration settles
+    // can turn the untracked Accept replay into fresh tracked changes.
     if (weToggledOff) {
       pushDiagnostic('restoreReviewing', {
         ok: true,
@@ -899,12 +874,8 @@
     };
   }
 
-  // Summarizes a reviewing state for the per-step diagnostics. Surfaces
-  // exactly the bits the user needs to diagnose a sticky-Editing slip: the
-  // reviewing detector's verdict (ok/status/source), a compact controls
-  // summary, and the two strict gates (isReviewingPositivelyOn /
-  // isEditingPositivelyConfirmed). Self-contained — the run card can render
-  // this verbatim without re-reading any page state.
+  // Capture the detector signals and strict gates for self-contained
+  // diagnostics; rendering must not reread mutable page state.
   function summarizeReviewingStateForDiagnostics(state = {}) {
     const reviewing = state.reviewing || {};
     const controls = (state.signals?.controls || []).slice(0, 6).map(control => {
@@ -930,10 +901,8 @@
     };
   }
 
-  // Track Changes is positively confirmed OFF only when Editing is positively
-  // detected AND Reviewing is NOT positively confirmed on. This is the strict
-  // gate the Accept replay needs: it must never replay while tracked, so
-  // anything short of a positive "Editing on / Reviewing off" is rejected.
+  // Accept replay requires positively detected Editing and no positively
+  // confirmed Reviewing; every weaker observation must stop the replay.
   function isEditingPositivelyConfirmed(state = {}) {
     return isEditingConfirmedForNoTraceUndo(state) && !isReviewingConfirmedForWrite(state);
   }
@@ -998,20 +967,14 @@
   async function forceEditingForAcceptReplay() {
     const initial = getReviewingState({});
     if (isEditingPositivelyConfirmed(initial)) {
-      // Positively confirmed already in Editing — no toggle needed.
       return { ok: true, activated: false };
     }
 
-    // Reviewing is on, or Editing is not positively confirmed off. Force the
-    // toggle rather than trusting ensureEditing's lenient detection.
+    // Force the toggle whenever Editing is not positively confirmed.
     const switched = await setReviewingEnabled(false, { waitMs: 1800 });
     if (!switched.ok) {
-      // §9.4 editing_not_confirmed: the document is at pre-write state after
-      // the editor-undo succeeded; the mode toggle failed. The Accept replay
-      // was rolled back so the user-visible doc state has moved from the
-      // post-write tracked state back to pre-write — set changedDocument:true
-      // per the design spec's "is there text the user might want to inspect"
-      // contract for accept-side failures after a rollback.
+      // Native Undo already changed the document; a failed mode switch must
+      // preserve changedDocument evidence even though replay never started.
       return {
         ok: false,
         code: switched.code || 'accept_editing_not_confirmed',
@@ -1071,10 +1034,8 @@
       const postContent = postByPath.get(path);
       const activePathMatches = getActiveFilePath() === path;
       const activeContentMatches = readActiveEditorText() === postContent;
-      // Overleaf can update the selected tree path before CodeMirror swaps its
-      // document. In that state getActiveFilePath() already names `path`, while
-      // readActiveEditorText() still belongs to the previously viewed file.
-      // Force-reopen the target whenever either identity signal disagrees.
+      // Tree selection can precede the editor swap. Reopen when either
+      // the target path or its exact postimage is not yet active.
       if (path && (!activePathMatches || !activeContentMatches)) {
         const opened = await openFileByPath(path, { force: true });
         if (!opened.ok) {
@@ -1290,19 +1251,7 @@
       if (!undoControl) {
         // Text and the native ledger can be ready before the toolbar updates.
         // Wait only before dispatch, keeping this click's scope fixed.
-        const scopeKey = () => {
-          const snapshot = prepareTrackedChangeCapture(path);
-          return snapshot.source !== 'native' ? '' : !snapshot.ready ? null
-            : JSON.stringify([snapshot.nativeDocId, snapshot.refs.map(ref => ref.key).sort()]);
-        };
-        const beforeScope = scopeKey(), until = Date.now() + 1500;
-        const assertStable = () => {
-          if (getActiveFilePath() !== path || readActiveEditorText() !== beforeText
-            || beforeScope === null || scopeKey() !== beforeScope) {
-            const failure = nativeReviewBlocked(path, 'native_review_scope_changed').skipped[0].result;
-            throw Object.assign(new Error(failure.reason), { reviewFailure: failure });
-          }
-        };
+        const assertStable = await createReviewScopeGuard(path, beforeText), until = Date.now() + 1500;
         while (!undoControl && Date.now() < until) {
           assertStable();
           await delay(Math.min(60, until - Date.now()));
@@ -1397,7 +1346,9 @@
     const appliedCountBefore = applied.length;
     const maxAttempts = 200;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const node = findLastTrackedChangeNodeForPath(path);
+      const selection = await waitForRejectableTrackedChange(path);
+      selection.assertStable();
+      const node = selection.node;
       if (!node) {
         if (applied.length > appliedCountBefore) {
           return { ok: true };
@@ -1409,7 +1360,7 @@
         };
       }
 
-      const rejectControl = findRejectControlForTrackedChangeNode(node);
+      const rejectControl = isTrackedChangeNodeInNativeScope(node, path) ? findRejectControlForTrackedChangeNode(node) : null;
       if (!rejectControl) {
         return {
           ok: false,
@@ -1420,6 +1371,7 @@
 
       const trackedChange = trackedChangeRefFromNode(node, path);
       const beforeText = readActiveEditorText();
+      selection.assertStable();
       clickNode(rejectControl);
       await waitForTrackedChangeRejectProgress(trackedChange, path, beforeText, 1200);
       applied.push({
@@ -1450,6 +1402,17 @@
     };
   }
 
+  async function verifyReviewFileContent(file, applied) {
+    const verified = await verifyActiveEditorText(file.content, file.path, 800);
+    if (getActiveFilePath() !== file.path) verified.ok = false;
+    if (verified.ok) for (const entry of applied) {
+      if (entry.trackedChange?.path === file.path && entry.result?.ok === true
+        && ['overleaf-review-reject', 'overleaf-review-reject-sweep'].includes(entry.result.method))
+        Object.assign(entry.result, { verified: true, verifiedContent: file.content });
+    }
+    return verified;
+  }
+
   async function rejectRemainingTrackedChangesForExpectedFile(file, applied) {
     const opened = await openFileByPath(file.path);
     if (!opened.ok) {
@@ -1463,18 +1426,16 @@
     const appliedCountBefore = applied.length;
     const maxAttempts = 200;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const node = findLastTrackedChangeNodeForPath(file.path);
+      if (applied.some(entry => entry.trackedChange?.path === file.path
+        && ['overleaf-review-reject', 'overleaf-review-reject-sweep'].includes(entry.result?.method))
+        && getActiveFilePath() === file.path && readActiveEditorText() === file.content
+        && (await verifyReviewFileContent(file, applied)).ok) return { ok: true };
+      const selection = await waitForRejectableTrackedChange(file.path);
+      selection.assertStable();
+      const node = selection.node;
       if (!node) {
-        const verified = await verifyActiveEditorText(file.content, file.path, 800);
-        if (getActiveFilePath() !== file.path) verified.ok = false;
-        if (verified.ok) {
-          for (const entry of applied) {
-            if (entry.trackedChange?.path === file.path && entry.result?.ok === true
-              && ['overleaf-review-reject', 'overleaf-review-reject-sweep'].includes(entry.result.method))
-              Object.assign(entry.result, { verified: true, verifiedContent: file.content });
-          }
-          return { ok: true };
-        }
+        const verified = await verifyReviewFileContent(file, applied);
+        if (verified.ok) return { ok: true };
         const rejectedAnyForFile = applied.length > appliedCountBefore;
         return {
           ...verified,
@@ -1485,7 +1446,7 @@
         };
       }
 
-      const rejectControl = findRejectControlForTrackedChangeNode(node);
+      const rejectControl = isTrackedChangeNodeInNativeScope(node, file.path) ? findRejectControlForTrackedChangeNode(node) : null;
       if (!rejectControl) {
         return {
           ok: false,
@@ -1496,6 +1457,7 @@
 
       const trackedChange = trackedChangeRefFromNode(node, file.path);
       const beforeText = readActiveEditorText();
+      selection.assertStable();
       clickNode(rejectControl);
       await waitForTrackedChangeRejectProgress(trackedChange, file.path, beforeText, 1200);
       applied.push({
@@ -1544,7 +1506,7 @@
   const captureModule = window?.CodexOverleafTrackedChangeCapture
     || (typeof module === 'object' && module.exports ? require('./trackedChangeCapture.js') : null);
   const { collectTrackedChangeNodes, trackedChangeRefFromNode, collectTrackedChangeRefsForPaths,
-    waitForTrackedChangeDiff, prepareTrackedChangeCapture, prepareTrackedChangeReview, prepareUntrackedUndo, getTrackedChangeCaptureStatus,
+    waitForTrackedChangeDiff, prepareTrackedChangeCapture, prepareTrackedChangeReview, prepareUntrackedUndo, getTrackedChangeCaptureStatus, isTrackedChangeNodeInNativeScope, rememberTrackedChangeNodeContext,
     captureTrackedWrite, reconcileTrackedChangeCapture } = captureModule.create(deps);
 
   function orderTrackedChangesForReviewAction(refs = []) {
@@ -1567,9 +1529,56 @@
     return nodes[0] || null;
   }
 
-  function findLastTrackedChangeNodeForPath(path) {
-    const nodes = findTrackedChangeNodesForPath(path);
-    return nodes[nodes.length - 1] || null;
+  async function createReviewScopeGuard(path, expectedText) {
+    const owner = nativeRejectPlan?.files?.find(file => file.path === path);
+    const changed = () => {
+      const failure = nativeReviewBlocked(path, 'native_review_scope_changed').skipped[0].result;
+      throw Object.assign(new Error(failure.reason), { reviewFailure: failure });
+    };
+    let snapshot = prepareTrackedChangeCapture(path);
+    const until = Date.now() + 1500;
+    while ((owner || snapshot.source === 'native') && (snapshot.source !== 'native' || !snapshot.ready) && Date.now() < until) {
+      if (getActiveFilePath() !== path || (expectedText !== undefined && readActiveEditorText() !== expectedText)) changed();
+      await delay(Math.min(60, until - Date.now()));
+      snapshot = prepareTrackedChangeCapture(path);
+    }
+    if (owner || snapshot.source === 'native') {
+      const owned = (owner?.scope.refs || []).map(ref => JSON.stringify([ref.id, ref.kind, ref.textHash]));
+      if (!snapshot.ready || !snapshot.refs.length || !owner || snapshot.nativeDocId !== owner.nativeDocId || snapshot.refs.some(ref => {
+        const index = owned.indexOf(JSON.stringify([ref.id, ref.kind, ref.textHash]));
+        if (index < 0) return true;
+        owned.splice(index, 1); return false;
+      })) changed();
+    }
+    const beforeText = expectedText ?? readActiveEditorText();
+    const key = value => value.source !== 'native' ? '' : !value.ready ? null
+      : JSON.stringify([value.nativeDocId, value.refs.map(ref => ref.key).sort()]);
+    const beforeScope = key(snapshot);
+    return () => {
+      if (getActiveFilePath() !== path || readActiveEditorText() !== beforeText
+        || key(prepareTrackedChangeCapture(path)) !== beforeScope) changed();
+    };
+  }
+  async function waitForRejectableTrackedChange(path) {
+    const until = Date.now() + 1500;
+    const select = () => {
+      const nodes = findTrackedChangeNodesForPath(path).reverse();
+      for (const node of nodes) {
+        if (!isTrackedChangeNodeInNativeScope(node, path)) continue;
+        const control = findRejectControlForTrackedChangeNode(node);
+        if (control) return { node, control };
+      }
+      return { node: nodes[0] || null, control: null };
+    };
+    let selection = select();
+    if (!selection.node) return { ...selection, assertStable() {} };
+    const assertStable = await createReviewScopeGuard(path);
+    selection = select();
+    while (!selection.control && Date.now() < until) {
+      assertStable(); await delay(Math.min(60, until - Date.now())); assertStable();
+      selection = select();
+    }
+    return { ...selection, assertStable };
   }
 
   function findTrackedChangeNodesForPath(path) {
@@ -1582,6 +1591,7 @@
   }
 
   function findRejectControlForTrackedChangeNode(node) {
+    if (!node || node.isConnected === false) return null;
     const scopes = [];
     let current = node;
     for (let index = 0; current && index < 6; index += 1) {
@@ -1608,7 +1618,7 @@
   }
 
   function isRejectTrackedChangeControl(node) {
-    if (!node || node.disabled) {
+    if (!node || node.disabled || node.isConnected === false) {
       return false;
     }
     if (/^(true|disabled)$/i.test(node.getAttribute?.('aria-disabled') || '')) {

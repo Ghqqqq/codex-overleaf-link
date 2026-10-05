@@ -4,7 +4,7 @@
   function create(deps = {}) {
     if (!deps.RunActivityModel) return null;
     const { RunActivityModel: Model, tx, findRunRecord, getPanel, cssEscape, isGuidance,
-      formatElapsed, renderMarkdownBlockText, renderRunEvent, presence, classifyStatus, getProjectId, summarizeCommand,
+      formatElapsed, renderMarkdownBlockText, renderRunEvent, presence, classifyStatus, getProjectId, summarizeCommand, projectReviewResultEvent, formatReviewResultFailure,
       sanitizeAssistantVisibleText: sanitize = value => String(value || '') } = deps;
     const cards = new WeakMap();
     const choices = new Map();
@@ -115,6 +115,31 @@
       disclosure(el, key);
       return { el, label, target, status, diff, body, key, bodyStamp: '' };
     }
+    function reviewResultLines(item) {
+      const source = item.event || {};
+      if (item.kind !== 'notice' || source.streamRole || source.guidanceId || source.subagent || source.technicalDetail
+        || (source.kind && source.kind !== 'activity') || item.meta?.noticeSource || source.activity?.noticeSource || source.activity?.id) return [];
+      const event = projectReviewResultEvent?.(source) || source;
+      const english = /^(?:Undo result: (?:undone \d+ item\(s\), skipped \d+ item\(s\)|undone \d+ file\(s\), skipped \d+|rejected \d+ tracked change\(s\), skipped \d+)|Accept result: accepted \d+ tracked change\(s\), skipped \d+)$/;
+      const chinese = /^(?:撤销结果：(?:已撤销 \d+ 项，跳过 \d+ 项|已撤销 \d+ 个文件，跳过 \d+ 项|已拒绝 \d+ 条留痕，跳过 \d+ 条)|接受结果：已接受 \d+ 条留痕，跳过 \d+ 条)$/;
+      if (!english.test(event.title || '') && !chinese.test(event.title || '')) return [];
+      const skipped = event.detail?.Skipped || event.detail?.['跳过'];
+      if (!Array.isArray(skipped) && source.failure) {
+        const message = plain(formatReviewResultFailure?.(source.failure)?.message).slice(0, 1000);
+        return message ? [message] : [];
+      }
+      if (!Array.isArray(skipped)) return [];
+      return skipped.flatMap(entry => {
+        const fileValue = entry?.File ?? entry?.['文件'], reasonValue = entry?.Reason ?? entry?.['原因'];
+        if (typeof fileValue !== 'string' || typeof reasonValue !== 'string') return [];
+        if (source.failure?.file === fileValue && [source.failure.userMessage, fileValue + ': ' + source.failure.userMessage].includes(reasonValue)) {
+          const message = plain(formatReviewResultFailure?.(source.failure)?.message).slice(0, 1000);
+          if (message) return [message];
+        }
+        const file = plain(fileValue).slice(0, 300), reason = plain(reasonValue).slice(0, 1000);
+        return file && reason ? [reason.startsWith(file + ': ') ? reason : file + ': ' + reason] : [];
+      });
+    }
     function renderTool(row, item, card, run) {
       const meta = item.meta || {};
       const state = effectiveState(item, run);
@@ -140,7 +165,8 @@
         row.status.hidden = true;
       } else row.status.hidden = false;
       const publicText = plain(item.event?.title);
-      const stamp = [publicText, meta.output, meta.command, meta.exitCode, file?.preview, state, meta.clipped].join('\0');
+      const reviewLines = reviewResultLines(item);
+      const stamp = [publicText, meta.output, meta.command, meta.exitCode, file?.preview, state, meta.clipped, JSON.stringify(reviewLines)].join('\0');
       if (stamp !== row.bodyStamp) {
         row.bodyStamp = stamp;
         row.body.replaceChildren();
@@ -155,9 +181,11 @@
         } else {
           if (meta.command) { const command = make('pre', 'run-workflow-command'); command.textContent = plain(meta.command); row.body.append(command); }
           if (meta.output) { const output = make('pre', 'run-workflow-output'); output.textContent = plain(meta.output); row.body.append(output); }
-          const note = make('div', 'run-workflow-tool-note');
-          note.textContent = publicText;
-          row.body.append(note);
+          for (const value of reviewLines.length ? reviewLines : [publicText]) {
+            const note = make('div', 'run-workflow-tool-note');
+            note.textContent = value;
+            row.body.append(note);
+          }
         }
         if (meta.exitCode !== undefined) { const exit = make('div', 'run-workflow-tool-note'); exit.textContent = tx('Exit code: ', '退出码：') + meta.exitCode; row.body.append(exit); }
         if (meta.clipped || file?.clipped) { const more = make('div', 'run-workflow-tool-note'); more.textContent = tx('Preview only. More detail may be available in diagnostics.', '当前为摘要预览，更多信息可通过诊断查看。'); row.body.append(more); }

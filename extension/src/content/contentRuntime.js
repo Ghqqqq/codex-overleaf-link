@@ -444,6 +444,7 @@
     RunScrollLayout: Modules.RunScrollLayout,
     RunFailureNotice: Modules.RunFailureNotice,
     I18n: i18n,
+    FailureReasons,
     localizeVisibleReason: value => localizeVisibleReason(value),
     localizeCompileReason: value => Modules.CompileAdapter.localizeCompileReason(value, getLocale()),
     tr,
@@ -7149,6 +7150,7 @@
       activity: Modules.RunActivityModel.capture(event, sanitizeAssistantVisibleText),
       guidanceId: sanitizeAssistantVisibleText(event.guidanceId)
     };
+    if (event.failure) normalized.failure = sanitizeAssistantVisibleValue(event.failure);
     record.events = [...(record.events || []), normalized].slice(-MAX_RUN_EVENTS);
     saveStateSoon();
 

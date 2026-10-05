@@ -131,6 +131,7 @@ Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并
 [CompileAdapter.localizeCompileReason](../../extension/src/shared/compileAdapter.js) 处理产品自产的编译与保存说明，保留原编译摘要和 TeX 日志。
 
 语言变化由 `contentRuntime.applyLocaleToPanel` 刷新已有界面。`RunTimelineView.refreshLocale` 重新呈现历史卡片，并保留展开与滚动位置；活动运行保留流式节点和缓冲引用，只更新产品控件及已生成报告的显示。队列、附件、模型选项、Provider 对话框和更新提示各自刷新自产文案；对话框输入与用户草稿保持原位。已知过程提示可通过精确模板投影，命令输出、技术详情和模型流不作推测翻译。
+Undo/Accept 的既有展开 Notice 由 [RunActivitySummary](../../extension/src/content/runActivitySummary.js) 显示当次结果的文件与跳过原因。[RunReviewController](../../extension/src/content/runReviewController.js) 通过既有 `event.failure` 保留受控主故障摘要；runtime 的 `appendRunRecordEvent` 延续该字段，通用 `detail` 仍按原策略脱敏。持久摘要只保留标准错误与产品文案、已有运行材料中的安全相对路径，不保留任意 Page reason、技术消息或原始 evidence；它不参与恢复权限及检查点结算。旧记录若只剩哈希且没有故障摘要，无法从哈希还原原理由。实时可用逐项详情与持久主故障的范围不同，见 [reviewResultNoticeDetails](../../test/reviewResultNoticeDetails.test.js)。
 [WritingStyleSettings](../../extension/src/content/writingStyleSettings.js) 的 `sync` 也会重新投影缓存的自产状态及目录错误；参考资料标题和模型风格预览保留原内容。缓存文案的语言变化不重新生成风格、不改变所选资料或启用状态，见 [writingStyleLocale](../../test/writingStyleLocale.test.js)。
 
 `RunCompletionMeta.projectCompletionBody` 只识别 `AgentTranscript.buildStructuredHumanReport` 的完整有序章节格式：前四节为单行列表，最后的跳过原因允许多行内容。它只翻译五个产品章节名，保留列表内容、模型结论及跳过原因正文；不符合该格式的历史正文保持原样。相关回归见 [runtimeStatusLocale](../../test/runtimeStatusLocale.test.js) 和 [uiLocaleProjection](../../test/uiLocaleProjection.test.js)。

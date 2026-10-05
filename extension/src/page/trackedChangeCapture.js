@@ -129,11 +129,21 @@
     const mergedPrefix = 'native-merge:';
     const nativeKey = tuple => 'native:' + JSON.stringify(tuple);
     const ledgerKeys = refs => refs.map(ref => ref.key).sort();
-    const { mergedInsertionScope, prepareMergedInsertionReview, nativeOwned, rangesFor, shiftedBaseline, scopeCovered } = Ownership.create({
+    const { mergedInsertionScope, prepareMergedInsertionReview, nativeOwned, rangesFor, shiftedBaseline, scopeCovered, reviewNodeMatches } = Ownership.create({
       fingerprint, readActiveEditorText, mergedPrefix, nativeKey, ledgerKeys
     });
 
 
+
+    function isTrackedChangeNodeInNativeScope(node, path) {
+      if (typeof deps.getCodeMirrorEditorView !== 'function') return true;
+      return reviewNodeMatches(node, path, readNativeSnapshot(path), explicitId(node));
+    }
+    function rememberTrackedChangeNodeContext(path) {
+      if (typeof deps.getCodeMirrorEditorView !== 'function') return;
+      const snapshot = readNativeSnapshot(path);
+      if (snapshot.ready) for (const node of collectTrackedChangeNodes()) reviewNodeMatches(node, path, snapshot, explicitId(node));
+    }
 
     function prepareTrackedChangeReview(path, refs = []) {
       const snapshot = readNativeSnapshot(path);
@@ -321,7 +331,7 @@
       }
       return observe(capture, params.expectedContent, 1200);
     }
-    return { collectTrackedChangeNodes, trackedChangeRefFromNode, collectTrackedChangeRefsForPaths,
+    return { collectTrackedChangeNodes, trackedChangeRefFromNode, collectTrackedChangeRefsForPaths, isTrackedChangeNodeInNativeScope, rememberTrackedChangeNodeContext,
       waitForTrackedChangeDiff, prepareTrackedChangeCapture, prepareTrackedChangeReview, prepareUntrackedUndo, getTrackedChangeCaptureStatus, captureTrackedWrite, reconcileTrackedChangeCapture };
   }
   return { create };

@@ -18,6 +18,7 @@
       RunScrollLayout,
       RunFailureNotice,
       I18n,
+      FailureReasons,
       localizeVisibleReason = value => value,
       localizeCompileReason = value => value,
       tr,
@@ -90,6 +91,8 @@
     return displayed ? { ...displayed, events: (displayed.events || []).map(sanitizeRunEventForRender) } : displayed;
   };
   const activitySummary = RunActivitySummary?.create({ RunActivityModel, SubagentActivityView, tx, findRunRecord: (...args) => displayLocalizedRun(findRunRecord(...args)), getPanel, cssEscape,
+    projectReviewResultEvent: sanitizeRunEventForRender,
+    formatReviewResultFailure,
     formatEventTime, formatElapsed, renderMarkdownBlockText, renderRunEvent, formatEventDetail,
     presence, classifyStatus: classifyRunPresence, getProjectId: () => getCurrentProjectId?.() || '',
     summarizeCommand: RunPresence?.commandSummary,
@@ -597,6 +600,13 @@
     };
     return { title: known ? nextTitle : localizeCompileReason(localizeVisibleReason(title)),
       detail: typeof detail === 'string' ? localizeVisibleReason(detail) : known ? project(detail) : detail };
+  }
+  function formatReviewResultFailure(failure) {
+    if (failure?.code === 'unknown_legacy_failure' && (!failure.evidence?.originalCode || failure.evidence.originalCode === 'unknown_legacy_failure')
+      && ['Unknown reason', '未知原因'].includes(failure.userMessage)) {
+      failure = { ...failure, userMessage: tr('unknownReason') };
+    }
+    return FailureReasons?.formatFailureReasonForDisplay(failure, getLocale?.(), key => { const value = tr(key, failure?.file ? undefined : { file: tr('unknownFile'), activeFile: tr('unknownFile') }); return value && value !== key ? value : undefined; });
   }
   function renderActivityLine(input) {
     const event = sanitizeRunEventForRender(input);

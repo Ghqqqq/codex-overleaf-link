@@ -191,7 +191,25 @@
       }));
     }
 
-    return { mergedInsertionScope, prepareMergedInsertionReview, nativeOwned, rangesFor, shiftedBaseline, scopeCovered };
+    const reviewNodeOwners = new WeakMap();
+    function reviewNodeMatches(node, path, snapshot, id = '') {
+      if (!node || snapshot?.ready !== true || !snapshot.nativeDocId) return false;
+      const explicitPath = node.getAttribute?.('data-path') || node.getAttribute?.('data-file-path') || node.getAttribute?.('data-doc-path');
+      if (explicitPath && explicitPath !== path) return false;
+      const rawPosition = node.getAttribute?.('data-pos'), from = Number(rawPosition);
+      const parts = Array.from(node.querySelectorAll?.('.review-panel-expandable-content') || []);
+      if (parts.length !== 1 || (!id && (rawPosition == null || rawPosition === '' || !Number.isSafeInteger(from) || from < 0))) return false;
+      const kind = /(?:delete|change-d)(?:\s|$)/.test(node.className || '') ? 'delete' : 'insert';
+      const textHash = fingerprint(parts[0].textContent || '');
+      if (!snapshot.refs.some(ref => (id ? ref.id === id : ref.from === from) && ref.kind === kind && ref.textHash === textHash)) return false;
+      const signature = JSON.stringify([id, from, kind, textHash]);
+      const prior = reviewNodeOwners.get(node);
+      if (prior && prior.docId !== snapshot.nativeDocId && prior.signature === signature) return false;
+      reviewNodeOwners.set(node, { docId: snapshot.nativeDocId, signature });
+      return true;
+    }
+
+    return { mergedInsertionScope, prepareMergedInsertionReview, nativeOwned, rangesFor, shiftedBaseline, scopeCovered, reviewNodeMatches };
   }
 
   return { create };
