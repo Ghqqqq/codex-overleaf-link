@@ -169,6 +169,72 @@ test('owned Undo activity localizes structured reasons and counts without changi
   locale = 'zh'; assert.equal(sanitize({ ...event, title: result.title }).title, event.title);
 });
 
+async function produceWritebackActivities(locale, written, skipped) {
+  const tx = (en, zh) => locale === 'zh' ? zh : en;
+  const tr = (key, params) => I18n.t(locale, key, params);
+  const events = [], windowObject = {};
+  Function('window', read('applyResultFormatters'))(windowObject);
+  Function('window', read('writebackOrchestrator'))(windowObject);
+  const plan = require('../extension/src/content/writebackPlan').create({ tx,
+    GovernanceRules: require('../extension/src/shared/governanceRules'),
+    getGovernanceRulesForCurrentProject: () => ({ readonlyPatterns: ['blocked/**'] }) });
+  const operations = Array.from({ length: skipped }, (_, index) => ({ type: 'edit', path: `blocked/file-${index}.tex` }));
+  const governed = plan.evaluateGovernedOperations(operations);
+  const blocked = plan.buildGovernanceSkippedApplyResult(governed.blocked);
+  const formatters = windowObject.CodexOverleafApplyResultFormatters.create({ tx, tr, getLocale: () => locale,
+    FailureReasons: require('../extension/src/shared/failureReasons'),
+    getAppliedEntries: result => result.applied, getSkippedEntries: result => result.skipped,
+    appendRunEvent: event => events.push(event) });
+  formatters.appendApplyResult({ ...blocked,
+    applied: Array.from({ length: written }, (_, index) => ({ operation: { type: 'edit', path: `written-${index}.tex` }, result: { status: 'applied' } })) });
+  const writeEvent = events.pop();
+  const orchestrator = windowObject.CodexOverleafWritebackOrchestrator.create({ tx, tr,
+    appendRunEvent: event => events.push(event), appendChangeSummary: noop, appendCompletionReport: noop, appendApplyResult: noop,
+    getState: () => ({ mode: 'auto', requireReviewing: true }), getAssistantAnswerForCurrentRun: () => '',
+    cleanFinalAnswer: value => value, buildSyncApplyOperations: () => operations,
+    partitionUnsafeProjectPathOperations: value => ({ safe: value, skipped: [] }),
+    evaluateGovernedOperations: plan.evaluateGovernedOperations, buildGovernanceSkippedApplyResult: plan.buildGovernanceSkippedApplyResult,
+    getSkippedEntries: result => result.skipped, filterSyncChangesByOperations: () => [], formatWritebackSkippedNextStep: () => '',
+    summarizeOperationForAudit: value => value, buildAuditSummaryFromApply: value => value,
+    writebackSettlement: require('../extension/src/shared/writebackSettlement') });
+  await orchestrator.applySyncChangesToOverleaf(operations, {}, { mode: 'auto', assistantMessage: 'Model 原文' });
+  return [writeEvent, events[0]];
+}
+
+for (const from of ['en', 'zh']) {
+  for (const [written, skipped] of [[0, 1], [2, 3]]) {
+    test(`owned writeback activities (${written}/${skipped}, ${from}) reproject producer counts and preserve non-activity text`, async () => {
+      const original = await produceWritebackActivities(from, written, skipped);
+      const saved = JSON.stringify(original);
+      const to = from === 'en' ? 'zh' : 'en';
+      const expected = await produceWritebackActivities(to, written, skipped);
+      let locale = to;
+      const deps = { I18n, tx: (en, zh) => locale === 'zh' ? zh : en,
+        tr: (key, params) => I18n.t(locale, key, params), localizeVisibleReason: value => value, localizeCompileReason: value => value };
+      deps.localizeProductActivity = production('runTimelineView', 'localizeProductActivity', deps);
+      const sanitize = production('runTimelineView', 'sanitizeRunEventForRender', { ...deps,
+        sanitizeAssistantVisibleText: value => value || '', sanitizeAssistantVisibleValue: value => value,
+        stripEmptyHtmlCommentPlaceholders: value => value });
+      for (const [index, event] of original.entries()) {
+        const projected = sanitize(event);
+        assert.equal(projected.title, expected[index].title);
+        assert.deepEqual(projected.detail, event.detail);
+        locale = from;
+        assert.equal(sanitize(projected).title, event.title);
+        locale = to;
+        for (const patch of [
+          ...['stream', 'report', 'guidance', 'technical', 'command'].map(kind => ({ kind })),
+          { streamRole: 'assistant' }, { streamRole: 'reasoning' }, { guidanceId: 'guide-1' }
+        ]) assert.equal(sanitize({ ...event, ...patch }).title, event.title);
+        for (const title of [`Model says: ${event.title}`, `${event.title} extra 原文`, 'unknown diagnostic 原文']) {
+          assert.equal(sanitize({ ...event, title }).title, title);
+        }
+      }
+      assert.equal(JSON.stringify(original), saved);
+    });
+  }
+}
+
 test('historical compile activity projects only owned titles and keeps raw technical evidence', () => {
   const Compile = require('../extension/src/shared/compileAdapter');
   let locale = 'zh';

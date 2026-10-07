@@ -588,6 +588,16 @@
       const match = new RegExp('^' + pattern + '$').exec(title);
       if (match) { known = true; nextTitle = tr(key, { applied: match[1], skipped: match[2] }); break outer; }
     }
+    let countedTitle;
+    const writeResult = /^(?:Write result: wrote (\d+) item\(s\), skipped (\d+)|写入结果：已写入 (\d+) 项，跳过 (\d+) 项)$/.exec(title);
+    const governance = /^(?:Project governance blocked (\d+) write\(s\) before review\.|项目治理规则在审核前阻止了 (\d+) 项写入。)$/.exec(title);
+    if (writeResult) {
+      const applied = writeResult[1] ?? writeResult[3], skipped = writeResult[2] ?? writeResult[4];
+      countedTitle = tx(`Write result: wrote ${applied} item(s), skipped ${skipped}`, `写入结果：已写入 ${applied} 项，跳过 ${skipped} 项`);
+    } else if (governance) {
+      const count = governance[1] ?? governance[2];
+      countedTitle = tx(`Project governance blocked ${count} write(s) before review.`, `项目治理规则在审核前阻止了 ${count} 项写入。`);
+    }
     const labels = ['detailAccepted', 'detailRejected', 'detailUndone', 'detailSkipped', 'detailFile', 'detailRecord', 'detailReason'];
     const project = (value, reason = false) => {
       if (typeof value === 'string') return reason ? localizeVisibleReason(value) : value;
@@ -598,7 +608,7 @@
         return [label ? tr(label) : key, project(child, label === 'detailReason')];
       }));
     };
-    return { title: known ? nextTitle : localizeCompileReason(localizeVisibleReason(title)),
+    return { title: countedTitle || (known ? nextTitle : localizeCompileReason(localizeVisibleReason(title))),
       detail: typeof detail === 'string' ? localizeVisibleReason(detail) : known ? project(detail) : detail };
   }
   function formatReviewResultFailure(failure) {
