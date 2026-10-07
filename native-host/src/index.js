@@ -5,7 +5,7 @@ const { decodeInputFrames, encodeOutputFrame } = require('./nativeTransportEnvel
 const { logDebug } = require('./debugLog');
 const { handleRequest } = require('./taskRunner');
 const { abortAllActiveOperations, quarantineActiveOperations, getActiveNativeWorkState } = require('./taskRunnerRuntime');
-const { handleUpdateRequest, isUpdateMethod } = require('./updateManager');
+const { handleUpdateRequest, isUpdateMethod, assertBootstrapBusinessAvailable } = require('./updateManager');
 const { buildNativeRuntimeEnv, summarizeNativeEnvironment } = require('./nativeEnvironment');
 
 let buffered = Buffer.alloc(0);
@@ -44,6 +44,7 @@ async function handleDecodedMessage(message) {
   if (nativeDisconnectHandled) return;
   try {
     logDebug('request.received', summarizeRequest(message));
+    assertBootstrapBusinessAvailable(message, { env: runtimeEnv });
     const response = isUpdateMethod(message?.method)
       ? await handleUpdateRequest(message, {
           env: runtimeEnv,
@@ -63,7 +64,7 @@ async function handleDecodedMessage(message) {
       id: message?.id,
       ok: false,
       error: {
-        code: 'internal_error',
+        code: /^[a-z0-9_]{1,80}$/.test(String(error?.code || '')) ? error.code : 'internal_error',
         message: error.message
       }
     };

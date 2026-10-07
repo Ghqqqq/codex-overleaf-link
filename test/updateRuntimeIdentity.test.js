@@ -25,6 +25,9 @@ test('unknown evidence, partial installations and active transactions cannot off
   assert.equal(inspectInstalledRuntime(status({ runtimeVersion: undefined }), options).state, 'unknown');
   assert.equal(inspectInstalledRuntime(status({ installedAligned: false }), options).state, 'repair_required');
   assert.equal(inspectInstalledRuntime(status({ transaction: { state: 'staged' } }), options).state, 'transaction_active');
+  assert.equal(inspectInstalledRuntime(status({ transaction: { state: 'bootstrap_pending' } }), options).state, 'transaction_active');
+  assert.equal(inspectInstalledRuntime(status({ transaction: { state: 'bootstrap_rolling_back' } }), options).state, 'transaction_active');
+  assert.equal(inspectInstalledRuntime(status({ transaction: { state: 'rolling_back' } }), options).state, 'transaction_active');
   assert.equal(inspectInstalledRuntime(status({ authorization: { state: 'authorized' } }), options).state, 'transaction_active');
 });
 

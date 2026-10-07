@@ -10,6 +10,9 @@ import { verifyPackagePaths } from './verify-npm-package.mjs';
 const require = createRequire(import.meta.url);
 const { verifySignedReleaseManifest } = require('../native-host/src/updateTrust.js');
 const { isAllowedUpdatePath } = require('../native-host/src/updateArchive.js');
+const { isBootstrapMigrationRelease, validateBootstrapMigrationDescriptor, assertBootstrapManifestShape,
+  BOOTSTRAP_MIGRATION_FILES, BOOTSTRAP_MIGRATION_IMPLEMENTATION_FILES } =
+  require('../native-host/src/bootstrapMigrationContract.js');
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FORBIDDEN_ARCHIVE_PATTERNS = [
@@ -79,6 +82,10 @@ export function verifyReleaseArtifacts(options = {}) {
   }
   if (actualSet.has(updateBundleName)) {
     verifyUpdateBundle(path.join(releaseDir, updateBundleName), errors);
+  }
+  if (isBootstrapMigrationRelease(version)) {
+    verifyBootstrapMigrationArtifacts({ releaseDir, version, extensionZipName, nativeTarballName,
+      npmTarballName, updateBundleName }, errors);
   }
   if (options.requireSignature || signaturePresent) {
     verifyReleaseSignature(releaseDir, errors, { version, updateBundleName });
@@ -156,8 +163,56 @@ function isAllowedNativeTarballEntry(entry) {
   return /^(package\.json|package-lock\.json|README\.md|LICENSE|install\.sh|install\.ps1)$/.test(entry)
     || /^(native-host\/|native-host\/src\/|extension\/|extension\/src\/|extension\/src\/shared\/|scripts\/)$/.test(entry)
     || /^native-host\/src\/.+/.test(entry)
+    || /^native-host\/bootstrap-payload(?:\/|\/bootstrap\/|\/manifest\.template\.json)$/.test(entry)
+    || BOOTSTRAP_MIGRATION_FILES.some(file => entry === 'native-host/bootstrap-payload/' + file)
     || /^extension\/src\/shared\/.+/.test(entry)
     || /^scripts\/(?:codex-json-agent|install-native-host|uninstall-native-host|verify-npm-package)\.mjs$/.test(entry);
+}
+
+export function verifyBootstrapMigrationArtifacts({ releaseDir, version, extensionZipName, nativeTarballName,
+  npmTarballName, updateBundleName }, errors) {
+  try {
+    const manifest = readJson(path.join(releaseDir, 'release-manifest.json'));
+    const descriptor = validateBootstrapMigrationDescriptor(manifest.bootstrapMigration, { targetVersion: version });
+    if (manifest.bootstrapProtocol !== descriptor.bootstrapProtocol || manifest.version !== version) {
+      throw new Error('Bootstrap migration differs from the release identity.');
+    }
+    const bundle = path.join(releaseDir, updateBundleName);
+    const native = path.join(releaseDir, nativeTarballName);
+    const npm = path.join(releaseDir, npmTarballName);
+    const extension = path.join(releaseDir, extensionZipName);
+    const bundleEntries = listTarEntries(bundle);
+    const expectedPayload = new Set(['manifest.template.json', ...BOOTSTRAP_MIGRATION_FILES]);
+    const payloadPrefix = 'native-runtime/native-host/bootstrap-payload/';
+    const unexpected = bundleEntries.filter(entry => entry.startsWith(payloadPrefix) && !entry.endsWith('/')
+      && !expectedPayload.has(entry.slice(payloadPrefix.length)));
+    if (unexpected.length) throw new Error('Undeclared Bootstrap payload files: ' + unexpected.join(', '));
+    for (const source of BOOTSTRAP_MIGRATION_IMPLEMENTATION_FILES) {
+      const archivePath = source.startsWith('extension/')
+        ? 'extension-runtime/' + source.slice('extension/'.length) : 'native-runtime/' + source;
+      if (!bundleEntries.includes(archivePath)) throw new Error('Bootstrap migration implementation is missing: ' + archivePath);
+    }
+    for (const file of descriptor.files) {
+      const payloadPath = 'native-host/bootstrap-payload/' + file.path;
+      const copies = [
+        ['update bundle', readTarEntry(bundle, 'native-runtime/' + payloadPath)],
+        ['native tarball', readTarEntry(native, payloadPath)],
+        ['npm tarball', readTarEntry(npm, 'package/extension/' + file.path)],
+        ['extension zip', readZipEntry(extension, file.path)]
+      ];
+      for (const [label, bytes] of copies) {
+        if (crypto.createHash('sha256').update(bytes).digest('hex') !== file.targetSha256) {
+          throw new Error(label + ' Bootstrap migration digest mismatch: ' + file.path);
+        }
+      }
+    }
+    for (const [artifact, prefix] of [[bundle, 'native-runtime/'], [native, '']]) {
+      assertBootstrapManifestShape(JSON.parse(readTarEntry(artifact,
+        prefix + 'native-host/bootstrap-payload/manifest.template.json')), { version });
+    }
+  } catch (error) {
+    errors.push('Bootstrap migration artifacts are invalid: ' + error.message);
+  }
 }
 
 function verifyUpdateBundle(filePath, errors) {

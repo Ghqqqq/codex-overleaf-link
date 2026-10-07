@@ -96,6 +96,7 @@ function renderExistingSettings(view, locale = 'en') {
 }
 
 function bindProductionBackground(h, statusReader) {
+  vm.runInContext(source('extension/src/backgroundBootstrapMigration.js'), h.sandbox);
   Object.assign(h.sandbox, { ManagedUpdateProjection: h.sandbox.CodexOverleafManagedUpdateProjection,
     MANAGED_UPDATE_STATE_KEY: UPDATE_KEY, MANAGED_UPDATE_CONSENT_KEY: CONSENT_KEY, MANAGED_UPDATE_TABS_KEY: TABS_KEY,
     sendNativeRequest: async () => ({ ok: true, result: await statusReader() }) });

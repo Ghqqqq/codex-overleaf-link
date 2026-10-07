@@ -588,7 +588,7 @@ async function sendConsentAction(action) {
       const summary = document.createElement('summary');
       summary.textContent = utx('Technical details', '技术详情');
       const code = document.createElement('code');
-      code.textContent = [state.code, state.message].filter(Boolean).join(': ');
+      code.textContent = [state.code, formatUpdateFailure(state)].filter(Boolean).join(': ');
       details.append(summary, code);
       card.append(details);
     }
@@ -698,10 +698,24 @@ async function sendConsentAction(action) {
       awaiting_health: [utx('Checking updated components', '正在检查更新后的组件'), latest, utx('Restarting and checking both components', '正在重启并检查两个组件')],
       committed: [utx('Update complete', '更新完成'), latest || current, utx('Extension and Native Host are healthy.', '扩展与 Native Host 均运行正常。')],
       rolled_back: [utx('Previous version restored', '已恢复上一版本'), current, utx('Health check failed, so the previous coordinated pair was restored.', '健康检查失败，已恢复上一组协调版本。')],
-      failed: [utx('Update could not continue', '更新无法继续'), latest, state.message || utx('Check the details and retry.', '请查看详情后重试。')]
+      failed: [utx('Update could not continue', '更新无法继续'), latest, formatUpdateFailure(state) || utx('Check the details and retry.', '请查看详情后重试。')]
     };
     const value = map[state.state] || map.idle;
     return { title: value[0], version: value[1], detail: value[2], phase: value[2] };
+  }
+
+  function formatUpdateFailure(state = {}) {
+    const code = String(state.code || '');
+    if (code === 'update_recovery_pending') return utx('The update result is being checked. Recovery has not been confirmed.', '正在确认更新结果，恢复状态尚未确认。');
+    if (['update_bootstrap_health_timeout', 'update_bootstrap_reload_failed'].includes(code)) return utx('The updated startup components did not finish restarting and confirming. Check recovery before retrying.', '更新后的启动组件未能完成重启和确认，请先检查恢复状态。');
+    if (['update_bootstrap_source_mismatch', 'update_bootstrap_source_version_mismatch'].includes(code)) return utx('The installed startup files do not match a supported update source. Check recovery before retrying.', '已安装的启动文件与支持的升级来源不一致，请先检查恢复状态。');
+    if (['update_bootstrap_record_missing', 'update_bootstrap_record_invalid', 'update_bootstrap_backup_mismatch', 'update_bootstrap_already_restoring'].includes(code)) return utx('The startup recovery material could not be confirmed. The update result remains unconfirmed.', '尚未确认启动组件的恢复材料有效，更新结果仍待确认。');
+    if (['update_bootstrap_confirmation_pending', 'update_bootstrap_native_restart_required'].includes(code)) return utx('Waiting for the updated startup components and Native Host to finish restarting and confirming.', '正在等待更新后的启动组件和本机服务完成重启及确认。');
+    if (code === 'update_bootstrap_monitor_unavailable') return utx('The update recovery monitor could not start. Check recovery before retrying.', '更新恢复监护程序未能启动，请先检查恢复状态。');
+    if (['update_bootstrap_transaction_mismatch', 'update_bootstrap_transaction_invalid'].includes(code)) return utx('The startup update transaction could not be matched. Check recovery before retrying.', '未能匹配启动组件的更新事务，请先检查恢复状态。');
+    if (code.startsWith('update_bootstrap_')) return utx('The startup update package or installed files could not be verified. Check recovery before retrying.', '无法验证启动组件更新包或已安装文件，请先检查恢复状态。');
+    if (['update_health_failed', 'update_request_failed', 'update_failed'].includes(code)) return utx('The updated components could not be confirmed. Check recovery before retrying.', '尚未确认更新后的组件正常，请先检查恢复状态。');
+    return state.message || '';
   }
 
   function formatBlocker(blocker) {

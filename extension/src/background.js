@@ -53,6 +53,10 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
   const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
   importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/shared/updateRuntimeIdentity.js`) : 'shared/updateRuntimeIdentity.js');
 }
+if (!globalThis.CodexOverleafBootstrapMigration) {
+  const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
+  importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/backgroundBootstrapMigration.js`) : 'backgroundBootstrapMigration.js');
+}
 
 (function initBackground() {
   'use strict';
@@ -147,6 +151,11 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
   });
 
   if (managedBootstrapRuntime) {
+    globalThis.CodexOverleafBootstrapMigration.init({
+      request: payload => sendNativeRequest(payload, null, { skipCompatibility: true }),
+      verifySafety: verifyManagedUpdateSafety,
+      setExecutionLocked: value => { managedUpdateExecutionLocked = value; }
+    });
     chrome.storage?.onChanged?.addListener((changes, area) => {
       if (area !== 'local' || !changes[MANAGED_UPDATE_STATE_KEY]?.newValue) {
         return;
@@ -371,6 +380,10 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
   }
 
   async function requestManagedInternal(payload) {
+    if (managedBootstrapRuntime && ['update.status', 'update.confirm'].includes(payload?.method)) {
+      payload = { ...payload, params: { ...payload.params,
+        bootstrapRevision: String(globalThis.__CODEX_OVERLEAF_BOOTSTRAP_REVISION__ || '') } };
+    }
     if (managedBootstrapRuntime && payload?.method === 'update.apply') {
       const gate = await verifyManagedUpdateSafety();
       if (!gate.ok) {
@@ -388,7 +401,11 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
         throw error;
       }
     }
-    return sendNativeRequest(payload, null, { skipCompatibility: true });
+    const response = await sendNativeRequest(payload, null, { skipCompatibility: true });
+    if (payload?.method === 'update.confirm') {
+      globalThis.CodexOverleafBootstrapMigration.observeConfirmation(payload.params, response);
+    }
+    return response;
   }
 
   async function verifyManagedUpdateSafety() {
@@ -479,6 +496,9 @@ if (!globalThis.CodexOverleafUpdateRuntimeIdentity) {
   }
 
   async function reconcileManagedUpdateTransaction() {
+    const migration = await globalThis.CodexOverleafBootstrapMigration.ready();
+    if (!migration.continueInitialization) return;
+    await globalThis.__CODEX_OVERLEAF_BOOTSTRAP_READY__;
     const coordinator = globalThis.CodexOverleafUpdateCoordinator;
     const recoveryOwner = await coordinator?.captureRecoveryOwner?.();
     const response = await sendNativeRequest({

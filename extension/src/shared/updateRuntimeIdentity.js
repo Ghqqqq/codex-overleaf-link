@@ -18,7 +18,7 @@
     if (!status.managed || !result.installedVersion || !result.nativeVersion ||
         !result.extensionVersion || !result.runtimeVersion) return result;
     if (['authorized', 'bound'].includes(status.authorization?.state) ||
-        ['staged', 'activation_pending', 'applying', 'awaiting_health'].includes(status.transaction?.state)) {
+        ['staged', 'activation_pending', 'applying', 'bootstrap_pending', 'bootstrap_rolling_back', 'awaiting_health', 'rolling_back'].includes(status.transaction?.state)) {
       return { ...result, state: 'transaction_active' };
     }
     if (status.installedAligned !== true) return { ...result, state: 'repair_required' };

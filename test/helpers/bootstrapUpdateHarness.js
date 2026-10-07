@@ -5,6 +5,8 @@ const ROOT = path.resolve(__dirname, "../..");
 const UPDATE_KEY = "codex-overleaf-managed-update-state-v1";
 async function createBootstrapHarness(options = {}) {
   const version = options.version || "2.5.0", data = { [UPDATE_KEY]: { state: "idle", currentVersion: version, latestVersion: version } }, listeners = [], nativeCalls = [], loaded = [], timers = /* @__PURE__ */ new Map(), probes = [];
+  Object.assign(data, structuredClone(options.data || {}));
+  const alarmListeners = [], storageListeners = [];
   let timerId = 0, reloads = 0;
   const noop = { addListener() {
   } };
@@ -20,16 +22,22 @@ async function createBootstrapHarness(options = {}) {
   } }, storage: { local: { async get(keys) {
     return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((k) => [k, structuredClone(data[k])]));
   }, async set(v) {
+    const changes = Object.fromEntries(Object.entries(v).map(([key, value]) => [key, {
+      oldValue: structuredClone(data[key]), newValue: structuredClone(value)
+    }]));
     Object.assign(data, structuredClone(v));
+    if (options.fireStorageChanges) queueMicrotask(() => storageListeners.forEach(listener => listener(changes, "local")));
   }, async remove(keys) {
     for (const k of Array.isArray(keys) ? keys : [keys]) delete data[k];
   } }, session: { async get(k) {
     return { [k]: true };
   }, async set() {
   }, async remove() {
-  } }, onChanged: noop }, alarms: { create() {
+  } }, onChanged: { addListener: listener => storageListeners.push(listener) } }, alarms: { create() {
   }, async clear() {
-  }, onAlarm: noop }, action: { async setBadgeText() {
+  }, onAlarm: { addListener: listener => alarmListeners.push(listener), removeListener(listener) {
+    const index = alarmListeners.indexOf(listener); if (index >= 0) alarmListeners.splice(index, 1);
+  } } }, action: { async setBadgeText() {
   }, async setBadgeBackgroundColor() {
   } }, permissions: { onAdded: noop, onRemoved: noop, async contains() {
     return true;
@@ -68,7 +76,8 @@ async function createBootstrapHarness(options = {}) {
     if (!rel.startsWith("bootstrap/") && !rel.startsWith("src/")) rel = "src/" + rel;
     const file = path.join(ROOT, "extension", rel);
     loaded.push(rel);
-    vm.runInContext(fs.readFileSync(file, "utf8"), ctx, { filename: file });
+    vm.runInContext(rel === "bootstrap/background.js" && options.bootstrapSource
+      ? options.bootstrapSource : fs.readFileSync(file, "utf8"), ctx, { filename: file });
   }
   if (options.bootstrap !== false) load("bootstrap/background.js");
   else {
@@ -77,7 +86,16 @@ async function createBootstrapHarness(options = {}) {
   }
   if (options.pendingTabs) data["codex-overleaf-managed-update-tabs-v1"] = options.pendingTabs;
   for (let i = 0; i < 10; i++) await new Promise(setImmediate);
-  return { data, loaded, nativeCalls, probes, chrome, sandbox, listeners, reloads: () => reloads, setActive(v) {
+  return { data, loaded, nativeCalls, probes, chrome, sandbox, listeners, reloads: () => reloads, async fireAlarm(name) {
+    alarmListeners.slice().forEach(listener => listener({ name }));
+    for (let i = 0; i < 12; i++) await new Promise(setImmediate);
+  }, async fireTimer(delay) {
+    const entry = [...timers.entries()].find(([_id, value]) => value.delay === delay);
+    if (!entry) throw new Error(`No pending timer for ${delay} ms`);
+    timers.delete(entry[0]);
+    entry[1].cb();
+    for (let i = 0; i < 12; i++) await new Promise(setImmediate);
+  }, setActive(v) {
     active = v;
   }, dispose() {
     timers.clear();

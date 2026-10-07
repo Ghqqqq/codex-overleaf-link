@@ -1,5 +1,7 @@
 'use strict';
 
+globalThis.__CODEX_OVERLEAF_BOOTSTRAP_REVISION__ = '3.1';
+
 const CODEX_OVERLEAF_HOST = 'com.codex.overleaf';
 const RUNTIME_SCRIPT_ID = 'codex-overleaf-managed-runtime';
 const UPDATE_STATE_KEY = 'codex-overleaf-managed-update-state-v1';
@@ -75,7 +77,7 @@ chrome.alarms.onAlarm.addListener(alarm => {
   }
 });
 
-initializeBootstrap().catch(async error => {
+globalThis.__CODEX_OVERLEAF_BOOTSTRAP_READY__ = initializeBootstrap().catch(async error => {
   await setUpdateState({ state: 'failed', code: safeCode(error), message: safeMessage(error) });
 });
 
@@ -91,6 +93,8 @@ async function initializeBootstrap() {
     return;
   }
 
+  const migration = await globalThis.CodexOverleafBootstrapMigration?.ready?.();
+  if (migration?.continueInitialization === false) return;
   const nativeStatus = await requestInternal({ method: 'update.status', params: {} }).catch(() => null);
   const transaction = nativeStatus?.ok ? nativeStatus.result?.transaction : null;
   if (transaction?.state === 'awaiting_health') {
@@ -406,6 +410,7 @@ async function confirmPendingUpdate(transaction) {
     method: 'update.confirm',
     params: {
       transactionId: transaction.id,
+      bootstrapRevision: String(globalThis.__CODEX_OVERLEAF_BOOTSTRAP_REVISION__ || ''),
       extensionVersion: chrome.runtime.getManifest().version,
       nativeVersion: ping.result.version
     }
@@ -466,7 +471,7 @@ async function rollbackBrokenRuntime(error, transaction) {
     chrome.runtime.reload();
     return;
   }
-  if (!pending?.id || !pending.sourceVersion || !['applying', 'awaiting_health', 'committed'].includes(pending.state)) {
+  if (!pending?.id || !pending.sourceVersion || !['applying', 'bootstrap_pending', 'awaiting_health', 'committed'].includes(pending.state)) {
     await setUpdateState({ state: 'failed', code: safeCode(error), message: safeMessage(error) });
     return;
   }
@@ -494,6 +499,9 @@ function isRollbackReadback(response, transaction, expectedPair) {
     && status.installedAligned === true && pair?.extensionVersion === transaction.sourceVersion
     && pair?.nativeVersion === transaction.sourceVersion
     && /^[0-9a-f]{64}$/.test(pair.extensionSha256 || '') && /^[0-9a-f]{64}$/.test(pair.nativeSha256 || '')
+    && (!(transaction.bootstrapRevision || status.transaction.bootstrapRevision || expectedPair?.bootstrapSha256)
+      || (/^[0-9a-f]{64}$/.test(pair.bootstrapSha256 || '')
+        && (!expectedPair || pair.bootstrapSha256 === expectedPair.bootstrapSha256)))
     && (!expectedPair || ['extensionVersion', 'nativeVersion', 'extensionSha256', 'nativeSha256']
       .every(key => pair[key] === expectedPair[key])));
 }
@@ -518,6 +526,8 @@ async function postponeUpdate() {
 }
 
 async function requestInternal(payload) {
+  if (payload?.method === 'update.status') payload = { ...payload,
+    params: { ...payload.params, bootstrapRevision: String(globalThis.__CODEX_OVERLEAF_BOOTSTRAP_REVISION__ || '') } };
   if (globalThis.CodexOverleafNativeBridge?.requestInternal) {
     return globalThis.CodexOverleafNativeBridge.requestInternal({
       id: crypto.randomUUID(),

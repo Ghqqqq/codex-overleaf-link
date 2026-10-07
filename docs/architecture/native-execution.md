@@ -63,6 +63,11 @@ sequenceDiagram
 `index.handleDecodedMessage` 把 `update.*` 交给 `updateManager`，其余交给 task runner；消息分派没有全局串行等待。
 因此 `codex.run` 未结束时仍能接收 `codex.steer/cancel`，项目级互斥另由 task runner 控制。
 
+托管Bootstrap迁移另有启动期间的业务屏障：`index`在普通业务派发前调用[updateManager.assertBootstrapBusinessAvailable](../../native-host/src/updateManager.js)。确切`2.5.0 → 2.5.1`迁移及其健康确认尚未结算，或源Native切回仍待完成时，普通业务返回`update_applying`；`update.*`、`bridge.ping`和`codex.cancel`保留各自处理路径。浏览器后台还持有自己的执行锁，两层共同防止迁移期间开启新任务，不能把其中一层等同项目任务锁。
+
+内部`update.bootstrap`在更新mutation lock下经[bootstrapUpdate.advanceBootstrapMigration](../../native-host/src/bootstrapUpdate.js)重验原签名、bound授权、事务和目标Native身份，随后调用[bootstrapMigration](../../native-host/src/bootstrapMigration.js)的文件事务。独立[bootstrapUpdateWatchdog](../../native-host/src/bootstrapUpdateWatchdog.js)先完成事务token/PID握手，再监测健康期限；恢复调用同一`recoverBootstrapTransaction()`及同一跨进程锁，不依赖Chrome Service Worker持续存活。watchdog保留有限重试，原Popup还能通过Native状态请求唤醒恢复检查；这要求目标Native恢复代码仍能启动，固定launcher的入口存在性回退没有变成任意启动损坏的自动修复。签名payload、回滚顺序与验证边界见[安装与更新](installation-and-updates.md)。
+迁移恢复已写`rolled_back`而仍有`sourceActivationPending`时，watchdog继续完成源证明核对、授权结算和指针切回；终态字符串本身不足以证明旧Native已接管。提交恢复则消费`committedEvidence`及当前runtime/Bootstrap摘要，仅结算身份完全相符的旧bound授权。[bootstrapMigrationUpdate](../../test/bootstrapMigrationUpdate.test.js)定位这些跨步骤中断与恢复契约，实际Chrome和物理断电有独立验证范围。
+
 ### 请求、流与终态
 
 流事件形状为 `{id, ok:true, event}`；`ok:true` 在此表示一次事件传递，不表示整轮成功。

@@ -99,7 +99,7 @@ Connection shortcuts cover OpenAI-compatible and Anthropic-compatible APIs, Kimi
 
 > **Upgrading from an older version**
 >
-> **Local candidate:** 2.5.1 is being tested and has not been published. For this checkout, use `npm run build:content` followed by `npm run install:managed`. The version-pinned npm and download commands below apply after publication. The current automatic-update compatibility check against 2.5.0 does not pass; this candidate requires a full local installation.
+> **Local candidate:** 2.5.1 is being tested and has not been published. For this checkout, use `npm run build:content` followed by `npm run install:managed`. The version-pinned npm and download commands below apply after publication. The compatible 2.5.0 → 2.5.1 update migration is implemented and awaiting complete acceptance; it is not yet available through the public update feed.
 
 > **Versions earlier than 2.5.0 require a manual installation to move to the 2.5.x line.** The in-extension **Update now** action cannot perform this upgrade. Run the installation command below, reload the extension in `chrome://extensions`, then refresh the Overleaf page.
 
@@ -258,6 +258,8 @@ The choice applies to every session in the current project; other projects keep 
 ## Updating
 
 Managed installs check GitHub for new signed stable releases on their own. When one is available, choose **Update now** in the notice or under **Settings → Software updates**. The update waits until every Overleaf tab is saved and no task is running, replaces the extension and native host together, and restores the previous version if the new one fails its health check. Drafts and prereleases are never picked up, and an update never adds Chrome permissions silently.
+
+The 2.5.1 candidate adds a compatible update from the published 2.5.0 installation through the same **Update now** action. Its signed package carries the startup-file fixes, retains recovery copies and progress, and reloads the extension before confirming the updated startup code. Bootstrap protocol 3 and existing Chrome permissions remain unchanged. This migration is still undergoing local acceptance; the candidate is unpublished.
 
 The updater respects HTTP(S) proxy environment variables and the macOS/Windows system proxy. SOCKS-only or PAC-only setups need an HTTP proxy endpoint.
 

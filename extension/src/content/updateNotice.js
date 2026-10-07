@@ -534,7 +534,7 @@
     const messages = {
       update_phase_timeout: ['The update timed out and its download was stopped. Retry when the connection is available.', '更新超时，下载已停止。连接恢复后请重试。'],
       update_not_applied: ['The update was stopped before installation. Retry when ready.', '更新已在安装前停止，可准备就绪后重试。'],
-      update_recovery_pending: ['The update reached installation before cancellation. Checking its result.', '取消时更新已进入安装，正在确认安装结果。'],
+      update_recovery_pending: ['The update result is being checked. Recovery has not been confirmed.', '正在确认更新结果，恢复状态尚未确认。'],
       update_rolled_back: ['The previous version has been restored.', '已恢复上一版本。'],
       update_not_managed: ['Run install-managed once to enable coordinated automatic updates.', '请先运行一次 install-managed，以启用扩展与本机服务的协调更新。'],
       update_native_busy: ['Native Host is still processing a Codex task.', 'Native Host 仍在处理 Codex 任务。'],
@@ -547,6 +547,14 @@
       update_apply_failed: ['The update could not be installed. Check recovery and retry.', '无法安装更新，请检查恢复状态后重试。']
     };
     if (messages[code]) return tx(...messages[code]);
+    if (['update_health_failed', 'update_request_failed', 'update_failed'].includes(code)) return tx('The updated components could not be confirmed. Check recovery before retrying.', '尚未确认更新后的组件正常，请先检查恢复状态。');
+    if (['update_bootstrap_health_timeout', 'update_bootstrap_reload_failed'].includes(code)) return tx('The updated startup components did not finish restarting and confirming. Check recovery before retrying.', '更新后的启动组件未能完成重启和确认，请先检查恢复状态。');
+    if (['update_bootstrap_source_mismatch', 'update_bootstrap_source_version_mismatch'].includes(code)) return tx('The installed startup files do not match a supported update source. Check recovery before retrying.', '已安装的启动文件与支持的升级来源不一致，请先检查恢复状态。');
+    if (['update_bootstrap_record_missing', 'update_bootstrap_record_invalid', 'update_bootstrap_backup_mismatch', 'update_bootstrap_already_restoring'].includes(code)) return tx('The startup recovery material could not be confirmed. The update result remains unconfirmed.', '尚未确认启动组件的恢复材料有效，更新结果仍待确认。');
+    if (['update_bootstrap_confirmation_pending', 'update_bootstrap_native_restart_required'].includes(code)) return tx('Waiting for the updated startup components and Native Host to finish restarting and confirming.', '正在等待更新后的启动组件和本机服务完成重启及确认。');
+    if (code === 'update_bootstrap_monitor_unavailable') return tx('The update recovery monitor could not start. Check recovery before retrying.', '更新恢复监护程序未能启动，请先检查恢复状态。');
+    if (['update_bootstrap_transaction_mismatch', 'update_bootstrap_transaction_invalid'].includes(code)) return tx('The startup update transaction could not be matched. Check recovery before retrying.', '未能匹配启动组件的更新事务，请先检查恢复状态。');
+    if (code.startsWith('update_bootstrap_')) return tx('The startup update package or installed files could not be verified. Check recovery before retrying.', '无法验证启动组件更新包或已安装文件，请先检查恢复状态。');
     if (['update_reload_required', 'update_reload_busy'].includes(code)) {
       const match = /^Reload is waiting for Overleaf to be saved and idle \(([^)]+)\)\.$/.exec(state.message || '');
       if (match) return blockersCopy(match[1].split(', '));

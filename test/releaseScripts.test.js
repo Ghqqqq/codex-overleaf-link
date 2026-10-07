@@ -256,6 +256,11 @@ function createReleaseTestIndexPath() {
     'native-host/src/updateArchive.js',
     'native-host/src/updateManager.js',
     'native-host/src/updateTrust.js',
+    'native-host/src/bootstrapMigrationContract.js',
+    'native-host/src/bootstrapMigration.js',
+    'native-host/src/bootstrapUpdate.js',
+    'native-host/src/bootstrapUpdateWatchdog.js',
+    'extension/src/backgroundBootstrapMigration.js',
     'scripts/install-managed.mjs',
     'scripts/sign-release-manifest.mjs',
     'scripts/uninstall-managed.mjs'
@@ -1424,7 +1429,7 @@ releaseTest('build-release refuses packaged files staged for deletion from HEAD'
   }
 });
 
-releaseTest('build-release creates expected artifacts and metadata', (t) => {
+releaseTest('build-release creates expected artifacts and metadata', async (t) => {
   const pkg = readJson(path.join(repoRoot, 'package.json'));
   const version = pkg.version;
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-release-build-'));
@@ -1480,6 +1485,18 @@ releaseTest('build-release creates expected artifacts and metadata', (t) => {
     const manifest = readJson(path.join(outputDir, 'release-manifest.json'));
     assert.equal(manifest.version, version);
     assert.match(manifest.gitCommit, /^(unknown|[0-9a-f]{40})$/);
+    if (version === '2.5.1') {
+      const { validateBootstrapMigrationDescriptor } = require('../native-host/src/bootstrapMigrationContract');
+      assert.doesNotThrow(() => validateBootstrapMigrationDescriptor(manifest.bootstrapMigration, { targetVersion: version }));
+      const updateEntries = listTarEntries(path.join(outputDir, updateBundle));
+      const nativeEntries = listTarEntries(path.join(outputDir, nativeTarball));
+      for (const file of manifest.bootstrapMigration.files) {
+        assert.ok(updateEntries.includes('native-runtime/native-host/bootstrap-payload/' + file.path));
+        assert.ok(nativeEntries.includes('native-host/bootstrap-payload/' + file.path));
+        assert.ok(npmEntries.includes('package/extension/' + file.path));
+      }
+      assert.ok(updateEntries.includes('extension-runtime/src/backgroundBootstrapMigration.js'));
+    }
     assert.doesNotThrow(() => new Date(manifest.createdAt).toISOString());
     assert.deepEqual(
       manifest.artifacts.map((artifact) => artifact.name).sort(),
@@ -1532,6 +1549,8 @@ releaseTest('build-release creates expected artifacts and metadata', (t) => {
       assert.equal(line.slice(0, 64), sha256(path.join(outputDir, fileName)));
     }
     assert.equal(fs.existsSync(path.join(repoRoot, npmTarball)), false, `${npmTarball} should not be left in the package root`);
+    const { verifyReleaseArtifacts } = await importScriptModule('scripts/verify-release-artifacts.mjs');
+    assert.equal(verifyReleaseArtifacts({ rootDir: repoRoot, releaseDir: outputDir }).version, version);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

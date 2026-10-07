@@ -119,6 +119,10 @@ Content 的 [NativeCompatibilityController.ensureForMethod](../../extension/src/
 后台 `sanitizeNativeRequest` 在发送前剥离兼容性 evidence。Native `handleRequest` 执行配额、方法路由及各业务检查，没有再实施同一版本 gate。
 托管更新的 `requestManagedInternal` 显式使用 `skipCompatibility`；更新安全点、授权、签名与事务检查见[安装与更新](installation-and-updates.md)，不能按普通业务方法解释这条内部通道。
 
+`2.5.0 → 2.5.1`的固定层修复增加内部`update.bootstrap`接续调用。产品版本`2.5.1`、Bootstrap协议`3`与固定入口revision `3.1`属于三个不同身份：协议3保持旧updater的归档/安装兼容性，revision说明重载后执行的固定入口实现。`bootstrapRevision`不授予升级资格；[bootstrapUpdate](../../native-host/src/bootstrapUpdate.js)仍重验原release签名、journal保存的manifest/bundle摘要和大小、bound授权及transaction ID，限定真实旧源摘要和封闭Bootstrap文件列表。目标payload位于签名bundle内旧归档器已允许的`native-runtime/native-host/bootstrap-payload/`；扩展manifest权限形状、Native注册及bridge保持原边界。
+
+`bootstrap_pending`阻止旧worker按原`awaiting_health`路径提前confirm；最终`update.confirm`同时消费相同事务的目标版本、已加载revision和目标磁盘摘要。独立watchdog的随机token/PID/心跳仅用于恢复进程归属，文件WAL仅记录待执行/已执行事实，二者均不替代原用户授权和签名。回滚先核对源字节再切回旧Native，未知来源内容、缺失恢复材料或失配事务保持失败。[bootstrapMigrationContract](../../native-host/src/bootstrapMigrationContract.js)、[bootstrapMigration](../../native-host/src/bootstrapMigration.js)和[backgroundBootstrapMigration](../../extension/src/backgroundBootstrapMigration.js)分别管理文件合同、落盘进度与浏览器接续，完整状态和恢复边界见安装专题。
+
 **Target contract：**新增或更改 Native 方法时，同步决定两个 gate 集合、能力宣告、分类规则、evidence 传播、取消和旧版本行为。
 兼容性方法矩阵与后台重试分类分别修改；“只读”不能自动推导兼容放行或断线重放。
 后台重试由 `getNativeRetryClass/canRetryNativeRequest` 控制，未列方法默认 `no_silent_retry`；允许重连的方法最多重试一次，细节见[Native 执行](native-execution.md)。
@@ -151,6 +155,7 @@ loopback 约束监听地址，token 约束请求持有的口令；二者都不�
 | Page 方法或握手 | client、capability guard、contract、dispatcher、Page 加载清单与消费者 | [pageRpcContract](../../test/pageRpcContract.test.js)、[pageBridgeClient](../../test/pageBridgeClient.test.js)、[pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js)、[writebackCancellationRecovery](../../test/writebackCancellationRecovery.test.js)、[assetTransferCancellation](../../test/assetTransferCancellation.test.js)：目录、模拟消息、Page 局部守卫和取消后回执收束 |
 | 后台消息准入 | 对应 listener、sender helper、manifest 注入、站点及 frame 范围 | [backgroundNativeError](../../test/backgroundNativeError.test.js)、[globalPreferences](../../test/globalPreferences.test.js)：worker VM 或存储 mock；不能代替 Chrome 投递验证 |
 | Native 兼容 gate | runtime 集合、controller、后台集合、共享分类、Native ping 与调用者 | [nativeCompatibilityController](../../test/nativeCompatibilityController.test.js)、[nativeCompatibilityRunDispatch](../../test/nativeCompatibilityRunDispatch.test.js)、[nativeCompatibilityBusinessMethods](../../test/nativeCompatibilityBusinessMethods.test.js)、[compatibility](../../test/compatibility.test.js)：须区分集合注入测试与生产集合完整性 |
+| Bootstrap兼容迁移 | 原签名/授权、源/目标摘要、封闭写入清单、loaded revision、事务及监护身份 | [bootstrapMigrationFiles](../../test/bootstrapMigrationFiles.test.js)、[bootstrapMigrationUpdate](../../test/bootstrapMigrationUpdate.test.js)、[bootstrapMigrationBuild](../../test/bootstrapMigrationBuild.test.js)、[bootstrapMigrationBrowser](../../test/bootstrapMigrationBrowser.test.js)：分别覆盖文件中断、Native事务恢复、产物合同与浏览器VM；真实签名资产及Chrome加载另行验收 |
 | Provider 本地边界 | prepared launch、三桥 token/地址验证、关闭与取消 | [providerReliability](../../test/providerReliability.test.js)；具体依赖替换和网络范围需按用例核对 |
 
 纯 helper、源码断言和模拟消息能验证确定分支；真实 frame、Chrome sender 字段、不同扩展加载版本和实际 Native 注册需要对应环境验收。

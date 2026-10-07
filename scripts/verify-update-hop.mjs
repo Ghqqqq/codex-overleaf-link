@@ -11,6 +11,9 @@ import {
   replaceTrustedUpdateKeySource
 } from './update-hop-test-signing.mjs';
 import { downloadReleaseAsset } from './update-hop-download.mjs';
+import { assertBootstrapSnapshot, isolatedHopEnvironment, startNativeSession,
+  stopHopWatchdogs, writeTestTrustPreload } from './update-hop-runtime.mjs';
+import { confirmThroughInstalledBootstrap } from './update-hop-bootstrap-harness.mjs';
 
 const require = createRequire(import.meta.url);
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -23,6 +26,8 @@ const baseTag = process.env.CODEX_OVERLEAF_UPDATE_BASE_REF || findPreviousStable
 if (!baseTag) throw new Error('No previous stable tag is available for the managed update hop rehearsal.');
 const baseVersion = baseTag.slice(1);
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-update-hop-'));
+const nativeRoot = path.join(tempRoot, 'managed', 'native');
+let native;
 
 try {
   const baseExtensionZip = path.join(tempRoot, `extension-${baseVersion}.zip`);
@@ -30,9 +35,8 @@ try {
   await downloadReleaseAsset(baseTag, `codex-overleaf-link-extension-v${baseVersion}.zip`, baseExtensionZip);
   await downloadReleaseAsset(baseTag, `codex-overleaf-native-host-v${baseVersion}.tar.gz`, baseNativeTar);
 
-  const extensionRoot = path.join(tempRoot, 'managed-extension');
+  const extensionRoot = path.join(tempRoot, 'managed', 'extension');
   const oldSourceRoot = path.join(tempRoot, 'old-source');
-  const nativeRoot = path.join(tempRoot, 'managed-native');
   fs.mkdirSync(extensionRoot, { recursive: true });
   fs.mkdirSync(oldSourceRoot, { recursive: true });
   run('unzip', ['-q', baseExtensionZip, '-d', extensionRoot]);
@@ -41,9 +45,12 @@ try {
   const bootstrapHashesBefore = hashDirectory(path.join(extensionRoot, 'bootstrap'));
   const manifestBytes = fs.readFileSync(path.join(releaseDir, 'release-manifest.json'));
   const targetManifest = JSON.parse(manifestBytes);
+  const migration = targetManifest.bootstrapMigration;
   let signatureBytes;
+  let testKey;
   if (cliOptions.localTestKey) {
     const signed = createEphemeralReleaseSignature(manifestBytes);
+    testKey = signed;
     const trustPath = path.join(oldSourceRoot, 'native-host', 'src', 'updateTrust.js');
     const trustSource = fs.readFileSync(trustPath, 'utf8');
     fs.writeFileSync(trustPath, replaceTrustedUpdateKeySource(trustSource, {
@@ -74,9 +81,10 @@ try {
 
   const bundlePath = path.join(releaseDir, `codex-overleaf-update-v${currentVersion}.tar.gz`);
   const bundleBytes = fs.readFileSync(bundlePath);
+  const releaseInputsBefore = hashReleaseInputs();
   const oldUpdateManager = require(path.join(oldSourceRoot, 'native-host', 'src', 'updateManager.js'));
   const env = {
-    ...process.env,
+    ...isolatedHopEnvironment(tempRoot),
     CODEX_OVERLEAF_MANAGED: '1',
     CODEX_OVERLEAF_MANAGED_EXTENSION_ROOT: extensionRoot,
     CODEX_OVERLEAF_MANAGED_NATIVE_ROOT: nativeRoot
@@ -136,10 +144,10 @@ try {
     if (extensionManifest.background?.service_worker !== 'bootstrap/background.js') {
       throw new Error('Managed update replaced the immutable bootstrap entry point.');
     }
-    const bootstrapHashesAfter = hashDirectory(path.join(extensionRoot, 'bootstrap'));
-    if (JSON.stringify(bootstrapHashesAfter) !== JSON.stringify(bootstrapHashesBefore)) {
-      throw new Error('Managed update changed immutable Bootstrap files.');
-    }
+    // The old updater installs only runtimes. Compatible fixed-layer migration
+    // begins after the original launcher starts the target Native process.
+    if (migration) assertBootstrapSnapshot(extensionRoot, migration, 'source');
+    else assertUnchangedBootstrap(extensionRoot, bootstrapHashesBefore);
     const updatedExtensionMarker = JSON.parse(fs.readFileSync(extensionMarkerPath, 'utf8'));
     if (Number(updatedExtensionMarker.bootstrapProtocol) !== baseBootstrapProtocol) {
       throw new Error(
@@ -147,13 +155,46 @@ try {
         `${updatedExtensionMarker.bootstrapProtocol}.`
       );
     }
-    const committed = await invoke('update.confirm', {
-      transactionId: staged.transactionId,
-      extensionVersion: currentVersion,
-      nativeVersion: currentVersion
-    });
-    if (committed.state !== 'committed') {
-      throw new Error(`Previous updater did not commit the healthy pair: ${committed.state}`);
+    const launcherPath = path.join(nativeRoot, 'launcher', 'managed-runtime.js');
+    fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
+    fs.copyFileSync(path.join(oldSourceRoot, 'native-host', 'src', 'managedLauncherRuntime.js'), launcherPath);
+    const targetRoot = path.join(nativeRoot, 'versions', currentVersion);
+    const targetNativeBefore = hashDirectory(targetRoot);
+    if (testKey) {
+      const preload = writeTestTrustPreload({ tempRoot, targetRoot, ...testKey });
+      env.NODE_OPTIONS = `--require ${JSON.stringify(preload)}`;
+    }
+    native = startNativeSession({ launcherPath, env });
+    const ping = await native.invoke('bridge.ping');
+    if (ping.version !== currentVersion) throw new Error('The original launcher did not start the target Native version.');
+    const status = await native.invoke('update.status');
+    if (status.activeVersion !== currentVersion || status.runtimeVersion !== currentVersion || status.installedAligned !== true) {
+      throw new Error('The running target Native did not observe an aligned installation.');
+    }
+    if (migration) {
+      if (status.transaction?.id !== staged.transactionId || status.transaction.state !== 'bootstrap_pending') {
+        throw new Error('The target Native did not require its signed Bootstrap migration.');
+      }
+      const advanced = await native.invoke('update.bootstrap', { transactionId: staged.transactionId, bootstrapRevision: '' });
+      if (advanced.state !== 'reload_required') throw new Error('Bootstrap migration did not require the new entry point to load.');
+      assertBootstrapSnapshot(extensionRoot, migration, 'target');
+      const health = await confirmThroughInstalledBootstrap({ extensionRoot, native,
+        transactionId: staged.transactionId, targetVersion: currentVersion });
+      if (health.revision !== migration.targetRevision) throw new Error('Loaded Bootstrap revision differs from the signed migration.');
+      assertBootstrapSnapshot(extensionRoot, migration, 'target');
+      console.log(`Loaded Bootstrap ${health.revision} confirmed the actual target Native and migrated file hashes.`);
+    } else {
+      const committed = await native.invoke('update.confirm', {
+        transactionId: staged.transactionId, extensionVersion: currentVersion, nativeVersion: ping.version
+      });
+      if (committed.state !== 'committed') throw new Error(`Target Native did not commit the healthy pair: ${committed.state}`);
+      assertUnchangedBootstrap(extensionRoot, bootstrapHashesBefore);
+    }
+    if (JSON.stringify(hashDirectory(targetRoot)) !== JSON.stringify(targetNativeBefore)) {
+      throw new Error('Update-hop rehearsal modified target Native package bytes.');
+    }
+    if (JSON.stringify(hashReleaseInputs()) !== JSON.stringify(releaseInputsBefore)) {
+      throw new Error('Update-hop rehearsal modified the release manifest, signature, or bundle.');
     }
     const signingMode = cliOptions.localTestKey ? 'ephemeral local signature' : 'production signature';
     console.log(
@@ -162,7 +203,25 @@ try {
     );
   }
 } finally {
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+  try { await native?.close(); }
+  finally {
+    try { await stopHopWatchdogs(nativeRoot); }
+    finally { fs.rmSync(tempRoot, { recursive: true, force: true }); }
+  }
+}
+
+function assertUnchangedBootstrap(extensionRoot, before) {
+  if (JSON.stringify(hashDirectory(path.join(extensionRoot, 'bootstrap'))) !== JSON.stringify(before)) {
+    throw new Error('Runtime-only update changed immutable Bootstrap files.');
+  }
+}
+
+function hashReleaseInputs() {
+  return Object.fromEntries(['release-manifest.json', 'release-manifest.sig',
+    `codex-overleaf-update-v${currentVersion}.tar.gz`].map(name => {
+    const filename = path.join(releaseDir, name);
+    return [name, fs.existsSync(filename) ? crypto.createHash('sha256').update(fs.readFileSync(filename)).digest('hex') : null];
+  }));
 }
 
 function createReleaseFetch({ manifestBytes, signatureBytes, bundleBytes }) {

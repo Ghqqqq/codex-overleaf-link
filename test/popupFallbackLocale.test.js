@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const crypto = require('node:crypto');
 
 const repoRoot = path.resolve(__dirname, '..');
 const script = fs.readFileSync(path.join(repoRoot, 'extension/bootstrap/popupFallback.js'), 'utf8');
@@ -11,12 +12,16 @@ const english = 'Codex Overleaf Link could not load its runtime. Rerun the insta
 const chinese = 'Codex Overleaf Link 无法加载运行组件。请重新运行安装程序，再重新加载扩展。';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function createHarness({ locale = 'en', read } = {}) {
-  const h = { present: true, message: { textContent: english }, html: { lang: 'en' }, locale };
+function createHarness({ locale = 'en', read, nativeResponse } = {}) {
+  const h = { present: true, message: { textContent: english }, html: { lang: 'en' }, locale, nativeCalls: [], reloads: 0 };
   const shell = { querySelector: selector => selector === 'p' ? h.message : null };
   const context = {
-    document: { documentElement: h.html, querySelector: selector => h.present && selector === '[data-bootstrap-shell]' ? shell : null },
-    chrome: { storage: {
+    crypto, setTimeout: callback => { h.timer = callback; },
+    document: { documentElement: h.html, querySelector: selector => h.present && selector === '[data-bootstrap-shell]' ? shell : null,
+      addEventListener: (type, callback) => { if (type === 'DOMContentLoaded') h.loaded = callback; } },
+    chrome: { runtime: { reload: () => { h.reloads++; }, sendNativeMessage: (host, request, callback) => {
+      h.nativeCalls.push({ host, request }); callback(nativeResponse); h.nativeCallback = callback;
+    } }, storage: {
       local: { get: read || (async () => ({ codexOverleafGlobalPrefsV1: { values: { locale: h.locale } } })) },
       onChanged: { addListener: listener => { h.changed = listener; } }
     } }
@@ -80,3 +85,50 @@ test('fallback honors legacy preferences and keeps the product default if storag
   assert.equal(legacy.message.textContent, chinese);
   assert.equal(unavailable.message.textContent, english);
 });
+
+test('a surviving fallback wakes native recovery without guessing a rollback transaction', async () => {
+  const h = createHarness();
+  await flush(); h.loaded(); h.timer();
+  assert.equal(h.nativeCalls.length, 1);
+  assert.equal(h.nativeCalls[0].host, 'com.codex.overleaf');
+  assert.equal(h.nativeCalls[0].request.method, 'update.status');
+  assert.equal(h.nativeCalls[0].request.params.bootstrapRecovery, true);
+  assert.equal(h.nativeCalls[0].request.params.transactionId, undefined);
+  assert.equal(h.message.textContent, english);
+});
+
+test('a healthy popup never invokes bootstrap recovery', async () => {
+  const h = createHarness();
+  await flush(); h.loaded(); h.present = false; h.timer();
+  assert.equal(h.nativeCalls.length, 0);
+});
+
+function restoredStatus() {
+  return { ok: true, result: { transaction: { id: 'fixture-transaction', state: 'rolled_back', sourceVersion: '2.5.0' },
+    installedAligned: true, activeVersion: '2.5.0', restoredPair: { extensionVersion: '2.5.0', nativeVersion: '2.5.0',
+      extensionSha256: 'a'.repeat(64), nativeSha256: 'b'.repeat(64), bootstrapSha256: 'c'.repeat(64) } } };
+}
+
+test('a fallback reloads once after Native proves the complete restored source', async () => {
+  const nativeResponse = restoredStatus();
+  const h = createHarness({ nativeResponse });
+  await flush(); h.loaded(); h.timer();
+  assert.equal(h.reloads, 1);
+  h.nativeCallback(nativeResponse);
+  assert.equal(h.reloads, 1);
+});
+
+for (const defect of ['bootstrapProof', 'nativeProof', 'sourceVersion', 'transaction', 'aligned']) {
+  test(`fallback preserves its existing message when restoration lacks ${defect}`, async () => {
+    const nativeResponse = restoredStatus();
+    if (defect === 'bootstrapProof') delete nativeResponse.result.restoredPair.bootstrapSha256;
+    if (defect === 'nativeProof') nativeResponse.result.restoredPair.nativeSha256 = 'invalid';
+    if (defect === 'sourceVersion') nativeResponse.result.activeVersion = '2.5.1';
+    if (defect === 'transaction') delete nativeResponse.result.transaction.id;
+    if (defect === 'aligned') nativeResponse.result.installedAligned = false;
+    const h = createHarness({ locale: 'zh', nativeResponse });
+    await flush(); h.loaded(); h.timer();
+    assert.equal(h.reloads, 0);
+    assert.equal(h.message.textContent, chinese);
+  });
+}

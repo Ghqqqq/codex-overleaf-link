@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BOOTSTRAP_MANIFEST_PATH = 'extension/bootstrap/manifest.template.json';
 const MANAGED_INSTALLER_PATH = 'scripts/install-managed.mjs';
+const require = createRequire(import.meta.url);
+const { buildBootstrapMigrationDescriptor, validateBootstrapMigrationDescriptor } =
+  require('../native-host/src/bootstrapMigrationContract.js');
 
 if (process.env.CODEX_OVERLEAF_TEST_IMPORT !== '1') {
   verifyUpdateBoundary();
@@ -34,17 +39,27 @@ function verifyUpdateBoundary() {
   }
 
   const changed = collectProtectedChanges(baseRef, protectedPaths);
-  const incompatibleChanges = changed.filter(relativePath => {
-    if (relativePath === BOOTSTRAP_MANIFEST_PATH) return false;
-    if (relativePath !== MANAGED_INSTALLER_PATH) return true;
-    return !isManagedInstallerCopyOnlyChange(
-      git(['show', `${baseRef}:${relativePath}`]),
-      fs.readFileSync(path.join(rootDir, relativePath), 'utf8')
-    );
-  });
   const previousPackage = JSON.parse(git(['show', `${baseRef}:package.json`]));
   const previousBootstrapProtocol = readBootstrapProtocol(`${baseRef}:native-host/src/updateTrust.js`);
   const currentBootstrapProtocol = readBootstrapProtocol(path.join(rootDir, 'native-host/src/updateTrust.js'));
+  const descriptor = buildBootstrapMigrationDescriptor({ packageRoot: rootDir, version: pkg.version });
+  const migratedPaths = descriptor && previousPackage.version === '2.5.0'
+    ? coveredBootstrapMigrationPaths({ descriptor, previousVersion: previousPackage.version,
+      currentVersion: pkg.version, previousProtocol: previousBootstrapProtocol, currentProtocol: currentBootstrapProtocol,
+      readPreviousFile: relativePath => {
+        const result = spawnSync('git', ['show', `${baseRef}:${relativePath}`], { cwd: rootDir });
+        if (result.error) throw result.error;
+        return result.status === 0 ? result.stdout : null;
+      }, readCurrentFile: relativePath => fs.readFileSync(path.join(rootDir, relativePath)) }) : new Set();
+  const incompatibleChanges = changed.filter(relativePath => {
+    if (relativePath === BOOTSTRAP_MANIFEST_PATH) return false;
+    if (migratedPaths.has(relativePath)) return false;
+    if (relativePath !== MANAGED_INSTALLER_PATH) return true;
+    return !isManagedInstallerPresentationOnlyChange(
+      readGitFile(`${baseRef}:${relativePath}`),
+      fs.readFileSync(path.join(rootDir, relativePath), 'utf8')
+    );
+  });
   const protocolMigration = assertBootstrapProtocolTransition({
     previousPackageVersion: previousPackage.version, currentPackageVersion: pkg.version,
     previousBootstrapProtocol, currentBootstrapProtocol
@@ -80,7 +95,30 @@ function verifyUpdateBoundary() {
 
   console.log(protocolMigration
     ? `Managed update boundary declares protocol migration ${previousBootstrapProtocol} -> ${currentBootstrapProtocol}: ${baseRef} -> ${currentTag}.`
-    : `Managed update boundary is compatible: ${baseRef} -> ${currentTag}.`);
+    : `Managed update boundary is compatible: ${baseRef} -> ${currentTag}.${migratedPaths.size ? ' Explicit Bootstrap revision 3.1 migration covers the declared files.' : ''}`);
+}
+
+// Only these signed, hash-bound files may cross a protocol-stable boundary.
+// The native launcher, registration, manifest shape and any new path retain
+// their existing protection, independently of this migration descriptor.
+export function coveredBootstrapMigrationPaths({ descriptor, previousVersion, currentVersion,
+  previousProtocol, currentProtocol, readPreviousFile, readCurrentFile }) {
+  validateBootstrapMigrationDescriptor(descriptor, { targetVersion: currentVersion });
+  if (!descriptor.sourceVersions.includes(previousVersion) || previousProtocol !== 3 || currentProtocol !== 3) {
+    throw new Error('Bootstrap migration does not cover this version/protocol boundary.');
+  }
+  const covered = new Set();
+  for (const file of descriptor.files) {
+    const sourcePath = 'extension/' + file.path;
+    const previous = readPreviousFile(sourcePath);
+    const current = readCurrentFile(sourcePath);
+    const digest = value => value === null ? null : crypto.createHash('sha256').update(value).digest('hex');
+    if (digest(previous) !== file.sourceSha256 || digest(current) !== file.targetSha256) {
+      throw new Error('Bootstrap migration source/target bytes differ from the explicit contract: ' + sourcePath);
+    }
+    covered.add(sourcePath);
+  }
+  return covered;
 }
 
 // Validate the checkout that packaging will consume, including staged, unstaged,
@@ -143,6 +181,19 @@ export function isManagedInstallerCopyOnlyChange(previousSource, currentSource) 
     previousSource.replace(previousLine, currentLine) === currentSource;
 }
 
+export function isManagedInstallerPresentationOnlyChange(previousSource, currentSource) {
+  if (isManagedInstallerCopyOnlyChange(previousSource, currentSource)) return true;
+  const warningLine = "    ...(result.warning ? ['Warning: ' + result.warning] : []),\n";
+  // Exactly one human-output line, inside the existing formatter. No imports,
+  // install decisions or result handling are exempted by this comparison.
+  if (currentSource.split(warningLine).length !== 2) return false;
+  const outputEnd = "    'Future signed stable updates are checked automatically. Choose Update now to authorize a version; installation waits until Overleaf is saved and idle.',\n"
+    + warningLine + "    ''\n  ].join('\\n');";
+  if (!currentSource.includes(outputEnd)) return false;
+  const withoutWarning = currentSource.replace(warningLine, '');
+  return previousSource === withoutWarning || isManagedInstallerCopyOnlyChange(previousSource, withoutWarning);
+}
+
 // Historical managed installers stamp the package version onto the template.
 // Compare that published manifest, retaining all non-version fields unchanged.
 // The current candidate still has to declare its release version explicitly.
@@ -188,6 +239,13 @@ function git(args) {
     throw new Error(`git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
   }
   return result.stdout.trim();
+}
+
+function readGitFile(refPath) {
+  const result = spawnSync('git', ['show', refPath], { cwd: rootDir, encoding: 'utf8' });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Cannot read ${refPath}: ${result.stderr}`);
+  return result.stdout;
 }
 
 function stableJson(value) {

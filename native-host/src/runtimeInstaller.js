@@ -18,14 +18,34 @@ function buildRuntimeFileManifest(options = {}) {
     fileEntry(packageRoot, 'package.json'),
     ...directoryEntries(packageRoot, 'native-host/src'),
     ...directoryEntries(packageRoot, 'extension/src/shared'),
+    ...bootstrapPayloadEntries(packageRoot),
     fileEntry(packageRoot, 'scripts/codex-json-agent.mjs'),
     fileEntry(packageRoot, 'scripts/install-native-host.mjs'),
     fileEntry(packageRoot, 'scripts/uninstall-native-host.mjs')
   ];
 
   return files
-    .filter((entry) => !allowedFiles || allowedFiles.has(entry.relativePath))
+    .filter((entry) => !allowedFiles || allowedFiles.has(entry.sourceRelativePath || entry.relativePath))
     .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+
+// Source packages hold one authoritative Bootstrap tree. Materialize its copy
+// under the native-host namespace accepted by the already-published updater.
+// Standalone Native tarballs already contain that mapped copy.
+function bootstrapPayloadEntries(packageRoot) {
+  const sourceDir = 'extension/bootstrap';
+  const payloadDir = 'native-host/bootstrap-payload';
+  if (!fs.existsSync(path.join(packageRoot, sourceDir))) {
+    return fs.existsSync(path.join(packageRoot, payloadDir)) ? directoryEntries(packageRoot, payloadDir) : [];
+  }
+  return directoryEntries(packageRoot, sourceDir).map(entry => {
+    const filename = path.posix.relative(sourceDir, entry.relativePath);
+    return {
+      ...entry,
+      sourceRelativePath: entry.relativePath,
+      relativePath: path.posix.join(payloadDir, filename === 'manifest.template.json' ? filename : 'bootstrap/' + filename)
+    };
+  });
 }
 
 function assertSafeManagedRuntimeRoot(runtimeRoot, options = {}) {

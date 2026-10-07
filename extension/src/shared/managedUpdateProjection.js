@@ -5,9 +5,9 @@
     waiting: 'waiting_for_idle',
     waiting_for_safe_point: 'waiting_for_idle',
     awaiting_health_check: 'awaiting_health',
-    health_checking: 'awaiting_health'
+    health_checking: 'awaiting_health',
+    bootstrap_pending: 'awaiting_health'
   });
-
   const PHASES = Object.freeze([
     'idle',
     'up_to_date',

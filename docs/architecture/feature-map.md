@@ -261,6 +261,15 @@
 - Windows 注册值的只读查询在 [nativeHostRegistration.queryWindowsNativeHostRegistration](../../native-host/src/nativeHostRegistration.js)，由 Doctor 和卸载归属检查共同消费；[compatibility.buildInstallCommand](../../extension/src/shared/compatibility.js) 根据安装身份生成原模式修复命令，Popup、原面板指引和诊断的完整消费链见 [managedRepairGuidance](../../test/managedRepairGuidance.test.js)。
 - Native 更新安全点还经 `getActiveNativeWorkState(env)` 消费 [processStopBarrier.getBlockedProjectCount](../../native-host/src/processStopBarrier.js) 的既有退出屏障；对应 [updateStopBarrier](../../test/updateStopBarrier.test.js)、[managedInstallRecovery](../../test/managedInstallRecovery.test.js)、[updateRollbackEvidence](../../test/updateRollbackEvidence.test.js)、[managedRuntimeEvidence](../../test/managedRuntimeEvidence.test.js)。
 
+### 改 2.5.0 → 2.5.1 的兼容 Bootstrap 迁移
+
+- 入口沿用原`Update now`；旧updater先安装新版runtime，随后 [backgroundBootstrapMigration](../../extension/src/backgroundBootstrapMigration.js) 接续`update.status → update.bootstrap → chrome.runtime.reload → update.confirm`。新Bootstrap的revision为`3.1`，安装协议仍为`3`，不扩Chrome权限或改写用户级bridge。
+- 合同由 [bootstrapMigrationContract](../../native-host/src/bootstrapMigrationContract.js)限定版本对、真实源摘要及封闭文件清单；[runtimeInstaller](../../native-host/src/runtimeInstaller.js)把payload放入旧归档器允许的Native子树，[build-release](../../scripts/build-release.mjs)生成受签名覆盖的描述，产物校验核对各包字节。
+- 状态owner：[bootstrapUpdate](../../native-host/src/bootstrapUpdate.js)绑定原签名、授权及主事务；[bootstrapMigration](../../native-host/src/bootstrapMigration.js)保存独立文件备份/进度并执行原子替换；[bootstrapUpdateWatchdog](../../native-host/src/bootstrapUpdateWatchdog.js)在浏览器worker外监护。`updateManager`先恢复并核对固定层、runtime与元数据，再切回source Native指针。
+- 恢复收尾：首次status前的rollback也绑定已知迁移；pending且尚无文件WAL时，严格源摘要证明以`sourceUnchanged`保存。`sourceActivationPending`使watchdog继续完成已恢复终态的授权与指针切回；`committedEvidence`使提交后的重启清理重新核对runtime、Bootstrap摘要与精确授权归属。
+- 必须联动：`bootstrap_pending`阻止旧worker提前confirm，后台与Native业务屏障，已加载revision与磁盘摘要，目标语法/权限形状验证，原Popup失载时的Native恢复唤醒，严格事务归属及重载次数。原固定Native launcher仍只检查入口存在性，目标Native本身无法启动不能泛化成自动恢复。
+- 验证入口：[bootstrapMigrationFiles](../../test/bootstrapMigrationFiles.test.js)、[bootstrapMigrationUpdate](../../test/bootstrapMigrationUpdate.test.js)、[bootstrapMigrationBuild](../../test/bootstrapMigrationBuild.test.js)、[bootstrapMigrationBrowser](../../test/bootstrapMigrationBrowser.test.js)、`verify:update-boundary`与真实旧版本update-hop。后者经[update-hop-runtime](../../scripts/update-hop-runtime.mjs)启动实际新Native，再由[update-hop-bootstrap-harness](../../scripts/update-hop-bootstrap-harness.mjs)运行已安装固定脚本；Chrome APIs/页面health仍由harness提供。文件故障注入、VM、实际Native进程和真实Chrome分别取证，详见[安装与更新](installation-and-updates.md)。
+
 ## 新增模块与能力的加载清单
 
 Content 源模块采用以下顺序；源码入口与浏览器注入清单承担不同职责。

@@ -10,6 +10,8 @@
 - Keep product-owned errors, activity counts, next-step guidance, and unsaved provider states consistent with the selected English or Simplified Chinese interface language.
 - Preserve ordinary examples and quoted text in conversations, project instructions, history, queues, forks, recovered runs, and child transcripts instead of replacing secret-like strings. Provider credential isolation, sensitive-content checks, and diagnostic summaries remain separate.
 - Correct verified edge cases in provider configuration, writing-style recovery, attachment handling, and coordinated updates within existing workflows.
+- Deliver the Bootstrap startup-file fixes through the existing 2.5.0 updater using a signed, explicitly scoped migration to revision 3.1. Keep Bootstrap protocol 3, Chrome permissions, Native registration and the existing update action unchanged.
+- Retain per-file recovery copies and progress, verify the loaded Bootstrap revision before update confirmation, and coordinate timeout recovery through an independent Native monitor and the existing popup fallback. Unknown source changes or incomplete recovery evidence remain blocked.
 
 ### Documentation and validation
 

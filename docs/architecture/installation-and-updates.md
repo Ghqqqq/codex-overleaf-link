@@ -39,7 +39,7 @@ V_{installed}=V_{native}=V_{extension}=V_{runtime}.
 
 两条 content 路径使用相同生成 bundle；源码纳入由 [content-entry.mjs](../../extension/entries/content-entry.mjs) 决定。
 Managed 的 `registerManagedRuntime()`读取 [runtime-manifest.json](../../extension/runtime-manifest.json)，动态注册 JS/CSS，见 [bootstrap/background.js](../../extension/bootstrap/background.js)。
-Managed Popup 的 [popupFallback.js](../../extension/bootstrap/popupFallback.js) 属于固定 Bootstrap，独立读取既有语言偏好，为 runtime 失载时的原有提示选择语言；正常 runtime 接管后不再改动其界面。该资产随 `buildManagedExtensionTree()` 复制，修改时须走完整安装，不能仅替换 runtime 目录。
+Managed Popup 的 [popupFallback.js](../../extension/bootstrap/popupFallback.js) 属于 Bootstrap，独立读取既有语言偏好，为 runtime 失载时的原有提示选择语言；正常 runtime 接管后不再改动其界面。该资产随 `buildManagedExtensionTree()` 复制；单纯替换 runtime 目录不会更新它。当前另有明确限定为 `2.5.0 → 2.5.1` 的签名 Bootstrap revision 迁移，见第5节，其他固定层改动仍须满足独立迁移合同或完整安装条件。
 页面主世界资源仍由 `PAGE_WORLD_SCRIPTS`及资源公开清单决定，新增 page 能力不能仅修改 content bundle。
 runtime manifest 可扩展 Overleaf 站点范围，但实际注册受已授予 host permission 约束；可选权限的申请另由 UI 发起。
 当前 manifest 仅列 `overleaf.com`、`www.overleaf.com` 和 `cn.overleaf.com`。增加其他 Overleaf 子域时，[Popup.offerNewSites](../../extension/src/popup.js) 可申请新增 host 权限，Bootstrap 可扩大动态注入范围；完整能力还需同步后台 Native sender、[SharedSessionBridge.enabled](../../extension/src/shared/sharedSessionBridge.js)、后台共享历史准入、更新协调器及安全点枚举的固定主机集合。授权和注入成功不能单独证明新站点可以运行、共享历史或参与更新保护。
@@ -67,6 +67,8 @@ Windows:       %LOCALAPPDATA%/CodexOverleaf/managed/
     active-version
     previous-version
     updates/                    候选、授权、事务、锁及暂存内容
+      bootstrap-migrations/
+        <transactionId>/        Bootstrap源文件备份、进度与监护心跳
 ```
 
 环境及安装参数可改变根目录，排障应读取实际安装输出与 Doctor，不能只按默认路径猜测。
@@ -84,7 +86,7 @@ Native 固定启动链有两层，安装器分别生成或复制它们：
 | 外层 bridge | `installManagedNativeRegistration()`调用 [launcher.js](../../native-host/src/launcher.js) 的`buildLauncher()`，生成用户级 shell 脚本；Windows生成`.cmd` | Native Host manifest的`path`指向bridge；bridge用安装时的Node路径启动内部launcher |
 | 内部 launcher | `installManagedNativeVersion()`将 [managedLauncherRuntime.js](../../native-host/src/managedLauncherRuntime.js) 复制到`native/bootstrap/launcher.js` | 读取active/previous版本指针、注入托管环境，再启动版本目录中的`native-host/src/index.js` |
 
-runtime-only更新只替换扩展runtime和Native版本目录，并更新指针、manifest版本及管理标记；上述两层启动文件都由完整安装路径维护。修改启动命令、PATH或Windows引号处理时，需要核对最终生成的bridge与内部launcher；仅确认新版runtime目录包含源码不足以证明启动行为已改变。
+常规runtime更新替换扩展runtime和Native版本目录，并更新指针、manifest版本及管理标记；上述两层Native启动文件仍由完整安装路径维护。`2.5.0 → 2.5.1` 的兼容迁移额外替换扩展的封闭Bootstrap资产清单，不修改这两层Native启动文件、注册或Chrome权限。修改启动命令、PATH或Windows引号处理时，需要核对最终生成的bridge与内部launcher；仅确认新版runtime目录包含源码不足以证明启动行为已改变。
 
 自定义 `managedRoot`只改变安装内容的位置，不隔离用户级注册资源。[nativeHostPlatform.js](../../native-host/src/nativeHostPlatform.js)的 `getDefaultBridgePath()`对不同管理根、Chrome和Chromium返回同一个用户级bridge路径。
 [manifest.js](../../native-host/src/manifest.js)的 `getNativeHostManifestPath()`在macOS/Linux按浏览器区分manifest；Windows共用manifest文件，`getWindowsRegistryMetadata()`再按浏览器区分HKCU注册表键。`auto`按Chrome处理。
@@ -119,7 +121,11 @@ Doctor继续读取manifest并直接启动bridge完成ping，因此注册异常�
 | 已验证候选 | [updateManager.js](../../native-host/src/updateManager.js) 的 `candidate.json` | 保存签名 manifest、签名及 bundle 地址 |
 | 手动重装提示缓存 | 同模块的`manual-candidate.json` | 保存原始manifest与签名；304要求同ETag和来源版本，重验签后派生目标及说明，边界见第9节 |
 | 可执行授权 | 同模块的 `authorization.json` | 绑定 source/target version、authorization ID及 transaction ID |
-| 安装事务 | 同模块的 `transaction.json`及磁盘指针 | 决定 staged、activation_pending、applying、awaiting_health、committed等事实 |
+| 安装事务 | 同模块的 `transaction.json`及磁盘指针 | 决定 staged、activation_pending、applying、bootstrap_pending、awaiting_health、committed等事实；迁移回滚另有bootstrap_rolling_back及sourceActivationPending |
+| Bootstrap迁移合同与协调 | [bootstrapMigrationContract.js](../../native-host/src/bootstrapMigrationContract.js)、[bootstrapUpdate.js](../../native-host/src/bootstrapUpdate.js) | 限定来源版本/源摘要/目标摘要，绑定签名、授权、事务、运行Native版本与已加载revision |
+| Bootstrap文件与进度 | [bootstrapMigration.js](../../native-host/src/bootstrapMigration.js)，`bootstrap-migrations/<transactionId>/state.json`及`files/` | 准备、应用、恢复、摘要读回；不自行授予更新资格，备份不随staging清理 |
+| 浏览器迁移接续 | [backgroundBootstrapMigration.js](../../extension/src/backgroundBootstrapMigration.js) | 使用现有更新屏障和重载入口，内存锁保持到匹配健康确认完成 |
+| 独立迁移恢复监护 | [bootstrapUpdateWatchdog.js](../../native-host/src/bootstrapUpdateWatchdog.js) | 事务/token/PID握手与心跳，期限到达经同一mutation lock调用恢复；原Popup还可唤醒Native检查 |
 | 阶段规范与恢复解释 | [managedUpdateProjection.js](../../extension/src/shared/managedUpdateProjection.js) | 归一别名、阶段、期限、进度和迁移；不执行文件替换 |
 | UI 展示策略 | [updateConsent.js](../../extension/src/shared/updateConsent.js)、[updateNotice.js](../../extension/src/content/updateNotice.js) | 仍有专用 view model与兼容映射，不能视为 Native journal 的原样副本 |
 | 新代码加载/健康确认 | [bootstrap/background.js](../../extension/bootstrap/background.js) | 固定加载器承担恢复入口，不能靠可替换 runtime 自证全部加载成功 |
@@ -167,6 +173,20 @@ Native `applyStagedUpdate()`再次检查本地 gate、管理布局、事务及�
 `update.activate`另有延迟激活路径：先写`activation_pending`再定时执行 apply；当前主协调路径调用`update.apply`。
 收到匹配事务的`awaiting_health`后才重载扩展，随后由 Bootstrap继续确认。
 
+### 2.5.0 → 2.5.1 的兼容 Bootstrap 迁移
+
+这条路径保留已发布`2.5.0`的首次下载、签名检查、授权和runtime安装，再由实际启动的`2.5.1` Native与新版runtime继续处理固定层。产品版本`2.5.1`、Bootstrap协议`3`、Bootstrap revision `3.1`分别表示产品发布、旧客户端可理解的安装/消息边界，以及这次固定层实现身份；revision变化没有扩大扩展权限或改写用户级bridge。
+
+1. [runtimeInstaller.js](../../native-host/src/runtimeInstaller.js)把目标Bootstrap资产放入Native版本包的`native-host/bootstrap-payload/bootstrap/`，附带仅供校验的`manifest.template.json`。该位置属于旧归档器已允许的Native子树。[build-release.mjs](../../scripts/build-release.mjs)将`bootstrapMigration`描述纳入待签名release manifest：源版本、已知源文件SHA-256、目标文件SHA-256及封闭文件列表。清单中的扩展manifest仅核验形状，不由文件迁移模块替换；原apply继续维护其版本字段。
+2. 新Native的`bindBootstrapMigration()`识别确切版本对，重验签名原件与journal保存的manifest/bundle摘要、大小及bound授权，把事务置为`bootstrap_pending`。缺证据仍保持迁移待处理，不能退化成普通更新成功。`update.status`的投影和`confirmUpdate()`共同阻止旧Service Worker提前confirm或清理恢复材料。
+3. 新后台的`CodexOverleafBootstrapMigration.init()`在原Bootstrap继续健康初始化前接续迁移，重新核对现有空闲/保存条件，再调用内部`update.bootstrap`。Native在已有跨进程mutation lock内检查本地任务屏障、实际运行Native版本、目标JS语法、归档字节、manifest形状及源文件摘要。
+4. `prepareBootstrapMigration()`先保存旧文件字节/权限与进度。进度记录采用WAL（预写日志）：先记下将要替换的文件，再原子替换并读回；中断后可由磁盘记录判断继续或恢复。新依赖先落盘，引用它的HTML随后更新，后台入口最后替换，入口始终保留一个文件。文件写入先flush临时文件、再rename、再flush父目录；Windows目录flush能力有限，不能据此宣称任意断电均可恢复。
+5. 独立watchdog握手成功后才进入文件替换。旧worker获得`reload_required`，沿`chrome.runtime.reload()`重载；新固定入口提供revision `3.1`，Native再核对目标磁盘摘要，将迁移phase置为`loaded`并返回`awaiting_health`。允许的重载次数及健康期限由[bootstrapUpdate.js](../../native-host/src/bootstrapUpdate.js)定义，避免跨worker无限重载。随后仍执行原页面、Native和版本健康检查，`update.confirm`同时要求事务身份、已加载revision与目标Bootstrap摘要相符。
+
+迁移期间仍使用原有更新状态界面，没有增加操作按钮或独立授权步骤。[managedUpdateProjection.js](../../extension/src/shared/managedUpdateProjection.js)将`bootstrap_pending`映射为既有`awaiting_health`，浏览器恢复分支继续使用`rolling_back/failed`；后台执行锁与Native的`assertBootstrapBusinessAvailable()`阻止业务穿过未完成的迁移，更新、ping与取消保留各自通道。
+
+文件进度的`prepared/applying/applied/restoring/restored`与主事务的`bootstrap_pending/awaiting_health/committed`分别属于文件替换和整体安装，不能互换。磁盘达到`applied`仍需重载证明实际执行的固定层；只有产品版本相等也不足以结算这条迁移。
+
 ## 6. 安全点的实际范围
 
 `buildIdleProbe()`位于 [content/updateIdle.js](../../extension/src/content/updateIdle.js)，检查业务 busy状态、近期编辑活动和保存信号稳定期。
@@ -185,8 +205,8 @@ UI idle、当前Native计数为零、所有历史子进程已退出，仍属于�
 
 `confirmPendingUpdate()`先调用`verifyPendingRuntimeHealth()`，刷新保存的开放标签页，在20秒预算内要求页面返回目标版本。
 没有可用待验证标签页时健康探测返回失败；关闭标签页、页面加载迟缓等场景需要作为浏览器验收条件记录。
-随后检查 Native ping版本、协议字段和必要capabilities，再请求`update.confirm`；Native核对事务、授权、指针及扩展Manifest版本。
-成功后 journal进入`committed`；`settleAuthorization()`先写授权`consumed`状态再删除`authorization.json`，因此该文件不长期保留消费记录。随后保留目标及来源Native版本并清理staging。
+随后检查 Native ping版本、协议字段和必要capabilities，再请求`update.confirm`；Native核对事务、授权、指针及扩展Manifest版本。含Bootstrap迁移的事务还要求`phase: loaded`、固定入口携带的`bootstrapRevision`与目标一致，以及磁盘Bootstrap摘要仍匹配。
+成功后 journal进入`committed`并保存`committedEvidence`，包含目标两端runtime的实际文件树证据；`settleAuthorization()`先写授权`consumed`状态再删除`authorization.json`，因此该文件不长期保留消费记录。随后保留目标及来源Native版本并清理staging。若在提交落盘与清理之间重启，`recoverAndReadStatus()`须先核对目标安装对齐、当前runtime摘要与`committedEvidence`相同；迁移事务还重查loaded revision及Bootstrap目标摘要，再结算ID、transaction、source和target全部匹配的bound授权，或清理同身份的consumed残留，并清理该事务staging。不同授权或已变化字节不沿此路径收尾。
 该健康检查没有自动执行 Ask、写回、保存、Undo等业务流程；功能正确性仍依赖专项测试与交互验收。
 
 | 场景 | 代码行为 | 证据含义 |
@@ -199,10 +219,17 @@ UI idle、当前Native计数为零、所有历史子进程已退出，仍属于�
 | Native重启见`applying` | `rollbackFiles()`先核对实际source文件，恢复后比对两端文件树摘要，再登记带`rollbackEvidence`的rolled_back | 恢复槽缺失时仅允许当前槽仍是实际source的早期中断；必要来源缺失或读回不同则拒绝成功 |
 | 协调器处理阶段超时 | `reconcileExpiredPhase()`携带事务身份调用`update.rollback`，核对来源版本并回读`update.status` | 检查安装对齐后才报告恢复完成 |
 | Bootstrap 健康失败 | `rollbackBrokenRuntime()`携带捕获的transactionId与expectedState，核对rollback应答后再读`update.status` | 同事务、source、active指针、布局及实际`restoredPair`相符才写rolled_back并重载；变化或恢复失败保留失败状态 |
+| Bootstrap迁移中断或健康超时 | 独立watchdog、后续Native状态恢复或原Popup的`bootstrapRecovery`请求进入同锁恢复 | 先恢复Bootstrap与runtime、manifest/marker并读回，再保存终态，最后切回source Native指针；失败保留恢复材料 |
 
 [managedRuntimeEvidence.js](../../native-host/src/managedRuntimeEvidence.js) 的`readManagedRuntimeEvidence()`读取实际扩展compatibility版本、runtime manifest及必需资产，并检查Native版本目录package与入口，再对两棵文件树取SHA-256。文件按固定UTF-16代码单元顺序遍历，使摘要与进程LANG/locale无关。摘要像文件树的指纹，用于比较恢复前后字节，不能证明这些字节已通过业务健康检查。
 带`rollbackEvidence`的journal只有在当前实际字节仍与保存证据一致时，`update.status`才提供`restoredPair`；旧journal没有历史摘要时保留兼容读取，只证明本次观察到的source配对。marker和manifest对齐拥有独立含义，不能替代文件树证据。Bootstrap消费上述回读；协调器`reconcileExpiredPhase()`继续核对事务、来源及`installedAligned`，其当前收尾条件不单独比较`restoredPair`。
 恢复检查针对磁盘上launcher下一次将加载的Native来源；仍存活的Native进程可能属于刚失败的target，不能以该进程ping替代磁盘来源证据。
+
+Bootstrap迁移回滚由`restoreBootstrap()`读取独立文件进度，倒序恢复源文件和权限，删除原先不存在的文件；未知第三方改动、备份损坏或身份不匹配均停止覆盖。即使首次`update.status`尚未发生，`rollbackUpdate()`也先为确切版本对绑定迁移，避免遗漏固定层证明。仍处于pending且尚无文件WAL时，只有全部已知源摘要一致、原本缺失文件仍不存在，才能作为未改动来源恢复；结果将`sourceUnchanged`持久化，后续状态读取继续核对源字节。
+
+整体事务先写`bootstrap_rolling_back`，恢复并核对Bootstrap及两端runtime，再写带`rollbackEvidence`和`sourceActivationPending`的`rolled_back`；结算本事务授权后才切换`active-version`并清除待激活标记。这个顺序避免旧Native过早接管尚未读懂的迁移进度。若终态已落盘而指针切回中断，`finishSourceActivation()`在再次核对runtime和Bootstrap源证明后完成授权及指针收尾，watchdog遇到`rolled_back + sourceActivationPending`也继续该步骤。迁移一旦开始，缺事务身份的旧rollback请求会被拒绝；尚未改动文件的pending阶段保留受限旧入口兼容。
+
+独立watchdog不依赖被替换的Service Worker继续存活；其事务token、PID和心跳用于核验监护归属。原[popupFallback.js](../../extension/bootstrap/popupFallback.js)在启动壳仍存在时可直接发送`update.status({bootstrapRecovery:true})`唤醒Native，由Native检查期限或失去监护后的恢复条件；Popup不自行猜测事务或发送无身份rollback。源备份在committed后仍保留，供已有回滚路径使用。该恢复要求目标Native或其恢复程序仍可启动；当前固定launcher仅检查入口存在性，无法泛化为Native入口自身完全损坏时自动自救。真实Chrome重载、跨平台文件系统及物理断电分别需要独立证据。
 
 [updateNetworkControl.js](../../native-host/src/updateNetworkControl.js) 的 `cancel()`写operation取消标记，中止本进程控制器并等待对应mutation锁释放。
 标记也用于拒绝其他Host中迟到的同operation网络工作；该取消针对更新网络操作，不承担agent子进程的停止职责。
@@ -234,6 +261,7 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 | 下载字节 | `stageCandidate()`及`verifyStagedArchive()` | 大小、SHA-256与签名manifest中的bundle声明一致 |
 | 解包边界 | [updateArchive.js](../../native-host/src/updateArchive.js) 的`extractVerifiedUpdateBundle()` | 路径allowlist、安全目标、tar校验、文件类型、大小和必需入口 |
 | 安装配对 | `verifyStagedPair()` | extension runtime与Native的版本和必要入口匹配 |
+| Bootstrap兼容迁移 | `bootstrapUpdate.verifiedDescriptor()`、`bootstrapMigrationContract`、`bootstrapMigration` | 原签名manifest与原事务一致，已知源摘要与封闭目标文件清单匹配；权限形状保持，未知源内容不覆盖 |
 
 签名证明签发身份，哈希证明对应字节完整性，归档校验证明受检查的结构约束；它们不证明压缩包内逻辑没有缺陷。
 当前签名manifest锚定整个bundle的SHA-256；tar header checksum属于归档格式校验，不能写成每个文件独立的签名认证。
@@ -249,7 +277,7 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 
 `BOOTSTRAP_PROTOCOL=3`定义于`updateTrust.js`；Native runtime协议为2，两者描述不同边界。
 固定Bootstrap、扩展权限/资源公开形状，以及第3节的外层bridge和内部Native launcher，均无法通过runtime-only包任意替换。
-本机修复涉及固定Bootstrap时，须通过完整Managed安装更新固定文件，再分别核验磁盘摘要、扩展重载及页面加载；仅安装runtime-only包无法交付这部分修复。公开发布仍按既有Bootstrap变更及协议迁移门禁处理。
+本机源码修复默认通过完整Managed安装更新固定文件，再分别核验磁盘摘要、扩展重载及页面加载；单纯替换runtime无法交付这部分修复。公开分发可采用第5节明确限定的兼容revision迁移；其他Bootstrap变更继续按受保护路径与协议迁移门禁判断，不能把这次封闭清单推广成任意固定文件自动更新。
 `checkForUpdate()`首次下载并验证签名manifest后，若Bootstrap协议不同，会返回`manual_install_required`及其中的说明；staging/apply仍拒绝该候选。
 
 普通`candidate.json`与手动提示`manual-candidate.json`都保存原始manifest和签名。304表示服务端所观察资源相对本次ETag未变，ETag类似该资源版本的校验标签，本身不授予安装资格。两类缓存均须具有与本次请求相同的非空ETag、相同来源`currentVersion`，并通过`verifySignedReleaseManifest()`重验签；`readManualCandidate()`从签名原件重新派生目标、协议和说明，继续要求目标高于当前版本且Bootstrap协议不同。错ETag、错来源、无效签名及旧版仅含派生字段的缓存按miss处理；`checkedAt`不构成TTL，当前未新增缓存时间政策。
@@ -265,7 +293,8 @@ Bootstrap协议3从2.5.0引入，旧安装的迁移说明见根 [README](../../R
 
 [verify-update-boundary.mjs](../../scripts/verify-update-boundary.mjs)核对受保护路径的已提交、暂存、未暂存和未跟踪变化。
 `protectedPaths`同时包含内部launcher源码`managedLauncherRuntime.js`和生成外层bridge的`launcher.js`。后者变更也进入现有Bootstrap协议迁移门禁；runtime-only的`applyStagedUpdate()`仍不重新生成用户级bridge，此类启动行为变更需要完整重装。验证应分别核对受保护变更选择、生成器与已安装启动文件，不能以新版runtime含有源码推定旧bridge字节已更新。
-`assertBootstrapProtocolTransition()`要求协议保持不变或恰增一；迁移必须进入新major/minor且patch为零。
+同协议的兼容revision迁移由`coveredBootstrapMigrationPaths()`及相邻检查精确核对`2.5.0 → 2.5.1`、协议3、真实旧源摘要、当前目标摘要、实现入口与不变的manifest权限形状；仅清单覆盖的Bootstrap差异可通过。安装器的warning输出另按精确展示差异校验，不因此豁免执行逻辑或其他受保护路径。
+`assertBootstrapProtocolTransition()`要求协议保持不变或恰增一；真正改变Bootstrap协议的迁移仍必须进入新major/minor且patch为零。revision `3.1`不等于把协议号提高到4。
 runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到边界检查。
 该校验描述当前发布规则；单独提高协议号不会自动实现旧安装的迁移功能。
 
@@ -273,6 +302,7 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 
 [buildRelease()](../../scripts/build-release.mjs)从package版本推导产物；stable tag为`vX.Y.Z`，RC为`vX.Y.Z-rc.N`。
 构建生成托管扩展ZIP、Native tar、协调update bundle、npm tgz、安装辅助文件、manifest、notes和SHA256SUMS；签名步骤另行增加sig。
+兼容迁移release还从目标源码构造Bootstrap payload与签名描述。`verify-release-artifacts`分别核对托管扩展、Native payload和update bundle里的目标字节、manifest形状及描述一致性；文件进入Native允许路径，仍受旧版归档边界约束。
 `package.json.files`控制npm范围；[verify-npm-package.mjs](../../scripts/verify-npm-package.mjs)核对精确内容及禁止路径，指南与私有材料不能因复制目录而进入包。
 构建器检查应跟踪输入与dirty来源，生成bundle按构建结果纳入；产物目录需通过安全路径检查。
 
@@ -290,8 +320,9 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 
 已正式发布的GitHub release会被前置检查拒绝覆盖；draft上传配置仍允许覆盖文件，故重跑工作流不能直接视为安全的恢复动作。
 该基线的npm等待逻辑为十二次、每次五秒轮询后比较metadata integrity。
-`verify:update-hop`默认选择前一稳定版；同Bootstrap协议测试实际升级，不同协议测试旧updater拒绝并要求重装。
-它会准备临时安装并下载旧资产；`--local-test-key`使用临时签名验证流程，不能证明正式发布密钥和公开资产正确。
+`verify:update-hop`默认选择前一稳定版，下载真实旧资产并在隔离目录准备安装。同Bootstrap协议先调用旧updater完成授权、stage与apply，再由[update-hop-runtime.mjs](../../scripts/update-hop-runtime.mjs)启动原旧launcher和实际目标Native进程，通过Native Messaging帧验证版本与事务。普通runtime更新继续要求Bootstrap字节不变；带显式revision迁移的分支在旧apply后核对源摘要，随后由新Native执行`update.bootstrap`并核对目标摘要。
+[update-hop-bootstrap-harness.mjs](../../scripts/update-hop-bootstrap-harness.mjs)将安装后的真实Bootstrap及其runtime依赖载入VM，让这些脚本向实际Native进程完成revision与健康确认；Chrome存储、标签页、重载和页面health应答由harness提供，因此该分支证明真实旧updater→旧launcher→新Native及实际固定脚本的接续，不构成真实Chrome验收。不同Bootstrap协议仍测试旧updater拒绝并要求重装。
+`--local-test-key`只向隔离进程注入临时信任材料，目标Native包及待发布manifest/签名/bundle原件保持摘要不变；它验证更新流程，不能证明正式发布密钥和公开资产正确。
 “覆盖最旧支持版本”需额外明确base ref及证据；默认前一稳定版演练不能自动提供该结论。
 
 ## 11. 修改联动与验证入口
@@ -304,6 +335,7 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 | 安全点/安装/恢复 | background、updateIdle、updateManager、taskRunnerRuntime、processStopBarrier、managedRuntimeEvidence、Bootstrap、runtime identity | [updateManager.test.js](../../test/updateManager.test.js)、[updateStopBarrier.test.js](../../test/updateStopBarrier.test.js)、[updateRollbackEvidence.test.js](../../test/updateRollbackEvidence.test.js)、[managedRuntimeEvidence.test.js](../../test/managedRuntimeEvidence.test.js)、[updateRuntimeRecovery.test.js](../../test/updateRuntimeRecovery.test.js)、[updateRuntimeIdentity.test.js](../../test/updateRuntimeIdentity.test.js)、[updateStateReasonRecovery.test.js](../../test/updateStateReasonRecovery.test.js)、[updateCenter.test.js](../../test/updateCenter.test.js)、[autoUpdateBootstrap.test.js](../../test/autoUpdateBootstrap.test.js) |
 | 候选/签名/缓存/归档/网络 | updateManager、updateTrust、updateArchive、releaseTransport、releaseProxy；手动提示联动coordinator与UI | [updateAuthorizedCandidate.test.js](../../test/updateAuthorizedCandidate.test.js)、[updateManualInstall.test.js](../../test/updateManualInstall.test.js)、[updateTrust.test.js](../../test/updateTrust.test.js)、[updateArchive.test.js](../../test/updateArchive.test.js)、[releaseTransport.test.js](../../test/releaseTransport.test.js) |
 | Bootstrap形状/协议迁移 | 两份manifest、protected paths、manual note、update-hop | [updateManualInstall.test.js](../../test/updateManualInstall.test.js)、[updateBoundaryWorkingTree.test.js](../../test/updateBoundaryWorkingTree.test.js) |
+| 同协议Bootstrap revision迁移 | bootstrapMigrationContract、bootstrapUpdate、bootstrapMigration、bootstrapUpdateWatchdog、backgroundBootstrapMigration、原Bootstrap/Popup与updateManager | [bootstrapMigrationFiles.test.js](../../test/bootstrapMigrationFiles.test.js)、[bootstrapMigrationUpdate.test.js](../../test/bootstrapMigrationUpdate.test.js)、[bootstrapMigrationBuild.test.js](../../test/bootstrapMigrationBuild.test.js)、[bootstrapMigrationBrowser.test.js](../../test/bootstrapMigrationBrowser.test.js)；文件故障注入、Native事务恢复、产物校验和浏览器VM各有范围，不能代替真实旧版到新版的Chrome验收 |
 | 发布包/工作流 | build-release、npm范围、签名与产物验证、workflow | [releaseScripts.test.js](../../test/releaseScripts.test.js)、[updateHopRehearsalWiring.test.js](../../test/updateHopRehearsalWiring.test.js) |
 
 以下命令提供验证入口；第一条列出测试，第二条执行所选测试：
@@ -325,7 +357,7 @@ node scripts/run-tests.mjs test/updateManager.test.js test/updateRevocationInten
 3. 点击取消、下载请求已abort、Native锁尚未释放：只能报告取消待确认；安装已开始时还可能返回too-late并转恢复。
 4. 页面和Native版本相等、capabilities齐全、写回仍失败：健康检查已完成其加载职责，业务回归仍需单独验证。
 5. 安装注册阶段失败：安装器在同一mutation lock内恢复扩展、指针、目标槽及已捕获注册内容；补偿不完整会明确报错，仍应核查实际结果，不能推定任意断电也具备同等恢复能力。
-6. update-hop迁移分支通过：证据是旧版拒绝不兼容包，不能描述成旧版已经自动升级成功。
+6. update-hop需区分分支：不同协议分支通过证明旧版拒绝不兼容包；同协议revision迁移分支串联真实旧updater、旧launcher、新Native与VM中的已安装Bootstrap，Chrome APIs和页面健康仍为harness，不能描述成真实浏览器已经完成升级。
 7. staged等待超过授权创建时的两小时期限：`bound`不再按`expiresAt`拒绝，需按实际授权状态判断。
 8. 旧`applying`或`awaiting_health`事务下完整重装同target：仅在实际配对和注册全部成功后退役匹配旧journal，并以新鲜`reinstalledPair`允许浏览器收尾；失败重装和无完整重装证明的普通中断保留原恢复路径。
 9. 多个管理根中卸载旧副本：分别核对当前bridge、manifest及所选注册键归属；无法识别或已属于其他副本时应保留，管理目录存在不足以证明Native入口可用。

@@ -214,6 +214,16 @@ test('v1.9.4 health confirmation accepts only the authorization-free inbound mig
     manifest.version = '1.9.4';
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 
+    assert.throws(() => confirmUpdate(fixture.context, {
+      transactionId: 'fixture', extensionVersion: '1.9.4', nativeVersion: '1.9.4'
+    }), { code: 'update_health_failed' }, 'matching labels alone cannot confirm different runtime bytes');
+    fs.writeFileSync(path.join(fixture.context.extensionRoot, 'runtime/src/shared/compatibility.js'),
+      "const BUILD_TARGET_VERSION = '1.9.4';\n");
+    const nativeVersionRoot = path.join(fixture.context.nativeRoot, 'versions/1.9.4');
+    fs.mkdirSync(path.join(nativeVersionRoot, 'native-host/src'), { recursive: true });
+    fs.writeFileSync(path.join(nativeVersionRoot, 'package.json'), '{"version":"1.9.4"}\n');
+    fs.writeFileSync(path.join(nativeVersionRoot, 'native-host/src/index.js'), 'void 0;\n');
+
     assert.deepEqual(confirmUpdate(fixture.context, {
       transactionId: 'fixture',
       extensionVersion: '1.9.4',

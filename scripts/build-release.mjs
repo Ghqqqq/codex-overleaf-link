@@ -17,6 +17,8 @@ const { buildManagedExtensionTree } = require('../native-host/src/managedInstall
 const { buildRuntimeFileManifest } = require('../native-host/src/runtimeInstaller.js');
 const { createUpdateBundleArchive } = require('../native-host/src/updateArchive.js');
 const { BOOTSTRAP_PROTOCOL } = require('../native-host/src/updateTrust.js');
+const { buildBootstrapMigrationDescriptor, BOOTSTRAP_MIGRATION_IMPLEMENTATION_FILES } =
+  require('../native-host/src/bootstrapMigrationContract.js');
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RELEASE_OUTPUT_MARKER = '.codex-overleaf-release-output';
@@ -61,6 +63,7 @@ export function buildRelease(options = {}) {
     throw new Error(`Release ref ${releaseRef || '(empty)'} must be ${stableReleaseRef} or an ${stableReleaseRef}-rc.N tag.`);
   }
   const releaseChannel = releaseRef === stableReleaseRef ? 'stable' : 'prerelease';
+  const bootstrapMigration = buildBootstrapMigrationDescriptor({ packageRoot: rootDir, version });
 
   const outputDir = path.resolve(options.outputDir || getDefaultReleaseOutputDir({ rootDir, version }));
   const extensionZipName = `codex-overleaf-link-extension-v${version}.zip`;
@@ -93,6 +96,12 @@ export function buildRelease(options = {}) {
 
   assertSafeReleaseOutputDir({ rootDir, outputDir });
   assertRequiredReleaseFilesTracked({ trackedFiles, version });
+  if (bootstrapMigration) {
+    for (const relativePath of [...BOOTSTRAP_MIGRATION_IMPLEMENTATION_FILES,
+      ...bootstrapMigration.files.map(file => 'extension/' + file.path)]) {
+      if (!trackedFiles.has(relativePath)) throw new Error('Bootstrap migration release input is not git-tracked: ' + relativePath);
+    }
+  }
   if (!options.allowDirtyReleaseInputs && process.env.CODEX_OVERLEAF_ALLOW_DIRTY_RELEASE_INPUTS !== '1') {
     assertCleanTrackedReleaseInputs({ rootDir, relativePaths: releaseInputFiles });
   }
@@ -150,6 +159,7 @@ export function buildRelease(options = {}) {
     version,
     tag: releaseRef,
     bootstrapProtocol: BOOTSTRAP_PROTOCOL,
+    ...(bootstrapMigration ? { bootstrapMigration } : {}),
     gitCommit: getGitCommit(rootDir),
     createdAt: new Date().toISOString(),
     updateBundle: describeArtifact(updateBundlePath, updateBundleName),
@@ -390,6 +400,12 @@ function createNativeTarball({ rootDir, outputPath, trackedFiles }) {
   try {
     for (const relativePath of getNativeTarballFiles(trackedFiles)) {
       copyTrackedFile({ rootDir, stagingRoot, relativePath, trackedFiles });
+    }
+    for (const entry of buildRuntimeFileManifest({ packageRoot: rootDir, allowedFiles: trackedFiles })) {
+      if (entry.sourceRelativePath) {
+        copyTrackedFile({ rootDir, stagingRoot, relativePath: entry.sourceRelativePath,
+          targetRelativePath: entry.relativePath, trackedFiles });
+      }
     }
 
     runRequiredCommand('tar', [

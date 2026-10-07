@@ -98,6 +98,7 @@
   }
 
   async function startup() {
+    if (!await waitForBootstrapOwnership()) return;
     chrome.alarms?.create?.(CHECK_ALARM, {
       delayInMinutes: 0.5,
       periodInMinutes: CHECK_INTERVAL_MINUTES
@@ -564,6 +565,7 @@
   function reconcileRecoveryState() {
     if (recoveryPromise) return recoveryPromise;
     recoveryPromise = (async () => {
+      if (!await waitForBootstrapOwnership()) return getUpdateState();
       const state = await getUpdateState();
       if (state.recoveryPending) return reconcileExpiredPhase();
       if (state.cancelRequested) return postponeUpdate();
@@ -734,6 +736,7 @@
 
 
   async function handleObservedStateChange() {
+    if (!await waitForBootstrapOwnership()) return;
     await settleTerminalConsent();
     const [state, consent] = await Promise.all([getUpdateState(), getConsentState()]);
     if (!consent.authorizationId && !policy.isExecutionState(state.state)) {
@@ -952,10 +955,18 @@
 
   function enqueuePolicyAction(action) {
     const generation = operationGeneration;
-    const guarded = () => generation !== operationGeneration || cancellationPromise ? getView() : action();
+    const guarded = async () => !await waitForBootstrapOwnership()
+      || generation !== operationGeneration || cancellationPromise ? getView() : action();
     const result = policyTail.then(guarded, guarded);
     policyTail = result.catch(() => {});
     return result;
+  }
+
+  async function waitForBootstrapOwnership() {
+    const migration = await root.CodexOverleafBootstrapMigration?.ready?.();
+    if (migration?.continueInitialization === false) return false;
+    await root.__CODEX_OVERLEAF_BOOTSTRAP_READY__;
+    return true;
   }
 
   function beginOperation(id) {
