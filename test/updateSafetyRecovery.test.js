@@ -9,7 +9,8 @@ function harness() {
   const h = { url, documentId: 'document-one', fileId: 'file-one', saved: true, mutations: [], calls: [], inputListeners: {},
     panel: { dataset: {}, textContent: 'original draft', getClientRects: () => [{}] }, state: 'bootstrap_pending', locked: true,
     tx: { id: 'transaction-one', targetVersion: '2.5.1', sourceVersion: '2.5.0' }, bgListeners: [], contentListeners: [], windowListeners: [],
-    data: { 'codex-overleaf-managed-update-tabs-v1': [1] }, advance(ms) { now += ms; } };
+    data: { 'codex-overleaf-managed-update-tabs-v1': [1] }, reorderStorage: true, storageReads: 0,
+    advance(ms) { now += ms; } };
   class Clock extends Date { static now() { return now; } }
   const location = { get href() { return h.url; }, get origin() { return new URL(h.url).origin; } };
   const saveNode = { get textContent() { return h.saved ? 'All changes saved' : 'Unsaved changes'; },
@@ -40,8 +41,13 @@ function harness() {
     sendMessage: message => dispatch(h.bgListeners, message, { id: 'fixture', tab: { id: 1 }, frameId: 0,
       documentId: h.documentId, url: h.url }) } };
   const chrome = { runtime: { id: 'fixture', onMessage: { addListener: fn => h.bgListeners.push(fn) } },
-    storage: { local: { async get(keys) { return Object.fromEntries(keys.map(key => [key, structuredClone(h.data[key])])); },
-      async set(value) { if (h.storageFailure) throw Error('storage failed'); Object.assign(h.data, structuredClone(value)); } } },
+    storage: { local: { async get(keys) {
+      const result = Object.fromEntries(keys.map(key => [key, structuredClone(h.data[key])]));
+      return h.reorderStorage ? reorderKeys(result, ++h.storageReads % 2 === 0) : result;
+    }, async set(value) {
+      if (h.storageFailure) throw Error('storage failed');
+      Object.assign(h.data, h.reorderStorage ? reorderKeys(structuredClone(value)) : structuredClone(value));
+    } } },
     tabs: { async query() { return h.closed ? [] : [{ id: 1, url: h.url }]; }, async sendMessage(id, message, target) {
       h.calls.push(message.type);
       if (!target) return undefined; // Chrome can resolve an unhandled message without an ACK.
@@ -74,6 +80,13 @@ function harness() {
     fn(h.isolated.__event);
   });
   return h;
+}
+function reorderKeys(value, reverse = false) {
+  if (Array.isArray(value)) return value.map(item => reorderKeys(item, reverse));
+  if (!value || typeof value !== 'object') return value;
+  const keys = Object.keys(value).sort();
+  if (reverse) keys.reverse();
+  return Object.fromEntries(keys.map(key => [key, reorderKeys(value[key], reverse)]));
 }
 
 test('a disconnected page gets only safety receivers and retains the old panel and idle/save delays', async () => {
@@ -232,4 +245,29 @@ test('a changed Native owner cannot revalidate an empty probe set or release an 
   assert.equal(await h.recovery.revalidate([], h.owner), false);
   assert.equal(await h.recovery.releaseReloadTabs(original), false);
   assert.deepEqual(h.data['codex-overleaf-managed-update-tabs-v1'], []);
+});
+
+test('Chrome storage may reorder nested object keys without changing protected document identities', async () => {
+  const h = harness(); h.reorderStorage = true; h.storageReads = 0;
+  assert.equal(await h.recovery.protectReloadTabs(h.tx), true);
+  assert.deepEqual(h.data['codex-overleaf-managed-update-tabs-v1'], []);
+  assert.equal(await h.recovery.releaseReloadTabs(h.tx), true);
+  assert.deepEqual(h.data['codex-overleaf-managed-update-tabs-v1'], [1]);
+});
+
+test('structural readback still rejects changed fields, extra keys, types and reordered tab arrays', () => {
+  const context = vm.createContext({});
+  vm.runInContext(extractFunction(fs.readFileSync(path.join(ROOT, 'extension/src/backgroundUpdateSafety.js'), 'utf8'), 'sameStored'), context);
+  const guard = { transactionId: 'original', sourceVersion: '2.5.0', targetVersion: '2.5.1', state: 'guarded',
+    entries: [{ tabId: 1, documentId: 'doc-one', url: 'https://www.overleaf.com/project/one' },
+      { tabId: 2, documentId: 'doc-two', url: 'https://www.overleaf.com/project/two' }] };
+  assert.equal(context.sameStored(guard, reorderKeys(guard, true)), true);
+  for (const change of [value => { value.transactionId = 'other'; }, value => { value.sourceVersion = '2.4.9'; },
+    value => { value.targetVersion = '2.5.2'; }, value => { value.state = 'ready'; },
+    value => { value.entries[0].tabId = '1'; }, value => { value.entries[0].documentId = 'new-document'; },
+    value => { value.entries[0].url += '/new'; }, value => { value.extra = true; },
+    value => { delete value.entries[0].url; }, value => { value.entries.reverse(); }]) {
+    const changed = structuredClone(guard); change(changed);
+    assert.equal(context.sameStored(guard, changed), false);
+  }
 });

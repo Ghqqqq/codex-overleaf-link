@@ -1,6 +1,19 @@
 (function installBackgroundUpdateSafety(root) {
   'use strict';
   const blocked = () => ({ idle: false, saved: false, blockers: ['tab_probe_unavailable'] });
+  // Chrome storage serializes object keys independently of insertion order.
+  // Preserve every key/value and array position when comparing readback.
+  function sameStored(left, right) {
+    if (left === right) return true;
+    if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+    if (Array.isArray(left) || Array.isArray(right)) {
+      return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+        && left.every((value, index) => sameStored(value, right[index]));
+    }
+    const leftKeys = Object.keys(left), rightKeys = Object.keys(right);
+    return leftKeys.length === rightKeys.length
+      && leftKeys.every(key => Object.prototype.hasOwnProperty.call(right, key) && sameStored(left[key], right[key]));
+  }
   function create(options) {
     const bindings = new Map();
     const tabsKey = 'codex-overleaf-managed-update-tabs-v1';
@@ -101,10 +114,10 @@
       const guard = { transactionId: transaction.id, sourceVersion: transaction.sourceVersion,
         targetVersion: transaction.targetVersion, state: 'guarded', entries };
       const current = await chrome.storage.local.get([tabsKey, guardKey]);
-      if (JSON.stringify(current) !== JSON.stringify(stored) || !await ownerMatches(owner)) return false;
+      if (!sameStored(current, stored) || !await ownerMatches(owner)) return false;
       await chrome.storage.local.set({ [guardKey]: guard, [tabsKey]: [] });
       const readback = await chrome.storage.local.get([tabsKey, guardKey]);
-      return JSON.stringify(readback[guardKey]) === JSON.stringify(guard) && readback[tabsKey]?.length === 0;
+      return sameStored(readback[guardKey], guard) && readback[tabsKey]?.length === 0;
     }
     async function releaseReloadTabs(transaction, expectedState = 'bootstrap_pending') {
       const owner = { transactionId: transaction.id, sourceVersion: transaction.sourceVersion,
@@ -123,7 +136,7 @@
         ids.push(entry.tabId);
       }
       const again = await chrome.storage.local.get([tabsKey, guardKey]);
-      if (JSON.stringify(again[guardKey]) !== JSON.stringify(guard) || again[tabsKey]?.length || !await ownerMatches(owner)) return false;
+      if (!sameStored(again[guardKey], guard) || again[tabsKey]?.length || !await ownerMatches(owner)) return false;
       await chrome.storage.local.set({ [tabsKey]: ids, [guardKey]: { ...guard, state: 'ready' } });
       return true;
     }
@@ -149,7 +162,7 @@
         const current = await snapshot(entry.tabId).catch(() => null);
         if (current && current.documentId !== entry.documentId) {
           const again = await chrome.storage.local.get([tabsKey, guardKey]);
-          return JSON.stringify(again) === JSON.stringify(stored) && await ownerMatches(owner);
+          return sameStored(again, stored) && await ownerMatches(owner);
         }
       }
       return false;

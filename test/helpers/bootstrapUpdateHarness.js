@@ -3,6 +3,11 @@
 const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto"), vm = require("node:vm");
 const ROOT = path.resolve(__dirname, "../..");
 const UPDATE_KEY = "codex-overleaf-managed-update-state-v1";
+function chromeStoredValue(value) {
+  if (Array.isArray(value)) return value.map(chromeStoredValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, chromeStoredValue(value[key])]));
+}
 async function createBootstrapHarness(options = {}) {
   const version = options.version || "2.5.0", data = { [UPDATE_KEY]: { state: "idle", currentVersion: version, latestVersion: version } }, listeners = [], nativeCalls = [], loaded = [], timers = /* @__PURE__ */ new Map(), probes = [];
   Object.assign(data, structuredClone(options.data || {}));
@@ -20,12 +25,12 @@ async function createBootstrapHarness(options = {}) {
       Promise.resolve(options.native(request)).then((response) => queueMicrotask(() => callbacks.forEach((l) => l({ ...response, id: request.id })))).catch((error) => queueMicrotask(() => callbacks.forEach((l) => l({ id: request.id, ok: false, error: { code: error.code || "fixture_error", message: error.message } }))));
     } };
   } }, storage: { local: { async get(keys) {
-    return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((k) => [k, structuredClone(data[k])]));
+    return chromeStoredValue(Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map((k) => [k, structuredClone(data[k])])));
   }, async set(v) {
     const changes = Object.fromEntries(Object.entries(v).map(([key, value]) => [key, {
       oldValue: structuredClone(data[key]), newValue: structuredClone(value)
     }]));
-    Object.assign(data, structuredClone(v));
+    Object.assign(data, chromeStoredValue(structuredClone(v)));
     if (options.fireStorageChanges) queueMicrotask(() => storageListeners.forEach(listener => listener(changes, "local")));
   }, async remove(keys) {
     for (const k of Array.isArray(keys) ? keys : [keys]) delete data[k];

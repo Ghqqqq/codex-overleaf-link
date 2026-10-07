@@ -107,3 +107,41 @@ test('rehearsal isolates caller homes, credentials and inherited Node hooks', as
   assert.equal(env.NODE_OPTIONS, undefined);
   assert.equal(env.CODEX_OVERLEAF_MANAGED_NATIVE_ROOT, undefined);
 });
+
+test('the installed Bootstrap rehearsal supplies real document snapshot results to guarded refresh', async t => {
+  const { confirmThroughInstalledBootstrap } = await import('../scripts/update-hop-bootstrap-harness.mjs');
+  const { buildManagedExtensionTree } = require('../native-host/src/managedInstall');
+  const Compatibility = require('../extension/src/shared/compatibility');
+  const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'update-hop-document-'));
+  t.after(() => fs.rmSync(extensionRoot, { recursive: true, force: true }));
+  const targetVersion = Compatibility.BUILD_TARGET_VERSION;
+  buildManagedExtensionTree({ packageRoot: repoRoot, targetRoot: extensionRoot, version: targetVersion });
+  const transaction = { id: 'fixture-transaction', state: 'bootstrap_pending', sourceVersion: '2.5.0', targetVersion };
+  const native = { calls: [], async request(request) {
+    this.calls.push(structuredClone(request));
+    let result;
+    if (request.method === 'update.status') result = { transaction: { ...transaction }, installedAligned: true,
+      managed: true, activeVersion: targetVersion, runtimeVersion: targetVersion };
+    else if (request.method === 'update.canApply') result = { idle: true, blockers: [] };
+    else if (request.method === 'update.bootstrap') {
+      assert.equal(request.params.transactionId, transaction.id);
+      transaction.state = 'awaiting_health';
+      result = { state: 'awaiting_health', transactionId: transaction.id, targetVersion, bootstrapRevision: '3.1' };
+    } else if (request.method === 'bridge.ping') result = { version: targetVersion, protocolVersion: 2,
+      supportedProtocol: { min: 1, max: 2 },
+      capabilities: Object.fromEntries(Compatibility.REQUIRED_CAPABILITIES.map(name => [name, true])) };
+    else if (request.method === 'update.confirm') {
+      assert.equal(transaction.state, 'awaiting_health');
+      transaction.state = 'committed';
+      result = { state: 'committed', version: targetVersion };
+    } else throw new Error('Unexpected Native method in healthy rehearsal: ' + request.method);
+    return { ok: true, result };
+  }, async invoke(method) { return (await this.request({ method, params: {} })).result; } };
+  const evidence = await confirmThroughInstalledBootstrap({ extensionRoot, native, transactionId: transaction.id, targetVersion });
+  assert.equal(evidence.status.transaction.state, 'committed');
+  assert.ok(evidence.documentEvidence.some(item => item.targetedBy === 'frameId'));
+  assert.ok(evidence.documentEvidence.some(item => item.targetedBy === 'documentId'));
+  assert.equal(new Set(evidence.documentEvidence.map(item => item.documentId)).size, 1);
+  assert.equal(native.calls.some(call => call.method === 'update.rollback'), false);
+  assert.ok(evidence.loaded.includes('runtime/src/backgroundUpdateSafety.js'));
+});

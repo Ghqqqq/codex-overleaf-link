@@ -211,7 +211,7 @@ Native `applyStagedUpdate()`再次检查本地 gate、管理布局、事务及�
 
 ### 迁移期间的页面刷新保护
 
-`protectReloadTabs()`在迁移开始时将原`codex-overleaf-managed-update-tabs-v1`清单及其文档身份放入`codex-overleaf-managed-update-guarded-tabs-v1`，同一存储写入清空旧清单并读回。这个清单由旧Bootstrap的健康/回滚路径消费，必须先保护，避免在迁移等待期间出现新的未保存编辑后仍按旧许可刷新页面。
+`protectReloadTabs()`在迁移开始时将原`codex-overleaf-managed-update-tabs-v1`清单及其文档身份放入`codex-overleaf-managed-update-guarded-tabs-v1`，同一存储写入清空旧清单并读回。读回按完整对象结构比较，保留字段、类型、值和数组顺序要求；Chrome存储返回对象的键排列不参与相等判断。这个清单由旧Bootstrap的健康/回滚路径消费，必须先保护，避免在迁移等待期间出现新的未保存编辑后仍按旧许可刷新页面。
 
 目标revision已加载且Native返回`awaiting_health`后，`releaseReloadTabs()`前后核对Native事务及预期状态、guard归属、仍打开的原文档ID/URL及存储内容，再放回清单进入既有健康刷新。回滚路径先核对磁盘源版本和三层恢复摘要，随后继续等待页面安全点，才放回清单并重载旧版本；磁盘已经恢复不等于页面可以立即刷新。若确认同一tab已经换成新文档，回滚控制器保留guard及空的旧清单，只重载扩展以结束旧等待，不自动刷新新文档；使用者可能仍需再次刷新项目页以重新连接。worker在等待期间消失时，受保护清单不进入旧Bootstrap的自动刷新入口，原页面保留到自然刷新或后续可验证的恢复处理。未知、改变或失配文档不能复用此前的刷新许可。
 

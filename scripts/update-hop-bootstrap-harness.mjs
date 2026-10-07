@@ -3,6 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 
+function chromeStoredValue(value) {
+  if (Array.isArray(value)) return value.map(chromeStoredValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, chromeStoredValue(value[key])]));
+}
+
 // Chrome transport/storage are supplied here; every Bootstrap/runtime script
 // comes from the installed candidate and every Native reply is a real frame.
 export async function confirmThroughInstalledBootstrap({ extensionRoot, native, transactionId, targetVersion }) {
@@ -14,6 +20,10 @@ export async function confirmThroughInstalledBootstrap({ extensionRoot, native, 
   const noop = { addListener() {}, removeListener() {} };
   const timers = new Set();
   const loaded = [];
+  const documentUrl = 'https://www.overleaf.com/project/update-hop';
+  const documentId = 'update-hop-main-document';
+  const documentEvidence = [];
+  const pageContext = vm.createContext({ location: { href: documentUrl } });
   let reloads = 0;
   const chrome = {
     runtime: {
@@ -32,8 +42,8 @@ export async function confirmThroughInstalledBootstrap({ extensionRoot, native, 
     },
     storage: {
       local: {
-        async get(keys) { return Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, structuredClone(data[key])])); },
-        async set(values) { Object.assign(data, structuredClone(values)); },
+        async get(keys) { return chromeStoredValue(Object.fromEntries((Array.isArray(keys) ? keys : [keys]).map(key => [key, structuredClone(data[key])]))); },
+        async set(values) { Object.assign(data, chromeStoredValue(structuredClone(values))); },
         async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete data[key]; }
       },
       session: { async get(key) { return { [key]: true }; }, async set() {}, async remove() {} },
@@ -43,9 +53,21 @@ export async function confirmThroughInstalledBootstrap({ extensionRoot, native, 
     action: { async setBadgeText() {}, async setBadgeBackgroundColor() {} },
     permissions: { onAdded: noop, onRemoved: noop, async contains() { return true; } },
     scripting: { async getRegisteredContentScripts() { return []; }, async registerContentScripts() {},
-      async unregisterContentScripts() {}, async insertCSS() {}, async executeScript() {} },
+      async unregisterContentScripts() {}, async insertCSS() {}, async executeScript(input) {
+        const target = input?.target;
+        const exactFrame = target?.frameIds?.length === 1 && target.frameIds[0] === 0;
+        const exactDocument = target?.documentIds?.length === 1 && target.documentIds[0] === documentId;
+        if (target?.tabId !== 1 || target.allFrames || (!exactFrame && !exactDocument)
+          || input.world !== 'ISOLATED' || input.files || typeof input.func !== 'function') {
+          throw new Error('Update-hop VM only provides a healthy main-document snapshot; receiver reinjection needs the browser rehearsal.');
+        }
+        pageContext.__args = input.args || [];
+        const result = await vm.runInContext(`(${input.func.toString()})(...__args)`, pageContext);
+        documentEvidence.push({ documentId, url: documentUrl, targetedBy: exactDocument ? 'documentId' : 'frameId' });
+        return [{ frameId: 0, documentId, result }];
+      } },
     tabs: {
-      async query() { return [{ id: 1, url: 'https://www.overleaf.com/project/update-hop' }]; },
+      async query() { return [{ id: 1, url: documentUrl }]; },
       async sendMessage(_id, message) {
         if (message.type === 'codex-overleaf/runtime-health-probe') return { ok: true, version: targetVersion };
         if (message.type === 'codex-overleaf/update-idle-probe') return { idle: true, blockers: [] };
@@ -94,7 +116,7 @@ export async function confirmThroughInstalledBootstrap({ extensionRoot, native, 
       || status.transaction?.id !== transactionId || status.transaction.state !== 'committed' || reloads) {
       throw new Error(`Installed Bootstrap did not confirm the target pair: ${JSON.stringify({ revision, reloads, state: data[stateKey], status })}`);
     }
-    return { revision, loaded, status };
+    return { revision, loaded, status, documentEvidence };
   } finally {
     clearTimeout(deadline);
     for (const timer of timers) clearTimeout(timer);
