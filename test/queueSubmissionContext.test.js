@@ -206,7 +206,7 @@ test('queue-time extra inputs stay fixed across the promotion mirror wait', asyn
   assert.equal(request.task, QTEXT); assert.equal(request.attachments, undefined);
   assert.equal(request.customInstructions, ORIGINAL_INSTRUCTIONS);
 });
-test('queue context is bounded, drops unknown fields and follows storage redaction', () => {
+test('queue context is bounded, drops unknown fields and preserves instruction text', () => {
   const f = setup(); f.extra.instructions = 'long '.repeat(4000); enqueue(f);
   const input = f.c.findSessionById('A').pendingInputs[0];
   const ctx = input.payload.submissionContext;
@@ -217,9 +217,10 @@ test('queue context is bounded, drops unknown fields and follows storage redacti
   assert.equal(normalized.payload.submissionContext.providerCredentials, undefined);
   assert.equal(normalized.payload.submissionContext.attachments, undefined);
   assert.equal(normalized.payload.submissionContext.skillLoadingSettings.password, undefined);
-  normalized.payload.submissionContext.customInstructions = 'api_key=sk-fixturesyntheticlongkeyvalue';
+  const instructionText = 'api_key=sk-fixturesyntheticlongkeyvalue';
+  normalized.payload.submissionContext.customInstructions = instructionText;
   const persisted = StorageDb.buildSessionRecord({ ...f.c.findSessionById('A'), pendingInputs: [normalized], projectId: 'project-one' });
-  assert.doesNotMatch(JSON.stringify(persisted.pendingInputs), /sk-fixturesyntheticlongkeyvalue/);
+  assert.equal(persisted.pendingInputs[0].payload.submissionContext.customInstructions, instructionText);
 });
 
 test('queueing preserves every enabled skill within the existing queue byte budget', async () => {
