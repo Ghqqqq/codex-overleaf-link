@@ -26,6 +26,8 @@
       ['Pending confirmation; check save status', '待确认，可检查保存状态']],
     nextStep: [
       ['Review the skipped items in this report, then retry after resolving them.', '请查看本轮报告中的跳过项，处理后可以重试。'],
+      ['Nothing was written in this run. Review the skipped reasons, fix them, and retry.', '这轮没有任何内容写入。请查看跳过原因，处理后重试。'],
+      ['Review the skipped reasons. You can use "Undo written parts" to roll back what already reached Overleaf, then fix conflicts and retry.', '请查看跳过原因。已写入的部分可以点击“撤销已写入部分”回退，处理冲突后再重试。'],
       ['Resolve the issue above, then retry.', '请处理上面的原因后重试。'],
       ['You can continue asking, or add more @context and run another check.', '可以继续追问，或加入更多 @context 后再检查。'],
       ['Review these tracked changes in Overleaf.', '请在 Overleaf 中查看这些文件的留痕修改。'],

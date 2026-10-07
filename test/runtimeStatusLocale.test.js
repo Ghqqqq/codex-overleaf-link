@@ -11,6 +11,7 @@ const Scheduler = require('../extension/src/content/runQueueScheduler');
 const Session = require('../extension/src/shared/sessionState');
 const I18n = require('../extension/src/shared/i18n');
 const ResultActions = require('../extension/src/content/runResultActions').create();
+const { extractFunction } = require('./_helpers/extractFunction');
 
 function metaOptions(locale) {
   return { tx: (en, zh) => locale === 'zh' ? zh : en, getLocale: () => locale,
@@ -79,6 +80,36 @@ test('old flat metadata uses the same translation and leaves custom reasons inta
   assert.equal(result[2].value, '下一步模型自己的回答');
   assert.equal(split.body, '结论：用户原文');
 });
+
+for (const written of [0, 1]) {
+  for (const from of ['en', 'zh']) {
+    test(`saved writeback next step (${written} written, ${from}) follows both languages without changing original text`, () => {
+      const source = fs.readFileSync(path.join(__dirname, '../extension/src/content/contentRuntime.js'), 'utf8');
+      const nextStepAt = locale => Function('tx', 'getAppliedEntries',
+        `${extractFunction(source, 'formatWritebackSkippedNextStep')}; return formatWritebackSkippedNextStep;`
+      )(metaOptions(locale).tx, result => result.applied)({ applied: Array(written).fill({}) });
+      const original = Transcript.buildHumanCompletionReport({ locale: from, mode: 'auto', status: 'failed',
+        conclusion: nextStepAt(from), nextStep: nextStepAt(from) });
+      const snapshot = JSON.stringify(original);
+      const metaForms = [original.structured.meta, Meta.splitFlatCompletionReport(original.text).meta];
+      for (const meta of metaForms) {
+        const savedMeta = JSON.stringify(meta);
+        for (const locale of [from === 'en' ? 'zh' : 'en', from]) {
+          const rows = Meta.projectCompletionMeta(meta, { id: 'r' }, metaOptions(locale));
+          const next = rows.find(row => row.key === 'nextStep');
+          assert.equal(next.label, locale === 'en' ? 'Next' : '下一步');
+          assert.equal(next.value, nextStepAt(locale));
+        }
+        assert.equal(JSON.stringify(meta), savedMeta);
+      }
+      assert.equal(original.structured.conclusion, nextStepAt(from));
+      assert.equal(JSON.stringify(original), snapshot);
+      const custom = [{ key: 'nextStep', label: 'Next', value: `${nextStepAt(from)} Model note: 原文` }];
+      assert.equal(Meta.projectCompletionMeta(custom, { id: 'r' }, metaOptions(from === 'en' ? 'zh' : 'en'))[0].value,
+        custom[0].value, 'only complete product templates may be translated');
+    });
+  }
+}
 
 for (const input of [
   { errorMessage: 'Codex CLI was not found locally' },
