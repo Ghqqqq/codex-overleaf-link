@@ -1,6 +1,6 @@
 # 模型连接、Provider 配置与协议适配
 
-适用产品版本：`2.5.0`；初始参考基线：`2073ae74747431aab8d529803d4e9f8197262388`；正文随当前仓库维护。
+初始参考产品版本：`2.5.0`；初始参考基线：`2073ae74747431aab8d529803d4e9f8197262388`；正文随当前仓库维护。
 入口见 [系统总览](system-overview.md) 与 [功能索引](feature-map.md)；运行身份、队列见 [运行状态与恢复](run-state-and-recovery.md)。
 进程启动、app-server 生命周期、项目锁和退出屏障由 [Native 执行](native-execution.md) 说明。
 
