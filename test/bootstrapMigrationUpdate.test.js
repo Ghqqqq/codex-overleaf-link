@@ -157,7 +157,10 @@ test('source edits, payload edits, and permission additions stop before replacin
       assert.equal(result.ok, false);
       if (kind === 'source') assert.equal(result.error.code, 'update_bootstrap_source_mismatch');
       if (kind === 'payload') assert.equal(result.error.code, 'update_bootstrap_payload_mismatch');
-      if (kind === 'manifest' || kind === 'payloadManifest') assert.match(result.error.message, /manifest shape or permissions/);
+      if (kind === 'manifest' || kind === 'payloadManifest') {
+        assert.equal(result.error.code, 'update_bootstrap_failed', 'owned validation failures reach the bilingual Bootstrap error projection');
+        assert.match(result.error.message, /manifest shape or permissions/);
+      }
       assert.deepEqual(fs.readFileSync(path.join(f.context.extensionRoot, 'bootstrap/background.js')), before);
       assert.equal(fs.existsSync(path.join(f.recordRoot(), 'state.json')), false);
     });

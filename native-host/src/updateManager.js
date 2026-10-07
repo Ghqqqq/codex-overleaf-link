@@ -124,7 +124,9 @@ async function handleUpdateRequest(request, options = {}) {
         throw updateError('unknown_update_method', 'Unknown managed update method.');
     }
   } catch (error) {
-    return errorResponse(request.id, safeErrorCode(error), safeErrorMessage(error));
+    const code = safeErrorCode(error);
+    return errorResponse(request.id, request.method === 'update.bootstrap' && code === 'update_internal_error'
+      ? 'update_bootstrap_failed' : code, safeErrorMessage(error));
   }
 }
 
