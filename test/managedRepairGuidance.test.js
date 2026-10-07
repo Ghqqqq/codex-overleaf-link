@@ -3,6 +3,7 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), vm = require('node:vm');
 const { spawnSync } = require('node:child_process');
 const Compatibility = require('../extension/src/shared/compatibility');
+const currentVersion = require('../package.json').version;
 const Controller = require('../extension/src/content/nativeCompatibilityController');
 const Messaging = require('../native-host/src/nativeMessaging');
 const root = path.resolve(__dirname, '..'), extensionId = 'abcdefghijklmnopabcdefghijklmnop';
@@ -10,7 +11,7 @@ const identity = { managed: true, managedRoot: "/tmp/fixture's $HOME `value`", b
 function background(marker, managed = true) {
   const listeners = [], nativeMessages = [], fetches = [];
   const chrome = { runtime: { id: extensionId,
-    getManifest: () => ({ version: '2.5.0', background: { service_worker: managed ? 'bootstrap/background.js' : 'src/background.js' } }),
+    getManifest: () => ({ version: currentVersion, background: { service_worker: managed ? 'bootstrap/background.js' : 'src/background.js' } }),
     getURL: name => 'chrome-extension://' + extensionId + '/' + name,
     onMessage: { addListener: f => listeners.push(f) }, onConnect: { addListener() {} },
     connectNative() { const replies = []; return { onMessage: { addListener: f => replies.push(f) }, onDisconnect: { addListener() {} },
@@ -40,7 +41,7 @@ function node(tag) {
 const flatten = value => [value, ...value.children.flatMap(flatten)];
 function panel(h, managed) {
   const element = node('panel'), copied = [];
-  const metadata = { version: '2.5.0', extensionId, installIdentity: { managed } };
+  const metadata = { version: currentVersion, extensionId, installIdentity: { managed } };
   const controller = Controller.create({ compatibility: Compatibility, nativeChannel: { sendBackgroundNative: h.send },
     gatedMethods: new Set(['codex.run']), getExtensionCompatibilityMetadata: () => metadata,
     getNativeCompatibilityClassification: value => value.classification, getPanel: () => element,
@@ -73,7 +74,7 @@ for (const known of [true, false]) test('existing background ping carries Manage
 test('Direct repair keeps the established three-argument command', async () => {
   const h = background(null, false), p = panel(h, false);
   const gate = await p.controller.ensureForMethod('codex.run');
-  assert.equal(gate.response.error.installCommand, Compatibility.buildInstallCommand('2.5.0', undefined, extensionId));
+  assert.equal(gate.response.error.installCommand, Compatibility.buildInstallCommand(currentVersion, undefined, extensionId));
   assert.equal(h.fetches.length, 0); assert.match(gate.response.error.installCommand, / -- install-native/);
 });
 test('Managed command generation refuses missing or mismatched identity and quotes platform paths', () => {
