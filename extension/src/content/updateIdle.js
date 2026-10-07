@@ -5,9 +5,10 @@
     let lastUserActivityAt = Date.now();
     let stableSavedSince = 0;
     let applying = false;
+    let saveIdentity;
     const documentRef = options.document || root.document;
     const noteActivity = event => {
-      if (event?.target?.closest?.('#codex-overleaf-panel')) return;
+      if (!options.includePanelActivity && event?.target?.closest?.('#codex-overleaf-panel')) return;
       lastUserActivityAt = Date.now();
       stableSavedSince = 0;
     };
@@ -42,6 +43,7 @@
         saveResult = { ok: false, state: 'unavailable' };
       }
       const saved = saveResult?.ok === true && ['verified_saved', 'verified_quiet'].includes(saveResult?.state);
+      if (saveResult?.identity !== saveIdentity) { stableSavedSince = 0; saveIdentity = saveResult?.identity; }
       if (saved) {
         stableSavedSince = stableSavedSince || Date.now();
       } else {
@@ -62,6 +64,7 @@
 
     return {
       buildIdleProbe,
+      noteActivity,
       handleMessage,
       isApplying: () => applying
     };

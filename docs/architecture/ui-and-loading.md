@@ -34,6 +34,10 @@ ContentRuntime
 | Managed 路径适配 | [runtimeContext.js](../../extension/bootstrap/runtimeContext.js) | 设置 `__CODEX_OVERLEAF_RUNTIME_PREFIX__ = 'runtime/'`，页面资源 URL 依此加前缀 |
 | 页面资源 | Direct WAR 与 [bootstrap manifest](../../extension/bootstrap/manifest.template.json) | Direct 显式条目、Managed `runtime/src/shared/*` 和 `runtime/src/page/*` 等覆盖范围 |
 
+Managed迁移需要区分扩展reload与页面刷新：旧面板DOM仍可存在，旧隔离世界的消息接收端却可能已失效。当前[backgroundUpdateSafety](../../extension/src/backgroundUpdateSafety.js)在迁移事务锁定且旧probe不可达时，按Chrome文档ID定向注入[updateSafetyReceiver](../../extension/src/content/updateSafetyReceiver.js)及[updateSafetyProbe](../../extension/src/page/updateSafetyProbe.js)。这条路径只恢复安全探测，复用保存/静默规则，不重建完整content runtime、Page Bridge或面板。面板DOM存在和单面板检查均不能替代接收端/版本健康证明。
+
+页面自动刷新由迁移控制器保护原刷新清单：等待期间先将清单转入guarded存储，目标固定层加载确认后，或源版本已恢复且页面重新达到安全点后，再按原文档身份放回清单。磁盘回滚完成时页面可能仍有未保存内容，允许刷新的判断须独立完成；具体owner及失败边界见[安装安全点](installation-and-updates.md#6-安全点的实际范围)。
+
 ### Registry 与组合根
 
 [ModuleRegistry.define/resolve](../../extension/src/content/moduleRegistryKernel.js) 保存命名定义、解析显式依赖、缓存实例；缺依赖、循环依赖或无有效导出时抛出受控错误。
@@ -318,7 +322,7 @@ DiffReviewPanel 同时保留 [ReviewHunks](../../extension/src/content/reviewHun
 AuditRecords 构造摘要字段并使用 secret-like 文本处理。维护约束是避免正文、完整附件或凭据进入诊断；新增字段须沿采集、摘要和导出链检查，已有字段的处理不能作为其他出口的无泄漏保证。
 [Direct popup HTML](../../extension/popup.html) 和 [Managed popup HTML](../../extension/bootstrap/popup.html) 共用 [src/popup.js](../../extension/src/popup.js)；后者通过 runtime 路径加载可替换代码和 CSS。
 `ensureMinimalPopupShell` 可改造旧 managed HTML 外壳；`initPopupState/applyPopupPreferences` 读取全局语言主题、监听变化，并设置 `<html lang>`。
-Popup 的自产动态状态、复制反馈和站点授权说明随语言重画；Managed 修复指引继续使用原安装身份及平台信息，语言变化不重新申请权限。Managed HTML 先加载固定的 [popupFallback.js](../../extension/bootstrap/popupFallback.js)，使 runtime 无法加载时的原有修复提示也可读取语言偏好。该脚本只更新仍存在的 fallback 外壳，正常 runtime 替换外壳后的迟到回调不覆盖界面。修改此固定资产须完整 Managed 安装，见 [popupFallbackLocale](../../test/popupFallbackLocale.test.js) 及[安装边界](installation-and-updates.md#9-手动升级与-bootstrap-边界)。
+Popup 的自产动态状态、复制反馈和站点授权说明随语言重画；Managed 修复指引继续使用原安装身份及平台信息，语言变化不重新申请权限。Managed HTML 先加载固定的 [popupFallback.js](../../extension/bootstrap/popupFallback.js)，使 runtime 无法加载时的原有修复提示也可读取语言偏好。该脚本只更新仍存在的 fallback 外壳，正常 runtime 替换外壳后的迟到回调不覆盖界面。此固定资产由完整 Managed 安装或明确声明的兼容 Bootstrap 迁移交付，单独替换runtime不会更新它，见 [popupFallbackLocale](../../test/popupFallbackLocale.test.js) 及[安装边界](installation-and-updates.md#9-手动升级与-bootstrap-边界)。
 launcher 开关先读 `get-panel-state`，按需发 `toggle-launcher`，再读回验证；该开关只控制侧边入口可见性，面板开合有自己的动作。
 [bootstrap/popup.js](../../extension/bootstrap/popup.js) 未被当前 managed HTML 引用；[contentScript.js](../../extension/src/contentScript.js) 也未列入当前 canonical content entry。旧文件存在与当前执行是两种证据。
 

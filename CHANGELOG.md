@@ -12,6 +12,7 @@
 - Correct verified edge cases in provider configuration, writing-style recovery, attachment handling, and coordinated updates within existing workflows.
 - Deliver the Bootstrap startup-file fixes through the existing 2.5.0 updater using a signed, explicitly scoped migration to revision 3.1. Keep Bootstrap protocol 3, Chrome permissions, Native registration and the existing update action unchanged.
 - Retain per-file recovery copies and progress, verify the loaded Bootstrap revision before update confirmation, and coordinate timeout recovery through an independent Native monitor and the existing popup fallback. Unknown source changes or incomplete recovery evidence remain blocked.
+- Reconnect read-only save and idle checks after the first extension reload during migration, and preserve unsaved pages while waiting to refresh after a verified rollback.
 
 ### Documentation and validation
 

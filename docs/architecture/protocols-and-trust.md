@@ -78,6 +78,8 @@ Chrome runtime 消息由多个 listener 消费，各自拥有准入函数。当�
 | global-preferences read/patch | [globalPreferences.installBackground](../../extension/src/shared/globalPreferences.js) | 本扩展 ID、tab URL、HTTPS 三站点和 `/project` 路径；没有独立 frame 检查 |
 | update coordinator 的 `MESSAGE_TYPES` | [backgroundUpdateCoordinator.isAllowedSender](../../extension/src/backgroundUpdateCoordinator.js) | 本扩展 ID，sender URL 优先；允许三站点项目路径或扩展的 `/bootstrap/popup.html` |
 | Bootstrap update-get-state/check-now/postpone | [bootstrap/background listener](../../extension/bootstrap/background.js) | 按这三个消息类型路由，listener 未消费 sender 参数；后续更新流程另有授权和事务条件 |
+| migration-save-probe | [backgroundUpdateSafety.saveProbe](../../extension/src/backgroundUpdateSafety.js) | 本扩展ID、绑定tab、顶层frame、Chrome documentId、sender URL、事务token及本轮nonce；MAIN读取前后还核对文档URL与当前Native事务 |
+| migration-idle-probe | [updateSafetyReceiver](../../extension/src/content/updateSafetyReceiver.js) | 只接受本扩展后台、无sender.tab、匹配token/事务/nonce及当前URL；应答由后台再次核对目标版本与绑定文档 |
 
 共享会话写入还检查 scope、记录归属与锁 token；这些检查不能由允许访问某个站点推导。各共享方法的锁例外见[运行状态与恢复](run-state-and-recovery.md)。 `put-compressed` 经 [SharedSessionTransfer](../../extension/src/shared/sharedSessionTransfer.js) 有界解码后沿同一整批写入事务；原始与压缩格式的字节上限、旧后台拒绝行为见[存储容量](run-state-and-recovery.md#storage-compaction)。
 普通 Native listener 的报错文案提到项目页面，但 `isAllowedOverleafSender` 有 tab 分支当前只检查主机和协议。
@@ -87,6 +89,8 @@ Chrome runtime 消息由多个 listener 消费，各自拥有准入函数。当�
 **Target contract：**调整站点、路由、frame 注入或新增消息族时，逐项决定实际 sender URL、扩展身份、项目路径及 frame 要求，并检查所有相关 listener。
 `sender.tab.url` 描述顶层标签页，`sender.url` 描述消息发送文档；两者在 frame 场景中可能不同，不能直接互换。
 `frameId` 限定文档层级，业务 `projectId` 限定数据归属，扩展 ID 限定扩展身份；三者分别维护。
+
+迁移专用probe仅用于恢复扩展reload后失效的安全接收端，不能借此获得普通Native或runtime-health资格。后台按`documentId`定向注入，避免相同tab发生整页导航后向新文档投递；同一文档内的SPA切换另靠URL与MAIN文件/文档identity复核。token绑定安装的接收端，nonce绑定本轮请求，仍须匹配Native事务source/target、状态和后台执行锁；这些字段提供归属与新鲜度约束，不代表页面已经保存。保存证据、活动静默窗口和原刷新清单guard见[安装与更新](installation-and-updates.md#6-安全点的实际范围)。
 
 ## 4. Native 兼容性门控的两个位置
 
@@ -156,6 +160,7 @@ loopback 约束监听地址，token 约束请求持有的口令；二者都不�
 | 后台消息准入 | 对应 listener、sender helper、manifest 注入、站点及 frame 范围 | [backgroundNativeError](../../test/backgroundNativeError.test.js)、[globalPreferences](../../test/globalPreferences.test.js)：worker VM 或存储 mock；不能代替 Chrome 投递验证 |
 | Native 兼容 gate | runtime 集合、controller、后台集合、共享分类、Native ping 与调用者 | [nativeCompatibilityController](../../test/nativeCompatibilityController.test.js)、[nativeCompatibilityRunDispatch](../../test/nativeCompatibilityRunDispatch.test.js)、[nativeCompatibilityBusinessMethods](../../test/nativeCompatibilityBusinessMethods.test.js)、[compatibility](../../test/compatibility.test.js)：须区分集合注入测试与生产集合完整性 |
 | Bootstrap兼容迁移 | 原签名/授权、源/目标摘要、封闭写入清单、loaded revision、事务及监护身份 | [bootstrapMigrationFiles](../../test/bootstrapMigrationFiles.test.js)、[bootstrapMigrationUpdate](../../test/bootstrapMigrationUpdate.test.js)、[bootstrapMigrationBuild](../../test/bootstrapMigrationBuild.test.js)、[bootstrapMigrationBrowser](../../test/bootstrapMigrationBrowser.test.js)：分别覆盖文件中断、Native事务恢复、产物合同与浏览器VM；真实签名资产及Chrome加载另行验收 |
+| 迁移专用安全probe | backgroundUpdateSafety、updateSafetyReceiver、updateSafetyProbe、文档/事务/nonce、guarded刷新清单 | [updateSafetyRecovery](../../test/updateSafetyRecovery.test.js)：局部消息与存储装配；真实reload后的文档寿命和原页面状态有独立浏览器证据 |
 | Provider 本地边界 | prepared launch、三桥 token/地址验证、关闭与取消 | [providerReliability](../../test/providerReliability.test.js)；具体依赖替换和网络范围需按用例核对 |
 
 纯 helper、源码断言和模拟消息能验证确定分支；真实 frame、Chrome sender 字段、不同扩展加载版本和实际 Native 注册需要对应环境验收。

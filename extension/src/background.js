@@ -57,6 +57,10 @@ if (!globalThis.CodexOverleafBootstrapMigration) {
   const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
   importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/backgroundBootstrapMigration.js`) : 'backgroundBootstrapMigration.js');
 }
+if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
+  const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
+  importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/backgroundUpdateSafety.js`) : 'backgroundUpdateSafety.js');
+}
 
 (function initBackground() {
   'use strict';
@@ -121,6 +125,10 @@ if (!globalThis.CodexOverleafBootstrapMigration) {
   const RUN_JOURNAL_MAX_EVENTS = 300;
   const RUN_JOURNAL_MAX_BYTES = 512 * 1024;
   const managedBootstrapRuntime = isManagedBootstrapRuntime();
+  const migrationSafety = globalThis.CodexOverleafBackgroundUpdateSafety.create({
+    request: payload => sendNativeRequest(payload, null, { skipCompatibility: true }),
+    isExecutionLocked: () => managedBootstrapRuntime && managedUpdateExecutionLocked
+  });
   let extensionInstallIdentity = { managed: managedBootstrapRuntime };
   let installIdentityRead;
   function readExtensionInstallIdentity() {
@@ -154,6 +162,9 @@ if (!globalThis.CodexOverleafBootstrapMigration) {
     globalThis.CodexOverleafBootstrapMigration.init({
       request: payload => sendNativeRequest(payload, null, { skipCompatibility: true }),
       verifySafety: verifyManagedUpdateSafety,
+      protectReloadTabs: transaction => migrationSafety.protectReloadTabs(transaction),
+      releaseReloadTabs: (transaction, state) => migrationSafety.releaseReloadTabs(transaction, state),
+      hasReplacedReloadDocument: transaction => migrationSafety.hasReplacedReloadDocument(transaction),
       setExecutionLocked: value => { managedUpdateExecutionLocked = value; }
     });
     chrome.storage?.onChanged?.addListener((changes, area) => {
@@ -408,12 +419,16 @@ if (!globalThis.CodexOverleafBootstrapMigration) {
     return response;
   }
 
-  async function verifyManagedUpdateSafety() {
+  async function verifyManagedUpdateSafety(migrationOwner) {
     const tabs = await chrome.tabs.query({ url: MANAGED_OVERLEAF_MATCHES }).catch(() => null);
     const editorTabs = (Array.isArray(tabs) ? tabs : []).filter(tab => (
       isManagedEditorTab(tab) && !tab.discarded && tab.status !== 'unloaded'
     ));
-    const probes = await Promise.all(editorTabs.map(tab => probeManagedUpdateTab(tab.id)));
+    const probes = await Promise.all(editorTabs.map(async tab => {
+      const result = await probeManagedUpdateTab(tab.id);
+      return migrationOwner && result?.blockers?.includes('tab_probe_unavailable')
+        ? migrationSafety.probe(tab, migrationOwner) : result;
+    }));
     // An unknown inventory cannot establish an idle safe point, even when Native is idle.
     if (!Array.isArray(tabs)) probes.push({ idle: false, blockers: ['tab_inventory_unavailable'] });
     const nativeGate = await sendNativeRequest({
@@ -427,6 +442,12 @@ if (!globalThis.CodexOverleafBootstrapMigration) {
         message: getErrorMessage(error, 'Native Host update safety check failed.')
       }
     }));
+    if (migrationOwner) {
+      const after = await chrome.tabs.query({ url: MANAGED_OVERLEAF_MATCHES }).catch(() => null);
+      const inventory = values => JSON.stringify((values || []).map(tab => [tab.id, tab.url, tab.discarded, tab.status]).sort());
+      if (!after || inventory(after) !== inventory(tabs)) probes.push({ idle: false, blockers: ['tab_probe_unavailable'] });
+      else if (!await migrationSafety.revalidate(editorTabs, migrationOwner)) probes.push({ idle: false, blockers: ['tab_probe_unavailable'] });
+    }
     const pendingState = globalThis.CodexOverleafNativeBridge?.getPendingState?.() || {};
     const backgroundBlockers = Number(pendingState.executionRequests || 0) > 0
       ? ['background_execution_pending']
@@ -453,13 +474,15 @@ if (!globalThis.CodexOverleafBootstrapMigration) {
       return { idle: false, blockers: ['tab_unavailable'] };
     }
     try {
-      return await Promise.race([
+      const response = await Promise.race([
         chrome.tabs.sendMessage(tabId, { type: 'codex-overleaf/update-idle-probe' }),
         new Promise(resolve => setTimeout(() => resolve({
           idle: false,
           blockers: ['tab_probe_timeout']
         }), 3500))
       ]);
+      return typeof response?.idle === 'boolean' ? response
+        : { idle: false, blockers: ['tab_probe_unavailable'] };
     } catch (_error) {
       return { idle: false, blockers: ['tab_probe_unavailable'] };
     }

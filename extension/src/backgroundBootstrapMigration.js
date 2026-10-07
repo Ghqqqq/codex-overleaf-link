@@ -17,6 +17,8 @@
 
   async function prepare(options) {
     let transaction;
+    let reloadProtected = false;
+    let rollbackState = 'bootstrap_pending';
     const revision = String(root.__CODEX_OVERLEAF_BOOTSTRAP_REVISION__ || '');
     const request = async (method, params = {}) => {
       const response = await options.request({ id: crypto.randomUUID(), method,
@@ -35,21 +37,24 @@
       if (!transaction.id || transaction.targetVersion !== root.CodexOverleafCompatibility?.BUILD_TARGET_VERSION) {
         throw codedError('The running update does not match the pending Bootstrap transaction.');
       }
+      reloadProtected = await options.protectReloadTabs(transaction);
+      if (!reloadProtected) throw codedError('The previous page refresh list could not be protected.');
       await writeState({ state: 'awaiting_health', transactionId: transaction.id,
         latestVersion: transaction.targetVersion, code: '', message: '' });
 
       // The first reload may leave old content contexts alive. Recheck the same
       // idle/save contract before replacing their loader and reloading again.
       const deadline = Date.now() + MAX_WAIT_MS;
-      while (revision !== '3.1') {
-        const gate = await options.verifySafety();
+      while (true) {
+        const gate = await options.verifySafety({ transactionId: transaction.id, targetVersion: transaction.targetVersion,
+          sourceVersion: transaction.sourceVersion, expectedState: 'bootstrap_pending' });
         if (gate?.ok) break;
         if (Date.now() >= deadline) throw codedError('The Bootstrap update did not reach a safe point.');
         await writeState({ blockers: gate?.error?.blockers || ['busy'] });
         await waitForRetry();
         const refreshed = await request('update.status');
         if (refreshed.transaction?.id !== transaction.id || refreshed.transaction?.state !== 'bootstrap_pending') {
-          throw codedError('The pending Bootstrap transaction changed before activation.');
+          throw Object.assign(codedError('The pending Bootstrap transaction changed before activation.'), { restoredStatus: refreshed });
         }
       }
 
@@ -67,21 +72,47 @@
       if (result.state !== 'awaiting_health' || revision !== '3.1' || result.bootstrapRevision !== revision) {
         throw codedError('The updated Bootstrap did not provide its loaded revision.');
       }
+      rollbackState = 'awaiting_health';
+      if (!await options.releaseReloadTabs(transaction, 'awaiting_health')) throw codedError('The original page identities could not be confirmed.');
       return { continueInitialization: true, state: result.state };
     } catch (error) {
       if (!transaction || transaction.state !== 'bootstrap_pending') return { continueInitialization: true };
+      if (!reloadProtected) {
+        await writeState({ state: 'failed', recoveryPending: true, code: 'update_recovery_pending' }).catch(() => {});
+        return { continueInitialization: false, state: 'failed' };
+      }
       const code = /^[a-z0-9_]{1,80}$/.test(error?.code || '') ? error.code : 'update_health_failed';
       await writeState({ state: 'rolling_back', code }).catch(() => {});
+      let restored = false;
       try {
-        const rollback = await request('update.rollback', { transactionId: transaction.id,
-          expectedState: 'bootstrap_pending', reasonCode: code });
-        const status = await request('update.status');
+        let status = error.restoredStatus;
+        let rollback = status && { transactionId: status.transaction?.id, state: status.transaction?.state,
+          version: status.activeVersion, restoredPair: status.restoredPair };
+        if (!hasRestoredSource(transaction, rollback, status)) {
+          rollback = await request('update.rollback', { transactionId: transaction.id,
+            expectedState: rollbackState, reasonCode: code });
+          status = await request('update.status');
+        }
         if (!hasRestoredSource(transaction, rollback, status)) throw codedError('Bootstrap rollback is unconfirmed.');
         await writeState({ state: 'rolled_back', currentVersion: transaction.sourceVersion,
           transactionId: transaction.id, recoveryPending: false, blockers: [], blocker: '', code });
+        restored = true;
+        while (true) {
+          try {
+            // A new document must never inherit the old document's refresh
+            // authorization. The source worker sees an empty legacy list;
+            // the guarded evidence remains for a later natural/user refresh.
+            if (await options.hasReplacedReloadDocument(transaction)) break;
+            const gate = await options.verifySafety({ transactionId: transaction.id, targetVersion: transaction.targetVersion,
+              sourceVersion: transaction.sourceVersion, expectedState: 'rolled_back' });
+            if (gate?.ok && await options.releaseReloadTabs(transaction, 'rolled_back')) break;
+          } catch (_) { /* Restored files stay restored while a page probe retries. */ }
+          await waitForRetry();
+        }
         chrome.runtime.reload();
         return { continueInitialization: false, state: 'rolled_back' };
       } catch (_rollbackError) {
+        if (restored) return { continueInitialization: false, state: 'rolled_back' };
         await writeState({ state: 'failed', recoveryPending: true, transactionId: transaction.id,
           code: 'update_recovery_pending', message: 'The installed update result has not been confirmed.' }).catch(() => {});
         return { continueInitialization: false, state: 'failed' };

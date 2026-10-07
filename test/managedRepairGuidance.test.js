@@ -30,6 +30,8 @@ function background(marker, managed = true) {
     CodexOverleafBootstrapMigration: { init() {}, ready: async () => ({ continueInitialization: true }), observeConfirmation() {} },
     CodexOverleafUpdateCoordinator: { init() {} }
   };
+  // Load the production dependency so this fixture preserves mandatory background startup assembly.
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'extension/src/backgroundUpdateSafety.js'), 'utf8'), context);
   vm.runInNewContext(fs.readFileSync(path.join(root, 'extension/src/background.js'), 'utf8'), context);
   return { nativeMessages, fetches, send: payload => new Promise(resolve => {
     for (const listener of listeners) listener({ type: 'codex-overleaf/native-request', payload: { id: 'fixture-' + nativeMessages.length, ...payload } },

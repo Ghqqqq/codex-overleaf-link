@@ -40,7 +40,7 @@ function transport(options = {}) {
     }
     if (request.method === 'update.rollback') {
       assert.equal(request.params.transactionId, transaction.id);
-      assert.equal(request.params.expectedState, 'bootstrap_pending');
+      assert.equal(request.params.expectedState, transaction.state);
       transaction.state = 'rolled_back';
       return ok({ transactionId: transaction.id, state: 'rolled_back', version: '2.5.0', restoredPair: sourcePair });
     }
@@ -161,4 +161,35 @@ test('a mismatching target fails closed before any Bootstrap migration or reload
   assert.equal(h.nativeCalls.some(call => call.method === 'update.bootstrap'), false);
   assert.equal(h.reloads(), 0);
   assert.equal(h.data[UPDATE_KEY].state, 'failed');
+});
+
+test('verified rollback preserves unsaved pages until a fresh safe point restores the guarded list', async t => {
+  const f = transport({ activationError: true });
+  const idle = { idle: true, saved: true, blockers: [] };
+  const h = await create(t, request => {
+    if (request.method === 'update.bootstrap') { idle.idle = false; idle.saved = false; idle.blockers = ['save_state_unverified']; }
+    return f.native(request);
+  }, { bootstrapSource: OLD_BOOTSTRAP, idle });
+  assert.equal(h.data[UPDATE_KEY].state, 'rolled_back');
+  assert.equal(h.reloads(), 0);
+  assert.deepEqual(h.data['codex-overleaf-managed-update-tabs-v1'], []);
+  assert.equal(h.data['codex-overleaf-managed-update-guarded-tabs-v1'].entries[0].tabId, 1);
+  idle.idle = true; idle.saved = true; idle.blockers = [];
+  await h.fireTimer(4000);
+  assert.equal(h.reloads(), 1);
+  assert.deepEqual(h.data['codex-overleaf-managed-update-tabs-v1'], [1]);
+});
+
+test('an independent Native rollback stays rolled back while page refresh is still unsafe', async t => {
+  const f = transport();
+  const idle = { idle: false, saved: false, blockers: ['save_state_unverified'] };
+  const h = await create(t, f.native, { bootstrapSource: OLD_BOOTSTRAP, idle });
+  f.transaction.state = 'rolled_back';
+  await h.fireTimer(4000);
+  assert.equal(h.data[UPDATE_KEY].state, 'rolled_back');
+  assert.equal(h.reloads(), 0);
+  assert.equal(h.nativeCalls.some(request => request.method === 'update.rollback'), false);
+  idle.idle = true; idle.saved = true; idle.blockers = [];
+  await h.fireTimer(4000);
+  assert.equal(h.reloads(), 1);
 });

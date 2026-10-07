@@ -125,6 +125,7 @@ Doctor继续读取manifest并直接启动bridge完成ping，因此注册异常�
 | Bootstrap迁移合同与协调 | [bootstrapMigrationContract.js](../../native-host/src/bootstrapMigrationContract.js)、[bootstrapUpdate.js](../../native-host/src/bootstrapUpdate.js) | 限定来源版本/源摘要/目标摘要，绑定签名、授权、事务、运行Native版本与已加载revision |
 | Bootstrap文件与进度 | [bootstrapMigration.js](../../native-host/src/bootstrapMigration.js)，`bootstrap-migrations/<transactionId>/state.json`及`files/` | 准备、应用、恢复、摘要读回；不自行授予更新资格，备份不随staging清理 |
 | 浏览器迁移接续 | [backgroundBootstrapMigration.js](../../extension/src/backgroundBootstrapMigration.js) | 使用现有更新屏障和重载入口，内存锁保持到匹配健康确认完成 |
+| 重载后的安全探测与页面刷新清单 | [backgroundUpdateSafety.js](../../extension/src/backgroundUpdateSafety.js)，`codex-overleaf-managed-update-guarded-tabs-v1` | 定向恢复只读接收端，按事务与文档身份保存待刷新清单；磁盘恢复与允许刷新页面分别核对 |
 | 独立迁移恢复监护 | [bootstrapUpdateWatchdog.js](../../native-host/src/bootstrapUpdateWatchdog.js) | 事务/token/PID握手与心跳，期限到达经同一mutation lock调用恢复；原Popup还可唤醒Native检查 |
 | 阶段规范与恢复解释 | [managedUpdateProjection.js](../../extension/src/shared/managedUpdateProjection.js) | 归一别名、阶段、期限、进度和迁移；不执行文件替换 |
 | UI 展示策略 | [updateConsent.js](../../extension/src/shared/updateConsent.js)、[updateNotice.js](../../extension/src/content/updateNotice.js) | 仍有专用 view model与兼容映射，不能视为 Native journal 的原样副本 |
@@ -179,9 +180,9 @@ Native `applyStagedUpdate()`再次检查本地 gate、管理布局、事务及�
 
 1. [runtimeInstaller.js](../../native-host/src/runtimeInstaller.js)把目标Bootstrap资产放入Native版本包的`native-host/bootstrap-payload/bootstrap/`，附带仅供校验的`manifest.template.json`。该位置属于旧归档器已允许的Native子树。[build-release.mjs](../../scripts/build-release.mjs)将`bootstrapMigration`描述纳入待签名release manifest：源版本、已知源文件SHA-256、目标文件SHA-256及封闭文件列表。清单中的扩展manifest仅核验形状，不由文件迁移模块替换；原apply继续维护其版本字段。
 2. 新Native的`bindBootstrapMigration()`识别确切版本对，重验签名原件与journal保存的manifest/bundle摘要、大小及bound授权，把事务置为`bootstrap_pending`。缺证据仍保持迁移待处理，不能退化成普通更新成功。`update.status`的投影和`confirmUpdate()`共同阻止旧Service Worker提前confirm或清理恢复材料。
-3. 新后台的`CodexOverleafBootstrapMigration.init()`在原Bootstrap继续健康初始化前接续迁移，重新核对现有空闲/保存条件，再调用内部`update.bootstrap`。Native在已有跨进程mutation lock内检查本地任务屏障、实际运行Native版本、目标JS语法、归档字节、manifest形状及源文件摘要。
+3. 新后台的`CodexOverleafBootstrapMigration.init()`在原Bootstrap继续健康初始化前接续迁移，先保护原待刷新页面清单，再重新核对空闲/保存条件。扩展重载可能使旧页面接收端失效；仅在迁移事务与执行锁仍匹配、原probe返回`tab_probe_unavailable`时，定向建立第6节的只读安全接收端。安全点成立后才调用内部`update.bootstrap`。Native在已有跨进程mutation lock内检查本地任务屏障、实际运行Native版本、目标JS语法、归档字节、manifest形状及源文件摘要。
 4. `prepareBootstrapMigration()`先保存旧文件字节/权限与进度。进度记录采用WAL（预写日志）：先记下将要替换的文件，再原子替换并读回；中断后可由磁盘记录判断继续或恢复。新依赖先落盘，引用它的HTML随后更新，后台入口最后替换，入口始终保留一个文件。文件写入先flush临时文件、再rename、再flush父目录；Windows目录flush能力有限，不能据此宣称任意断电均可恢复。
-5. 独立watchdog握手成功后才进入文件替换。旧worker获得`reload_required`，沿`chrome.runtime.reload()`重载；新固定入口提供revision `3.1`，Native再核对目标磁盘摘要，将迁移phase置为`loaded`并返回`awaiting_health`。允许的重载次数及健康期限由[bootstrapUpdate.js](../../native-host/src/bootstrapUpdate.js)定义，避免跨worker无限重载。随后仍执行原页面、Native和版本健康检查，`update.confirm`同时要求事务身份、已加载revision与目标Bootstrap摘要相符。
+5. 独立watchdog握手成功后才进入文件替换。旧worker获得`reload_required`，沿`chrome.runtime.reload()`重载；新固定入口提供revision `3.1`，再次经过迁移安全检查后，Native核对目标磁盘摘要，将迁移phase置为`loaded`并返回`awaiting_health`。后台重新核对原待刷新文档身份，放回页面清单，才继续原页面、Native和版本健康检查；`update.confirm`同时要求事务身份、已加载revision与目标Bootstrap摘要相符。允许的重载次数及健康期限由[bootstrapUpdate.js](../../native-host/src/bootstrapUpdate.js)定义，避免跨worker无限重载。
 
 迁移期间仍使用原有更新状态界面，没有增加操作按钮或独立授权步骤。[managedUpdateProjection.js](../../extension/src/shared/managedUpdateProjection.js)将`bootstrap_pending`映射为既有`awaiting_health`，浏览器恢复分支继续使用`rolling_back/failed`；后台执行锁与Native的`assertBootstrapBusinessAvailable()`阻止业务穿过未完成的迁移，更新、ping与取消保留各自通道。
 
@@ -196,6 +197,25 @@ Native `applyStagedUpdate()`再次检查本地 gate、管理布局、事务及�
 应答失败、超时或保存未知会产生 blocker；不能把 tab探针不可达直接解释为空闲。
 **整体枚举失败的处理。** 后台 `verifyManagedUpdateSafety` 将 `tabs.query` 拒绝或非数组结果记为 `tab_inventory_unavailable` blocker，不把未知清单等同合法空数组。该 blocker 与单页探针、Native gate 及后台 pending 检查共同决定是否允许 apply；合法空清单仍可在其他条件满足时放行。
 二次检查受阻经 `update_not_idle` 回到 `waiting_for_idle`，保留暂存事务和授权，并沿现有定时器重试；UI 仍采用已有 busy 投影。首次协调器枚举错误保留原失败/撤销处理。[managedUpdateSafetyGate.test.js](../../test/managedUpdateSafetyGate.test.js) 从实际安装消息入口装配完整后台与协调器，验证枚举恢复后只 apply 一次；Chrome/Native I/O 使用内存替身，真实浏览器异常仍需验收。
+
+### 扩展重载后恢复安全探测
+
+扩展worker重载与Overleaf页面刷新属于两个生命周期。旧面板DOM可以仍在页面里，旧content receiver却已无法接收新worker的消息；面板可见、旧bundle摘要存在均不能证明安全probe可用。[background.verifyManagedUpdateSafety(migrationOwner)](../../extension/src/background.js)只有在原probe明确不可达且带迁移owner时，才调用[backgroundUpdateSafety.probe](../../extension/src/backgroundUpdateSafety.js)。普通安装前的未知保存/超时/忙碌继续按原规则阻断；恢复接收端也不把消息缺失折算为空闲。
+
+`backgroundUpdateSafety`使用Chrome提供的顶层`documentId`与URL固定探测对象，并要求后台执行锁、Native事务ID、source/target版本和`expectedState`仍相符。恢复注入分为两侧：
+
+- 隔离世界的[updateSafetyReceiver.js](../../extension/src/content/updateSafetyReceiver.js)复用`UpdateIdle`，只监听专用迁移probe。相同文档/事务的重复注入保留计时；每次探测使用新nonce并保持single-flight。恢复实例把旧面板交互也记入活动，观察可见对话框、面板运行/取消/接受状态，以及按[pageRpcContract](../../extension/src/shared/pageRpcContract.js)分类的在途页面修改消息。它不初始化完整content runtime、不创建第二个面板、不承担业务请求或runtime健康应答。
+- MAIN world的[updateSafetyProbe.js](../../extension/src/page/updateSafetyProbe.js)复用[saveState.js](../../extension/src/page/saveState.js)做只读保存观察。探测前后复核URL、文件身份、编辑器view与文档对象；只有取得完整CodeMirror文档时才允许quiet fallback，DOM可见行不能替代全文。没有完整文档时仍需明确的正向保存信号及可核对文件身份。返回的文件/文档identity让`UpdateIdle`在切换文件或文档变化时重新积累保存稳定时间。
+
+专用消息的token、nonce、事务、目标版本和文档身份在往返各层核对；MAIN读取前后及最终接收应答前再次检查Native事务。保存成功仍须满足原30秒无相关活动和3秒保存稳定条件，之后继续检查Native任务/退出屏障、后台pending请求，以及Native等待前后标签页集合是否变化；`revalidate()`再对已建立恢复接收端的文档发起一次新probe，避免沿用Native等待前的旧应答。恢复实例没有重新获得旧runtime的全部私有闭包，不能把它的DOM观察单独当成完整运行状态；原安装前安全点、当前Native屏障和专用接收端各自提供不同证据。
+
+### 迁移期间的页面刷新保护
+
+`protectReloadTabs()`在迁移开始时将原`codex-overleaf-managed-update-tabs-v1`清单及其文档身份放入`codex-overleaf-managed-update-guarded-tabs-v1`，同一存储写入清空旧清单并读回。这个清单由旧Bootstrap的健康/回滚路径消费，必须先保护，避免在迁移等待期间出现新的未保存编辑后仍按旧许可刷新页面。
+
+目标revision已加载且Native返回`awaiting_health`后，`releaseReloadTabs()`前后核对Native事务及预期状态、guard归属、仍打开的原文档ID/URL及存储内容，再放回清单进入既有健康刷新。回滚路径先核对磁盘源版本和三层恢复摘要，随后继续等待页面安全点，才放回清单并重载旧版本；磁盘已经恢复不等于页面可以立即刷新。若确认同一tab已经换成新文档，回滚控制器保留guard及空的旧清单，只重载扩展以结束旧等待，不自动刷新新文档；使用者可能仍需再次刷新项目页以重新连接。worker在等待期间消失时，受保护清单不进入旧Bootstrap的自动刷新入口，原页面保留到自然刷新或后续可验证的恢复处理。未知、改变或失配文档不能复用此前的刷新许可。
+
+其他事务留下的guard只在全部捕获文档已关闭或Chrome `documentId`已改变后才可被新事务替代；仍是原文档或身份无法读取时继续保留。该规则清理过时保护，不会把旧清单里的tab ID直接当成新事务许可。[updateSafetyRecovery.test.js](../../test/updateSafetyRecovery.test.js)定位只读接收端重试、文档/文件身份、未保存与对话框、旧页面修改消息、刷新清单及异常存储的局部契约；真实扩展reload与实际Overleaf保存信号仍须单独验收。
 
 Native `getApplyGate()`检查`projectLocks`、`runControllers`和`processStopBarriers`；生产入口将`runtimeEnv`传入 [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js) 的`getActiveNativeWorkState(env)`，读取当前镜像根的既有退出屏障。`update.canApply`、实际`update.apply`和延迟`update.activate`均使用该gate；未确认退出沿原等待状态及双语文案呈现，当前锁和controller计数为零也不能跳过屏障。
 [processStopBarrier.js](../../native-host/src/processStopBarrier.js) 的`getBlockedProjectCount(rootDir, { env })`检查当前mirror-root内已有项目隔离文件，以及本Host尚未成功持久化的既有记录，按原进程身份复核退出。未知、损坏或不可读的屏障证据继续阻断；该读取不改写记录，也不扫描任意操作系统进程。
@@ -220,6 +240,7 @@ UI idle、当前Native计数为零、所有历史子进程已退出，仍属于�
 | 协调器处理阶段超时 | `reconcileExpiredPhase()`携带事务身份调用`update.rollback`，核对来源版本并回读`update.status` | 检查安装对齐后才报告恢复完成 |
 | Bootstrap 健康失败 | `rollbackBrokenRuntime()`携带捕获的transactionId与expectedState，核对rollback应答后再读`update.status` | 同事务、source、active指针、布局及实际`restoredPair`相符才写rolled_back并重载；变化或恢复失败保留失败状态 |
 | Bootstrap迁移中断或健康超时 | 独立watchdog、后续Native状态恢复或原Popup的`bootstrapRecovery`请求进入同锁恢复 | 先恢复Bootstrap与runtime、manifest/marker并读回，再保存终态，最后切回source Native指针；失败保留恢复材料 |
+| 磁盘已回滚、页面仍有未保存改动 | 浏览器迁移控制器继续安全probe，guarded刷新清单保持隔离 | 等待安全点及原文档身份核对后才刷新；回滚成功不能代替页面刷新许可 |
 
 [managedRuntimeEvidence.js](../../native-host/src/managedRuntimeEvidence.js) 的`readManagedRuntimeEvidence()`读取实际扩展compatibility版本、runtime manifest及必需资产，并检查Native版本目录package与入口，再对两棵文件树取SHA-256。文件按固定UTF-16代码单元顺序遍历，使摘要与进程LANG/locale无关。摘要像文件树的指纹，用于比较恢复前后字节，不能证明这些字节已通过业务健康检查。
 带`rollbackEvidence`的journal只有在当前实际字节仍与保存证据一致时，`update.status`才提供`restoredPair`；旧journal没有历史摘要时保留兼容读取，只证明本次观察到的source配对。marker和manifest对齐拥有独立含义，不能替代文件树证据。Bootstrap消费上述回读；协调器`reconcileExpiredPhase()`继续核对事务、来源及`installedAligned`，其当前收尾条件不单独比较`restoredPair`。
@@ -336,6 +357,7 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 | 候选/签名/缓存/归档/网络 | updateManager、updateTrust、updateArchive、releaseTransport、releaseProxy；手动提示联动coordinator与UI | [updateAuthorizedCandidate.test.js](../../test/updateAuthorizedCandidate.test.js)、[updateManualInstall.test.js](../../test/updateManualInstall.test.js)、[updateTrust.test.js](../../test/updateTrust.test.js)、[updateArchive.test.js](../../test/updateArchive.test.js)、[releaseTransport.test.js](../../test/releaseTransport.test.js) |
 | Bootstrap形状/协议迁移 | 两份manifest、protected paths、manual note、update-hop | [updateManualInstall.test.js](../../test/updateManualInstall.test.js)、[updateBoundaryWorkingTree.test.js](../../test/updateBoundaryWorkingTree.test.js) |
 | 同协议Bootstrap revision迁移 | bootstrapMigrationContract、bootstrapUpdate、bootstrapMigration、bootstrapUpdateWatchdog、backgroundBootstrapMigration、原Bootstrap/Popup与updateManager | [bootstrapMigrationFiles.test.js](../../test/bootstrapMigrationFiles.test.js)、[bootstrapMigrationUpdate.test.js](../../test/bootstrapMigrationUpdate.test.js)、[bootstrapMigrationBuild.test.js](../../test/bootstrapMigrationBuild.test.js)、[bootstrapMigrationBrowser.test.js](../../test/bootstrapMigrationBrowser.test.js)；文件故障注入、Native事务恢复、产物校验和浏览器VM各有范围，不能代替真实旧版到新版的Chrome验收 |
+| 重载后的安全probe与刷新保护 | backgroundUpdateSafety、updateSafetyReceiver、updateSafetyProbe、UpdateIdle/saveState、backgroundBootstrapMigration、guarded刷新清单 | [updateSafetyRecovery.test.js](../../test/updateSafetyRecovery.test.js)、[managedUpdateSafetyGate.test.js](../../test/managedUpdateSafetyGate.test.js)、[bootstrapMigrationBrowser.test.js](../../test/bootstrapMigrationBrowser.test.js)；局部替身与真实浏览器接收端寿命分别验证 |
 | 发布包/工作流 | build-release、npm范围、签名与产物验证、workflow | [releaseScripts.test.js](../../test/releaseScripts.test.js)、[updateHopRehearsalWiring.test.js](../../test/updateHopRehearsalWiring.test.js) |
 
 以下命令提供验证入口；第一条列出测试，第二条执行所选测试：

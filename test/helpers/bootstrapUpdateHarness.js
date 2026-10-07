@@ -46,7 +46,12 @@ async function createBootstrapHarness(options = {}) {
   }, async registerContentScripts() {
   }, async unregisterContentScripts() {
   }, async insertCSS() {
-  }, async executeScript() {
+  }, async executeScript(input) {
+    if (options.executeScript) return options.executeScript(input);
+    const tabId = input.target.tabId;
+    const url = (options.tabs || []).find(tab => tab.id === tabId)?.url;
+    return [{ frameId: 0, documentId: 'fixture-document-' + tabId,
+      result: input.files ? undefined : input.args?.length ? { ok: true, url } : { url } }];
   } }, tabs: { async query() {
     if (!active) return [];
     return options.tabs || [];
