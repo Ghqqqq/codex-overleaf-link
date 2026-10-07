@@ -145,8 +145,10 @@ for (const sizeChange of [false, true]) test('release signature verification rej
 function boundaryFixture() {
   let source = fs.readFileSync(path.join(root, 'scripts/verify-update-boundary.mjs'), 'utf8');
   source = source.replace(/^import .*;\n/gm, '').replace(/^export /gm, '')
-    .replace("const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');", "const rootDir = '/controlled-boundary';");
-  const context = { process: { env: { CODEX_OVERLEAF_TEST_IMPORT: '1', CODEX_OVERLEAF_UPDATE_BASE_REF: 'v2.4.9' } }, path,
+    .replace("const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');", "const rootDir = '/controlled-boundary';")
+    .replace('const require = createRequire(import.meta.url);', 'const require = createRequire(scriptFilename);');
+  const context = { process: { env: { CODEX_OVERLEAF_TEST_IMPORT: '1', CODEX_OVERLEAF_UPDATE_BASE_REF: 'v2.4.9' } }, path, crypto, createRequire,
+    scriptFilename: path.join(root, 'scripts/verify-update-boundary.mjs'),
     console: { log() {} }, fs: { readFileSync(name) { return name.endsWith('package.json') ? JSON.stringify({ version: '2.5.0' }) : 'const BOOTSTRAP_PROTOCOL = 3;'; } },
     spawnSync(_command, args) {
       let stdout = '';

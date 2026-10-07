@@ -25,6 +25,9 @@ function background(marker, managed = true) {
     CodexOverleafNativeRequestIdentity: require('../extension/src/shared/nativeRequestIdentity'),
     CodexOverleafGlobalPreferences: { installBackground() {} }, CodexOverleafStorageRunActions: {}, CodexOverleafSharedSessionTransfer: {},
     CodexOverleafSharedSessionsBackground: { installBackground() {} }, CodexOverleafUpdateRuntimeIdentity: {},
+    // This fixture isolates repair guidance. The dedicated migration tests
+    // exercise startup/update requests through the real migration controller.
+    CodexOverleafBootstrapMigration: { init() {}, ready: async () => ({ continueInitialization: true }), observeConfirmation() {} },
     CodexOverleafUpdateCoordinator: { init() {} }
   };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'extension/src/background.js'), 'utf8'), context);
