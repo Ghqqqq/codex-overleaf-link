@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.5.1 - 2026-10-07
+
+### Fixed
+
+- Preserve session drafts, queued inputs, submission ownership, and recovery records across cancellation, navigation, storage retries, and page reloads.
+- Strengthen file identity and writeback receipt checks, retain verified multi-file Undo progress, and bind native review controls to the intended document.
+- Explain why ordinary Undo stops when unresolved tracked changes remain, while preserving the existing protection, confirmation, and retry rules.
+- Keep product-owned errors, activity counts, next-step guidance, and unsaved provider states consistent with the selected English or Simplified Chinese interface language.
+- Preserve ordinary examples and quoted text in conversations, project instructions, history, queues, forks, recovered runs, and child transcripts instead of replacing secret-like strings. Provider credential isolation, sensitive-content checks, and diagnostic summaries remain separate.
+- Correct verified edge cases in provider configuration, writing-style recovery, attachment handling, and coordinated updates within existing workflows.
+
+### Documentation and validation
+
+- Add and maintain the architecture guide, feature-location index, and change workflow; keep review reports and test evidence outside distributed documentation.
+- Refresh regression coverage for current persistence, review, and localization contracts. Version 2.5.1 is being prepared for local validation and manual evaluation; no release has been published from this checkout.
+
 ## v2.5.0 - 2026-10-03
 
 ### Added

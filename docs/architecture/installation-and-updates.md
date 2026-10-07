@@ -261,7 +261,7 @@ Native `revokeUpdate()`可删除staged和授权；`rollbackUpdate()`支持已app
 `checkForUpdate()`另有RC晋升例外：已安装标记为`prerelease`且最新stable具有相同数字版本时，返回`prerelease_promotion_requires_manual_update`、`available: false`，需要手动重装，不能按数字版本相等认定stable内容已经加载。
 `backgroundUpdateCoordinator.checkOnly()`将该专用原因映射到已有`manual_install_required`状态并保留code；`updateConsent.deriveViewModel()`仅在这个原因下允许目标与运行版本相同的重装提示，其他手动候选仍要求目标版本更高。
 [UpdateNotice](../../extension/src/content/updateNotice.js)按当前语言解释候选版与稳定版同数字的情况，沿用原固定目标`install-managed`命令、复制和Later操作；不会提供自动安装资格。重新检查确认已安装稳定版后恢复idle。[updateStateReasonRecovery.test.js](../../test/updateStateReasonRecovery.test.js)覆盖Native marker、专用原因、协调器、双语指引、Later及稳定安装后的对照；实际完成重装和加载仍需独立核验。
-当前2.5.0迁移说明见根 [README](../../README.md#quick-start)；完成磁盘重装后仍需核验扩展重载与页面刷新。
+Bootstrap协议3从2.5.0引入，旧安装的迁移说明见根 [README](../../README.md#quick-start)；后续版本号变化不代表已公开发布，完成磁盘重装后仍需核验扩展重载与页面刷新。
 
 [verify-update-boundary.mjs](../../scripts/verify-update-boundary.mjs)核对受保护路径的已提交、暂存、未暂存和未跟踪变化。
 `protectedPaths`同时包含内部launcher源码`managedLauncherRuntime.js`和生成外层bridge的`launcher.js`。后者变更也进入现有Bootstrap协议迁移门禁；runtime-only的`applyStagedUpdate()`仍不重新生成用户级bridge，此类启动行为变更需要完整重装。验证应分别核对受保护变更选择、生成器与已安装启动文件，不能以新版runtime含有源码推定旧bridge字节已更新。
