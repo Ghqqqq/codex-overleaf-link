@@ -11,17 +11,29 @@
   const PATCH_MESSAGE = 'codex-overleaf/global-preferences/patch';
   const DEFAULTS = Object.freeze({ theme: 'dark', locale: 'en', preloadProjectContext: true,
     loadCodexLocalSkills: true, loadCodexOverleafSkills: true });
-  const FIELDS = Object.freeze([...Object.keys(DEFAULTS), 'codexOverleafSkillEnabled']);
+  const SKILL_MAP_FIELDS = Object.freeze(['codexOverleafSkillEnabled', 'codexLocalSkillEnabled']);
+  const FIELDS = Object.freeze([...Object.keys(DEFAULTS), ...SKILL_MAP_FIELDS]);
+  const MAX_SKILL_PREFERENCES = 200;
 
   function validSkillId(id) {
     return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(id)
       && !['__proto__', 'prototype', 'constructor'].includes(id) && !id.includes('..');
   }
 
+  function normalizeSkillEnabledMap(value) {
+    const result = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+    for (const [id, enabled] of Object.entries(value)) {
+      if (validSkillId(id) && typeof enabled === 'boolean') result[id] = enabled;
+    }
+    if (Object.keys(result).length > MAX_SKILL_PREFERENCES) throw new Error('Too many skill preferences.');
+    return result;
+  }
+
   function pick(value = {}) {
-    const skills = {};
-    for (const [id, enabled] of Object.entries(value.codexOverleafSkillEnabled || {}).slice(0, 200)) {
-      if (validSkillId(id) && typeof enabled === 'boolean') skills[id] = enabled;
+    const overleafSkills = {};
+    for (const [id, enabled] of Object.entries(value.codexOverleafSkillEnabled || {}).slice(0, MAX_SKILL_PREFERENCES)) {
+      if (validSkillId(id) && typeof enabled === 'boolean') overleafSkills[id] = enabled;
     }
     return {
       theme: ['dark', 'light', 'auto'].includes(value.theme) ? value.theme : 'dark',
@@ -29,7 +41,8 @@
       preloadProjectContext: value.preloadProjectContext !== false,
       loadCodexLocalSkills: value.loadCodexLocalSkills !== false,
       loadCodexOverleafSkills: value.loadCodexOverleafSkills !== false,
-      codexOverleafSkillEnabled: skills
+      codexOverleafSkillEnabled: overleafSkills,
+      codexLocalSkillEnabled: normalizeSkillEnabledMap(value.codexLocalSkillEnabled)
     };
   }
 
@@ -43,8 +56,8 @@
         || typeof DEFAULTS[key] === 'boolean' && typeof item !== 'boolean') {
         throw new Error('Invalid global preference: ' + key);
       }
-      if (key === 'codexOverleafSkillEnabled') {
-        if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).length > 200) {
+      if (SKILL_MAP_FIELDS.includes(key)) {
+        if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).length > MAX_SKILL_PREFERENCES) {
           throw new Error('Invalid skill preference map.');
         }
         for (const [id, enabled] of Object.entries(item)) {
@@ -57,9 +70,12 @@
   }
 
   function applyPatch(values, patch) {
-    return { ...pick(values), ...patch, codexOverleafSkillEnabled: {
-      ...pick(values).codexOverleafSkillEnabled, ...(patch.codexOverleafSkillEnabled || {})
-    } };
+    const previous = pick(values);
+    const result = { ...previous, ...patch };
+    for (const field of SKILL_MAP_FIELDS) {
+      result[field] = normalizeSkillEnabledMap({ ...previous[field], ...(patch[field] || {}) });
+    }
+    return result;
   }
 
   function changedKeys(left, right) {
@@ -71,7 +87,9 @@
       throw new Error('Invalid global preference revision.');
     }
     validatePatch(value.values);
-    if (!FIELDS.every(key => Object.hasOwn(value.values, key))) throw new Error('Incomplete global preferences.');
+    // The local-skill map was added within v1; existing complete v1 snapshots
+    // inherit their source defaults until an explicit preference is saved.
+    if (!FIELDS.filter(key => key !== 'codexLocalSkillEnabled').every(key => Object.hasOwn(value.values, key))) throw new Error('Incomplete global preferences.');
     return { schemaVersion: 1, revision: value.revision, values: pick(value.values) };
   }
 
@@ -95,7 +113,6 @@
         const patch = validatePatch(input);
         const previous = await read();
         const values = applyPatch(previous.values, patch);
-        if (Object.keys(values.codexOverleafSkillEnabled).length > 200) throw new Error('Too many skill preferences.');
         if (!changedKeys(previous.values, values).length) return previous;
         const snapshot = { schemaVersion: 1, revision: previous.revision + 1, values };
         await storage.set({ [STORAGE_KEY]: snapshot });
@@ -127,5 +144,5 @@
   }
 
   return Object.freeze({ STORAGE_KEY, LEGACY_KEY, READ_MESSAGE, PATCH_MESSAGE, FIELDS,
-    pick, validatePatch, validateSnapshot, applyPatch, changedKeys, createStore, installBackground });
+    normalizeSkillEnabledMap, pick, validatePatch, validateSnapshot, applyPatch, changedKeys, createStore, installBackground });
 });

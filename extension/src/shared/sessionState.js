@@ -50,6 +50,7 @@
     loadCodexLocalSkills: true,
     loadCodexOverleafSkills: true,
     codexOverleafSkillEnabled: {},
+    codexLocalSkillEnabled: {},
     theme: 'dark',
     panelWidth: 380,
     task: '',
@@ -156,6 +157,7 @@
     state.loadCodexLocalSkills = state.loadCodexLocalSkills !== false;
     state.loadCodexOverleafSkills = state.loadCodexOverleafSkills !== false;
     state.codexOverleafSkillEnabled = normalizeCodexOverleafSkillEnabled(state.codexOverleafSkillEnabled);
+    state.codexLocalSkillEnabled = normalizeCodexLocalSkillEnabled(state.codexLocalSkillEnabled);
     state.theme = ['dark', 'light', 'auto'].includes(state.theme) ? state.theme : 'dark';
     state.panelWidth = normalizePanelWidth(state.panelWidth);
     state.task = typeof state.task === 'string' ? state.task : '';
@@ -1061,6 +1063,17 @@
     return result;
   }
 
+  function normalizeCodexLocalSkillEnabled(value) {
+    const result = {};
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+    for (const [id, enabled] of Object.entries(value)) {
+      if (/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(id) && !id.includes('..')
+        && !['__proto__', 'prototype', 'constructor'].includes(id) && typeof enabled === 'boolean') result[id] = enabled;
+    }
+    if (Object.keys(result).length > 200) throw new Error('Too many skill preferences.');
+    return result;
+  }
+
   function normalizeProjectPrefKey(value) {
     const key = typeof value === 'string' ? value.trim() : '';
     if (!key) {
@@ -1132,6 +1145,7 @@
       loadCodexLocalSkills: source.loadCodexLocalSkills !== false,
       loadCodexOverleafSkills: source.loadCodexOverleafSkills !== false,
       codexOverleafSkillEnabled: normalizeCodexOverleafSkillEnabled(source.codexOverleafSkillEnabled),
+      codexLocalSkillEnabled: normalizeCodexLocalSkillEnabled(source.codexLocalSkillEnabled),
       theme: ['dark', 'light', 'auto'].includes(source.theme) ? source.theme : 'dark',
       panelWidth: normalizePanelWidth(source.panelWidth),
       task: summarizeTextForStorage(active?.task || source.task || '', 'task'),
@@ -1749,6 +1763,7 @@
     normalizeRunStatus,
     recoverRecordedRunFailure,
     recoverSettledRunningRun,
+    normalizeCodexLocalSkillEnabled,
     normalizeProjectReferenceFiles,
     normalizeComposerAttachmentsForPersistence,
     normalizeSelectionContext: SelectionContext.normalize,

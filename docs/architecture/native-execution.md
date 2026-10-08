@@ -23,7 +23,7 @@ Native Host 是浏览器启动的本机 Node 进程，负责消息接入、镜�
 | 工作区到 agent 结果 | [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) 的 `runCodexSession` | 快照/镜像、提示词、worker 收束、差异收集 |
 | app-server RPC 与终止 | 同文件 `runCodexAppServerProcess`；[codexSessionTiming.js](../../native-host/src/codexSessionTiming.js) | `pending` 为这一子进程自己的 RPC 表，与后台表分开 |
 | Transport 断连收尾 | [nativeRunLifecycle.js](../../native-host/src/nativeRunLifecycle.js) 的 `register/abortAllActiveOperations/quarantineActiveOperations` | 独立于 RPC ID 的运行完成 Promise、已启动 PID 与隔离；由 taskRunnerRuntime require，index 调用 re-export |
-| 独立 helper 生命周期 | [nativeHelperLifecycle.js](../../native-host/src/nativeHelperLifecycle.js) 的 `runOwnedNativeHelper` | 将外部 task、线程分叉及 Provider 连接测试的准备、执行和清理纳入 transport 收尾；不加入普通运行取消索引 |
+| 独立 helper 生命周期 | [nativeHelperLifecycle.js](../../native-host/src/nativeHelperLifecycle.js) 的 `runOwnedNativeHelper` | 将外部 task、线程分叉、Provider 连接测试及本地技能目录读取的准备、执行和清理纳入 transport 收尾；不加入普通运行取消索引 |
 | 退出未确认的隔离 | [processStopBarrier.js](../../native-host/src/processStopBarrier.js) 的 `record/isBlocked/getBlockedProjectCount` | 内存记录及项目镜像旁的持久屏障；更新安全点读取既有屏障数量 |
 
 `index` 启动时通过 `buildNativeRuntimeEnv` 合并路径并发现 CLI；`handleRequest` 在配额检查后、处理 `bridge.ping/codex.run/codex.models/codex.thread.fork` 前调用 `refreshCodexRuntimeEnv`。
@@ -31,7 +31,7 @@ Native Host 是浏览器启动的本机 Node 进程，负责消息接入、镜�
 
 `runCodexAppServerProcess` 与线程分叉启动前通过 `buildCodexHomeEnv` 启用 `isolateRuntimeHome`。`codexHomeScope` 按捕获配置、技能发现参数和来源目录选择持久 scope，完整 staging 原子发布，已存在的技能目录不再重建；worker 保持原 `CODEX_OVERLEAF_CODEX_HOME` 的 canonical 身份。
 scope 的会话目录链接插件 canonical 历史，SQLite 保留显式配置及已有环境选择，缺省采用 canonical；scope 持久保留以支持 rollout 绝对路径。[codexConfigPaths](../../native-host/src/codexConfigPaths.js) 保持已知配置层路径的原锚点，[codexInheritedAuth](../../native-host/src/codexInheritedAuth.js) 同步可归因的认证副本，[codexSkillIsolation](../../native-host/src/codexSkillIsolation.js) 消费单项技能开关。来源配置的摘要与发布内容使用同一份捕获字节，配置变化不会把另一份内容缓存到旧键。
-显式 user home 与 plugin home 为同一路径时保留提前返回。插件历史与用户来源全局历史分别管理，认证旧副本的迁移边界见[Provider认证](providers-and-protocols.md#5-内建与自定义执行的共同边界)。目录、路径字段及技能开关联动见[写作风格与技能](writing-style-and-skills.md)；排查续接需同时核对 CLI 身份、scope、canonical 和有效 SQLite 路径。
+显式 user home 与 plugin home 为同一路径的旧调用保留提前返回；本地技能目录发现和含显式 `enabledCodexLocalSkillIds` 的调用会派生独立 canonical home，再准备 scope，逐项 `skills/config/write` 不落入用户来源配置。插件历史与用户来源全局历史分别管理，认证旧副本的迁移边界见[Provider认证](providers-and-protocols.md#5-内建与自定义执行的共同边界)。目录、路径字段及技能开关联动见[写作风格与技能](writing-style-and-skills.md)；排查续接需同时核对 CLI 身份、scope、canonical 和有效 SQLite 路径。
 
 ## 2. 两层 RPC 的调用链
 

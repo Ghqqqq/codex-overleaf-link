@@ -63,6 +63,14 @@
     const locale = normalizeLocale(options);
     const type = String(event.type || '');
 
+    if (type === 'codex.local_skills.missing' || type === 'codex.local_skill_invocation.ignored') {
+      return { kind: 'activity', visible: true,
+        title: type === 'codex.local_skills.missing'
+          ? textFor(locale, '所选的本地技能未能加载。', 'A selected local skill could not be loaded.')
+          : textFor(locale, '所选的本地技能已关闭或不可用。', 'A selected local skill is disabled or unavailable.'),
+        status: event.status || 'failed', technicalDetail: normalizeRawEvent(event) };
+    }
+
     if (isContextCompactionEvent(event)) {
       return formatContextCompactionCheckpoint(event, locale);
     }
@@ -730,6 +738,21 @@
     // failure data alongside the human-readable text. The string text is kept
     // verbatim because it has mode-aware nuance (e.g. "No files were written"
     // vs "This run did not start") the catalog's fallback strings don't capture.
+    if (context.code === 'codex_local_skill_unavailable' || /(?:The )?selected local Codex skill is unavailable/i.test(text)) {
+      return {
+        conclusion: textFor(locale, '所选 Codex 本地技能不可用或已关闭，本轮没有启动。', 'The selected local Codex skill is unavailable or disabled. This run did not start.'),
+        nextStep: textFor(locale, '请打开技能页，选择可用且已启用的技能后重新提交。', 'Open Skills, select an available enabled skill, and submit again.'),
+        failureCode: 'codex_local_skill_unavailable'
+      };
+    }
+    if (/^codex_local_skills_/.test(String(context.code || ''))
+      || /local Codex skill discovery|Codex could not (?:list local skills|start local skill discovery)|Codex returned an invalid local skill catalog/i.test(text)) {
+      return {
+        conclusion: textFor(locale, 'Codex 本地技能未能加载，本轮没有启动。', 'Local Codex skills could not be loaded. This run did not start.'),
+        nextStep: textFor(locale, '请打开技能页重新加载本地目录，然后重新提交。', 'Open Skills to reload the local catalog, then submit again.'),
+        failureCode: 'codex_local_skills_failed'
+      };
+    }
     const providerError = translateProviderError(text, locale);
     if (providerError) {
       return providerError;

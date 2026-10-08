@@ -179,7 +179,7 @@ Chat 且响应模式 Auto 时先 streaming；只有工具不兼容或流式工�
 因此 Built-in 的连接配置还受继承的 Codex 配置影响，插件的 Custom 端点披露及 profile revision 校验不覆盖这条来源。修改用户配置不会因此更新插件的 Built-in revision，固定的执行快照也不记录该配置的内容哈希。
 审计经 [contentRuntime.createAuditDraftForRun](../../extension/src/content/contentRuntime.js) 调用 [ProviderSettingsCoordinator.getProviderSnapshot](../../extension/src/content/providerSettingsCoordinator.js)，读取浏览器目录中的 Built-in 身份，端点为空；该记录不能作为继承配置实际网络目的地或当前认证状态的证明。file API-key 的继承行为见下文，其他配置及认证路线仍需按实际 Codex 版本和消费者核对，保留连接字段本身不证明已发送任何内容。配置过滤的 TOML 形式限制另见[技能继承与作用域](writing-style-and-skills.md#普通技能安装继承与作用域)。
 
-**认证副本的生命周期。** 用户 home 与插件 home 分离时，[codexInheritedAuth](../../native-host/src/codexInheritedAuth.js) 为实际复制的 `auth.json` 记录源路径和内容 SHA-256 指纹。来源缺失时，只有来源匹配且内容仍为已知副本的文件可清理；已经独立改写的认证、来源不同的副本及没有来源记录的旧文件保持。samehome 提前返回也保持，因此升级前已丢失来源的无标记残留不会被猜测删除。
+**认证副本的生命周期。** 用户 home 与插件 home 分离时，[codexInheritedAuth](../../native-host/src/codexInheritedAuth.js) 为实际复制的 `auth.json` 记录源路径和内容 SHA-256 指纹。来源缺失时，只有来源匹配且内容仍为已知副本的文件可清理；已经独立改写的认证、来源不同的副本及没有来源记录的旧文件保持。基础准备的 samehome 旧调用继续提前返回；本地技能目录发现或显式本地名单采用[独立 canonical home](writing-style-and-skills.md#普通技能安装继承与作用域)，再沿分离目录同步认证。升级前已丢失来源的无标记残留不会被猜测删除。
 实际执行 scope 经 [codexHomeScope](../../native-host/src/codexHomeScope.js) 同步 user→canonical→scope 两级来源。staging 不发布直接 user 来源的认证，后续准备以 canonical 为一致来源清理或更新当前 scope；复用 scope 也执行认证同步。来源轮换后采用新副本，来源移除后不再把该已知旧副本交给后续启动。
 清理会原子认领自己的来源记录和候选文件；读后发生独立替换时，保留非匹配内容或后来的目标文件。恢复采用排他发布，必要时保留私有副本，I/O错误向上传播并阻止继续启动，不能静默改成无认证成功。来源记录和副本同步提供有限的文件继承一致性，不构成全局账号事务；`clearPluginCodexHistory()` 仍只负责历史。
 

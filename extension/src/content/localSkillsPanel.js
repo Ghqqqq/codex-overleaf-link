@@ -17,11 +17,17 @@
     document: documentDep = null,
     getPanel = () => null,
     getState = () => null,
+    getScope = () => '',
     setState = () => {},
     saveState = null,
     sendBackgroundNative = () => Promise.resolve({ ok: false }),
     getSkillLoadingSettings = () => ({ loadCodexOverleafSkills: true }),
     isCodexOverleafSkillEnabled = () => true,
+    isCodexLocalSkillEnabled = (id, skill) => skill?.enabled !== false,
+    setCodexLocalSkillEnabled = () => {},
+    getCodexLocalSkills = () => [],
+    getCodexLocalSkillWarnings = () => [],
+    refreshCodexLocalSkills = async () => [],
     setCodexOverleafSkillEnabled = () => {},
     setProjectSettingsStatus = () => {},
     tr = (key) => key,
@@ -36,27 +42,51 @@
       || root.document
       || (typeof globalThis !== 'undefined' ? globalThis.document : null);
 
+    let localSkillsListError = false;
+    let refreshGeneration = 0;
     async function refreshLocalSkills() {
+      const generation = ++refreshGeneration;
+      const scope = getScope();
+      const isCurrent = () => generation === refreshGeneration && scope === getScope();
+      localSkillsListError = false;
       showSkillListLoading();
+      const localList = getPanel()?.querySelector('[data-codex-local-skill-list]');
+      if (localList) {
+        localList.textContent = '';
+        appendLocalSkillEmpty(localList, 'codexOverleafSkillsLoading');
+      }
+      const localRefresh = localList ? refreshCodexLocalSkills({ force: true }) : Promise.resolve([]);
+      const localOutcome = localRefresh.then(() => {
+        if (isCurrent()) renderCodexLocalSkillList();
+        return null;
+      }, error => {
+        if (isCurrent()) { localSkillsListError = true; renderCodexLocalSkillList(); }
+        return error;
+      });
       try {
         const codexOverleafResponse = await sendBackgroundNative({
           method: 'skills.list',
           params: { scope: 'codex-overleaf' }
         });
         if (!codexOverleafResponse?.ok) {
-          throw new Error(codexOverleafResponse?.error?.message || 'native host did not return Codex Overleaf skills');
+          throw new Error(tx('Could not load Codex Overleaf skills. Try again.', '无法加载 Codex Overleaf 技能，请重试。'));
         }
         const codexOverleafSkills = Array.isArray(codexOverleafResponse.result?.skills)
           ? codexOverleafResponse.result.skills
           : [];
+        if (!isCurrent()) return;
         const state = getState() || {};
         setState({
           ...state,
           codexOverleafSkills
         });
         setSlashCodexOverleafSkills(codexOverleafSkills);
+        const localError = await localOutcome;
+        if (!isCurrent()) return;
         renderLocalSkillList();
+        if (localError) throw localError;
       } catch (err) {
+        if (!isCurrent()) return;
         renderLocalSkillList();
         throw err;
       }
@@ -85,6 +115,7 @@
     }
 
     function renderLocalSkillList() {
+      renderCodexLocalSkillList();
       const list = getPanel()?.querySelector('[data-local-skill-list]');
       if (!list) {
         return;
@@ -102,6 +133,31 @@
       }
       for (const skill of codexOverleafSkills) {
         renderCodexOverleafSkillRow(list, skill, codexOverleafEnabled);
+      }
+    }
+
+    function renderCodexLocalSkillList() {
+      const list = getPanel()?.querySelector('[data-codex-local-skill-list]');
+      if (!list) return;
+      list.textContent = '';
+      const enabled = getSkillLoadingSettings().loadCodexLocalSkills !== false;
+      if (!enabled) appendLocalSkillEmpty(list, 'codexLocalSkillsDisabled');
+      const skills = getCodexLocalSkills();
+      if (localSkillsListError) { appendLocalSkillEmpty(list, 'codexLocalSkillsLoadFailed'); return; }
+      if (!Array.isArray(skills)) { appendLocalSkillEmpty(list, 'codexOverleafSkillsLoading'); return; }
+      if (!skills.length) appendLocalSkillEmpty(list, 'codexLocalSkillsEmpty');
+      const skippedCount = getCodexLocalSkillWarnings().reduce((sum, warning) => sum + (warning?.code === 'codex_local_skills_skipped' ? warning.count : 0), 0);
+      if (skippedCount > 0) {
+        const warning = document.createElement('div');
+        warning.className = 'codex-project-settings-empty';
+        warning._refreshLocale = () => { warning.textContent = tr('codexLocalSkillsSkipped', { count: skippedCount }); };
+        warning._refreshLocale();
+        list.append(warning);
+      }
+      for (const skill of skills) {
+        const title = String(skill.title || skill.name || skill.id).trim();
+        const duplicateTitle = skills.filter(other => String(other.title || other.name || other.id).trim() === title).length > 1;
+        renderCodexOverleafSkillRow(list, { ...skill, title, duplicateTitle, scope: 'codex-local', removable: false }, enabled);
       }
     }
 
@@ -124,10 +180,11 @@
       if (!id) {
         return;
       }
+      const local = skill.scope === 'codex-local';
       const compact = Boolean(list.closest?.('.codex-settings-workbench'));
       const row = document.createElement('div');
       row.className = 'codex-local-skill-row';
-      row.dataset.scope = 'codex-overleaf';
+      row.dataset.scope = local ? 'codex-local' : 'codex-overleaf';
       if (!masterEnabled) {
         row.dataset.disabled = 'true';
       }
@@ -149,7 +206,7 @@
         'annotated-rewrite': tx('Guided editing for document revisions.', '用于文稿修订的编辑流程。'),
         'parallel-subagents': tx('Split independent subtasks across multiple agents.', '将相互独立的子任务分配给多个 agent。')
       };
-      const description = descriptions[id]
+      const description = (!local && descriptions[id])
         || (typeof skill.description === 'string' ? skill.description.replace(/\s+/g, ' ').trim() : '');
       if (description) {
         const help = document.createElement('span');
@@ -158,7 +215,17 @@
         help.title = description;
         copy.append(help);
       }
-      if (compact) row.append(createSkillMark(id));
+      const sourceText = () => (skill.sourceKind === 'system' ? tx('Codex built-in', 'Codex 内置')
+        : skill.sourceKind === 'plugin' && skill.sourceLabel ? String(skill.sourceLabel) : tx('Local Codex', 'Codex 本地'))
+        + (skill.duplicateTitle ? ' · ' + (skill.sourceHint || id.slice(-8)) : '');
+      let sourceLabel = null;
+      if (local) {
+        sourceLabel = document.createElement('span');
+        sourceLabel.className = 'codex-local-skill-description';
+        sourceLabel.textContent = sourceText();
+        copy.append(sourceLabel);
+      }
+      if (compact) row.append(createSkillMark(local ? '' : id));
       row.append(copy);
       const controls = compact ? document.createElement('div') : row;
       if (compact) controls.className = 'codex-local-skill-controls';
@@ -167,18 +234,20 @@
       const toggle = document.createElement('input');
       toggle.type = 'checkbox';
       toggle.className = 'codex-switch';
-      toggle.checked = isCodexOverleafSkillEnabled(id);
+      toggle.checked = local ? isCodexLocalSkillEnabled(id, skill) : isCodexOverleafSkillEnabled(id);
       toggle.setAttribute('aria-label', (trimmedTitle || id) + ': ' + tr('codexOverleafSkillEnableToggle'));
       if (!masterEnabled) {
         toggle.disabled = true;
       }
       toggle.addEventListener('change', event => {
-        setCodexOverleafSkillEnabled(id, event.target.checked);
+        if (local) setCodexLocalSkillEnabled(id, event.target.checked);
+        else setCodexOverleafSkillEnabled(id, event.target.checked);
       });
       row._refreshLocale = () => {
+        if (sourceLabel) sourceLabel.textContent = sourceText();
         toggle.setAttribute('aria-label', (trimmedTitle || id) + ': ' + tr('codexOverleafSkillEnableToggle'));
-        const label = id === 'annotated-rewrite' ? tx('Guided editing for document revisions.', '用于文稿修订的编辑流程。')
-          : id === 'parallel-subagents' ? tx('Split independent subtasks across multiple agents.', '将相互独立的子任务分配给多个 agent。') : '';
+        const label = !local && id === 'annotated-rewrite' ? tx('Guided editing for document revisions.', '用于文稿修订的编辑流程。')
+          : !local && id === 'parallel-subagents' ? tx('Split independent subtasks across multiple agents.', '将相互独立的子任务分配给多个 agent。') : '';
         const help = copy.querySelector('.codex-local-skill-description');
         if (label && help) { help.textContent = label; help.title = label; }
       };
@@ -318,7 +387,11 @@
 
     return {
       refreshLocalSkills,
-      refreshLocale: () => { for (const row of getPanel()?.querySelector('[data-local-skill-list]')?.children || []) row._refreshLocale?.(); },
+      refreshLocale: () => {
+        for (const selector of ['[data-local-skill-list]', '[data-codex-local-skill-list]']) {
+          for (const row of getPanel()?.querySelector(selector)?.children || []) row._refreshLocale?.();
+        }
+      },
       renderLocalSkillList,
       removeCodexOverleafSkill
     };

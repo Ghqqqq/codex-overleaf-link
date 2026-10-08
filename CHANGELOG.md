@@ -1,6 +1,11 @@
 # Changelog
 
-## v2.5.1 - 2026-10-07
+## v2.5.1 - 2026-10-08
+
+### Added
+
+- Show the local skills discovered by Codex in the existing Skills settings, with individual enable controls and source labels for ambiguous names. Keep these choices separate from the user's original Codex configuration.
+- Invoke enabled local skills from the existing `/` menu, preserving the selected skill and available-skill list through queued tasks, forks, and delegated work. Report unavailable skills before model execution and retain unchanged draft inputs for retry.
 
 ### Fixed
 

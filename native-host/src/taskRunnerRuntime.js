@@ -50,7 +50,7 @@ const activeRunEntries = new Map();
 // Overleaf tab was reloaded — the requestId lived in content-side JS state
 // and is gone, but the native-host-side controller is still running).
 const activeRunByProject = new Map();
-const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result', 'codex_process_stop_unconfirmed', 'selected_context_unresolved']);
+const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result', 'codex_process_stop_unconfirmed', 'selected_context_unresolved', 'codex_local_skill_unavailable']);
 
 async function handleRequest(request, env = process.env, emit = () => {}) {
   if (!request || typeof request !== 'object') {
@@ -485,8 +485,10 @@ function handleCodexHistoryClear(request, env) {
   }
 }
 
-function handleSkillsList(request, env) {
+async function handleSkillsList(request, env) {
   try {
+    if (request.params?.scope === 'codex-local') return okResponse(request.id,
+      await require('./codexLocalSkills').listCodexLocalSkills({ env }));
     const { CODEX_OVERLEAF_SKILL_SCOPE, listCodexOverleafSkills, listProjectSkills } = require('./localSkills');
     if (request.params?.scope === CODEX_OVERLEAF_SKILL_SCOPE) {
       // Install/restore official skills before listing so newly shipped ones
@@ -505,9 +507,9 @@ function handleSkillsList(request, env) {
     return errorResponse(request.id, 'skills_list_failed', error.message);
   }
 }
-
 function handleSkillsInstall(request, env) {
   try {
+    if (request.params?.scope === 'codex-local') throw new Error('Local Codex skills are managed by Codex.');
     const { CODEX_OVERLEAF_SKILL_SCOPE, installCodexOverleafSkill, installProjectSkill } = require('./localSkills');
     if (request.params?.scope === CODEX_OVERLEAF_SKILL_SCOPE) {
       return okResponse(request.id, installCodexOverleafSkill({
@@ -526,9 +528,9 @@ function handleSkillsInstall(request, env) {
     return errorResponse(request.id, 'skills_install_failed', error.message);
   }
 }
-
 function handleSkillsRemove(request, env) {
   try {
+    if (request.params?.scope === 'codex-local') throw new Error('Local Codex skills are managed by Codex.');
     const { CODEX_OVERLEAF_SKILL_SCOPE, removeCodexOverleafSkill, removeProjectSkill } = require('./localSkills');
     if (request.params?.scope === CODEX_OVERLEAF_SKILL_SCOPE) {
       return okResponse(request.id, removeCodexOverleafSkill({
@@ -573,7 +575,8 @@ function hasRunnableProjectSnapshotEvidence(params = {}) {
 
 function isSnapshotlessSkillInstallerRun(params = {}) {
   return params.skipMirrorSync === true
-    && String(params.skillInvocation?.id || '').trim() === 'skill-installer';
+    && String(params.skillInvocation?.id || '').trim() === 'skill-installer'
+    && (!params.skillInvocation?.scope || params.skillInvocation.scope === 'builtin');
 }
 
 function validateOtFocusedWarmMirrorReuse(params = {}, status = {}) {

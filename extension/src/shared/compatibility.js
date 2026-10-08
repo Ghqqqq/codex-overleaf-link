@@ -25,6 +25,7 @@
     'codexModels',
     'historyClearPlugin',
     'localSkills',
+    'localCodexSkills',
     'mirrorSensitiveScan',
     'providerProfiles',
     'assetTransfer',

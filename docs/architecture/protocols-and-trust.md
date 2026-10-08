@@ -98,6 +98,10 @@ Chrome runtime 消息由多个 listener 消费，各自拥有准入函数。当�
 [compatibility.js](../../extension/src/shared/compatibility.js) 定义协议范围、最低版本、必要 capabilities，以及 `compatible/update-available/incompatible` 分类和允许方法矩阵。
 [taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) 的 `bridge.ping` 报告 Native 版本、协议、能力和环境；基础 capabilities 取自共享常量，另宣告按功能协商的可选能力；能力宣告不能视作逐项业务实测结果。
 
+本地 Codex 目录和逐项选择使用全局必要能力 `localCodexSkills`，与原技能 CRUD 的 `localSkills` 分开命名。旧 Native 即使报告相同产品版本 `2.5.1`，缺少新能力仍被归为不兼容；普通业务沿既有门控与更新/重载提示处理，避免新名单字段被旧执行器静默忽略。该变更不增加 Page RPC、Chrome 权限或另一套授权入口。
+
+外层方法继续为 `skills.list`，`scope:'codex-local'` 路由到 [codexLocalSkills](../../native-host/src/codexLocalSkills.js) 的真实 app-server 目录读取。响应向 Content 返回技能元数据及 `discoveryWarnings` 固定代码/数量；单项发现错误保留有效列表，整体失败或结构异常返回 `skills_list_failed`。该 scope 的 `skills.install/remove` 被拒绝，用户来源技能仍由 Codex 管理。`codex.run` 的 `skillInvocation.scope` 与 `enabledCodexLocalSkillIds` 分别表达单次选择和允许发现的名单，缺失与空名单的兼容语义见[技能调用](writing-style-and-skills.md#local-skill-catalog)。
+
 Content 的 [NativeCompatibilityController.ensureForMethod](../../extension/src/content/nativeCompatibilityController.js) 先 ping，再用传入的 `gatedMethods` 集合决定是否阻止目标方法。
 该方法接受可选的 `{assertCurrent}`：普通运行与 skill-installer 共用的 `sendTrackedCodexRun` 传入原运行句柄、AbortSignal 和账号/项目校验。controller 在 `bridge.ping` 返回后、兼容评估及 blocked 通知前执行回调，sender 在 gate 返回后再次执行，再消费通过或拒绝结果；旧运行的迟到响应不能向后继运行派发请求或追加兼容失败。Guide另将同一可选回调交给 `sendBackgroundNative(payload,{assertCurrent})`：controller在ping后和业务派发前复核原指导身份；该阶段抛出的拒绝标为 `requestDispatched:false`，供Guide保留可操作队列。其他通用调用保持各自取消语义，未统一获得这一运行身份回调。
 集合定义在 [contentRuntime.NATIVE_COMPATIBILITY_GATED_METHODS](../../extension/src/content/contentRuntime.js)；只有集合内方法会附加兼容性 evidence，并执行对应派发前取消检查。

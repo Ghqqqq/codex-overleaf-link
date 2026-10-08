@@ -40,7 +40,7 @@
 
 worker 通过 Native Host 创建 sibling runner；父任务和 worker 都传入同一 `mirror.workspacePath`。
 worker 使用新的 thread，`session: null`、`threadId: ''`；继承当前运行的 model、reasoning、speed、mode、provider 和写作风格上下文。
-`applyWorkerSkillStrip` 在 worker app-server 内禁用 fan-out 技能，限制递归派发。
+worker 通过 `disableCodexOverleafSkillIds` 排除 fan-out 技能，由共享的 `codexSkillIsolation.applyCodexSkillIsolation` 按真实插件来源执行，限制递归派发；同名的独立本地来源继续遵守自己的本地名单。
 父任务和 worker 各自运行，broker 定时扫描队列；worker 活跃时父任务 idle watchdog 允许合法等待。
 
 **目标契约。** 每项任务声明完整、互不重叠的语义范围；worker 波次期间主任务只派发、读取和等待，项目文件的整合留到波次结束。
@@ -55,9 +55,9 @@ worker 使用新的 thread，`session: null`、`threadId: ''`；继承当前运�
 Codex 原生 collab 路线不通过这个文件队列，不受上述 broker gate 控制；相关发现与状态证据按第 7 节单独核对。
 
 **技能执行目录与共享历史。** [codexHome.buildCodexHomeEnv](../../native-host/src/codexHome.js) 为实际父任务、worker、风格生成和分叉启用稳定 scope；[codexHomeScope](../../native-host/src/codexHomeScope.js) 按技能开关、启用/禁用 IDs、角色、来源目录和捕获配置派生持久执行目录。
-新 scope 完整准备后原子发布，已发布 skills 不再重建；另一个任务不会因准备不同配置删除活跃路径。worker 继承本次启用列表并排除 fan-out 技能，[codexSkillIsolation](../../native-host/src/codexSkillIsolation.js) 再核对实际发现来源并禁用关闭项。installer 使用独立角色，skills 始终映射到持久插件技能根。
+新 scope 完整准备后原子发布，已发布 skills 不再重建；另一个任务不会因准备不同配置删除活跃路径。worker 继承本次 `enabledCodexOverleafSkillIds/enabledCodexLocalSkillIds` 并排除 fan-out 技能，[codexSkillIsolation](../../native-host/src/codexSkillIsolation.js) 再核对实际发现来源并应用逐项选择；名单缺失保留旧继承，显式 `[]` 关闭对应项。installer 使用独立角色，skills 始终映射到持久插件技能根。
 父与 worker 保持原 canonical home 身份，插件会话目录共享，SQLite 显式配置及环境优先级保持；默认数据根仍为 canonical。scope 持久保留以维持 rollout 绝对路径，没有整轮 home 锁或新增 GC。项目写入互斥仍归 `taskRunnerRuntime.acquireProjectLock()`；worker 共享镜像和 OS 权限的边界不因此改变。
-技能正文仍经来源链接读取，使用者对源文件的更改和删除继续生效。路径保持、配置发现、实际模型调用与跨 scope 历史恢复分别验收，详见[普通技能安装、继承与作用域](writing-style-and-skills.md#普通技能安装继承与作用域)；samehome 提前返回仍为显式例外。
+技能正文仍经来源链接读取，使用者对源文件的更改和删除继续生效。路径保持、配置发现、实际模型调用与跨 scope 历史恢复分别验收，详见[普通技能安装、继承与作用域](writing-style-and-skills.md#普通技能安装继承与作用域)。samehome 的旧调用继续提前返回；目录发现或显式本地名单则创建独立执行根，使技能配置写入留在插件范围。
 
 ## 3. job 文件协议与权威状态
 

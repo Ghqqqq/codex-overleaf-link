@@ -209,12 +209,14 @@
       return String(helpers.normalizeDisplay ? helpers.normalizeDisplay(text, maxChars) : text).slice(0, maxChars);
     };
     const safeId = value => typeof value === 'string'
-      && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(value) && !value.includes('..');
+      && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(value) && !value.includes('..')
+      && !['__proto__', 'prototype', 'constructor'].includes(value);
     const rawSkill = input.skillInvocation;
+    const installer = rawSkill?.id === 'skill-installer' && (rawSkill.scope == null || rawSkill.scope === 'builtin');
     const skillInvocation = safeId(rawSkill?.id)
-      && (rawSkill.id === 'skill-installer' || rawSkill.scope === 'codex-overleaf')
+      && (installer || ['codex-overleaf', 'codex-local'].includes(rawSkill.scope))
       ? { id: rawSkill.id, title: normalizeText(rawSkill.title || rawSkill.id, 80),
-          ...(rawSkill.id === 'skill-installer' ? {} : { scope: 'codex-overleaf' }) }
+          ...(installer ? {} : { scope: rawSkill.scope }) }
       : null;
     return {
       customInstructions: normalizeText(input.customInstructions, MAX_CUSTOM_INSTRUCTIONS_CHARS),
@@ -223,6 +225,9 @@
         loadCodexOverleafSkills: input.skillLoadingSettings?.loadCodexOverleafSkills === true
       },
       skillInvocation,
+      ...(Array.isArray(input.enabledCodexLocalSkillIds) ? {
+        enabledCodexLocalSkillIds: [...new Set(input.enabledCodexLocalSkillIds.filter(safeId))]
+      } : {}),
       enabledCodexOverleafSkillIds: [...new Set((Array.isArray(input.enabledCodexOverleafSkillIds)
         ? input.enabledCodexOverleafSkillIds : []).filter(safeId))]
     };

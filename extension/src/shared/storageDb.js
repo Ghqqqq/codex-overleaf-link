@@ -480,7 +480,8 @@
       customInstructionsByProject: normalizeStringMap(state.customInstructionsByProject),
       governanceRulesByProject: normalizeGovernanceRulesMap(state.governanceRulesByProject),
       selectedLocalSkillIdsByProject: normalizeStringListMap(state.selectedLocalSkillIdsByProject),
-      codexOverleafSkillEnabled: normalizeCodexOverleafSkillEnabledMap(state.codexOverleafSkillEnabled)
+      codexOverleafSkillEnabled: normalizeCodexOverleafSkillEnabledMap(state.codexOverleafSkillEnabled),
+      codexLocalSkillEnabled: SessionState.normalizeCodexLocalSkillEnabled(state.codexLocalSkillEnabled)
     };
     return prefs;
   }

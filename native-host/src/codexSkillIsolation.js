@@ -3,10 +3,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { getCodexOverleafSkillsRoot } = require('./localSkills');
+const { createCodexLocalSkillIdentity } = require('./codexLocalSkills');
 
 async function applyCodexSkillIsolation({ input = {}, childEnv = process.env, request, emit = () => {} } = {}) {
   if (input.loadCodexLocalSkills !== false && input.loadCodexOverleafSkills !== false
-    && !Array.isArray(input.enabledCodexOverleafSkillIds) && !Array.isArray(input.disableCodexOverleafSkillIds)) {
+    && !Array.isArray(input.enabledCodexOverleafSkillIds) && !Array.isArray(input.disableCodexOverleafSkillIds)
+    && !Array.isArray(input.enabledCodexLocalSkillIds)) {
     return { disabled: [] };
   }
   if (typeof request !== 'function') {
@@ -19,13 +21,30 @@ async function applyCodexSkillIsolation({ input = {}, childEnv = process.env, re
     ...(input.workspacePath ? { cwds: [input.workspacePath] } : {}),
     forceReload: true
   });
+  if (Array.isArray(input.enabledCodexLocalSkillIds) && (!Array.isArray(listResult?.data)
+    || listResult.data.some(group => !Array.isArray(group?.skills)
+      || (group.errors !== undefined && !Array.isArray(group.errors))))) {
+    throw Object.assign(new Error('Local Codex skills could not be prepared. Refresh the skill list and try again.'),
+      { code: 'codex_local_skill_unavailable' });
+  }
   const skills = flattenCodexSkillsList(listResult);
   const disabled = [];
+  const enabled = [];
   for (const skill of skills) {
-    if (skill?.enabled === false || !shouldDisableCodexSkillForIsolation(skill, input, childEnv)) {
+    const localSelection = getLocalSkillSelection(skill, input, childEnv);
+    const shouldDisable = shouldDisableCodexSkillForIsolation(skill, input, childEnv);
+    if (localSelection === true && skill?.enabled === false) {
+      const params = buildSkillDisableParams(skill, { preferPath: true });
+      if (params) {
+        await request('skills/config/write', { ...params, enabled: true });
+        enabled.push(String(skill.name || skill.path || '').trim());
+      }
       continue;
     }
-    const params = buildSkillDisableParams(skill);
+    if (skill?.enabled === false || !shouldDisable) {
+      continue;
+    }
+    const params = buildSkillDisableParams(skill, { preferPath: localSelection !== null });
     if (!params) {
       continue;
     }
@@ -37,7 +56,16 @@ async function applyCodexSkillIsolation({ input = {}, childEnv = process.env, re
       disabledSkillNames: disabled.filter(Boolean)
     }, 'completed');
   }
-  return { disabled };
+  return { disabled, enabled };
+}
+
+function getLocalSkillSelection(skill, input, childEnv) {
+  if (!Array.isArray(input.enabledCodexLocalSkillIds)
+    || getOverleafSkillId(skill.path, input, childEnv)) return null;
+  if (isCodexSystemSkill(skill) && isAllowedSystemSkillForIsolation(skill, input)) return true;
+  if (input.loadCodexLocalSkills === false) return false;
+  const id = createCodexLocalSkillIdentity(skill, childEnv);
+  return Boolean(id) && input.enabledCodexLocalSkillIds.includes(id);
 }
 
 function flattenCodexSkillsList(listResult = {}) {
@@ -46,6 +74,8 @@ function flattenCodexSkillsList(listResult = {}) {
 }
 
 function shouldDisableCodexSkillForIsolation(skill = {}, input = {}, childEnv = process.env) {
+  const localSelection = getLocalSkillSelection(skill, input, childEnv);
+  if (localSelection !== null) return !localSelection;
   if (isCodexSystemSkill(skill)) {
     return input.loadCodexLocalSkills === false && !isAllowedSystemSkillForIsolation(skill, input);
   }
@@ -98,12 +128,13 @@ function isSystemSkillPath(skillPath) {
   return String(skillPath || '').split(path.sep).includes('.system');
 }
 
-function buildSkillDisableParams(skill = {}) {
+function buildSkillDisableParams(skill = {}, { preferPath = false } = {}) {
   const name = String(skill.name || '').trim();
+  const skillPath = String(skill.path || '').trim();
+  if (preferPath && path.isAbsolute(skillPath)) return { path: skillPath, enabled: false };
   if (isCodexSystemSkill(skill) && name) {
     return { name, enabled: false };
   }
-  const skillPath = String(skill.path || '').trim();
   if (path.isAbsolute(skillPath)) {
     return { path: skillPath, enabled: false };
   }

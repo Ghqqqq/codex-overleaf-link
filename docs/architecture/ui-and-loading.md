@@ -90,6 +90,9 @@ dialog 的 `cancel` 只处理目标为 dialog 的事件，避免文件选择器�
 Provider 通过 `revealProviders` 嵌入工作台；相关编辑器由 [ProviderSettingsDialog](../../extension/src/content/providerSettingsDialog.js) 与 [ProviderSettingsCoordinator](../../extension/src/content/providerSettingsCoordinator.js) 管理。
 普通主题选项仍以已有 select 为值入口，Workbench 的主题卡片触发其 input/change；新增视觉代理控件应继续接入既有状态通路。
 
+Skills 页面由 [LocalSkillsPanel](../../extension/src/content/localSkillsPanel.js) 分别渲染本地 Codex 与 Codex Overleaf 目录，两份列表沿用已有行布局和逐项开关；本地项不提供删除操作。`refreshLocalSkills` 通过 runtime 的 `primeCodexLocalSkillsCatalog` 读取本地目录，加载中、空目录和失败使用各自的中英文状态，重新打开页面可刷新。单项发现失败保留有效目录，并按 `discoveryWarnings` 的代码与数量显示“部分技能未加载”提示，不阻断普通任务。目录仅在内存中保存，偏好由全局 owner 持久化。
+`contentRuntime.getSlashCommands` 把已启用本地项加入 `/` 菜单，保留 `codex-local` scope 与稳定 ID；选中后沿既有 composer 技能标签提交。插件技能同名时仍保留独立身份。目录发现、选择默认值与 Native 显式读取见[目录、逐项选择与调用](writing-style-and-skills.md#local-skill-catalog)，改 UI 时须同时核对提交捕获、队列和实际执行隔离；界面与提交的相关验证入口为 [localCodexSkillsUi](../../test/localCodexSkillsUi.test.js)。
+
 ### 历史查看、清理与结果动作
 
 新建、切换、重命名和单会话删除经 PanelRenderer/SessionPanel 的 runtime callbacks 进入 `SessionManager`。空会话复用、容量确认、手动标题与最后会话重置见[会话生命周期](run-state-and-recovery.md#session-lifecycle)。
@@ -119,7 +122,7 @@ Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并
 
 | 作用域 | 代表字段与 owner | 修改后的影响 |
 | --- | --- | --- |
-| 全局偏好 | [GlobalPreferences](../../extension/src/shared/globalPreferences.js)：theme、locale、preloadProjectContext、skills 总开关及逐项开关 | 通过 [GlobalPreferencesController](../../extension/src/content/globalPreferencesController.js) 发字段 patch、接收 revision 与 storage 事件 |
+| 全局偏好 | [GlobalPreferences](../../extension/src/shared/globalPreferences.js)：theme、locale、preloadProjectContext、skills 总开关、`codexOverleafSkillEnabled/codexLocalSkillEnabled` | 通过 [GlobalPreferencesController](../../extension/src/content/globalPreferencesController.js) 发字段 patch、接收 revision 与 storage 事件；本地 map 缺失项继承目录的来源默认 |
 | 当前项目 | [ProjectSettingsCoordinator](../../extension/src/content/projectSettingsCoordinator.js)：custom instructions、governance；OT 按 project map 保存 | 对应项目后续提交读取这些值 |
 | 项目 Provider 选择 | [ProjectProviderSelection.commit](../../extension/src/content/projectProviderSelection.js) | 更新项目及各会话未来默认选择；Provider/revision 变化会重置未来线程绑定，保留已有 runs/pendingInputs |
 | 活动会话 | [SessionState](../../extension/src/shared/sessionState.js)：task、mode、requireReviewing、focusFiles、selectionContext 等 | `readPanelInputs/updateActiveSession` 更新当前会话；Track 的实际写入属于此路径 |
@@ -128,6 +131,7 @@ Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并
 
 `persistPanelInputs` 先交给全局 controller；识别到全局字段就返回该 patch Promise。普通 task 输入走 debounce 保存，明确控件变更继续读取并持久化。
 全局 controller 将 pending patch 投影到本地视图，再接收递增 revision；失败时移除 pending patch 并报告错误。此结构旨在阻止旧会话 autosave 回滚全局偏好。
+两份技能 map 按 ID 合并 patch，保留其他页面设置的不同项；本地 map 只保存显式布尔覆盖，读取旧 v1 偏好时允许该字段缺失。其容量由 `globalPreferences.js` 的 `MAX_SKILL_PREFERENCES` 限定，超过上限拒绝本次更新，不能以截断形式丢掉旧选择。完整本地目录不进入轻量偏好或会话存储；相关迁移与失败回退见 [localCodexSkillsPersistence](../../test/localCodexSkillsPersistence.test.js)。
 语言存在三条呈现通路：[i18n](../../extension/src/shared/i18n.js) 的 `tr` 键、runtime 的 `tx(en, zh)`、Popup 的 `utx`。修改翻译需同时检查实际消费者。Notice、Bridge 和 apply 详情共用 `FailureReasons.formatFailureReasonForDisplay`，已知错误及下一步文案在渲染时读取当前面板语言；历史记录的 Undo、Accept、Review 自产精确模板由同一显示投影识别，覆盖丢失原始错误码及已包装为通用错误码的情况。动态文件路径只展示一次，从旧文案解析出的路径仅用于显示，恢复按钮仍只消费原 failure 的可信路径。原生审阅尚未写入与可能已写入的提示分别保留对应语义。`localizeFailureMessage` 为只有历史文案的消费者提供同一精确模板匹配，未知诊断、模型回答及用户原文保留原文。现有 canonical 错误（`unknown_legacy_failure` 除外）的用户说明与下一步均有中英词条；旧记录中的精确 catalog 默认正文及单层 `文件: 已知正文` 也可恢复显示语言。显示投影不改变 canonical 错误分类、重试标志、持久状态及恢复动作权限；相关回归见 [undoNoticeRecovery](../../test/undoNoticeRecovery.test.js)。
 
 [RunCompletionMeta](../../extension/src/content/runCompletionMeta.js) 根据稳定的 `meta.key`、自产固定模板、计数字段及既有 FailureReason／AgentTranscript 错误建议生成当前语言的元信息显示，不改运行记录及保存的报告。[RunQueueScheduler](../../extension/src/content/runQueueScheduler.js) 按已知 Native 指导错误码生成本地化提示；[ComposerAttachments](../../extension/src/content/composerAttachments.js) 的 `FileReader` 失败使用自产本地化摘要，浏览器原始错误保留在 `cause`。runtime 的自产执行快照、选区、存储和 Native 连接异常通过 `ApplyResultFormatters.localizeVisibleReason` 精确匹配；任意外部异常不做推测翻译。
@@ -150,14 +154,15 @@ Undo/Accept 的既有展开 Notice 由 [RunActivitySummary](../../extension/src/
 ```text
 textarea input → persistPanelInputs → readPanelInputs → updateActiveSession → debounce save
 提交 → safeRunTask
-  ├─ 无当前运行：runTask 捕获输入与归属 → 按需等待插件技能目录 → 等待旧镜像 → 准备 Provider/风格 → startRunView → audit 等待与身份复核 → 条件清理输入
+  ├─ 无当前运行：runTask 捕获输入与归属 → 按需等待两类技能目录 → 等待旧镜像 → 准备 Provider/风格 → startRunView → audit 等待与身份复核 → 条件清理输入
   └─ 有当前运行：queueComposerInput → RunQueueScheduler coordinator → pendingInputs
 结果卡 Edit & resend → refillComposerForRetry → prepareRetryReplacement → 会话草稿
 ```
 
 [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `syncComposerSendAvailability` 在运行中且无文字时呈现取消，有文字时呈现排队发送；`safeRunTask` 将活动运行期间的提交交给队列协调器。
-`runTask` 在首次 await 前捕获输入、提交会话、提示词会话投影、线程和技能开关。普通提交启用插件技能时，先与面板预取共用 `primeCodexOverleafSkillsCatalog({ required:true })`，再按捕获的逐项开关生成启用 ID；读取失败走已有任务启动错误提示，输入保留，尚未派发任务。随后等待 `pendingMirror`、Provider 与风格准备；风格快照仍在加载后获取。`startRunView` 按捕获的 sessionId 建立记录；`safeRunTask` 用准备期标志防止重复启动。
+`runTask` 在首次 await 前捕获输入、提交会话、提示词会话投影、线程和两套技能开关。普通提交按主开关共用 `primeCodexOverleafSkillsCatalog/primeCodexLocalSkillsCatalog` 的目录准备，再按捕获的逐项偏好生成启用 ID；本地缺省项继承来源 `enabled`，显式本地调用强制刷新。本地空目录是合法结果，读取失败走已有任务启动错误提示并保留输入，尚未派发任务。随后等待 `pendingMirror`、Provider 与风格准备；风格快照仍在加载后获取。`startRunView` 按捕获的 sessionId 建立记录；`safeRunTask` 用准备期标志防止重复启动。
 建立 run 后等待 audit 草稿，再复核账号项目并条件清理已提交输入。原会话草稿或当前文字、附件、技能、选区已变化时保留新输入；在途附件和 `SelectionContextView.getRevision` 的代次变化也阻止清理。切换会话后只可能清理仍匹配的原会话 task，当前 composer 保留；队列提升跳过此清理。普通与 skill-installer 参数消费已捕获的会话投影，详见[运行状态与恢复](run-state-and-recovery.md#31-执行快照)。
+本地显式技能通过 Content 检查后仍可能在 Native 重新发现时失效。`restoreRejectedLocalSkillSubmission` 只恢复本次实际清空、归属未变且仍未被使用者编辑的 composer；草稿、选区和附件 revision 共同限制迟到回填。`ComposerAttachments.restoreSubmittedAttachments` 采用普通 composer 的数量、单项和总字节限制恢复内存附件，超过刷新草稿预算的原附件也能恢复；持久草稿的独立限制保持原样。该恢复针对 `codex_local_skill_unavailable`，不普遍恢复任意失败任务。
 [PendingInputView.pullBack](../../extension/src/content/pendingInputView.js) 只回填 queued 项，已有非空草稿时提示并返回；实际移除队列项与持久化由回调完成，UI 回填动作本身不提供事务提交证明。队列准入、推进和保存边界见[运行状态与恢复](run-state-and-recovery.md)。
 
 <a id="pending-queue-render"></a>

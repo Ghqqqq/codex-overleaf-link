@@ -408,17 +408,20 @@ function formatSkillInvocationContext(context = {}) {
   const codexSkillInvocationContext = context.codexSkillInvocationContext || {};
   const contextInvocation = normalizeSkillInvocation(codexSkillInvocationContext.invocation);
   const effectiveInvocation = contextInvocation || invocation;
+  const skillLabel = effectiveInvocation?.scope === 'codex-local' ? 'local Codex' : 'Codex Overleaf';
   if (Array.isArray(codexSkillInvocationContext.ignored) && codexSkillInvocationContext.ignored.length) {
     return [
-      'Ignored selected Codex Overleaf skill:',
+      `Ignored selected ${skillLabel} skill:`,
       ...codexSkillInvocationContext.ignored.map(item => `- ${item.id}`),
-      '- Reason: Codex Overleaf skills are disabled for this turn.',
+      effectiveInvocation?.scope === 'codex-local'
+        ? '- Reason: The selected local Codex skill is disabled for this turn.'
+        : '- Reason: Codex Overleaf skills are disabled for this turn.',
       '- The stale slash selection was ignored; no selected skill instructions were forced into this prompt.'
     ].join('\n');
   }
   if (Array.isArray(codexSkillInvocationContext.missing) && codexSkillInvocationContext.missing.length) {
     return [
-      'Missing selected Codex Overleaf skill:',
+      `Missing selected ${skillLabel} skill:`,
       ...codexSkillInvocationContext.missing.map(id => `- ${id}`),
       '- The stale slash selection was ignored; no selected skill instructions were forced into this prompt.'
     ].join('\n');
@@ -440,17 +443,19 @@ function formatSkillInvocationContext(context = {}) {
   if (loadedSkill) {
     return [
       `- ${effectiveInvocation.id} (${effectiveInvocation.title})`,
-      '- REQUIRED for this turn: read and use this selected Codex Overleaf skill before answering.',
+      `- REQUIRED for this turn: read and use this selected ${skillLabel} skill before answering.`,
       '- Follow the embedded SKILL.md instructions when they apply to the current user request.',
+      ...(effectiveInvocation.scope === 'codex-local' && loadedSkill.path
+        ? [`- Skill source: ${loadedSkill.path}`, '- Resolve relative skill resources against this SKILL.md directory.'] : []),
       '',
-      'Selected Codex Overleaf SKILL.md:',
+      `Selected ${skillLabel} SKILL.md:`,
       `## ${loadedSkill.id}: ${loadedSkill.title || effectiveInvocation.title || loadedSkill.id}`,
       fencedBlock(loadedSkill.content)
     ].join('\n');
   }
   return [
     `- ${effectiveInvocation.id} (${effectiveInvocation.title})`,
-    '- Use this selected Codex Overleaf skill for the current turn.',
+    `- Use this selected ${skillLabel} skill for the current turn.`,
     '- Follow the skill instructions and workflow when they apply to the user request.'
   ].join('\n');
 }
@@ -463,17 +468,18 @@ function normalizeSkillInvocation(value) {
   const title = String(value?.title || value?.name || (id === 'skill-installer' ? 'Skill Installer' : id))
     .trim()
     .slice(0, 80) || 'Skill Installer';
-  if (id === 'skill-installer') {
+  if (id === 'skill-installer' && (!value?.scope || value.scope === 'builtin')) {
     return { id, title };
   }
-  if (value?.scope !== 'codex-overleaf' && !Object.prototype.hasOwnProperty.call(value || {}, 'skillId')) {
+  if (!['codex-overleaf', 'codex-local'].includes(value?.scope) && !Object.prototype.hasOwnProperty.call(value || {}, 'skillId')) {
     return null;
   }
-  return { id, title, scope: 'codex-overleaf' };
+  return { id, title, scope: value?.scope === 'codex-local' ? 'codex-local' : 'codex-overleaf' };
 }
 
 function isSkillInstallerInvocation(value) {
-  return normalizeSkillInvocation(value)?.id === 'skill-installer';
+  const invocation = normalizeSkillInvocation(value);
+  return invocation?.id === 'skill-installer' && !invocation.scope;
 }
 
 function isSafeSkillId(id) {

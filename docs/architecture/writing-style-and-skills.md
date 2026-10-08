@@ -1,6 +1,6 @@
 # 写作风格资产与技能
 
-源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。
+初始参考源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。当前行为随本仓库实现维护。
 本页说明风格资产的生成、发布、消费与普通技能的安装边界；源码推导、局部测试覆盖和完整生成验收分别说明。
 入口：[架构指南](README.md) · [功能修改索引](feature-map.md) · [运行状态与恢复](run-state-and-recovery.md)。
 
@@ -12,7 +12,7 @@ Write in My Style 从参考资料提取有出处的表达习惯，为目标项�
 
 | 对象 | 权威位置与作用 | 不应推导的保证 |
 | --- | --- | --- |
-| 本地 Codex skills | 用户 Codex home；由 `loadCodexLocalSkills` 控制继承 | 启用开关不证明任意技能在当前运行中一定被调用 |
+| 本地 Codex skills | 继承本机 Codex 配置后由 app-server `skills/list` 发现；`loadCodexLocalSkills` 和逐项选择控制本插件运行 | 目录不枚举全部插件缓存；启用不证明模型在某次任务中一定使用该技能 |
 | Codex Overleaf skills | `getCodexOverleafSkillsRoot()` 下的 `<id>/SKILL.md` | 文件存在不证明内容可信或任务执行成功 |
 | 项目本地 skills | 镜像项目根的 `.codex-overleaf/skills/<id>.md`；兼容 API 及选定内容注入 | 当前 Settings 列表并未切换为项目 skills 列表 |
 | 参考草稿 | `WritingStyleSettings` 内存中的项目选择、PDF File、dirty 标记 | 修改草稿不会立即替换已有风格 |
@@ -34,6 +34,7 @@ Write in My Style 从参考资料提取有出处的表达习惯，为目标项�
 | Native 配置、版本及生成 | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) `get/set/build/forRun` | [taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js)、[codexSessionRunner](../../native-host/src/codexSessionRunner.js) |
 | 生成结果的结构与证据 | [writingStyleProfile](../../native-host/src/writingStyleProfile.js) `validate/renderGuide/renderSection`；[writingStyleEvidence](../../native-host/src/writingStyleEvidence.js) `resolveExample/renderExample` | `build()` 的 `parseResult()` 和资产渲染 |
 | 普通技能 CRUD | [localSkills](../../native-host/src/localSkills.js) `installProjectSkill/installCodexOverleafSkill/removeCodexOverleafSkill` | `handleSkillsList/handleSkillsInstall/handleSkillsRemove` |
+| 本地 Codex 技能目录、身份与显式读取 | [codexLocalSkills](../../native-host/src/codexLocalSkills.js) `listCodexLocalSkills/createCodexLocalSkillIdentity/loadSelectedCodexLocalSkill` | `skills.list` 的 `codex-local` scope；`codexSessionRunner.loadCodexSkillInvocationContext` |
 | 技能发现环境 | [codexHome](../../native-host/src/codexHome.js) `preparePluginCodexHome/composePluginSkillsDirectory` | Codex app-server 启动；普通及 installer 轮次 |
 
 Page RPC 名称为 `listReferenceProjects`、`getReferenceProjectSnapshot` 和 `cancelReferenceRead`。
@@ -198,8 +199,26 @@ Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元�
 
 ## 普通技能安装、继承与作用域
 
-`LocalSkillsPanel.refreshLocalSkills()` 请求 `skills.list`，当前 UI 使用 `scope: codex-overleaf`。
-`handleSkillsList/Install/Remove` 对该 scope 调用插件技能库，其余请求进入项目技能接口并要求项目 ID。
+<a id="local-skill-catalog"></a>
+
+### 目录、逐项选择与 `/` 调用
+
+Settings 的 Skills 页面分开呈现本地 Codex 与 Codex Overleaf 两份目录。[LocalSkillsPanel.refreshLocalSkills](../../extension/src/content/localSkillsPanel.js) 读取插件目录，并调用 runtime 的 `primeCodexLocalSkillsCatalog` 读取 `skills.list {scope:'codex-local'}`。本地项显示名称、描述、来源与启用开关；它们不能从该面板删除。插件项继续使用 `scope:'codex-overleaf'` 的安装与删除接口；旧项目 scope 仍要求项目 ID。
+
+[codexLocalSkills.listCodexLocalSkills](../../native-host/src/codexLocalSkills.js) 在继承本机配置的独立运行 home 中启动短期 Codex app-server，只执行初始化和 `skills/list`，不创建模型轮次。目录采用 Codex 当前发现结果，包含来源的 `enabled` 状态，并排除 Codex Overleaf 持久技能根；普通文件系统缓存扫描不充当启用目录。返回给 Content 的元数据不提供技能文件路径字段或技能正文，名称和描述仍来自实际目录。helper 通过 `runOwnedNativeHelper` 管理取消、超时、输出预算和进程退出；当前预算见同模块的 `DISCOVERY_TIMEOUT_MS/MAX_DISCOVERY_BYTES`。
+
+本地条目的 ID 为 `local-` 加来源身份摘要：普通技能使用实际 `SKILL.md` 的 realpath，system 技能使用 system 名称，避免每个运行 home 重新生成 system 目录导致身份变化。相同物理来源的别名合并；独立来源的同名技能保持不同 ID，列表来源和 `/` 副标题为这些重名项附加 ID 短后缀以便区分。`scope:'codex-local'` 与插件的 `scope:'codex-overleaf'` 共同限定显式调用，名称相同不合并为一个技能。
+
+全局偏好 `codexLocalSkillEnabled` 只保存使用者明确设置的布尔覆盖；某个 ID 缺失时继承目录的 `enabled`。目录本身仅保存在 Content 内存，并以账号、项目和 SPA 路由代次限定响应归属；重新打开 Skills 强制刷新，普通预取与提交可复用当前目录和在途 Promise。空目录是合法结果。Codex 的单项发现错误通过 `discoveryWarnings:[{code:'codex_local_skills_skipped',count}]` 提供固定代码与数量；有效项继续显示并参与普通任务，原页面以当前语言说明部分技能未加载，不向 UI 返回原错误中的路径或内容。CLI 整体失败或目录结构异常仍报错，保留草稿并允许重试；显式选择的项缺失仍拒绝启动。目录快照不持久化为会话配置，源技能更新和删除仍可能改变下一次发现结果。
+
+runtime 的 `getSlashCommands/activateCodexOverleafSkillComposerContext` 将启用的本地项加入 `/` 菜单并选择调用标签，命令和标签保留 scope 与稳定 ID；关闭主开关或单项后该项不再进入可用菜单。普通提交在首次异步等待前捕获两套开关和显式调用；启用本地技能时等待目录，再生成 `enabledCodexLocalSkillIds`。显式本地调用会强制刷新目录，已关闭或消失的选中项在派发前拒绝。队列另外保存捕获的名单和调用，详见[执行快照](run-state-and-recovery.md#31-执行快照)。
+
+Native 的 `loadSelectedCodexLocalSkill` 重新通过权威目录解析传入 ID，并复核主开关、运行名单和源文件身份，只读取限制内的有效 UTF-8 `SKILL.md`；显式本地调用缺失或禁用时，session runner 以 `codex_local_skill_unavailable` 停止启动。`codexPromptAssembly.formatSkillInvocationContext` 把选中正文及实际源路径交给模型，源路径让相对引用能够定位到技能目录。发现、允许参与运行、显式注入与模型实际执行是四个独立环节；该入口不保证模型会遵循技能，也不提供任意文件读取隔离。
+`bridge.ping` 报告的 `localCodexSkills` 属于全局 `REQUIRED_CAPABILITIES`，防止旧 Native 在产品版本号相同的情况下忽略新增选择字段。能力缺失沿既有兼容门控和更新提示处理，具体分类与允许方法见[Native 兼容性门控](protocols-and-trust.md#4-native-兼容性门控的两个位置)。
+若源技能在提交前检查后失效，该错误沿既有运行失败呈现；`contentRuntime.restoreRejectedLocalSkillSubmission` 只在本次确实清空了输入且原账号、项目、会话和 composer 代次仍匹配时恢复原稿、选区、技能标签及内存附件。后来输入、主动清空、附件变化或切换归属均阻止回填；队列仍沿既有失败保留流程。该恢复不扩展附件的刷新持久化预算，细节见[已提交输入与草稿](ui-and-loading.md#已提交输入运行中草稿与编辑重发)。
+
+### 插件安装与 Codex home 继承
+
 `installCodexOverleafSkill()` 与 `installProjectSkill()` 校验安全 ID、文本类型、NUL、64 KiB 限额及符号链接路径。
 插件技能默认位于用户主目录 `.codex-overleaf/skills`；自定义根也必须留在该默认根内部。
 插件技能 scope 没有按 Overleaf 账号或项目进一步隔离；项目技能则依附具体镜像根。
@@ -209,7 +228,7 @@ Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元�
 现有正常 `SKILL.md` 会保留；升级 bundled 文件不自动覆盖该已安装文件。安装接口的覆盖行为与补装行为分别核对。
 安装时的文本和路径校验不审查技能语义，也没有风格画像所用的证据验证和不可变版本发布。
 
-`preparePluginCodexHome()` 负责配置、认证及技能的基础准备，并移除继承的全局 AGENTS、rules、memories。实际 runner 和线程分叉通过 `buildCodexHomeEnv({…}, { isolateRuntimeHome: true, … })` 取得稳定的执行 scope；持久数据根由 `getPluginCodexHome()` 确定，下文称 canonical home。显式配置与用户 home 同路径时保留提前返回，不创建 scope 或重写该 home。
+`preparePluginCodexHome()` 负责配置、认证及技能的基础准备，并移除继承的全局 AGENTS、rules、memories。实际 runner 和线程分叉通过 `buildCodexHomeEnv({…}, { isolateRuntimeHome: true, … })` 取得稳定的执行 scope；持久数据根由 `getPluginCodexHome()` 确定，下文称 canonical home。显式配置与用户 home 同路径的旧调用保留提前返回；目录发现的 `forceIsolatedSkillSettings` 或显式本地名单会改用独立 canonical home 后再创建 scope，避免逐项 `skills/config/write` 改写用户来源配置。
 开关决定用户 skills、plugins、superpowers 等继承；`vendor_imports` 有单独规则，不能将关闭本地技能描述为目录完全空白。
 
 **TOML 过滤与配置路径。** [codexHome.sanitizeCopiedCodexConfig](../../native-host/src/codexHome.js) 依次执行 personality 过滤及按开关执行本地技能过滤。[tomlStatements](../../native-host/src/tomlStatements.js) 的 `splitTomlStatements` 保留完整值边界，`readTomlStatementPath/filterTomlRootKeys` 解码键的各段后判断目标 root。顶层 `personality` 始终移除；关闭本地技能时同时移除 `notify/skills/plugins/mcp_servers/marketplaces`。quoted、Unicode 转义、dotted、inline 和数组表形式遵循相同 root 规则。
@@ -218,21 +237,21 @@ scope 的配置键和发布内容使用同一次捕获的来源字节；准备 s
 [codexConfigIsolation](../../test/codexConfigIsolation.test.js) 检查等价写法、完整值、未选字段和错误保护；[codexConfigPaths](../../test/codexConfigPaths.test.js) 检查路径锚与非目标值保持。实际 CLI 的配置接受和消费者行为仍需对应版本验证。
 
 **稳定执行目录与共享历史。** [codexHomeScope.prepareScopedPluginCodexHome](../../native-host/src/codexHomeScope.js) 按发现配置派生 `canonical/runtime-homes/<hash>`：键包含主开关、排序去重的启用/禁用 IDs、installer 角色、来源配置字节摘要和有效技能源目录身份。相同配置复用已发布目录，变化创建另一目录；首次准备在独立 staging 中完成后原子发布，竞争准备不会删除胜出目录。
-`composePluginSkillsDirectory()` 仅在新 scope 的 staging 组合技能，先本地后插件；已启用的同名插件覆盖本地入口。已发布 scope 的 skills 不再重建，父运行、worker、风格生成和 installer 的后续准备不会改掉彼此已发现的路径。技能正文继续通过来源链接读取，来源内容更新及使用者主动删除源文件仍会影响读取。
+`composePluginSkillsDirectory()` 仅在新 scope 的 staging 组合技能，先本地后插件；同名插件使用原名称，本地来源通过 `preserveLocalSkillAlias` 保留另一链接，随后按真实来源身份选择。已发布 scope 的 skills 不再重建，父运行、worker、风格生成和 installer 的后续准备不会改掉彼此已发现的路径。技能正文继续通过来源链接读取，来源内容更新及使用者主动删除源文件仍会影响读取。
 scope 持久保留，`sessions/archived_sessions/history` 链接 canonical 的插件历史；`CODEX_OVERLEAF_CODEX_HOME` 保持 canonical，使 worker、分叉和清历史不会误入嵌套 scope。显式 `sqlite_home` 保留原选择及路径语义，已有 `CODEX_SQLITE_HOME` 继续传递，缺省才使用 canonical 环境默认值。`clearPluginCodexHistory` 清理同一物理插件历史，用户来源 home 的全局会话保持。
 该方案不持有整轮 home 锁，父任务等待 worker 时不会因该锁互相等待；项目写入互斥仍由 [taskRunnerRuntime.acquireProjectLock](../../native-host/src/taskRunnerRuntime.js) 管理。持久 scope 没有自动 GC；旧 rollout 的绝对路径仍可依赖它。
 普通 runner 将选定项目技能作为 prompt 内容传递，并向底层执行器传 `projectLocalSkills: null`；home 的项目技能物化能力另有调用条件。
 主开关及单技能启用 map 由 [projectSettingsCoordinator](../../extension/src/content/projectSettingsCoordinator.js) 与 [globalPreferences](../../extension/src/shared/globalPreferences.js) 协作保存。
 `loadSelectedCodexOverleafSkill()` 按主开关及 enabled IDs 检查显式调用；未提供 enabled IDs 的兼容请求默认允许所有项。
 
-**单技能开关与发现。** `runCodexSession` 把 `enabledCodexOverleafSkillIds` 传入父执行器、worker 和 home 准备；列表缺失保持兼容，显式空列表关闭全部插件项，worker 的 `disableCodexOverleafSkillIds` 再排除递归派发技能。
-组合目录按列表筛选插件项；[codexSkillIsolation.applyCodexSkillIsolation](../../native-host/src/codexSkillIsolation.js) 在真实 `skills/list` 后按来源路径及 realpath 检查，并通过 `skills/config/write` 禁用额外发现根或别名提供的关闭插件项。本地技能开启时仍执行插件单项检查；相同名称但属于独立用户来源的本地技能保持，system `skill-installer` 沿原例外处理。
+**单技能开关与发现。** `runCodexSession` 把 `enabledCodexOverleafSkillIds` 与 `enabledCodexLocalSkillIds` 传入父执行器、worker 和 home 准备；列表缺失保留旧继承语义，显式空列表关闭对应来源的全部项。本地名单包含选择后的稳定 ID，来源原本关闭的项可由明确选择启用。线程分叉沿同一名单选择 home，worker 的 `disableCodexOverleafSkillIds` 另排除递归派发技能。
+组合目录按列表筛选插件项；[codexSkillIsolation.applyCodexSkillIsolation](../../native-host/src/codexSkillIsolation.js) 在实际运行的 `skills/list` 后按来源路径及 realpath 检查，通过当前独立 home 的 `skills/config/write` 禁用关闭项或启用名单中原本关闭的本地项。插件与本地技能分别判断，同名独立来源不会借用对方开关；installer 的 system `skill-installer` 保留原例外。名单约束参与 scope 身份，改变选择会得到另一运行目录；该配置不追溯撤销活动轮次和已有线程上下文。
 验收需分别核对显式 loader、实际发现列表和模型调用；[codexSkillDiscovery](../../test/codexSkillDiscovery.test.js) 的合成 RPC 覆盖来源判断，真实 CLI 列表可验证生效配置，模型自然触发及 Chrome 端到端另行验收。任意文件读取隔离、运行中撤销和历史上下文清除不由该开关提供。
 
 删除技能涉及持久目录与列表更新、Composer 调用清理两部分。[LocalSkillsPanel.removeCodexOverleafSkill()](../../extension/src/content/localSkillsPanel.js) 在 `skills.remove` 成功后，以生产 normalizer 的 `{ id, title, scope }` 形状核对当前调用；只有 scope 为 `codex-overleaf` 且 id 与删除目标相同，才执行 `clearComposerSkillInvocation()` 并立即重绘标签。删除失败保留选择；等待期间改选其他技能时，新的选择保持。随后刷新技能列表并保存状态。
 原生 `loadSelectedCodexOverleafSkill()` 仍按主开关、启用 ID 和实际文件存在性过滤显式调用。标签清除不取消已在执行的技能，也不证明整个发现目录或其他进程已经同步清理。Composer 标签旁的 `×` 继续提供原有手动清除入口。
 
-`skill-installer` 是特殊调用：工作目录改为插件技能根、沙箱为 workspace-write、`approvalPolicy: never`，拒绝附件和选区，并返回空项目 sync changes。
+`id:'skill-installer'` 且 scope 缺省或为 `builtin` 是特殊调用：工作目录改为插件技能根、沙箱为 workspace-write、`approvalPolicy: never`，拒绝附件和选区，并返回空项目 sync changes。具有 `codex-local/codex-overleaf` scope 的同名条目沿普通技能执行，不获得 installer 的目录或权限。
 installer 使用独立角色的稳定 scope，`$CODEX_HOME/skills` 固定映射到持久插件技能目录；普通、worker 和风格 scope 不替换该映射。按该路径完成的新安装留在持久根，后续目录准备可发现它；风格生成仍使用自己的资料 staging。
 installer 的工作目录、skills 实际解析目标和后续发现分别验证；路径保持不能替代安装产物验收。
 收到 app-server `commandExecution/requestApproval` 时，`decideSkillInstallerCommandApproval()` 委托 [commandApproval.evaluateSkillCommand](../../native-host/src/commandApproval.js) 判断。
@@ -253,6 +272,7 @@ installer 完成由模型运行结果汇总，当前路径未统一核验是否�
 | 配置保存与异常资产恢复 | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) 的 `get/set/build/saveConfig/safeBundleText`、[writingStyleStore](../../native-host/src/writingStyleStore.js) 的 `writeJson/withConfigLock`；Settings 的 `toggle/ensureLoaded` 与 runtime `runTask` | [writingStyleRecovery](../../test/writingStyleRecovery.test.js) 覆盖初始化清理、配置竞争、关闭坏资产、发布消费一致性；[writingStyleLimits](../../test/writingStyleLimits.test.js) 覆盖输入配额与编码预算 |
 | 项目参考敏感预检 | `WritingStyleSettings.generate`、组合根 `preflightProjectReferences`、`SensitivePreflight` 与 Native build | [writingStylePreflight](../../test/writingStylePreflight.test.js) 覆盖阻断/确认/关闭扫描和等待期间作用域变化；实际模型及浏览器呈现另行验收 |
 | 普通技能安装和开关 | `localSkills`、`codexHome/Scope`、`codexSkillIsolation`；panel、偏好、runner、command approval | [localSkills](../../test/localSkills.test.js)、[codexHomeScope](../../test/codexHomeScope.test.js)、[codexSkillDiscovery](../../test/codexSkillDiscovery.test.js)、[codexSessionRunner](../../test/codexSessionRunner.test.js)；显式 loader、发现配置、父/worker 参数、活跃路径与 installer 持久性，实际模型和浏览器另验 |
+| 本地 Codex 目录与逐项调用 | `codexLocalSkills`、`LocalSkillsPanel`、`contentRuntime.primeCodexLocalSkillsCatalog/getSlashCommands`、`codexSkillIsolation`；全局偏好、提交、队列及 fork | [codexLocalSkills](../../test/codexLocalSkills.test.js) 覆盖目录元数据、来源身份、显式读取和 helper 收尾；[localCodexSkillsPersistence](../../test/localCodexSkillsPersistence.test.js) 覆盖旧偏好、并发写入、名单缺失/空值与存储投影；[localCodexSkillsUi](../../test/localCodexSkillsUi.test.js) 与 [codexLocalSkillExecution](../../test/codexLocalSkillExecution.test.js) 分别定位界面/提交和 Native 父/worker 消费。真实 CLI、浏览器及模型执行另行验证 |
 | Codex 配置继承与过滤 | `codexHome.sanitizeCopiedCodexConfig`、[tomlStatements](../../native-host/src/tomlStatements.js) 的语句与 key path、[codexConfigPaths](../../native-host/src/codexConfigPaths.js) 的配置层锚点 | [codexConfigIsolation](../../test/codexConfigIsolation.test.js)、[codexConfigPaths](../../test/codexConfigPaths.test.js)、[codexHome](../../test/codexHome.test.js)；等价写法、未选字段、结构错误、samehome 与来源变化 |
 | 认证继承与历史目录 | `codexInheritedAuth`、`codexHomeScope`、canonical 环境身份 | [codexInheritedAuth](../../test/codexInheritedAuth.test.js)、[codexHomeScope](../../test/codexHomeScope.test.js)；已知副本、独立/旧认证、交错发布和共享历史；真实 CLI 的认证、路径与 read/resume/fork 消费另验 |
 | 删除当前选中的技能 | `LocalSkillsPanel.removeCodexOverleafSkill`、`contentRuntime.normalizeComposerSkillInvocation/clearComposerSkillInvocation/getEnabledCodexOverleafSkillIds`、Native 显式调用过滤 | [removedComposerSkill](../../test/removedComposerSkill.test.js) 串联真实 controller、生产 normalizer/标签重绘及临时技能库，覆盖匹配删除、失败、其他技能、installer、等待期间改选及原文件缺失检查；[contentPanelModules](../../test/contentPanelModules.test.js) 保留原删除按钮确认行为。浏览器呈现与实际点击另行验收 |

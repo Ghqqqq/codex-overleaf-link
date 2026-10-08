@@ -13,6 +13,11 @@
 
     async function forkRunFromNode(runId) {
       const previousState = getState();
+      const skillPreferences = {
+        loadCodexLocalSkills: previousState.loadCodexLocalSkills !== false,
+        loadCodexOverleafSkills: previousState.loadCodexOverleafSkills !== false,
+        codexLocalSkillEnabled: { ...previousState.codexLocalSkillEnabled }
+      };
       const source = findSource(previousState, runId);
       if (!source) return failFork('session_fork_source_missing', tr('forkRunUnavailable'));
       const scope = getScope ? { ...getScope() } : null;
@@ -37,14 +42,22 @@
       }
       let response;
       try {
+        const resolveLocalSkills = deps.captureLocalSkillIdsForFork || deps.getEnabledCodexLocalSkillIds;
+        const enabledCodexLocalSkillIds = skillPreferences.loadCodexLocalSkills
+          ? captureLocalSkillIds(await resolveLocalSkills?.(skillPreferences)) : [];
+        if (!sameScope() || !currentSource()) return null;
+        if (resolveLocalSkills && !Array.isArray(enabledCodexLocalSkillIds)) {
+          throw codedError('codex_local_skill_unavailable', tr('forkRunFailed'));
+        }
         response = await sendBackgroundNative({
           method: 'codex.thread.fork',
           params: {
             threadId: sourceThreadId,
             lastTurnId: run.codexTurnId,
             speedTier: session.speedTier,
-            loadCodexLocalSkills: previousState.loadCodexLocalSkills !== false,
-            loadCodexOverleafSkills: previousState.loadCodexOverleafSkills !== false
+            loadCodexLocalSkills: skillPreferences.loadCodexLocalSkills,
+            loadCodexOverleafSkills: skillPreferences.loadCodexOverleafSkills,
+            enabledCodexLocalSkillIds
           }
         });
       } catch (error) {
@@ -135,6 +148,10 @@
     }
 
     return { forkRunFromNode };
+  }
+
+  function captureLocalSkillIds(value) {
+    return Array.isArray(value) ? [...value] : undefined;
   }
 
   function buildUniqueForkTitle(sessions = [], sourceTitle = '') {

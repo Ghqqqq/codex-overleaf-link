@@ -214,6 +214,8 @@
     closeSlashMenu: () => closeSlashMenu(),
     getCurrentProjectId: () => getCurrentProjectId(),
     getLocalSkillsPanel: () => localSkillsPanel,
+    getCodexLocalSkills: () => getCodexLocalSkillsCatalog(),
+    onSkillsChange: () => updateSlashMenuForTaskInput(),
     getLocale: () => getLocale(),
     getPanel: () => panel,
     getPanelRendererInstance: () => panelRendererInstance,
@@ -236,6 +238,9 @@
     closeCustomInstructionsSettings,
     closeSkillsView,
     getCodexOverleafSkillEnabled,
+    getCodexLocalSkillEnabled,
+    isCodexLocalSkillEnabled,
+    setCodexLocalSkillEnabled,
     getCustomInstructionsForCurrentProject,
     getGovernanceRulesForCurrentProject,
     getSkillLoadingSettings,
@@ -422,6 +427,13 @@
     setState: next => { state = next; },
     getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId(), generation: spaRouteGeneration }),
     sendBackgroundNative, saveState,
+    getEnabledCodexLocalSkillIds: () => getEnabledCodexLocalSkillIds(),
+    captureLocalSkillIdsForFork: async preferences => {
+      if (preferences.loadCodexLocalSkills === false) return [];
+      const choices = { ...preferences.codexLocalSkillEnabled };
+      const skills = await primeCodexLocalSkillsCatalog({ required: true });
+      return skills.filter(skill => Object.hasOwn(choices, skill.id) ? choices[skill.id] !== false : skill.enabled !== false).map(skill => skill.id);
+    },
     applyStateToPanel,
     showPluginToast,
     tr
@@ -935,9 +947,15 @@
     saveState,
     sendBackgroundNative,
     getCurrentProjectId,
+    getScope: () => getCodexLocalSkillsCatalogScope(),
     getSkillLoadingSettings,
     isCodexOverleafSkillEnabled,
     setCodexOverleafSkillEnabled,
+    isCodexLocalSkillEnabled,
+    setCodexLocalSkillEnabled,
+    getCodexLocalSkills: () => getCodexLocalSkillsCatalog(),
+    getCodexLocalSkillWarnings: () => getCodexLocalSkillWarnings(),
+    refreshCodexLocalSkills: options => primeCodexLocalSkillsCatalog(options),
     setProjectSettingsStatus,
     tr,
     tx,
@@ -991,6 +1009,7 @@
   let pendingStreamRenderEvents = new Map();
   let storageNoticeKeys = new Set();
   let composerSkillInvocation = null;
+  let composerDraftRevision = 0;
   let slashCodexOverleafSkills = [];
   let slashCodexOverleafSkillsLoaded = false;
   let slashCodexOverleafSkillsLoading = false;
@@ -1369,6 +1388,7 @@
       renderContextSelection();
       scheduleMirrorPrefetch({ reason: 'cold-start', delayMs: 2500 });
       primeCodexOverleafSkillsCatalog().catch(() => { /* non-blocking */ });
+      primeCodexLocalSkillsCatalog().catch(() => { /* retry through settings, slash, or submission */ });
     }
 
     PanelRenderer.setVisible(panel, true);
@@ -1395,6 +1415,60 @@
       }).finally(() => { codexOverleafSkillsCatalogPromise = null; });
     }
     return codexOverleafSkillsCatalogPromise;
+  }
+
+  // Local metadata stays in memory. A stale page/account read cannot become the
+  // next page's selected catalog, and an empty successful directory is valid.
+  let codexLocalSkillsCatalog = null;
+  let codexLocalSkillsWarnings = [];
+  let codexLocalSkillsCatalogScope = '';
+  let codexLocalSkillsCatalogRequest = null;
+  function getCodexLocalSkillsCatalogScope() {
+    return [cachedAccountScopeId, getCurrentProjectId(), spaRouteGeneration].join(':');
+  }
+
+  function getCodexLocalSkillsCatalog() {
+    return codexLocalSkillsCatalogScope === getCodexLocalSkillsCatalogScope() ? codexLocalSkillsCatalog : null;
+  }
+
+  function getCodexLocalSkillWarnings() {
+    return codexLocalSkillsCatalogScope === getCodexLocalSkillsCatalogScope() ? codexLocalSkillsWarnings : [];
+  }
+
+  async function primeCodexLocalSkillsCatalog({ required = false, force = false } = {}) {
+    const scope = getCodexLocalSkillsCatalogScope();
+    if (!required && !force && getSkillLoadingSettings().loadCodexLocalSkills === false) return [];
+    if (!force && codexLocalSkillsCatalogScope === scope && Array.isArray(codexLocalSkillsCatalog)) return codexLocalSkillsCatalog;
+    if (codexLocalSkillsCatalogRequest?.scope === scope) return codexLocalSkillsCatalogRequest.promise;
+    const request = { scope, promise: null };
+    request.promise = sendBackgroundNative({ method: 'skills.list', params: { scope: 'codex-local' } }).then(response => {
+      if (!response?.ok || !Array.isArray(response.result?.skills)) throw new Error(tx(
+        'Could not load local Codex skills. Try again.', '无法加载 Codex 本地技能，请重试。'));
+      if (scope !== getCodexLocalSkillsCatalogScope()) throw new Error(tx(
+        'The active project changed while loading skills. Try again.', '加载技能时活动项目已改变，请重试。'));
+      const seen = new Set();
+      const skills = response.result.skills.filter(skill => {
+        const id = String(skill?.id || '');
+        if (!isSafeSkillId(id) || seen.has(id)) return false;
+        seen.add(id); return true;
+      });
+      codexLocalSkillsCatalog = skills;
+      codexLocalSkillsWarnings = (Array.isArray(response.result.discoveryWarnings) ? response.result.discoveryWarnings : [])
+        .filter(warning => warning?.code === 'codex_local_skills_skipped' && Number.isSafeInteger(warning.count) && warning.count > 0)
+        .map(warning => ({ code: warning.code, count: warning.count }));
+      codexLocalSkillsCatalogScope = scope;
+      updateSkillsEntrySummary();
+      updateSlashMenuForTaskInput();
+      return skills;
+    }).catch(() => {
+      if (scope !== getCodexLocalSkillsCatalogScope()) throw new Error(tx(
+        'The active project changed while loading skills. Try again.', '加载技能时活动项目已改变，请重试。'));
+      throw new Error(tx('Could not load local Codex skills. Try again.', '无法加载 Codex 本地技能，请重试。'));
+    }).finally(() => {
+      if (codexLocalSkillsCatalogRequest === request) codexLocalSkillsCatalogRequest = null;
+    });
+    codexLocalSkillsCatalogRequest = request;
+    return request.promise;
   }
 
   function closePanel() {
@@ -1764,7 +1838,19 @@
     const submittedSkillInvocation = queuedContext ? queuedContext.skillInvocation : getComposerSkillInvocationForRun();
     let submittedEnabledSkillIds = queuedContext ? queuedContext.enabledCodexOverleafSkillIds : getEnabledCodexOverleafSkillIds();
     const submittedSkillEnabled = { ...state.codexOverleafSkillEnabled };
+    const submittedLocalSkillEnabled = { ...state.codexLocalSkillEnabled };
     const submittedSelectionRevision = selectionContextView.getRevision?.();
+    let submittedEnabledLocalSkillIds = queuedContext ? queuedContext.enabledCodexLocalSkillIds : [];
+    if (!queuedInput && submittedSkillLoadingSettings.loadCodexLocalSkills !== false) {
+      const localSkills = await primeCodexLocalSkillsCatalog({ required: true, force: submittedSkillInvocation?.scope === 'codex-local' });
+      submittedEnabledLocalSkillIds = localSkills.filter(skill => Object.hasOwn(submittedLocalSkillEnabled, skill.id)
+        ? submittedLocalSkillEnabled[skill.id] !== false : skill.enabled !== false).map(skill => skill.id);
+    }
+    if (!queuedInput && submittedSkillInvocation?.scope === 'codex-local'
+      && (submittedSkillLoadingSettings.loadCodexLocalSkills === false || !submittedEnabledLocalSkillIds.includes(submittedSkillInvocation.id))) {
+      throw new Error(tx('The selected local Codex skill is unavailable or disabled. Select an enabled skill and try again.',
+        '所选 Codex 本地技能不可用或已关闭，请选择已启用的技能后重试。'));
+    }
     if (!queuedInput && submittedSkillLoadingSettings.loadCodexOverleafSkills !== false) {
       const skills = await primeCodexOverleafSkillsCatalog({ required: true });
       submittedEnabledSkillIds = skills.map(skill => String(skill?.id || '').trim())
@@ -1822,6 +1908,7 @@
     if (!queuedInput && pendingRetryReplacement === submittedRetryReplacement) pendingRetryReplacement = null;
     const runSessionId = currentRunView.sessionId;
     let runAuditDraft = null;
+    let localSkillRestorePoint = null;
     try {
       if (queuedInput?.id) {
         await runQueueScheduler?.markExecuting(runSessionId, queuedInput.id, currentRunView.recordId);
@@ -1843,15 +1930,22 @@
       // Binary attachments belong to this submitted turn. The run record has
       // already captured their snapshots, so clear them from the composer
       // together with the submitted text. Persistent @context remains intact.
-      if (!queuedInput) clearTaskComposer({ keepAttachments: false, submission: {
+      const submittedComposerCleared = !queuedInput && clearTaskComposer({ keepAttachments: false, submission: {
         ...submittedWritingStyleScope,
         sessionId: submittedSessionId, task: submittedDraft, attachments: submittedAttachments,
         skillInvocation: submittedSkillInvocation, selectionContext: submittedPanelState.selectionContext,
         selectionRevision: submittedSelectionRevision
       } });
+      if (submittedComposerCleared && submittedSkillInvocation?.scope === 'codex-local'
+        && state.activeSessionId === submittedSessionId && !panel?.querySelector('[data-task]')?.value
+        && !getComposerAttachmentsForRun().length && !composerAttachmentController.getAttachmentByteUsage?.().pending
+        && !getComposerSkillInvocationForRun() && !selectionContextView.capture()) {
+        localSkillRestorePoint = { draftRevision: composerDraftRevision,
+          attachmentRevision: composerAttachmentController.getRevision?.(), selectionRevision: selectionContextView.getRevision?.() };
+      }
       syncComposerSendAvailability(true);
       appendRunEvent({
-        title: submittedSkillInvocation?.id === 'skill-installer'
+        title: submittedSkillInvocation?.id === 'skill-installer' && !submittedSkillInvocation.scope
           ? tx('I will use the Codex skill installer for this request.', '我会用 Codex skill installer 处理这个请求。')
           : tx('I will first understand your request, then inspect the relevant Overleaf files.', '我会先理解你的请求，再检查相关 Overleaf 文件。'),
         status: 'running',
@@ -1866,7 +1960,7 @@
           '@context': formatContextItems(executionSnapshot.focusFiles)
         }
       });
-      if (submittedSkillInvocation?.id === 'skill-installer') {
+      if (submittedSkillInvocation?.id === 'skill-installer' && !submittedSkillInvocation.scope) {
         await awaitRunStep(runSkillInstallerTask({
           task,
           runSessionId,
@@ -1874,6 +1968,8 @@
           submittedMode,
           submittedCustomInstructions,
           submittedSkillLoadingSettings,
+          submittedEnabledLocalSkillIds,
+          submittedEnabledSkillIds,
           submittedAttachments,
           submittedSkillInvocation,
           executionSnapshot
@@ -2076,6 +2172,7 @@
           customInstructions: submittedCustomInstructions,
           skillLoadingSettings: submittedSkillLoadingSettings,
           enabledCodexOverleafSkillIds: submittedEnabledSkillIds,
+          enabledCodexLocalSkillIds: submittedEnabledLocalSkillIds,
           attachments: submittedAttachments,
           skillInvocation: submittedSkillInvocation,
           submittedMode
@@ -2129,6 +2226,7 @@
             customInstructions: submittedCustomInstructions,
             skillLoadingSettings: submittedSkillLoadingSettings,
             enabledCodexOverleafSkillIds: submittedEnabledSkillIds,
+            enabledCodexLocalSkillIds: submittedEnabledLocalSkillIds,
             attachments: submittedAttachments,
             skillInvocation: submittedSkillInvocation,
             submittedMode
@@ -2161,6 +2259,7 @@
               customInstructions: submittedCustomInstructions,
               skillLoadingSettings: submittedSkillLoadingSettings,
               enabledCodexOverleafSkillIds: submittedEnabledSkillIds,
+              enabledCodexLocalSkillIds: submittedEnabledLocalSkillIds,
               attachments: submittedAttachments,
               skillInvocation: submittedSkillInvocation,
               submittedMode
@@ -2181,7 +2280,12 @@
           void finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
           return;
         }
-        const translated = translateRawError(response.error.message, { mode: submittedMode, locale: getLocale() });
+        if (response.error?.code === 'codex_local_skill_unavailable' && localSkillRestorePoint) {
+          restoreRejectedLocalSkillSubmission({ ...submittedWritingStyleScope, sessionId: submittedSessionId,
+            task: submittedDraft, attachments: submittedAttachments, skillInvocation: submittedSkillInvocation,
+            selectionContext: submittedPanelState.selectionContext }, localSkillRestorePoint);
+        }
+        const translated = translateRawError(response.error.message, { mode: submittedMode, locale: getLocale(), code: response.error?.code });
         // Structured FailureReason (§9.7): split bridge-availability from
         // Codex-side errors. `native_connection_failed` / `native_unavailable`
         // / `native_update_required` indicate the bridge itself is missing,
@@ -2193,7 +2297,11 @@
         // steps) existed but were never emitted, so everything collapsed into
         // "no usable result" and pointed users at the wrong recovery.
         const runErrorMessage = String(response.error?.message || '');
-        const codexRunFailure = response.error?.code === 'native_execution_interrupted'
+        const codexRunFailure = response.error?.code === 'codex_local_skill_unavailable'
+          ? buildContentFailure('codex_local_skill_unavailable', { path: 'codex.run' }, { technicalMessage: runErrorMessage })
+          : translated.failureCode === 'codex_local_skills_failed'
+            ? buildContentFailure('codex_local_skills_failed', { path: 'codex.run' }, { technicalMessage: runErrorMessage })
+          : response.error?.code === 'native_execution_interrupted'
           ? buildContentFailure('native_request_failed', { path: 'codex.run' }, {
             // The host IS installed — the request was interrupted mid-flight.
             // Telling this user to reinstall would be a misdiagnosis.
@@ -2518,6 +2626,8 @@
     submittedMode,
     submittedCustomInstructions,
     submittedSkillLoadingSettings,
+    submittedEnabledLocalSkillIds,
+    submittedEnabledSkillIds,
     submittedAttachments,
     submittedSkillInvocation,
     executionSnapshot
@@ -2542,6 +2652,8 @@
       customInstructions: submittedCustomInstructions || undefined,
       loadCodexLocalSkills: submittedSkillLoadingSettings?.loadCodexLocalSkills !== false,
       loadCodexOverleafSkills: submittedSkillLoadingSettings?.loadCodexOverleafSkills !== false,
+      enabledCodexLocalSkillIds: submittedEnabledLocalSkillIds,
+      enabledCodexOverleafSkillIds: submittedEnabledSkillIds,
       attachments: submittedAttachments.length ? submittedAttachments : undefined,
       skillInvocation: submittedSkillInvocation,
       focusFiles: [],
@@ -2783,7 +2895,8 @@
           customInstructions: getCustomInstructionsForCurrentProject(),
           skillLoadingSettings: getSkillLoadingSettings(),
           skillInvocation: getComposerSkillInvocationForRun(),
-          enabledCodexOverleafSkillIds: getEnabledCodexOverleafSkillIds()
+          enabledCodexOverleafSkillIds: getEnabledCodexOverleafSkillIds(),
+          enabledCodexLocalSkillIds: getEnabledCodexLocalSkillIds()
         })
       }),
       prepareClaim: () => providerSettingsCoordinator.ensureLoaded(),
@@ -2853,6 +2966,18 @@
   }
 
   function queueComposerInput() {
+    if (getSkillLoadingSettings().loadCodexLocalSkills !== false && !Array.isArray(getCodexLocalSkillsCatalog())) {
+      primeCodexLocalSkillsCatalog({ required: true }).catch(() => {});
+      showPluginToast(tx('Local Codex skills are still loading. Try submitting again when loading finishes.',
+        'Codex 本地技能仍在加载，请在加载完成后重新提交。'), { status: 'info' });
+      return;
+    }
+    const invocation = getComposerSkillInvocationForRun();
+    if (invocation?.scope === 'codex-local' && !getEnabledCodexLocalSkillIds()?.includes(invocation.id)) {
+      showPluginToast(tx('The selected local Codex skill is unavailable or disabled. Select an enabled skill and try again.',
+        '所选 Codex 本地技能不可用或已关闭，请选择已启用的技能后重试。'), { status: 'failed' });
+      return;
+    }
     return runInputCoordinator?.queueComposerInput();
   }
 
@@ -3049,6 +3174,12 @@
       .filter(id => id && isCodexOverleafSkillEnabled(id));
   }
 
+  function getEnabledCodexLocalSkillIds() {
+    if (getSkillLoadingSettings().loadCodexLocalSkills === false) return [];
+    const skills = getCodexLocalSkillsCatalog();
+    return Array.isArray(skills) ? skills.filter(skill => isCodexLocalSkillEnabled(skill.id, skill)).map(skill => skill.id) : undefined;
+  }
+
   function buildCodexRunParams({
     task,
     project,
@@ -3062,6 +3193,7 @@
     customInstructions,
     skillLoadingSettings,
     enabledCodexOverleafSkillIds,
+    enabledCodexLocalSkillIds,
     attachments,
     skillInvocation,
     submittedMode
@@ -3091,6 +3223,7 @@
         : skillLoadingSettings,
       enabledCodexOverleafSkillIds: enabledCodexOverleafSkillIds === undefined
         ? getEnabledCodexOverleafSkillIds() : enabledCodexOverleafSkillIds,
+      enabledCodexLocalSkillIds,
       attachments,
       skillInvocation,
       compileLogContext,
@@ -3363,6 +3496,7 @@
   }
 
   function handleTaskInput() {
+    composerDraftRevision += 1;
     autosizeTaskTextarea();
     syncComposerSendAvailability();
     renderPendingInputs();
@@ -3385,10 +3519,8 @@
         subtitle: tr('slashInstallSkillSubtitle')
       }
     ];
-    if (getSkillLoadingSettings().loadCodexOverleafSkills === false) {
-      return commands;
-    }
-    for (const skill of slashCodexOverleafSkills) {
+    const settings = getSkillLoadingSettings();
+    for (const skill of settings.loadCodexOverleafSkills === false ? [] : slashCodexOverleafSkills) {
       const id = String(skill?.id || '').trim();
       if (!isSafeSkillId(id)) {
         continue;
@@ -3404,13 +3536,28 @@
         scope: 'codex-overleaf',
         skillId: id,
         title,
-        subtitle: tr('slashUseSkillSubtitle')
+        subtitle: tr('slashUseOverleafSkillSubtitle')
       });
+    }
+    const localSkills = settings.loadCodexLocalSkills === false ? [] : (getCodexLocalSkillsCatalog() || []);
+    for (const skill of localSkills) {
+      if (!isSafeSkillId(skill.id) || !isCodexLocalSkillEnabled(skill.id, skill)) continue;
+      const sameName = localSkills.filter(other => String(other.title || other.name || other.id) === String(skill.title || skill.name || skill.id)).length > 1;
+      commands.push({ id: `local-skill:${skill.id}`, kind: 'codex-local-skill', scope: 'codex-local', skillId: skill.id,
+        title: String(skill.title || skill.name || skill.id).trim().slice(0, 80),
+        searchName: String(skill.name || ''),
+        subtitle: tr('slashUseLocalSkillSubtitle') + (skill.sourceKind === 'plugin' && skill.sourceLabel ? ' · ' + skill.sourceLabel : '')
+          + (sameName ? ' · ' + (skill.sourceHint || skill.id.slice(-8)) : '') });
     }
     return commands;
   }
 
   async function refreshCodexOverleafSkillsForSlashMenu() {
+    if (getSlashTrigger() && getSkillLoadingSettings().loadCodexLocalSkills !== false) {
+      primeCodexLocalSkillsCatalog().catch(() => {
+        showPluginToast(tx('Could not load local Codex skills. Try again.', '无法加载 Codex 本地技能，请重试。'), { status: 'failed' });
+      });
+    }
     if (slashCodexOverleafSkillsLoaded || slashCodexOverleafSkillsLoading) {
       return;
     }
@@ -3444,7 +3591,8 @@
       const commands = getSlashCommands().filter(command => {
         return !query
           || command.title.toLowerCase().includes(query)
-          || command.id.toLowerCase().includes(query);
+          || command.id.toLowerCase().includes(query)
+          || String(command.searchName || '').toLowerCase().includes(query);
       });
       renderSlashMenu(commands);
       return;
@@ -3738,7 +3886,7 @@
       activateSkillInstallerComposerContext();
       return;
     }
-    if (command.kind === 'codex-overleaf-skill') {
+    if (command.kind === 'codex-overleaf-skill' || command.kind === 'codex-local-skill') {
       activateCodexOverleafSkillComposerContext(command);
     }
   }
@@ -3765,6 +3913,7 @@
   }
 
   function activateSkillInstallerComposerContext() {
+    composerDraftRevision += 1;
     composerSkillInvocation = {
       id: 'skill-installer',
       title: tr('skillInstallerComposerLabel')
@@ -3775,6 +3924,7 @@
   }
 
   function activateCodexOverleafSkillComposerContext(command) {
+    composerDraftRevision += 1;
     const id = String(command?.skillId || '').trim();
     if (!isSafeSkillId(id)) {
       return;
@@ -3782,7 +3932,7 @@
     composerSkillInvocation = {
       id,
       title: String(command?.title || id).trim().slice(0, 80) || id,
-      scope: 'codex-overleaf'
+      scope: command.scope === 'codex-local' ? 'codex-local' : 'codex-overleaf'
     };
     renderComposerSkillInvocation();
     const input = panel?.querySelector('[data-task]');
@@ -3790,6 +3940,7 @@
   }
 
   function clearComposerSkillInvocation() {
+    composerDraftRevision += 1;
     composerSkillInvocation = null;
     renderComposerSkillInvocation();
     panel?.querySelector('[data-task]')?.focus?.();
@@ -3800,7 +3951,7 @@
     if (!normalized) {
       return null;
     }
-    if (normalized.id === 'skill-installer') {
+    if (normalized.id === 'skill-installer' && !normalized.scope) {
       return {
         id: 'skill-installer',
         title: tr('skillInstallerComposerLabel')
@@ -3815,13 +3966,9 @@
       return null;
     }
     const title = String(value?.title || id).trim().slice(0, 80) || id;
-    if (id === 'skill-installer') {
-      return { id, title };
-    }
-    if (value?.scope !== 'codex-overleaf') {
-      return null;
-    }
-    return { id, title, scope: 'codex-overleaf' };
+    if (id === 'skill-installer' && (!value?.scope || value.scope === 'builtin')) return { id, title };
+    if (!['codex-overleaf', 'codex-local'].includes(value?.scope)) return null;
+    return { id, title, scope: value.scope };
   }
 
   function isSafeSkillId(id) {
@@ -3842,7 +3989,7 @@
     }
     const clear = context.querySelector('[data-composer-skill-clear]');
     if (clear) {
-      const clearLabel = active?.id === 'skill-installer'
+      const clearLabel = active?.id === 'skill-installer' && !active.scope
         ? tr('skillInstallerComposerClear')
         : tr('composerSkillClear');
       clear.title = clearLabel;
@@ -4093,7 +4240,7 @@
       chromeApi: chrome, getState: () => state, setState: next => { state = next; }, getPanel: () => panel,
       applyTheme: applyPanelTheme, applyLocale: () => { applyLocaleToPanel(); refreshDashboardSoon(); },
       onPreloadChange: enabled => contextTrayController.scheduleContextPrefetch({ enabled }),
-      onSkillsChange: () => { renderLocalSkillList(); updateSkillsEntrySummary(); },
+      onSkillsChange: () => { renderLocalSkillList(); updateSkillsEntrySummary(); updateSlashMenuForTaskInput(); },
       onError: error => showPluginToast(tx(
         `Global settings could not be saved or loaded: ${error.message}. Please retry.`,
         `全局设置未能保存或读取：${error.message}。请重试。`), { status: 'failed', sticky: true })
@@ -5335,6 +5482,7 @@
         loadCodexLocalSkills: prefs.loadCodexLocalSkills !== false,
         loadCodexOverleafSkills: prefs.loadCodexOverleafSkills !== false,
         codexOverleafSkillEnabled: prefs.codexOverleafSkillEnabled || {},
+        codexLocalSkillEnabled: prefs.codexLocalSkillEnabled || {},
         experimentalOtByProject: prefs.experimentalOtByProject || {},
         customInstructionsByProject: prefs.customInstructionsByProject || {},
         governanceRulesByProject: normalizeGovernanceRulesByProject(prefs.governanceRulesByProject),
@@ -5389,6 +5537,7 @@
           loadCodexLocalSkills: fallback.loadCodexLocalSkills !== false,
           loadCodexOverleafSkills: fallback.loadCodexOverleafSkills !== false,
           codexOverleafSkillEnabled: fallback.codexOverleafSkillEnabled || {},
+          codexLocalSkillEnabled: fallback.codexLocalSkillEnabled || {},
           experimentalOtByProject: fallback.experimentalOtByProject || {},
           customInstructionsByProject: fallback.customInstructionsByProject || {},
           governanceRulesByProject: normalizeGovernanceRulesByProject(fallback.governanceRulesByProject),
@@ -5450,6 +5599,7 @@
       compactState.loadCodexLocalSkills = state.loadCodexLocalSkills !== false;
       compactState.loadCodexOverleafSkills = state.loadCodexOverleafSkills !== false;
       compactState.codexOverleafSkillEnabled = getCodexOverleafSkillEnabled();
+      compactState.codexLocalSkillEnabled = getCodexLocalSkillEnabled();
       compactState.experimentalOtByProject = state.experimentalOtByProject;
       compactState.customInstructionsByProject = state.customInstructionsByProject;
       compactState.governanceRulesByProject = state.governanceRulesByProject;
@@ -5883,19 +6033,19 @@
     const taskInput = panel?.querySelector('[data-task]');
     if (submission) {
       if (submission.projectId !== getCurrentProjectId()
-        || submission.accountScopeId !== cachedAccountScopeId) return;
-      if (findSessionById(submission.sessionId)?.task !== submission.task) return;
+        || submission.accountScopeId !== cachedAccountScopeId) return false;
+      if (findSessionById(submission.sessionId)?.task !== submission.task) return false;
       if (state.activeSessionId !== submission.sessionId) {
         updateSessionById(submission.sessionId, { task: '' });
         saveStateSoon();
-        return;
+        return false;
       }
       if (composerAttachmentController.getAttachmentByteUsage?.().pending > 0
-        || selectionContextView.getRevision?.() !== submission.selectionRevision) return;
+        || selectionContextView.getRevision?.() !== submission.selectionRevision) return false;
       if (!runController.isSubmittedComposerUnchanged(submission, {
         task: taskInput?.value, attachments: getComposerAttachmentsForRun(),
         skillInvocation: getComposerSkillInvocationForRun(), selectionContext: selectionContextView.capture()
-      })) return;
+      })) return false;
     }
     if (taskInput) {
       taskInput.value = '';
@@ -5909,6 +6059,30 @@
     selectionContextView.clear();
     state = updateActiveSession(state, { task: '' });
     saveStateSoon();
+    return true;
+  }
+
+  function restoreRejectedLocalSkillSubmission(submission, checkpoint) {
+    const input = panel?.querySelector('[data-task]');
+    if (!checkpoint || !input || submission.accountScopeId !== cachedAccountScopeId
+      || submission.projectId !== getCurrentProjectId() || submission.sessionId !== state.activeSessionId
+      || !findSessionById(submission.sessionId) || input.value || state.task
+      || composerDraftRevision !== checkpoint.draftRevision
+      || getComposerAttachmentsForRun().length || composerAttachmentController.getAttachmentByteUsage?.().pending
+      || composerAttachmentController.getRevision?.() !== checkpoint.attachmentRevision
+      || selectionContextView.getRevision?.() !== checkpoint.selectionRevision
+      || selectionContextView.capture() || getComposerSkillInvocationForRun()) return false;
+    if (!composerAttachmentController.restoreSubmittedAttachments?.(submission.attachments, checkpoint.attachmentRevision)) return false;
+    composerDraftRevision += 1;
+    composerSkillInvocation = submission.skillInvocation;
+    input.value = submission.task;
+    state = updateActiveSession(state, { task: submission.task, selectionContext: submission.selectionContext });
+    renderComposerSkillInvocation();
+    selectionContextView.render();
+    autosizeTaskTextarea();
+    syncComposerSendAvailability();
+    saveStateSoon();
+    return true;
   }
 
   function applyStateToPanel(options = {}) {

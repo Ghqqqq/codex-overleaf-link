@@ -29,11 +29,13 @@ test('broker worker receives the captured enabled skill IDs and keeps its recurs
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-skill-inheritance-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const enabled = ['parallel-subagents', 'synthetic-enabled'];
+  const enabledLocal = ['local-' + '1'.repeat(64)];
   let workerInput, parentInput, arrived;
   const workerStarted = new Promise(resolve => { arrived = resolve; });
   await runCodexSession({ rootDir: path.join(root, 'mirrors'), env: { HOME: root, USERPROFILE: root },
     params: { projectId: 'project', task: 'Synthetic parent', mode: 'auto', loadCodexLocalSkills: false,
-      enabledCodexOverleafSkillIds: enabled, project: { files: [{ path: 'main.tex', content: 'Original' }] } },
+      enabledCodexOverleafSkillIds: enabled, enabledCodexLocalSkillIds: enabledLocal,
+      project: { files: [{ path: 'main.tex', content: 'Original' }] } },
     executeCodex: async input => {
       if (input.userTask.startsWith('subagent:')) { workerInput = input; arrived(); return { assistantMessage: 'Worker done' }; }
       parentInput = input;
@@ -46,5 +48,7 @@ test('broker worker receives the captured enabled skill IDs and keeps its recurs
   });
   assert.deepEqual(parentInput.enabledCodexOverleafSkillIds, enabled);
   assert.deepEqual(workerInput.enabledCodexOverleafSkillIds, enabled);
+  assert.deepEqual(parentInput.enabledCodexLocalSkillIds, enabledLocal);
+  assert.deepEqual(workerInput.enabledCodexLocalSkillIds, enabledLocal);
   assert.deepEqual(workerInput.disableCodexOverleafSkillIds, ['parallel-subagents']);
 });

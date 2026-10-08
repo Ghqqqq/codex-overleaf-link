@@ -69,12 +69,9 @@ test('workers inherit the parent run shape minus the fan-out skill and the timel
   assert.match(broker, /compactEvent\(event\)/);
   assert.match(broker, /emit\('codex\.subagent\.event'[\s\S]*?source: 'broker', jobId: job\.id/);
   assert.match(workerBlock, /signal: workerSignal/);
-  // the strip helper disables by skill-directory name through the per-child
-  // skills/config/write rail
-  const strip = extractFunction(runner, 'applyWorkerSkillStrip');
-  assert.match(strip, /skills\/list/);
-  assert.match(strip, /path\.basename\(path\.dirname\(/);
-  assert.match(strip, /skills\/config\/write/);
+  // The shared isolation rail applies the recursive plugin exclusion by
+  // physical source. Same-name local skill behavior has dedicated coverage.
+  assert.match(runner, /await applyCodexSkillIsolation\(/);
 });
 
 test('ownership violations are demoted from syncChanges to unsupportedChanges (S8)', () => {

@@ -25,6 +25,7 @@ function prepareScopedPluginCodexHome(env, options, home) {
     overleaf: options.loadCodexOverleafSkills !== false,
     installer: options.installCodexOverleafSkillsTarget === true,
     enabled: normalizedIds(options.enabledCodexOverleafSkillIds),
+    enabledLocal: normalizedIds(options.enabledCodexLocalSkillIds),
     disabled: normalizedIds(options.disableCodexOverleafSkillIds),
     config: digest(capturedConfig),
     localSkills: options.loadCodexLocalSkills !== false ? directoryIdentity(path.join(userHome, 'skills')) : [],
@@ -47,6 +48,7 @@ function prepareScopedPluginCodexHome(env, options, home) {
         ...options,
         skipCopiedUserConfig: true,
         enabledCodexOverleafSkillIds: descriptor.enabled || undefined,
+        enabledCodexLocalSkillIds: descriptor.enabledLocal || undefined,
         disableCodexOverleafSkillIds: descriptor.disabled || undefined
       });
       // Published scopes inherit from the canonical home, including provenance.
@@ -96,7 +98,8 @@ function directoryIdentity(root) {
   let entries;
   try { entries = fs.readdirSync(root, { withFileTypes: true }); }
   catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-  return entries.filter(entry => entry.isDirectory()).map(entry => {
+  return entries.filter(entry => entry.isDirectory() || (entry.isSymbolicLink()
+    && isDirectory(path.join(root, entry.name)))).map(entry => {
     const location = path.join(root, entry.name);
     return [entry.name, fs.realpathSync(location)];
   }).sort((a, b) => a[0].localeCompare(b[0]));
@@ -114,6 +117,7 @@ function isReady(directory, key) {
 }
 
 function isFile(file) { try { return fs.statSync(file).isFile(); } catch { return false; } }
+function isDirectory(file) { try { return fs.statSync(file).isDirectory(); } catch { return false; } }
 function readOptionalFile(file) { try { return fs.readFileSync(file); } catch (error) { if (error.code === 'ENOENT') return Buffer.alloc(0); throw error; } }
 function digest(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 

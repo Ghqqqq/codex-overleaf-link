@@ -40,7 +40,7 @@
       if (force || changed.includes('theme')) options.applyTheme?.(values.theme);
       if (changed.includes('locale')) options.applyLocale?.();
       if (force || changed.includes('preloadProjectContext')) options.onPreloadChange?.(values.preloadProjectContext);
-      if (changed.some(key => key === 'codexOverleafSkillEnabled' || key.startsWith('loadCodex'))) options.onSkillsChange?.();
+      if (changed.some(key => key === 'codexOverleafSkillEnabled' || key === 'codexLocalSkillEnabled' || key.startsWith('loadCodex'))) options.onSkillsChange?.();
     }
 
     function accept(value) {

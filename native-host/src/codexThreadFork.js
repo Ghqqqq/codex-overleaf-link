@@ -19,6 +19,7 @@ function runForkProcess(params, env, signal) {
   const childEnv = buildCodexHomeEnv(env, {
     isolateRuntimeHome: true,
     enabledCodexOverleafSkillIds: params.enabledCodexOverleafSkillIds,
+    enabledCodexLocalSkillIds: params.enabledCodexLocalSkillIds,
     loadCodexLocalSkills: params.loadCodexLocalSkills !== false,
     loadCodexOverleafSkills: params.loadCodexOverleafSkills !== false
   });

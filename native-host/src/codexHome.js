@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const { filterTomlRootKeys } = require('./tomlStatements');
 const { copyInheritedAuth, removeMissingInheritedAuth } = require('./codexInheritedAuth');
 const {
@@ -216,7 +217,14 @@ function removePluginHomeEntry(pluginHome, entryName, skippedLinks) {
 
 function buildCodexHomeEnv(env = process.env, options = {}) {
   const userHome = getUserCodexHome(env, options);
-  const canonicalHome = getPluginCodexHome(env, options);
+  let canonicalHome = getPluginCodexHome(env, options);
+  // Per-skill writes belong to the plugin even when an older installation
+  // explicitly shared its Codex home with the user's normal Codex session.
+  if (samePath(userHome, canonicalHome) && (options.forceIsolatedSkillSettings === true
+    || Array.isArray(options.enabledCodexLocalSkillIds))) {
+    canonicalHome += '-overleaf-runtime';
+    if (samePath(userHome, canonicalHome)) throw new Error('The isolated skill home must not alias the user Codex home.');
+  }
   if (options.isolateRuntimeHome === true && !samePath(userHome, canonicalHome)) {
     const { prepareScopedPluginCodexHome } = require('./codexHomeScope');
     const prepared = prepareScopedPluginCodexHome(env, options, {
@@ -283,7 +291,8 @@ function composePluginSkillsDirectory({
       continue;
     }
     for (const entry of fs.readdirSync(source.root, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !isSafeSkillEntryName(entry.name)) {
+      if (!(entry.isDirectory() || (source.name === 'codex-local' && entry.isSymbolicLink()
+        && isDirectory(path.join(source.root, entry.name)))) || !isSafeSkillEntryName(entry.name)) {
         continue;
       }
       if (source.name === 'codex-overleaf') {
@@ -297,6 +306,7 @@ function composePluginSkillsDirectory({
         continue;
       }
       if (source.replaceExisting) {
+        preserveLocalSkillAlias(targetPath, targetRoot, options);
         fs.rmSync(targetPath, { recursive: true, force: true });
       }
       const linkResult = ensureSymlink(sourcePath, targetPath, options);
@@ -340,6 +350,21 @@ function composePluginSkillsDirectory({
     fs.rmSync(targetRoot, { recursive: true, force: true });
   }
   return { linked, skippedLinks };
+}
+
+function preserveLocalSkillAlias(targetPath, targetRoot, options) {
+  let target;
+  try {
+    if (!fs.lstatSync(targetPath).isSymbolicLink()) return;
+    target = fs.realpathSync(targetPath);
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  const suffix = createHash('sha256').update(target).digest('hex').slice(0, 16);
+  const alias = path.join(targetRoot, `${path.basename(targetPath)}.codex-local-${suffix}`);
+  const result = ensureSymlink(target, alias, options);
+  if (!result.ok) throw new Error('The local skill alias could not be preserved.');
 }
 
 function clearPluginCodexHistory(optionsOrEnv = {}, maybeEnv = null) {
@@ -560,7 +585,10 @@ function chmodIfPossible(target, mode) {
 }
 
 function samePath(left, right) {
-  return path.resolve(left) === path.resolve(right);
+  const resolvedLeft = path.resolve(left), resolvedRight = path.resolve(right);
+  if (resolvedLeft === resolvedRight) return true;
+  try { return fs.realpathSync(resolvedLeft) === fs.realpathSync(resolvedRight); }
+  catch { return false; }
 }
 
 function isInsideDirectory(target, parent) {

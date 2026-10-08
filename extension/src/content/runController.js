@@ -33,6 +33,7 @@
     customInstructions,
     skillLoadingSettings,
     enabledCodexOverleafSkillIds,
+    enabledCodexLocalSkillIds,
     attachments,
     skillInvocation,
     compileLogContext,
@@ -68,6 +69,9 @@
       loadCodexLocalSkills: skillLoadingSettings?.loadCodexLocalSkills !== false,
       loadCodexOverleafSkills: skillLoadingSettings?.loadCodexOverleafSkills !== false,
       enabledCodexOverleafSkillIds: normalizedEnabledSkillIds,
+      enabledCodexLocalSkillIds: Array.isArray(enabledCodexLocalSkillIds)
+        ? [...new Set(enabledCodexLocalSkillIds.filter(id => typeof id === 'string' && isSafeSkillId(id)))]
+        : undefined,
       skillInvocation: normalizedSkillInvocation || undefined,
       attachments: normalizedAttachments.length ? normalizedAttachments : undefined
     };
@@ -201,19 +205,22 @@
     if (!isSafeSkillId(id)) {
       return null;
     }
-    const title = String(value?.title || 'Skill Installer').trim().slice(0, 80) || 'Skill Installer';
-    if (id === 'skill-installer') {
+    const installer = id === 'skill-installer' && (value?.scope == null || value.scope === 'builtin');
+    const fallbackTitle = installer ? 'Skill Installer' : id;
+    const title = String(value?.title || fallbackTitle).trim().slice(0, 80) || fallbackTitle;
+    if (installer) {
       return { id, title };
     }
-    if (value?.scope !== 'codex-overleaf') {
+    if (!['codex-overleaf', 'codex-local'].includes(value?.scope)) {
       return null;
     }
-    return { id, title, scope: 'codex-overleaf' };
+    return { id, title, scope: value.scope };
   }
 
   function isSafeSkillId(id) {
     return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(String(id || ''))
-      && !String(id || '').includes('..');
+      && !String(id || '').includes('..')
+      && !['__proto__', 'prototype', 'constructor'].includes(id);
   }
 
   function normalizeAttachmentName(value) {

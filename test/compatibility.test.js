@@ -52,6 +52,7 @@ test('release version metadata is aligned with the current package while the han
   assert.equal(response.result.minExtensionVersion, compatibility.MIN_COMPATIBLE_EXTENSION_VERSION);
   assert.equal(response.result.protocolVersion, 2);
   assert.deepEqual(response.result.supportedProtocol, { min: 1, max: 2 });
+  assert.equal(response.result.capabilities.localCodexSkills, true);
 });
 
 test('buildBridgePingParams returns protocol 2 metadata with protocol 1 compatibility', () => {
@@ -135,6 +136,14 @@ test('classifyNativeCompatibility returns incompatible when a target-version nat
   assert.equal(result.status, 'native_too_old');
   assert.equal(result.classification, 'incompatible');
   assert.deepEqual(result.missingCapabilities, ['mirrorPatchFiles']);
+});
+
+test('same-version Native without local skill selection capability cannot silently ignore new run or fork choices', () => {
+  const capabilities = capabilityMap(); delete capabilities.localCodexSkills;
+  const result = compatibility.evaluateNativeCompatibility(nativeResponse({ capabilities }), { version: CURRENT_VERSION });
+  assert.equal(result.classification, 'incompatible');
+  assert.deepEqual(result.missingCapabilities, ['localCodexSkills']);
+  for (const method of ['codex.run', 'codex.thread.fork']) assert.equal(compatibility.isNativeMethodAllowed(method, result), false);
 });
 
 test('classifyNativeCompatibility returns incompatible for missing native, unsupported protocol, extension mismatch, or unhealthy local Codex', () => {

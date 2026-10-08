@@ -107,12 +107,15 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
   const turnAttachments = materializeTurnAttachments(params.attachments, mirror.workspacePath);
   const settings = buildCodexSettings(params);
   const skillLoading = normalizeSkillLoadingSettings(params);
-  const codexSkillInvocationContext = loadCodexSkillInvocationContext({
+  const codexSkillInvocationContext = await loadCodexSkillInvocationContext({
     skillInvocation,
+    loadCodexLocalSkills: skillLoading.loadCodexLocalSkills,
+    enabledCodexLocalSkillIds: params.enabledCodexLocalSkillIds,
     loadCodexOverleafSkills: skillLoading.loadCodexOverleafSkills,
     enabledCodexOverleafSkillIds: params.enabledCodexOverleafSkillIds,
     env,
-    emit
+    emit,
+    signal
   });
   const effectiveSkillInvocation = getEffectiveSkillInvocation(codexSkillInvocationContext);
   const runnerWorkspacePath = skillInstallTurn
@@ -160,6 +163,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
         loadCodexLocalSkills: skillLoading.loadCodexLocalSkills,
         loadCodexOverleafSkills: skillLoading.loadCodexOverleafSkills,
         enabledCodexOverleafSkillIds: params.enabledCodexOverleafSkillIds,
+        enabledCodexLocalSkillIds: params.enabledCodexLocalSkillIds,
         skillInvocation: null,
         installCodexOverleafSkillsTarget: false,
         projectLocalSkills: null,
@@ -206,6 +210,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
       loadCodexLocalSkills: skillLoading.loadCodexLocalSkills,
       loadCodexOverleafSkills: skillLoading.loadCodexOverleafSkills,
       enabledCodexOverleafSkillIds: params.enabledCodexOverleafSkillIds,
+      enabledCodexLocalSkillIds: params.enabledCodexLocalSkillIds,
       skillInvocation: effectiveSkillInvocation,
       installCodexOverleafSkillsTarget: skillInstallTurn,
       projectLocalSkills: null,
@@ -430,12 +435,15 @@ function normalizeSkillLoadingSettings(params = {}) {
   };
 }
 
-function loadCodexSkillInvocationContext({
+async function loadCodexSkillInvocationContext({
   skillInvocation,
+  loadCodexLocalSkills = true,
+  enabledCodexLocalSkillIds,
   loadCodexOverleafSkills = true,
   enabledCodexOverleafSkillIds,
   env = process.env,
-  emit = () => {}
+  emit = () => {},
+  signal
 } = {}) {
   const invocation = normalizeSkillInvocation(skillInvocation);
   if (!invocation) {
@@ -445,19 +453,37 @@ function loadCodexSkillInvocationContext({
     return { invocation, skill: null, missing: [], ignored: [] };
   }
 
-  const result = loadSelectedCodexOverleafSkill({
+  const local = invocation.scope === 'codex-local';
+  const result = local ? await require('./codexLocalSkills').loadSelectedCodexLocalSkill({
+    skillId: invocation.id,
+    loadCodexLocalSkills,
+    enabledCodexLocalSkillIds,
+    env,
+    signal
+  }).catch(error => {
+    if (signal?.aborted || (!String(error?.code || '').startsWith('codex_local_skills_')
+      && error?.code !== 'codex_not_found')) throw error;
+    throw Object.assign(new Error('The selected local Codex skill is unavailable. Refresh the skill list and select it again.'),
+      { code: 'codex_local_skill_unavailable', cause: error });
+  }) : loadSelectedCodexOverleafSkill({
     skillId: invocation.id,
     loadCodexOverleafSkills,
     enabledCodexOverleafSkillIds,
     env
   });
+  if (local && !result.skill) {
+    throw Object.assign(new Error('The selected local Codex skill is unavailable. Refresh the skill list and select it again.'),
+      { code: 'codex_local_skill_unavailable' });
+  }
   if (result.missing.length) {
-    emitCodexEvent(emit, 'codex.overleaf_skills.missing', 'Selected Codex Overleaf skill was missing', {
+    emitCodexEvent(emit, local ? 'codex.local_skills.missing' : 'codex.overleaf_skills.missing',
+      local ? 'Selected local Codex skill was missing' : 'Selected Codex Overleaf skill was missing', {
       missingSkillIds: result.missing
     }, 'failed');
   }
   if (result.ignored.length) {
-    emitCodexEvent(emit, 'codex.overleaf_skill_invocation.ignored', 'Selected Codex Overleaf skill was ignored', {
+    emitCodexEvent(emit, local ? 'codex.local_skill_invocation.ignored' : 'codex.overleaf_skill_invocation.ignored',
+      local ? 'Selected local Codex skill was ignored' : 'Selected Codex Overleaf skill was ignored', {
       ignoredSkillIds: result.ignored.map(item => item.id),
       reason: result.ignored[0]?.reason || 'ignored'
     }, 'warning');
@@ -488,17 +514,18 @@ function normalizeSkillInvocation(value) {
     return null;
   }
   const title = String(value?.title || 'Skill Installer').trim().slice(0, 80) || 'Skill Installer';
-  if (id === 'skill-installer') {
+  if (id === 'skill-installer' && (!value?.scope || value.scope === 'builtin')) {
     return { id, title };
   }
-  if (value?.scope !== 'codex-overleaf') {
+  if (!['codex-overleaf', 'codex-local'].includes(value?.scope)) {
     return null;
   }
-  return { id, title, scope: 'codex-overleaf' };
+  return { id, title, scope: value.scope };
 }
 
 function isSkillInstallerInvocation(value) {
-  return normalizeSkillInvocation(value)?.id === 'skill-installer';
+  const invocation = normalizeSkillInvocation(value);
+  return invocation?.id === 'skill-installer' && !invocation.scope;
 }
 
 function isSafeSkillId(id) {
@@ -563,113 +590,6 @@ function buildCodexAppServerArgs(input = {}) {
   ];
 }
 
-// Recursion guard (spec S6): disable specific Codex-Overleaf skills for one
-// app-server child process — used to strip `parallel-subagents` from worker
-// runs so an inheriting worker cannot discover the queue and fan out again.
-// Skill directories are named by skill id (<root>/<id>/SKILL.md).
-async function applyWorkerSkillStrip({ input = {}, request } = {}) {
-  const ids = Array.isArray(input.disableCodexOverleafSkillIds)
-    ? input.disableCodexOverleafSkillIds.filter(Boolean)
-    : [];
-  if (!ids.length || typeof request !== 'function') {
-    return { disabled: [] };
-  }
-  const listResult = await request('skills/list', {
-    cwd: input.workspacePath,
-    includeDisabled: true
-  });
-  const disabled = [];
-  for (const skill of flattenCodexSkillsList(listResult)) {
-    if (skill?.enabled === false) {
-      continue;
-    }
-    const skillDirName = path.basename(path.dirname(String(skill?.path || '')));
-    if (!ids.includes(skillDirName)) {
-      continue;
-    }
-    const params = buildSkillDisableParams(skill);
-    if (!params) {
-      continue;
-    }
-    await request('skills/config/write', params);
-    disabled.push(skillDirName);
-  }
-  return { disabled };
-}
-
-function flattenCodexSkillsList(listResult = {}) {
-  const data = Array.isArray(listResult?.data) ? listResult.data : [];
-  return data.flatMap(entry => Array.isArray(entry?.skills) ? entry.skills : []);
-}
-
-function shouldDisableCodexSkillForIsolation(skill = {}, input = {}, childEnv = process.env) {
-  if (isCodexSystemSkill(skill)) {
-    return !isAllowedSystemSkillForIsolation(skill, input);
-  }
-  return !isAllowedCodexOverleafSkillPath(skill.path, input, childEnv);
-}
-
-function isCodexSystemSkill(skill = {}) {
-  return String(skill.scope || '') === 'system' || isSystemSkillPath(skill.path);
-}
-
-function isAllowedSystemSkillForIsolation(skill = {}, input = {}) {
-  return input.installCodexOverleafSkillsTarget === true && String(skill.name || '') === 'skill-installer';
-}
-
-function isAllowedCodexOverleafSkillPath(skillPath, input = {}, childEnv = process.env) {
-  if (input.loadCodexOverleafSkills === false && input.installCodexOverleafSkillsTarget !== true) {
-    return false;
-  }
-  const pathText = String(skillPath || '');
-  if (!pathText || !path.isAbsolute(pathText) || isSystemSkillPath(pathText)) {
-    return false;
-  }
-  const roots = [
-    path.join(String(childEnv.CODEX_HOME || ''), 'skills'),
-    getCodexOverleafSkillsRoot({ env: childEnv })
-  ].filter(Boolean);
-  return roots.some(root => isInsideOrSamePath(pathText, root));
-}
-
-function isSystemSkillPath(skillPath) {
-  return String(skillPath || '').split(path.sep).includes('.system');
-}
-
-function buildSkillDisableParams(skill = {}) {
-  const name = String(skill.name || '').trim();
-  if (isCodexSystemSkill(skill) && name) {
-    return { name, enabled: false };
-  }
-  const skillPath = String(skill.path || '').trim();
-  if (path.isAbsolute(skillPath)) {
-    return { path: skillPath, enabled: false };
-  }
-  if (name) {
-    return { name, enabled: false };
-  }
-  return null;
-}
-
-function isInsideOrSamePath(target, root) {
-  const targetPaths = comparablePaths(target);
-  const rootPaths = comparablePaths(root);
-  return targetPaths.some(targetPath => rootPaths.some(rootPath => (
-    targetPath === rootPath || targetPath.startsWith(rootPath + path.sep)
-  )));
-}
-
-function comparablePaths(value) {
-  const resolved = path.resolve(String(value || ''));
-  const candidates = [resolved];
-  try {
-    candidates.push(fs.realpathSync.native(resolved));
-  } catch (_) {
-    // Fall back to the lexical path when the file is not present yet.
-  }
-  return Array.from(new Set(candidates));
-}
-
 function buildTurnStartParams(input = {}, threadId = input.threadId || '') {
   const params = {
     threadId,
@@ -712,6 +632,7 @@ function runCodexAppServerProcess(input) {
     const childEnv = applyProviderEnvironment(buildCodexHomeEnv(input.env || process.env, {
       isolateRuntimeHome: true,
       enabledCodexOverleafSkillIds: input.enabledCodexOverleafSkillIds,
+      enabledCodexLocalSkillIds: input.enabledCodexLocalSkillIds,
       disableCodexOverleafSkillIds: input.disableCodexOverleafSkillIds,
       loadCodexLocalSkills: input.loadCodexLocalSkills !== false,
       loadCodexOverleafSkills: input.loadCodexOverleafSkills !== false,
@@ -824,10 +745,6 @@ function runCodexAppServerProcess(input) {
         childEnv,
         request,
         emit: input.emit
-      });
-      await applyWorkerSkillStrip({
-        input,
-        request
       });
 
       if (input.threadId) {

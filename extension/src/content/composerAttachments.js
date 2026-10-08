@@ -17,6 +17,7 @@
     const pendingAttachmentKeys = new Set();
     let pendingAttachmentBytes = 0;
     let attachmentGeneration = 0;
+    let attachmentRevision = 0;
 
     function handlePaste(event) {
       const files = collectFilesFromDataTransfer(event.clipboardData);
@@ -85,6 +86,7 @@
             ));
             continue;
           }
+          attachmentRevision += 1;
           pendingAttachmentKeys.add(dedupeKey);
           pendingAttachmentBytes += fileSize;
           try {
@@ -104,6 +106,7 @@
             };
             if (!attachments.some(existing => buildAttachmentDedupeKey(existing) === dedupeKey)) {
               attachments.push(attachment);
+              attachmentRevision += 1;
               onChange();
             }
           } catch (error) {
@@ -163,6 +166,7 @@
 
     function clear(options = {}) {
       attachmentGeneration += 1;
+      attachmentRevision += 1;
       attachments = [];
       pendingAttachmentKeys.clear();
       pendingAttachmentBytes = 0;
@@ -174,7 +178,7 @@
       const previousLength = attachments.length;
       attachments = attachments.filter(attachment => attachment.id !== id);
       renderComposerAttachments();
-      if (attachments.length !== previousLength) onChange();
+      if (attachments.length !== previousLength) { attachmentRevision += 1; onChange(); }
     }
 
     function isDuplicateAttachmentFile(dedupeKey) {
@@ -282,14 +286,36 @@
       if (!usable.length) {
         return 0;
       }
+      attachmentRevision += 1;
       attachments = usable.map(item => ({ ...item }));
       renderComposerAttachments();
       return attachments.length;
     }
 
+    // Only a just-rejected local-skill submission uses this in-memory recovery.
+    // It keeps the normal composer limits, without durable-draft truncation.
+    function restoreSubmittedAttachments(value, expectedRevision) {
+      if (expectedRevision !== attachmentRevision || attachments.length || pendingAttachmentBytes || pendingAttachmentKeys.size) return false;
+      if (!Array.isArray(value) || value.length > maxAttachments) return false;
+      let total = 0;
+      for (const item of value) {
+        const size = Number(item?.size);
+        if (!item?.name || typeof item.contentBase64 !== 'string' || !Number.isFinite(size) || size < 0 || size > maxAttachmentBytes) return false;
+        total += size;
+      }
+      if (total > maxAttachmentTotalBytes) return false;
+      attachments = value.map((item, index) => ({ ...item, id: `restored-${Date.now()}-${index}`, dedupeKey: buildAttachmentDedupeKey(item) }));
+      attachmentRevision += 1;
+      renderComposerAttachments();
+      onChange();
+      return true;
+    }
+
     return {
       serializePersistableAttachments,
       restorePersistedAttachments,
+      restoreSubmittedAttachments,
+      getRevision: () => attachmentRevision,
       handlePaste,
       handleDragOver,
       handleDragLeave,

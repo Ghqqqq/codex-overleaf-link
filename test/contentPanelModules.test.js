@@ -1126,6 +1126,7 @@ test('skills entry-row summary tracks the enabled-skill state through the real s
         { id: 'skill-b', title: 'Skill B', removable: false }
       ],
       codexOverleafSkillEnabled: {},
+      loadCodexLocalSkills: false,
       loadCodexOverleafSkills: true
     };
     function getState() { return state; }

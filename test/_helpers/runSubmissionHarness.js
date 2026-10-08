@@ -53,7 +53,7 @@ function harness(block = '') {
   const context = {
     state: originalState, panel, currentRunView: null, runSubmissionPending: false, activeProjectId: projectId,
     cachedAccountScopeId: 'account-one', runCancellationRequested: false, runCancellationController: null,
-    pendingRetryReplacement: null, composerSkillInvocation: null, composerAttachmentsRestoredOnce: false,
+    pendingRetryReplacement: null, composerSkillInvocation: null, composerDraftRevision: 0, composerAttachmentsRestoredOnce: false,
     RunExecutionSnapshot, RunInputQueue, runController, WritebackSettlement, Modules: { ProjectFiles },
     AbortController, crypto: webcrypto, fetch: networkForbidden,
     window: { location: { pathname: '/project/project-one', origin: 'https://synthetic.invalid' }, fetch: networkForbidden },
@@ -74,6 +74,8 @@ function harness(block = '') {
     getSkillLoadingSettings: () => ({ loadCodexLocalSkills: false, loadCodexOverleafSkills: false }),
     getComposerAttachmentsForRun: () => [], getComposerSkillInvocationForRun: () => null,
     createRunAttachmentSnapshots: () => [], getEnabledCodexOverleafSkillIds: () => [],
+    getEnabledCodexLocalSkillIds: () => [], getCodexLocalSkillsCatalog: () => [],
+    primeCodexLocalSkillsCatalog: async () => [], isCodexLocalSkillEnabled: () => true,
     createRunId: () => 'run-' + (++runCounter), getCurrentProjectReferenceFiles: () => [],
     getLastExperimentalOtProjectId: () => projectId, getThemePreference: () => 'dark', modelSelectHasOption: () => true,
     getRenderedModelEntries: () => [], PANEL_DEFAULT_WIDTH: 400,

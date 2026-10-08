@@ -9,7 +9,7 @@ const runtime = fs.readFileSync(path.join(__dirname, '../extension/src/content/c
 function composer(value) {
   const chip = { hidden: false, querySelector: () => ({ setAttribute() {} }) };
   const panel = { querySelector: s => s === '[data-composer-skill-context]' ? chip : { focus() {} } };
-  const api = Function('panel', 'initial', `let composerSkillInvocation = initial; const tr = k => k;\n` +
+  const api = Function('panel', 'initial', `let composerSkillInvocation = initial; let composerDraftRevision = 0; const tr = k => k;\n` +
     ['isSafeSkillId', 'normalizeComposerSkillInvocation', 'getComposerSkillInvocationForRun', 'renderComposerSkillInvocation', 'clearComposerSkillInvocation']
       .map(n => extractFunction(runtime, n)).join('\n') +
     '\nreturn {normalizeComposerSkillInvocation, clearComposerSkillInvocation, get:()=>composerSkillInvocation, set:v=>{composerSkillInvocation=v;}, renderComposerSkillInvocation};')(panel, value);

@@ -353,6 +353,16 @@
       fallbackUserMessage: 'Native host version or capabilities do not match the extension.',
       fallbackNextAction: 'Update the native host.'
     },
+    codex_local_skill_unavailable: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: true,
+      fallbackUserMessage: 'The selected local Codex skill is unavailable or disabled. This run did not start.',
+      fallbackNextAction: 'Open Skills, select an available enabled skill, and submit again.'
+    },
+    codex_local_skills_failed: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: true,
+      fallbackUserMessage: 'Local Codex skills could not be loaded. This run did not start.',
+      fallbackNextAction: 'Open Skills to reload the local catalog, then submit again.'
+    },
     codex_no_usable_result: {
       stage: 'codex', severity: 'error', defaultRetryable: true,
       fallbackUserMessage: 'Local Codex returned no usable final report or operations.',

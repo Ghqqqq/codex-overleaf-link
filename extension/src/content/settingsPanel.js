@@ -242,7 +242,7 @@
               </label>
               <p class="codex-set-row-help" data-i18n="loadCodexLocalSkillsHelp">Pull skills from your local Codex installation.</p>
               <button type="button" class="codex-skills-entry" data-skills-entry>
-                <span class="codex-skills-entry-label" data-i18n="codexOverleafSkillsEntry">Codex Overleaf skills</span>
+                <span class="codex-skills-entry-label" data-i18n="skillsManageEntry">Manage skills</span>
                 <span class="codex-skills-entry-summary" data-skills-entry-summary></span>
                 <span class="codex-skills-entry-chevron" aria-hidden="true">›</span>
               </button>
@@ -254,10 +254,13 @@
         <div class="codex-custom-instructions-head">
           <button type="button" data-skills-back title="Back" aria-label="Back">‹</button>
           <div>
-            <div class="codex-custom-instructions-title" data-i18n="codexOverleafSkillsTitle">Codex Overleaf skills</div>
+            <div class="codex-custom-instructions-title" data-i18n="localSkillsTitle">Skills</div>
           </div>
           <span class="codex-set-saved" data-set-saved hidden><svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg><span data-i18n="settingsSaved">Saved</span></span>
         </div>
+        <div class="codex-wb-skills-list-title codex-wb-skills-caption" data-i18n="codexLocalSkillsTitle">Local Codex skills</div>
+        <div class="codex-local-skill-list" data-codex-local-skill-list></div>
+        <div class="codex-skills-divider"></div>
         <div class="codex-set-card">
           <label class="codex-project-settings-row codex-project-settings-row--switch">
             <span class="codex-project-settings-row-label" data-i18n="loadCodexOverleafSkills">Load Codex Overleaf skills</span>

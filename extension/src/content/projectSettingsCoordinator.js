@@ -140,9 +140,13 @@
       if (!settingsPanelInstance) {
         return;
       }
-      const summary = getSkillLoadingSettings().loadCodexOverleafSkills === false
+      const settings = getSkillLoadingSettings();
+      const localCount = settings.loadCodexLocalSkills === false ? 0
+        : (deps.getCodexLocalSkills?.() || []).filter(skill => isCodexLocalSkillEnabled(skill.id, skill)).length;
+      const overleafCount = settings.loadCodexOverleafSkills === false ? 0 : countEnabledCodexOverleafSkills();
+      const summary = settings.loadCodexLocalSkills === false && settings.loadCodexOverleafSkills === false
         ? tr('codexOverleafSkillsSummaryOff')
-        : tr('codexOverleafSkillsSummaryCount', { count: countEnabledCodexOverleafSkills() });
+        : tr('codexOverleafSkillsSummaryCount', { count: localCount + overleafCount });
       SettingsPanel.setSkillsSummary(settingsPanelInstance, summary);
     }
 
@@ -296,6 +300,36 @@
       deps.updateGlobalPreferences?.({ codexOverleafSkillEnabled: { [skillId]: Boolean(enabled) } })?.catch(() => {});
     }
 
+    function getCodexLocalSkillEnabled() {
+      const map = getState()?.codexLocalSkillEnabled;
+      return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+    }
+
+    function isCodexLocalSkillEnabled(skillId, skill) {
+      const map = getCodexLocalSkillEnabled();
+      return Object.prototype.hasOwnProperty.call(map, skillId) ? map[skillId] !== false : skill?.enabled !== false;
+    }
+
+    function setCodexLocalSkillEnabled(skillId, enabled) {
+      if (deps.updateGlobalPreferences) {
+        try {
+          const pending = deps.updateGlobalPreferences({ codexLocalSkillEnabled: { [skillId]: Boolean(enabled) } });
+          Promise.resolve(pending).then(() => saveStateSoon()).catch(() => {
+            renderLocalSkillList();
+            setProjectSettingsStatus(tx('Could not save the local skill selection. Try again.', '无法保存本地技能选择，请重试。'), 'failed');
+          });
+        } catch (_error) {
+          renderLocalSkillList();
+          setProjectSettingsStatus(tx('Could not save the local skill selection. Try again.', '无法保存本地技能选择，请重试。'), 'failed');
+        }
+      } else {
+        setState({ ...getState(), codexLocalSkillEnabled: { ...getCodexLocalSkillEnabled(), [skillId]: Boolean(enabled) } });
+        saveStateSoon();
+        renderLocalSkillList();
+      }
+      deps.onSkillsChange?.();
+    }
+
     function readSkillLoadingSettingsFromSettings() {
       return SettingsPanel.readState(getSettingsPanelInstance()).skillToggles;
     }
@@ -337,6 +371,9 @@
       closeCustomInstructionsSettings,
       closeSkillsView,
       getCodexOverleafSkillEnabled,
+      getCodexLocalSkillEnabled,
+      isCodexLocalSkillEnabled,
+      setCodexLocalSkillEnabled,
       getCustomInstructionsForCurrentProject,
       getGovernanceRulesForCurrentProject,
       getSkillLoadingSettings,
