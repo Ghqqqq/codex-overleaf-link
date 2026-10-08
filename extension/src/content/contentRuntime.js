@@ -1362,6 +1362,7 @@
           onTaskKeydown: handleTaskInputKeydown,
           onTaskInput: handleTaskInput,
           onSlashMenuClick: handleSlashMenuClick,
+          onMenuLayoutChange: updateSlashMenuLayout,
           onClearSkillInvocation: clearComposerSkillInvocation,
           onAddContext: toggleContextTray,
           onAttachClick: () => panel.querySelector('[data-attach-input]')?.click(),
@@ -3807,6 +3808,17 @@
     renderedSlashCommands = new Map(commands.map(command => [command.id, command]));
     menu.dataset.activeIndex = '0';
     menu.hidden = false;
+    menu.scrollTop = 0;
+    updateSlashMenuLayout();
+  }
+
+  function updateSlashMenuLayout() {
+    const menu = panel?.querySelector('[data-slash-menu]');
+    const composer = panel?.querySelector('[data-composer-form]');
+    if (!menu || menu.hidden || !composer) return;
+    const visibleTop = Math.max(0, root.visualViewport?.offsetTop || 0, panel.getBoundingClientRect().top);
+    const available = Math.max(0, Math.floor(composer.getBoundingClientRect().top - visibleTop - 12));
+    menu.style.setProperty('--codex-slash-menu-space', `${available}px`);
   }
 
   function handleSlashMenuClick(event) {
@@ -3865,6 +3877,18 @@
     buttons.forEach((button, buttonIndex) => {
       button.dataset.active = buttonIndex === index ? 'true' : 'false';
     });
+    const active = buttons[index];
+    if (!active || !menu.clientHeight) return;
+    const viewport = menu.getBoundingClientRect();
+    const item = active.getBoundingClientRect();
+    const top = viewport.top + menu.clientTop;
+    const bottom = top + menu.clientHeight;
+    // Scroll only this popup; scrollIntoView may move the chat or editor too.
+    if (item.height > menu.clientHeight || item.top < top) {
+      menu.scrollTop += item.top - top;
+    } else if (item.bottom > bottom) {
+      menu.scrollTop += item.bottom - bottom;
+    }
   }
 
   function selectSlashCommand(commandId) {

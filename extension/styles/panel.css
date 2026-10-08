@@ -4538,7 +4538,14 @@
   bottom: calc(100% + 6px);
   z-index: 2147483647;
   display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 2px;
+  box-sizing: border-box;
+  max-height: min(360px, var(--codex-slash-menu-space, 50vh));
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
   border: 1px solid var(--tl-border-strong);
   border-radius: 8px;
   background: var(--tl-surface-2);
@@ -4554,12 +4561,15 @@
   display: grid;
   gap: 2px;
   width: 100%;
+  min-width: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--tl-fg-1);
   padding: 7px 8px;
   text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 #codex-overleaf-panel .codex-slash-menu button[data-active="true"],

@@ -132,6 +132,7 @@
     `;
 
     bindEvents(instance);
+    bindMenuLayout(instance);
 
     return {
       setRunning: running => setRunning(instance, running),
@@ -191,6 +192,22 @@
     }
     target.addEventListener(type, listener);
     instance.listeners.push({ target, type, listener });
+  }
+
+  function bindMenuLayout(instance) {
+    const view = instance.container.ownerDocument?.defaultView || window;
+    const update = () => instance.callbacks.onMenuLayoutChange?.();
+    bind(instance, view, 'resize', update);
+    bind(instance, view.visualViewport, 'resize', update);
+    bind(instance, view.visualViewport, 'scroll', update);
+    const form = instance.container.querySelector('[data-composer-form]');
+    if (form && typeof view.ResizeObserver === 'function') {
+      instance.menuResizeObserver = new view.ResizeObserver(update);
+      instance.menuResizeObserver.observe(form);
+      instance.menuResizeObserver.observe(instance.container);
+      const panel = instance.container.closest?.('#codex-overleaf-panel');
+      if (panel && panel !== instance.container) instance.menuResizeObserver.observe(panel);
+    }
   }
 
   function setRunning(target, running) {
@@ -276,6 +293,7 @@
   }
 
   function destroy(instance) {
+    instance.menuResizeObserver?.disconnect();
     for (const { target, type, listener } of instance.listeners.splice(0)) {
       target.removeEventListener?.(type, listener);
     }

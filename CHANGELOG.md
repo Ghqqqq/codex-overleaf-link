@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Keep long `/` and `@` menus within the available panel height, enable internal scrolling, and keep keyboard selections visible without moving the surrounding page.
 - Preserve session drafts, queued inputs, submission ownership, and recovery records across cancellation, navigation, storage retries, and page reloads.
 - Strengthen file identity and writeback receipt checks, retain verified multi-file Undo progress, and bind native review controls to the intended document.
 - Explain why ordinary Undo stops when unresolved tracked changes remain, while preserving the existing protection, confirmation, and retry rules.

@@ -93,6 +93,8 @@ Provider 通过 `revealProviders` 嵌入工作台；相关编辑器由 [Provider
 Skills 页面由 [LocalSkillsPanel](../../extension/src/content/localSkillsPanel.js) 分别渲染本地 Codex 与 Codex Overleaf 目录，两份列表沿用已有行布局和逐项开关；本地项不提供删除操作。`refreshLocalSkills` 通过 runtime 的 `primeCodexLocalSkillsCatalog` 读取本地目录，加载中、空目录和失败使用各自的中英文状态，重新打开页面可刷新。单项发现失败保留有效目录，并按 `discoveryWarnings` 的代码与数量显示“部分技能未加载”提示，不阻断普通任务。目录仅在内存中保存，偏好由全局 owner 持久化。
 `contentRuntime.getSlashCommands` 把已启用本地项加入 `/` 菜单，保留 `codex-local` scope 与稳定 ID；选中后沿既有 composer 技能标签提交。插件技能同名时仍保留独立身份。目录发现、选择默认值与 Native 显式读取见[目录、逐项选择与调用](writing-style-and-skills.md#local-skill-catalog)，改 UI 时须同时核对提交捕获、队列和实际执行隔离；界面与提交的相关验证入口为 [localCodexSkillsUi](../../test/localCodexSkillsUi.test.js)。
 
+`/` 与 `@` 共用 `.codex-slash-menu`。菜单以内部纵向滚动容纳长列表，不截断可用技能；[panel.css](../../extension/styles/panel.css) 提供高度上限、滚动边界和长文本换行，`contentRuntime.updateSlashMenuLayout` 根据输入区顶边与面板/可见视口顶边计算剩余空间。[ComposerPanel](../../extension/src/content/composerPanel.js) 监听窗口及 visualViewport 变化，并用 ResizeObserver 观察输入区、挂载容器及面板尺寸；销毁时解除这些订阅。重新渲染或过滤列表会同步回到首项和顶部；方向键通过 `setSlashMenuActiveIndex` 只调整菜单自身的 scrollTop，使选中项可见，不滚动会话正文或编辑器。布局变化保留已有滚动位置，下一次键盘选择再对齐高亮项。IME、Enter、Escape 以及 `@` 的原选择语义保持；几何与生命周期回归见 [slashMenuViewport](../../test/slashMenuViewport.test.js)，实际滚轮仍须浏览器验收。
+
 ### 历史查看、清理与结果动作
 
 新建、切换、重命名和单会话删除经 PanelRenderer/SessionPanel 的 runtime callbacks 进入 `SessionManager`。空会话复用、容量确认、手动标题与最后会话重置见[会话生命周期](run-state-and-recovery.md#session-lifecycle)。
