@@ -819,8 +819,8 @@ test('composer slash menu offers Codex Overleaf skill installation and installed
   assert.match(selectBody, /activateSkillInstallerComposerContext\(\)/);
   assert.match(selectBody, /activateCodexOverleafSkillComposerContext/);
   assert.match(runTaskBody, /const submittedSkillInvocation = queuedContext \? queuedContext\.skillInvocation : getComposerSkillInvocationForRun\(\)/);
-  assert.match(runTaskBody, /submittedSkillInvocation\?\.id === 'skill-installer'[\s\S]*runSkillInstallerTask/);
-  assert.match(runTaskBody, /try\s*\{[\s\S]*?if \(submittedSkillInvocation\?\.id === 'skill-installer'\)[\s\S]*runSkillInstallerTask/);
+  assert.match(runTaskBody, /submittedSkillInvocation\?\.id === 'skill-installer' && !submittedSkillInvocation\.scope[\s\S]*runSkillInstallerTask/);
+  assert.match(runTaskBody, /try\s*\{[\s\S]*?if \(submittedSkillInvocation\?\.id === 'skill-installer' && !submittedSkillInvocation\.scope\)[\s\S]*runSkillInstallerTask/);
   assert.match(runTaskBody, /finally\s*\{[\s\S]*setRunning\(false\)[\s\S]*nativeChannel\.clearActiveRequest\(\)/);
   assert.match(runTaskBody, /skillInvocation:\s*submittedSkillInvocation/);
   assert.match(contentScript, /skipMirrorSync:\s*true/);
@@ -4148,6 +4148,10 @@ test('saveState merges latest lightweight prefs before saving project-scoped set
       const map = state.codexOverleafSkillEnabled;
       return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
     }
+    function getCodexLocalSkillEnabled() {
+      const map = state.codexLocalSkillEnabled;
+      return map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+    }
     ${extractFromContentScript( 'normalizeExperimentalOtByProject')}
     ${extractFromContentScript( 'normalizeGovernanceRulesByProject')}
     ${extractFromContentScript( 'normalizeCustomInstructionsByProject')}
@@ -5220,6 +5224,7 @@ test('Fix A: saveState skips persistence when run is navigation-divergent and no
     + "function normalizeGovernanceRulesByProject(v){ return v || {}; }"
     + "function normalizeCustomInstructionsByProject(v){ return v || {}; }"
     + "function getCodexOverleafSkillEnabled(){ return {}; }"
+    + "function getCodexLocalSkillEnabled(){ return {}; }"
     + "function isStorageQuotaError(){ return false; }"
     + "const persistenceCoordinator = {"
     + "  commit: async (projectId, _options, action) => ({ ok: true, value: await action({ scope: { accountScopeId: 'account-a', projectId }, nextMeta: {}, writerId: 'test-writer' }) })"

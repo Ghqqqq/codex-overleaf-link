@@ -54,7 +54,7 @@ async function refreshLab() {
   Object.assign(h.context.Modules, { StorageDb: observerDb, StorageMigration: Migration,
     SessionPersistence: Persistence, ScopedPersistenceCoordinator: PanelState });
   Object.assign(h.context, { prepareStateForStorage: State.prepareStateForStorage,
-    notifyAggressiveCompactionOnce: no, getCodexOverleafSkillEnabled: () => ({}),
+    notifyAggressiveCompactionOnce: no, getCodexOverleafSkillEnabled: () => ({}), getCodexLocalSkillEnabled: () => ({}),
     normalizeExperimentalOtByProject: value => value || {}, normalizeGovernanceRulesByProject: value => value || {},
     normalizeCustomInstructionsByProject: value => value || {},
     getGlobalPreferences: () => globalPreferences,

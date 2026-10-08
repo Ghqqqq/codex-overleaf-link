@@ -249,6 +249,12 @@ test('same-name local skills display their readable source hints', () => {
   h.controller.renderLocalSkillList();
   assert.equal(h.localList.children[0].children[0].children[1].textContent, 'Local Codex · skills/personal');
   assert.equal(h.localList.children[1].children[0].children[1].textContent, 'Local Codex · skills/team');
+  const switches = h.localList.children.map(row => row.children.find(node => node.tag === 'input'));
+  assert.equal(switches[0]['aria-label'], 'Same title: skills/personal: Enable this skill');
+  assert.equal(switches[1]['aria-label'], 'Same title: skills/team: Enable this skill');
+  h.setLocale('zh'); h.controller.refreshLocale();
+  assert.equal(switches[0]['aria-label'], 'Same title: skills/personal: 启用该技能');
+  assert.equal(switches[1]['aria-label'], 'Same title: skills/team: 启用该技能');
 });
 
 for (const locale of ['en', 'zh']) {

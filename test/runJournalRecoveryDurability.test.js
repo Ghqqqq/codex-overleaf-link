@@ -181,7 +181,7 @@ function createHarness(options = {}) {
     normalizeExperimentalOtByProject: value => value || {},
     normalizeGovernanceRulesByProject: value => value || {},
     normalizeCustomInstructionsByProject: value => value || {},
-    getCodexOverleafSkillEnabled: () => ({}),
+    getCodexOverleafSkillEnabled: () => ({}), getCodexLocalSkillEnabled: () => ({}),
     notifyAggressiveCompactionOnce() { trace.push('compaction-notice'); },
     appendPlainLog() { trace.push('plain-log'); },
     appendStorageNoticeOnce() { trace.push('save-failed-notice'); }

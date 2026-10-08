@@ -235,7 +235,9 @@
       toggle.type = 'checkbox';
       toggle.className = 'codex-switch';
       toggle.checked = local ? isCodexLocalSkillEnabled(id, skill) : isCodexOverleafSkillEnabled(id);
-      toggle.setAttribute('aria-label', (trimmedTitle || id) + ': ' + tr('codexOverleafSkillEnableToggle'));
+      const accessibleSkillName = (trimmedTitle || id)
+        + (local && skill.duplicateTitle ? ': ' + (skill.sourceHint || id.slice(-8)) : '');
+      toggle.setAttribute('aria-label', accessibleSkillName + ': ' + tr('codexOverleafSkillEnableToggle'));
       if (!masterEnabled) {
         toggle.disabled = true;
       }
@@ -245,7 +247,7 @@
       });
       row._refreshLocale = () => {
         if (sourceLabel) sourceLabel.textContent = sourceText();
-        toggle.setAttribute('aria-label', (trimmedTitle || id) + ': ' + tr('codexOverleafSkillEnableToggle'));
+        toggle.setAttribute('aria-label', accessibleSkillName + ': ' + tr('codexOverleafSkillEnableToggle'));
         const label = !local && id === 'annotated-rewrite' ? tx('Guided editing for document revisions.', '用于文稿修订的编辑流程。')
           : !local && id === 'parallel-subagents' ? tx('Split independent subtasks across multiple agents.', '将相互独立的子任务分配给多个 agent。') : '';
         const help = copy.querySelector('.codex-local-skill-description');

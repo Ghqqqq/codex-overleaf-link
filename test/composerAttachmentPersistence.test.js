@@ -122,6 +122,7 @@ function attachMemoryPersistence(h) {
     ScopedPersistenceCoordinator: PanelState, SessionPersistence });
   Object.assign(h.context, { storageKey: 'synthetic-legacy-key', prepareStateForStorage: SessionState.prepareStateForStorage,
     notifyAggressiveCompactionOnce: no, getCodexOverleafSkillEnabled: () => ({}),
+    getCodexLocalSkillEnabled: () => ({}),
     normalizeExperimentalOtByProject: value => value || {}, normalizeGovernanceRulesByProject: value => value || {},
     normalizeCustomInstructionsByProject: value => value || {},
     getScopedPersistenceCoordinator: () => ({ async commit(project, options, persist) {

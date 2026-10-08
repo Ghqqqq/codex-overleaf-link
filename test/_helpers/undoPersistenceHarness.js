@@ -63,7 +63,7 @@ async function createPersistenceFixture({ track = false, files, operations, crea
     storageKey: 'synthetic-legacy-qa-project', getCurrentProjectId: () => h.state.projectId, spaRouteGeneration: 0,
     getAccountScopeId: () => context.cachedAccountScopeId, getRouteGeneration: () => context.spaRouteGeneration,
     prepareStateForStorage: State.prepareStateForStorage, notifyAggressiveCompactionOnce() {},
-    getCodexOverleafSkillEnabled: () => ({}), normalizeExperimentalOtByProject: value => value || {},
+    getCodexOverleafSkillEnabled: () => ({}), getCodexLocalSkillEnabled: () => ({}), normalizeExperimentalOtByProject: value => value || {},
     normalizeCustomInstructionsByProject: value => value || {}, normalizeGovernanceRulesByProject: value => value || {},
     getComposerDraftPersistence: () => ({ async save() {}, async load() { return []; } }),
     getScopedPersistenceCoordinator: () => ({ async commit(projectId, options, action) {

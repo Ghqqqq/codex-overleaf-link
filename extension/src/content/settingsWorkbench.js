@@ -243,6 +243,11 @@
       projectFilter.setAttribute('aria-pressed', String(filter === 'project'));
       closeButton.title = t('settingsWorkbenchClose');
       closeButton.setAttribute('aria-label', t('settingsWorkbenchClose'));
+      const skillsBack = skills?.querySelector('[data-skills-back]');
+      if (skillsBack) {
+        skillsBack.title = t('settingsBack');
+        skillsBack.setAttribute('aria-label', t('settingsBack'));
+      }
       for (const [id, tab] of navButtons) {
         tab.hidden = !availablePages.has(id);
         tab.setAttribute('aria-selected', String(id === active));

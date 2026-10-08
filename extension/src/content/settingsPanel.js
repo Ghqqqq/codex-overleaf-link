@@ -252,15 +252,12 @@
       </section>
       <section class="codex-custom-instructions-panel codex-skills-panel" data-skills-screen>
         <div class="codex-custom-instructions-head">
-          <button type="button" data-skills-back title="Back" aria-label="Back">‹</button>
+          <button type="button" data-skills-back data-i18n-title="settingsBack" data-i18n-aria-label="settingsBack" title="Back" aria-label="Back">‹</button>
           <div>
             <div class="codex-custom-instructions-title" data-i18n="localSkillsTitle">Skills</div>
           </div>
           <span class="codex-set-saved" data-set-saved hidden><svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg><span data-i18n="settingsSaved">Saved</span></span>
         </div>
-        <div class="codex-wb-skills-list-title codex-wb-skills-caption" data-i18n="codexLocalSkillsTitle">Local Codex skills</div>
-        <div class="codex-local-skill-list" data-codex-local-skill-list></div>
-        <div class="codex-skills-divider"></div>
         <div class="codex-set-card">
           <label class="codex-project-settings-row codex-project-settings-row--switch">
             <span class="codex-project-settings-row-label" data-i18n="loadCodexOverleafSkills">Load Codex Overleaf skills</span>
@@ -269,6 +266,9 @@
         </div>
         <div class="codex-skills-divider"></div>
         <div class="codex-local-skill-list" data-local-skill-list></div>
+        <div class="codex-skills-divider"></div>
+        <div class="codex-wb-skills-list-title codex-wb-skills-caption" data-i18n="codexLocalSkillsTitle">Local Codex skills</div>
+        <div class="codex-local-skill-list" data-codex-local-skill-list></div>
       </section>
     `;
 

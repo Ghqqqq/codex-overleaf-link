@@ -70,7 +70,7 @@ function setup({ providerGate = false, commitGate = '', storageFailure = false }
   Object.assign(c, { PROJECT_EDITOR_RESERVED_IDS: new Set(['new', 'upload', 'import']), structuredClone,
     RunQueueScheduler: Scheduler, runInputCoordinator: null, scopedPersistenceCoordinator: null, spaRouteGeneration: 0,
     prepareStateForStorage: Session.prepareStateForStorage, notifyAggressiveCompactionOnce: noop,
-    getCodexOverleafSkillEnabled: () => ({}), normalizeExperimentalOtByProject: x => x || {},
+    getCodexOverleafSkillEnabled: () => ({}), getCodexLocalSkillEnabled: () => ({}), normalizeExperimentalOtByProject: x => x || {},
     normalizeGovernanceRulesByProject: x => x || {}, normalizeCustomInstructionsByProject: x => x || {},
     chrome: { storage: { local: { async set() { logs.saveFallback++; } } } }, storageKey: 'synthetic',
     buildScopedFallbackStorageKey: () => 'synthetic-fallback', prepareCompactFallbackState: () => ({}),

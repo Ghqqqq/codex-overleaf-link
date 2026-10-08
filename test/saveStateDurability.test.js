@@ -16,7 +16,7 @@ function setup(options = {}) {
     currentRunView: options.diverged ? { runProjectId: 'another-project' } : null,
     getCurrentProjectId: () => options.noProject ? '' : 'project',
     prepareStateForStorage: SessionState.prepareStateForStorage,
-    getCodexOverleafSkillEnabled: () => ({}), notifyAggressiveCompactionOnce() {},
+    getCodexOverleafSkillEnabled: () => ({}), getCodexLocalSkillEnabled: () => ({}), notifyAggressiveCompactionOnce() {},
     normalizeExperimentalOtByProject: x => x, normalizeGovernanceRulesByProject: x => x,
     normalizeCustomInstructionsByProject: x => x,
     getScopedPersistenceCoordinator: () => ({ async commit() {

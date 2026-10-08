@@ -24,13 +24,16 @@ function harness({ delayedSave = false, renderErrors = [] } = {}) {
     }), id: 'source-session' }], activeSessionId: 'source-session'
   });
   let scope = { accountScopeId: 'account-a', projectId: 'project-a', generation: 1 };
-  const native = deferred(), save = deferred(), saveEntered = deferred();
+  const native = deferred(), nativeEntered = deferred(), save = deferred(), saveEntered = deferred();
   const requests = [], saves = [], notices = [], renders = [];
   const getState = () => state;
   const setState = next => { state = next; };
   const sendBackgroundNative = async request => {
     requests.push(request);
-    if (request.method === 'codex.thread.fork') return native.promise;
+    if (request.method === 'codex.thread.fork') {
+      nativeEntered.resolve();
+      return native.promise;
+    }
     if (request.method === 'codex.history.clearPlugin') return { ok: true };
     throw new Error(`Unexpected request ${request.method}`);
   };
@@ -57,7 +60,7 @@ function harness({ delayedSave = false, renderErrors = [] } = {}) {
     showPluginToast() {}, getSessionPanelInstance: () => null, formatSessionTime: value => value
   });
   return {
-    controller, manager, native, save, saveEntered, requests, saves, notices, renders, getState, setState,
+    controller, manager, native, nativeEntered, save, saveEntered, requests, saves, notices, renders, getState, setState,
     setScope: next => { scope = { ...scope, ...next }; },
     draft: value => setState(SessionState.updateActiveSession(getState(), { task: value })),
     succeed: () => native.resolve({ ok: true, result: { threadId: 'forked-thread' } })
@@ -125,6 +128,7 @@ test('fork merge leaves an unrelated running session running', options, async ()
 test('source removal discards and cleans the unattached Native fork', options, async () => {
   const h = harness();
   const pending = h.controller.forkRunFromNode('source-run');
+  await h.nativeEntered.promise;
   const replacement = SessionState.normalizePanelState({
     sessions: [SessionState.createSession({ id: 'replacement', task: 'new view' })], activeSessionId: 'replacement'
   });
@@ -144,6 +148,7 @@ for (const changed of [{ accountScopeId: 'account-b' }, { projectId: 'project-b'
     const h = harness();
     const before = h.getState();
     const pending = h.controller.forkRunFromNode('source-run');
+    await h.nativeEntered.promise;
     h.setScope(changed);
     h.succeed();
     assert.equal(await pending, null);
@@ -158,6 +163,7 @@ for (const changed of [{ accountScopeId: 'account-b' }, { projectId: 'project-b'
 test('a late Native rejection does not display failure in a new scope', options, async () => {
   const h = harness();
   const pending = h.controller.forkRunFromNode('source-run');
+  await h.nativeEntered.promise;
   h.setScope({ generation: 2 });
   h.native.reject(new Error('old project Native failure'));
   assert.equal(await pending, null);
