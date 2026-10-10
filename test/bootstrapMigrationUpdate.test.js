@@ -489,11 +489,11 @@ function killAfterCommittedEvidence(f) {
 const root=process.argv[1],journalPath=path.join(root,'native/updates/transaction.json');
 const authorizationPath=path.join(root,'native/updates/authorization.json');
 const {loadWithDependencies}=require(process.argv[2]);
-const io={...fs,writeFileSync(filename,...args){
-if(typeof filename==='string'&&filename.startsWith(authorizationPath+'.tmp-')){
+const io={...fs,renameSync(from,to){
+if(to===authorizationPath){
 const journal=JSON.parse(fs.readFileSync(journalPath,'utf8'));
 if(journal.state==='committed'&&journal.committedEvidence)process.kill(process.pid,'SIGKILL');}
-return fs.writeFileSync(filename,...args);}};
+return fs.renameSync(from,to);}};
 const updater=loadWithDependencies('native-host/src/updateManager.js',{'node:fs':io});
 const journal=JSON.parse(fs.readFileSync(journalPath,'utf8'));
 updater.handleUpdateRequest({id:'killed-confirm',method:'update.confirm',params:{transactionId:journal.id,
