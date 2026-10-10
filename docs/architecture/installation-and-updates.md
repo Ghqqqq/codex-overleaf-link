@@ -331,16 +331,17 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 签名证明声明来源，摘要和大小证明对应资产字节：$Verify(pk,manifest,signature)\land H(bundle)=manifest.updateBundle.sha256\land |bundle|=manifest.updateBundle.size$。这些检查不证明发布逻辑没有缺陷，也不代表真实公开资产已经核验。
 [installReleaseSafety.test.js](../../test/installReleaseSafety.test.js)使用临时签名及有效归档，覆盖正确资产、大小不符和摘要不符；[releaseScripts.test.js](../../test/releaseScripts.test.js)保留构建时产物与manifest的一致性验证。运行时`stageCandidate()`继续独立检查实际下载字节，发布检查不替代客户端信任边界。
 
-源码基线中的 [.github/workflows/release.yml](../../.github/workflows/release.yml)顺序如下：
+当前 [.github/workflows/release.yml](../../.github/workflows/release.yml)顺序如下：
 
 1. macOS、Ubuntu、Windows矩阵执行测试、架构预算、更新边界和大型项目benchmark。
 2. 核对版本/tag/日期，检查目标GitHub release尚未正式发布。
 3. 构建产物、签名；stable执行旧稳定版update-hop，再以`--require-signature`验证产物。
 4. 创建/更新GitHub draft并上传资产；stable发布或匹配既有npm版本，RC跳过npm。
-5. 验证npm可见性与integrity，最后解除GitHub draft标记。
+5. stable验证公开npm元数据与实际下载包，最后解除GitHub draft标记；RC跳过npm检查。
 
 已正式发布的GitHub release会被前置检查拒绝覆盖；draft上传配置仍允许覆盖文件，故重跑工作流不能直接视为安全的恢复动作。
-该基线的npm等待逻辑为十二次、每次五秒轮询后比较metadata integrity。
+stable的公开可见性检查由[waitForNpmPublication()](../../scripts/wait-for-npm-publication.mjs)执行：元数据、tarball下载及响应体读取共享默认十分钟总期限，单次请求最多三十秒且受剩余总期限限制；重试间隔从五秒逐步增加，最多三十秒，workflow另设十二分钟外层限制。临时HTTP状态（404/408/425/429/5xx）、连接或响应体超时、截断JSON和缺少dist字段的元数据会继续等待；其他HTTP错误直接失败。
+该检查使用固定公开registry，不携带发布token，也不跟随重定向。成功须同时满足包名/版本正确、tarball URL精确匹配、元数据声明的SHA-512及实际下载内容SHA-512均与已验证的本地tgz一致。身份、URL或摘要不符立即失败；总期限耗尽时保留GitHub draft，helper不会自动再次发布npm包。失败后应先检查公开包及原资产，不能把完整workflow重跑视为保持draft字节不变的恢复操作。
 `verify:update-hop`默认选择前一稳定版，下载真实旧资产并在隔离目录准备安装。同Bootstrap协议先调用旧updater完成授权、stage与apply，再由[update-hop-runtime.mjs](../../scripts/update-hop-runtime.mjs)启动原旧launcher和实际目标Native进程，通过Native Messaging帧验证版本与事务。普通runtime更新继续要求Bootstrap字节不变；带显式revision迁移的分支在旧apply后核对源摘要，随后由新Native执行`update.bootstrap`并核对目标摘要。
 [update-hop-bootstrap-harness.mjs](../../scripts/update-hop-bootstrap-harness.mjs)将安装后的真实Bootstrap及其runtime依赖载入VM，让这些脚本向实际Native进程完成revision与健康确认；Chrome存储、标签页、重载和页面health应答由harness提供，因此该分支证明真实旧updater→旧launcher→新Native及实际固定脚本的接续，不构成真实Chrome验收。不同Bootstrap协议仍测试旧updater拒绝并要求重装。
 `--local-test-key`只向隔离进程注入临时信任材料，目标Native包及待发布manifest/签名/bundle原件保持摘要不变；它验证更新流程，不能证明正式发布密钥和公开资产正确。
@@ -358,7 +359,7 @@ runtime-only updater不安装`node_modules`；runtime依赖集合变化也受到
 | Bootstrap形状/协议迁移 | 两份manifest、protected paths、manual note、update-hop | [updateManualInstall.test.js](../../test/updateManualInstall.test.js)、[updateBoundaryWorkingTree.test.js](../../test/updateBoundaryWorkingTree.test.js) |
 | 同协议Bootstrap revision迁移 | bootstrapMigrationContract、bootstrapUpdate、bootstrapMigration、bootstrapUpdateWatchdog、backgroundBootstrapMigration、原Bootstrap/Popup与updateManager | [bootstrapMigrationFiles.test.js](../../test/bootstrapMigrationFiles.test.js)、[bootstrapMigrationUpdate.test.js](../../test/bootstrapMigrationUpdate.test.js)、[bootstrapMigrationBuild.test.js](../../test/bootstrapMigrationBuild.test.js)、[bootstrapMigrationBrowser.test.js](../../test/bootstrapMigrationBrowser.test.js)；文件故障注入、Native事务恢复、产物校验和浏览器VM各有范围，不能代替真实旧版到新版的Chrome验收 |
 | 重载后的安全probe与刷新保护 | backgroundUpdateSafety、updateSafetyReceiver、updateSafetyProbe、UpdateIdle/saveState、backgroundBootstrapMigration、guarded刷新清单 | [updateSafetyRecovery.test.js](../../test/updateSafetyRecovery.test.js)、[managedUpdateSafetyGate.test.js](../../test/managedUpdateSafetyGate.test.js)、[bootstrapMigrationBrowser.test.js](../../test/bootstrapMigrationBrowser.test.js)；局部替身与真实浏览器接收端寿命分别验证 |
-| 发布包/工作流 | build-release、npm范围、签名与产物验证、workflow | [releaseScripts.test.js](../../test/releaseScripts.test.js)、[updateHopRehearsalWiring.test.js](../../test/updateHopRehearsalWiring.test.js) |
+| 发布包/工作流 | build-release、npm范围、签名与产物验证、wait-for-npm-publication、workflow | [releaseScripts.test.js](../../test/releaseScripts.test.js)、[waitForNpmPublication.test.js](../../test/waitForNpmPublication.test.js)、[updateHopRehearsalWiring.test.js](../../test/updateHopRehearsalWiring.test.js)；公开npm可见性需实际发布环境取证 |
 
 以下命令提供验证入口；第一条列出测试，第二条执行所选测试：
 

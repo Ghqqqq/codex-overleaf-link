@@ -33,3 +33,4 @@ ROADMAP.md
 scripts/npm-package-files-v*.txt
 .claude/
 .superpowers/
+/.local-handoff/

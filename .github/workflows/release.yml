@@ -176,29 +176,10 @@ jobs:
 
       - name: Verify npm package is published
         if: env.RELEASE_PRERELEASE != 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        shell: bash
-        run: |
-          published=0
-          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            published_version="$(npm view "codex-overleaf-link@${PACKAGE_VERSION}" version 2>/dev/null || true)"
-            if [ "${published_version}" = "${PACKAGE_VERSION}" ]; then
-              published=1
-              break
-            fi
-            sleep 5
-          done
-          if [ "${published}" != "1" ]; then
-            echo "codex-overleaf-link@${PACKAGE_VERSION} was not visible on npm after retry."
-            exit 1
-          fi
-          published_integrity="$(npm view "codex-overleaf-link@${PACKAGE_VERSION}" dist.integrity)"
-          local_integrity="sha512-$(node -e "const fs=require('node:fs'),crypto=require('node:crypto');process.stdout.write(crypto.createHash('sha512').update(fs.readFileSync(process.argv[1])).digest('base64'))" "${LOCAL_TGZ}")"
-          if [ "${published_integrity}" != "${local_integrity}" ]; then
-            echo "Published npm integrity does not match the verified release tarball."
-            exit 1
-          fi
+        # npm can accept a publish before its public metadata and tarball are ready.
+        # The helper has a shared 10-minute budget; this outer limit is a failsafe.
+        timeout-minutes: 12
+        run: node scripts/wait-for-npm-publication.mjs
 
       - name: Publish prepared GitHub release
         shell: bash

@@ -1780,8 +1780,11 @@ releaseTest('release workflow builds and verifies artifacts before npm publish w
     'name: Publish prepared GitHub release'
   ]);
   assert.match(workflow, /npm run verify:release-artifacts/);
-  assert.match(workflow, /for attempt in 1 2 3 4 5 6 7 8 9 10 11 12;/);
-  assert.match(workflow, /sleep 5/);
+  const verificationStep = workflow.split('name: Verify npm package is published')[1].split('name: Publish prepared GitHub release')[0];
+  assert.match(verificationStep, /if: env\.RELEASE_PRERELEASE != 'true'/);
+  assert.match(verificationStep, /timeout-minutes:\s*12/);
+  assert.match(verificationStep, /run: node scripts\/wait-for-npm-publication\.mjs/);
+  assert.doesNotMatch(verificationStep, /NODE_AUTH_TOKEN|npm publish/);
   assert.match(workflow, /overwrite_files:\s*true/);
 });
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.5.1 - 2026-10-08
+## v2.5.1 - 2026-10-10
 
 ### Added
 
@@ -19,11 +19,12 @@
 - Deliver the Bootstrap startup-file fixes through the existing 2.5.0 updater using a signed, explicitly scoped migration to revision 3.1. Keep Bootstrap protocol 3, Chrome permissions, Native registration and the existing update action unchanged.
 - Retain per-file recovery copies and progress, verify the loaded Bootstrap revision before update confirmation, and coordinate timeout recovery through an independent Native monitor and the existing popup fallback. Unknown source changes or incomplete recovery evidence remain blocked.
 - Reconnect read-only save and idle checks after the first extension reload during migration, and preserve unsaved pages while waiting to refresh after a verified rollback.
+- Wait for npm publication to become publicly readable, then verify both registry metadata and the downloaded package against the release artifact within a shared time limit.
 
 ### Documentation and validation
 
 - Add and maintain the architecture guide, feature-location index, and change workflow; keep review reports and test evidence outside distributed documentation.
-- Refresh regression coverage for current persistence, review, and localization contracts. Version 2.5.1 is being prepared for local validation and manual evaluation; no release has been published from this checkout.
+- Refresh regression coverage for current persistence, review, localization, local-skill selection, and long command menus.
 
 ## v2.5.0 - 2026-10-03
 
