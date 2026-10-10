@@ -77,7 +77,7 @@ async function main() {
   const allFiles = fs.readdirSync(testDir)
   .filter((fileName) => fileName.endsWith('.test.js'))
   .sort()
-  .map((fileName) => path.join('test', fileName))
+  .map((fileName) => path.posix.join('test', fileName))
   .sort((left, right) => getTestFilePriority(left) - getTestFilePriority(right) || left.localeCompare(right));
   let selection;
   try {

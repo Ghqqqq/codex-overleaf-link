@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const output = path.resolve('.local-diagnostic');
+const phase = process.argv[2] || 'all';
+if (!['all', 'helper', 'remaining'].includes(phase)) throw new Error('Invalid diagnostic phase');
+const output = path.resolve('.local-diagnostic', phase);
 fs.mkdirSync(output, { recursive: true });
 const results = [];
 function run(label, file, env = {}) {
@@ -20,11 +22,13 @@ function run(label, file, env = {}) {
   fs.writeFileSync(path.join(output, 'summary.json'), JSON.stringify(results, null, 2) + '\n');
   console.log(`::endgroup::`);
 }
-run('helper-baseline', 'test/nativeHelperShutdown.test.js');
-run('helper-system32-path-control', 'test/nativeHelperShutdown.test.js', { CODEX_TEST_HELPER_SYSTEM_TOOLS: '1' });
+if (phase !== 'remaining') {
+  run('helper-baseline', 'test/nativeHelperShutdown.test.js');
+  run('helper-system32-path-control', 'test/nativeHelperShutdown.test.js', { CODEX_TEST_HELPER_SYSTEM_TOOLS: '1' });
+}
 const remaining = fs.readdirSync('test').filter(name => name.endsWith('.test.js')
   && name.localeCompare('nativeHelperShutdown.test.js') > 0).sort((a, b) => a.localeCompare(b));
-for (const name of remaining) run(name.replace(/\.test\.js$/, ''), 'test/' + name);
+if (phase !== 'helper') for (const name of remaining) run(name.replace(/\.test\.js$/, ''), 'test/' + name);
 const failed = results.filter(result => result.status !== 0);
 console.log(JSON.stringify({ diagnosticOnly: true, files: results.length, failed }, null, 2));
 // Diagnostic runs preserve every failure and cannot serve as release gates.

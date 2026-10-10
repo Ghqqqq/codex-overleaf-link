@@ -9,7 +9,27 @@ permissions:
   contents: read
 
 jobs:
-  diagnostics:
+  helper:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.18.0
+      - run: npm ci
+      - run: npm run check:module-graph
+      - name: Capture helper stop and System32 control
+        run: node scripts/diagnose-windows-helpers.mjs helper
+      - name: Preserve helper diagnostic results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-helper-diagnostics
+          path: .local-diagnostic/helper/
+          include-hidden-files: true
+          if-no-files-found: error
+  remaining:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -19,12 +39,13 @@ jobs:
           node-version: 24.18.0
       - run: npm ci
       - run: npm run check:module-graph
-      - name: Capture helper stop and remaining test failures
-        run: node scripts/diagnose-windows-helpers.mjs
+      - name: Capture remaining test failures
+        run: node scripts/diagnose-windows-helpers.mjs remaining
       - name: Preserve diagnostic results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-helper-diagnostics
-          path: .local-diagnostic/
+          name: windows-remaining-diagnostics
+          path: .local-diagnostic/remaining/
+          include-hidden-files: true
           if-no-files-found: error
