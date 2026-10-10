@@ -263,6 +263,7 @@
 - stable发布后的公开npm检查由[waitForNpmPublication](../../scripts/wait-for-npm-publication.mjs)在共享期限内等待元数据和下载包，再与已验证本地tgz核对身份、URL及SHA-512；失败保留draft，不自动重新发布。回归入口为[waitForNpmPublication](../../test/waitForNpmPublication.test.js)，重跑边界与RC分支见[发布顺序](installation-and-updates.md#10-构建分发和发布顺序)。
 - [installReleaseSafety](../../test/installReleaseSafety.test.js) 定位 Windows 注册发现、跨管理根共享入口归属、签名 manifest 与实际 bundle 字节绑定，以及固定启动器生成器的更新边界；真实 Windows 注册和发布资产仍需对应环境验证。
 - Windows 注册值的只读查询在 [nativeHostRegistration.queryWindowsNativeHostRegistration](../../native-host/src/nativeHostRegistration.js)，由 Doctor 和卸载归属检查共同消费；[compatibility.buildInstallCommand](../../extension/src/shared/compatibility.js) 根据安装身份生成原模式修复命令，Popup、原面板指引和诊断的完整消费链见 [managedRepairGuidance](../../test/managedRepairGuidance.test.js)。
+- 查询命令前缀与Direct安装/卸载的`CODEX_OVERLEAF_REG_EXE_ARGS_JSON`契约联动；保留参数数组、查询限制及manifest归属核对。对应[注册查询](../../test/nativeHostRegistration.test.js)、[安装产物烟测](../../test/npmDistribution.test.js)，范围见[注册发现](installation-and-updates.md#3-安装目录注册和失败恢复)。
 - Native 更新安全点还经 `getActiveNativeWorkState(env)` 消费 [processStopBarrier.getBlockedProjectCount](../../native-host/src/processStopBarrier.js) 的既有退出屏障；对应 [updateStopBarrier](../../test/updateStopBarrier.test.js)、[managedInstallRecovery](../../test/managedInstallRecovery.test.js)、[updateRollbackEvidence](../../test/updateRollbackEvidence.test.js)、[managedRuntimeEvidence](../../test/managedRuntimeEvidence.test.js)。
 
 ### 改 2.5.0 → 2.5.1 的兼容 Bootstrap 迁移

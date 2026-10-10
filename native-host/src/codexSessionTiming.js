@@ -104,8 +104,12 @@ async function stopCodexAppServer(child, {
 }
 
 function defaultTaskkill(pid, timeout) {
+  const path = require('node:path');
+  const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || process.env.windir || process.env.WINDIR;
+  const command = systemRoot && path.win32.isAbsolute(systemRoot)
+    ? path.win32.join(systemRoot, 'System32', 'taskkill.exe') : 'taskkill';
   return new Promise((resolve, reject) => {
-    require('node:child_process').execFile('taskkill', ['/pid', String(pid), '/t', '/f'],
+    require('node:child_process').execFile(command, ['/pid', String(pid), '/t', '/f'],
       { windowsHide: true, timeout }, error => error ? reject(error) : resolve());
   });
 }

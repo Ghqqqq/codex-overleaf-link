@@ -8,7 +8,9 @@ function queryWindowsNativeHostRegistration(target, options = {}) {
   const env = options.env || process.env;
   const run = options.spawnSync || require('node:child_process').spawnSync;
   let result;
-  try { result = run(env.CODEX_OVERLEAF_REG_EXE || 'reg.exe', ['query', target.registryKey, '/ve'], {
+  try { result = run(env.CODEX_OVERLEAF_REG_EXE || 'reg.exe', [
+    ...parseStringArrayEnv(env.CODEX_OVERLEAF_REG_EXE_ARGS_JSON), 'query', target.registryKey, '/ve'
+  ], {
     env, encoding: 'utf8', windowsHide: true, timeout: 3000, maxBuffer: 64 * 1024
   }); } catch (_) { return { verified: false, status: 'unavailable' }; }
   if (result.error || result.status !== 0) return { verified: false, status: 'unavailable' };
@@ -16,6 +18,16 @@ function queryWindowsNativeHostRegistration(target, options = {}) {
   if (values.length !== 1 || !path.win32.isAbsolute(values[0])) return { verified: false, status: 'unavailable' };
   const matches = path.win32.normalize(values[0]).toLowerCase() === path.win32.normalize(target.manifestPath).toLowerCase();
   return { verified: matches, status: matches ? 'verified' : 'mismatch', registeredManifestPath: values[0] };
+}
+
+// Match the existing install/uninstall registry command prefix contract.
+function parseStringArrayEnv(value) {
+  if (!value) return [];
+  const parsed = JSON.parse(value);
+  if (!Array.isArray(parsed) || !parsed.every(item => typeof item === 'string')) {
+    throw new Error('CODEX_OVERLEAF_REG_EXE_ARGS_JSON must be a JSON array of strings');
+  }
+  return parsed;
 }
 
 module.exports = { queryWindowsNativeHostRegistration };

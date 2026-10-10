@@ -29,5 +29,9 @@ for (const kind of ['task', 'fork', 'provider']) test('Host disconnect stops own
   // Ordinary run cancellation must not become global helper cancellation.
   const cancel = Buffer.from(JSON.stringify({ id: 'cancel', method: 'codex.cancel', params: { projectKey: 'unrelated', force: true } }));header.writeUInt32LE(cancel.length);child.stdin.write(Buffer.concat([header, cancel]));await sleep(60);assert.equal(alive(pid), true);
   child.stdin.end();await until(() => exited);assert.equal(alive(pid), false, 'helper must be gone when Host reports exit');
+  const stopEvents = fs.readFileSync(path.join(root, 'stop.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const hostExit = JSON.parse(fs.readFileSync(path.join(root, 'host-exit.jsonl'), 'utf8').trim());
+  assert.equal(stopEvents.some(event => event.event === 'rejected'), false, 'Host exit cannot substitute for a successful explicit stop');
+  assert.ok(stopEvents.some(event => event.event === 'resolved' && event.at <= hostExit.at), 'owned stop must finish before Host exit');
   const bytes = fs.statSync(path.join(root, 'heartbeat')).size;await sleep(80);assert.equal(fs.statSync(path.join(root, 'heartbeat')).size, bytes);
 });

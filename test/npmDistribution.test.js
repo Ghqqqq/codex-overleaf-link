@@ -5,6 +5,7 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const test = require('node:test');
+const { isolatedRegistryCommand } = require('./helpers/isolatedRegistryCommand');
 
 const repoRoot = path.resolve(__dirname, '..');
 const packageJson = require('../package.json');
@@ -77,21 +78,14 @@ function getPathValue(env) {
 
 function createFakeWindowsRegistryCommand(tempDir) {
   const binDir = path.join(tempDir, 'fake-registry-bin');
-  const logPath = path.join(tempDir, 'fake-registry-calls.jsonl');
-  const recorderPath = path.join(binDir, 'record-reg-call.cjs');
+  const registry = isolatedRegistryCommand(tempDir, {
+    manifestPath: path.win32.join(tempDir, 'LocalAppData', 'codex-overleaf', 'native-messaging-hosts', 'com.codex.overleaf.json')
+  });
+  const logPath = registry.logPath;
+  const recorderPath = JSON.parse(registry.env.CODEX_OVERLEAF_REG_EXE_ARGS_JSON)[0];
   const cmdPath = path.join(binDir, 'reg.cmd');
 
   fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(recorderPath, [
-    "const fs = require('node:fs');",
-    "const logPath = process.env.CODEX_OVERLEAF_FAKE_REG_LOG;",
-    "if (!logPath) {",
-    "  console.error('Missing CODEX_OVERLEAF_FAKE_REG_LOG');",
-    "  process.exit(2);",
-    "}",
-    "fs.appendFileSync(logPath, `${JSON.stringify(process.argv.slice(2))}\\n`);",
-    ''
-  ].join('\n'));
   fs.writeFileSync(cmdPath, [
     '@echo off',
     '"%CODEX_OVERLEAF_FAKE_NODE_EXE%" "%CODEX_OVERLEAF_FAKE_REG_RECORDER%" %*',
@@ -99,7 +93,7 @@ function createFakeWindowsRegistryCommand(tempDir) {
     ''
   ].join('\r\n'));
 
-  return { binDir, cmdPath, logPath, recorderPath };
+  return { ...registry, binDir, cmdPath, logPath, recorderPath };
 }
 
 function createFakeCodexCommand(tempDir, platform = process.platform) {
@@ -334,6 +328,19 @@ test('packed npm tarball installs executable CLI and manages temp native host', 
     assert.equal(version.status, 0, version.stderr || version.stdout);
     assert.equal(version.stdout.trim(), packageJson.version);
 
+    // Exercise the packed query module and its command prefix on every host.
+    const packedRegistration = require(path.join(installPrefix, 'node_modules', packageJson.name, 'native-host/src/nativeHostRegistration.js'));
+    const registryProbeRoot = path.join(tempDir, 'packed-registry-probe');
+    fs.mkdirSync(registryProbeRoot);
+    const probeManifest = 'C:\\Packed Fixture\\native-hosts\\com.codex.overleaf.json';
+    const registryProbe = isolatedRegistryCommand(registryProbeRoot, { manifestPath: probeManifest, initiallyRegistered: true });
+    const probeTarget = { registryKey: registryProbe.registryKey, manifestPath: probeManifest };
+    assert.equal(packedRegistration.queryWindowsNativeHostRegistration(probeTarget, { env: registryProbe.env }).verified, true);
+    assert.equal(packedRegistration.queryWindowsNativeHostRegistration({ ...probeTarget, manifestPath: 'C:\\Other\\manifest.json' },
+      { env: registryProbe.env }).status, 'mismatch');
+    assert.deepEqual(registryProbe.calls(), [['query', probeTarget.registryKey, '/ve'], ['query', probeTarget.registryKey, '/ve']]);
+    assert.deepEqual(registryProbe.state(), { registered: true, manifestPath: probeManifest });
+
     const help = runInstalledCli(installPrefix, ['help'], { env });
     assert.equal(help.status, 0, help.stderr || help.stdout);
     assert.match(help.stdout, /Commands:/);
@@ -364,6 +371,11 @@ test('packed npm tarball installs executable CLI and manages temp native host', 
       ...runtimeRootArgs
     ], { env });
     assert.equal(doctorAfterInstall.status, 0, doctorAfterInstall.stderr || doctorAfterInstall.stdout);
+    const installedBody = JSON.parse(doctorAfterInstall.stdout);
+    if (process.platform === 'win32') {
+      assert.equal(installedBody.registration.verified, true);
+      assert.equal(installedBody.registration.status, 'verified');
+    }
 
     const uninstallNative = runInstalledCli(installPrefix, [
       'uninstall-native',
@@ -387,8 +399,12 @@ test('packed npm tarball installs executable CLI and manages temp native host', 
       assert.ok(fakeRegistry);
       assert.equal(getPathValue(env).split(path.delimiter)[0], fakeRegistry.binDir);
       const registryCalls = readFakeRegistryCalls(fakeRegistry.logPath);
-      assert.deepEqual(registryCalls.map((call) => call[0]), ['add', 'delete']);
-      assert.equal(registryCalls.every((call) => call[1].startsWith('HKCU\\')), true);
+      assert.deepEqual(registryCalls.map((call) => call[0]), ['query', 'add', 'query', 'delete', 'query']);
+      assert.equal(registryCalls.every((call) => call[1] === fakeRegistry.registryKey), true);
+      assert.deepEqual(registryCalls.filter(call => call[0] === 'query'), Array.from({ length: 3 }, () => ['query', fakeRegistry.registryKey, '/ve']));
+      assert.equal(beforeInstallBody.registration.verified, false);
+      assert.equal(afterUninstallBody.registration.verified, false);
+      assert.deepEqual(fakeRegistry.state(), { registered: false, manifestPath: manifestPathForHome(tempDir) });
     }
   } finally {
     fs.rmSync(tarballPath, { force: true });

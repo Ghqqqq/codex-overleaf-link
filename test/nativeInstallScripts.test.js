@@ -96,12 +96,17 @@ function writeRuntimePackageFixture(tempDir, version = '9.8.7') {
 }
 
 function makeDoctorEnv(tempDir) {
-  return {
+  const env = {
     ...process.env,
     HOME: tempDir,
     USERPROFILE: tempDir,
     LOCALAPPDATA: path.join(tempDir, 'LocalAppData')
   };
+  if (process.platform === 'win32') {
+    const manifestPath = getNativeHostManifestPath({ platform: 'win32', browser: 'chrome', env });
+    Object.assign(env, isolatedRegistryCommand(tempDir, { manifestPath }).env);
+  }
+  return env;
 }
 
 function writeDoctorManifest(tempDir, bridgePath, overrides = {}) {
@@ -122,6 +127,9 @@ function writeDoctorManifest(tempDir, bridgePath, overrides = {}) {
   };
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  if (process.platform === 'win32') {
+    Object.assign(env, isolatedRegistryCommand(tempDir, { manifestPath, initiallyRegistered: true }).env);
+  }
   return { env, manifest, manifestPath };
 }
 

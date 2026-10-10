@@ -143,5 +143,5 @@ test('the installed Bootstrap rehearsal supplies real document snapshot results 
   assert.ok(evidence.documentEvidence.some(item => item.targetedBy === 'documentId'));
   assert.equal(new Set(evidence.documentEvidence.map(item => item.documentId)).size, 1);
   assert.equal(native.calls.some(call => call.method === 'update.rollback'), false);
-  assert.ok(evidence.loaded.includes('runtime/src/backgroundUpdateSafety.js'));
+  assert.ok(evidence.loaded.includes(path.join('runtime', 'src', 'backgroundUpdateSafety.js')));
 });

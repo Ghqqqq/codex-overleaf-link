@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const test = require('node:test');
+const { spawnSync } = require('node:child_process');
 const runner = import(pathToFileURL(path.join(__dirname, '../scripts/run-tests.mjs')).href);
 const files = ['test/releaseScripts.test.js', 'test/binaryAssetUploader.test.js', 'test/textPatch.test.js'];
 
@@ -18,6 +19,17 @@ test('focused tests accept known paths or basenames, deduplicate, and preserve r
   assert.deepEqual(selectTestFiles(files, ['textPatch.test.js', 'test\\binaryAssetUploader.test.js', 'test/textPatch.test.js']), {
     files: files.slice(1), mode: 'focused', listOnly: false
   });
+});
+
+test('the CLI lists and executes a selected file using the real platform inventory', () => {
+  const script = path.resolve(__dirname, '../scripts/run-tests.mjs');
+  const cwd = path.resolve(__dirname, '..');
+  const listed = spawnSync(process.execPath, [script, '--list', 'test\\textPatch.test.js'], { cwd, encoding: 'utf8', timeout: 10000 });
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(listed.stdout.trim(), 'test/textPatch.test.js');
+  const executed = spawnSync(process.execPath, [script, 'test/textPatch.test.js'], { cwd, encoding: 'utf8', timeout: 10000 });
+  assert.equal(executed.status, 0, executed.stdout + executed.stderr);
+  assert.match(executed.stderr, /focused: 1\/1 files executed, 1 passed/);
 });
 
 test('test-list mode reports its scope without changing the selected files', async () => {

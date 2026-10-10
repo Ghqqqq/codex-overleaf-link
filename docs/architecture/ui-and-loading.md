@@ -141,6 +141,8 @@ Native 分叉返回后复核 scope 与来源记录，合并当前会话集合并
 [CompileAdapter.localizeCompileReason](../../extension/src/shared/compileAdapter.js) 处理产品自产的编译与保存说明，保留原编译摘要和 TeX 日志。
 
 语言变化由 `contentRuntime.applyLocaleToPanel` 刷新已有界面。`RunTimelineView.refreshLocale` 重新呈现历史卡片，并保留展开与滚动位置；活动运行保留流式节点和缓冲引用，只更新产品控件及已生成报告的显示。队列、附件、模型选项、Provider 对话框和更新提示各自刷新自产文案；对话框输入与用户草稿保持原位。已知过程提示可通过精确模板投影，命令输出、技术详情和模型流不作推测翻译。
+
+当前活动运行的 `RunActivitySummary.updateThought` 以流式状态和正文缓存已结束思考行，缓存键未包含语言；切换语言时，正文未变的旧 `Thought/思考` 标签可能延迟到卡片重建或运行完成后刷新。补充指令走独立的 `RunGuidanceView.reconcileGuidance`，其自产标签在语言切换时重新计算。维护此边界应保留流式节点、正文缓存及展开选择。
 Undo/Accept 的既有展开 Notice 由 [RunActivitySummary](../../extension/src/content/runActivitySummary.js) 显示当次结果的文件与跳过原因。[RunReviewController](../../extension/src/content/runReviewController.js) 通过既有 `event.failure` 保留受控主故障摘要；runtime 的 `appendRunRecordEvent` 延续该字段，通用 `detail` 仍按原策略脱敏。持久摘要只保留标准错误与产品文案、已有运行材料中的安全相对路径，不保留任意 Page reason、技术消息或原始 evidence；它不参与恢复权限及检查点结算。旧记录若只剩哈希且没有故障摘要，无法从哈希还原原理由。实时可用逐项详情与持久主故障的范围不同，见 [reviewResultNoticeDetails](../../test/reviewResultNoticeDetails.test.js)。
 普通 Undo 的 `native_untracked_undo_pending_changes` 沿此显示通路说明现存待处理留痕及下一步；只消费明确的机器原因和未开始变更的证据，不从通用失败文案猜测原因。
 [WritingStyleSettings](../../extension/src/content/writingStyleSettings.js) 的 `sync` 也会重新投影缓存的自产状态及目录错误；参考资料标题和模型风格预览保留原内容。缓存文案的语言变化不重新生成风格、不改变所选资料或启用状态，见 [writingStyleLocale](../../test/writingStyleLocale.test.js)。
@@ -178,6 +180,8 @@ composer 输入、运行状态变化和 turn 绑定仍会触发重绘。队列 c
 [RunGuidanceView.reconcileGuidance](../../extension/src/content/runGuidanceView.js) 把已确认事件与在途投影合并到 `data-run-guidance`，按消息 ID 原位更新并去重，保留文字相同但 ID 不同的真实发送；无 ID 的旧记录沿用已有兼容规则。[RunActivitySummary](../../extension/src/content/runActivitySummary.js) 从 runtime 展示块中分离 guidance，[RunTimelineView](../../extension/src/content/runTimelineView.js) 的无 activity presenter 路径使用同一投影方法。活动更新、历史重绘、运行完成或取消均采用该区域；折叠执行过程不隐藏用户输入。语言切换重绘自产标签，保留用户原文。发送失败或结果未知时移除临时投影，沿队列既有错误和暂停恢复路径处理，不能留下成功气泡或自动重发。
 
 新气泡经 `RunTimelineView.revealGuidance → RunScrollLayout.revealGuidance` 接入既有帧合并滚动。正在跟随最新内容时，优先让新输入和 runtime 页眉留在面板可视范围；展开的长执行过程要求离开底部时，暂时退出自动跟随，并以 `.run-guidance-text` 保持阅读锚点。既有“最新”按钮恢复跟随，runtime 展开状态保持原样。使用者已经翻阅历史，或在下一帧绘制前开始向上阅读时，不主动移动阅读位置；滚动仅作用于插件面板。过长的单条输入优先露出开头，余下内容通过面板滚动阅读。相关局部行为见 [runGuidanceScroll.test.js](../../test/runGuidanceScroll.test.js)。
+
+执行过程中的工具状态由单项事件决定。`RunActivitySummary.effectiveState` 在整轮已结束、某工具仍只有 `running/pending` 证据时显示“结果未确认”；整轮完成不自动补造每条工具的成功状态。排查时须核对 Native 通知、`AgentTranscript` 映射及 `RunActivityModel` 的 thread/turn/item 身份合并。
 
 [runGuidancePresentation.test.js](../../test/runGuidancePresentation.test.js) 组合真实 activity model、guidance 与 runtime presenter，覆盖上下区域、确认原位更新、历史读取、重复发送、失败移除及中英文投影；DOM 使用替身。消息身份跨存储的验证见 [runGuidanceStorage.test.js](../../test/runGuidanceStorage.test.js)，真实页面的滚动和发送交互仍需浏览器验收。
 

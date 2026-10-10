@@ -175,7 +175,7 @@ Native `handleCodexCancel` 命中 controller 后调用 abort，并返回 `{cance
 POSIX 子进程以 detached 启动，失败/取消停止时先尝试 `turn/interrupt`，再向所属进程组发 SIGTERM，必要时 SIGKILL。
 当前默认等待由函数参数定义：interrupt 1,500 ms、terminate 500 ms、force 1,500 ms；各阶段预算不能直接推出 UI 取消总耗时。
 POSIX 确认停止要求已观察子进程退出，且进程组探测得到 `ESRCH`；单纯 `child.killed` 或信号发送成功不满足条件。
-Windows 使用 `taskkill /pid <owned-pid> /t /f`，随后检查 child 退出状态；实现没有 POSIX 同类的剩余进程组探测。
+Windows 使用 `taskkill /pid <owned-pid> /t /f`，随后检查 child 退出状态。`defaultTaskkill` 按 `SystemRoot/SYSTEMROOT/windir/WINDIR` 顺序取首个非空值；该值通过 Windows 绝对路径检查时拼接 `System32/taskkill.exe`，避免 Native 的精简 PATH 遗漏系统工具，否则保留命令查找。路径判定不预先证明目录或工具存在，启动失败仍沿原停止错误路径处理。仍按 child 的退出证据决定停止是否确认，命令返回成功本身不足以结算；实现没有 POSIX 同类的剩余进程组探测。[windowsProcessStop.test.js](../../test/windowsProcessStop.test.js)覆盖工具定位与退出证据，三类 helper 入口的真实子进程夹具还要求显式 stop 成功先于 Host 退出，见[nativeHelperShutdown.test.js](../../test/nativeHelperShutdown.test.js)。
 无法确认时抛出 `codex_process_stop_unconfirmed`，携带 PID、group 与运行时 `isStopped`；runner 将它传给 `onStopUnconfirmed`。
 
 `processStopBarrier.record` 原子写入镜像旁 `.codex-stop-barrier.json`；内存保留 `isStopped` 回调，持久数据去掉函数。

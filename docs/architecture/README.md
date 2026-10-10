@@ -47,7 +47,9 @@ node scripts/run-tests.mjs --list test/ordinaryUndoRouting.test.js test/undoMirr
 node scripts/run-tests.mjs test/ordinaryUndoRouting.test.js test/undoMirrorInvalidation.test.js
 ```
 
-第一条仅列出测试；第二条执行所选测试。命令从仓库根目录运行，按修改范围选择：
+第一条仅列出测试；第二条执行所选测试。命令从仓库根目录运行。
+
+运行器的发现清单统一使用 `/` 路径分隔符，输入可使用文件名、`test/文件名`或Windows的反斜线路径；`--list`与实际专项执行共用选择逻辑。[testRunnerSelection.test.js](../../test/testRunnerSelection.test.js)同时核对选择函数和真实CLI的清单/执行入口。
 
 | 修改或验证目的 | 入口 | 作用与证据范围 |
 | --- | --- | --- |

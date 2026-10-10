@@ -10,22 +10,25 @@
 ### Fixed
 
 - Keep long `/` and `@` menus within the available panel height, enable internal scrolling, and keep keyboard selections visible without moving the surrounding page.
+- Show Steer follow-up messages immediately below the original input while sending, and keep confirmed messages above run activity after completion, cancellation, and history reloads. Preserve message order and avoid repeating guidance after late delivery confirmations.
 - Preserve session drafts, queued inputs, submission ownership, and recovery records across cancellation, navigation, storage retries, and page reloads.
 - Strengthen file identity and writeback receipt checks, retain verified multi-file Undo progress, and bind native review controls to the intended document.
 - Explain why ordinary Undo stops when unresolved tracked changes remain, while preserving the existing protection, confirmation, and retry rules.
 - Keep product-owned errors, activity counts, next-step guidance, and unsaved provider states consistent with the selected English or Simplified Chinese interface language.
 - Preserve ordinary examples and quoted text in conversations, project instructions, history, queues, forks, recovered runs, and child transcripts instead of replacing secret-like strings. Provider credential isolation, sensitive-content checks, and diagnostic summaries remain separate.
 - Correct verified edge cases in provider configuration, writing-style recovery, attachment handling, and coordinated updates within existing workflows.
-- Deliver the Bootstrap startup-file fixes through the existing 2.5.0 updater using a signed, explicitly scoped migration to revision 3.1. Keep Bootstrap protocol 3, Chrome permissions, Native registration and the existing update action unchanged.
+- Deliver the Bootstrap startup-file fixes through the existing 2.5.0 updater using a signed, explicitly scoped migration to revision 3.1. Keep Bootstrap protocol 3, Chrome permissions, Native registration paths and the existing update action unchanged.
 - Retain per-file recovery copies and progress, verify the loaded Bootstrap revision before update confirmation, and coordinate timeout recovery through an independent Native monitor and the existing popup fallback. Unknown source changes or incomplete recovery evidence remain blocked.
 - Reconnect read-only save and idle checks after the first extension reload during migration, and preserve unsaved pages while waiting to refresh after a verified rollback.
 - Wait for npm publication to become publicly readable, then verify both registry metadata and the downloaded package against the release artifact within a shared time limit.
 - Flush update records through their writable file handles so Windows can persist update checks, authorization, and transactions without rejecting the operation.
+- Keep Windows subprocess cleanup available with a restricted PATH, including when the Native connection closes.
+- Honor configured Windows registry command arguments during registration and uninstall ownership checks, consistent with installation and removal commands.
 
 ### Documentation and validation
 
 - Add and maintain the architecture guide, feature-location index, and change workflow; keep review reports and test evidence outside distributed documentation.
-- Refresh regression coverage for current persistence, review, localization, local-skill selection, and long command menus.
+- Refresh regression coverage for current persistence, review, localization, local-skill selection, long command menus, Steer guidance, and Windows process cleanup and registration checks.
 
 ## v2.5.0 - 2026-10-03
 
