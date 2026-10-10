@@ -9,6 +9,17 @@ const repo = process.env.CODEX_TEST_REPOSITORY_ROOT;
 if (!root || !repo || !path.isAbsolute(root) || !path.isAbsolute(repo)) throw new Error('Missing isolated paths');
 const native = name => path.join(repo, 'native-host/src', name);
 const record = (name, value) => fs.appendFileSync(path.join(root, name + '.jsonl'), JSON.stringify({ at: Date.now(), ...value }) + '\n');
+const childProcess = require('node:child_process');
+const originalExecFile = childProcess.execFile;
+childProcess.execFile = function(command, args, options, callback) {
+  if (!/^taskkill(?:\.exe)?$/i.test(path.win32.basename(String(command)))) return originalExecFile.apply(this, arguments);
+  record('taskkill', { event: 'started', command, args });
+  return originalExecFile.call(this, command, args, options, (error, stdout, stderr) => {
+    record('taskkill', { event: 'finished', code: error?.code ?? null, killed: error?.killed ?? false,
+      signal: error?.signal ?? null, stdout: String(stdout || '').slice(0, 4096), stderr: String(stderr || '').slice(0, 4096) });
+    callback(error, stdout, stderr);
+  });
+};
 const debug = require(native('debugLog'));
 const originalLog = debug.logDebug;
 debug.logDebug = (event, detail) => originalLog(event, detail, { homeDir: root });

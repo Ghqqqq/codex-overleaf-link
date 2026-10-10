@@ -8,7 +8,16 @@ async function until(fn, ms = 7000) { const end = Date.now() + ms; while (!fn())
 for (const kind of ['task', 'fork', 'provider']) test('Host disconnect stops owned ' + kind + ' helper that ignores SIGTERM', { timeout: 15000 }, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-helper-shutdown-'));
   let child, pid, exited = false;
-  t.after(async () => { if (pid && alive(pid)) { process.kill(pid, 'SIGKILL'); await until(() => !alive(pid)).catch(() => {}); } if (child && !exited) child.kill('SIGKILL'); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => {
+    const observations = { kind, hostPid: child?.pid, helperPid: pid, helperAlive: pid ? alive(pid) : null,
+      systemToolsControl: process.env.CODEX_TEST_HELPER_SYSTEM_TOOLS === '1' };
+    for (const name of ['helper-pid.json', 'taskkill.jsonl', 'stop.jsonl', 'host-exit.jsonl']) {
+      observations[name] = fs.existsSync(path.join(root, name)) ? fs.readFileSync(path.join(root, name), 'utf8').slice(0, 16000) : null;
+    }
+    console.log('[windows-helper-diagnostic] ' + JSON.stringify(observations));
+    if (pid && alive(pid)) { process.kill(pid, 'SIGKILL'); await until(() => !alive(pid)).catch(() => {}); }
+    if (child && !exited) child.kill('SIGKILL'); fs.rmSync(root, { recursive: true, force: true });
+  });
   const command = path.join(root, process.platform === 'win32' ? 'synthetic.cmd' : 'synthetic-codex');
   fs.writeFileSync(command, process.platform === 'win32' ? `@"${process.execPath}" "${helper}" %*\r\n` : `#!${process.execPath}\nrequire(${JSON.stringify(helper)});\n`, { mode: 0o755 });
   const userHome = path.join(root, 'user');fs.mkdirSync(userHome);
@@ -18,6 +27,9 @@ for (const kind of ['task', 'fork', 'provider']) test('Host disconnect stops own
     CODEX_OVERLEAF_CODEX_HOME: path.join(root, 'plugin'), CODEX_OVERLEAF_USER_CODEX_HOME: userHome,
     CODEX_OVERLEAF_PROVIDER_STORE_DIR: path.join(root, 'providers'), CODEX_OVERLEAF_MIRROR_ROOT: path.join(root, 'mirrors'),
     CODEX_OVERLEAF_AGENT_FILE: process.execPath, CODEX_OVERLEAF_AGENT_ARGS_JSON: JSON.stringify([helper]) };
+  if (process.platform === 'win32' && process.env.CODEX_TEST_HELPER_SYSTEM_TOOLS === '1') {
+    env.PATH += path.delimiter + path.join(process.env.SystemRoot, 'System32');
+  }
   child = spawn(process.execPath, ['--require', path.join(__dirname, 'fixtures/native-disconnect-settlement/host-preload.cjs'), path.join(repo, 'native-host/src/index.js')], { env, cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
   child.on('exit', () => { exited = true; });child.stdout.resume();child.stderr.resume();child.stdin.on('error', () => {});
   const request = kind === 'task' ? { id: 'task', method: 'task.run', params: { mode: 'ask' } }

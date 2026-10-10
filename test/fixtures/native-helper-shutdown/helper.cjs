@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path'), readline = require('node:readline');
 const root = process.env.CODEX_TEST_DISCONNECT_ROOT;
-fs.writeFileSync(path.join(root, 'helper-pid.json'), JSON.stringify({ pid: process.pid }));
+fs.writeFileSync(path.join(root, 'helper-pid.json'), JSON.stringify({ pid: process.pid, ppid: process.ppid }));
 process.on('SIGTERM', () => {}); // Exercise the bounded force-stop stage.
 process.stdout.on('error', () => {});
 setInterval(() => fs.appendFileSync(path.join(root, 'heartbeat'), '.'), 30);

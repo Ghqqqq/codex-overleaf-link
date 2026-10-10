@@ -1,0 +1,30 @@
+name: Windows helper diagnostics
+
+on:
+  push:
+    branches:
+      - codex/windows-helper-diagnostics-20261010
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostics:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.18.0
+      - run: npm ci
+      - run: npm run check:module-graph
+      - name: Capture helper stop and remaining test failures
+        run: node scripts/diagnose-windows-helpers.mjs
+      - name: Preserve diagnostic results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-helper-diagnostics
+          path: .local-diagnostic/
+          if-no-files-found: error
