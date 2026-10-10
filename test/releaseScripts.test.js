@@ -6,6 +6,8 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
+const { isolatedRegistryCommand } = require('./helpers/isolatedRegistryCommand');
+const { getNativeHostManifestPath } = require('../native-host/src/manifest');
 
 const repoRoot = path.resolve(__dirname, '..');
 const RELEASE_TEST_TRACE = process.env.CI === 'true' || process.env.CODEX_OVERLEAF_RELEASE_TEST_TRACE === '1';
@@ -1261,6 +1263,18 @@ releaseTest('top-level copied uninstaller runs from release artifact root', (t) 
   const homeDir = path.join(tempDir, 'home');
   const runtimeRoot = path.join(tempDir, 'runtime');
   const bridgePath = path.join(tempDir, 'codex-overleaf-bridge');
+  const env = {
+    ...process.env,
+    HOME: homeDir,
+    USERPROFILE: homeDir,
+    LOCALAPPDATA: path.join(homeDir, 'LocalAppData')
+  };
+  const manifestPath = getNativeHostManifestPath({ platform: process.platform, browser: 'chrome', env });
+  const registrationRelative = path.relative(tempDir, manifestPath);
+  assert.ok(registrationRelative && !registrationRelative.startsWith('..') && !path.isAbsolute(registrationRelative),
+    'registration stays within the fixture');
+  const registry = isolatedRegistryCommand(tempDir, { manifestPath, initiallyRegistered: true });
+  Object.assign(env, registry.env);
 
   try {
     const build = spawnSync(process.execPath, [
@@ -1282,6 +1296,8 @@ releaseTest('top-level copied uninstaller runs from release artifact root', (t) 
     fs.mkdirSync(path.dirname(bridgePath), { recursive: true });
     fs.writeFileSync(bridgePath, '#!/bin/sh\n');
     fs.mkdirSync(runtimeRoot, { recursive: true });
+    fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+    fs.writeFileSync(manifestPath, JSON.stringify({ name: 'com.codex.overleaf', path: bridgePath }));
 
     const result = spawnSync(process.execPath, [
       path.join(outputDir, 'uninstall-native-host.mjs'),
@@ -1291,16 +1307,21 @@ releaseTest('top-level copied uninstaller runs from release artifact root', (t) 
       bridgePath,
       '--keep-runtime'
     ], {
-      env: {
-        ...process.env,
-        HOME: homeDir
-      },
+      env,
       encoding: 'utf8'
     });
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.equal(fs.existsSync(bridgePath), false);
     assert.equal(fs.existsSync(runtimeRoot), true);
+    assert.equal(fs.existsSync(manifestPath), false);
+    if (process.platform === 'win32') {
+      assert.deepEqual(registry.calls(), [['delete', registry.registryKey, '/f']]);
+      assert.deepEqual(registry.state(), { registered: false, manifestPath });
+    } else {
+      assert.deepEqual(registry.calls(), [], 'POSIX uninstallation never invokes the registry adapter');
+      assert.deepEqual(registry.state(), { registered: true, manifestPath });
+    }
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

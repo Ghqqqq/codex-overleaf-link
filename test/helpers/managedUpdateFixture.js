@@ -1,5 +1,6 @@
 'use strict';
 const fs = require('node:fs');
+const assert = require('node:assert/strict');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -8,6 +9,8 @@ const { createRequire } = require('node:module');
 const { spawn } = require('node:child_process');
 const installer = require('../../native-host/src/managedInstall');
 const platform = require('../../native-host/src/nativeHostPlatform');
+const registrationQuery = require('../../native-host/src/nativeHostRegistration');
+const { buildDoctorBridgeSpawnInvocation } = require('../../native-host/src/nativeDoctor');
 const repo = path.resolve(__dirname, '../..');
 
 function managedFixture(t) {
@@ -21,7 +24,7 @@ function managedFixture(t) {
 Module._load=function(name){const value=load.apply(this,arguments);
 return /(?:^|\\/)nativeEnvironment(?:\\.js)?$/.test(name)?{...value,
 buildNativeRuntimeEnv:env=>({...env,CODEX_OVERLEAF_ENV_READY:'1'}),refreshCodexRuntimeEnv:env=>env}:value};\n`);
-  const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: home,
+  const env = { ...process.env, HOME: home, USERPROFILE: home, LOCALAPPDATA: path.join(home, 'AppData', 'Local'), PATH: home,
     NODE_OPTIONS: '--require=' + discoveryPreload, CODEX_HOME: path.join(home, 'codex'),
     CODEX_OVERLEAF_MANAGED: '1', CODEX_OVERLEAF_MANAGED_ROOT: managedRoot,
     CODEX_OVERLEAF_MANAGED_NATIVE_ROOT: path.join(managedRoot, 'native'),
@@ -29,6 +32,36 @@ buildNativeRuntimeEnv:env=>({...env,CODEX_OVERLEAF_ENV_READY:'1'}),refreshCodexR
   const context = { managed: true, nativeRoot: env.CODEX_OVERLEAF_MANAGED_NATIVE_ROOT,
     extensionRoot: env.CODEX_OVERLEAF_MANAGED_EXTENSION_ROOT,
     updatesRoot: path.join(managedRoot, 'native/updates'), env };
+  // Registration persistence is a per-fixture in-memory registry on every OS.
+  // Real bridge/manifest files retain the host platform's path semantics.
+  const registry = new Map();
+  const registration = { ...platform.getNativeHostRegistrationTarget({ env, platform: process.platform }),
+    kind: 'registry', registryKey: 'HKCU\\fixture-native-host-' + path.basename(root) };
+  const bridge = platform.getDefaultBridgePath({ env, platform: process.platform });
+  for (const filename of [registration.manifestPath, bridge]) {
+    const relative = path.relative(root, filename);
+    assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative), 'fixture registration file escaped its temporary root');
+  }
+  const registrySpawn = (command, args) => {
+    assert.equal(command, process.env.CODEX_OVERLEAF_REG_EXE || 'reg.exe');
+    const expected = args[0] === 'add' ? ['add', registration.registryKey, '/ve', '/t', 'REG_SZ', '/d', registration.manifestPath, '/f']
+      : args[0] === 'delete' ? ['delete', registration.registryKey, '/f'] : ['query', registration.registryKey, '/ve'];
+    assert.deepEqual(args, expected, 'fixture registry accepts only its explicit default value');
+    if (args[0] === 'add') registry.set(args[1], args[args.indexOf('/d') + 1]);
+    else if (args[0] === 'delete') registry.delete(args[1]);
+    else if (args[0] !== 'query') throw new Error('Unexpected registry operation: ' + args[0]);
+    const value = registry.get(args[1]);
+    return { status: args[0] === 'query' && !value ? 1 : 0,
+      stdout: value ? args[1] + '\n    (Default)    REG_SZ    ' + value + '\n' : '', stderr: '' };
+  };
+  const loadInstaller = (overrides = {}) => loadWithDependencies('native-host/src/managedInstall.js', {
+    'node:child_process': { spawnSync: registrySpawn },
+    './nativeHostPlatform': { ...platform, getNativeHostRegistrationTarget: () => registration },
+    './nativeHostRegistration': { ...registrationQuery, queryWindowsNativeHostRegistration: (target, options) =>
+      registrationQuery.queryWindowsNativeHostRegistration(target, { ...options, spawnSync: registrySpawn }) },
+    ...overrides
+  });
+  const fixtureInstaller = loadInstaller();
   function packageFor(version, suffix = '') {
     const destination = path.join(root, 'package-' + version + suffix);
     if (fs.existsSync(destination)) return destination;
@@ -46,10 +79,10 @@ buildNativeRuntimeEnv:env=>({...env,CODEX_OVERLEAF_ENV_READY:'1'}),refreshCodexR
   }
   const options = (version, suffix) => ({ packageRoot: packageFor(version, suffix),
     managedRoot, version, env, platform: process.platform, browser: 'chrome' });
-  return { root, home, managedRoot, context, env, packageFor, options,
-    install: (version, impl = installer, suffix) => impl.installManagedDistribution(options(version, suffix)),
-    registration: platform.getNativeHostRegistrationTarget({ env, platform: process.platform }),
-    bridge: platform.getDefaultBridgePath({ env, platform: process.platform }) };
+  return { root, home, managedRoot, context, env, packageFor, options, registry, registration, loadInstaller,
+    loadInstallerWithFs: io => loadInstaller({ 'node:fs': io }),
+    install: (version, impl = fixtureInstaller, suffix) => impl.installManagedDistribution(options(version, suffix)),
+    bridge };
 }
 
 function loadWithFs(relative, io) {
@@ -65,7 +98,9 @@ function loadWithDependencies(relative, overrides) {
 
 function pingInstalled(fixture, method = 'bridge.ping') {
   return new Promise((resolve, reject) => {
-    const child = spawn(fixture.bridge, [], { env: fixture.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const invocation = buildDoctorBridgeSpawnInvocation(fixture.bridge, { platform: process.platform, env: fixture.env });
+    const child = spawn(invocation.command, invocation.args, { env: fixture.env, stdio: ['pipe', 'pipe', 'pipe'],
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments === true });
     let bytes = Buffer.alloc(0), response, stderr = '';
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Fixture bridge timeout: ' + stderr)); }, 5000);
     child.stderr.on('data', value => { stderr += value; });

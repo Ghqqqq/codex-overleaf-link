@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const test = require('node:test');
 
@@ -168,17 +168,108 @@ test('the final retry delay is truncated to the remaining shared budget', async 
   assert.equal(h.requests.length, 3);
 });
 
+test('a registry operation that ignores abort cannot outlive the publication budget', async (t) => {
+  for (const phase of ['headers', 'metadata body', 'archive body']) {
+    await t.test(phase, { timeout: 1500 }, async (t) => {
+      const h = await harness(t);
+      const keepAlive = setInterval(() => {}, 100);
+      t.after(() => clearInterval(keepAlive));
+      const never = () => new Promise(() => {});
+      await assert.rejects(h.run(async (url) => {
+        if (phase === 'headers') return never();
+        if (phase === 'archive body' && url === metadataUrl) return json(metadata);
+        return { ok: true, json: never, arrayBuffer: never, body: { getReader: () => ({ read: never, cancel: never, releaseLock() {} }) } };
+      }, {
+        now: () => performance.now(),
+        timeoutMs: 60,
+        requestTimeoutMs: 25,
+        initialDelayMs: 5,
+        maxDelayMs: 10,
+        sleepImpl: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+      }), /timed out.*Keep the GitHub draft/);
+      assert.ok(h.requests.some(({ init }) => init.signal.aborted));
+    });
+  }
+});
+
+test('a stalled error-body cleanup cannot delay or change the HTTP classification', async (t) => {
+  for (const status of [401, 503]) {
+    await t.test(`HTTP ${status}`, { timeout: 1500 }, async (t) => {
+      const h = await harness(t);
+      const keepAlive = setInterval(() => {}, 100);
+      t.after(() => clearInterval(keepAlive));
+      const errorResponse = { ok: false, status, body: { cancel: () => new Promise(() => {}) } };
+      if (status === 401) {
+        await assert.rejects(h.run(sequence([errorResponse])), /HTTP 401/);
+        assert.deepEqual(h.waits, []);
+      } else {
+        const result = await h.run(sequence([errorResponse, json(metadata), new Response(archive)]));
+        assert.equal(result.attempts, 2);
+        assert.deepEqual(h.waits, [5]);
+      }
+    });
+  }
+});
+
+test('late registry completions stay cancelled and late failures are consumed', async (t) => {
+  for (const phase of ['headers', 'body']) {
+    for (const outcome of ['fulfill', 'reject']) {
+      await t.test(`${phase} ${outcome}`, { timeout: 1500 }, async (t) => {
+        const h = await harness(t);
+        let fulfill;
+        let reject;
+        const late = new Promise((resolve, rejectPromise) => { fulfill = resolve; reject = rejectPromise; });
+        let cancelled = 0;
+        let released = 0;
+        let reads = 0;
+        const response = {
+          ok: true,
+          body: {
+            cancel: async () => { cancelled += 1; },
+            getReader: () => ({
+              read: () => ++reads === 1 ? late : Promise.resolve({ done: true }),
+              cancel: async () => { cancelled += 1; },
+              releaseLock: () => { released += 1; }
+            })
+          }
+        };
+        await assert.rejects(h.run(async () => phase === 'headers' ? late : response, {
+          now: () => performance.now(), timeoutMs: 20, requestTimeoutMs: 100,
+          sleepImpl: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+        }), /timed out.*Keep the GitHub draft/);
+        if (outcome === 'reject') reject(new Error('late registry failure'));
+        else fulfill(phase === 'headers' ? response : { done: false, value: Buffer.from(JSON.stringify(metadata)) });
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(h.requests.length, 1);
+        assert.equal(h.requests[0].init.signal.aborted, true);
+        assert.equal(h.logs.some((line) => line.startsWith('Verified ')), false);
+        assert.equal(cancelled, phase === 'headers' && outcome === 'reject' ? 0 : 1);
+        assert.equal(released, phase === 'body' ? 1 : 0);
+      });
+    }
+  }
+});
+
+test('finished registry requests no longer have a live abort timer', async (t) => {
+  const h = await harness(t, { requestTimeoutMs: 20 });
+  await h.run(sequence([json(metadata), new Response(archive)]));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(h.requests.some(({ init }) => init.signal.aborted), false);
+});
+
 test('real fetch aborts metadata and archive bodies that stall after response headers', async (t) => {
   for (const phase of ['metadata', 'archive']) {
     await t.test(phase, { timeout: 10000 }, async (t) => {
       const h = await harness(t);
       let stalledBodies = 0;
+      const stalledBodyClosures = [];
       const server = http.createServer((request, response) => {
         if (phase === 'archive' && !request.url.endsWith('.tgz')) {
           response.end(JSON.stringify(metadata));
           return;
         }
         stalledBodies += 1;
+        stalledBodyClosures.push(new Promise((resolve) => response.once('close', resolve)));
         response.writeHead(200);
         response.write(phase === 'metadata' ? '{"name":' : 'partial archive');
       });
@@ -187,8 +278,9 @@ test('real fetch aborts metadata and archive bodies that stall after response he
         server.listen(0, '127.0.0.1', resolve);
       });
       t.after(async () => {
+        const closed = new Promise((resolve) => server.close(resolve));
         server.closeAllConnections();
-        await new Promise((resolve) => server.close(resolve));
+        await closed;
       });
       const origin = `http://127.0.0.1:${server.address().port}`;
       await assert.rejects(h.run((url, init) => fetch(`${origin}${new URL(url).pathname}`, init), {
@@ -200,6 +292,62 @@ test('real fetch aborts metadata and archive bodies that stall after response he
         sleepImpl: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
       }), /timed out.*Keep the GitHub draft/);
       assert.ok(stalledBodies >= 1);
+      await Promise.all(stalledBodyClosures);
+    });
+  }
+});
+
+test('a CLI-style process exits after timeout while the registry keeps its response open', async (t) => {
+  for (const phase of ['metadata', 'archive']) {
+    await t.test(phase, { timeout: 10000 }, async (t) => {
+      const h = await harness(t);
+      const server = http.createServer((request, response) => {
+        if (phase === 'archive' && !request.url.endsWith('.tgz')) {
+          response.end(JSON.stringify(metadata));
+          return;
+        }
+        response.writeHead(200);
+        response.write(phase === 'metadata' ? '{"name":' : 'partial archive');
+      });
+      await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', resolve);
+      });
+      t.after(async () => {
+        const closed = new Promise((resolve) => server.close(resolve));
+        server.closeAllConnections();
+        await closed;
+      });
+      const source = `
+        import { pathToFileURL } from 'node:url';
+        const { waitForNpmPublication } = await import(pathToFileURL(process.argv[1]).href);
+        try {
+          await waitForNpmPublication({
+            version: process.argv[4], tarballPath: process.argv[2],
+            timeoutMs: 600, requestTimeoutMs: 150, initialDelayMs: 5, maxDelayMs: 10,
+            fetchImpl: (url, init) => fetch(process.argv[3] + new URL(url).pathname, init),
+            log() {}
+          });
+          process.exitCode = 2;
+        } catch (error) {
+          console.error(error.message);
+          process.exitCode = /timed out.*Keep the GitHub draft/.test(error.message) ? 17 : 18;
+        }
+      `;
+      const child = spawn(process.execPath, ['--input-type=module', '-e', source, scriptPath,
+        path.join(h.dir, 'release.tgz'), `http://127.0.0.1:${server.address().port}`, version], {
+        env: { PATH: process.env.PATH, TMPDIR: h.dir }, stdio: ['ignore', 'pipe', 'pipe']
+      });
+      let output = '';
+      child.stdout.on('data', (chunk) => { output += chunk; });
+      child.stderr.on('data', (chunk) => { output += chunk; });
+      t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+      const result = await new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', (code, signal) => resolve({ code, signal }));
+      });
+      assert.deepEqual(result, { code: 17, signal: null }, output);
+      assert.match(output, /timed out.*Keep the GitHub draft/);
     });
   }
 });

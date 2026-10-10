@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
+const { isolatedRegistryCommand } = require('./helpers/isolatedRegistryCommand');
 
 const {
   DEFAULT_CHROME_EXTENSION_ID,
@@ -957,6 +958,18 @@ test('native install runtime includes package metadata required by bridge ping',
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-overleaf-runtime-test-'));
   const runtimeRoot = path.join(tempDir, 'runtime');
   const bridgePath = path.join(tempDir, 'codex-overleaf-bridge');
+  const env = {
+    ...makeDoctorEnv(tempDir),
+    CODEX_HOME: path.join(tempDir, 'codex'),
+    CODEX_OVERLEAF_PROVIDER_STORE_DIR: path.join(tempDir, 'providers'),
+    CODEX_OVERLEAF_MIRROR_ROOT: path.join(tempDir, 'mirrors')
+  };
+  const manifestPath = getNativeHostManifestPath({ platform: process.platform, browser: 'chrome', env });
+  const registrationRelative = path.relative(tempDir, manifestPath);
+  assert.ok(registrationRelative && !registrationRelative.startsWith('..') && !path.isAbsolute(registrationRelative),
+    'registration stays within the fixture');
+  const registry = isolatedRegistryCommand(tempDir, { manifestPath });
+  Object.assign(env, registry.env);
   try {
     const result = spawnSync(process.execPath, [
       path.join(__dirname, '../scripts/install-native-host.mjs'),
@@ -967,15 +980,21 @@ test('native install runtime includes package metadata required by bridge ping',
       '--bridge-path',
       bridgePath
     ], {
-      env: {
-        ...process.env,
-        HOME: tempDir
-      },
+      env,
       encoding: 'utf8'
     });
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout, new RegExp(`Runtime package version: ${escapeRegExp(CURRENT_PACKAGE_VERSION)}`));
+    assert.equal(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).path, bridgePath);
+    if (process.platform === 'win32') {
+      assert.deepEqual(registry.calls(), [[
+        'add', registry.registryKey, '/ve', '/t', 'REG_SZ', '/d', manifestPath, '/f'
+      ]]);
+      assert.deepEqual(registry.state(), { registered: true, manifestPath });
+    } else {
+      assert.deepEqual(registry.calls(), [], 'POSIX registration never invokes the registry adapter');
+    }
     const runtimePackagePath = path.join(runtimeRoot, 'package.json');
     const runtimeAgentPath = path.join(runtimeRoot, 'scripts/codex-json-agent.mjs');
     assert.equal(fs.existsSync(runtimePackagePath), true);
@@ -988,7 +1007,7 @@ test('native install runtime includes package metadata required by bridge ping',
     );
     const runtimePackage = JSON.parse(fs.readFileSync(runtimePackagePath, 'utf8'));
     const { handleRequest } = require(path.join(runtimeRoot, 'native-host/src/taskRunner.js'));
-    const response = await handleRequest({ id: 'runtime-ping', method: 'bridge.ping', params: {} }, {});
+    const response = await handleRequest({ id: 'runtime-ping', method: 'bridge.ping', params: {} }, env);
 
     assert.equal(response.ok, true);
     assert.equal(response.result.version, runtimePackage.version);

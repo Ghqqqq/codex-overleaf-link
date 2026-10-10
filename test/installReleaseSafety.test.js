@@ -56,10 +56,26 @@ for (const [label, registration, healthy] of [['valid', '', true], ['missing', n
     assert.equal(h.calls.some(call => call.args[0] === 'query'), true);
   });
 }
+function installerLocations(home, platform = process.platform) {
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
+  const env = { ...process.env, HOME: home, USERPROFILE: home,
+    LOCALAPPDATA: platformPath.join(home, 'AppData', 'Local') };
+  return { platform, env,
+    target: Platform.getNativeHostRegistrationTarget({ platform, browser: 'chrome', env }),
+    bridge: Platform.getDefaultBridgePath({ platform, env }) };
+}
+test('installer fixture registration paths retain the temporary home under Windows path semantics', () => {
+  const home = 'C:\\Users\\fixture\\AppData\\Local\\Temp\\col-install-safety';
+  const { env, target, bridge } = installerLocations(home, 'win32');
+  for (const filename of [env.LOCALAPPDATA, target.manifestPath, bridge]) {
+    assert.equal(path.win32.isAbsolute(filename), true);
+    assert.equal(path.win32.relative(home, filename).startsWith('..'), false);
+  }
+  assert.throws(() => Platform.getNativeHostRegistrationTarget({ platform: 'linux', browser: 'chrome', env }), /must be absolute/);
+});
 function installerFixture(t) {
   const home = temporary(t), registry = new Map(), calls = [];
-  const env = { ...process.env, HOME: home, USERPROFILE: home };
-  const target = Platform.getNativeHostRegistrationTarget({ platform: 'linux', browser: 'chrome', env });
+  const { platform, env, target, bridge } = installerLocations(home);
   const registration = { ...target, kind: 'registry', registryKey: 'HKCU\\fixture-native-host' };
   const spawnSync = (command, args) => {
     calls.push(args);
@@ -71,10 +87,10 @@ function installerFixture(t) {
   };
   const install = load('native-host/src/managedInstall.js', { 'node:child_process': { spawnSync },
     './nativeHostPlatform': { ...Platform, getNativeHostRegistrationTarget: () => registration,
-      getDefaultBridgePath: () => Platform.getDefaultBridgePath({ platform: 'linux', env }) },
+      getDefaultBridgePath: () => bridge },
     './nativeHostRegistration': { queryWindowsNativeHostRegistration: (target, options) => Registration.queryWindowsNativeHostRegistration(target, { ...options, spawnSync }) } });
-  const options = managedRoot => ({ packageRoot: root, managedRoot, platform: 'linux', browser: 'chrome', env });
-  return { home, env, install, options, registry, calls, registration, bridge: Platform.getDefaultBridgePath({ platform: 'linux', env }) };
+  const options = managedRoot => ({ packageRoot: root, managedRoot, platform, browser: 'chrome', env });
+  return { home, env, install, options, registry, calls, registration, bridge };
 }
 test('uninstalling old managed A preserves B shared bridge, manifest and browser registration', t => {
   const h = installerFixture(t), a = path.join(h.home, 'A'), b = path.join(h.home, 'B');

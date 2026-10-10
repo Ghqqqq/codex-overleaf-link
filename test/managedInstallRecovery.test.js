@@ -3,18 +3,19 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { managedFixture, loadWithFs, loadWithDependencies, pingInstalled, stageLocalUpdate } = require('./helpers/managedUpdateFixture');
+const { managedFixture, loadWithFs, pingInstalled, stageLocalUpdate } = require('./helpers/managedUpdateFixture');
 const updater = require('../native-host/src/updateManager');
 const { createCoordinatorHarness, UPDATE_KEY, CONSENT_KEY } = require('./helpers/updateCoordinatorHarness');
 
 test('registration failure restores an existing extension and the actual Native launcher pair', async t => {
   const f = managedFixture(t);
   f.install('2.4.9');
+  assert.equal(f.registry.get(f.registration.registryKey), f.registration.manifestPath);
   const active = path.join(f.context.nativeRoot, 'active-version');
   const manifest = path.join(f.context.extensionRoot, 'manifest.json');
   const oldManifest = fs.readFileSync(manifest);
   let injected = false;
-  const faulty = loadWithFs('native-host/src/managedInstall.js', { ...fs, writeFileSync(file, ...args) {
+  const faulty = f.loadInstallerWithFs({ ...fs, writeFileSync(file, ...args) {
     if (!injected && file === f.registration.manifestPath) {
       injected = true; throw Object.assign(new Error('Registration fixture failure'), { code: 'EACCES' });
     }
@@ -23,6 +24,7 @@ test('registration failure restores an existing extension and the actual Native 
   assert.throws(() => f.install('2.5.0', faulty), /Registration fixture failure/);
   assert.equal(injected, true);
   assert.deepEqual(fs.readFileSync(manifest), oldManifest);
+  assert.equal(f.registry.get(f.registration.registryKey), f.registration.manifestPath);
   assert.equal(fs.readFileSync(active, 'utf8').trim(), '2.4.9');
   assert.equal(fs.existsSync(path.join(f.context.nativeRoot, 'versions/2.5.0')), false);
   assert.equal((await pingInstalled(f)).result.version, '2.4.9');
@@ -35,17 +37,18 @@ test('same-version failed reinstall restores its prior Native bytes and registra
   fs.writeFileSync(path.join(oldPackage, 'native-host/src/build-sentinel.txt'), 'old bytes');
   f.install('2.5.0');
   fs.chmodSync(f.bridge, 0o751);
+  const originalMode = fs.statSync(f.bridge).mode & 0o777;
   const registration = fs.readFileSync(f.registration.manifestPath);
   const newPackage = f.packageFor('2.5.0', '-replacement');
   fs.writeFileSync(path.join(newPackage, 'native-host/src/build-sentinel.txt'), 'new bytes');
   let injected = false;
-  const faulty = loadWithFs('native-host/src/managedInstall.js', { ...fs, writeFileSync(file, ...args) {
+  const faulty = f.loadInstallerWithFs({ ...fs, writeFileSync(file, ...args) {
     if (!injected && file === f.registration.manifestPath) { injected = true; throw new Error('same-version failure'); }
     return fs.writeFileSync(file, ...args);
   } });
   assert.throws(() => f.install('2.5.0', faulty, '-replacement'), /same-version failure/);
   assert.equal(fs.readFileSync(path.join(f.context.nativeRoot, 'versions/2.5.0/native-host/src/build-sentinel.txt'), 'utf8'), 'old bytes');
-  assert.equal(fs.statSync(f.bridge).mode & 0o777, 0o751);
+  assert.equal(fs.statSync(f.bridge).mode & 0o777, originalMode);
   assert.deepEqual(fs.readFileSync(f.registration.manifestPath), registration);
   assert.equal(fs.existsSync(path.join(f.context.nativeRoot, 'previous-version')), false);
 });
@@ -53,7 +56,7 @@ test('same-version failed reinstall restores its prior Native bytes and registra
 test('failed first registration removes newly created destinations and permits a clean retry', t => {
   const f = managedFixture(t);
   let injected = false;
-  const faulty = loadWithFs('native-host/src/managedInstall.js', { ...fs, writeFileSync(file, ...args) {
+  const faulty = f.loadInstallerWithFs({ ...fs, writeFileSync(file, ...args) {
     if (!injected && file === f.registration.manifestPath) { injected = true; throw new Error('first-install failure'); }
     return fs.writeFileSync(file, ...args);
   } });
@@ -67,8 +70,8 @@ test('failed first registration removes newly created destinations and permits a
 test('an interrupted Native copy leaves the old pair and no orphan version staging', t => {
   const f = managedFixture(t); f.install('2.4.9');
   let injected = false;
-  const faulty = loadWithFs('native-host/src/managedInstall.js', { ...fs, copyFileSync(source, target, ...args) {
-    if (!injected && target.includes('/versions/.2.5.0.staging-')) { injected = true; throw new Error('copy failure'); }
+  const faulty = f.loadInstallerWithFs({ ...fs, copyFileSync(source, target, ...args) {
+    if (!injected && target.includes(path.join('versions', '.2.5.0.staging-'))) { injected = true; throw new Error('copy failure'); }
     return fs.copyFileSync(source, target, ...args);
   } });
   assert.throws(() => f.install('2.5.0', faulty), /copy failure/);
@@ -116,7 +119,7 @@ test('failed same-target reinstall leaves the old transaction and its recovery s
   const journal = path.join(f.context.updatesRoot, 'transaction.json');
   const before = fs.readFileSync(journal);
   let injected = false;
-  const faulty = loadWithFs('native-host/src/managedInstall.js', { ...fs, writeFileSync(file, ...args) {
+  const faulty = f.loadInstallerWithFs({ ...fs, writeFileSync(file, ...args) {
     if (!injected && file === f.registration.manifestPath) { injected = true; throw new Error('registration failed before settlement'); }
     return fs.writeFileSync(file, ...args);
   } });
@@ -145,7 +148,7 @@ test('a failed compensation is reported explicitly instead of claiming the prior
   const f = managedFixture(t); f.install('2.4.9');
   const active = path.join(f.context.nativeRoot, 'active-version');
   const originalWrite = fs.writeFileSync;
-  const faulty = loadWithFs('native-host/src/managedInstall.js', { ...fs, writeFileSync(file, ...args) {
+  const faulty = f.loadInstallerWithFs({ ...fs, writeFileSync(file, ...args) {
     if (file === f.registration.manifestPath) throw new Error('registration fixture error');
     return originalWrite(file, ...args);
   } });
@@ -185,7 +188,7 @@ test('an installation completed before lock acquisition is retained when the nex
     return fs.openSync(filename, ...args);
   } });
   let failed = false;
-  const faulty = loadWithDependencies('native-host/src/managedInstall.js', {
+  const faulty = f.loadInstaller({
     './managedInstallRecovery': recovery,
     'node:fs': { ...fs, renameSync(source, target) {
       if (!failed && source === f.context.extensionRoot) { failed = true; throw new Error('swap failure after other install'); }
@@ -213,7 +216,7 @@ test('first-install compensation cannot erase a successor after its own Native r
     rmdirSync(filename, ...args) { const result = fs.rmdirSync(filename, ...args); afterRemoval(filename); return result; }
   });
   let injected = false;
-  const faulty = loadWithDependencies('native-host/src/managedInstall.js', {
+  const faulty = f.loadInstaller({
     './managedInstallRecovery': recovery,
     'node:fs': { ...fs, writeFileSync(filename, ...args) {
       if (!injected && filename === f.registration.manifestPath) { injected = true; throw new Error('first registration failed'); }

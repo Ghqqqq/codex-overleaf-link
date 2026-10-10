@@ -47,30 +47,66 @@ export async function waitForNpmPublication({
   async function readRegistry(url, binary = false) {
     const remainingMs = deadline - now();
     if (remainingMs <= 0) return { pending: 'publication deadline reached' };
-    const signal = AbortSignal.timeout(Math.max(1, Math.min(requestTimeoutMs, Math.ceil(remainingMs))));
-    let response;
-    try {
-      response = await fetchImpl(url, {
-        headers: { 'Cache-Control': 'no-cache', Accept: binary ? 'application/octet-stream' : 'application/json' },
-        signal,
-        redirect: 'error'
-      });
-    } catch (error) {
-      if (!(error instanceof TypeError) && !['AbortError', 'TimeoutError'].includes(error?.name)) throw error;
-      return { pending: signal.aborted ? 'registry request timed out' : 'registry connection unavailable' };
-    }
-    if (!response.ok) {
-      await response.body?.cancel();
-      if ([404, 408, 425, 429].includes(response.status) || response.status >= 500) {
-        return { pending: `registry returned HTTP ${response.status}` };
+    const controller = new AbortController();
+    const signal = controller.signal;
+    let reader;
+    let timer;
+    const expired = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        resolve({ pending: 'registry request timed out' });
+        controller.abort(new DOMException('registry request timed out', 'TimeoutError'));
+        // Some fetch implementations do not settle a body read on signal abort.
+        // Cancel the reader too, without letting cleanup extend the deadline.
+        try { if (reader) Promise.resolve(reader.cancel()).catch(() => {}); } catch {}
+      }, Math.max(1, Math.min(requestTimeoutMs, Math.ceil(remainingMs))));
+    });
+
+    async function readResponse() {
+      let response;
+      try {
+        response = await fetchImpl(url, {
+          headers: { 'Cache-Control': 'no-cache', Accept: binary ? 'application/octet-stream' : 'application/json' },
+          signal,
+          redirect: 'error'
+        });
+      } catch (error) {
+        if (!(error instanceof TypeError) && !['AbortError', 'TimeoutError'].includes(error?.name)) throw error;
+        return { pending: signal.aborted ? 'registry request timed out' : 'registry connection unavailable' };
       }
-      throw new Error(`Public npm verification failed with HTTP ${response.status}; check registry access before resuming.`);
+      if (signal.aborted || !response.ok) {
+        // The status is already authoritative; an unread error body must not
+        // hide a permanent HTTP failure or prevent a temporary-status retry.
+        try { Promise.resolve(response.body?.cancel()).catch(() => {}); } catch {}
+        if (signal.aborted) return { pending: 'registry request timed out' };
+        if ([404, 408, 425, 429].includes(response.status) || response.status >= 500) {
+          return { pending: `registry returned HTTP ${response.status}` };
+        }
+        throw new Error(`Public npm verification failed with HTTP ${response.status}; check registry access before resuming.`);
+      }
+      try {
+        const chunks = [];
+        reader = response.body?.getReader();
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(Buffer.from(value));
+          }
+        }
+        const bytes = Buffer.concat(chunks);
+        return { value: binary ? bytes : JSON.parse(new TextDecoder().decode(bytes)) };
+      } catch (error) {
+        if (!(error instanceof SyntaxError) && !(error instanceof TypeError) && !['AbortError', 'TimeoutError'].includes(error?.name)) throw error;
+        return { pending: 'registry response was incomplete or timed out' };
+      } finally {
+        reader?.releaseLock();
+      }
     }
+
     try {
-      return { value: binary ? Buffer.from(await response.arrayBuffer()) : await response.json() };
-    } catch (error) {
-      if (!(error instanceof SyntaxError) && !(error instanceof TypeError) && !['AbortError', 'TimeoutError'].includes(error?.name)) throw error;
-      return { pending: 'registry response was incomplete or timed out' };
+      return await Promise.race([readResponse(), expired]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
