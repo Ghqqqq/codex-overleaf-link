@@ -110,16 +110,24 @@ test('duplicate ZIP identity cannot enter the focused-partial execution path via
   assert.equal(RunController.canUseFocusedPartialSnapshot({project,snapshotWarnings,focusFiles:['other.tex']}),true);
   const vm=require('node:vm'),{createRequire}=require('node:module');
   const filename=path.resolve(__dirname,'../native-host/src/taskRunnerRuntime.js'),realRequire=createRequire(filename),module={exports:{}};
-  let runnerCalls=0;
+  let runnerCalls=0,providerCalls=0;
   const requireGuard=id=>id==='./codexSessionRunner' ? {runCodexSession:async()=>{runnerCalls++;return{assistantMessage:'Guard control',syncChanges:[],unsupportedChanges:[]};}}
-    : id==='./providerRuntime' ? {...realRequire(id),resolveRunProviderForRun:async()=>({modelId:'synthetic',reasoningEffort:'high',providerSelection:{kind:'builtin'}})} : realRequire(id);
+    : id==='./providerRuntime' ? {...realRequire(id),resolveRunProviderForRun:async()=>{providerCalls++;return{modelId:'synthetic',reasoningEffort:'high',providerSelection:{kind:'builtin'}};}}
+    : id==='./nativeEnvironment' ? {...realRequire(id),refreshCodexRuntimeEnv:env=>({...env})} : realRequire(id);
   // The full request dispatcher, quotas, focused evidence, locks and cleanup are real;
-  // only provider lookup and the final model runner are isolated from external state.
+  // CLI discovery, provider lookup and the final model runner are isolated from external state.
   vm.runInNewContext('(function(require,module,exports,process){'+fs.readFileSync(filename,'utf8')+'\n})',
     {AbortController,setTimeout,clearTimeout,Buffer,console})(requireGuard,module,module.exports,{env:{},platform:process.platform});
   const params={projectId:PROJECT,project,focusFiles:['main.tex'],restrictToFocusFiles:true,task:'guard fixture',mode:'auto'};
-  const refused=await module.exports.handleRequest({id:'duplicate-focus',method:'codex.run',params},{CODEX_OVERLEAF_MIRROR_ROOT:h.rootDir});
+  const missingEnv={HOME:h.rootDir,USERPROFILE:h.rootDir,CODEX_HOME:path.join(h.rootDir,'codex-home'),PATH:'',
+    CODEX_OVERLEAF_MIRROR_ROOT:h.rootDir,CODEX_OVERLEAF_ENV_READY:'1',CODEX_OVERLEAF_CODEX_PATH:''};
+  const missing=await module.exports.handleRequest({id:'missing-cli',method:'codex.run',params},missingEnv);
+  assert.equal(missing.ok,false);assert.equal(missing.error.code,'codex_not_found');assert.equal(providerCalls,0);assert.equal(runnerCalls,0);
+  // A synthetic discovered identity satisfies only the prerequisite; no executable is created or launched.
+  const availableEnv={...missingEnv,CODEX_OVERLEAF_CODEX_PATH:path.join(h.rootDir,'synthetic-codex')};
+  assert.equal(fs.existsSync(availableEnv.CODEX_OVERLEAF_CODEX_PATH),false);
+  const refused=await module.exports.handleRequest({id:'duplicate-focus',method:'codex.run',params},availableEnv);
   assert.equal(refused.ok,false);assert.equal(refused.error.code,'codex_run_requires_snapshot_evidence');assert.equal(runnerCalls,0);
-  const accepted=await module.exports.handleRequest({id:'safe-focus',method:'codex.run',params:{...params,focusFiles:['other.tex']}},{CODEX_OVERLEAF_MIRROR_ROOT:h.rootDir});
-  assert.equal(accepted.ok,true);assert.equal(runnerCalls,1);
+  const accepted=await module.exports.handleRequest({id:'safe-focus',method:'codex.run',params:{...params,focusFiles:['other.tex']}},availableEnv);
+  assert.equal(accepted.ok,true);assert.equal(providerCalls,2);assert.equal(runnerCalls,1);
 });

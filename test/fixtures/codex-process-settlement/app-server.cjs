@@ -42,7 +42,8 @@ function checkLatches() {
   lateWritten = true;
   write('late-write.json', { pid: process.pid, content, nativeResultReceived: true });
 }
-watcher = fs.watch(root, checkLatches);
+// Expand Windows TEMP's 8.3 aliases before libuv compares event paths.
+watcher = fs.watch(fs.realpathSync.native(root), checkLatches);
 process.on('SIGTERM', () => {
   termSeen = true;
   write('sigterm-received.json', { pid: process.pid });

@@ -45,7 +45,8 @@ function check() {
   lateWritten = true;
   record('late-write.json', { content, hostExited: true, hostPid: gate.hostPid });
 }
-watcher = fs.watch(root, check);
+// Expand Windows TEMP's 8.3 aliases before libuv compares event paths.
+watcher = fs.watch(fs.realpathSync.native(root), check);
 process.on('SIGTERM', () => {
   record('term.json', {});
   if (mode === 'cooperative-disconnect') exit(0, 'cooperative-term');

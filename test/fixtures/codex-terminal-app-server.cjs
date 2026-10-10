@@ -39,7 +39,8 @@ function startParent() {
     JSON.parse(fs.readFileSync(receipt, 'utf8'));
     terminal({ status: 'completed' });
   };
-  watcher = fs.watch(path.dirname(receipt), maybeFinish);
+  // Expand Windows TEMP's 8.3 aliases before libuv compares event paths.
+  watcher = fs.watch(fs.realpathSync.native(path.dirname(receipt)), maybeFinish);
   const job = { id: 'terminal-worker', task: 'Synthetic worker: edit the owned file', files: ['main.tex'] };
   const temporary = path.join(queueRoot, 'jobs', '.tmp-worker');
   fs.writeFileSync(temporary, JSON.stringify(job));
