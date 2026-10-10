@@ -1,171 +1,171 @@
-# 消息协议、准入与信任边界
+# Message Protocols, Admission, and Trust Boundaries
 
-初始参考产品版本：`2.5.0`；初始参考源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。正文随当前仓库维护。
-执行环境见[系统总览](system-overview.md)，修改入口见[功能索引](feature-map.md)；本页集中说明消息进入各环境前检查什么、这些检查能证明什么。
+Initial reference product version: `2.5.0`; initial reference source baseline: `2073ae74747431aab8d529803d4e9f8197262388`. The body is maintained alongside the current repository.
+See the [System overview](system-overview.md) for execution contexts and the [Feature map](feature-map.md) for change entry points. This page focuses on the checks performed before messages enter each context and what those checks establish.
 
-**Current behavior** 表示可沿所列 owner 核对的源码行为；**Target contract** 表示维护约束；**Known gap / 验证范围** 表示当前检查的例外或尚需集成验证的条件。
-消息准入、版本兼容性、项目归属和操作结果各有证据，不能由一次握手或一个 `ok:true` 合并推定。
+**Current behavior** means source behavior that can be verified through the listed owner; **Target contract** means a maintenance constraint; **Known gap / Verification scope** means an exception to current checks or a condition still requiring integration verification.
+Message admission, version compatibility, project ownership, and operation outcomes each have their own evidence. A single handshake or `ok:true` cannot establish them collectively.
 
-## 1. 两条 RPC 与本地 HTTP 接口
+## 1. Two RPC channels and the local HTTP interface
 
-RPC 将方法名、参数和响应关联起来。项目中两条 RPC 的载体、身份与重放策略分别维护。
+RPC associates method names, parameters, and responses. The two RPC channels in this project have separately maintained transports, identities, and replay policies.
 
-| 通道 | 生产者、消费者与目录 | 当前边界 |
+| Channel | Producers, consumers, and catalogs | Current boundary |
 | --- | --- | --- |
-| Page RPC | [PageBridgeClient](../../extension/src/content/pageBridgeClient.js) → [pageBridge](../../extension/src/pageBridge.js)；[pageRpcContract](../../extension/src/shared/pageRpcContract.js) 管理方法策略 | 同文档 `window.postMessage`，跨 isolated / MAIN world；请求带桥接 token，方法可另要求项目身份 |
-| Native RPC | [NativeChannel](../../extension/src/content/nativeChannel.js) → [background](../../extension/src/background.js) → [native index](../../native-host/src/index.js) | Chrome runtime 消息再经 Native Messaging；[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js)、[providerRuntime](../../native-host/src/providerRuntime.js)、[updateManager](../../native-host/src/updateManager.js) 分别路由方法族 |
-| Provider HTTP | [codexProviderLaunch](../../native-host/src/codexProviderLaunch.js) 准备本地桥，Codex 访问桥后由桥请求上游 | loopback 地址与临时 bearer token；三种协议的路由由 [providerBridgeRoutes](../../native-host/src/providerBridgeRoutes.js) 分类 |
+| Page RPC | [PageBridgeClient](../../extension/src/content/pageBridgeClient.js) → [pageBridge](../../extension/src/pageBridge.js); [pageRpcContract](../../extension/src/shared/pageRpcContract.js) manages method policies | Same-document `window.postMessage` across the isolated / MAIN worlds; requests carry a bridge token, and individual methods may also require project identity |
+| Native RPC | [NativeChannel](../../extension/src/content/nativeChannel.js) → [background](../../extension/src/background.js) → [native index](../../native-host/src/index.js) | Chrome runtime messages followed by Native Messaging; [taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js), [providerRuntime](../../native-host/src/providerRuntime.js), and [updateManager](../../native-host/src/updateManager.js) route their respective method families |
+| Provider HTTP | [codexProviderLaunch](../../native-host/src/codexProviderLaunch.js) prepares a local bridge; Codex calls the bridge, which then requests the upstream service | Loopback address and temporary bearer token; [providerBridgeRoutes](../../native-host/src/providerBridgeRoutes.js) classifies routes for the three protocols |
 
-Page 目录包含读取、文档修改、页面状态、缓存、导航和 observer 方法，目录中的分类不能代替实际 handler。
-Native 没有与 Page `METHODS` 完全对应的统一方法目录；路由、兼容 gate、配额、重放与取消分别由不同 owner 决定。
-Native Messaging 使用四字节小端长度前缀加 UTF-8 JSON，app-server 内层使用逐行 JSON；信封与事件语义见[Native 执行](native-execution.md)。
+The Page catalog includes read, document-mutation, page-state, cache, navigation, and observer methods. Catalog classifications do not replace the actual handlers.
+Native has no unified method catalog that corresponds exactly to Page `METHODS`; different owners determine routing, compatibility gates, quotas, replay, and cancellation.
+Native Messaging uses a four-byte little-endian length prefix followed by UTF-8 JSON, while the inner app-server protocol uses line-delimited JSON. Envelope and event semantics are described in [Native execution](native-execution.md).
 
-## 2. Page 的四种身份语义
+## 2. Four identity meanings in Page requests
 
-同一个请求内的字段像“通行口令、操作名称、收件地址和单据号”，分别回答不同问题。
+Fields within the same request resemble a passphrase, an operation name, a delivery address, and a receipt number: each answers a different question.
 
-| 字段或概念 | 当前用途 | 不能独自证明的事实 |
+| Field or concept | Current use | Facts it cannot establish alone |
 | --- | --- | --- |
-| 请求 `capability` token | 当前 Page Bridge 实例接受的口令，由 client 生成并在初始化后复用 | 请求一定来自扩展 isolated world；某个方法获得独立权限 |
-| 目录 `capability` 名称 | `document.write`、`snapshot.read` 等方法能力描述，随 capability report 提供定位信息 | 按调用者或 token 实施逐方法授权 |
-| `runProjectId` | `writeGuard` 比较捕获项目与当前页面项目；是否要求由目录策略决定 | 账号、会话、运行、内容基线和保存状态全部匹配 |
-| RPC `id` / `writebackRequestId` | client 关联响应；文本写回还用请求身份定位页面回执 | 通用重复请求去重、来源认证或页面已保存 |
+| Request `capability` token | A passphrase accepted by the current Page Bridge instance, generated by the client and reused after initialization | That the request necessarily came from the extension's isolated world; that a method has independent authorization |
+| Catalog `capability` name | A description of a method capability, such as `document.write` or `snapshot.read`, supplied with the capability report for navigation | Per-method authorization enforced by caller or token |
+| `runProjectId` | `writeGuard` compares the captured project with the current page project; catalog policy determines whether it is required | That account, session, run, content baseline, and save state all match |
+| RPC `id` / `writebackRequestId` | The client correlates responses; text writeback also uses request identity to locate page receipts | General duplicate-request deduplication, source authentication, or a saved page |
 
-client 的 `createCapability` 使用随机 UUID，缺少该接口时使用随机字节；token 保存在 client 闭包中。
-[pageBridgeCapability.create](../../extension/src/page/pageBridgeCapability.js) 接受首个格式有效的初始化 token，同 token 再初始化返回已初始化，冲突 token 被拒绝。
-`pageBridgeMessageHandler` 检查 `event.source === window`、同源及消息 `source` 标签，再执行初始化或 token 相等检查。
-token 检查通过后，`dispatch` 查目录和 handler，并按 `projectIdentity` 策略调用 [writeGuard.runWriteGuard](../../extension/src/page/writeGuard.js)。
-项目身份的 optional 例外和页面项目读取回退见[Auto 修改与撤销](auto-edit-undo.md)，不能将某个写操作的守卫推广到全部方法。
+The client's `createCapability` uses a random UUID, falling back to random bytes when that API is unavailable; the token is kept in the client closure.
+[pageBridgeCapability.create](../../extension/src/page/pageBridgeCapability.js) accepts the first well-formed initialization token. Reinitialization with the same token returns already-initialized status; a conflicting token is rejected.
+`pageBridgeMessageHandler` checks `event.source === window`, same origin, and the message `source` label before initializing or checking token equality.
+After the token check passes, `dispatch` looks up the catalog entry and handler, then invokes [writeGuard.runWriteGuard](../../extension/src/page/writeGuard.js) according to the `projectIdentity` policy.
+Optional project-identity exceptions and page-project read fallbacks are described in [Auto editing and Undo](auto-edit-undo.md). The guard on one write operation cannot be generalized to all methods.
 
-### 同文档 MAIN world 的信任前提
+### Trust assumptions for the same-document MAIN world
 
-**Current behavior：**client 在每条 `window.postMessage` 请求中携带 token；同文档 MAIN 脚本能够监听这条消息通道。
-Page 响应没有独立秘密：client 检查同窗、同源、消息标签、目标版本、Page revision 和请求 ID 后接受 `result`。
-这些字段提供桥接实例、版本和响应关联信息；消息标签与随机请求 ID 均不能替代独立的发送者认证。
+**Current behavior:** The client includes the token in every `window.postMessage` request; MAIN-world scripts in the same document can listen to this message channel.
+Page responses have no independent secret: the client accepts `result` after checking the same window, same origin, message label, target version, Page revision, and request ID.
+These fields provide bridge-instance, version, and response-correlation information. Neither message labels nor random request IDs replace independent sender authentication.
 
 \[
-\text{同窗且同源} \not\Rightarrow \text{扩展 isolated world 来源已认证}.
+\text{Same window and origin} \not\Rightarrow \text{Authenticated extension isolated-world source}.
 \]
 
-因此当前 Page Bridge 依赖同文档 MAIN 脚本受信任的前提；token 检查可拒绝未携带正确口令的请求，无法单独隔离已经观察到该口令的同文档代码。
-纯消息模拟可验证“匹配版本、revision 和 ID 的同窗响应会被 client 接受”，该性质不提供真实浏览器攻击可达性或影响范围的证据。
-修改注入方式、页面脚本信任范围或消息传输时，应同时审视请求与响应两个方向，保留上述限定。
+The current Page Bridge therefore assumes that same-document MAIN-world scripts are trusted. The token check can reject requests lacking the correct passphrase, but cannot by itself isolate same-document code that has already observed it.
+Message simulation can verify that the client accepts a same-window response with a matching version, revision, and ID. This property provides no evidence of attack reachability or impact in a real browser.
+Changes to injection, the trust scope of page scripts, or message transport should examine both request and response directions and retain these qualifications.
 
-### 回执、重放与取消
+### Receipts, replay, and cancellation
 
 <a id="shared-review-owner"></a>
 
-**共享审阅归属。** [SharedSessionBridge](../../extension/src/shared/sharedSessionBridge.js) 与 [backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js) 使用独立 `review` lock-port，并以账号、项目和 run 定位 owner；它不长期持有普通 account 存储锁。`review-owner` 查询只读状态，`review-dispatched` 在 Page 派发前耐久保存 token 专属 deadline 行并返回 ACK，`release-review` 正常结束时仅清理自己的 token。
-确认前只有活跃 port 预留；可能已派发的 token 行在 owner 丢失或 worker 更替后继续隔离到截止时间。每个 token 使用独立不可变键，迟到旧 set/remove 无法覆盖或删除新 owner 的证明；存储写/删 pending 时同实例也保持 in-flight 屏障。读取或下一次取得 owner 时仅回收键、token 与 deadline 严格匹配的已过期行，异常行保持拒绝，清理失败不开放未过期租约。
-既有 Page `cancelActiveWrite` 接受可选 `reviewOwnerToken`，仅失效匹配的 review context，不推进全局取消序号。token 经 runtime、Broker、Journal 和 Router 传递；文本、文件树操作在等待后及实际修改前重查归属与期限。该机制约束后续客户端派发，不能撤回已启动的服务端 HTTP 副作用。相关验证见 [undoReloadOwnership](../../test/undoReloadOwnership.test.js)、[reviewDeadline](../../test/reviewDeadline.test.js) 及[运行恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
+**Shared review ownership.** [SharedSessionBridge](../../extension/src/shared/sharedSessionBridge.js) and [backgroundSharedSessions](../../extension/src/backgroundSharedSessions.js) use a separate `review` lock-port and locate the owner by account, project, and run; they do not hold the normal account storage lock for the long term. `review-owner` queries read-only state, `review-dispatched` durably stores a token-specific deadline row before Page dispatch and returns an ACK, and `release-review` clears only its own token on normal completion.
+While awaiting user confirmation, only the active port reserves ownership. A token row whose operation may already have been dispatched remains fenced off until its deadline after owner loss or worker replacement. Each token has a separate immutable key, so a late old set/remove cannot overwrite or delete evidence for a new owner. The same instance also retains an in-flight barrier while a storage write/delete is pending. Reads or the next owner acquisition reclaim only expired rows whose key, token, and deadline match strictly; malformed rows continue to cause rejection, and cleanup failure does not release an unexpired lease.
+The existing Page `cancelActiveWrite` accepts an optional `reviewOwnerToken` and invalidates only the matching review context without advancing the global cancellation sequence. The token passes through the runtime, Broker, Journal, and Router; text and file-tree operations recheck ownership and deadline after waits and immediately before mutation. This mechanism constrains later client dispatches; it cannot reverse server-side HTTP effects that have already started. Relevant checks are [undoReloadOwnership](../../test/undoReloadOwnership.test.js), [reviewDeadline](../../test/reviewDeadline.test.js), and [Run recovery](run-state-and-recovery.md#6-undo-persistence-and-reload-projection).
 
-`pageRpcContract.resolveDispatchPolicy` 固定 `automaticAttempts: 1`；`safe`、`idempotent` 等标签描述方法策略，client 不据此自动重发。
-幂等表示重复执行应收敛到同一结果，例如开关设置；它与“请求只发送一次”属于不同性质。
-文本写回回执由 [writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 管理，二进制 staging、commit 和 status 由 [binaryAssetUploader](../../extension/src/page/binaryAssetUploader.js) 管理。
-回执生命周期、部分结果、保存证据和恢复动作仍按具体 handler 解释，见[Auto 修改与撤销](auto-edit-undo.md)。
-`content_abort` 控制 client 的派发前拒绝与活动等待取消；页面 `cancelActiveWrite` 另行推进取消序号，具体写入循环在检查点停止。`binaryUploadBegin` 同样受派发前取消检查。
-`getWritebackReceipt` 与 `binaryUploadStatus` 为需要项目身份、`cancellation:none` 的只读收尾查询，取消后仍可查询原请求结果，单次 RPC 超时继续有效；文本的显式 deadline 与二进制独立轮询截止点分别维护。broker 将前批已确认结果与未派发尾部分别返回，二进制 begin 成功后的失败，或 begin 已派发且等待被取消，在 commit 未实际派发时按原 transferId 清理暂存；明确拒绝的重复 begin 保留既有 stage；相关时序、部分结果与持久化边界见写回专题。
+`pageRpcContract.resolveDispatchPolicy` sets `automaticAttempts: 1`. Labels such as `safe` and `idempotent` describe method policies; the client does not automatically resend based on them.
+Idempotence means that repeated execution should converge on the same result, as with setting a toggle. This is a different property from sending a request only once.
+Text writeback receipts are managed by [writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js); binary staging, commit, and status are managed by [binaryAssetUploader](../../extension/src/page/binaryAssetUploader.js).
+Receipt lifetimes, partial results, save evidence, and recovery actions still depend on the specific handler; see [Auto editing and Undo](auto-edit-undo.md).
+`content_abort` controls client rejection before dispatch and cancellation of active waits. Page `cancelActiveWrite` separately advances the cancellation sequence, and each write loop stops at its checkpoints. `binaryUploadBegin` is also subject to the pre-dispatch cancellation check.
+`getWritebackReceipt` and `binaryUploadStatus` are read-only finalization queries requiring project identity, with `cancellation:none`. They can still query the original request's result after cancellation, while the per-RPC timeout remains in effect. The explicit text deadline and the independent binary polling deadline are maintained separately. The broker returns previously confirmed batches separately from the undispatched tail. If a failure occurs after binary begin succeeds, or begin was dispatched and its wait was cancelled, staging is cleaned up using the original transferId when commit has not actually been dispatched. An explicitly rejected duplicate begin retains the existing stage. Related timing, partial results, and persistence boundaries are described in the writeback chapter.
 
-## 3. 后台消息族的发送者准入
+## 3. Sender admission for background message families
 
-Chrome runtime 消息由多个 listener 消费，各自拥有准入函数。当前三站点主机为 `overleaf.com`、`www.overleaf.com`、`cn.overleaf.com`。
-下表描述 listener 实际检查；Chrome 的消息投递条件、manifest 注入范围和业务层身份校验仍需分别核对。
+Multiple listeners consume Chrome runtime messages, each with its own admission function. The three current site hosts are `overleaf.com`, `www.overleaf.com`, and `cn.overleaf.com`.
+The table describes the actual listener checks. Chrome's message-delivery conditions, manifest injection scope, and business-layer identity checks still require separate verification.
 
-| 消息族 | 准入 owner | 当前检查范围 |
+| Message family | Admission owner | Current check scope |
 | --- | --- | --- |
-| `native-request`、run-journal list/ack、run-owner port | [background.isAllowedOverleafSender](../../extension/src/background.js) | 有 tab 时检查 `sender.tab.url` 的 HTTPS 与三站点主机；不另检查项目路径、`sender.url` 或 frame。无 tab 时要求本扩展 ID 与扩展 URL 前缀 |
-| `shared-sessions-v1`、shared-session-lock port | [backgroundSharedSessions.senderOrigin](../../extension/src/backgroundSharedSessions.js) | 本扩展 ID、有 tab、`sender.url` 优先于 tab URL、HTTPS 三站点、`/project` 路径；存在 frameId 时要求为 0 |
-| global-preferences read/patch | [globalPreferences.installBackground](../../extension/src/shared/globalPreferences.js) | 本扩展 ID、tab URL、HTTPS 三站点和 `/project` 路径；没有独立 frame 检查 |
-| update coordinator 的 `MESSAGE_TYPES` | [backgroundUpdateCoordinator.isAllowedSender](../../extension/src/backgroundUpdateCoordinator.js) | 本扩展 ID，sender URL 优先；允许三站点项目路径或扩展的 `/bootstrap/popup.html` |
-| Bootstrap update-get-state/check-now/postpone | [bootstrap/background listener](../../extension/bootstrap/background.js) | 按这三个消息类型路由，listener 未消费 sender 参数；后续更新流程另有授权和事务条件 |
-| migration-save-probe | [backgroundUpdateSafety.saveProbe](../../extension/src/backgroundUpdateSafety.js) | 本扩展ID、绑定tab、顶层frame、Chrome documentId、sender URL、事务token及本轮nonce；MAIN读取前后还核对文档URL与当前Native事务 |
-| migration-idle-probe | [updateSafetyReceiver](../../extension/src/content/updateSafetyReceiver.js) | 只接受本扩展后台、无sender.tab、匹配token/事务/nonce及当前URL；应答由后台再次核对目标版本与绑定文档 |
+| `native-request`, run-journal list/ack, run-owner port | [background.isAllowedOverleafSender](../../extension/src/background.js) | With a tab, checks HTTPS and the three site hosts in `sender.tab.url`; does not separately check project path, `sender.url`, or frame. Without a tab, requires this extension's ID and extension-URL prefix |
+| `shared-sessions-v1`, shared-session-lock port | [backgroundSharedSessions.senderOrigin](../../extension/src/backgroundSharedSessions.js) | This extension's ID, a tab, `sender.url` preferred over tab URL, HTTPS on the three sites, and a `/project` path; frameId must be 0 when present |
+| global-preferences read/patch | [globalPreferences.installBackground](../../extension/src/shared/globalPreferences.js) | This extension's ID, tab URL, HTTPS on the three sites, and a `/project` path; no separate frame check |
+| Update coordinator `MESSAGE_TYPES` | [backgroundUpdateCoordinator.isAllowedSender](../../extension/src/backgroundUpdateCoordinator.js) | This extension's ID, with sender URL preferred; allows project paths on the three sites or the extension's `/bootstrap/popup.html` |
+| Bootstrap update-get-state/check-now/postpone | [bootstrap/background listener](../../extension/bootstrap/background.js) | Routes by these three message types; the listener does not consume the sender parameter. Subsequent update processing has separate authorization and transaction conditions |
+| migration-save-probe | [backgroundUpdateSafety.saveProbe](../../extension/src/backgroundUpdateSafety.js) | This extension's ID, bound tab, top-level frame, Chrome documentId, sender URL, transaction token, and current request nonce; also checks the document URL and current Native transaction before and after the MAIN-world read |
+| migration-idle-probe | [updateSafetyReceiver](../../extension/src/content/updateSafetyReceiver.js) | Accepts only this extension's background sender, with no sender.tab and matching token/transaction/nonce and current URL; the background rechecks the target version and bound document on the response |
 
-共享会话写入还检查 scope、记录归属与锁 token；这些检查不能由允许访问某个站点推导。各共享方法的锁例外见[运行状态与恢复](run-state-and-recovery.md)。 `put-compressed` 经 [SharedSessionTransfer](../../extension/src/shared/sharedSessionTransfer.js) 有界解码后沿同一整批写入事务；原始与压缩格式的字节上限、旧后台拒绝行为见[存储容量](run-state-and-recovery.md#storage-compaction)。
-普通 Native listener 的报错文案提到项目页面，但 `isAllowedOverleafSender` 有 tab 分支当前只检查主机和协议。
-该 helper 的条件允许 Overleaf `/learn`，也未额外拒绝“顶层 tab 为 Overleaf、sender URL 指向其他源且 frameId 非零”的字段组合。
-真实扩展消息的 sender 元数据由 Chrome 提供，网页脚本不能任意指定它；函数接受一个合成对象不证明现行注入与 Chrome 投递路径能够产生该组合，实际可达性需要独立浏览器验证。
+Shared-session writes additionally check scope, record ownership, and lock token. These checks cannot be inferred from permission to access a site. Lock exceptions for individual shared methods are described in [Run state and recovery](run-state-and-recovery.md). `put-compressed` follows the same whole-batch write transaction after bounded decoding by [SharedSessionTransfer](../../extension/src/shared/sharedSessionTransfer.js); see [Storage capacity](run-state-and-recovery.md#storage-compaction) for raw and compressed byte limits and rejection by older backgrounds.
+The ordinary Native listener's error wording mentions a project page, but the tab branch of `isAllowedOverleafSender` currently checks only the host and protocol.
+The helper's conditions allow Overleaf `/learn`; they also do not separately reject the field combination of an Overleaf top-level tab, a sender URL on another origin, and a nonzero frameId.
+Chrome supplies sender metadata for real extension messages; page scripts cannot set it arbitrarily. Acceptance of a synthetic object by the function does not prove that the current injection and Chrome delivery path can produce that combination. Actual reachability requires separate browser verification.
 
-**Target contract：**调整站点、路由、frame 注入或新增消息族时，逐项决定实际 sender URL、扩展身份、项目路径及 frame 要求，并检查所有相关 listener。
-`sender.tab.url` 描述顶层标签页，`sender.url` 描述消息发送文档；两者在 frame 场景中可能不同，不能直接互换。
-`frameId` 限定文档层级，业务 `projectId` 限定数据归属，扩展 ID 限定扩展身份；三者分别维护。
+**Target contract:** When changing sites, routes, frame injection, or message families, explicitly decide the actual sender-URL, extension-identity, project-path, and frame requirements and check every relevant listener.
+`sender.tab.url` describes the top-level tab, while `sender.url` describes the sending document. They may differ for frames and cannot be directly interchanged.
+`frameId` constrains document level, business `projectId` constrains data ownership, and extension ID constrains extension identity; all three are maintained separately.
 
-迁移专用probe仅用于恢复扩展reload后失效的安全接收端，不能借此获得普通Native或runtime-health资格。后台按`documentId`定向注入，避免相同tab发生整页导航后向新文档投递；同一文档内的SPA切换另靠URL与MAIN文件/文档identity复核。token绑定安装的接收端，nonce绑定本轮请求，仍须匹配Native事务source/target、状态和后台执行锁；这些字段提供归属与新鲜度约束，不代表页面已经保存。保存证据、活动静默窗口和原刷新清单guard见[安装与更新](installation-and-updates.md#6-安全点的实际范围)。
+Migration-specific probes only restore safety receivers invalidated by an extension reload; they do not confer eligibility for ordinary Native messages or runtime-health. The background injects into a specific `documentId` to avoid delivering to a new document after a full navigation in the same tab. SPA changes within one document are separately checked against the URL and MAIN-world file/document identity. The token binds the installed receiver, and the nonce binds the current request; the Native transaction source/target, status, and background execution lock must still match. These fields constrain ownership and freshness, without establishing that the page has been saved. Save evidence, the activity quiet window, and guards on the original refresh list are described in [Installation and updates](installation-and-updates.md#6-actual-scope-of-safe-points).
 
-## 4. Native 兼容性门控的两个位置
+## 4. The two Native compatibility gates
 
-兼容性门控决定当前版本与协议能否处理某个方法，与发送者准入、用户操作授权分别执行。
-[compatibility.js](../../extension/src/shared/compatibility.js) 定义协议范围、最低版本、必要 capabilities，以及 `compatible/update-available/incompatible` 分类和允许方法矩阵。
-[taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) 的 `bridge.ping` 报告 Native 版本、协议、能力和环境；基础 capabilities 取自共享常量，另宣告按功能协商的可选能力；能力宣告不能视作逐项业务实测结果。
+Compatibility gates decide whether the current version and protocol can handle a method. They operate separately from sender admission and user authorization of operations.
+[compatibility.js](../../extension/src/shared/compatibility.js) defines protocol ranges, minimum versions, required capabilities, the `compatible/update-available/incompatible` classifications, and the allowed-method matrix.
+`bridge.ping` in [taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) reports the Native version, protocol, capabilities, and environment. Base capabilities come from shared constants; optional capabilities negotiated by feature are also declared. Capability declarations cannot be treated as individual end-to-end business test results.
 
-本地 Codex 目录和逐项选择使用全局必要能力 `localCodexSkills`，与原技能 CRUD 的 `localSkills` 分开命名。旧 Native 即使报告相同产品版本 `2.5.1`，缺少新能力仍被归为不兼容；普通业务沿既有门控与更新/重载提示处理，避免新名单字段被旧执行器静默忽略。该变更不增加 Page RPC、Chrome 权限或另一套授权入口。
+The local Codex catalog and per-item selection use the globally required capability `localCodexSkills`, named separately from `localSkills` for the existing skill CRUD operations. An older Native that reports the same product version, `2.5.1`, is still classified as incompatible if the new capability is absent. Ordinary business operations use the existing gates and update/reload prompts so the older executor cannot silently ignore the new list fields. This change adds no Page RPC, Chrome permission, or separate authorization entry point.
 
-外层方法继续为 `skills.list`，`scope:'codex-local'` 路由到 [codexLocalSkills](../../native-host/src/codexLocalSkills.js) 的真实 app-server 目录读取。响应向 Content 返回技能元数据及 `discoveryWarnings` 固定代码/数量；单项发现错误保留有效列表，整体失败或结构异常返回 `skills_list_failed`。该 scope 的 `skills.install/remove` 被拒绝，用户来源技能仍由 Codex 管理。`codex.run` 的 `skillInvocation.scope` 与 `enabledCodexLocalSkillIds` 分别表达单次选择和允许发现的名单，缺失与空名单的兼容语义见[技能调用](writing-style-and-skills.md#local-skill-catalog)。
+The outer method remains `skills.list`; `scope:'codex-local'` routes to the actual app-server catalog read in [codexLocalSkills](../../native-host/src/codexLocalSkills.js). The response returns skill metadata and fixed `discoveryWarnings` codes/counts to Content. A per-item discovery error preserves the valid list; overall failure or malformed structure returns `skills_list_failed`. `skills.install/remove` is rejected for this scope, and skills from user sources remain managed by Codex. The `skillInvocation.scope` and `enabledCodexLocalSkillIds` fields of `codex.run` express the one-turn selection and the list allowed for discovery, respectively. Compatibility semantics for missing and empty lists are described in [Skill invocation](writing-style-and-skills.md#local-skill-catalog).
 
-Content 的 [NativeCompatibilityController.ensureForMethod](../../extension/src/content/nativeCompatibilityController.js) 先 ping，再用传入的 `gatedMethods` 集合决定是否阻止目标方法。
-该方法接受可选的 `{assertCurrent}`：普通运行与 skill-installer 共用的 `sendTrackedCodexRun` 传入原运行句柄、AbortSignal 和账号/项目校验。controller 在 `bridge.ping` 返回后、兼容评估及 blocked 通知前执行回调，sender 在 gate 返回后再次执行，再消费通过或拒绝结果；旧运行的迟到响应不能向后继运行派发请求或追加兼容失败。Guide另将同一可选回调交给 `sendBackgroundNative(payload,{assertCurrent})`：controller在ping后和业务派发前复核原指导身份；该阶段抛出的拒绝标为 `requestDispatched:false`，供Guide保留可操作队列。其他通用调用保持各自取消语义，未统一获得这一运行身份回调。
-集合定义在 [contentRuntime.NATIVE_COMPATIBILITY_GATED_METHODS](../../extension/src/content/contentRuntime.js)；只有集合内方法会附加兼容性 evidence，并执行对应派发前取消检查。
-其中 `mirror.invalidate` 豁免该取消检查，用于保留 Undo 后的镜像失效处理；不能从豁免推定其他操作可在取消后继续。
-后台 [getNativeCompatibilityBlock](../../extension/src/background.js) 再检查请求 evidence；它不会为普通请求重新执行独立 ping。
+Content's [NativeCompatibilityController.ensureForMethod](../../extension/src/content/nativeCompatibilityController.js) pings first, then uses the supplied `gatedMethods` set to decide whether to block the target method.
+The method accepts an optional `{assertCurrent}`. `sendTrackedCodexRun`, shared by ordinary runs and skill-installer, supplies the original run handle, AbortSignal, and account/project checks. The controller invokes the callback after `bridge.ping` returns and before compatibility evaluation or blocked notification. The sender invokes it again after the gate returns, then consumes the allow/reject result. A late response for an old run cannot dispatch a request or append a compatibility failure to a successor run. Guide also passes this optional callback to `sendBackgroundNative(payload,{assertCurrent})`: the controller rechecks the original guidance identity after ping and before business dispatch. A rejection thrown at this stage is marked `requestDispatched:false`, allowing Guide to retain an actionable queue. Other general calls retain their own cancellation semantics; this run-identity callback is not applied uniformly to them.
+The set is defined in [contentRuntime.NATIVE_COMPATIBILITY_GATED_METHODS](../../extension/src/content/contentRuntime.js). Only methods in that set receive compatibility evidence and the corresponding pre-dispatch cancellation check.
+`mirror.invalidate` is exempt from that cancellation check so mirror invalidation after Undo is retained. This exemption does not imply that other operations may continue after cancellation.
+The background [getNativeCompatibilityBlock](../../extension/src/background.js) checks request evidence again; it does not perform a separate new ping for ordinary requests.
 
-**字面 focus 的可选能力门。** [RunController.buildCodexRunParams](../../extension/src/content/runController.js) 为文件 chip 中已经解析为项目路径的 focus 数组设置 `focusFilesAreLiteral:true`；runtime 的首次运行与参数重建共用该生产者。只有布尔 `true` 开启字面语义。Native 的 `hasRunnableProjectSnapshotEvidence`、`validateOtFocusedWarmMirrorReuse` 与 `codexSessionRunner.filterSyncChangesForFocus` 按该标志解释 focus 数组；结构化文件、OT 状态、覆盖层及变更路径始终按字面身份匹配。Content 的 OT producer 同样显式启用字面 focus。因而名为 `@file:main.tex` 的真实文件不会被当成 `main.tex` 的提示语。
+**Optional capability gate for literal focus paths.** [RunController.buildCodexRunParams](../../extension/src/content/runController.js) sets `focusFilesAreLiteral:true` for focus arrays already resolved from file chips to project paths. The runtime's initial run and parameter reconstruction share this producer. Only the boolean `true` enables literal semantics. Native's `hasRunnableProjectSnapshotEvidence`, `validateOtFocusedWarmMirrorReuse`, and `codexSessionRunner.filterSyncChangesForFocus` interpret the focus array according to this flag. Structured files, OT state, overlays, and change paths always match by literal identity. Content's OT producer also explicitly enables literal focus. A real file named `@file:main.tex` is therefore not interpreted as a prompt reference to `main.tex`.
 
-`bridge.ping` 额外宣告 `capabilities.literalProjectPaths:true`，该项不加入全局 `REQUIRED_CAPABILITIES`。后台 `getNativeCompatibilityBlock` 对 `codex.run` 增加条件：当 `focusFilesAreLiteral===true`，且 focus 数组非空或 `restrictToFocusFiles===true` 时，兼容 evidence 必须含 `native.capabilities.literalProjectPaths===true`。缺少能力时，在 Native 派发前返回 `native_update_required`、`status:native_capability_missing` 和缺失能力名，提示安装协调版本并重载扩展；同产品版本号也不能代替此能力证据。
+`bridge.ping` additionally declares `capabilities.literalProjectPaths:true`; this capability is not added to the global `REQUIRED_CAPABILITIES`. Background `getNativeCompatibilityBlock` adds a condition for `codex.run`: when `focusFilesAreLiteral===true` and either the focus array is nonempty or `restrictToFocusFiles===true`, compatibility evidence must contain `native.capabilities.literalProjectPaths===true`. If the capability is missing, it returns `native_update_required`, `status:native_capability_missing`, and the missing capability name before Native dispatch, prompting installation of coordinated versions and an extension reload. A matching product version cannot replace this capability evidence.
 
-无 focus、无范围限制的普通运行继续使用原兼容规则；旧调用者未声明字面标志时保留 focus 提示语兼容，例如 `@file:/main.tex`，不会自动获得新的字面保证。该兼容分支只解释 focus 输入，不能重新解释结构化 `file.path` 或 `change.path/to`。相关边界由 [literalFocusIdentity](../../test/literalFocusIdentity.test.js)、[otWarmMirrorContract](../../test/otWarmMirrorContract.test.js) 与 [backgroundNativeError](../../test/backgroundNativeError.test.js) 定位；新增该能力或调整字段时需同时核对生产者、后台门控和 Native 消费者。
+Ordinary runs with no focus and no scope restriction continue to use the original compatibility rules. Older callers that do not declare the literal flag retain compatibility with focus prompt syntax, such as `@file:/main.tex`, without automatically receiving the new literal guarantee. This compatibility branch interprets only focus inputs; it cannot reinterpret structured `file.path` or `change.path/to`. Relevant boundaries are located through [literalFocusIdentity](../../test/literalFocusIdentity.test.js), [otWarmMirrorContract](../../test/otWarmMirrorContract.test.js), and [backgroundNativeError](../../test/backgroundNativeError.test.js). Adding this capability or changing its fields requires checking the producer, background gate, and Native consumers together.
 
-| 范围 | 方法族及例外 |
+| Scope | Method families and exceptions |
 | --- | --- |
-| Content 与后台 required 集合共同覆盖 | `codex.run/steer`、`task.run`、镜像 `sync/patchFiles/confirmWriteback/invalidate/scanSensitive`、当前 `codex.providers.*` 七个方法、`codex.history.clearPlugin`、`skills.list/install/remove`、`writing-style.get/set`、`codex.thread.fork`、`asset.readChunk/release` |
-| Content gate 中的额外项 | `mirror.status`、`codex.models`；后台将其列入 recoverable 集合 |
-| 后台 required 集合中的额外项 | `task.confirm`；当前 Native 返回 Suggest 模式已移除 |
-| 后台 recoverable 集合 | `bridge.ping`、`mirror.status`、`codex.models`、`codex.cancel`；无 evidence 不按 required 规则拦截，有 evidence 时仍应用分类规则 |
+| Covered by both the Content and background required sets | `codex.run/steer`, `task.run`, mirror `sync/patchFiles/confirmWriteback/invalidate/scanSensitive`, the seven current `codex.providers.*` methods, `codex.history.clearPlugin`, `skills.list/install/remove`, `writing-style.get/set`, `codex.thread.fork`, `asset.readChunk/release` |
+| Additional entries in the Content gate | `mirror.status`, `codex.models`; the background puts these in the recoverable set |
+| Additional entries in the background required set | `task.confirm`; current Native returns that Suggest mode has been removed |
+| Background recoverable set | `bridge.ping`, `mirror.status`, `codex.models`, `codex.cancel`; without evidence, the required rule does not block them; with evidence, classification rules still apply |
 
-`writingStyleSettings`、`sessionForkController` 与 `assetTransferBroker` 的上述五个业务方法由runtime注入sender，Content取得不兼容结果后阻止派发；兼容请求附带evidence，后台在evidence缺失或不允许该方法时拒绝。该方法集合对齐不增加全局 `REQUIRED_CAPABILITIES`，也不改变 `bridge.ping`、取消或未列名未来方法的原政策。
+For the five business methods above used by `writingStyleSettings`, `sessionForkController`, and `assetTransferBroker`, the runtime injects the sender. Content blocks dispatch on an incompatible result; compatible requests carry evidence, and the background rejects missing evidence or a classification that disallows the method. Aligning these method sets adds nothing to global `REQUIRED_CAPABILITIES` and does not change the existing policy for `bridge.ping`, cancellation, or future unlisted methods.
 
-**Current behavior 限定：**未进入Content集合的方法仍保持既有ping及非gated放行策略；后台无evidence时仅阻止required方法，显式evidence继续按共享分类矩阵判定。`bridge.ping`由分类规则始终放行。生产集合、controller和真实后台准入的专项见 [nativeCompatibilityBusinessMethods.test.js](../../test/nativeCompatibilityBusinessMethods.test.js)。
-后台 `sanitizeNativeRequest` 在发送前剥离兼容性 evidence。Native `handleRequest` 执行配额、方法路由及各业务检查，没有再实施同一版本 gate。
-托管更新的 `requestManagedInternal` 显式使用 `skipCompatibility`；更新安全点、授权、签名与事务检查见[安装与更新](installation-and-updates.md)，不能按普通业务方法解释这条内部通道。
+**Current behavior qualification:** Methods outside the Content set retain the existing ping and non-gated allow policy. Without evidence, the background blocks only required methods; explicit evidence continues to be evaluated against the shared classification matrix. The classification rules always allow `bridge.ping`. Targeted checks for the production sets, controller, and actual background admission are in [nativeCompatibilityBusinessMethods.test.js](../../test/nativeCompatibilityBusinessMethods.test.js).
+Background `sanitizeNativeRequest` strips compatibility evidence before sending. Native `handleRequest` enforces quotas, method routing, and individual business checks; it does not repeat the same version gate.
+Managed updates explicitly use `skipCompatibility` in `requestManagedInternal`. Update safe points, authorization, signatures, and transaction checks are described in [Installation and updates](installation-and-updates.md). This internal channel cannot be interpreted as an ordinary business method.
 
-`2.5.0 → 2.5.1`的固定层修复增加内部`update.bootstrap`接续调用。产品版本`2.5.1`、Bootstrap协议`3`与固定入口revision `3.1`属于三个不同身份：协议3保持旧updater的归档/安装兼容性，revision说明重载后执行的固定入口实现。`bootstrapRevision`不授予升级资格；[bootstrapUpdate](../../native-host/src/bootstrapUpdate.js)仍重验原release签名、journal保存的manifest/bundle摘要和大小、bound授权及transaction ID，限定真实旧源摘要和封闭Bootstrap文件列表。目标payload位于签名bundle内旧归档器已允许的`native-runtime/native-host/bootstrap-payload/`；扩展manifest权限形状、Native注册及bridge保持原边界。
+The fixed-layer repair for `2.5.0 → 2.5.1` adds an internal `update.bootstrap` continuation call. Product version `2.5.1`, Bootstrap protocol `3`, and fixed-entry revision `3.1` are three distinct identities: protocol 3 preserves archive/install compatibility with the old updater, while the revision identifies the fixed-entry implementation executed after reload. `bootstrapRevision` does not confer upgrade eligibility. [bootstrapUpdate](../../native-host/src/bootstrapUpdate.js) still revalidates the original release signature, manifest/bundle digests and sizes saved in the journal, bound authorization, and transaction ID, restricting execution to actual old-source digests and a closed Bootstrap file list. The target payload resides at `native-runtime/native-host/bootstrap-payload/` inside the signed bundle, a path already allowed by the old archiver. The extension manifest's permission shape, Native registration, and bridge retain their existing boundaries.
 
-`bootstrap_pending`阻止旧worker按原`awaiting_health`路径提前confirm；最终`update.confirm`同时消费相同事务的目标版本、已加载revision和目标磁盘摘要。独立watchdog的随机token/PID/心跳仅用于恢复进程归属，文件WAL仅记录待执行/已执行事实，二者均不替代原用户授权和签名。回滚先核对源字节再切回旧Native，未知来源内容、缺失恢复材料或失配事务保持失败。[bootstrapMigrationContract](../../native-host/src/bootstrapMigrationContract.js)、[bootstrapMigration](../../native-host/src/bootstrapMigration.js)和[backgroundBootstrapMigration](../../extension/src/backgroundBootstrapMigration.js)分别管理文件合同、落盘进度与浏览器接续，完整状态和恢复边界见安装专题。
+`bootstrap_pending` prevents the old worker from confirming prematurely through the original `awaiting_health` path. The final `update.confirm` consumes the target version, loaded revision, and target on-disk digest for the same transaction. The independent watchdog's random token/PID/heartbeat serves only to recover process ownership; the file WAL records only pending/executed facts. Neither replaces the original user authorization or signature. Rollback checks source bytes before switching back to the old Native. Content of unknown origin, missing recovery material, or a mismatched transaction remains a failure. [bootstrapMigrationContract](../../native-host/src/bootstrapMigrationContract.js), [bootstrapMigration](../../native-host/src/bootstrapMigration.js), and [backgroundBootstrapMigration](../../extension/src/backgroundBootstrapMigration.js) manage the file contract, on-disk progress, and browser continuation, respectively. The full states and recovery boundaries are described in the installation chapter.
 
-**Target contract：**新增或更改 Native 方法时，同步决定两个 gate 集合、能力宣告、分类规则、evidence 传播、取消和旧版本行为。
-兼容性方法矩阵与后台重试分类分别修改；“只读”不能自动推导兼容放行或断线重放。
-后台重试由 `getNativeRetryClass/canRetryNativeRequest` 控制，未列方法默认 `no_silent_retry`；允许重连的方法最多重试一次，细节见[Native 执行](native-execution.md)。
+**Target contract:** Adding or changing a Native method requires coordinated decisions on both gate sets, capability declarations, classification rules, evidence propagation, cancellation, and older-version behavior.
+The compatibility method matrix and background retry classification are changed separately; a read-only designation does not automatically imply compatibility admission or replay after disconnection.
+Background retries are controlled by `getNativeRetryClass/canRetryNativeRequest`; unlisted methods default to `no_silent_retry`. Methods that permit reconnection receive at most one retry; see [Native execution](native-execution.md) for details.
 
-## 5. Chrome Native Messaging 的扩展身份
+## 5. Extension identity in Chrome Native Messaging
 
-[manifest.buildHostManifest](../../native-host/src/manifest.js) 将有效扩展 ID 转换成 `chrome-extension://<id>/`，写入 Native host manifest 的 `allowed_origins`。
-这决定 Chrome 允许哪个扩展连接本地 host。注册错误可使 Native Messaging 连接失败，即使 Node 程序本身可以启动。
-它不携带 Overleaf 账号、项目、会话或运行身份；连接建立后仍由后台与业务 handler 处理这些归属。
-本地 host 使用 stdio 信封，直接启动本地程序也不能用来证明浏览器的 `allowed_origins` 注册正确。
-扩展 ID、Direct/Managed 安装和 doctor 检查入口见[安装与更新](installation-and-updates.md)。
+[manifest.buildHostManifest](../../native-host/src/manifest.js) converts valid extension IDs to `chrome-extension://<id>/` entries in the Native host manifest's `allowed_origins`.
+This determines which extensions Chrome permits to connect to the local host. Incorrect registration can prevent Native Messaging from connecting even when the Node program itself can start.
+It carries no Overleaf account, project, session, or run identity; after connection, the background and business handlers still handle those ownership checks.
+The local host uses a stdio envelope. Starting the local program directly does not prove that the browser's `allowed_origins` registration is correct.
+Extension IDs, Direct/Managed installation, and doctor check entry points are described in [Installation and updates](installation-and-updates.md).
 
-## 6. Provider loopback token 与通知 nonce
+## 6. Provider loopback tokens and notification nonces
 
-[prepareProviderLaunch](../../native-host/src/codexProviderLaunch.js) 为 Custom Provider 准备桥，将传给 Codex 的 URL 替换为本地地址、wire API 设为 Responses，并把 API key 字段替换为桥 token。
-真实上游 API key 由桥的 upstream launch 使用；prepared launch 中的本地 token 与上游凭据是两个生命周期不同的值。
-三桥实现为 [Responses](../../native-host/src/responsesPassthroughBridge.js)、[Chat](../../native-host/src/chatCompletionsBridge.js)、[Anthropic](../../native-host/src/anthropicMessagesBridge.js)。
-各桥使用随机字节创建 token，监听 `127.0.0.1` 的临时端口；在路由和正文处理前验证 bearer token，等长后使用 `timingSafeEqual` 比较。
-loopback 约束监听地址，token 约束请求持有的口令；二者都不能证明调用方的项目、运行或线程身份。
-桥按本次 prepared 生命周期维护请求与 history，关闭时中止活动请求并清理 history；上游协议转换、续传和关闭时序见[Provider 与协议](providers-and-protocols.md)。
+[prepareProviderLaunch](../../native-host/src/codexProviderLaunch.js) prepares a bridge for a Custom Provider, replaces the URL passed to Codex with a local address, sets the wire API to Responses, and replaces the API key field with the bridge token.
+The real upstream API key is used by the bridge's upstream launch. The local token in the prepared launch and the upstream credential are distinct values with different lifetimes.
+The three bridge implementations are [Responses](../../native-host/src/responsesPassthroughBridge.js), [Chat](../../native-host/src/chatCompletionsBridge.js), and [Anthropic](../../native-host/src/anthropicMessagesBridge.js).
+Each bridge creates a token from random bytes and listens on an ephemeral port on `127.0.0.1`. It verifies the bearer token before routing or body processing, using `timingSafeEqual` after checking equal lengths.
+Loopback constrains the listening address, while the token constrains the passphrase held by the requester. Neither establishes the caller's project, run, or thread identity.
+A bridge maintains requests and history for the lifetime of its prepared launch; closing aborts active requests and clears history. Upstream protocol conversion, continuation, and shutdown ordering are described in [Providers and protocols](providers-and-protocols.md).
 
-另有用于变化通知的 `nonce`：共享会话的 `notify` 与 [writingStyleSettings](../../extension/src/content/writingStyleSettings.js) 向扩展存储写入新通知值。
-该值帮助产生可观察的变化，消费者随后重新读取状态；它没有参与上述 Page 或 Provider 认证，也没有提供通用防重放承诺。
-新增字段应按实际消费者命名与说明，避免将所有随机值统称为授权 token。
+A separate `nonce` is used for change notifications: shared-session `notify` and [writingStyleSettings](../../extension/src/content/writingStyleSettings.js) write new notification values to extension storage.
+This value helps produce an observable change, after which consumers reread state. It does not participate in the Page or Provider authentication described above and provides no general replay-protection guarantee.
+New fields should be named and documented according to their actual consumers; random values should not all be called authorization tokens.
 
-## 7. 修改与验证入口
+## 7. Change and verification entry points
 
-| 修改范围 | 必须联动 | 最近验证入口及范围 |
+| Change scope | Required coordination | Nearest verification entry points and scope |
 | --- | --- | --- |
-| Page 方法或握手 | client、capability guard、contract、dispatcher、Page 加载清单与消费者 | [pageRpcContract](../../test/pageRpcContract.test.js)、[pageBridgeClient](../../test/pageBridgeClient.test.js)、[pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js)、[writebackCancellationRecovery](../../test/writebackCancellationRecovery.test.js)、[assetTransferCancellation](../../test/assetTransferCancellation.test.js)：目录、模拟消息、Page 局部守卫和取消后回执收束 |
-| 后台消息准入 | 对应 listener、sender helper、manifest 注入、站点及 frame 范围 | [backgroundNativeError](../../test/backgroundNativeError.test.js)、[globalPreferences](../../test/globalPreferences.test.js)：worker VM 或存储 mock；不能代替 Chrome 投递验证 |
-| Native 兼容 gate | runtime 集合、controller、后台集合、共享分类、Native ping 与调用者 | [nativeCompatibilityController](../../test/nativeCompatibilityController.test.js)、[nativeCompatibilityRunDispatch](../../test/nativeCompatibilityRunDispatch.test.js)、[nativeCompatibilityBusinessMethods](../../test/nativeCompatibilityBusinessMethods.test.js)、[compatibility](../../test/compatibility.test.js)：须区分集合注入测试与生产集合完整性 |
-| Bootstrap兼容迁移 | 原签名/授权、源/目标摘要、封闭写入清单、loaded revision、事务及监护身份 | [bootstrapMigrationFiles](../../test/bootstrapMigrationFiles.test.js)、[bootstrapMigrationUpdate](../../test/bootstrapMigrationUpdate.test.js)、[bootstrapMigrationBuild](../../test/bootstrapMigrationBuild.test.js)、[bootstrapMigrationBrowser](../../test/bootstrapMigrationBrowser.test.js)：分别覆盖文件中断、Native事务恢复、产物合同与浏览器VM；真实签名资产及Chrome加载另行验收 |
-| 迁移专用安全probe | backgroundUpdateSafety、updateSafetyReceiver、updateSafetyProbe、文档/事务/nonce、guarded刷新清单 | [updateSafetyRecovery](../../test/updateSafetyRecovery.test.js)：局部消息与存储装配；真实reload后的文档寿命和原页面状态有独立浏览器证据 |
-| Provider 本地边界 | prepared launch、三桥 token/地址验证、关闭与取消 | [providerReliability](../../test/providerReliability.test.js)；具体依赖替换和网络范围需按用例核对 |
+| Page method or handshake | Client, capability guard, contract, dispatcher, Page loading list, and consumers | [pageRpcContract](../../test/pageRpcContract.test.js), [pageBridgeClient](../../test/pageBridgeClient.test.js), [pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js), [writebackCancellationRecovery](../../test/writebackCancellationRecovery.test.js), [assetTransferCancellation](../../test/assetTransferCancellation.test.js): catalog, simulated messages, local Page guards, and receipt resolution after cancellation |
+| Background message admission | Corresponding listener, sender helper, manifest injection, site and frame scope | [backgroundNativeError](../../test/backgroundNativeError.test.js), [globalPreferences](../../test/globalPreferences.test.js): worker VM or storage mocks; these do not replace Chrome delivery verification |
+| Native compatibility gate | Runtime set, controller, background set, shared classification, Native ping, and callers | [nativeCompatibilityController](../../test/nativeCompatibilityController.test.js), [nativeCompatibilityRunDispatch](../../test/nativeCompatibilityRunDispatch.test.js), [nativeCompatibilityBusinessMethods](../../test/nativeCompatibilityBusinessMethods.test.js), [compatibility](../../test/compatibility.test.js): distinguish set-injection tests from completeness of the production sets |
+| Bootstrap compatibility migration | Original signature/authorization, source/target digests, closed write list, loaded revision, transaction and watchdog identity | [bootstrapMigrationFiles](../../test/bootstrapMigrationFiles.test.js), [bootstrapMigrationUpdate](../../test/bootstrapMigrationUpdate.test.js), [bootstrapMigrationBuild](../../test/bootstrapMigrationBuild.test.js), [bootstrapMigrationBrowser](../../test/bootstrapMigrationBrowser.test.js): cover file-operation interruptions, Native transaction recovery, artifact contracts, and browser VM, respectively; actual signed assets and Chrome loading require separate acceptance checks |
+| Migration-specific safety probe | backgroundUpdateSafety, updateSafetyReceiver, updateSafetyProbe, document/transaction/nonce, and guarded refresh list | [updateSafetyRecovery](../../test/updateSafetyRecovery.test.js): local message and storage composition; document lifetime and original page state after a real reload have separate browser evidence |
+| Local Provider boundary | Prepared launch, token/address checks in all three bridges, shutdown and cancellation | [providerReliability](../../test/providerReliability.test.js); dependency substitutions and network scope must be checked per case |
 
-纯 helper、源码断言和模拟消息能验证确定分支；真实 frame、Chrome sender 字段、不同扩展加载版本和实际 Native 注册需要对应环境验收。
-验证结论应标明所覆盖的通道、身份字段与方法族，再沿调用者确认是否进入该检查；协议目录存在不等同整条调用链已受同一策略保护。
+Pure helpers, source assertions, and simulated messages can verify specific branches. Real frames, Chrome sender fields, different loaded extension versions, and actual Native registration require acceptance checks in the corresponding environment.
+Verification conclusions should identify the channels, identity fields, and method families covered, then trace callers to confirm that they enter the check. The existence of a protocol catalog does not establish that the entire call chain is protected by the same policy.

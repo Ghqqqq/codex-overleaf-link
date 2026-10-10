@@ -1,87 +1,87 @@
-# 功能开发与故障修复 SOP
+# Feature Development and Bug-Fix SOP
 
-SOP（标准操作流程）规定维护任务的执行顺序与完成条件。本流程适用于新功能、功能调整、debug、重构，以及配置、协议、存储、加载、安装和验证工具的修改。每次代码任务都必须分析指南影响；实现变化与必要的指南修订在同一任务、同一可审阅变更中完成。
+This SOP (standard operating procedure) defines the sequence and completion criteria for maintenance tasks. It applies to new features, feature adjustments, debugging, refactoring, and changes to configuration, protocols, storage, loading, installation, and validation tools. Every code task must assess guide impact. Complete implementation changes and necessary guide revisions within the same task and the same reviewable change.
 
-基本流程：**指南定位 → 明确契约或复现故障 → 修改实现 → 验证行为 → 同步指南 → 检查交付条件**。分析与实现过程中发现指南错误时即可修正，交付前再按最终代码复核。
+The basic sequence is **locate through the guide → establish the contract or reproduce the failure → change the implementation → validate behavior → synchronize the guide → check delivery criteria**. Guide errors may be corrected during analysis and implementation; review them again against the final code before delivery.
 
-**修复范围。** 缺陷修复以修复前已有功能和主要交互为基线，分别登记确定缺陷、待验证风险和能力限制。能力限制不自动产生新功能需求；新增入口、人工收尾流程、额外确认步骤或支持范围扩张，应属于用户明确提出的工作范围。优先在既有入口内部修正错误，错误提示遵循现有语言与样式。收回附带扩展时沿调用链核对必要保护、旧持久记录及已执行操作的恢复能力，避免整体回退同时丢失有效修复。
+**Fix scope.** Use the existing features and primary interactions before the fix as the baseline. Record confirmed defects, risks awaiting validation, and capability limitations separately. A capability limitation does not automatically create a new feature requirement. New entry points, manual finalization workflows, extra confirmation steps, or expanded support must fall within the work explicitly requested by the user. Prefer correcting errors within existing entry points, and follow existing language and style for error messages. When withdrawing incidental additions, trace necessary protections, older persisted records, and recovery for operations already performed along the call chain, so that a wholesale rollback does not also discard valid fixes.
 
-## 1. 开始任务：建立改动地图
+## 1. Start the Task: Map the Change
 
-1. 读取 [AGENTS.md](../../AGENTS.md)，检查当前 Git 状态、任务范围及已有未提交改动，保留无关工作。
-2. 从[功能修改索引](feature-map.md)进入受影响的领域页。只展开相关章节和跨层依赖；普通任务无需重新审阅整套指南。
-3. 沿指南中的符号核对实际源码与测试，形成一条改动地图：**用户入口 → 执行环境 → 状态 owner → 消费者及持久化 → 验证入口**。owner 指负责写入事实或作行为决策的模块。
-4. 核对当前说明、目标契约和已知限制。发现指南与代码不一致时，分别判断预期行为和实际实现，避免直接把任一方当作修复目标。
+1. Read [AGENTS.md](../../AGENTS.md), inspect the current Git status, task scope, and existing uncommitted changes, and preserve unrelated work.
+2. Use the [feature change index](feature-map.md) to reach the affected domain pages. Expand only relevant sections and cross-layer dependencies; ordinary tasks do not require reviewing the entire guide again.
+3. Follow the guide's symbols to verify actual source and tests, forming a change map: **user entry point → execution context → state owner → consumers and persistence → validation entry point**. An owner is the module responsible for writing a fact or making a behavioral decision.
+4. Check the current description, target contract, and known limitations. When the guide and code disagree, assess intended behavior and actual implementation separately instead of directly treating either as the fix target.
 
-改动地图可以写在任务说明或当前计划中，无需为每次小修改新建报告。至少明确要动的模块、关联指南章节和验证方式；未确定的行为作为待验证问题保留。
+The change map may live in the task description or current plan; a separate report is unnecessary for every small change. At minimum, identify the modules to change, the related guide sections, and the validation method. Keep uncertain behavior as questions awaiting validation.
 
-## 2. 按任务类型确定起点
+## 2. Choose the Starting Point by Task Type
 
-| 任务 | 实现前需要明确 | 实现后需要证明 |
+| Task | Establish before implementation | Demonstrate after implementation |
 | --- | --- | --- |
-| 新功能或行为调整 | 用户可观察结果、输入输出、状态归属、兼容要求，以及失败/取消/恢复中的适用分支 | 新能力从实际入口可达，参数和状态穿过完整消费链；异常行为符合目标 |
-| Debug 或逻辑修复 | 触发条件、预期与实际差异、运行身份/版本、最小复现或可定位的失败证据；注明尚未复现部分 | 原失败条件下结果已纠正，并检查相邻正常及异常分支；必要时固化为行为回归 |
-| 重构或内部调整 | 原有行为契约、将移动的职责/依赖/符号、需要保持的入口和副作用 | 行为保持，调用者与加载仍有效；指南的定位路径和职责划分仍准确 |
-| 配置、构建、安装或验证工具 | 默认值、作用域、消费时机、平台/权限、生成产物与已有安装的关系 | 实际消费者采用新行为，验证命令的作用和证据范围与说明一致 |
-| 只读诊断或纯文档修正 | 证据来源和需要纠正的主张；明确是否修改实现 | 结论对应证据，未把仅阅读测试定义描述为测试通过 |
+| New feature or behavior adjustment | User-observable results, inputs and outputs, state ownership, compatibility requirements, and applicable failure/cancellation/recovery branches | The new capability is reachable from the actual entry point, parameters and state pass through the complete consumer chain, and exceptional behavior matches the target |
+| Debugging or logic fix | Trigger conditions, differences between expected and actual behavior, run identity/version, and a minimal reproduction or failure evidence that permits localization; identify parts not yet reproduced | The result is corrected under the original failure conditions, and adjacent normal and exceptional branches have been checked; capture a behavioral regression test where needed |
+| Refactoring or internal adjustment | Existing behavior contracts, responsibilities/dependencies/symbols to move, and entry points and side effects to preserve | Behavior is preserved, callers and loading remain valid, and the guide's navigation paths and division of responsibilities remain accurate |
+| Configuration, build, installation, or validation tools | Defaults, scope, consumption timing, platform/permissions, and the relationship between generated outputs and existing installations | Actual consumers use the new behavior, and validation commands' effects and evidence scope match their descriptions |
+| Read-only diagnosis or documentation-only correction | Evidence sources and claims to correct; make clear whether the implementation will change | Conclusions match the evidence, and reading test definitions alone is not described as passing tests |
 
-新设计尚未实现时标为 `Target contract`。完成后将已验证的实现写入当前行为；仍未满足的部分保留为明确限制。故障根因、临时探针和排查经过放在独立问题记录或任务材料中。
+Label designs that have not yet been implemented as `Target contract`. After completion, document verified implementation as current behavior; retain any unmet parts as explicit limitations. Keep failure root causes, temporary probes, and investigation history in separate issue records or task materials.
 
-## 3. 按触发条件检查跨层影响
+## 3. Check Cross-Layer Impact by Trigger
 
-下表用于选择受影响范围，不要求每次运行全部检查。
+Use the following table to select the affected scope; running every check for every task is unnecessary.
 
-| 改动触发器 | 必须追踪的链路 | 对应指南 |
+| Change trigger | Chain that must be traced | Guide |
 | --- | --- | --- |
-| 新增配置、输入或运行选项 | 按字段实际消费路径核对草稿、捕获时机、执行快照、队列、Native、持久化/重载，以及默认值和迁移；明确哪些环节不适用、是否进入快照白名单，未进入者另查捕获时机 | [运行状态](run-state-and-recovery.md)、[界面](ui-and-loading.md)、[Provider](providers-and-protocols.md) |
-| 改状态、异步等待、取消或恢复 | 实际 owner、身份与代次、迟到结果、部分完成、收尾；报告、settlement、按钮与历史投影分别核对 | [运行状态](run-state-and-recovery.md)、[Native](native-execution.md)、[界面](ui-and-loading.md) |
-| 改文件读取、写回、Accept 或 Undo | 路径/项目/基线身份、空内容、补丁坐标、逐项结果、回执、保存及恢复材料；applied/readback/saved/mirrored/compiled/settled 分别取证 | [Auto 修改与撤销](auto-edit-undo.md) |
-| 改存储或数据生命周期 | 真实 writer/reader、账号与项目作用域、迁移标记、压缩实际消费者、删除与保留规则；覆盖旧数据和失败路径 | [运行状态](run-state-and-recovery.md)、[上下文与治理](context-and-governance.md) |
-| 改 Page/Native 方法、消息或权限 | 生产者、目录/dispatcher、发送者与项目准入、兼容集合、超时/取消/重放、错误映射及消费者 | [协议与信任边界](protocols-and-trust.md)、[Native](native-execution.md) |
-| 新增或移动模块 | Content 的 import/registry/组合根与构建；Page 的 contract/dispatcher、顺序注入、WAR 和托管 allowlist；禁止手改生成 bundle | [功能索引加载清单](feature-map.md#新增模块与能力的加载清单)、[界面与加载](ui-and-loading.md) |
-| 改模型、子代理、风格或技能 | 配置身份、协议转换、共享工作目录、资产读写与限额、并发/取消、凭据及语料流向 | [Provider](providers-and-protocols.md)、[子代理](parallel-subagents.md)、[风格与技能](writing-style-and-skills.md)、[治理](context-and-governance.md) |
-| 改站点、安装、更新或分发 | 注入权限与各通道主机集合；源码/构建/磁盘安装/已加载代码/分发产物的分别验证；固定启动器与恢复路径 | [安装与更新](installation-and-updates.md)、[系统总览](system-overview.md) |
+| Add configuration, input, or a run option | Follow each field's actual consumption path through drafts, capture timing, execution snapshots, queues, Native, persistence/reload, defaults, and migration. Identify inapplicable stages and whether the field is in the snapshot allowlist; separately check capture timing for fields outside it | [Run State](run-state-and-recovery.md), [UI](ui-and-loading.md), [Providers](providers-and-protocols.md) |
+| Change state, asynchronous waiting, cancellation, or recovery | Actual owner, identity and generation, late results, partial completion, and finalization; check reports, settlement, buttons, and history projections separately | [Run State](run-state-and-recovery.md), [Native](native-execution.md), [UI](ui-and-loading.md) |
+| Change file reading, writeback, Accept, or Undo | Path/project/baseline identity, empty content, patch coordinates, per-item results, receipts, saving, and recovery materials; obtain separate evidence for applied/readback/saved/mirrored/compiled/settled | [Auto Editing and Undo](auto-edit-undo.md) |
+| Change storage or data lifecycle | Actual writers/readers, account and project scope, migration markers, actual consumers of compaction, and deletion/retention rules; cover legacy data and failure paths | [Run State](run-state-and-recovery.md), [Context and Governance](context-and-governance.md) |
+| Change Page/Native methods, messages, or permissions | Producers, catalog/dispatcher, sender and project admission, compatibility sets, timeout/cancellation/replay, error mapping, and consumers | [Protocols and Trust Boundaries](protocols-and-trust.md), [Native](native-execution.md) |
+| Add or move a module | Content imports/registry/composition root and build; Page contract/dispatcher, ordered injection, WAR, and the Managed allowlist; never edit the generated bundle manually | [Feature Index Loading Checklist](feature-map.md#loading-checklist-for-new-modules-and-capabilities), [UI and Loading](ui-and-loading.md) |
+| Change models, subagents, styles, or skills | Configuration identity, protocol conversion, shared working directories, asset reading/writing and limits, concurrency/cancellation, and credential and corpus flows | [Providers](providers-and-protocols.md), [Subagents](parallel-subagents.md), [Styles and Skills](writing-style-and-skills.md), [Governance](context-and-governance.md) |
+| Change sites, installation, updates, or distribution | Injection permissions and each channel's host set; separate validation of source/build/disk installation/loaded code/distribution artifacts; fixed launchers and recovery paths | [Installation and Updates](installation-and-updates.md), [System Overview](system-overview.md) |
 
-跨层修改应检查参数是否在中间层丢失、状态是否有第二个写入者、失败是否跳过清理，以及最近测试是否替换了关键依赖。新增文件名或 helper 测试存在，均不足以证明功能已进入生产链路。
+For cross-layer changes, check whether intermediate layers lose parameters, whether state has a second writer, whether failures skip cleanup, and whether the nearest tests substitute critical dependencies. A new filename or the existence of a helper test is insufficient to prove that a feature is wired into the production chain.
 
-## 4. 实现与验证：按风险取得证据
+## 4. Implement and Validate: Obtain Evidence Proportional to Risk
 
-实现应围绕已定位的最小连贯调用链展开。逻辑修复优先保留原失败条件；测试检查用户可观察行为和关键契约，避免只复写实现细节。没有行为变化的低影响修改使用适当的现有检查，不要求机械新增测试。
+Implement changes around the smallest coherent call chain identified. For logic fixes, preserve the original failure conditions first. Tests should check user-observable behavior and key contracts, avoiding mere duplication of implementation details. Use appropriate existing checks for low-impact changes with no behavior changes; additional tests are not mechanically required.
 
-按[指南入口的验证表](README.md#按修改选择验证)选择专项：纯函数、装配/契约、子进程、浏览器及真实模型提供不同层次的证据。先执行相关检查；仅在变化、失败或未解决问题需要时扩大范围。代码触及必须遵守的仓库检查时仍应完成该检查。
+Select focused checks from the [validation table at the guide entry point](README.md#choosing-validation-for-a-change). Pure-function, integration/contract, subprocess, browser, and real-model tests provide different levels of evidence. Run relevant checks first; expand scope only when changes, failures, or unresolved concerns require it. Still complete mandatory repository checks that apply to the code being changed.
 
-涉及真实编辑器、保存、刷新、已加载扩展或平台注册的结论，应有相应环境证据。暂时只能完成局部验证时，交付说明列出缺少的场景，指南也保留准确的保证范围。测试通过后不把替身行为提升为整条链路已验收。
+Conclusions about real editors, saving, refresh, loaded extensions, or platform registration require evidence from the corresponding environment. If only partial validation is currently possible, delivery notes must list the missing scenarios, and the guide must retain an accurate scope of guarantees. Passing tests does not turn substitute behavior into acceptance of the full chain.
 
-**本机修复后的验收流程。** 涉及运行时代码的修复通过相关自动检查后，默认直接执行 `npm run build:content`，备份现有 Managed 安装及其 Native bridge/浏览器注册，再执行 `npm run install:managed`。安装许可已作为本项目的本机维护约定，无需逐次询问。核对磁盘扩展、Native 版本和源码/安装摘要后，提示使用者在现有 Chrome 扩展条目点击重新加载；收到已重载后继续刷新已授权的测试项目并进行 CUA 验收。普通网页刷新不能代替扩展后台重载，磁盘安装成功也不能代替浏览器运行身份与功能验收。使用可用的 Chrome smoke 技能执行相应检查，真实文件写入及清理遵守已有授权和可验证的恢复方案；纯文档变更不触发安装。
+**Acceptance procedure after a local fix.** Once a runtime-code fix passes the relevant automated checks, run `npm run build:content` directly by default, back up the existing Managed installation and its Native bridge/browser registration, then run `npm run install:managed`. Installation permission is already part of this project's local maintenance convention and does not need to be requested each time. After verifying the disk extension, Native version, and source/installation digests, ask the user to click Reload on the existing Chrome extension entry. After the user confirms the reload, refresh the authorized test project and perform CUA acceptance testing. An ordinary page refresh does not replace reloading the extension background, and a successful disk installation does not replace browser runtime identity and functional acceptance checks. Use the available Chrome smoke skill for the corresponding checks. Real file writes and cleanup must follow existing authorization and a verifiable recovery plan. Documentation-only changes do not trigger installation.
 
-真实模型验收与烟测统一使用 Luna，先在 UI 核验实际可用的模型标识；每次提交前核对所选模型，并将实际标识与该次 run ID 一并记录。Luna 不可用时将相关模型检查记为阻塞，不自动替换为 Sol 或其他模型。该要求只规定验收时的模型选择，不修改产品默认模型，也不将测试选型本身视作模型行为修复。
+Use Luna for all real-model acceptance tests and smoke tests, first verifying the model identifier actually available in the UI. Check the selected model before every submission, and record its actual identifier together with that run ID. If Luna is unavailable, mark the relevant model checks as blocked; do not automatically substitute Sol or another model. This requirement only specifies model selection during acceptance testing; it does not change the product's default model, nor does it treat test-model selection itself as a fix for model behavior.
 
-## 5. 同步指南：按最终实现更新
+## 5. Synchronize the Guide with the Final Implementation
 
-完成代码修改后，对照实际 diff 和改动地图再次判断文档影响。同步至少覆盖受影响的以下内容：
+After completing code changes, reassess documentation impact against the actual diff and change map. Synchronization must cover at least the affected parts of the following:
 
-- **领域页**：入口、owner、调用顺序、数据与身份、成功/失败语义、取消/恢复、支持范围及最近验证入口。
-- **功能索引**：新增用户能力或修改路线、模块迁移/重命名、必要联动及测试路径；新功能必须能从索引找到。
-- **系统总览与协议页**：跨环境职责、状态权威、通道和信任边界发生变化时同步。
-- **指南入口与 AGENTS**：阅读路线、开发命令或维护契约改变时同步。
+- **Domain pages**: entry points, owners, call order, data and identity, success/failure semantics, cancellation/recovery, support scope, and nearest validation entry points.
+- **Feature index**: new user capabilities or change paths, module moves/renames, required related changes, and test paths; new features must be discoverable through the index.
+- **System overview and protocol pages**: update when cross-context responsibilities, state authority, channels, or trust boundaries change.
+- **Guide entry point and AGENTS**: update when reading paths, development commands, or maintenance contracts change.
 
-修复已知问题时，重新核对对应 `Known gap`：已经解决的描述改为当前行为，部分修复则保留剩余条件及限制。不能只新增一段“已修复”而留下互相冲突的旧说明。已有独立问题记录可用时，同步修复状态和验证证据；其不存在不阻塞正常维护，也不要求创建或操作外部工单。
+When fixing a known issue, recheck the corresponding `Known gap`: replace resolved descriptions with current behavior, and preserve remaining conditions and limitations for partial fixes. Do not merely add a "fixed" paragraph while leaving conflicting old descriptions. If a separate issue record already exists, update its fix status and validation evidence. Its absence does not block normal maintenance or require creating or operating an external ticket.
 
-**无需改正文的条件。** 纯内部调整，或修复后恢复了指南已经准确描述的行为，可能无需改正文。仍须核对受影响章节、定位符号、限制和验证入口，并在交付中注明章节及具体理由。入口、行为或已知限制实际变化时，应完成相应文档修改；“改动很小”不能代替影响判断。
+**When body changes are unnecessary.** Purely internal adjustments, or fixes that restore behavior already accurately described in the guide, may need no body changes. Still check affected sections, navigation symbols, limitations, and validation entry points, and name those sections and specific reasons in delivery notes. When entry points, behavior, or known limitations actually change, make the corresponding documentation changes. "The change is small" does not replace impact assessment.
 
-**基线与版本。** 指南随本仓库当前受维护代码维护，历史提交用于定位初始参考。修改涉及带固定版本/源码基线的页面时，同时核对该声明；局部同步可明确“初始参考基线，正文随当前仓库维护”，避免继续声称新增行为仅来自旧提交。产品适用版本以真实元数据为依据；尚未提交的变更不编造提交哈希，文档提交也不构成产品发布或全仓重新验收。
+**Baselines and versions.** Maintain the guide alongside the currently maintained code in this repository; historical commits identify initial references. When a change affects a page with a fixed version/source baseline, check that statement too. A local update may explicitly say "initial reference baseline; the body is maintained with the current repository" to avoid continuing to claim that new behavior comes solely from an older commit. Determine applicable product versions from actual metadata. Do not invent commit hashes for uncommitted changes; a documentation commit does not constitute a product release or a fresh acceptance review of the entire repository.
 
-正文保持项目指南形态：保存最终行为、必要理由、已知边界和维护路线。审阅报告、排查过程、临时计划、问题清单及验证统计保持独立，正式指南不依赖私人文件才能使用。
+Keep the body in the form of a project guide: final behavior, necessary rationale, known boundaries, and maintenance paths. Review reports, investigation history, temporary plans, issue lists, and validation statistics remain separate. The official guide must be usable without depending on private files.
 
-## 6. 新页面、链接与分发规则
+## 6. New Pages, Links, and Distribution Rules
 
-优先更新已有领域页，新增主题确有独立阅读价值时再拆页。新增、重命名或删除正式页时同步：
+Prefer updating existing domain pages; split out a new topic only when it provides independent reading value. When adding, renaming, or deleting an official page, update the following together:
 
-1. [指南入口](README.md)与相关功能索引/交叉链接。
-2. [.gitignore](../../.gitignore) 中对应单页声明及 [PUBLIC_ARCHITECTURE_GUIDE_PATHS](../../scripts/verify-release.mjs) 精确名单；移动或删除时清理旧条目。
-3. 运行现有 [architectureGuidePublication](../../test/architectureGuidePublication.test.js)，确认名单对齐、文件存在和私密路径拒绝；该测试自动枚举声明，新页不要求额外硬编码测试。Git 跟踪范围与 npm/release 分发范围分别保持。
+1. The [guide entry point](README.md) and related feature-index entries/cross-links.
+2. The corresponding per-page declaration in [.gitignore](../../.gitignore) and the exact [PUBLIC_ARCHITECTURE_GUIDE_PATHS](../../scripts/verify-release.mjs) list; remove old entries when moving or deleting pages.
+3. Run the existing [architectureGuidePublication](../../test/architectureGuidePublication.test.js) test to confirm list alignment, file existence, and rejection of private paths. This test automatically enumerates declarations; a new page does not require an additional hardcoded test. Maintain Git tracking scope separately from npm/release distribution scope.
 
-文档使用真实文件、符号与相对链接；删除或移动源码时检查入链。提交前检查链接、锚点和命令是否仍有效，并运行适用检查：
+Use actual files, symbols, and relative links in documentation; check inbound links when source files are deleted or moved. Before committing, check that links, anchors, and commands remain valid, and run the applicable checks:
 
 ```sh
 git diff --check
@@ -89,25 +89,25 @@ node --test test/architectureGuidePublication.test.js
 npm run verify:source
 ```
 
-这些命令检查格式、入库边界及开发元数据；它们不会自动证明代码与指南语义一致，也不会替代链接/符号核对。语义同步仍由维护者沿源码和消费者完成。详细运行测试按第 4 节选择。
+These commands check formatting, repository admission boundaries, and development metadata. They do not automatically establish semantic consistency between code and guide, and do not replace link/symbol checks. Maintainers must still synchronize meaning by following source and consumers. Select detailed runtime tests according to Section 4.
 
-## 7. 完成条件与交付说明
+## 7. Completion Criteria and Delivery Notes
 
-任务结束前逐项确认：
+Before finishing a task, confirm each item:
 
-- 已从指南定位实际实现，当前行为、目标和未解决项区分清楚。
-- 代码改动与必要指南修订处于同一任务及可审阅变更范围；逻辑关联清楚时可拆提交，不能把必需的指南同步留给未知的后续任务。
-- 所有受影响的导航、符号、旧限制与版本表述已经核对；无需改正文时有具体依据。
-- 验证结果对应实际运行的范围，尚缺的环境验证或未解决问题已明确保留。
-- 指南只保留项目知识；独立问题记录按已获证据更新，未把文档修订当作产品修复。
+- The actual implementation has been located through the guide, with clear distinctions among current behavior, targets, and unresolved items.
+- Code changes and necessary guide revisions belong to the same task and reviewable change scope. They may be split into commits when the logical relationship is clear; required guide synchronization cannot be left to an unspecified future task.
+- All affected navigation, symbols, old limitations, and version statements have been checked. Specific evidence supports any decision to leave the body unchanged.
+- Validation results match the scope actually executed, and missing environment validation or unresolved issues remain explicit.
+- The guide contains only project knowledge. Separate issue records reflect the evidence obtained, and documentation revisions have not been treated as product fixes.
 
-最终回复或已有 PR/任务说明至少包含以下信息；按改动规模压缩表达，无需另建交付报告：
+The final reply or existing PR/task description includes at least the following information. Scale the wording to the change; a separate delivery report is unnecessary:
 
 ```text
-行为：完成的能力或已消除的故障条件。
-指南：更新的章节/索引；或已核对的章节及无需修改的具体原因。
-验证：实际执行的检查、结果和证据范围。
-遗留：本次任务尚未解决的问题或缺少的验证；无则明确本任务无已知遗留。
+Behavior: The capability completed or failure condition eliminated.
+Guide: Updated sections/index entries, or the sections checked and specific reasons no change was needed.
+Validation: Checks actually executed, their results, and evidence scope.
+Remaining: Unresolved issues or missing validation for this task; explicitly state when this task has no known remaining items.
 ```
 
-本流程规定任务完成标准，不新增发布、外部通信或真实项目操作的授权；相关动作沿当前任务范围及仓库既有规则执行。
+This procedure defines task completion criteria. It does not grant additional authorization for publishing, external communication, or operations on real projects; those actions follow the current task scope and existing repository rules.

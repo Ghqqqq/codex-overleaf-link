@@ -1,450 +1,450 @@
-# Auto 修改、写回、保存与 Undo
+# Auto Edits, Writeback, Save Confirmation, and Undo
 
-本页提供从一次 Auto 文本修改到写回、保存确认、撤销及刷新恢复的源码路线。
-适用于定位“改动写到了哪里”“保存依据是什么”“撤销为何跳过”“刷新后为何丢失按钮”等问题。
+This page maps the source path from an Auto text edit through writeback, save confirmation, Undo, and recovery after refresh.
+It supports investigation of questions such as where changes were written, what proves they were saved, why Undo skipped an item, and why buttons disappeared after refresh.
 
-初始参考源码基线：`main@2073ae74747431aab8d529803d4e9f8197262388`；初始参考包版本 `2.5.0`。当前行为随本仓库实现维护。
-总入口见 [架构目录](README.md)，其他功能见 [功能定位图](feature-map.md)。
+Initial reference source baseline: `main@2073ae74747431aab8d529803d4e9f8197262388`; initial reference package version: `2.5.0`. Current behavior is maintained against this repository's implementation.
+See the [architecture index](README.md) for the main entry point and the [feature map](feature-map.md) for other features.
 
-## 1. 首先分清四份内容与两种身份
+## 1. Distinguish Four Content Representations and Two Identities First
 
-**当前实现。** 编辑器、服务器 ZIP、本地工作副本和运行基线分别承担不同职责。
+**Current behavior.** The editor, server ZIP, local working copy, and run baseline have separate responsibilities.
 
-| 概念 | 含义与权威来源 | 首读源码与符号 |
+| Concept | Meaning and authoritative source | Source and symbols to read first |
 |---|---|---|
-| 编辑器内容 $C$ | 当前页面已打开文档的实时内容，可能尚未保存 | [pageBridge](../../extension/src/pageBridge.js) 的 `readActiveEditorText`；[overleafEditor](../../extension/src/page/overleafEditor.js) |
-| 项目快照 | 一次读取产生的项目文件集合，带来源、完整性、跳过项等元数据 | [snapshotRouter](../../extension/src/page/snapshotRouter.js) 的 `buildProjectSnapshot`、`buildZipOnlyProjectSnapshot` |
-| 本地镜像 $W$ | Native Host 管理的磁盘工作副本，agent 在此产生修改 | [mirrorWorkspace](../../native-host/src/mirrorWorkspace.js) 的 `getProjectMirror`、`syncOverleafToMirror` |
-| 基线 $B$ | 用于计算该运行差异及检查并发修改的原始文件内容与哈希 | 同文件的 `buildBaselineFile`、`collectMirrorChangesDetailed` |
-| 执行配置快照 | 提交时固定的模式、Track、模型、Provider、上下文等 | [runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js)；运行使用 `executionSnapshot` |
-| 运行归属 | 原项目、会话、运行记录，绑定晚到结果和恢复操作 | [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `currentRunView`、`getRunProjectIdForWriteback` |
+| Editor content $C$ | Live content of the document open on the current page; it may be unsaved | `readActiveEditorText` in [pageBridge](../../extension/src/pageBridge.js); [overleafEditor](../../extension/src/page/overleafEditor.js) |
+| Project snapshot | A project file set produced by one read, with metadata for source, completeness, skipped items, and so on | `buildProjectSnapshot` and `buildZipOnlyProjectSnapshot` in [snapshotRouter](../../extension/src/page/snapshotRouter.js) |
+| Local mirror $W$ | A disk working copy managed by the Native Host, where the agent makes changes | `getProjectMirror` and `syncOverleafToMirror` in [mirrorWorkspace](../../native-host/src/mirrorWorkspace.js) |
+| Baseline $B$ | Original file content and hashes used to compute this run's changes and check concurrent edits | `buildBaselineFile` and `collectMirrorChangesDetailed` in the same file |
+| Execution configuration snapshot | Mode, Track, model, Provider, context, and other settings fixed at submission | [runExecutionSnapshot](../../extension/src/shared/runExecutionSnapshot.js); the run uses `executionSnapshot` |
+| Run ownership | The original project, session, and run record, which bind late results and recovery actions | `currentRunView` and `getRunProjectIdForWriteback` in [contentRuntime](../../extension/src/content/contentRuntime.js) |
 
-内容快照回答“该运行看到了什么”，执行配置快照回答“该运行按什么配置执行”。
-两者与本地镜像类似“底稿、操作单、工作台”的关系；工作台上的新内容不自动成为已保存的项目事实。
+The content snapshot answers what the run saw; the execution configuration snapshot answers which settings it used.
+Together with the local mirror, these resemble a reference draft, an instruction sheet, and a workbench: new content on the workbench does not automatically become saved project state.
 
-运行归属可记为 $I=(projectId,sessionId,runId)$；持久化恢复记录还带 `accountScopeId`。
-首次执行按提交配置运行；后续 Undo 仍绑定原项目，并从原运行记录决定 Track 语义。
-恢复入口需逐字段核对：显式 Retry sync 保留恢复意图中的 Track，自动编译优先使用原执行快照中的有效布尔值；旧记录缺少该值时才回退当前面板设置，详见第 7 节。
-详细会话与持久化路线见 [运行状态与恢复](run-state-and-recovery.md)。
+Run ownership can be written as $I=(projectId,sessionId,runId)$; persisted recovery records also carry `accountScopeId`.
+Initial execution uses the submitted configuration. Later Undo remains bound to the original project and determines Track semantics from the original run record.
+Check recovery entry points field by field: explicit Retry sync preserves Track from the recovery intent and prefers a valid auto-compile boolean from the original execution snapshot. Only older records without that value fall back to the current panel setting; see Section 7.
+See [run state and recovery](run-state-and-recovery.md) for the detailed session and persistence path.
 
-**当前实现的边界。** [pageRpcContract](../../extension/src/shared/pageRpcContract.js) 的 `METHODS` 声明每个 RPC 的身份策略。
-`applyOperations`、Accept、Reject、编译触发要求项目身份；`ensureReviewing`、`ensureEditing` 为 `optional`。
-[pageBridge](../../extension/src/pageBridge.js) 的 `dispatch` 按目录执行 `writeGuard.runWriteGuard`。
-因此核查新调用时，应同时检查目录策略、调用方参数、实际 handler；不能从“跨过 Page RPC”推导所有方法都拒绝缺失身份。
-模式切换的可选项目身份仍保留 Page Bridge 的 capability token 检查；token 对同文档 MAIN 脚本的信任前提见[协议与信任边界](protocols-and-trust.md)。相关定义见 [pageRpcContract.test.js](../../test/pageRpcContract.test.js) 和 [pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js)，后者包含空参数切换模式用例。
+**Current implementation boundary.** `METHODS` in [pageRpcContract](../../extension/src/shared/pageRpcContract.js) declares each RPC's identity policy.
+`applyOperations`, Accept, Reject, and compile triggering require project identity; `ensureReviewing` and `ensureEditing` are `optional`.
+`dispatch` in [pageBridge](../../extension/src/pageBridge.js) executes `writeGuard.runWriteGuard` according to this catalog.
+When checking a new call, inspect the catalog policy, caller arguments, and actual handler together. Crossing Page RPC does not establish that every method rejects missing identity.
+Mode switching with optional project identity still retains the Page Bridge capability-token check; see [protocols and trust boundaries](protocols-and-trust.md) for the token's trust assumptions about MAIN scripts in the same document. Relevant definitions are in [pageRpcContract.test.js](../../test/pageRpcContract.test.js) and [pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js); the latter includes mode switching with empty arguments.
 
-## 2. 端到端调用图
+## 2. End-to-End Call Graph
 
-**当前实现。** content 是侧边栏所在隔离世界；page 是可读取 Overleaf 编辑器对象的 MAIN 世界；native 是本机进程。
-此图保留主链，模式、权限和失败分支在后文展开。
+**Current behavior.** Content is the isolated world that hosts the sidebar; Page is the MAIN world that can read Overleaf editor objects; Native is the local process.
+This graph shows the main chain. Mode, permission, and failure branches are detailed below.
 
 ```mermaid
 flowchart TD
-    A[contentRuntime.runTask] --> B[getRunProjectSnapshot / warm mirror 判断]
+    A[contentRuntime.runTask] --> B[getRunProjectSnapshot / warm mirror decision]
     B --> C[Native runCodexSession]
-    C --> D[mirrorWorkspace：同步 / 工作副本 / 收集差异]
-    D --> T[codexSessionRunner：展示 diff / 执行 patches]
+    C --> D[mirrorWorkspace: sync / working copy / collect changes]
+    D --> T[codexSessionRunner: display diff / execution patches]
     T --> E[writebackOrchestrator.applySyncChangesToOverleaf]
-    E --> F[writebackController + writebackPlan：规范化与预检]
+    E --> F[writebackController + writebackPlan: normalization and preflight]
     F --> G[assetTransferBroker.applyOperations]
-    G --> H[文本与文件树 RPC + writeGuard]
+    G --> H[Text and file-tree RPC + writeGuard]
     H --> I[writebackReceiptJournal.apply]
-    I --> J[writebackRouter：导航 / 编辑 / 新建 / 读回]
-    G --> Q[二进制 begin / append / commit RPC + writeGuard]
-    Q --> R[binaryAssetUploader：上传 / 独立回执 / 取证]
-    J --> S[broker 合并逐项结果]
+    I --> J[writebackRouter: navigation / edit / create / readback]
+    G --> Q[Binary begin / append / commit RPC + writeGuard]
+    Q --> R[binaryAssetUploader: upload / separate receipts / evidence]
+    J --> S[broker merges per-item results]
     R --> S
     S --> K[contentRuntime.recordUndoFromApply]
     K --> L[writebackController.confirmPostWriteSave]
-    L --> M[镜像确认或失效处理]
-    L --> N[可选 Overleaf 编译]
-    L --> O[WritebackSettlement + 运行持久化]
-    O --> P[runTimelineView：Undo / Accept / 保存核查]
+    L --> M[Mirror confirmation or invalidation]
+    L --> N[Optional Overleaf compile]
+    L --> O[WritebackSettlement + run persistence]
+    O --> P[runTimelineView: Undo / Accept / save check]
 ```
 
-源码入口为 [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `runTask`，以及
-[codexSessionRunner](../../native-host/src/codexSessionRunner.js) 的 `runCodexSession`。
-后者调用 `syncOverleafToMirror` 准备本地内容，执行后调用 `collectMirrorChangesDetailed`，最终返回 `syncChanges`。
-其中 `diff` 由 [diffEngine](../../native-host/src/diffEngine.js) 的 `computeLineDiff` 生成，供界面展示；
-`patches` 由 [textPatch](../../native-host/src/textPatch.js) 的 `computeTextPatches` 生成，供后续写入。
-content 在 `applySyncChangesToOverleaf` 消费这些差异；模型自然语言总结不充当文件变更依据。
+The source entry points are `runTask` in [contentRuntime](../../extension/src/content/contentRuntime.js) and
+`runCodexSession` in [codexSessionRunner](../../native-host/src/codexSessionRunner.js).
+The latter calls `syncOverleafToMirror` to prepare local content, calls `collectMirrorChangesDetailed` after execution, and ultimately returns `syncChanges`.
+Within that result, `diff` is generated by `computeLineDiff` in [diffEngine](../../native-host/src/diffEngine.js) for display;
+`patches` are generated by `computeTextPatches` in [textPatch](../../native-host/src/textPatch.js) for subsequent writes.
+Content consumes these changes in `applySyncChangesToOverleaf`; a model's natural-language summary is not evidence of file changes.
 
-## 3. 快照进入镜像时的关键分岔
+## 3. Key Branches When a Snapshot Enters the Mirror
 
-**当前实现。** `contentRuntime.runTask` 先调用 [otWarmMirror.resolveWarmRunStart](../../extension/src/content/otWarmMirror.js)，尝试普通镜像或 OT 聚焦文件快启，并读取当前编辑器覆盖层（overlay）。
-快启未选中时，`contentRuntime.getRunProjectSnapshot` 优先请求完整 ZIP，包含二进制，禁止为读取而导航编辑器；无法得到完整结果时，再尝试不导航的页面状态读取。
-取得快照后，`contentRuntime.resolveWarmMirrorReuse` 还会根据快照完整性、聚焦文件覆盖和镜像健康状态判断能否复用。
-[snapshotRouter](../../extension/src/page/snapshotRouter.js) 决定 ZIP、活动编辑器覆盖层和页面文件记录如何合并。
-[overleafProjectSnapshot](../../extension/src/page/overleafProjectSnapshot.js) 承担快照桥及缓存相关装配。
+**Current behavior.** `contentRuntime.runTask` first calls [otWarmMirror.resolveWarmRunStart](../../extension/src/content/otWarmMirror.js), trying an ordinary mirror or OT focused-file warm start and reading the current editor overlay.
+When no warm start is selected, `contentRuntime.getRunProjectSnapshot` first requests a full ZIP, including binaries, and forbids editor navigation for reading. If a complete result is unavailable, it tries a page-state read without navigation.
+After obtaining a snapshot, `contentRuntime.resolveWarmMirrorReuse` also considers snapshot completeness, focused-file overlays, and mirror health to decide whether reuse is possible.
+[snapshotRouter](../../extension/src/page/snapshotRouter.js) determines how the ZIP, active editor overlay, and page file records merge.
+[overleafProjectSnapshot](../../extension/src/page/overleafProjectSnapshot.js) composes the snapshot bridge and cache-related dependencies.
 
-- 完整快照：`mirrorWorkspace.syncOverleafToMirror` 根据 `fullProjectSnapshot` 进入全量替换分支，删除规范化输入及已知未读路径集合中没有的镜像文件，更新成功读取文件的基线并保留未读资产的旧基线。只有路径集合完整且文件身份保持一致时，缺失路径才能代表项目中已删除的文件；ZIP 路径身份边界见下文。
-- 部分快照：只覆盖已读取路径，合并旧基线；不能用“本次未读到”推导服务器文件已删除。
-- Warm mirror：普通快启检查整体镜像健康与当前 overlay；OT 快启另由 [otWarmMirrorController.canUseOtWarmStart](../../extension/src/content/otWarmMirrorController.js) 检查聚焦文件的新鲜度。观察事件经 `otWarmMirror` 的队列送入 Native `mirror.patchFiles`；局部更新不能单独证明完整项目已同步。
-- 保存核查：`serverOnly: true` 明确要求服务器来源；编辑器覆盖层不能用于证明服务器已保存。
+- Full snapshot: `mirrorWorkspace.syncOverleafToMirror` enters the full-replacement branch according to `fullProjectSnapshot`. It removes mirror files absent from both the normalized input and the known unread-path set, updates baselines for successfully read files, and retains old baselines for unread assets. An absent path can represent a file deleted from the project only when the path set is complete and file identity remains consistent; see the ZIP path-identity boundary below.
+- Partial snapshot: overwrites only read paths and merges old baselines. A file not read this time cannot be inferred to have been deleted from the server.
+- Warm mirror: ordinary warm start checks overall mirror health and the current overlay. OT warm start also checks focused-file freshness through [otWarmMirrorController.canUseOtWarmStart](../../extension/src/content/otWarmMirrorController.js). Observed events reach Native `mirror.patchFiles` through the `otWarmMirror` queue; a partial update alone does not prove that the whole project is synchronized.
+- Save check: `serverOnly: true` explicitly requires a server source. An editor overlay cannot prove server persistence.
 
 <a id="zip-path-identity"></a>
 
-**当前实现：ZIP 字面文件名与路径身份。** ZIP 条目名、项目元数据与结构化操作路径都是字面项目相对路径。[projectFiles.normalizeSafeProjectPath](../../extension/src/shared/projectFiles.js) 校验后返回原值，不执行 URI 解码：`chapter%20one.tex`、`chapter one.tex`、`100%.tex` 与含字面 `%2F` 的名字各自保留身份。校验拒绝绝对路径、盘符、反斜线、控制字符、空或点段、首尾空白，以及超过 `MAX_SAFE_PROJECT_PATH_LENGTH` 的输入。显式 URL 编码边界另用 `normalizeUrlEncodedProjectPath`，返回一次解码结果并检查嵌套编码的分隔符与穿越风险；例如 `chapter%2520one.tex` 只还原成字面 `chapter%20one.tex`。项目 ID、doc ID 等 URL 参数继续遵守各自的编码规则。
+**Current behavior: literal ZIP filenames and path identity.** ZIP entry names, project metadata, and structured operation paths are literal project-relative paths. [projectFiles.normalizeSafeProjectPath](../../extension/src/shared/projectFiles.js) validates and returns the original value without URI decoding: `chapter%20one.tex`, `chapter one.tex`, `100%.tex`, and names containing a literal `%2F` retain their distinct identities. Validation rejects absolute paths, drive letters, backslashes, control characters, empty or dot segments, leading or trailing whitespace, and input longer than `MAX_SAFE_PROJECT_PATH_LENGTH`. Explicit URL-encoded boundaries instead use `normalizeUrlEncodedProjectPath`, which returns one decoding pass and checks nested encoded separators and traversal risks; for example, `chapter%2520one.tex` becomes the literal `chapter%20one.tex`. Project IDs, doc IDs, and other URL parameters continue to follow their own encoding rules.
 
-`snapshotRouter.extractFilesFromZip` 严格按 UTF-8 解码名字；非法或无法确定的路径、重复条目加入 `skipped`，并设 `pathIdentityComplete:false`。重复名字的已保留首项也从可信文件集合移除，编辑器覆盖层和页面回退不能重新加入这个歧义路径；普通目录条目继续允许。该标志传播到 ZIP 快照、精确文件清单及组合快照，阻止结果被标成 `fullProjectSnapshot:true`。`contentRuntime.sanitizeRunProjectSnapshot` 还独立检查结构化文件的合法性与唯一性；`getRunProjectSnapshot` 保留已知路径错误的负证据，避免一次页面回退将它改写成完整快照。普通 ZIP 不可用仍走原页面回退。
+`snapshotRouter.extractFilesFromZip` decodes names strictly as UTF-8. Invalid or indeterminate paths and duplicate entries enter `skipped` and set `pathIdentityComplete:false`. The previously retained first entry of a duplicate name is also removed from the trusted file set; neither an editor overlay nor page fallback can reintroduce that ambiguous path. Ordinary directory entries remain allowed. This flag propagates to ZIP snapshots, exact file listings, and combined snapshots, preventing the result from being marked `fullProjectSnapshot:true`. `contentRuntime.sanitizeRunProjectSnapshot` independently checks structured files for validity and uniqueness. `getRunProjectSnapshot` preserves negative evidence of known path errors so that a page fallback cannot overwrite it with a complete-snapshot claim. Ordinary ZIP unavailability still uses the original page fallback.
 
-Native 的完整快照准入因而不能把这些遗漏解释为远端删除。聚焦到歧义文件时，Content 和 Native 的 focused-partial 检查均无法取得该文件证据；其他已知可信文件仍可按聚焦范围继续。[referenceProjects.readProject](../../extension/src/page/referenceProjects.js) 对路径身份不完整返回 `reference_project_incomplete`，不宣称 `referenceTextComplete`。路径范围完整与内容全部可读分别由 `fullProjectSnapshot` 和 `contentComplete` 表达；二进制配额导致的已知路径未读按下一段处理。
+Native full-snapshot admission therefore cannot interpret these omissions as remote deletions. When an ambiguous file is focused, neither Content nor Native focused-partial checks can obtain evidence for it; other known trusted files may continue within the focused scope. [referenceProjects.readProject](../../extension/src/page/referenceProjects.js) returns `reference_project_incomplete` for incomplete path identity and does not claim `referenceTextComplete`. `fullProjectSnapshot` and `contentComplete` separately express complete path coverage and fully readable content; known unread paths caused by binary quotas are handled as described below.
 
-字面身份也有本机文件系统边界。[projectPathPlatform](../../native-host/src/projectPathPlatform.js) 在 `mirrorWorkspace.syncOverleafToMirror` 创建目录、清理旧文件、写入内容或推进基线之前，按实际 `process.platform` 预检 Windows 名称：冒号与备用数据流（stream）语法、保留设备名、尾随点或空格、保留字符、过长组件及已检测的大小写别名冲突会明确拒绝，并保留旧镜像和基线。请求字段不能覆盖平台判定；POSIX 上原本合法的冒号名称仍可使用。
+Literal identity also has a local-filesystem boundary. Before `mirrorWorkspace.syncOverleafToMirror` creates directories, cleans up old files, writes content, or advances baselines, [projectPathPlatform](../../native-host/src/projectPathPlatform.js) preflights Windows names using the actual `process.platform`. It explicitly rejects colons and alternate-data-stream syntax, reserved device names, trailing dots or spaces, reserved characters, overlong components, and detected case-alias collisions, preserving the old mirror and baselines. Request fields cannot override platform detection. Colon-containing names that are valid on POSIX remain usable there.
 
-来自文件 chip（已选文件标签）的 focus 数组以 `focusFilesAreLiteral:true` 声明字面语义，结构化文件、变更与 OT 覆盖层始终按字面身份匹配。后台要求有 focus 或写入范围限制的新格式请求取得 Native 的可选 `literalProjectPaths` 能力，旧 Host 缺少该能力时提示更新并重载，不继续用旧提示语规则解释路径；具体入口及旧调用者兼容见[协议与信任边界](protocols-and-trust.md)。
+Focus arrays from file chips (selected-file labels) declare literal semantics with `focusFilesAreLiteral:true`; structured files, changes, and OT overlays always match by literal identity. For new-format requests with focus or write-scope restrictions, the background requires Native's optional `literalProjectPaths` capability. When an older Host lacks it, the UI asks for an update and reload instead of continuing to interpret paths with the old prompt-text rules; see [protocols and trust boundaries](protocols-and-trust.md) for entry points and compatibility with older callers.
 
-[zipLiteralIdentity.test.js](../../test/zipLiteralIdentity.test.js) 串联 ZIP、快照回退、参考项目、Native 准入与镜像、写回和 Undo 前像；[literalFocusIdentity.test.js](../../test/literalFocusIdentity.test.js) 检查 chip 到 Native 的身份传递；[projectPathPlatform.test.js](../../test/projectPathPlatform.test.js) 检查平台谓词及拒绝前保留旧数据。ZIP、页面与模型 I/O 使用替身，Windows 拒绝分支使用注入的平台值；这些证据不能替代真实 Overleaf 文件名接纳、Chrome 写回及 Windows 实机验收。
+[zipLiteralIdentity.test.js](../../test/zipLiteralIdentity.test.js) connects ZIP handling, snapshot fallback, reference projects, Native admission and mirrors, writeback, and Undo pre-images. [literalFocusIdentity.test.js](../../test/literalFocusIdentity.test.js) checks identity propagation from chips to Native. [projectPathPlatform.test.js](../../test/projectPathPlatform.test.js) checks platform predicates and preservation of old data before rejection. ZIP, page, and model I/O use test doubles, and Windows rejection branches use an injected platform value. These checks do not replace acceptance of actual Overleaf filenames, Chrome writeback, or validation on a real Windows machine.
 
-**配额跳过与内容完整性。** 请求包含二进制且读取内容时，`extractFilesFromZip` 对超过单文件或项目二进制预算的资产加入 `capabilities.skipped`，省略对应内容。完整 ZIP 的 `fullProjectSnapshot` 表达路径读取范围，`contentComplete` 单独表达内容是否全部读取；仅列清单的 `includeContent:false` 路径不执行内容预算裁剪。
-[mirrorWorkspace.resolveUnreadSnapshotFiles](../../native-host/src/mirrorWorkspace.js) 合并 ZIP 和 Native 规范化器的二进制预算跳过项，将其路径纳入存在集合，保留已有本地文件及旧基线，并写入 `unreadFiles`。未读资产不获得新的新鲜度：镜像保持 dirty，不推进 `lastFullSyncAt`，warm reuse、写回后就地确认及 OT patch 都有独立的未读检查。部分刷新保留该状态；后续完整读取该文件可解除，完整清单确认远端已删除时才移除旧副本。
-[collectMirrorChangesDetailed](../../native-host/src/mirrorWorkspace.js) 对未读路径的本地新建、修改或删除返回 `snapshot_content_unavailable`，不产生可写回操作；overlay 也不能把其旧内容更新为当前基线。[codexPromptAssembly](../../native-host/src/codexPromptAssembly.js) 列出未读路径并说明保留副本可能过时，普通可读文件仍可继续处理。该机制保护这些路径，不提供跨路径复制的内容来源追踪。
-Native 准入仍独立检查快照实际携带的二进制总量，见 [nativeQuotas.validateNativeRequestQuotas](../../native-host/src/nativeQuotas.js)。其总量限额低于 ZIP 的项目预算，普通总预算跳过场景会在镜像写入前被拒绝，旧镜像保持；单文件跳过后的其余载荷可准入并按上述未读规则处理。
-[contentRuntime.getProjectSnapshotWarnings](../../extension/src/content/contentRuntime.js) 继续将这些跳过项呈现为非阻断警告。文本写回成功后，若镜像仍有未读资产，异步刷新可转为失效状态，`mirrored` 不宣称完成；本次文本的 applied/saved 证据与整体镜像完整性分别判断。
-[snapshotSkippedAssets.test.js](../../test/snapshotSkippedAssets.test.js) 串联真实 ZIP、Native 准入、临时镜像及 Content 结算，覆盖边界、原资源保留、后续完整读取/真实删除、部分刷新、非法路径及确认/OT/overlay 防线。Page 写入、保存和外部 I/O 使用替身，真实浏览器与远端后果仍需单独验收。
+**Quota skips and content completeness.** When a request includes binaries and reads content, `extractFilesFromZip` adds assets exceeding the per-file or project binary budget to `capabilities.skipped` and omits their content. For a full ZIP, `fullProjectSnapshot` describes path-read coverage; `contentComplete` separately describes whether all content was read. Listing-only `includeContent:false` does not apply content-budget trimming.
+[mirrorWorkspace.resolveUnreadSnapshotFiles](../../native-host/src/mirrorWorkspace.js) merges binary-budget skips from ZIP handling and the Native normalizer, includes their paths in the existence set, preserves existing local files and old baselines, and records `unreadFiles`. Unread assets acquire no new freshness: the mirror stays dirty, `lastFullSyncAt` does not advance, and warm reuse, in-place post-writeback confirmation, and OT patching each check unread state independently. Partial refreshes retain that state. A later full read of the file can clear it; only a complete listing confirming remote deletion removes the old copy.
+[collectMirrorChangesDetailed](../../native-host/src/mirrorWorkspace.js) returns `snapshot_content_unavailable` for local creation, modification, or deletion of an unread path and produces no writeback operation. An overlay cannot promote its old content to a current baseline either. [codexPromptAssembly](../../native-host/src/codexPromptAssembly.js) lists unread paths and explains that preserved copies may be stale; ordinary readable files may still be processed. This mechanism protects those paths without tracing content provenance for copies across paths.
+Native admission still independently checks the actual total binary payload in the snapshot; see [nativeQuotas.validateNativeRequestQuotas](../../native-host/src/nativeQuotas.js). Its total limit is lower than the ZIP project budget, so ordinary total-budget-skip scenarios are rejected before mirror writes and preserve the old mirror. The payload remaining after a per-file skip may be admitted and processed under the unread-file rules above.
+[contentRuntime.getProjectSnapshotWarnings](../../extension/src/content/contentRuntime.js) continues to display these skips as non-blocking warnings. After successful text writeback, an asynchronous refresh may invalidate a mirror that still has unread assets, and `mirrored` does not claim completion. Evidence that this text was applied/saved is assessed separately from overall mirror completeness.
+[snapshotSkippedAssets.test.js](../../test/snapshotSkippedAssets.test.js) connects real ZIP handling, Native admission, a temporary mirror, and Content settlement. It covers limits, preservation of original assets, later full reads/actual deletions, partial refreshes, invalid paths, and confirmation/OT/overlay guards. Page writes, save operations, and external I/O use test doubles; actual browser and remote effects require separate acceptance.
 
-**OT 快启的覆盖层证明。** `resolveWarmRunStart` 为 OT 快启提供恰好覆盖聚焦文件的当前 `fileOverlays`；普通 warm 路径保留原覆盖层行为。[mirrorWorkspace.buildOtStatusFields](../../native-host/src/mirrorWorkspace.js) 只为可信且仍 OT-fresh 的文本项发布 SHA-256。Native `validateOtFocusedWarmMirrorReuse` 要求 overlays 无重复、无额外或缺失聚焦路径，实际内容哈希与可信 OT 项一致；这些 overlays 只作为相等证明，不再次写入镜像，也不采纳其自报 hash。
+**Overlay evidence for OT warm start.** `resolveWarmRunStart` supplies current `fileOverlays` covering exactly the focused files for OT warm start; the ordinary warm path retains its existing overlay behavior. [mirrorWorkspace.buildOtStatusFields](../../native-host/src/mirrorWorkspace.js) publishes SHA-256 only for trusted text entries that remain OT-fresh. Native `validateOtFocusedWarmMirrorReuse` requires overlays with no duplicate, extra, or missing focused paths and actual content hashes matching the trusted OT entries. These overlays serve only as equality evidence: they are not written into the mirror again, and their self-reported hashes are not accepted.
 
-健康、freshness、dirty、未读资产及聚焦范围检查继续有效。浏览器缺少当前覆盖层等条件时不选择快启，直接读取快照；已选择快启但 Native 复核发现不一致、过期或缺少证据时返回 `mirror_stale`，沿实际 `runTask → getRunProjectSnapshot → prepareMirrorStaleRetry → SensitivePreflight` 重新检查并派发。Native 内部无 overlay 请求保留原接纳范围；旧 Native 可拒绝新快启并触发快照回退。[otWarmMirrorContract.test.js](../../test/otWarmMirrorContract.test.js) 覆盖浏览器 producer、RunController、Native 与外层回退组合；模型、页面与存储 I/O 使用替身。
+Health, freshness, dirty-state, unread-asset, and focus-scope checks remain in force. When the browser lacks a current overlay or other prerequisites, it skips warm start and reads a snapshot directly. If warm start is selected but Native revalidation finds inconsistency, staleness, or missing evidence, it returns `mirror_stale` and rechecks and dispatches through the actual `runTask → getRunProjectSnapshot → prepareMirrorStaleRetry → SensitivePreflight` path. Internal Native requests without overlays retain their original admission scope; older Native versions may reject the new warm start and trigger snapshot fallback. [otWarmMirrorContract.test.js](../../test/otWarmMirrorContract.test.js) covers the browser producer, RunController, Native, and outer fallback together; model, page, and storage I/O use test doubles.
 
-**目标契约。** 缺失内容、已知空字符串 `""`、已知非空内容应保持可区分。
-快照覆盖规则理应让成功读取的空编辑器内容覆盖旧 ZIP 内容。
+**Target contract.** Missing content, a known empty string `""`, and known nonempty content must remain distinguishable.
+Snapshot overlay rules should allow successfully read empty editor content to overwrite stale ZIP content.
 
-**当前读取规则。** [snapshotRouter.readActiveEditorOverlay](../../extension/src/page/snapshotRouter.js) 接受已成功读取的空串或纯空白；由于旧 reader 在编辑器缺失时也会返回空串，空白覆盖还要求 [pageBridge.getActiveEditorIdentity](../../extension/src/pageBridge.js) 提供可读的 CodeMirror doc、textarea 或 contenteditable，且其文本与读取结果一致。空白读取缺少或未就绪的来源不会覆盖 ZIP；读取异常及 Loading 占位也不构成覆盖证据。非空文本沿用无需 identity 的兼容路径。
-路径、文本与空白读取证据在等待 ZIP 前一并捕获；`mergeSnapshotFiles` 保留成功读取的空内容。ZIP 不可用时返回相应编辑器部分快照；`serverOnly` 始终不采纳编辑器覆盖层，不能用未保存空内容证明服务器已保存。
-[pageBridgeSnapshotCache.test.js](../../test/pageBridgeSnapshotCache.test.js) 装配完整 Page 入口；[snapshotEmptyContent.test.js](../../test/snapshotEmptyContent.test.js) 使用当前模块与显式网络替身检查不同读取来源和等待时序。创建、保存核查、Undo 的空内容语义仍需沿各自链路验证。
+**Current read rules.** [snapshotRouter.readActiveEditorOverlay](../../extension/src/page/snapshotRouter.js) accepts a successfully read empty or whitespace-only string. Because the old reader also returns an empty string when the editor is absent, a blank overlay additionally requires [pageBridge.getActiveEditorIdentity](../../extension/src/pageBridge.js) to provide a readable CodeMirror doc, textarea, or contenteditable whose text matches the read result. A blank read with a missing or unready source does not override the ZIP; read errors and Loading placeholders do not constitute overlay evidence either. Nonempty text retains the compatibility path that requires no identity.
+Path, text, and evidence for a blank read are captured together before waiting for the ZIP; `mergeSnapshotFiles` preserves successfully read empty content. When the ZIP is unavailable, the corresponding partial editor snapshot is returned. `serverOnly` never accepts editor overlays, so unsaved empty content cannot prove server persistence.
+[pageBridgeSnapshotCache.test.js](../../test/pageBridgeSnapshotCache.test.js) composes the complete Page entry point. [snapshotEmptyContent.test.js](../../test/snapshotEmptyContent.test.js) uses current modules and explicit network test doubles to check read sources and waiting order. Empty-content semantics for creation, save checking, and Undo still require validation along their respective paths.
 
-## 4. Auto 写回：先得到逐项结果，再记录恢复凭据
+## 4. Auto Writeback: Obtain Per-Item Results Before Recording Recovery Evidence
 
-**当前实现。** [writebackOrchestrator](../../extension/src/content/writebackOrchestrator.js) 的 `applySyncChangesToOverleaf` 是 content 主调度入口。
-运行传入提交时的 `mode`、`requireReviewing` 等配置；Ask 的防护分支会忽略本地变更。
+**Current behavior.** `applySyncChangesToOverleaf` in [writebackOrchestrator](../../extension/src/content/writebackOrchestrator.js) is Content's main orchestration entry point.
+The run passes the submitted `mode`, `requireReviewing`, and other settings; the Ask guard ignores local changes.
 
-1. [writebackController](../../extension/src/content/writebackController.js) 的 `buildSyncApplyOperations` 把差异转成 edit/create/delete 等操作，保留已有补丁。
-2. [writebackPlan](../../extension/src/content/writebackPlan.js) 检查路径与治理规则；删除和二进制操作经过现有产品确认流程。
-3. `ensureReviewingBeforeWrite` 与 page 写入路径确认 Reviewing 或 Editing；Auto 仍受这些前置条件约束。
-4. `stageWritebackRecovery` 保存可恢复的新建请求；[assetTransferBroker](../../extension/src/content/assetTransferBroker.js) 的 `applyOperations` 按原顺序调度文本批次与二进制传输。
-5. 文本与文件树批次通过 [writebackRouter](../../extension/src/page/writebackRouter.js) 的 `applyOperationsCore` 逐项执行，形成 `applied`、`skipped` 与留痕捕获证据；二进制通过独立 uploader，最后由 broker 合并结果。
-6. 返回后立即 `appendApplyResult`、`recordUndoFromApply`；随后才等待保存核查、镜像和编译。
+1. `buildSyncApplyOperations` in [writebackController](../../extension/src/content/writebackController.js) converts changes into edit/create/delete and other operations, retaining existing patches.
+2. [writebackPlan](../../extension/src/content/writebackPlan.js) checks paths and governance rules; deletion and binary operations use the existing product confirmation flow.
+3. `ensureReviewingBeforeWrite` and the Page write path confirm Reviewing or Editing; Auto remains subject to these prerequisites.
+4. `stageWritebackRecovery` saves recoverable creation requests; `applyOperations` in [assetTransferBroker](../../extension/src/content/assetTransferBroker.js) schedules text batches and binary transfers in their original order.
+5. Text and file-tree batches execute item by item through `applyOperationsCore` in [writebackRouter](../../extension/src/page/writebackRouter.js), producing `applied`, `skipped`, and tracked-change capture evidence. Binaries use a separate uploader; the broker merges the results at the end.
+6. Immediately after return, call `appendApplyResult` and `recordUndoFromApply`; only then wait for save checking, mirror work, and compilation.
 
-该顺序有实际意义：broker 已返回逐项结果后，进入保存等待前可记录已知写入部分的 Undo checkpoint。
-broker 对已派发操作在取消后继续查询只读回执，保留可确认的前批结果；未确认结果及恢复材料的边界见第 7 节。
-`recordUndoFromApply` 位于较大的 contentRuntime 中；只阅读 orchestrator 会漏掉恢复账本如何建立。
+This order matters: after the broker has returned per-item results, Undo checkpoints for known written items can be recorded before waiting for save confirmation.
+After cancellation, the broker continues read-only receipt queries for dispatched operations and retains confirmable earlier-batch results; Section 7 explains the boundaries of unconfirmed results and recovery material.
+`recordUndoFromApply` lives in the larger contentRuntime; reading only the orchestrator misses how the recovery ledger is built.
 
-### 4.1 编辑已有文本
+### 4.1 Editing Existing Text
 
-**当前实现。** `writebackRouter.applyEditOperation` 负责目标编辑器就绪、陈旧检查、应用和读回。
-导航需确认目标路径与实际编辑器文档，文件树选中标签不能单独证明 CodeMirror 已切换文档。
-补丁生成在 Native 的 `textPatch.computeTextPatches`：按行锚点划分窗口，再按词、句、段落等变化选择补丁；自然补丁集合通过 `isValidNaturalPatchSet` 校验，必要时回退到各行窗口内的替换。
-`diffEngine.computeLineDiff` 的展示结果有独立规模上限，展示截断不能推导执行补丁也被截断。
-content 的 `writebackController.getSyncChangePatches` 优先保留 Native 补丁，缺少可用补丁时才尝试前后像的单区间差异。
-Page 先通过 [staleGuard.prepareOperationPatches](../../extension/src/shared/staleGuard.js) 将源补丁转换到编辑器坐标；`applyTextPatches` 再校验 `expected` 并按起点降序应用，以免前面的写入移动后面的坐标。坐标使用 JavaScript 字符串索引，即 UTF-16 代码单元。
-实际编辑器写入由 [overleafEditor](../../extension/src/page/overleafEditor.js) 适配，陈旧检查依赖 [staleGuard](../../extension/src/shared/staleGuard.js)。
+**Current behavior.** `writebackRouter.applyEditOperation` handles target-editor readiness, stale checks, application, and readback.
+Navigation must confirm both the target path and the actual editor document; a selected file-tree label alone does not prove that CodeMirror has switched documents.
+Native `textPatch.computeTextPatches` generates patches: it divides the input into windows using line anchors, then selects patches according to word, sentence, paragraph, and other changes. `isValidNaturalPatchSet` validates the natural patch set, falling back to replacements within each line window when necessary.
+The display output of `diffEngine.computeLineDiff` has its own size limit; truncation of the display does not imply truncation of execution patches.
+Content's `writebackController.getSyncChangePatches` prefers Native patches and attempts a single-range pre-image/post-image diff only when no usable patches exist.
+Page first converts source patches into editor coordinates through [staleGuard.prepareOperationPatches](../../extension/src/shared/staleGuard.js). `applyTextPatches` then validates `expected` and applies patches in descending start-offset order, preventing earlier writes from shifting later coordinates. Coordinates use JavaScript string indices, measured in UTF-16 code units.
+[overleafEditor](../../extension/src/page/overleafEditor.js) adapts actual editor writes; stale checks depend on [staleGuard](../../extension/src/shared/staleGuard.js).
 
-整文件新鲜度按换行归一化函数 $L$ 判断 $L(B)=L(C)$，其中 $L$ 将 CRLF（`\r\n`）转换为 LF（`\n`）；基线 Map 保留原始字符串，用于解释 Native 补丁坐标。归一化后内容不同的情况，再对转换后的编辑器区间和 `expected` 作范围核验，保留未冲突的其他编辑。范围证明只覆盖参与比较的位置，不能推广为整份文件完全一致。
+Whole-file freshness uses line-ending normalization $L$ to check $L(B)=L(C)$, where $L$ converts CRLF (`\r\n`) to LF (`\n`). The baseline Map retains raw strings for interpreting Native patch coordinates. If normalized content differs, range checks compare the converted editor spans with `expected`, preserving other nonconflicting edits. Range evidence covers only the positions compared and cannot establish equality of the entire file.
 
-**换行表示与坐标转换。** `prepareOperationPatches` 使用“源原始偏移 → LF 逻辑偏移 → 编辑器原始偏移”的映射。对完整换行边界，源偏移 $p$ 的逻辑位置为 $p-N_B(p)$，其中 $N_B(p)$ 是该位置之前 CRLF 中被归一化省略的 `\r` 数量；目标侧再还原为编辑器的 UTF-16 偏移。
-涉及拆开 CRLF 或在编辑边缘新组成 CRLF 的操作，先补齐必要边界再转换；未编辑的相邻换行保留原样。转换同时处理 `from/to/expected/insert`，不改写 Native 的原始 diff，也不通过禁止合法混合换行编辑来规避坐标差异。同起点等组合仍需逐步通过 `expected` 校验。
-`writebackRouter.applyEditOperation` 将同一套编辑器补丁用于实际派发、读回预期和 Track 捕获；批内另用 `sourceContent` 推进源坐标基线，避免第二个同文件操作误用编辑器表示。`verified:true` 表明读回符合本次基于当前内容构造的目标，服务器保存和其他并发边界仍分别取证。
-[textPatchLineEndings.test.js](../../test/textPatchLineEndings.test.js) 覆盖四种 LF/CRLF 组合、插入/替换、多补丁、相邻换行、UTF-16 代理对和协作者范围；[pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js) 串联真实模块的写回、Track、连续操作及回执后的 Undo。编辑器 I/O 采用替身，真实 Overleaf 的 ZIP、编辑器与保存行为仍需浏览器验收。
+**Line-ending representations and coordinate conversion.** `prepareOperationPatches` maps source raw offsets to LF logical offsets and then to editor raw offsets. At complete line-ending boundaries, source offset $p$ has logical position $p-N_B(p)$, where $N_B(p)$ counts the `\r` characters omitted by CRLF normalization before that position; the target side then converts back to editor UTF-16 offsets.
+Operations that split CRLF or form a new CRLF at an edit boundary first expand the necessary boundaries and then convert; adjacent unedited line endings remain unchanged. Conversion handles `from/to/expected/insert` together, leaves Native's raw diff unchanged, and does not avoid coordinate differences by forbidding valid mixed-line-ending edits. Combinations such as equal starting offsets must still pass `expected` validation step by step.
+`writebackRouter.applyEditOperation` uses the same editor patches for actual dispatch, expected readback, and Track capture. Within a batch, `sourceContent` separately advances the source-coordinate baseline so that a second operation on the same file does not misuse the editor representation. `verified:true` means readback matches the target constructed from current content for this operation; server persistence and other concurrency boundaries still require separate evidence.
+[textPatchLineEndings.test.js](../../test/textPatchLineEndings.test.js) covers all four LF/CRLF combinations, insertions/replacements, multiple patches, adjacent line endings, UTF-16 surrogate pairs, and collaborator ranges. [pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js) connects real modules for writeback, Track, sequential operations, and Undo after receipt. Editor I/O uses test doubles; actual Overleaf ZIP, editor, and save behavior still require browser acceptance.
 
-**空白基线。** `staleGuard.checkOperationFreshness` 将空串和纯空白作为有效内容参与相同比较。基线与当前内容不一致时，整文 `replaceAll` 兜底被拒绝；有补丁时仍可经过范围及 expected 检查保留未冲突的后来编辑。空文件的合法插入继续可用，已有基线 Map 但目标路径缺失时返回 missing_base_file；整个 Map 缺失时仍保留既有内部无基线操作。
-[writebackController.buildSyncApplyOperations](../../extension/src/content/writebackController.js) 在无法取得可用补丁时提供整文兜底；当前 Native 文本差异携带 previousContent 并生成 patches，两条路径均需维护。[emptyContentWriteback.test.js](../../test/emptyContentWriteback.test.js) 覆盖 Controller → StaleGuard → Page 写回，分别验证拒绝、允许及当前内容保持。
-Page router 与 snapshot 闭包通过共享 [pageRpcContract.REVISION](../../extension/src/shared/pageRpcContract.js) 重新注入；[pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js) 的重注入用例同时检查旧版本替换、换行补丁和空基线保护。实际 Chrome 重载、保存竞速与远端后果仍需独立验收。
+**Blank baselines.** `staleGuard.checkOperationFreshness` treats empty and whitespace-only strings as valid content in the same comparison. When baseline and current content differ, the whole-document `replaceAll` fallback is rejected. Patches may still preserve nonconflicting later edits through range and expected checks. Valid insertions into empty files remain supported. If a baseline Map exists but the target path is absent, the result is missing_base_file; if the entire Map is absent, existing internal operations without baselines remain supported.
+[writebackController.buildSyncApplyOperations](../../extension/src/content/writebackController.js) supplies a whole-document fallback when no usable patches can be obtained. Current Native text changes carry previousContent and generate patches; both paths require maintenance. [emptyContentWriteback.test.js](../../test/emptyContentWriteback.test.js) covers Controller → StaleGuard → Page writeback, checking rejection, admission, and preservation of current content separately.
+Page router and snapshot closures are reinjected through the shared [pageRpcContract.REVISION](../../extension/src/shared/pageRpcContract.js). Reinjection cases in [pageBridgeStaleGuard.test.js](../../test/pageBridgeStaleGuard.test.js) check replacement of old versions, line-ending patches, and empty-baseline protection together. Actual Chrome reloads, save races, and remote effects still require separate acceptance.
 
-### 4.2 新增文本与二进制
+### 4.2 Creating Text and Binary Files
 
-**当前实现。** [textFileCreator](../../extension/src/page/textFileCreator.js) 的 `beginCreateBatch`、`finishCreateBatch` 合并唯一新建路径的服务器预检与最终读取。
-同一路径重复操作保留顺序验证语义。
-`createTextFileWithDom` 支持根文件和嵌套路径，上传前逐级创建缺失父目录并选择准确目录；二进制 DOM 上传通过 `prepareUploadParent` 的 `createMissing: true` 分支复用这套目录准备能力。
-[undoOperations.buildCreatedFileUndoCheckpoint](../../extension/src/shared/undoOperations.js) 保存文件删除证明及 `createdDirectories` 观测。目录路径与 nativeFolderId 是创建尝试后的观察，`ownershipConfirmed:false` 明确不将同名出现当作创建所有权。目录准备、文件提交分别由对应状态及 `fileUploadAttempted` 记账；仅目录变化不能被报告为文件已上传，也不能因后来出现同内容文件就推导创建成功。
-[DirectoryCleanupRecovery](../../extension/src/content/directoryCleanupRecovery.js) 在记录 Undo 前收集成功、失败和取消结果中的目录观测，包括零 applied 分支及历史移动恢复。带账号/项目/会话/运行身份的 `pendingDirectoryCleanup` 随既有主存储记录保存；[DirectoryCleanupProof](../../extension/src/shared/directoryCleanupProof.js) 限定100个目录、64 KiB，溢出保留旧观测并在已有技术详情记录省略；目录观测没有独立的强制保存/读回门槛。原文件恢复材料仍沿核心 writer 的身份与耐久检查保存。目录观测不声明创建所有权，也不授权自动删除。
-既有完成详情可显示操作结束时观测到的目录，不能据此断言当前仍存在。插件不提供独立目录核查或清理入口；平台未接入原子、非递归的空目录条件删除，文件撤销成功也不代表目录已经回收。`textFileCreator.readServerSnapshot` 对非法、重复或身份不完整的路径仍拒绝给出不存在的证明，已知资产配额跳过不消除路径存在事实。
-相关保护见 [createdDirectoryCleanup.test.js](../../test/createdDirectoryCleanup.test.js)、[directoryCleanupRecovery.test.js](../../test/directoryCleanupRecovery.test.js) 与 [textFileCreator.test.js](../../test/textFileCreator.test.js)。
-Auto 的显式 Retry sync 经 `contentRuntime.retryRunWriteback → writebackOrchestrator.applySyncChangesToOverleaf → assetTransferBroker.applyOperations` 将 `retryCreates: true` 送入 Page RPC。
-[writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 的 `apply` 按严格布尔值保留该字段，[pageBridge](../../extension/src/pageBridge.js) 的 `applyOperations` wrapper 将选项交给 router；router 在新建批次中据此设置 creator 的 `allowExistingMatches`。
-批次服务器预检读到完全相同的文本（包括空字符串）时，creator 返回 `idempotent: true`、`changedDocument: false` 的已验证结果，不再次上传。幂等表示重复确认得到相同结果且不新增文件修改；目标缺失时仍进入正常创建，不同内容的已有目标仍拒绝覆盖。
-这使“已上传、首次读回未确认”的新建文件可在服务器读取恢复后通过显式重试确认；读取仍不可用时不能凭路径已存在认定成功。
-原 `requestId` 的 receipt 查询及同一请求重复派发取回原结果有独立机制；显式 Retry sync 使用新的派发执行上述内容检查。
-`recordUndoFromApply` 过滤 `idempotent: true` 的条目，保留已有 Undo 证据，并避免把此次仅确认的文件新增为该运行可删除的新建文件；实际创建成功仍记录新建文件的 Undo 凭据。
+**Current behavior.** `beginCreateBatch` and `finishCreateBatch` in [textFileCreator](../../extension/src/page/textFileCreator.js) consolidate server preflight and final reads for unique creation paths.
+Repeated operations on the same path retain sequential validation semantics.
+`createTextFileWithDom` supports root files and nested paths. Before upload, it creates missing parent directories level by level and selects the exact directory. Binary DOM upload reuses this directory preparation through the `createMissing: true` branch of `prepareUploadParent`.
+[undoOperations.buildCreatedFileUndoCheckpoint](../../extension/src/shared/undoOperations.js) saves file-deletion evidence and `createdDirectories` observations. Directory paths and nativeFolderId are observations after a creation attempt; `ownershipConfirmed:false` explicitly prevents the appearance of the same name from implying creation ownership. Directory preparation and file submission are accounted for separately through their states and `fileUploadAttempted`. A directory-only change cannot be reported as a file upload, and a same-content file appearing later does not prove successful creation.
+[DirectoryCleanupRecovery](../../extension/src/content/directoryCleanupRecovery.js) collects directory observations from successful, failed, and cancelled results before recording Undo, including zero-applied branches and historical move recovery. `pendingDirectoryCleanup`, carrying account/project/session/run identity, is saved with the existing primary storage record. [DirectoryCleanupProof](../../extension/src/shared/directoryCleanupProof.js) limits it to 100 directories and 64 KiB; overflow preserves older observations and records omissions in the existing technical details. Directory observations have no independent mandatory save/readback gate. Original file-recovery material continues to be saved through the core writer's identity and durability checks. Directory observations claim no creation ownership and authorize no automatic deletion.
+Existing completion details may show directories observed when the operation ended; they cannot establish that those directories still exist. The extension has no separate directory-check or cleanup entry point. The platform has no integrated atomic, nonrecursive conditional deletion of empty directories, so successful file Undo does not establish directory removal. `textFileCreator.readServerSnapshot` still refuses to prove absence for invalid, duplicate, or identity-incomplete paths; known asset-quota skips do not erase path-existence facts.
+Related guards are covered by [createdDirectoryCleanup.test.js](../../test/createdDirectoryCleanup.test.js), [directoryCleanupRecovery.test.js](../../test/directoryCleanupRecovery.test.js), and [textFileCreator.test.js](../../test/textFileCreator.test.js).
+Auto's explicit Retry sync passes `retryCreates: true` into Page RPC through `contentRuntime.retryRunWriteback → writebackOrchestrator.applySyncChangesToOverleaf → assetTransferBroker.applyOperations`.
+`apply` in [writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) preserves this field as a strict boolean. The `applyOperations` wrapper in [pageBridge](../../extension/src/pageBridge.js) forwards the option to the router, which uses it to set the creator's `allowExistingMatches` for creation batches.
+When batch server preflight reads exactly matching text, including an empty string, the creator returns a verified result with `idempotent: true` and `changedDocument: false` without uploading again. Idempotence means repeated confirmation produces the same result without another file mutation. Missing targets still take the normal creation path; existing targets with different content are still protected from overwrite.
+This allows an uploaded file whose initial readback was unconfirmed to be confirmed by explicit retry once server reads recover. If reading remains unavailable, path existence alone cannot establish success.
+Receipt queries for the original `requestId` and repeated dispatch of that same request have a separate mechanism for retrieving the original result. Explicit Retry sync uses a new dispatch to perform the content check above.
+`recordUndoFromApply` filters out `idempotent: true` entries, preserving existing Undo evidence without adding a merely confirmed file to the set of newly created files that this run may delete. An actual successful creation still records the new file's Undo evidence.
 
-二进制经 broker 的 `applyBinaryOperation` 执行 begin/append/commit；大资源可通过 Native asset token 分块读取。
-联动 owner 为 [nativeAssetTransfer](../../native-host/src/nativeAssetTransfer.js) 与 [binaryAssetUploader](../../extension/src/page/binaryAssetUploader.js)。
-`pageBridge` 的 `binaryUploadBegin/Append/Commit/Status/Abort` handler 直接调用 uploader，上传过程不经过文本 `writebackReceiptJournal` 或 `writebackRouter.applyOperationsCore`。
-uploader 按声明大小、分块顺序和 SHA-256 检查载荷；依次尝试 DOM、multipart、legacy manager，可能已提交后即停止切换运输方式，并核对原尝试的路径与远端内容证据。
-broker 在 commit 结果不确定时查询 `binaryUploadStatus`；仍不确定则保留 `changedDocument` 与 `receiptUnconfirmed`，阻断后续操作。
-begin 成功后的失败，或 begin 已派发且等待被取消，在 commit 尚未实际派发时会请求 abort；commit 已派发后 abort 不撤销已提交上传。Native asset token 在该操作的 `finally` 中请求释放，状态查询本身不重新上传。
-文本新建和二进制新建均可能获得创建撤销证明，但已有二进制覆盖不能直接按“撤销新建”删除。
+Binaries execute begin/append/commit through the broker's `applyBinaryOperation`; large assets can be read in chunks using a Native asset token.
+The collaborating owners are [nativeAssetTransfer](../../native-host/src/nativeAssetTransfer.js) and [binaryAssetUploader](../../extension/src/page/binaryAssetUploader.js).
+The `binaryUploadBegin/Append/Commit/Status/Abort` handlers in `pageBridge` call the uploader directly. Upload does not pass through the text `writebackReceiptJournal` or `writebackRouter.applyOperationsCore`.
+The uploader validates declared size, chunk order, and SHA-256. It tries DOM, multipart, and legacy manager in sequence, stops switching transports as soon as submission may have occurred, and verifies the path and remote-content evidence for the original attempt.
+When the commit result is uncertain, the broker queries `binaryUploadStatus`. If it remains uncertain, it retains `changedDocument` and `receiptUnconfirmed` and blocks subsequent operations.
+After a successful begin, a failure requests abort if commit has not actually been dispatched; the same applies when begin was dispatched and its wait was cancelled. Once commit has been dispatched, abort does not undo a submitted upload. The operation's `finally` requests release of the Native asset token; status queries do not upload again.
+Both new text and new binary files may acquire creation-Undo evidence, but overwriting an existing binary does not permit deleting it as though it were a newly created file.
 
-**二进制覆盖前的基线保护。** Native 差异携带 `previousSha256`，Controller 和 Broker 将旧基线传到 uploader；浏览器已有原始二进制快照时会交叉核验其哈希，冲突或缺失时拒绝覆盖。uploader 在实际提交前读取原项目、精确路径对应实体的远端字节，要求旧内容哈希一致，并重新核对项目、实体、父目录及输入框或替换对话框身份。读取受8秒和资产大小上限约束，不能用 basename 匹配代替完整路径归属。
-载荷校验要求 $H(N)=h_N$，覆盖前检查要求 $H(C_{before})=H(B)$；其中 $N$ 是新字节，$B$ 是原基线。上传后仍核对新哈希。平台没有接入原子条件覆盖，检查与提交之间仍有并发窗口，不能将客户端检查称为服务器原子比较交换。
-[binaryOverwriteBaseline.test.js](../../test/binaryOverwriteBaseline.test.js) 串联 Native 旧基线、assetRef 分块、Content 与 Page，覆盖旧版本变化、身份/目录漂移及正常上传；网络和真实平台时序仍需单独验收。新建文件的目录变化与实际文件上传尝试分别记账，不能因创建了目录、后来出现同内容文件就补造创建所有权。
+**Baseline protection before binary overwrite.** Native changes carry `previousSha256`, and the Controller and Broker forward the old baseline to the uploader. When the browser has an original binary snapshot, its hash is cross-checked; conflicts or missing evidence reject overwrite. Immediately before submission, the uploader reads remote bytes for the entity at the exact path in the original project, requires the old-content hash to match, and rechecks project, entity, parent directory, and input or replacement-dialog identity. Reading is bounded by 8 seconds and the asset-size limit; basename matching cannot replace full-path ownership.
+Payload validation requires $H(N)=h_N$, and the pre-overwrite check requires $H(C_{before})=H(B)$, where $N$ is the new byte sequence and $B$ is the original baseline. The new hash is still checked after upload. The platform has no integrated atomic conditional overwrite; a concurrency window remains between checking and submission, so the client check must not be described as server-side atomic compare-and-swap.
+[binaryOverwriteBaseline.test.js](../../test/binaryOverwriteBaseline.test.js) connects Native old baselines, assetRef chunking, Content, and Page, covering changes to the old version, identity/directory drift, and normal uploads. Network and actual platform timing still require separate acceptance. Directory changes for new files and actual file-upload attempts are accounted for separately; creating a directory or observing a same-content file later cannot manufacture creation ownership.
 
-### 4.3 Auto 文件操作与资产类型的支持范围
+### 4.3 Supported Auto File Operations and Asset Types
 
-**当前实现。** Auto 的操作类型先由 [mirrorWorkspace.collectMirrorChangesDetailed](../../native-host/src/mirrorWorkspace.js) 生成，再由 `writebackController.buildSyncApplyOperations` 转换。Native 按路径比较文件，不将相同内容的创建与删除自动配成 metadata move。
+**Current behavior.** Auto operation types are first generated by [mirrorWorkspace.collectMirrorChangesDetailed](../../native-host/src/mirrorWorkspace.js), then converted by `writebackController.buildSyncApplyOperations`. Native compares files by path; it does not automatically pair a creation and deletion with identical content into a metadata move.
 
-| 本地变化 | Auto 主链的处理 | 边界与维护入口 |
+| Local change | Handling in the main Auto chain | Boundary and maintenance entry point |
 |---|---|---|
-| 支持的新建文本 | `write` 转为 `create` | 新路径按 `isTextMirrorPath` 判断；已有文本基线继续走原分支 |
-| 文本重命名或移动 | 目标创建与来源删除分别处理 | 原有删除确认只决定删除项；内容可以迁移，原实体、评论及留痕身份的保留没有保证，拒绝删除可能留下两份文件 |
-| 新建或替换受支持二进制 | `binary-create` 或 `overwrite-binary`，使用原有资源确认 | 接受 PDF、PNG、JPG/JPEG、SVG，另受大小及生成产物过滤约束 |
-| 删除已有二进制 | 放入 `unsupportedChanges`，原因 `binary_delete_unsupported` | 不生成普通删除操作；有创建证明的新建文件仍可沿 Undo 删除 |
-| 二进制重命名或移动 | 可支持的目标按新资源处理，来源删除保持不支持 | 批准上传可能形成副本，不自动移动原实体 |
-| 新建 GIF、WebP 等未支持资产 | 放入 `unsupportedChanges`，原因 `unsupported_non_text_file` | “图片”类别不等于所有格式均可上传 |
-| 被识别为构建产物的 PDF | 放入 `unsupportedChanges`，原因 `generated_artifact` | 过滤根目录中与基线同名 `.tex` 对应的 PDF，以及根 `main.pdf`、`output.pdf`；其他路径继续按既有规则判断 |
+| Supported new text file | `write` becomes `create` | New paths are classified by `isTextMirrorPath`; existing text baselines retain their original branch |
+| Text rename or move | Destination creation and source deletion are processed separately | Existing deletion confirmation decides only the deletion item. Content may migrate, but preservation of the original entity, comments, and tracked-change identity is not guaranteed. Rejecting deletion may leave two files |
+| Creation or replacement of supported binaries | `binary-create` or `overwrite-binary`, using existing asset confirmation | PDF, PNG, JPG/JPEG, and SVG are accepted, subject also to size limits and generated-artifact filtering |
+| Deletion of an existing binary | Added to `unsupportedChanges` with reason `binary_delete_unsupported` | No ordinary delete operation is generated; a new file with creation evidence may still be deleted through Undo |
+| Binary rename or move | A supported destination is handled as a new asset; source deletion remains unsupported | Approving upload may create a copy; it does not automatically move the original entity |
+| New unsupported assets such as GIF or WebP | Added to `unsupportedChanges` with reason `unsupported_non_text_file` | The image category does not imply upload support for every format |
+| PDF recognized as a build artifact | Added to `unsupportedChanges` with reason `generated_artifact` | Filters root PDFs corresponding to a same-name baseline `.tex`, as well as root `main.pdf` and `output.pdf`; other paths continue through existing rules |
 
-创建、删除和资源上传使用既有流程，不提供额外整批文件计划确认。旧 Native 或在途消息仍带 `syncChanges.type=move` 时，Content 明确拒绝并报告，不能将其转为空内容创建或忽略后报告成功。
+Creation, deletion, and asset upload use their existing flows, with no additional whole-batch file-plan confirmation. When an older Native version or an in-flight message still carries `syncChanges.type=move`, Content explicitly rejects and reports it; it must not become an empty-content creation or be ignored while reporting success.
 
-**已有结构操作与历史恢复兼容。** Page 原有无 `moveProof` 的结构化 rename/move 继续通过 `fileTreeManager` 兼容入口，保留原项目、内容基线和后续验证；缺少可用控件时安全拒绝。已执行的历史 metadata move 若持有原实体及哈希证明，仍可由原 Undo 路线以 `no-trace-undo` 调用 [FileMover](../../extension/src/page/fileMover.js) 做逆向恢复。它核对原项目、源/目标实体、内容、路径和期限；不确定副作用继续停止尾项，不盲目重放。该兼容不重新开放 Auto 正向 metadata move，也不将无证明的旧记录补成可撤销操作。
-[fileMoveNativeDiff.test.js](../../test/fileMoveNativeDiff.test.js)、[fileMovePipeline.test.js](../../test/fileMovePipeline.test.js) 与 [fileMover.test.js](../../test/fileMover.test.js) 覆盖差异生成、拒绝旧正向消息和历史逆向恢复，平台 I/O 使用替身。
+**Existing structural operations and historical recovery compatibility.** Page's existing structured rename/move operations without `moveProof` continue through the compatibility entry point in `fileTreeManager`, retaining original-project, content-baseline, and post-operation checks. They safely reject when usable controls are missing. A historical metadata move already performed with proof of the original entity and hash can still use the original Undo path to call [FileMover](../../extension/src/page/fileMover.js) with `no-trace-undo` for reverse recovery. It checks the original project, source/destination entities, content, paths, and deadline. Uncertain side effects still stop remaining items without blind replay. This compatibility does not reopen forward Auto metadata moves or make old records without evidence undoable.
+[fileMoveNativeDiff.test.js](../../test/fileMoveNativeDiff.test.js), [fileMovePipeline.test.js](../../test/fileMovePipeline.test.js), and [fileMover.test.js](../../test/fileMover.test.js) cover change generation, rejection of old forward messages, and historical reverse recovery; platform I/O uses test doubles.
 
-## 5. 两类 receipt 与保存、编译、镜像的分工
+## 5. Two Receipt Categories and the Roles of Saving, Compilation, and Mirrors
 
-**当前实现。** receipt 可类比“回执”，但不同回执证明的事件不同。这里区分执行回执与服务器内容回执；文本和二进制的执行回执另有各自的 owner。
+**Current behavior.** A receipt acknowledges an event, but different receipts prove different events. This section distinguishes execution receipts from server-content receipts; text and binary execution receipts also have separate owners.
 
-| 证据 | 生成与消费位置 | 能支持的结论 |
+| Evidence | Producer and consumer | Supported conclusion |
 |---|---|---|
-| 文本与文件树执行 receipt | [writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js) 的 `apply/get`；broker 的 `recoverTextReceipt` | 原批次仍在执行或已结束，且已有逐项结果 |
-| 二进制执行 receipt | `binaryAssetUploader.commit/status`；broker 的 `applyBinaryOperation` | 原 transfer 的执行状态、结果及可能已修改的证据；与文本回执独立 |
-| 服务器内容 receipt | `textFileCreator.makeSaveReceipt`；`writebackController.receiptsConfirmExpectedFiles` | 某项目某路径的指定内容哈希曾在服务器 ZIP 中观察到 |
-| editor readback | `writebackRouter.verifyActiveEditorText` | 当前编辑器读回内容符合预期 |
-| 保存状态 | `writebackController.confirmPostWriteSave`；[saveState](../../extension/src/page/saveState.js) | 得到正向 UI 保存信号或对应服务器内容证据 |
-| 编译结果 | [compileBridge](../../extension/src/page/compileBridge.js) 与 [compileAdapter](../../extension/src/shared/compileAdapter.js) | 编译触发、成功或失败的独立证据 |
-| 镜像确认 | orchestrator 与 `mirrorWorkspace.confirmWritebackFiles` | 本地基线可前进或需要失效重读 |
+| Text and file-tree execution receipt | `apply/get` in [writebackReceiptJournal](../../extension/src/page/writebackReceiptJournal.js); the broker's `recoverTextReceipt` | The original batch is still running or has finished, with per-item results already available |
+| Binary execution receipt | `binaryAssetUploader.commit/status`; the broker's `applyBinaryOperation` | The original transfer's execution state, result, and evidence of possible mutation; independent of text receipts |
+| Server-content receipt | `textFileCreator.makeSaveReceipt`; `writebackController.receiptsConfirmExpectedFiles` | The specified content hash at a path in a project was observed in the server ZIP |
+| Editor readback | `writebackRouter.verifyActiveEditorText` | Current editor readback matches the expected content |
+| Save state | `writebackController.confirmPostWriteSave`; [saveState](../../extension/src/page/saveState.js) | A positive UI save signal or corresponding server-content evidence was obtained |
+| Compile result | [compileBridge](../../extension/src/page/compileBridge.js) and [compileAdapter](../../extension/src/shared/compileAdapter.js) | Independent evidence of compile triggering, success, or failure |
+| Mirror confirmation | The orchestrator and `mirrorWorkspace.confirmWritebackFiles` | The local baseline may advance, or it needs invalidation and rereading |
 
-文本与文件树执行 receipt 使用 `requestId` 和原 `runProjectId`，存于 page 内存 Map。
-新请求通过身份、期限及活动写入检查后，在 `apply` 中按默认 16 份容量与完成后 10 分钟阈值裁剪完成项。该清理按需触发；`get` 及命中已有 requestId 的重复 `apply` 不执行 `prune`，所以空闲页面中的旧回执可保留并可读取超过 10 分钟。活动操作另受执行串行约束。
-收到 RPC timeout 后，broker 查询原请求；未确认的文本批次会阻止后续文本或二进制派发。
-页面重新加载后的恢复不能依赖这份内存 Map 永久存在。
+Text and file-tree execution receipts use `requestId` and the original `runProjectId`, stored in a Page-memory Map.
+After a new request passes identity, deadline, and active-write checks, `apply` prunes completed entries using a default capacity of 16 and an age threshold of 10 minutes after completion. Cleanup runs on demand. Neither `get` nor repeated `apply` hitting an existing requestId calls `prune`, so old receipts on an idle page may remain readable beyond 10 minutes. Active operations are separately constrained by serialized execution.
+After an RPC timeout, the broker queries the original request. An unconfirmed text batch blocks subsequent text or binary dispatch.
+Recovery after page reload cannot rely on this memory Map surviving indefinitely.
 
-二进制另有 uploader 拥有的 `transfers` 与 `receipts` 两个 page 内存 Map，以 `transferId` 和项目归属查询。
-`begin` 检查每个 Map 的容量，当前阈值为 32；完成回执的保留期为 10 分钟，清理由 `pruneReceipts` 在 begin/status 时触发。
-相同 transfer 的重复 commit 返回已有 Promise；broker 的 commit 后状态查询将轮询截止点设为开始查询后的 30 秒，单次 RPC 等待仍有自身耗时。页面重载也会丢失这组回执，不能套用文本 journal 的请求 ID、容量或查询入口。
+Binaries have separate Page-memory `transfers` and `receipts` Maps owned by the uploader, queried by `transferId` and project ownership.
+`begin` checks the capacity of each Map, currently 32. Completed receipts have a retention period of 10 minutes; `pruneReceipts` triggers cleanup on begin/status.
+A repeated commit for the same transfer returns the existing Promise. Post-commit status queries by the broker set a polling deadline 30 seconds after queries begin; individual RPC waits still take their own time. Page reload also loses these receipts. Text-journal request IDs, capacity, and query entry points do not apply to them.
 
-服务器内容 receipt 绑定路径、项目、UTF-8 内容 SHA-256、来源及观察时间。
-它相当于“这一版本曾送达”的证明；后续同路径写入需要更新证据。
+A server-content receipt binds path, project, UTF-8 content SHA-256, source, and observation time.
+It proves that this version reached the server at some point; later writes to the same path require new evidence.
 
-**当前实现。** `confirmPostWriteSave` 的取证顺序为：
+**Current behavior.** `confirmPostWriteSave` gathers evidence in this order:
 
-1. 尝试用已返回的服务器 receipt 覆盖本次预期内容。
-2. 读取正向保存 UI 信号。
-3. 在允许且预期内容可计算时，读取 `serverOnly` ZIP 并逐项比较；共享 90 秒预算，每次 ZIP 上限 30 秒，最多三次。
-4. 必要时再探测 UI；未确认时保留 `unknown_timeout` 或 `unavailable`，离线时不按正常在线路径继续取证。
+1. Try to cover the expected content using server receipts already returned.
+2. Read a positive UI save signal.
+3. When allowed and expected content is computable, read a `serverOnly` ZIP and compare each item, using a shared 90-second budget, at most 30 seconds per ZIP, and at most three attempts.
+4. Probe the UI again if necessary. If unconfirmed, retain `unknown_timeout` or `unavailable`; when offline, do not continue gathering evidence through the normal online path.
 
-**当前实现。** 镜像刷新以 `verified_saved` 为门槛；不满足时调用失效处理。
-满足时可通过 `mirror.confirmWriteback` 就地更新文本基线，也可完整读取后 `mirror.sync`。
-`tryConfirmMirrorWriteback` 仅对全部为 edit 的已应用条目尝试就地确认，且本次已有确认用快照时直接走同步路线。
-[WritebackController.buildMirrorWritebackConfirmation](../../extension/src/content/writebackController.js) 从成功 edit 的 `verifiedContent` 生成 UTF-8 SHA-256 证明；要求 `ok`、`verified` 及字符串内容，空字符串也可参与。多个 edit 命中同一路径时使用最后一次已验证读回。
-`tryConfirmMirrorWriteback` 携带 `expectedFiles: [{path, sha256}]` 调用 Native，并核对返回的逐路径哈希。`mirrorWorkspace.confirmWritebackFiles` 保留基线、未读资产、dirty、路径和类型守卫，在全部本地字节匹配页面证明后才更新基线；任一项不符返回 `postimage_mismatch`，不部分推进。项目仍相同时，缺证明、不支持方法或不一致响应走原完整快照同步回退；项目已变则失效原项目镜像，不向新项目执行同步。树操作与二进制继续走完整同步。
-该证明确保纳入基线的字节与页面已验证内容相同，不提供文件系统排他。核对之后的额外本地写入由后续镜像完整性检查识别。[mirrorWritebackProof.test.js](../../test/mirrorWritebackProof.test.js) 串联实际 Content/Native 链，覆盖空内容、晚写、缺证明及回退；页面与模型 I/O 为替身。
+**Current behavior.** Mirror refresh requires `verified_saved`; otherwise, invalidation is invoked.
+When the requirement is met, `mirror.confirmWriteback` can update text baselines in place, or a full read can be followed by `mirror.sync`.
+`tryConfirmMirrorWriteback` attempts in-place confirmation only when every applied entry is an edit. If a confirmation snapshot already exists for this writeback, it goes directly to synchronization.
+[WritebackController.buildMirrorWritebackConfirmation](../../extension/src/content/writebackController.js) generates UTF-8 SHA-256 evidence from successful edits' `verifiedContent`. It requires `ok`, `verified`, and string content; an empty string is valid. When multiple edits target one path, it uses the last verified readback.
+`tryConfirmMirrorWriteback` calls Native with `expectedFiles: [{path, sha256}]` and checks the returned per-path hashes. `mirrorWorkspace.confirmWritebackFiles` retains baseline, unread-asset, dirty-state, path, and type guards and updates baselines only after all local bytes match Page evidence. Any mismatch returns `postimage_mismatch` without partial advancement. If the project is unchanged, missing evidence, an unsupported method, or an inconsistent response takes the existing full-snapshot synchronization fallback. If the project changed, the original project's mirror is invalidated and no synchronization is performed against the new project. Tree operations and binaries continue to use full synchronization.
+This evidence ensures that bytes admitted to the baseline equal the Page-verified content; it does not provide filesystem exclusion. Later mirror-integrity checks detect additional local writes after verification. [mirrorWritebackProof.test.js](../../test/mirrorWritebackProof.test.js) connects the actual Content/Native chain and covers empty content, late writes, missing evidence, and fallback; page and model I/O use test doubles.
 
-后台 `pendingMirrorRefresh` 防止下一轮或 Undo 与晚到镜像更新交错。
+The background `pendingMirrorRefresh` prevents the next run or Undo from interleaving with a late mirror update.
 
-编译另有条件：启用 Auto Compile、非 Ask、实际写入可编译文件。
-`autoRecompileAfterWriteback` 在保存尚未确认时仍可触发 Overleaf Recompile，并请求页面等待保存。
-因此“编译触发了”“服务器保存了”“镜像已更新”应分别呈现。
+Compilation has separate conditions: Auto Compile is enabled, the mode is not Ask, and a compilable file was actually written.
+`autoRecompileAfterWriteback` may trigger Overleaf Recompile before save confirmation and ask the page to wait for saving.
+Compile triggering, server persistence, and mirror updates must therefore be represented separately.
 
-**结果投影与入口守卫。** settlement、完成报告和 `run.status` 有各自的收尾投影；普通 Auto 文本写回在此之前经过 [AssetTransferBroker.normalizeTextResult](../../extension/src/content/assetTransferBroker.js)，按计划补齐缺项为 skipped，并设置 `receiptUnconfirmed`，使缺项不能仅以原始 applied 数量被当作完整成功。`writebackOperationEvidence` 仍提供 `write_result_missing` 结算兜底。排查结算与运行标签分歧时，应先证明实际入口没有经过上述归一化，或证明现有守卫不足；只看末端条件不能认定普通 Auto 已出现假成功。失败主因、恢复按钮和页眉活动摘要的实际消费者见[失败、结算与动作](ui-and-loading.md#failure-settlement-actions)，修改成功语义时仍需同时核对这些投影。
+**Result projections and entry guards.** Settlement, the completion report, and `run.status` each have their own final projections. Before reaching them, ordinary Auto text writeback passes through [AssetTransferBroker.normalizeTextResult](../../extension/src/content/assetTransferBroker.js), which fills missing planned items as skipped and sets `receiptUnconfirmed`. Missing items therefore cannot count as full success solely on the raw applied count. `writebackOperationEvidence` still supplies the `write_result_missing` settlement fallback. When investigating disagreement between settlement and run labels, first establish that the actual entry point bypassed this normalization or that the current guards are insufficient; inspecting only the final condition does not prove false success in ordinary Auto. See [failure, settlement, and actions](ui-and-loading.md#failure-settlement-actions) for the actual consumers of primary failure reasons, recovery buttons, and header activity summaries. Changes to success semantics must check these projections together.
 
-## 6. Undo 的入口、分支与后来修改保护
+## 6. Undo Entry Points, Branches, and Protection for Later Edits
 
-**当前实现。** [runTimelineView](../../extension/src/content/runTimelineView.js) 的按钮调用 `contentRuntime.undoRun`。
-该入口先通过 `UndoOperations.prepareRunUndo` 补齐有证据的旧文件恢复，再等待 `pendingMirrorRefresh`，按保存的 refs、前后像及文件恢复操作路由。
-当前面板 Track 开关不能替代原运行的 `executionSnapshot.requireReviewing`。
+**Current behavior.** Buttons in [runTimelineView](../../extension/src/content/runTimelineView.js) call `contentRuntime.undoRun`.
+This entry point first uses `UndoOperations.prepareRunUndo` to fill in evidence-backed restoration of old files, waits for `pendingMirrorRefresh`, then routes according to saved refs, pre-images/post-images, and file-recovery operations.
+The current panel Track toggle cannot replace the original run's `executionSnapshot.requireReviewing`.
 
 ```text
 undoRun(runId)
-  ├─ 存在 tracked refs / 可用前后像 / 指定创建恢复状态
+  ├─ Tracked refs / usable pre-images and post-images / specified creation-recovery state exist
   │    └─ undoRunTrackedChanges
-  │         ├─ rejectTrackedChanges RPC：恢复已有文本
-  │         ├─ applyOperations RPC：删除有证明的新建文件／重建有原文的已删旧文件
-  │         └─ 验证与推进账本；finally 按已知 Page 结果登记镜像失效
-  └─ 其余可用逆操作
+  │         ├─ rejectTrackedChanges RPC: restore existing text
+  │         ├─ applyOperations RPC: delete proven new files / recreate deleted old files with original text
+  │         └─ Verify and advance the ledger; finally register mirror invalidation from known Page results
+  └─ Other available inverse operations
        └─ buildNoTraceUndoRestore → applyOperations(no-trace-undo)
-无留痕逆操作取得结果 → 镜像失效处理 → 验证证据 → 推进或保留恢复账本
+No-trace inverse operations obtain results → mirror invalidation → verify evidence → advance or retain the recovery ledger
 ```
 
-### 6.1 普通文本与 Track 文本共用部分运输路线
+### 6.1 Ordinary Text and Track Text Share Part of the Transport Path
 
-**当前实现。** 函数名 `undoRunTrackedChanges` 和 RPC 名 `rejectTrackedChanges` 同时承担部分普通文本恢复。
-Track-off 且有前后像的记录，可通过 `untrackedUndo: true` 进入
-[trackedChangesLifecycle](../../extension/src/page/trackedChangesLifecycle.js) 的 `restoreExpectedFilesWithNoTraceUndo`。
-它先检查原生变更归属和 checkpoint，按已保存内容恢复；这一分支不会借用不属于原运行的全局 editor Undo。
-[trackedChangeReplay](../../extension/src/page/trackedChangeReplay.js) 的 `prepareSnapshotUndoCheckpoints/buildSnapshotUndoResult` 负责前后像映射和回执转换；Lifecycle 保留文件导航、原生身份检查及写入编排。
+**Current behavior.** The function `undoRunTrackedChanges` and RPC `rejectTrackedChanges` also handle some ordinary text recovery.
+Track-off records with pre-images and post-images can enter
+`restoreExpectedFilesWithNoTraceUndo` in [trackedChangesLifecycle](../../extension/src/page/trackedChangesLifecycle.js) with `untrackedUndo: true`.
+It first checks native change ownership and checkpoints, then restores from saved content. This branch does not borrow global editor Undo belonging to another run.
+`prepareSnapshotUndoCheckpoints/buildSnapshotUndoResult` in [trackedChangeReplay](../../extension/src/page/trackedChangeReplay.js) handle pre-image/post-image mapping and receipt conversion; Lifecycle retains file navigation, native identity checks, and write orchestration.
 
-普通 Undo 要求原生账本已就绪且没有待处理留痕。`prepareUntrackedUndo` 检测到留痕时返回 `native_untracked_undo_pending_changes`；在尚未开始变更的分支，现有原因提示明确说明“仍有未接受或拒绝的修订”，并指向 Overleaf 审阅面板处理后重试。`FailureReasons` 根据这一精确机器码生成中英文显示，`RunReviewController` 沿既有安全故障摘要保存该码；[settlementFacts.normalizeFailures](../../extension/src/shared/settlementFacts.js) 仅在没有已变更或可能变更证据时，为该码保留白名单 `originalCode`，使顶部 Notice 与刷新后的详情仍能正确显示。它不改变 canonical 分类、重试权限或检查点；账本未就绪、身份不明，以及旧记录中没有机器码的泛化失败，不能据此推断为存在留痕。链路回归见 [ordinaryUndoRouting.test.js](../../test/ordinaryUndoRouting.test.js)。
+Ordinary Undo requires a ready native ledger with no pending tracked changes. When `prepareUntrackedUndo` detects tracked changes, it returns `native_untracked_undo_pending_changes`. In the branch where no mutation has started, the existing reason message explicitly states that unaccepted or unrejected revisions remain and directs the user to handle them in the Overleaf review panel before retrying. `FailureReasons` generates Chinese and English display text from this exact machine code, and `RunReviewController` preserves it through the existing safe failure summary. [settlementFacts.normalizeFailures](../../extension/src/shared/settlementFacts.js) retains the allowlisted `originalCode` for this code only when there is no evidence of actual or possible mutation, allowing the top Notice and refreshed details to display the correct reason. This does not change the canonical classification, retry authority, or checkpoints. An unready ledger, uncertain identity, or a generic failure in an old record without the machine code cannot be inferred to mean tracked changes exist. Chain regression coverage is in [ordinaryUndoRouting.test.js](../../test/ordinaryUndoRouting.test.js).
 
-**部分完成但回执丢失。** 普通 Track-off 文本 Undo 重试时，完整检查点中的部分文件可能已经等于前像（本轮写入前原文），其余仍等于后像。`restoreExpectedFilesWithNoTraceUndo` 只在 `untrackedUndo` 的原生账本检查通过后识别这种状态：已恢复文件必须逐字等于完整前像，空字符串有效；当前文件路径和本次重试捕获的 `nativeDocId` 必须稳定，原生账本不得含待处理留痕。该项只回传 `verifiedContent`、`idempotent:true` 和 `changedDocument:false`，不再次改写正文，也不调用全局 editor Undo；剩余项继续沿原后像/重基守卫恢复。
+**Partial completion with a lost receipt.** When retrying ordinary Track-off text Undo, some files in the complete checkpoint may already equal their pre-images (the original text before this run's write), while others still equal their post-images. `restoreExpectedFilesWithNoTraceUndo` recognizes this state only after the native-ledger checks for `untrackedUndo` pass. Already restored files must equal their complete pre-images character for character; an empty string is valid. The current path and the `nativeDocId` captured for this retry must remain stable, and the native ledger must contain no pending tracked changes. Such an item returns only `verifiedContent`, `idempotent:true`, and `changedDocument:false`, without rewriting the text or invoking global editor Undo. Remaining items continue through the original post-image/rebase guards.
 
-已恢复项在其他前检等待后、剩余写入完成后再次核验。`TreeOperations.openFileByPath` 成功只保证目标活动路径匹配，CodeMirror 正文和原生账本仍可能稍后就绪；`verifyAlreadyRestored` 复用 `waitForNativeReview` 的有界等待，要求路径、固定的本次重试 `nativeDocId`、无待处理留痕的原生账本和精确前像同时满足。等待继续消费 ReviewContext 的总期限与取消约束，持续不匹配仍拒绝。完成结算前仍需通过 Page 的保存与内容验证。前检冲突阻止尾项派发；尾项写入后发现已恢复项变化时保留部分结果和该项检查点。全部文件已恢复时可只读完成原检查点结算。普通文本持久材料不绑定首次写入的 `nativeDocId`，这里只保证本次重试期间的实体稳定；内容相等不授予 Track-on 审阅、文件创建/删除或移动权限。链路回归见 [partialUndoReceiptRecovery.test.js](../../test/partialUndoReceiptRecovery.test.js)。
+Already restored items are rechecked after other preflight waits and after the remaining writes finish. Successful `TreeOperations.openFileByPath` guarantees only a matching active path; CodeMirror text and the native ledger may become ready later. `verifyAlreadyRestored` reuses the bounded wait in `waitForNativeReview`, requiring the path, the fixed `nativeDocId` for this retry, a native ledger without pending tracked changes, and the exact pre-image to match together. Waiting continues to consume ReviewContext's overall deadline and cancellation constraints; persistent mismatch still rejects. Page save and content verification must still pass before final settlement. A preflight conflict prevents remaining dispatch. If an already restored item changes after later items are written, partial results and that item's checkpoint are retained. If every file is already restored, the original checkpoint can be settled through read-only checks. Ordinary text's persistent recovery material does not bind the `nativeDocId` from the first write; this check guarantees entity stability only during the current retry. Content equality grants no authority for Track-on review, file creation/deletion, or moves. Chain regression coverage is in [partialUndoReceiptRecovery.test.js](../../test/partialUndoReceiptRecovery.test.js).
 
-Track-on 的恢复使用捕获的 refs、原生 ownership 和前后像。
-`rejectTrackedChanges` 可尝试受前后像保护的 editor Undo、快照恢复或变更节点操作。
-原生 editor Undo 在文件正文就绪后，若控件暂时缺失或 disabled，会最多等待1.5秒、每60毫秒重新查询可用控件；等待继续消费 ReviewContext 的原总期限与取消状态。每次等待固定该次点击前的文件路径、完整正文、原生文档ID及完整留痕 refs；任何漂移立即停止整条审阅请求并保留先前成功结果，不进入快照或DOM回退。已点击但正文无进展时沿原逻辑停止，不因新增等待再次点击。永久缺失控件仍可能部分失败；该有界等待不增加丢失原生历史后的恢复权限。[trackedUndoControlReadiness.test.js](../../test/trackedUndoControlReadiness.test.js) 通过生产 Page RPC 与隔离编辑器验证第二文件控件延迟、永久缺失、取消/截止、路径/正文/文档/账本漂移及无进展对照。
-既有 Review DOM 回退识别 Reject 控件时，同时读取当前候选控件内 `.visually-hidden` 的独立文本标签。Overleaf 图标文字与辅助标签可在 `innerText/textContent` 中黏连为 `closeReject change`，因此只对整串做单词边界匹配会漏掉真实按钮。中文“拒绝/接受”等标签独立于英文单词边界匹配。补读标签不扩展节点搜索范围；disabled、aria-disabled、包含 Accept 与 Reject 的歧义控件及原生归属守卫仍有效。
+Track-on recovery uses captured refs, native ownership, and pre-images/post-images.
+`rejectTrackedChanges` may try editor Undo guarded by pre-images/post-images, snapshot restoration, or change-node operations.
+For native editor Undo, after the file text is ready, a temporarily absent or disabled control is retried for at most 1.5 seconds, querying available controls every 60 milliseconds. This wait continues to consume ReviewContext's original overall deadline and cancellation state. Each wait binds to the file path, complete text, native document ID, and complete tracked-change refs from before that click. Any drift immediately stops the entire review request and retains earlier successful results, without entering snapshot or DOM fallback. If a click produces no text progress, the existing logic stops; the added wait does not cause another click. Permanently missing controls may still cause partial failure. This bounded wait grants no additional recovery authority after native history is lost. [trackedUndoControlReadiness.test.js](../../test/trackedUndoControlReadiness.test.js) uses production Page RPC and an isolated editor to check delayed controls on the second file, permanent absence, cancellation/deadlines, path/text/document/ledger drift, and a no-progress control case.
+When the existing Review DOM fallback identifies Reject controls, it also reads separate text labels in `.visually-hidden` elements within the current candidate control. Overleaf icon text and accessibility labels may concatenate as `closeReject change` in `innerText/textContent`, so word-boundary matching only against the entire string can miss a real button. Chinese labels such as “拒绝/接受” (Reject/Accept) are matched independently of English word boundaries. Reading the additional label does not expand the node-search scope; disabled, aria-disabled, ambiguous controls containing both Accept and Reject, and native-ownership guards remain effective.
 
-同一路径同时存在行内留痕与 Review 卡片时，sweep 优先选择实际带可用 Reject 控件的候选，不依赖节点排列的末项。原生节点还须通过 [trackedChangeOwnership.reviewNodeMatches](../../extension/src/page/trackedChangeOwnership.js)：真实变更ID或 `data-pos`、增删类型、完整单段卡片正文指纹须匹配当前文档原生 refs；fallbackPath 本身不构成节点归属。导航前 [trackedChangeCapture.rememberTrackedChangeNodeContext](../../extension/src/page/trackedChangeCapture.js) 在内存弱引用表中记录已匹配卡片的文档ID及签名，同一旧节点且签名未变时不跨文档认领。缺少位置/真实ID、完整正文或原生账本就绪证据时停止；多段或截断卡片未获得此匹配保证，只有根本没有原生适配器的 legacy 调用保留原DOM规则。只观察到无控件留痕时会最多等待1.5秒并每60毫秒重新发现候选；复用 `createReviewScopeGuard`，在本轮 preflight 固定文档和已拥有 refs 范围内有界等待账本就绪后，绑定本次点击的路径、正文、文档和完整当前 refs；新refs、替换文档、期限/取消或绑定后的漂移停止请求。点击前重新查询控件，已脱离文档或失效的节点不复用；无卡片或无控件不产生成功回执。
+When a path has both inline tracked-change nodes and Review cards, the sweep prefers a candidate with an actually usable Reject control, without relying on the last node in traversal order. Native nodes must also pass [trackedChangeOwnership.reviewNodeMatches](../../extension/src/page/trackedChangeOwnership.js): a real change ID or `data-pos`, insertion/deletion type, and the full single-paragraph card-text fingerprint must match native refs for the current document. fallbackPath alone does not establish node ownership. Before navigation, [trackedChangeCapture.rememberTrackedChangeNodeContext](../../extension/src/page/trackedChangeCapture.js) records the matched card's document ID and signature in an in-memory weak-reference table. The same old node with an unchanged signature cannot be claimed for another document. Missing position/real ID, complete text, or ready-native-ledger evidence stops the operation. Multiparagraph or truncated cards do not receive this matching guarantee; only legacy calls with no native adapter at all retain the original DOM rules. When only tracked-change nodes without controls are observed, candidates are rediscovered every 60 milliseconds for at most 1.5 seconds. This reuses `createReviewScopeGuard`: within the document and owned-refs scope fixed by this preflight, it waits a bounded time for ledger readiness, then binds this click's path, text, document, and complete current refs. New refs, a replaced document, deadline/cancellation, or drift after binding stops the request. Controls are queried again before clicking; detached or invalid nodes are not reused. Missing cards or controls produce no success receipt.
 
-已经发生该文件 DOM 拒绝且正文达到完整前像时，sweep 优先只读核验收尾，避免延迟消失的卡片触发第二次 Reject；账本更新稍晚不阻断这条已有行动的精确读回证明。只有 refs 而没有前像时，空原生scope不授予再次点击旧卡片的权限。每个文件的 sweep 只在实际 DOM 拒绝后、目标活动路径一致且完整前像读回成功时，为该文件已有 DOM 回执附加 `verified/verifiedContent`；保留原节点 key 和 DOM method。[writebackSettlement.isVerifiedUndoEntryForPath](../../extension/src/shared/writebackSettlement.js) 严格核对 DOM method、节点 key 类型、路径及精确前像后，才允许结算和消费该文件检查点。无验证、错误内容或其他文件回执继续保留恢复材料；同一测试也覆盖真实 Controller、完整两文件后像、Page RPC、存储重载及空前像。
+Once a DOM rejection has occurred in the file and the text reaches the complete pre-image, the sweep prefers read-only verification to finish, preventing a slowly disappearing card from triggering a second Reject. A slightly delayed ledger update does not block this exact-readback proof for an action already performed. With refs but no pre-image, an empty native scope grants no authority to click an old card again. A per-file sweep adds `verified/verifiedContent` to that file's existing DOM receipt only after actual DOM rejection, a matching active target path, and successful complete-pre-image readback. It preserves the original node key and DOM method. [writebackSettlement.isVerifiedUndoEntryForPath](../../extension/src/shared/writebackSettlement.js) strictly checks the DOM method, node-key type, path, and exact pre-image before allowing settlement and consumption of that file's checkpoint. Unverified results, wrong content, or receipts for another file continue to retain recovery material. The same test also covers the actual Controller, complete two-file post-images, Page RPC, storage reload, and an empty pre-image.
 
-[trackedUndoRejectLabels.test.js](../../test/trackedUndoRejectLabels.test.js) 重放实际按钮文本，串联两文件 Page RPC、原生留痕前检和精确前像读回，并包含他人留痕与禁用/歧义控件对照。
-归属读取和捕获联动 [trackedChangeOwnership](../../extension/src/page/trackedChangeOwnership.js)、
-[trackedChangeCapture](../../extension/src/page/trackedChangeCapture.js)、[trackedChangeCaptureController](../../extension/src/content/trackedChangeCaptureController.js)。
+[trackedUndoRejectLabels.test.js](../../test/trackedUndoRejectLabels.test.js) replays actual button text and connects two-file Page RPC, native tracked-change preflight, and exact pre-image readback, with control cases for others' tracked changes and disabled/ambiguous controls.
+Ownership reads and capture involve [trackedChangeOwnership](../../extension/src/page/trackedChangeOwnership.js),
+[trackedChangeCapture](../../extension/src/page/trackedChangeCapture.js), and [trackedChangeCaptureController](../../extension/src/content/trackedChangeCaptureController.js).
 
-没有这类文本恢复条件的记录，走 [undoOperations](../../extension/src/shared/undoOperations.js) 的逆补丁或快照恢复操作。
-直接逆操作路径支持多文件子集选择；部分选择保留 `partial`，未处理文件仍可撤销。
+Records without these text-recovery prerequisites use inverse patches or snapshot-restoration operations in [undoOperations](../../extension/src/shared/undoOperations.js).
+The direct inverse-operation path supports selecting a subset of files; a partial selection retains `partial`, and unprocessed files remain undoable.
 
-`recordUndoFromApply` 先经 `WritebackSettlement.attachVerifiedContentToOperation` 附加页面 `verifiedContent`，再建立 checkpoint。[UndoOperations.buildUndoOperations](../../extension/src/shared/undoOperations.js) 分别推进源映像与已验证编辑器映像，把源 post-image 上的逆补丁转换到实际 `verifiedContent` 坐标，确保逆补丁与 `undoBaseFiles` 使用同一表示。
-Track 的 `selectExpectedFilesForTrackedUndo` 保留 `WritebackSettlement` 对外入口，内部委派 `UndoOperations`。对含非空补丁和字符串 `verifiedContent` 的记录，通过相同 checkpoint 重建编辑器表示的预期前像；已有 `previousExpectedFiles` 优先保留，其余情况沿用项目快照回退。验证必须经过正向结果附加及 checkpoint 消费，写回前单独构建逆补丁不足以覆盖该链路。
+`recordUndoFromApply` first adds Page `verifiedContent` through `WritebackSettlement.attachVerifiedContentToOperation`, then builds the checkpoint. [UndoOperations.buildUndoOperations](../../extension/src/shared/undoOperations.js) advances the source image and verified editor image separately, converting inverse patches on the source post-image into actual `verifiedContent` coordinates so that inverse patches and `undoBaseFiles` use the same representation.
+Track's `selectExpectedFilesForTrackedUndo` retains the public `WritebackSettlement` entry point and delegates internally to `UndoOperations`. For records with nonempty patches and string `verifiedContent`, it rebuilds the expected pre-image in editor representation through the same checkpoint. Existing `previousExpectedFiles` take precedence; other cases retain project-snapshot fallback. Validation must cover attachment of forward results and checkpoint consumption; building inverse patches in isolation before writeback does not cover this chain.
 
-`contentRuntime.callPageBridge` 对 `applyOperations` 且 `reviewingPolicy: 'no-trace-undo'` 的调用专门包装一层 `AssetTransferBroker`，因此创建删除与直接逆操作也可查询原文本批次回执。
-`undoRun`、`undoRunTrackedChanges` 在确认后生成 `deadlineAt`；混合 Undo 的文本恢复请求与后续创建删除请求携带同一截止时间。
-对 no-trace apply 路线，client 按剩余时间收紧 RPC 等待，broker 将期限继续传给回执查询，journal 在准备前后检查，router 在操作边界检查并将其传入创建删除验证。
-`PageBridgeClient.send` 为 Accept/Reject 注入同一个有效期限，默认由 RPC contract 的120秒生命周期预算决定，较短的显式期限继续有效。[reviewContext.js](../../extension/src/page/reviewContext.js) 为每个请求隔离上下文，准备、导航等待、模式切换、恢复及内部 apply 共同消费期限和取消状态，并预留最多250毫秒回传部分结果。Router 在新操作及实际编辑前检查守卫，保存确认不采纳截止后的快照。
-期限或取消阻止后续未开始的正文写入，已确认部分继续形成恢复进度。底层已经发出的导航或 HTTP 请求可能迟到完成；守卫不能撤回已发生的副作用，迟到导航也可能改变活动文件。
-[RunReviewController](../../extension/src/content/runReviewController.js) 与 `WritebackSettlement.isUndoResultEffectivelyApplied` 核对真实成功证据；`ok:false` 且没有 skipped 的运输失败保持 partial，不能仅凭空 skipped 显示 Undone。已验证的纯文本及结构操作由 `advanceUndoCheckpoint` 消耗恢复材料，持久化后重试只处理剩余项。普通 Undo 同样等待持久确认，操作锁存续时保持“正在撤销”。[reviewDeadline.test.js](../../test/reviewDeadline.test.js)、[ordinaryUndoDeadlineConsumer.test.js](../../test/ordinaryUndoDeadlineConsumer.test.js) 和 [ordinaryUndoDurability.test.js](../../test/ordinaryUndoDurability.test.js) 覆盖实际生产调用链与受控 I/O；真实平台延迟另需验收。
+`contentRuntime.callPageBridge` specially wraps `applyOperations` calls with `reviewingPolicy: 'no-trace-undo'` in an `AssetTransferBroker`, allowing deletion of created files and direct inverse operations to query the original text-batch receipt too.
+`undoRun` and `undoRunTrackedChanges` generate `deadlineAt` after confirmation; text-restoration requests and later created-file deletion requests in mixed Undo share the same deadline.
+For the no-trace apply path, the client tightens RPC waiting to the remaining time, the broker forwards the deadline to receipt queries, the journal checks before and after preparation, and the router checks at operation boundaries and forwards it into created-file deletion verification.
+`PageBridgeClient.send` injects the same effective deadline for Accept/Reject, determined by the RPC contract's default 120-second lifecycle budget; a shorter explicit deadline remains effective. [reviewContext.js](../../extension/src/page/reviewContext.js) isolates context per request. Preparation, navigation waits, mode switching, recovery, and internal apply share the deadline and cancellation state, reserving up to 250 milliseconds to return partial results. The router checks guards before new operations and actual edits, and save confirmation rejects snapshots after the deadline.
+Deadline or cancellation prevents later text writes that have not started; confirmed portions continue to form recovery progress. Navigation or HTTP requests already dispatched underneath may finish late. Guards cannot undo side effects that have already occurred, and late navigation may change the active file.
+[RunReviewController](../../extension/src/content/runReviewController.js) and `WritebackSettlement.isUndoResultEffectivelyApplied` check actual success evidence. A transport failure with `ok:false` and no skipped items remains partial; an empty skipped list alone cannot display Undone. `advanceUndoCheckpoint` consumes recovery material for verified text and structural operations; after persistence, retries process only remaining items. Ordinary Undo also waits for durable confirmation and retains the Undoing state while the operation lock remains held. [reviewDeadline.test.js](../../test/reviewDeadline.test.js), [ordinaryUndoDeadlineConsumer.test.js](../../test/ordinaryUndoDeadlineConsumer.test.js), and [ordinaryUndoDurability.test.js](../../test/ordinaryUndoDurability.test.js) cover actual production call chains with controlled I/O; real-platform latency requires additional acceptance.
 
-Track Undo 的逐文件 reject sweep 即使未找到 DOM 留痕节点，也保留已知目标路径到 `result.file` 与 `skipped.trackedChange.path`。因此另一文件已有精确前像读回回执时，`advanceUndoCheckpoint` 可移除该成功项，持久化后的重试仅携带未完成文件；缺少路径的全局失败或缺少独立验证的成功项仍保留恢复材料。路径依据正在执行的 sweep 目标，无法定位到文件的失败继续保留全局范围。[trackedUndoCheckpoint.test.js](../../test/trackedUndoCheckpoint.test.js) 串联 Controller、Page RPC、原生账本前检、存储重载与重试，并覆盖无路径失败及未验证回执对照；编辑器与服务器 I/O 使用隔离替身。
+Track Undo's per-file reject sweep preserves the known target path in `result.file` and `skipped.trackedChange.path` even when no DOM tracked-change node is found. Therefore, when another file has an exact-pre-image readback receipt, `advanceUndoCheckpoint` can remove that successful item; a retry after persistence carries only unfinished files. Global failures without paths and successful items without independent verification still retain recovery material. The path comes from the sweep target currently being processed; failures that cannot be assigned to a file remain global. [trackedUndoCheckpoint.test.js](../../test/trackedUndoCheckpoint.test.js) connects the Controller, Page RPC, native-ledger preflight, storage reload, and retry, with control cases for pathless failures and unverified receipts; editor and server I/O use isolated test doubles.
 
-**已知限制。** 若旧 Track-on 持久记录已留下“某文件正文恢复前像、原留痕 refs 已消失，但该文件仍在恢复账本”的状态，原生 review 前检仍会以 `native_review_scope_changed` 停止。上述逐项结果传播防止新的独立成功回执被文件级失败连带保留，不为缺少当次成功回执的旧状态补造恢复证明；精确前像相等本身也不会绕过 Track-on 的原生归属匹配。该旧状态由同一测试保留无写入、可继续检查的失败对照。
+**Known gap.** If an older Track-on persisted record is already in the state where a file's text has returned to its pre-image and original tracked refs have disappeared, but the file remains in the recovery ledger, native review preflight still stops with `native_review_scope_changed`. The per-item result propagation above lets newly verified, successfully restored files leave the recovery ledger even when another file fails. It does not manufacture recovery proof for older states lacking a receipt from that successful action. Exact pre-image equality alone does not bypass Track-on native-ownership matching. The same test retains this old state as a nonwriting failure control that remains available for inspection.
 
-**目标契约与实现守卫。** 后来修改应保留；安全性依靠实际证据判断。
-原生 editor Undo 要求当前内容符合原运行 post-image；创建撤销要求文本内容或二进制哈希仍匹配。
-`waitForActiveEditorCheckpoint` 对能证明的前后缀变化支持受限重基，冲突或归属不明时应跳过并保留恢复信息。
-它不提供任意协作编辑的通用三方合并保证。
+**Target contract and implementation guards.** Later edits must be preserved; safety decisions rely on actual evidence.
+Native editor Undo requires current content to match the original run's post-image; undoing creation requires text content or the binary hash still to match.
+`waitForActiveEditorCheckpoint` supports limited rebasing for provable prefix/suffix changes. Conflicts or uncertain ownership should cause a skip while retaining recovery information.
+It does not provide a general three-way merge guarantee for arbitrary collaborative edits.
 
-### 6.2 文件创建、删除与混合 Undo
+### 6.2 File Creation, Deletion, and Mixed Undo
 
-**当前实现。** `buildCreatedFileUndoCheckpoint` 为该运行新建路径生成 `undoCreatedFile` 证明，保留文本 post-image 或二进制 SHA-256。
-`undoRunTrackedChanges` 先恢复仍存在的已有文本，再处理文件结构操作：撤销新建或重建原有删除。需要分段持久化的生命周期记录会先保存已确认的文本进度。
-文本仍未解决或进度无法保存时，后续文件结构操作不派发；新建文件和已删除文件保持该阶段的状态，恢复材料留给后续尝试。
-中间 `applyTrackedChangeSettlement` 保存失败时，[scopedPersistencePanelState](../../extension/src/content/scopedPersistencePanelState.js) 恢复材料、标记 `needs_review` 并继续抛错。`undoRunTrackedChanges` 将已取得的 Page 结果保留在 try 外，在 finally、释放 review 操作锁之前调用 `invalidateMirrorAfterUndo`；正常完成和持久化失败共用这一出口。
-失效依据仍是 Page 返回的已应用操作或 `changedDocument`；请求直接抛错且没有结果时不虚构撤销证据。文件阶段已返回时采用合并结果；中间保存失败则只处理已知文本结果，并保留未派发的文件操作。失效任务登记到 `pendingMirrorRefresh`，下一次运行等待该任务后重新判断镜像可用性。Native 失效失败和页面结果缺失仍需单独处理，不能由 finally 已执行推定镜像一定不可复用。
+**Current behavior.** `buildCreatedFileUndoCheckpoint` generates `undoCreatedFile` evidence for paths created by the run, retaining a text post-image or binary SHA-256.
+`undoRunTrackedChanges` first restores existing text files that remain present, then handles structural file operations: undoing creation or recreating originally deleted files. Lifecycle records that require staged persistence first save confirmed text progress.
+If text remains unresolved or progress cannot be saved, later structural file operations are not dispatched. New and deleted files remain in their current phase state, with recovery material retained for a later attempt.
+If the intermediate `applyTrackedChangeSettlement` save fails, [scopedPersistencePanelState](../../extension/src/content/scopedPersistencePanelState.js) restores recovery material, marks `needs_review`, and rethrows. `undoRunTrackedChanges` keeps obtained Page results outside the try block and calls `invalidateMirrorAfterUndo` in finally, before releasing the review-operation lock. Normal completion and persistence failure share this exit path.
+Invalidation still depends on Page-returned applied operations or `changedDocument`; a request that throws without a result does not fabricate Undo evidence. If the file phase has returned, merged results are used. If intermediate saving fails, only known text results are handled, and undispatched file operations remain. The invalidation task is registered in `pendingMirrorRefresh`; the next run waits for it before reevaluating mirror usability. Native invalidation failures and missing Page results still need separate handling. Execution of finally alone does not establish that the mirror is unusable.
 
-这里的生命周期分类由 [runTimelineView.js](../../extension/src/content/runTimelineView.js) 的 `isTrackedChangeLifecycleRun` 判断 `trackedChangeStatus` 或 refs。
-普通 Track-off 或无 refs 的混合记录可走 `RunReviewController.applyLegacyUndoSettlement`，现在同样经 `applyReviewTransition({legacyUndo:true})` 等待严格保存。tracked review 与普通 Undo 各自核对对应终态；partial 还核对剩余检查点。文本 refs 已消耗但仍有待恢复文件时，pending 生命周期继续保存，不能因 refs 为空提前移去文件阶段状态。
-排查 Undo 后立即刷新时，两条保存路线须分别检查，详见[运行状态与恢复](run-state-and-recovery.md)。
+This lifecycle classification is determined by `isTrackedChangeLifecycleRun` in [runTimelineView.js](../../extension/src/content/runTimelineView.js), based on `trackedChangeStatus` or refs.
+Ordinary Track-off or mixed records without refs may use `RunReviewController.applyLegacyUndoSettlement`, which now also waits for strict persistence through `applyReviewTransition({legacyUndo:true})`. Tracked review and ordinary Undo each check their corresponding terminal state; partial also checks remaining checkpoints. When text refs have been consumed but files remain to be recovered, the pending lifecycle is still saved. Empty refs cannot prematurely remove file-phase state.
+When investigating immediate refresh after Undo, check both persistence paths separately; see [run state and recovery](run-state-and-recovery.md).
 
-新建删除进入 `writebackRouter.applyCreatedFileUndo`，重新核验原项目、取消序号、内容/哈希和服务器删除结果。
-文件在写入后被用户改动时，删除证明失效，不能直接删除。
-`UndoOperations.advanceUndoCheckpoint` 随已验证进度收缩剩余恢复账本，避免下次重做已完成部分。 文件删除的服务器证明充分时即可完成该文件的 Undo；目录观测单独保留，目录仍存在不会成为文件撤销失败或额外重试的前提。
+Deletion of a newly created file enters `writebackRouter.applyCreatedFileUndo`, which rechecks the original project, cancellation sequence, content/hash, and server deletion result.
+If a user modifies the file after writeback, deletion evidence becomes invalid and the file cannot be deleted directly.
+`UndoOperations.advanceUndoCheckpoint` shrinks the remaining recovery ledger as progress is verified, avoiding repetition of completed work. Sufficient server evidence of file deletion completes that file's Undo. Directory observations are retained separately; a remaining directory is not a condition for file-Undo failure or an extra retry.
 
-**删除原有文本的恢复。** [UndoOperations.getFileUndoOperations](../../extension/src/shared/undoOperations.js) 将旧文件重建与新建文件撤销统一为文件操作。已有 `create` 逆操作继续保留；补齐缺失的逆操作时，要求原文字符串保留在 undoExpectedFiles、appliedOperations 有成功删除，且推导后像不再包含该路径，空原文有效。只有后像缺项不足以推断应重建文件，先新建再删除的临时文件也不会因此复活。
-Track-on 记录同样保留这些 `create` 逆操作；历史 Track-on 记录缺少逆操作但仍保留上述证据时，`prepareRunUndo` 可补齐。已裁掉原文或删除证据的历史记录不具备该恢复保证。
+**Restoring deleted original text files.** [UndoOperations.getFileUndoOperations](../../extension/src/shared/undoOperations.js) treats recreation of old files and Undo of new-file creation as file operations. Existing `create` inverse operations are preserved. Reconstructing a missing inverse operation requires an original string in undoExpectedFiles, a successful deletion in appliedOperations, and a derived post-image that no longer contains the path; empty original text is valid. Absence from the post-image alone does not imply that a file should be recreated, and a temporary file created and then deleted is not resurrected.
+Track-on records also preserve these `create` inverse operations. If a historical Track-on record lacks inverse operations but retains the evidence above, `prepareRunUndo` can reconstruct them. Historical records whose original text or deletion evidence was trimmed have no such recovery guarantee.
 
-| 运行组合 | 当前恢复路线 |
+| Run composition | Current recovery path |
 |---|---|
-| 仅删除原有文本，Track 两态 | 有证据的 `create` 逆操作进入 `applyOperations(no-trace-undo)`；保留原项目、路径存在性、创建和服务器读回检查 |
-| 编辑＋删除原有文本，Track 两态 | `textUndoRun` 从原生文本 review 的前像和 refs 中排除待重建路径；文本恢复成功后派发文件结构操作，避免要求先打开已删除文件 |
-| 编辑＋新建＋删除原有文本 | 文本阶段后统一处理新建删除与旧文件重建，仍使用同一 deadline 和原项目身份；文件阶段可以逐项保留失败材料 |
-| 删除后该路径被用户重新创建 | 原有 Page 创建守卫拒绝覆盖，恢复操作保留供后续处理 |
+| Only deletion of original text, either Track state | Evidence-backed `create` inverse operations enter `applyOperations(no-trace-undo)`, retaining original-project, path-existence, creation, and server-readback checks |
+| Editing plus deletion of original text, either Track state | `textUndoRun` excludes paths awaiting recreation from native text-review pre-images and refs. File-structure operations are dispatched after successful text recovery, avoiding a requirement to open a deleted file first |
+| Editing plus creation plus deletion of original text | After the text phase, deletion of new files and recreation of old files are handled together, using the same deadline and original-project identity. The file phase may retain failure material per item |
+| The user recreates the path after deletion | Existing Page creation guards reject overwrite, retaining the recovery operation for later handling |
 
-`mergeFileUndoResult` 要求文件操作具备对应类型、路径及已验证的服务器回执，缺项进入失败结果。`advanceUndoCheckpoint` 还核对重建内容匹配，只有独立验证成功的项才消耗恢复材料；成功项的前像一并移除，进度成功持久化后，重载不会再次推导同一重建操作。失败兄弟项保留，needs_review 的文案和操作投影包含待重建旧文件。
-[deletedFileUndo.test.js](../../test/deletedFileUndo.test.js) 覆盖真实 runtime 函数、生产 Undo/Router/guard、历史记录及保存投影；文件树和服务器 I/O 使用替身。既有 [createdFileUndo.test.js](../../test/createdFileUndo.test.js) 与 [mixedUndoReceipt.test.js](../../test/mixedUndoReceipt.test.js) 继续约束新建撤销及回执，共用夹具为 test/_helpers/undoRuntimeHarness.js。真实浏览器、服务器写入及存储配额仍需独立验收。
+`mergeFileUndoResult` requires file operations to have the corresponding type, path, and verified server receipt; missing items enter the failure result. `advanceUndoCheckpoint` also checks recreated content for equality. Only independently verified successful items consume recovery material, and their pre-images are removed together. Once progress is durably saved, reload does not derive the same recreation operation again. Failed sibling items remain, and the needs_review text and action projection include old files awaiting recreation.
+[deletedFileUndo.test.js](../../test/deletedFileUndo.test.js) covers real runtime functions, production Undo/Router/guard, historical records, and save projections; file-tree and server I/O use test doubles. Existing [createdFileUndo.test.js](../../test/createdFileUndo.test.js) and [mixedUndoReceipt.test.js](../../test/mixedUndoReceipt.test.js) continue to constrain creation Undo and receipts, sharing test/_helpers/undoRuntimeHarness.js. Actual browsers, server writes, and storage quotas still require separate acceptance.
 
-### 6.3 Accept 与 Undo 的共同结算
+### 6.3 Shared Settlement for Accept and Undo
 
-**当前实现。** `contentRuntime.acceptRun` 调用 page 的 `acceptTrackedChanges`，消费原运行 refs、前后像及已应用操作。
-Undo、Accept 由 `RunReviewController.withSharedReviewOwnership` 取得同账号/项目/run 的共享 review port。确认框阶段只预留 owner，不消耗执行期限；确认后先取得耐久派发租约的 ACK，再把 token 与截止时间送入 Page。失去 port 时只取消该 token 的 review context，旧 token 不影响后来的任务。正常收尾仅删除自己的租约；刷新后的隔离和旧版记录处理见[执行中恢复](run-state-and-recovery.md#6-undo-的持久化与重载投影)。
-Accept 需要可归属的留痕记录；`untrackedUndo` 不能赋予接受其他留痕的权限。
-混合运行接受后保留新建文件，并随已验证的生命周期关闭相应恢复状态。
+**Current behavior.** `contentRuntime.acceptRun` calls Page `acceptTrackedChanges`, consuming the original run's refs, pre-images/post-images, and applied operations.
+Undo and Accept obtain a shared review port for the same account/project/run through `RunReviewController.withSharedReviewOwnership`. The confirmation-dialog phase reserves ownership only and does not consume the execution deadline. After confirmation, it first receives the ACK for a durable dispatch lease, then sends the token and deadline to Page. Losing the port cancels only the review context for that token; an old token does not affect later tasks. Normal finalization removes only its own lease; see [in-flight recovery](run-state-and-recovery.md#6-undo-persistence-and-reload-projection) for isolation after refresh and handling of older records.
+Accept requires attributable tracked-change records; `untrackedUndo` grants no authority to accept other tracked changes.
+Accepting a mixed run preserves newly created files and closes the corresponding recovery state along the verified lifecycle.
 
-page 的实际分流在 `trackedChangesLifecycle.prepareNativeReview` 与 `acceptTrackedChanges`。
-生产 `pageBridge` 注入 `getCodeMirrorEditorView`，即使原生账本尚未就绪，也会进入原生守卫，并在无法确认账本时保留失败结果；缺少该适配器且 refs 均无 `native:` 前缀的调用才进入 legacy 恢复路线。
+Actual Page routing occurs in `trackedChangesLifecycle.prepareNativeReview` and `acceptTrackedChanges`.
+Production `pageBridge` injects `getCodeMirrorEditorView`, so native guards run even when the native ledger is not yet ready, preserving a failure result when the ledger cannot be confirmed. Only calls lacking that adapter and having no refs with the `native:` prefix enter the legacy recovery path.
 
-| 分支 | 写入与验证行为 | 失败、模式与联动入口 |
+| Branch | Write and verification behavior | Failure, mode, and related entry points |
 |---|---|---|
-| 原生 ID Accept | `acceptNativeReview` 向原项目及文档的 `/changes/accept` 提交 `change_ids`；随后确认目标 refs 消失、无关 refs 保留、文本未变 | 不改编辑器模式；请求或核验不确定时保留部分结果与恢复材料。当前账本的 `acceptByIdSupported: false` 时返回 `native_accept_protocol_unsupported`，不回退 DOM Accept 或 legacy 文本 replay |
-| 与旧留痕合并的原运行插入 | `trackedChangeOwnership.prepareMergedInsertionReview` 核对范围证明；`reviewMergedInsertion` 在稳定 Editing 下同文替换获证的插入区间，消除该部分留痕 | 不把合并父 ID 送入整项 Accept；核对文本和应保留 refs。已尝试写入后保持 Editing，避免待保存操作重新产生留痕；该范围证明也用于对应 Undo |
-| legacy adapter | 尝试 editor Undo 或 checkpoint 恢复，再由 `buildAcceptReplayOperations` 生成无留痕 replay；逐项重确认 Editing | 中途失败可能已经改变内容；成功 replay 后保持 Editing。联动 [trackedChangeReplay](../../extension/src/page/trackedChangeReplay.js)，不能用该分支概括生产 Native Accept |
+| Native ID Accept | `acceptNativeReview` submits `change_ids` to `/changes/accept` for the original project and document, then confirms that target refs disappeared, unrelated refs remain, and text is unchanged | Does not change editor mode. Uncertain requests or checks retain partial results and recovery material. When the current ledger has `acceptByIdSupported: false`, returns `native_accept_protocol_unsupported` without fallback to DOM Accept or legacy text replay |
+| Original-run insertion merged with older tracked changes | `trackedChangeOwnership.prepareMergedInsertionReview` checks range evidence; `reviewMergedInsertion` replaces the proven inserted range with identical text in stable Editing mode, removing tracked changes for that portion | Does not submit the merged parent ID for whole-item Accept. Checks text and refs that should remain. After an attempted write, stays in Editing so pending saves do not recreate tracked changes. The same range proof also supports the corresponding Undo |
+| Legacy adapter | Tries editor Undo or checkpoint restoration, then generates no-trace replay with `buildAcceptReplayOperations`, reconfirming Editing for each item | Midway failure may already have changed content. Stays in Editing after successful replay. Involves [trackedChangeReplay](../../extension/src/page/trackedChangeReplay.js); this branch does not describe production Native Accept |
 
-**自动 Accept 的支持限制。** [trackedChangeCapture.readNativeSnapshot](../../extension/src/page/trackedChangeCapture.js) 按当前账本的实际表示计算 `acceptByIdSupported`：任一变更带有 `snapshotRange`，或 ID 符合 `change-(insert|delete)-数字` 时，不允许按 ID 接受并返回明确失败，保留已有恢复材料；用户可使用 Overleaf 原生 Review。不能仅凭编辑器名称或以前观察到的 History-OT 表示推断本次一定失败；当前账本支持 ID 协议且归属与结果核验通过时，原生 Accept 可以成功。插件不提供“人工接受后再核验为 accepted”的额外流程。旧 `manualReviewProof` 不构成当前 Accept/Undo 权限，存储归一化会丢弃该退休字段，已有真实 refs、正文检查点和终态分别保留。原 Accept 行为及退役请求保护见 [writebackRouterAccept.test.js](../../test/writebackRouterAccept.test.js) 与 [manualReviewWorkflow.test.js](../../test/manualReviewWorkflow.test.js)。
+**Automatic Accept support limits.** [trackedChangeCapture.readNativeSnapshot](../../extension/src/page/trackedChangeCapture.js) computes `acceptByIdSupported` from the current ledger's actual representation. If any change has `snapshotRange`, or an ID matches `change-(insert|delete)-<digits>`, accepting by ID is disallowed and returns an explicit failure while retaining existing recovery material; the user can use Overleaf's native Review. The editor name or a previously observed History-OT representation alone does not prove that the current attempt will fail. Native Accept can succeed when the current ledger supports the ID protocol and ownership and result verification pass. The extension has no additional workflow for manually accepting changes and then verifying them as accepted. Old `manualReviewProof` grants no current Accept/Undo authority; storage normalization discards this retired field while retaining actual existing refs, text checkpoints, and terminal states separately. See [writebackRouterAccept.test.js](../../test/writebackRouterAccept.test.js) and [manualReviewWorkflow.test.js](../../test/manualReviewWorkflow.test.js) for original Accept behavior and retired-request guards.
 
-[writebackSettlement](../../extension/src/shared/writebackSettlement.js) 的 `settleTrackedChangeLifecycle`、`attachAcceptNotVerifiedFailure`、`attachUndoNotVerifiedFailure` 判断终态。
-`contentRuntime.applyTrackedChangeSettlement` 通过 [scopedPersistenceCoordinator](../../extension/src/content/scopedPersistenceCoordinator.js) 保存迁移。
-`needs_review` 表示证据不足，不能仅因按钮点击完成就清空 refs、checkpoint 或创建证明。
+`settleTrackedChangeLifecycle`, `attachAcceptNotVerifiedFailure`, and `attachUndoNotVerifiedFailure` in [writebackSettlement](../../extension/src/shared/writebackSettlement.js) determine terminal state.
+`contentRuntime.applyTrackedChangeSettlement` saves transitions through [scopedPersistenceCoordinator](../../extension/src/content/scopedPersistenceCoordinator.js).
+`needs_review` means insufficient evidence. Completion of a button click alone cannot clear refs, checkpoints, or creation evidence.
 
-## 7. 取消、部分失败与刷新后的定位
+## 7. Cancellation, Partial Failure, and Recovery After Refresh
 
-**当前实现。** page cancellation sequence 在 `cancelActiveWrite` 时递增，router 在操作边界检查。
-router 可以返回已发生修改的逐项结果并跳过未开始项；content 获得这些结果后再结算与记录 checkpoint。
-[pageRpcContract](../../extension/src/shared/pageRpcContract.js) 将 `getWritebackReceipt` 与 `binaryUploadStatus` 定义为需要项目身份、取消后仍可等待的只读查询；单次 RPC 超时继续生效。文本回执有轮询截止点，显式 `deadlineAt` 还会收紧查询等待；未给显式期限时，最后一次 RPC 仍可能超过轮询截止点。二进制状态沿独立的 30 秒轮询截止点加单次 RPC 等待，未接入文本的 `deadlineAt`。查询只取回原请求或 transfer 的结果，不重放写入。
-[pageBridgeClient](../../extension/src/content/pageBridgeClient.js) 在派发前检查可取消请求；已取消时直接拒绝并标记 `requestDispatched:false/changedDocument:false`。已发出的 `applyOperations` 被 `cancelActiveRequests` 拒绝时附带原 requestId，broker 可据此取回已发生的部分结果；用户 `cancelActiveRun` 的 Page 路径仍是推进取消序号，该接口能力不能推定为每次点击取消都会立即拒绝所有客户端等待。
-[assetTransferBroker](../../extension/src/content/assetTransferBroker.js) 在文本超时或带原请求身份的取消后执行 `recoverTextReceipt`；后批取消保留前批 `applied` 与 Track refs，并停止派发余下文本和二进制项。二进制 commit 结果不确定时通过原 transferId 查询状态；begin 成功后的失败，或 begin 已派发且等待被取消，在 commit 尚未实际派发时使用同一 transferId 清理暂存；明确拒绝的重复 begin 不删除既有 stage。commit 收到成功回执时保留已应用结果，在途取消信号仍阻止尾部派发；派发前取消不会创建新的 Page stage。
-成功取得的逐项结果进入 orchestrator 原有 `recordUndoFromApply`，随后才进行可取消的保存核查。回执超时、Page 重载或无法确认原操作时仍保留未确认语义及尾部阻断，不能宣称全部写入都形成了持久 Undo。Page 回执、Content checkpoint 与实际存储各有寿命；真实 Chrome 跨 world 时序、服务器保存和存储重载仍需独立验收。
+**Current behavior.** The Page cancellation sequence advances on `cancelActiveWrite`; the router checks it at operation boundaries.
+The router can return per-item results for mutations that have already occurred and skip unstarted items. Content settles and records checkpoints after receiving these results.
+[pageRpcContract](../../extension/src/shared/pageRpcContract.js) defines `getWritebackReceipt` and `binaryUploadStatus` as read-only queries that require project identity and may continue waiting after cancellation; individual RPC timeouts remain effective. Text receipts have a polling deadline, and an explicit `deadlineAt` further tightens query waits. Without an explicit deadline, the final RPC may still extend past the polling deadline. Binary status uses its own 30-second polling deadline plus individual RPC waits and is not wired to the text `deadlineAt`. Queries retrieve only the original request or transfer's results; they do not replay writes.
+[pageBridgeClient](../../extension/src/content/pageBridgeClient.js) checks cancellable requests before dispatch. If already cancelled, it rejects directly and marks `requestDispatched:false/changedDocument:false`. When `cancelActiveRequests` rejects an already dispatched `applyOperations`, it includes the original requestId so the broker can retrieve partial results for mutations that occurred. The Page path of the user's `cancelActiveRun` still advances the cancellation sequence; this interface capability does not establish that every Cancel click immediately rejects all client waits.
+[assetTransferBroker](../../extension/src/content/assetTransferBroker.js) runs `recoverTextReceipt` after a text timeout or cancellation carrying original-request identity. Cancellation of a later batch preserves earlier `applied` results and Track refs, then stops dispatching remaining text and binary items. An uncertain binary commit result is queried using the original transferId. After a successful begin, failure cleans up staging with the same transferId if commit has not actually been dispatched; this also applies when begin was dispatched and its wait was cancelled. An explicitly rejected duplicate begin does not delete an existing stage. When commit returns a success receipt, applied results are retained; an in-flight cancellation still prevents remaining dispatch. Cancellation before dispatch creates no new Page stage.
+Successfully obtained per-item results enter the orchestrator's existing `recordUndoFromApply` before cancellable save checking. Receipt timeout, Page reload, or inability to confirm the original operation retains unconfirmed semantics and blocks remaining items; it does not establish that every write acquired durable Undo. Page receipts, Content checkpoints, and actual storage each have their own lifetimes. Real Chrome cross-world timing, server persistence, and storage reload still require separate acceptance.
 
-**当前实现。** `contentRuntime.stageWritebackRecovery` 为文本新建保存原有 `retryWriteback` 意图，普通编辑不额外写入核查摘要；`settleWritebackRecovery` 根据实际写回及保存结果维护 `retryWriteback/saveCheck`。写前新建意图与写后恢复结算分别核对原账号、项目、会话及运行。
-[writebackIntent](../../extension/src/shared/writebackIntent.js) 对请求记录设置 100 操作、300 KiB 上限；[sessionState](../../extension/src/shared/sessionState.js) 执行恢复字段筛选。
-只读保存核查保存摘要与身份，通过 `confirmSaveCheck` 重新读取服务器，不重新上传文件。
-重试写入则由 `retryRunWriteback` 进入写回链，两者应在指南和 UI 中保持语义区分。
-原请求 receipt 查询可以取回原结果，显式 Retry sync 则创建新的派发；新建重试按第 4.2 节的服务器精确内容检查确认已有文件或创建缺失文件。已存在同内容的幂等确认不重复上传，也不新增 Undo 删除凭据；不同内容保持拒绝，项目和运行归属检查仍适用。
+**Current behavior.** `contentRuntime.stageWritebackRecovery` saves the existing `retryWriteback` intent for text creation. Ordinary edits do not add a separate write-check summary. `settleWritebackRecovery` maintains `retryWriteback/saveCheck` according to actual writeback and save results. Pre-write creation intent and post-write recovery settlement each check the original account, project, session, and run.
+[writebackIntent](../../extension/src/shared/writebackIntent.js) caps request records at 100 operations and 300 KiB; [sessionState](../../extension/src/shared/sessionState.js) filters recovery fields.
+A read-only save check stores a summary and identity, then rereads the server through `confirmSaveCheck` without uploading files again.
+Retrying writes enters the writeback chain through `retryRunWriteback`; the guide and UI must preserve this semantic distinction.
+Queries for the original request's receipt may retrieve the original result, while explicit Retry sync creates a new dispatch. Creation retries use the exact server-content check in Section 4.2 to confirm existing files or create missing ones. Idempotent confirmation of existing identical content neither uploads again nor adds Undo deletion evidence; different content remains rejected, and project/run ownership checks still apply.
 
-**Retry 的配置来源。** 首次运行与显式 `retryRunWriteback` 都采用原执行快照中的 `autoRecompile`；重试在首次等待前捕获该布尔值。旧记录没有有效布尔值时沿用当前设置兼容。Retry sync 不重新启动模型，只重试剩余写回；只读内容核验不执行写回或编译。[writebackOutcomeConsistency.test.js](../../test/writebackOutcomeConsistency.test.js) 覆盖设置双向切换、旧记录和正常保存分支。
+**Configuration source for Retry.** Both initial execution and explicit `retryRunWriteback` use `autoRecompile` from the original execution snapshot. Retry captures this boolean before its first await. For older records without a valid boolean, compatibility falls back to the current setting. Retry sync does not restart the model; it retries only remaining writeback. Read-only content verification performs neither writeback nor compilation. [writebackOutcomeConsistency.test.js](../../test/writebackOutcomeConsistency.test.js) covers settings toggled in both directions, old records, and normal save branches.
 
-**恢复边界。** 页面执行回执有有限寿命，不能保证跨页面刷新保留。恢复以实际保留的 Undo 检查点、原有 Retry sync 和 `saveCheck` 为依据；缺少证据时保留未确认状态，不凭当前内容相等补造执行归属、创建权限或 Undo。插件没有独立“核查写入内容”入口；旧 `writebackCheck` 仅为退休字段，不再生产或授予动作，存储归一化会将其丢弃。
+**Recovery boundary.** Page execution receipts have finite lifetimes, with no guarantee of survival across page refresh. Recovery relies on actually retained Undo checkpoints, existing Retry sync, and `saveCheck`. Missing evidence retains the unconfirmed state; equality of current content cannot manufacture execution ownership, creation authority, or Undo. The extension has no separate Check writeback content entry point. Old `writebackCheck` is a retired field, no longer produced and no longer authorizing actions; storage normalization discards it.
 
-`content/writebackRecovery.js` 另定义通用 prepare/reconcile 模块；该模块未纳入上述 Auto 主调用链。
-定位当前行为应从上述实际调用及 [run-state-and-recovery](run-state-and-recovery.md) 出发，不能凭模块文件名推定默认恢复流程。
+`content/writebackRecovery.js` separately defines a generic prepare/reconcile module; it is not part of the main Auto call chain above.
+Locate current behavior through the actual calls above and [run-state-and-recovery](run-state-and-recovery.md), rather than inferring the default recovery flow from a module filename.
 
-`writebackOrchestrator.invalidateMirrorAfterUndo` 按已知 Page 修改结果调用原项目的 `mirror.invalidate`，并在仍处同项目时清快照缓存。
-混合 Undo 由 finally 统一调用，覆盖中间持久化失败；无 Page 结果的异常仍缺少已修改证据。
-失效任务挂入 `pendingMirrorRefresh`，下一轮等待屏障后重新评估镜像。
-失效失败会记录警告；“编辑器撤销完成”不自动证明本地基线已处理完成。
+`writebackOrchestrator.invalidateMirrorAfterUndo` calls `mirror.invalidate` for the original project based on known Page mutation results and clears the snapshot cache if still in that project.
+Mixed Undo invokes it through a shared finally path, including intermediate persistence failures. Exceptions without Page results still lack evidence of mutation.
+The invalidation task enters `pendingMirrorRefresh`; the next run waits at this barrier before reevaluating the mirror.
+Invalidation failures log a warning; completion of editor Undo does not automatically establish completion of local-baseline handling.
 
-**验证边界。** 页面重载、浏览器存储限额、Native 断线、导航和取消组合下的恢复需分别验收。
-现有有界记录与内存回执不构成无限历史或全链路恰好一次保证。
+**Validation boundary.** Recovery across combinations of page reload, browser storage limits, Native disconnection, navigation, and cancellation requires separate acceptance.
+Existing bounded records and in-memory receipts do not provide unlimited history or an end-to-end exactly-once guarantee.
 
-## 8. 修改路线与最窄验证入口
+## 8. Change Routes and Narrowest Validation Entry Points
 
-下表列出与各层行为对应的测试入口；测试通过后仍需为 DOM、编辑器和服务器行为选择对应浏览器验收。
-命令从仓库根目录执行，按实际改动选择一行，不要求每次运行整组。
+The table maps tests to behavior at each layer. Passing tests still requires selecting appropriate browser acceptance for DOM, editor, and server behavior.
+Run commands from the repository root and select a row for the actual change; running the entire group every time is unnecessary.
 
-| 改动或症状 | 主改位置与联动检查 | 最窄测试命令 |
+| Change or symptom | Primary modification point and related checks | Narrowest test command |
 |---|---|---|
-| 展示 diff 截断或执行补丁粒度错误 | codexSessionRunner 的两类输出、diffEngine、textPatch；展示 hunks 与执行 patches 分别核对 | `node --test test/diffEngine.test.js test/textPatch.test.js` |
-| 文本差异转操作错误 | `writebackController.buildSyncApplyOperations`；patch 输入与基线 | `node --test test/writebackController.test.js` |
-| Auto 重命名、二进制删除或资产类型被过滤 | `mirrorWorkspace.collectMirrorChangesDetailed`、WritebackController、原有删除/资源确认及历史 FileMover Undo | `node --test test/fileMoveNativeDiff.test.js test/fileMovePipeline.test.js test/fileMover.test.js`；独立二进制删除及未支持格式仍属边界 |
-| 活动文件/ZIP/空内容不一致 | snapshotRouter、projectFiles、快照缓存、mirrorWorkspace | `node --test test/pageBridgeSnapshotCache.test.js test/staleGuard.test.js` |
-| ZIP 路径碰撞、丢弃或资产配额影响完整性 | `extractFilesFromZip`、`normalizeSafeProjectPath`、`mergeSnapshotFiles`、快照标志及 Native 全量清理 | [projectFiles](../../test/projectFiles.test.js)、[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js)、[mirrorWorkspace](../../test/mirrorWorkspace.test.js)、[snapshotSkippedAssets](../../test/snapshotSkippedAssets.test.js)；字面文件名及完整链路见 [zipLiteralIdentity](../../test/zipLiteralIdentity.test.js) |
-| CRLF/LF 坐标转换及撤销 | textPatch 原始偏移、staleGuard.prepareOperationPatches、router 实际补丁、settlement verifiedContent、UndoOperations 双映像 | [textPatchLineEndings](../../test/textPatchLineEndings.test.js)、[undoOperations](../../test/undoOperations.test.js)、[pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js)；比较最终文本、保留内容与实际回执后的撤销结果 |
-| OT 快启进入快照重读回退 | `resolveWarmRunStart`、`runController.buildCodexRunParams`、Native `validateOtFocusedWarmMirrorReuse`、runtime 的 mirror_stale 回退 | `node --test test/otWarmMirrorContract.test.js test/otWarmMirrorIntegration.test.js test/taskRunner.test.js`；检查正常快启与失效后的完整回退 |
-| 原请求超时但文件已变化 | broker 查询原执行 receipt、逐项结果与尾部阻断 | `node --test test/writebackReceiptRecovery.test.js` |
-| 显式 Retry sync 确认已有文件或创建缺失文件 | runtime 恢复意图、orchestrator/broker/journal 参数、router/creator 精确内容检查及 Undo 所有权 | `node --test test/retryCreatedFile.test.js test/textFileCreator.test.js test/writebackEditRetry.test.js`；模块组合覆盖新建未确认后恢复、同内容/空内容幂等、异内容拒绝、原请求去重及归属检查，DOM 与外部 I/O 使用替身 |
-| 嵌套路径创建与父目录保留 | textFileCreator 的目录观测、DirectoryCleanupRecovery 的耐久目录观测与证明边界 | `node --test test/createdDirectoryCleanup.test.js test/directoryCleanupRecovery.test.js test/textFileSnapshotIdentity.test.js`；目录回收需用户原生操作 |
-| 保存待确认或刷新后核查 | writebackController、writebackIntent、sessionState | `node --test test/writebackSaveCheck.test.js` |
-| 普通 Undo 错撤用户历史 | contentRuntime 路由、提交 Track、trackedChangesLifecycle、ownership | `node --test test/ordinaryUndoRouting.test.js` |
-| 新建文件撤销或混合进度 | undoOperations、contentRuntime、router、textFileCreator、持久化 | `node --test test/createdFileUndo.test.js test/mixedUndoReceipt.test.js` |
-| 已有文本删除后的 Undo 或编辑＋删除混合恢复 | `recordUndoFromApply`、`UndoOperations.prepareRunUndo/textUndoRun/advanceUndoCheckpoint`、`undoRun`、Page guard；分别核对文本与文件恢复 | `node --test test/deletedFileUndo.test.js test/undoOperations.test.js test/ordinaryUndoRouting.test.js test/createdFileUndo.test.js`；两种 Track、冲突、历史材料、部分恢复及重载 |
-| Undo 超时、尾部未确认或重复删除 | contentRuntime.callPageBridge 的 broker 包装、deadlineAt、client/journal/router/creator | `node --test test/undoDeadlineRouting.test.js test/undoReceiptDeadline.test.js` |
-| 撤销后下一轮恢复旧内容 | orchestrator 镜像屏障、mirrorWorkspace、运行入口 | `node --test test/undoMirrorInvalidation.test.js test/undoPersistenceFailure.test.js` |
-| 取消后丢失部分结果 | cancellation sequence、router、broker、Page RPC、checkpoint 时序 | `node --test test/writebackCancellationRecovery.test.js test/assetTransferCancellation.test.js test/writebackReceiptRecovery.test.js`；检查原请求回执、前批结果、尾部停止与 checkpoint |
-| 二进制位置/回执/撤销或覆盖前基线检查 | broker、binaryAssetUploader 独立回执、textFileCreator、Native asset；Native旧哈希、Broker基线交叉检查及Page覆盖前远端核验 | `node --test test/binaryOverwriteBaseline.test.js test/binaryAssetUploader.test.js test/binaryUploadUndoRoundTrip.test.js`；实际平台并发时序仍需另验 |
-| 生产 Native Accept 归属或验证失败 | pageBridge 原生适配器、trackedChangesLifecycle、ownership、settlement | `node --test test/pageBridgeStaleGuard.test.js test/writebackSettlementContract.test.js` |
-| legacy Accept replay、模式切换或恢复 | trackedChangesLifecycle、trackedChangeReplay；勿推广为生产原生路径 | `node --test test/writebackRouterAccept.test.js` |
-| 编译状态投影异常 | orchestrator、compileBridge、compileAdapter | `node --test test/compileAdapter.test.js` |
+| Display diff truncation or wrong execution-patch granularity | Both codexSessionRunner outputs, diffEngine, and textPatch; check display hunks and execution patches separately | `node --test test/diffEngine.test.js test/textPatch.test.js` |
+| Incorrect conversion of text changes to operations | `writebackController.buildSyncApplyOperations`; patch input and baseline | `node --test test/writebackController.test.js` |
+| Filtered Auto rename, binary deletion, or asset type | `mirrorWorkspace.collectMirrorChangesDetailed`, WritebackController, existing deletion/asset confirmation, and historical FileMover Undo | `node --test test/fileMoveNativeDiff.test.js test/fileMovePipeline.test.js test/fileMover.test.js`; standalone binary deletion and unsupported formats remain limitations |
+| Inconsistent active-file/ZIP/empty content | snapshotRouter, projectFiles, snapshot cache, and mirrorWorkspace | `node --test test/pageBridgeSnapshotCache.test.js test/staleGuard.test.js` |
+| ZIP path collisions, dropped paths, or asset quotas affect completeness | `extractFilesFromZip`, `normalizeSafeProjectPath`, `mergeSnapshotFiles`, snapshot flags, and Native full cleanup | [projectFiles](../../test/projectFiles.test.js), [pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js), [mirrorWorkspace](../../test/mirrorWorkspace.test.js), and [snapshotSkippedAssets](../../test/snapshotSkippedAssets.test.js); see [zipLiteralIdentity](../../test/zipLiteralIdentity.test.js) for literal filenames and the complete chain |
+| CRLF/LF coordinate conversion and Undo | textPatch raw offsets, staleGuard.prepareOperationPatches, actual router patches, settlement verifiedContent, and UndoOperations dual images | [textPatchLineEndings](../../test/textPatchLineEndings.test.js), [undoOperations](../../test/undoOperations.test.js), and [pageBridgeStaleGuard](../../test/pageBridgeStaleGuard.test.js); compare final text, preserved content, and Undo results after actual receipts |
+| OT warm start falls back to snapshot rereading | `resolveWarmRunStart`, `runController.buildCodexRunParams`, Native `validateOtFocusedWarmMirrorReuse`, and runtime mirror_stale fallback | `node --test test/otWarmMirrorContract.test.js test/otWarmMirrorIntegration.test.js test/taskRunner.test.js`; check normal warm start and complete fallback after invalidation |
+| Original request times out but files have changed | Broker queries for the original execution receipt, per-item results, and blocking of remaining items | `node --test test/writebackReceiptRecovery.test.js` |
+| Explicit Retry sync confirms existing files or creates missing ones | Runtime recovery intents, orchestrator/broker/journal parameters, router/creator exact-content checks, and Undo ownership | `node --test test/retryCreatedFile.test.js test/textFileCreator.test.js test/writebackEditRetry.test.js`; module composition covers recovery after unconfirmed creation, identical/empty-content idempotence, different-content rejection, original-request deduplication, and ownership checks; DOM and external I/O use test doubles |
+| Nested-path creation and parent-directory retention | textFileCreator directory observations, durable DirectoryCleanupRecovery observations, and evidence boundaries | `node --test test/createdDirectoryCleanup.test.js test/directoryCleanupRecovery.test.js test/textFileSnapshotIdentity.test.js`; directory removal requires user actions in Overleaf’s native UI |
+| Save awaiting confirmation or checks after refresh | writebackController, writebackIntent, and sessionState | `node --test test/writebackSaveCheck.test.js` |
+| Ordinary Undo incorrectly undoes user history | contentRuntime routing, submitted Track, trackedChangesLifecycle, and ownership | `node --test test/ordinaryUndoRouting.test.js` |
+| New-file Undo or mixed progress | undoOperations, contentRuntime, router, textFileCreator, and persistence | `node --test test/createdFileUndo.test.js test/mixedUndoReceipt.test.js` |
+| Undo after deleting existing text, or mixed edit/delete recovery | `recordUndoFromApply`, `UndoOperations.prepareRunUndo/textUndoRun/advanceUndoCheckpoint`, `undoRun`, and Page guard; check text and file recovery separately | `node --test test/deletedFileUndo.test.js test/undoOperations.test.js test/ordinaryUndoRouting.test.js test/createdFileUndo.test.js`; both Track states, conflicts, historical material, partial recovery, and reload |
+| Undo timeout, unconfirmed remaining items, or duplicate deletion | Broker wrapper in contentRuntime.callPageBridge, deadlineAt, and client/journal/router/creator | `node --test test/undoDeadlineRouting.test.js test/undoReceiptDeadline.test.js` |
+| The next run restores old content after Undo | Orchestrator mirror barrier, mirrorWorkspace, and run entry point | `node --test test/undoMirrorInvalidation.test.js test/undoPersistenceFailure.test.js` |
+| Partial results lost after cancellation | Cancellation sequence, router, broker, Page RPC, and checkpoint timing | `node --test test/writebackCancellationRecovery.test.js test/assetTransferCancellation.test.js test/writebackReceiptRecovery.test.js`; check original-request receipts, earlier-batch results, stopping remaining items, and checkpoints |
+| Binary location/receipt/Undo or pre-overwrite baseline check | Broker, binaryAssetUploader's separate receipts, textFileCreator, and Native assets; Native old hash, Broker baseline cross-check, and Page remote verification before overwrite | `node --test test/binaryOverwriteBaseline.test.js test/binaryAssetUploader.test.js test/binaryUploadUndoRoundTrip.test.js`; actual platform concurrency timing still requires separate validation |
+| Production Native Accept ownership or verification failure | pageBridge native adapter, trackedChangesLifecycle, ownership, and settlement | `node --test test/pageBridgeStaleGuard.test.js test/writebackSettlementContract.test.js` |
+| Legacy Accept replay, mode switching, or recovery | trackedChangesLifecycle and trackedChangeReplay; do not generalize to the production native path | `node --test test/writebackRouterAccept.test.js` |
+| Incorrect compile-state projection | Orchestrator, compileBridge, and compileAdapter | `node --test test/compileAdapter.test.js` |
 
-**测试装配边界。** `diffEngine`、`textPatch` 测试直接调用算法；`writebackRouterAccept` 的主要 harness 缺少原生 editor getter，并注入允许身份检查的 guard，覆盖 legacy 路线。
-`pageBridgeStaleGuard` 含 Native ID Accept 与保留后来文本的场景，但 fetch、编辑器与留痕账本为模拟对象。
-`binaryUploadUndoRoundTrip` 组合真实 broker、uploader、Native 分块和 ZIP 模块；其 Page RPC 直接路由 uploader 方法，Undo 直接调用 creator 删除，不能据此推定运行账本与刷新按钮全链覆盖。
-`undoDeadlineRouting` 覆盖生产 wrapper 的提取函数及各层期限传递，`undoReceiptDeadline` 使用真实 client/broker/journal 和虚拟时钟，页面 mutation 为注入函数。
-`writebackReceiptRecovery` 检查模式参数、原请求回执恢复和去重；[retryCreatedFile](../../test/retryCreatedFile.test.js) 通过公开 [retryCreateHarness](../../test/_helpers/retryCreateHarness.js) 串联真实 runtime Retry/recovery/Undo 函数、orchestrator、broker、journal、Page wrapper、router 和 creator，覆盖 `retryCreates` 完整传递、同内容与空内容确认、异内容拒绝及 Undo 证据保留。其合成 DOM、上传与 ZIP 夹具和 [textFileCreator](../../test/textFileCreator.test.js) 共用；UI、Native 与持久化 I/O 使用替身，不能由此推定真实 Chrome 传输、服务器上传或 IndexedDB 落盘已验收。
-`undoMirrorInvalidation` 的相关 harness 将 settlement 替换为成功 stub；`undoPersistenceFailure` 串联 runtime、Page Undo、review transition 与 orchestrator，在保存回调注入异常，检查失效登记、下一次 Undo 等待屏障，以及冲突/抛错不虚构结果。编辑器、保存与 Native I/O 使用替身。
-`writebackCancellationRecovery` 串联 client、journal、Page router/editor、orchestrator、Undo 和 StorageDb 投影；`assetTransferCancellation` 检查混合批次、二进制状态、项目拒绝和 Page stage 清理。网络、真实编辑器及 IndexedDB 重载仍在替换边界之外。
-`mirrorWorkspace` 覆盖独立二进制删除上报、支持资产及生成 PDF 过滤；`fileMovePipeline` 串联真实 Native 差异、原删除/资源确认与 Broker/Page 写回，并检查旧正向 move 被拒绝、普通创建不增加确认。历史有证明的逆向 move 由 `fileMoveProtocol` 和 `fileMover` 覆盖，外部文件树与 API 为替身。
-`deletedFileUndo` 从正向记录进入删除恢复与重载重试；`ordinaryUndoRouting` 和 `createdFileUndo` 继续覆盖普通文本与新建组合。这些模块组合验证不能替代真实 Overleaf 文件树、服务器保存与浏览器重载验收。
-这些范围各自提供定位依据；真实服务端协议、DOM、取消与立即刷新仍需相应执行证据。
+**Test-composition boundaries.** `diffEngine` and `textPatch` tests call algorithms directly. The main `writebackRouterAccept` harness lacks a native editor getter and injects a guard that permits identity checks, covering the legacy path.
+`pageBridgeStaleGuard` includes Native ID Accept and preservation of later text, but fetch, the editor, and the tracked-change ledger are simulated.
+`binaryUploadUndoRoundTrip` composes the real broker, uploader, Native chunking, and ZIP modules. Its Page RPC routes directly to uploader methods, and Undo calls creator deletion directly; it does not establish full-chain coverage of the run ledger and buttons after refresh.
+`undoDeadlineRouting` covers extracted production-wrapper functions and deadline propagation through each layer. `undoReceiptDeadline` uses the real client/broker/journal with a virtual clock and injected page mutations.
+`writebackReceiptRecovery` checks mode parameters, original-request receipt recovery, and deduplication. [retryCreatedFile](../../test/retryCreatedFile.test.js) uses the public [retryCreateHarness](../../test/_helpers/retryCreateHarness.js) to connect real runtime Retry/recovery/Undo functions, orchestrator, broker, journal, Page wrapper, router, and creator. It covers full `retryCreates` propagation, identical- and empty-content confirmation, different-content rejection, and preservation of Undo evidence. Its synthetic DOM, upload, and ZIP fixtures are shared with [textFileCreator](../../test/textFileCreator.test.js). UI, Native, and persistence I/O use test doubles, so these tests do not establish acceptance of actual Chrome transport, server upload, or IndexedDB persistence.
+The relevant `undoMirrorInvalidation` harness replaces settlement with a success stub. `undoPersistenceFailure` connects runtime, Page Undo, review transition, and orchestrator, injecting exceptions into save callbacks to check invalidation registration, the next Undo waiting at the barrier, and absence of fabricated results after conflicts/exceptions. Editor, save, and Native I/O use test doubles.
+`writebackCancellationRecovery` connects client, journal, Page router/editor, orchestrator, Undo, and StorageDb projections. `assetTransferCancellation` checks mixed batches, binary status, project rejection, and Page-stage cleanup. Network behavior, real editors, and IndexedDB reload remain outside these substituted boundaries.
+`mirrorWorkspace` covers standalone binary-deletion reporting, supported assets, and generated-PDF filtering. `fileMovePipeline` connects real Native changes, existing deletion/asset confirmation, and Broker/Page writeback, checking rejection of old forward moves and no additional confirmation for ordinary creation. Historical reverse moves with evidence are covered by `fileMoveProtocol` and `fileMover`; external file-tree and API behavior use test doubles.
+`deletedFileUndo` begins with forward-operation recording and proceeds through deletion recovery and reload retry. `ordinaryUndoRouting` and `createdFileUndo` continue to cover ordinary text and creation combinations. These composed-module checks do not replace acceptance of the actual Overleaf file tree, server persistence, and browser reload.
+Each scope provides a basis for locating changes; actual server protocols, DOM, cancellation, and immediate refresh still require corresponding execution evidence.
 
-进一步缩小单个场景，可使用已经存在的测试名称，例如：
+To narrow a single scenario further, use existing test names, for example:
 
 ```sh
 node --test --test-name-pattern='ordinary Undo after reload' test/ordinaryUndoRouting.test.js
 node --test --test-name-pattern='lost final reply' test/writebackReceiptRecovery.test.js
 ```
 
-`ordinary Undo after reload` 覆盖先重载记录再执行 Undo；它不能独自证明“混合 Undo 完成后立即刷新”的结果。
-后者还涉及 Track 条件、延迟保存/确认保存、共享记录和按钮投影，需要完整的真实浏览器场景验证。
+`ordinary Undo after reload` covers reloading a record before executing Undo. Alone, it cannot establish the result of an immediate refresh after mixed Undo completes.
+The latter also involves Track conditions, delayed/confirmed saves, shared records, and button projections, requiring a complete real-browser scenario.
 
-**目标契约。** 每次修改须说明：原运行身份如何保留、哪项证据新增或失效、恢复账本何时推进，以及相关调用方是否同步更新。
-新增 Page RPC 或 page 模块还需检查 [pageBridgeClient](../../extension/src/content/pageBridgeClient.js) 的注入顺序、协议目录、handler 和扩展注册。
-最小浏览器验收样例为：根文件和嵌套文件编辑、一个新建文本、用户后续修改、一次部分 Undo、刷新后重试剩余部分。
-涉及网络或取消逻辑时，再补慢 ZIP、丢失最终响应和写到一半取消；结果分别记录，避免把静态阅读当作运行验收。
+**Target contract.** Every change must explain how original-run identity is retained, which evidence is added or invalidated, when the recovery ledger advances, and whether related callers are updated together.
+Adding Page RPCs or Page modules also requires checking [pageBridgeClient](../../extension/src/content/pageBridgeClient.js) injection order, the protocol catalog, handlers, and extension registration.
+A minimal browser acceptance scenario includes edits to a root file and a nested file, one new text file, later user edits, one partial Undo, and retrying the remainder after refresh.
+For network or cancellation logic, add a slow ZIP, a lost final response, and cancellation midway through writing. Record results separately so that static reading is not presented as runtime acceptance.

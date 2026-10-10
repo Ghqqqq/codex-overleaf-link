@@ -1,399 +1,399 @@
-# 模型连接、Provider 配置与协议适配
+# Model Connections, Provider Configuration, and Protocol Adaptation
 
-初始参考产品版本：`2.5.0`；初始参考基线：`2073ae74747431aab8d529803d4e9f8197262388`；正文随当前仓库维护。
-入口见 [系统总览](system-overview.md) 与 [功能索引](feature-map.md)；运行身份、队列见 [运行状态与恢复](run-state-and-recovery.md)。
-进程启动、app-server 生命周期、项目锁和退出屏障由 [Native 执行](native-execution.md) 说明。
+Initial reference product version: `2.5.0`; initial reference baseline: `2073ae74747431aab8d529803d4e9f8197262388`; the body is maintained with the current repository.
+Start with the [system overview](system-overview.md) and [feature map](feature-map.md); see [run state and recovery](run-state-and-recovery.md) for run identity and queues.
+[Native execution](native-execution.md) covers process startup, the app-server lifecycle, project locks, and exit barriers.
 
-## 1. 范围与概念
+## 1. Scope and Concepts
 
-**Current behavior** 表示能沿本页所列调用方核对的源码行为；**Target contract** 表示维护约束；**Known gap / 未验证** 表示有明确范围的实现差异或待验证条件。
-Provider 连接配置包括上游端点、协议、模型清单、能力声明和凭据引用；model ID 标识该服务下的一个模型。
-协议适配类似插头转换器：外侧分别连接 Responses、Chat Completions 或 Anthropic Messages，内侧向 Codex 提供 Responses 形状。
-字段名称相同只提供定位线索，是否真正生效必须检查最终请求构造与调用方。
+**Current behavior** means source behavior that can be checked through the callers listed on this page; **Target contract** means a maintenance constraint; **Known gap / Unverified** means an implementation difference or condition awaiting verification, with an explicit scope.
+A Provider connection configuration includes an upstream endpoint, protocol, model list, capability declarations, and credential references; a model ID identifies one model under that service.
+Protocol adaptation works like a plug adapter: its outer side connects to Responses, Chat Completions, or Anthropic Messages, while its inner side presents the Responses shape to Codex.
+Matching field names provide only a navigation clue; the final request construction and callers must be checked to establish whether a field actually takes effect.
 
-| 概念 | 当前含义 | 不应推导的结论 |
+| Concept | Current meaning | Conclusion that must not be inferred |
 |---|---|---|
-| Built-in Codex | 沿已有 Codex 配置、认证及模型发现路径执行，`providerLaunch=null`；配置继承见第 5 节 | 插件已固定其实际网络端点；任意自定义服务故障都自动改用 Built-in |
-| Custom Provider | 本地保存的端点和模型配置，经本地桥接入 Codex | 直接由面板实现独立 agent 引擎 |
-| `wireApiPreference` | `auto/responses/chat/anthropic` 的配置偏好 | Auto 表示任意失败都尝试全部协议 |
-| `resolvedWireApi` / model diagnostics | 对已测试连接指纹记下的协议结果 | 测试过一个模型即可证明该 Provider 全部模型可用 |
-| `upstreamResponseMode` | 模型级上游响应模式；普通请求可选择上游 SSE 或完整 JSON，客户端输出模式另行适配 | 无限缓冲、所有网关兼容或通用断流重试 |
-| Provider revision | 单份配置的版本身份 | 等同整个存储目录的版本 |
-| `storeRevision` | profiles、secrets 配套提交的存储版本 | 每次变化都会使旧排队任务的 Provider revision 失效 |
-| 模型能力声明 | reasoning、上下文、输入模态、并行工具等配置 | 已经向上游逐项实测认证的能力 |
+| Built-in Codex | Executes through the existing Codex configuration, authentication, and model discovery paths, with `providerLaunch=null`; configuration inheritance is covered in section 5 | The extension pins its actual network endpoint; every Custom service failure automatically switches to Built-in |
+| Custom Provider | Locally saved endpoint and model configuration connected to Codex through a local bridge | The panel directly implements an independent agent engine |
+| `wireApiPreference` | The configured preference `auto/responses/chat/anthropic` | Auto tries every protocol after any failure |
+| `resolvedWireApi` / model diagnostics | The protocol result recorded for a tested connection fingerprint | Testing one model proves that every model under that Provider is available |
+| `upstreamResponseMode` | Model-level upstream response mode; ordinary requests can select upstream SSE or complete JSON, with the client output mode adapted separately | Unlimited buffering, compatibility with every gateway, or generic interrupted-stream retries |
+| Provider revision | The version identity of one configuration | The version of the entire storage directory |
+| `storeRevision` | The storage version for a coordinated profiles/secrets commit | Every change invalidates the Provider revision of existing queued tasks |
+| Model capability declarations | Configuration for reasoning, context, input modalities, parallel tools, and related capabilities | Capabilities individually tested and certified against the upstream service |
 
-状态入口为 [providerProfiles.js](../../extension/src/shared/providerProfiles.js)、[providerProfile.js](../../native-host/src/providerProfile.js)、[providerStore.js](../../native-host/src/providerStore.js)。
-前者服务浏览器表单和目录投影，后两者承担 Native 侧归一化、校验和持久化；新增字段需核对两侧传播。
+The state entry points are [providerProfiles.js](../../extension/src/shared/providerProfiles.js), [providerProfile.js](../../native-host/src/providerProfile.js), and [providerStore.js](../../native-host/src/providerStore.js).
+The first serves browser forms and catalog projections; the latter two handle Native-side normalization, validation, and persistence. New fields require checking propagation on both sides.
 
-## 2. 调用关系与所有者
+## 2. Call Relationships and Owners
 
 ```mermaid
 flowchart TD
-  UI[ProviderSettingsDialog 表单] --> C[ProviderSettingsCoordinator]
-  C --> B[NativeChannel 与 background 路由]
+  UI[ProviderSettingsDialog form] --> C[ProviderSettingsCoordinator]
+  C --> B[NativeChannel and background routing]
   B --> R[ProviderRuntime]
-  R --> S[ProviderStore 配置和专用凭据]
-  R --> T[CodexProviderTest 临时工具兼容性测试]
-  RUN[contentRuntime 提交快照] --> TR[TaskRunnerRuntime]
+  R --> S[ProviderStore configuration and dedicated credentials]
+  R --> T[CodexProviderTest temporary tool compatibility test]
+  RUN[contentRuntime submission snapshot] --> TR[TaskRunnerRuntime]
   TR --> RP[resolveRunProviderForRun]
   RP --> S
-  RP -->|Auto 缺少有效诊断| T
+  RP -->|Auto lacks valid diagnostics| T
   RP --> L[createProviderLaunch]
   L --> P[prepareProviderLaunch]
-  P --> CAT[临时 Codex model catalog]
-  P --> BR[本地 Responses 接口与随机 token]
+  P --> CAT[Temporary Codex model catalog]
+  P --> BR[Local Responses interface and random token]
   BR --> RR[Responses passthrough]
-  BR --> CH[Chat 请求和响应转换]
-  BR --> AN[Anthropic 请求和响应转换]
+  BR --> CH[Chat request and response conversion]
+  BR --> AN[Anthropic request and response conversion]
   CAT --> A[Codex app-server]
   A --> BR
 ```
 
-配置链：`ProviderSettingsDialog.handleClick/readContext → ProviderSettingsCoordinator.request → codex.providers.* → ProviderRuntime.handleProviderRequest`。
-源码位置：[providerSettingsDialog.js](../../extension/src/content/providerSettingsDialog.js)、[providerSettingsCoordinator.js](../../extension/src/content/providerSettingsCoordinator.js)、[providerRuntime.js](../../native-host/src/providerRuntime.js)。
-运行链：`TaskRunnerRuntime.handleCodexRun → resolveRunProviderForRun → createProviderLaunch → CodexSessionRunner → runCodexAppServerSession → prepareProviderLaunch`。
-源码位置：[taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js)、[codexSessionRunner.js](../../native-host/src/codexSessionRunner.js)、[codexProviderLaunch.js](../../native-host/src/codexProviderLaunch.js)。
-项目锁取得后才进行运行前 Provider 解析；Auto 协商也共享该运行的取消 signal，具体锁释放见 Native 执行专题。
+Configuration chain: `ProviderSettingsDialog.handleClick/readContext → ProviderSettingsCoordinator.request → codex.providers.* → ProviderRuntime.handleProviderRequest`.
+Source locations: [providerSettingsDialog.js](../../extension/src/content/providerSettingsDialog.js), [providerSettingsCoordinator.js](../../extension/src/content/providerSettingsCoordinator.js), and [providerRuntime.js](../../native-host/src/providerRuntime.js).
+Run chain: `TaskRunnerRuntime.handleCodexRun → resolveRunProviderForRun → createProviderLaunch → CodexSessionRunner → runCodexAppServerSession → prepareProviderLaunch`.
+Source locations: [taskRunnerRuntime.js](../../native-host/src/taskRunnerRuntime.js), [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js), and [codexProviderLaunch.js](../../native-host/src/codexProviderLaunch.js).
+Pre-run Provider resolution begins only after the project lock is acquired. Auto negotiation also shares the run's cancellation signal; lock release is detailed in the Native execution page.
 
-| 数据 | 权威 owner | 浏览器侧持有的内容 |
+| Data | Authoritative owner | Browser-side representation |
 |---|---|---|
-| Custom 配置及 profile revision | ProviderStore | 无专用 API key 的目录投影 |
-| Built-in 继承的连接配置 | 用户 Codex `config.toml`，经 `codexHome.copyUserCodexFile` 交给子进程 | Built-in 身份；未投影继承的端点或配置版本 |
-| 专用 API key | ProviderStore secrets | 输入期间的表单值与短期 request payload |
-| 当前项目选择 | ProjectProviderSelection 与项目状态 | providerId/revision、model、reasoning、speed |
-| 已提交运行选择 | RunExecutionSnapshot | 固定的执行身份及设置，无 Provider API key |
-| 本地桥 token、请求 history | 本次 prepared bridge | 不通过模型目录返回 |
-| 连接测试进度 | ProviderRuntime 的 operationId 与 activeTests | 对应弹窗的短期状态 |
+| Custom configuration and profile revision | ProviderStore | Catalog projection without the dedicated API key |
+| Connection configuration inherited by Built-in | The user's Codex `config.toml`, passed to the child process through `codexHome.copyUserCodexFile` | Built-in identity; the inherited endpoint and configuration version are not projected |
+| Dedicated API key | ProviderStore secrets | Form value during input and a short-lived request payload |
+| Current project selection | ProjectProviderSelection and project state | providerId/revision, model, reasoning, speed |
+| Submitted run selection | RunExecutionSnapshot | Fixed execution identity and settings, without the Provider API key |
+| Local bridge token and request history | The current prepared bridge | Not returned through the model catalog |
+| Connection test progress | ProviderRuntime's operationId and activeTests | Short-lived state for the corresponding dialog |
 
-## 3. 模型配置、发现与运行身份
+## 3. Model Configuration, Discovery, and Run Identity
 
-### 3.1 两类模型目录
+### 3.1 Two Types of Model Catalog
 
-`ModelPicker.loadModelOptions` 发送 `codex.models`，同时捕获 modelLoadGeneration 和 Provider 选择。
-返回时校验 generation、Provider ID 和自定义 Provider revision，过期结果不能替换当前选择。
-revision 比较只用于成功响应；当前请求的错误响应即使没有 result/revision，仍进入不可用与错误展示。过期 generation 或另一 Provider 的响应继续被丢弃。
-入口为 [modelPicker.js](../../extension/src/content/modelPicker.js) 与 [modelPickerSupport.js](../../extension/src/content/modelPickerSupport.js)。
-Native 的 `resolveProviderModels` 对 Built-in 调用 `resolveCodexModels`，依次读取候选 `models_cache.json`，无可用缓存才返回内建 fallback。
-缓存位置优先级由 [codexModels.js](../../native-host/src/codexModels.js) 的 `getModelsCacheCandidates` 管理；当前发现链不主动向服务商拉取实时模型列表。
-Custom 目录来自已保存 `profile.models`，附 reasoning 控件能力、Provider revision 和 standard speed；未调用上游 `/models` 枚举全部模型。
-本地桥的 `/models` 响应也仅描述当前 launch 模型，不能当作服务商的模型发现 API。
-自定义目录为空、错误或无法归一化时，面板显示不可用；Built-in fallback 有明确 guard，不能用于掩盖自定义连接失败。
+`ModelPicker.loadModelOptions` sends `codex.models` while capturing modelLoadGeneration and the Provider selection.
+On return, it validates the generation, Provider ID, and Custom Provider revision; stale results cannot replace the current selection.
+Revision comparison applies only to successful responses. An error for the current request still enters the unavailable/error display path even without result/revision. Responses from a stale generation or another Provider continue to be discarded.
+The entry points are [modelPicker.js](../../extension/src/content/modelPicker.js) and [modelPickerSupport.js](../../extension/src/content/modelPickerSupport.js).
+For Built-in, Native's `resolveProviderModels` calls `resolveCodexModels`, reads candidate `models_cache.json` files in order, and returns the built-in fallback only when no usable cache exists.
+Cache location priority is managed by `getModelsCacheCandidates` in [codexModels.js](../../native-host/src/codexModels.js); the current discovery chain does not actively fetch a live model list from the service provider.
+The Custom catalog comes from saved `profile.models`, with reasoning-control capabilities, the Provider revision, and standard speed. It does not call upstream `/models` to enumerate every model.
+The local bridge's `/models` response also describes only the current launch model and must not be treated as the service provider's model discovery API.
+If the Custom catalog is empty, fails, or cannot be normalized, the panel shows it as unavailable. Built-in fallback has an explicit guard and cannot mask a Custom connection failure.
 
-### 3.2 配置版本与执行快照
+### 3.2 Configuration Versions and Execution Snapshots
 
-Provider 执行选择可表示为 \(P=(providerId,providerRevision,modelId,reasoningEffort,speedTier)\)，完整提交快照另含 mode、Track 等字段。
-浏览器提交和队列校验之外，`resolveRunProvider` 对 Custom 再次核验配置存在、revision 相等、模型已配置及端点披露仍有效；Built-in 提前返回，其继承配置的边界见第 5 节。
-若 Native 默认服务为 Custom，却缺少来自页面的明确 providerSelection，会返回 `provider_selection_unavailable`。
-端点披露同时比较 hostname 与规范化 baseUrl；只保留相同域名不足以放行改变后的路径。
-这些检查核验提交选择与当前保存配置的身份；它们并不保存任意历史版本供旧队列恢复，版本变化后旧任务可被拒绝。
-端点披露比较配置字符串，未建立重定向目的地或 DNS 解析地址固定保证，网络边界见第 8 节。
-项目切换行为及不可变队列快照见 [运行状态与恢复](run-state-and-recovery.md)。
+The Provider execution selection can be expressed as \(P=(providerId,providerRevision,modelId,reasoningEffort,speedTier)\); the full submission snapshot also includes fields such as mode and Track.
+Beyond browser submission and queue validation, `resolveRunProvider` rechecks that a Custom configuration exists, its revision matches, the model is configured, and endpoint disclosure remains valid. Built-in returns early; the boundary of its inherited configuration is covered in section 5.
+If the Native default service is Custom but the page supplies no explicit providerSelection, it returns `provider_selection_unavailable`.
+Endpoint disclosure compares both hostname and normalized baseUrl; retaining the same domain alone does not authorize a changed path.
+These checks compare the identity of the submitted selection with the currently saved configuration. They do not retain arbitrary historical versions for old queues to recover; a version change can cause an old task to be rejected.
+Endpoint disclosure compares configuration strings and does not pin redirect destinations or DNS resolution addresses. Network boundaries are covered in section 8.
+See [run state and recovery](run-state-and-recovery.md) for project switching and immutable queue snapshots.
 
-| 操作 | profile revision | storeRevision | 配置与运行影响 |
+| Operation | profile revision | storeRevision | Effect on configuration and runs |
 |---|---|---|---|
-| 新建/保存 `upsertProvider` | 新增或递增 | 递增 | 校验 expectedRevision；重算诊断指纹 |
-| Use 已存 Custom `activateProvider` | 递增 | 递增 | 保存披露，更新 Native activeProviderId |
-| Use Built-in | Built-in 保持 0 | 递增 | 切换 Native 默认项 |
-| Clear API key | 递增 | 递增 | 清除诊断；若为 Native 默认项则回退 Built-in，项目选择另见第 4 节 |
-| 成功记录匹配模型诊断 | 保持 | 递增 | 更新协议、响应模式与验证时间 |
-| 删除 | 记录移除 | 递增 | 删除专用凭据；Native 默认项可回退 Built-in，项目配置缺失后另走选择回退 |
+| Create/save with `upsertProvider` | Created or incremented | Incremented | Validates expectedRevision; recomputes the diagnostic fingerprint |
+| Use saved Custom with `activateProvider` | Incremented | Incremented | Saves disclosure and updates Native activeProviderId |
+| Use Built-in | Built-in remains 0 | Incremented | Switches the Native default |
+| Clear API key | Incremented | Incremented | Clears diagnostics; falls back to Built-in if this is the Native default; project selection is covered separately in section 4 |
+| Successfully record matching model diagnostics | Unchanged | Incremented | Updates the protocol, response mode, and verification time |
+| Delete | Record removed | Incremented | Deletes the dedicated credential; the Native default can fall back to Built-in, while a missing project configuration takes a separate selection-fallback path |
 
-`recordProviderDiagnostic` 只在 profile revision、已保存 model ID、connectionFingerprint 均匹配时记录。
-未保存的模型可以测试成功，但该诊断不会因此被写入旧 profile；表单随后 Save 可携带匹配诊断。
-**维护目标**：两种 revision 的语义保持独立；运行前 Auto 探测不得仅因写入诊断而破坏刚捕获的配置身份。
+`recordProviderDiagnostic` records a result only when the profile revision, saved model ID, and connectionFingerprint all match.
+An unsaved model can pass a test, but this does not write its diagnostics into the old profile; a subsequent form Save can carry matching diagnostics.
+**Target contract**: keep the two revision semantics separate. Writing diagnostics during pre-run Auto probing must not invalidate the configuration identity just captured.
 
-### 3.3 能力声明的归一化与取值
+### 3.3 Capability Normalization and Value Selection
 
-能力从表单到 Codex 目录要经过归一化及 launch 取值；模型字段省略后可能已被补为具体值，不能统一解释为继承 Provider。
-权威入口为 [providerProfile.js](../../native-host/src/providerProfile.js) 的 `normalizeModels/normalizeProviderDraft`、[codexProviderLaunch.js](../../native-host/src/codexProviderLaunch.js) 的 `createProviderLaunch` 和 [providerModelCatalog.js](../../native-host/src/providerModelCatalog.js) 的 `buildModelEntry`。
+Capabilities pass through normalization and launch value selection between the form and the Codex catalog. Omitted model fields may already have been filled with concrete values, so omission cannot uniformly mean inheritance from the Provider.
+The authoritative entry points are `normalizeModels/normalizeProviderDraft` in [providerProfile.js](../../native-host/src/providerProfile.js), `createProviderLaunch` in [codexProviderLaunch.js](../../native-host/src/codexProviderLaunch.js), and `buildModelEntry` in [providerModelCatalog.js](../../native-host/src/providerModelCatalog.js).
 
-| 字段 | 模型字段省略后的 Native 值 | 正常 profile → launch/目录的取值 |
+| Field | Native value when the model field is omitted | Value selection in the normal profile → launch/catalog path |
 |---|---|---|
-| contextWindow | 262144 | 模型值先于 Provider 值；归一化后的默认值会遮蔽 Provider 上下文配置 |
-| inputModalities | `['text']` | 模型数组先于 Provider 数组；默认文本数组会遮蔽 Provider 的 image 声明 |
-| supportsParallelToolCalls | false | 使用模型值 `??` Provider 值；false 已是有效值，会遮蔽 Provider 的 true |
-| reasoningAdapter / reasoningCapability | 空字符串 | 模型非空值优先，否则采用 Provider 值；后续 auto 识别见 6.2 节 |
-| reasoningEfforts | 空数组 | 控件由 `getReasoningControl` 解析；launch 优先模型显式列表，否则使用本次选定 effort（若有），目录仍须核对 `normalizeEfforts` |
-| supportsStreamOptions | 无模型级配置 | launch 读取 Provider 布尔值；Chat 请求据此决定 stream_options |
-| maxOutputTokens | null | 模型有效值优先，否则采用 Provider 值；归一化与请求预算例外见 6.3 节 |
+| contextWindow | 262144 | The model value takes precedence over the Provider value; the normalized default masks the Provider context configuration |
+| inputModalities | `['text']` | The model array takes precedence over the Provider array; the default text array masks the Provider's image declaration |
+| supportsParallelToolCalls | false | Uses the model value `??` the Provider value; false is already a valid value and masks the Provider's true |
+| reasoningAdapter / reasoningCapability | Empty string | A nonempty model value takes precedence; otherwise the Provider value is used; subsequent auto detection is covered in section 6.2 |
+| reasoningEfforts | Empty array | `getReasoningControl` resolves the control; launch prefers an explicit model list, otherwise the effort selected for this run, if any; catalog behavior also requires checking `normalizeEfforts` |
+| supportsStreamOptions | No model-level configuration | Launch reads the Provider boolean; the Chat request uses it to decide stream_options |
+| maxOutputTokens | null | A valid model value takes precedence; otherwise the Provider value is used; normalization and request-budget exceptions are covered in section 6.3 |
 
-例如 Provider 声明 contextWindow=1000000、image 和并行工具，模型仅配置 ID，Native 归一化后该模型仍以 262144、text、false 进入 launch。
-这类似先给子配置填满默认值，再向父配置查找空位；默认值的生成位置决定继承是否还会发生。
-[providerReliability.test.js](../../test/providerReliability.test.js) 有默认上下文及直接构造模型目录的断言，但这两项不能证明 Provider 与模型配置冲突时的整条传播；测试装配范围见第 9 节。
+For example, if a Provider declares contextWindow=1000000, image, and parallel tools, while a model is configured with only an ID, Native normalization still sends that model into launch with 262144, text, and false.
+This resembles filling a child configuration with defaults before looking to its parent for empty slots; where defaults are generated determines whether inheritance can still occur.
+[providerReliability.test.js](../../test/providerReliability.test.js) contains assertions for the default context and directly constructed model catalogs, but these two checks do not prove the complete propagation chain when Provider and model configurations conflict. Test setup boundaries are covered in section 9.
 
-Speed 从 `ModelPicker` 经 `persistPanelInputs` 和运行快照进入 `params.speedTier`；Custom 目录当前只提供 standard。
-正式执行由 [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) 的 `normalizeSpeedTier/buildCodexAppServerArgs` 调用 [codexArgs.js](../../native-host/src/codexArgs.js) 的 `buildCodexSpeedArgs`：fast 生成 `--enable fast_mode -c service_tier="fast"`，其他输入归一为 standard 并生成 `--disable fast_mode`。
-该映射说明传给 Codex 的进程参数；参数存在不能证明远端支持该档位、实际采用该档位或适用某种费用规则。
+Speed travels from `ModelPicker` through `persistPanelInputs` and the run snapshot into `params.speedTier`; the Custom catalog currently offers only standard.
+During normal execution, `normalizeSpeedTier/buildCodexAppServerArgs` in [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) calls `buildCodexSpeedArgs` in [codexArgs.js](../../native-host/src/codexArgs.js): fast generates `--enable fast_mode -c service_tier="fast"`; other input is normalized to standard and generates `--disable fast_mode`.
+This mapping describes the process arguments sent to Codex. Their presence does not prove that the remote service supports or actually uses that tier, or that any particular pricing rule applies.
 
-### 3.4 快捷预设与协议切换
+### 3.4 Quick Presets and Protocol Switching
 
-[providerProfiles.js](../../extension/src/shared/providerProfiles.js) 的 `PROVIDER_CONNECTIONS/PROVIDER_PRESETS` 定义快捷入口，`buildPresetDraft` 生成尚未保存的草稿，不直接改变活动服务。
-[ProviderSettingsDialog.renderDetail](../../extension/src/content/providerSettingsDialog.js) 按配置身份显示状态：无持久 ID 的新草稿显示“尚未保存的模型服务配置”，已保存且被当前项目选用的配置显示使用状态，其余已保存配置显示保存状态；中英文切换保留原表单草稿。
-Kimi、GLM 和 DeepSeek 快捷入口默认采用 Anthropic Messages；端点、协议、authMode 和 reasoningAdapter 按预设填写，API key 与 model ID 仍需单独配置。
-[ProviderSettingsDialog.syncPresetProtocol](../../extension/src/content/providerSettingsDialog.js) 仅在 `fullEndpoint=false`、当前 URL 匹配已知预设且目标协议有对应地址时切换 URL。
-authMode 与 reasoningAdapter 只有在仍等于旧预设值时才跟随新协议更新，以保留手动覆盖；自定义地址、完整端点和没有对应地址的协议不获得这一联动。
-`handleInput` 检测到直接修改 baseUrl 或上述联动改变 URL 时，会取消端点披露勾选并刷新披露文字及操作按钮。
-仅改变协议且地址未变时不走该披露复位分支；`updatePresetConnectionHint` 可提示预设地址与协议不匹配，但提示不代替 Native 的配置校验。
+`PROVIDER_CONNECTIONS/PROVIDER_PRESETS` in [providerProfiles.js](../../extension/src/shared/providerProfiles.js) defines the quick entry points. `buildPresetDraft` generates an unsaved draft without directly changing the active service.
+[ProviderSettingsDialog.renderDetail](../../extension/src/content/providerSettingsDialog.js) displays status according to configuration identity: a new draft without a persistent ID shows “Unsaved provider profile”, a saved configuration selected by the current project shows its in-use status, and other saved configurations show their saved status. Switching between English and Chinese preserves the form draft.
+The Kimi, GLM, and DeepSeek quick entry points default to Anthropic Messages. The preset fills the endpoint, protocol, authMode, and reasoningAdapter; the API key and model ID still need separate configuration.
+[ProviderSettingsDialog.syncPresetProtocol](../../extension/src/content/providerSettingsDialog.js) switches the URL only when `fullEndpoint=false`, the current URL matches a known preset, and the target protocol has a corresponding address.
+authMode and reasoningAdapter follow the new protocol only while they still equal the old preset values, preserving manual overrides. Custom addresses, full endpoints, and protocols without a corresponding address do not receive this coordinated update.
+When `handleInput` detects a direct baseUrl edit or a URL change from this coordinated update, it clears the endpoint disclosure checkbox and refreshes the disclosure text and action buttons.
+Changing only the protocol without changing the address does not enter this disclosure-reset branch. `updatePresetConnectionHint` can indicate a preset address/protocol mismatch, but that hint does not replace Native configuration validation.
 
-## 4. Save、Test 与 Use
+## 4. Save, Test, and Use
 
-Save 调用 `codex.providers.upsert`，可在未测试时保存；普通 Save 不等价于把当前项目切换到该服务。
-Save & Use 同一次 upsert 请求带 activate，并要求当前项目和端点披露；后续仍需成功投影到项目选择。
-Use 针对已保存且可激活的配置；`prepareProviderActivation` 先要求当前项目，必要时确认项目服务切换，再加载模型目录；准备成功后调用 Native activate。
-Native 成功后 `notifyChanged/reconcileProviderSelection` 更新项目、会话默认值和模型控件；requireProjection 路径失败时显示失败，不能提前宣布 UI 已切换。
-允许切换时，同 ID revision 变化会使当前项目重新绑定，并清除旧 Codex thread 绑定；已有执行快照保留原值。
+Save calls `codex.providers.upsert` and can save without a test. An ordinary Save does not imply switching the current project to that service.
+Save & Use carries activate in the same upsert request and requires a current project and endpoint disclosure; successful projection into the project selection is still required afterward.
+Use applies to a saved, activatable configuration. `prepareProviderActivation` first requires a current project, confirms the project service switch if needed, and then loads the model catalog. After preparation succeeds, it calls Native activate.
+After Native succeeds, `notifyChanged/reconcileProviderSelection` updates the project, session defaults, and model controls. A failure on a requireProjection path displays failure; the UI must not announce the switch in advance.
+When switching is allowed, a revision change under the same ID rebinds the current project and clears the old Codex thread binding; existing execution snapshots retain their original values.
 
-运行中切换由 [ProjectProviderSelection.assertSwitchAllowed](../../extension/src/content/projectProviderSelection.js) 统一限制。Save & Use、Use、Use Built-in 和删除当前项目所选配置均复用该限制；确认或目录读取期间才开始运行，也会在后续模型投影及最终 `commit` 重新检查。
-普通 Save 可以保存配置，但活动运行期间不会借 revision 更新重置项目选择或线程；删除其他 Provider 仍可进行。后续空闲时调用既有 `syncSessionProvider`，协调器通过 `getSelectedProviderRevision` 比较项目已绑定 revision 与当前目录，完成目录读取后提交延期的新 revision 并清除旧线程；同 ID、同 revision 的普通刷新继续可用，没有新增轮询或运行结束即自动重绑的流程。若 Native 已完成配置变更、页面随后才发现新运行，最终项目提交仍拒绝，不能把页面守卫解释为跨进程事务回滚。
+[ProjectProviderSelection.assertSwitchAllowed](../../extension/src/content/projectProviderSelection.js) centrally restricts switching during a run. Save & Use, Use, Use Built-in, and deleting the current project's selected configuration all reuse this restriction. If a run starts during confirmation or catalog reading, subsequent model projection and the final `commit` check again.
+An ordinary Save can save configuration, but it will not use the revision update to reset the project selection or thread during an active run; deleting another Provider remains allowed. When the existing `syncSessionProvider` is called later while idle, the coordinator uses `getSelectedProviderRevision` to compare the project's bound revision with the current catalog. After catalog reading completes, it commits the deferred new revision and clears the old thread. Ordinary refresh under the same ID and revision remains available. No new polling or automatic rebinding immediately at run completion is introduced. If Native has already changed the configuration before the page notices a new run, the final project commit still refuses the switch; the page guard must not be interpreted as a cross-process transaction rollback.
 
-**Current behavior / 两处选择状态。** Native `activeProviderId` 是默认项，项目 `providerId/providerRevision` 是后续运行明确提交的选择。
-[providerStore.js](../../native-host/src/providerStore.js) 的 `clearProviderSecretUnlocked` 清除当前 Native 默认服务的密钥时，将默认项改为 Built-in，但保留该 Custom profile 并递增 revision。
-`upsertProviderUnlocked` 在修改当前默认服务端点后普通 Save 时，也会清空旧披露并将 Native 默认项回退 Built-in；Save & Use 另行保存新披露。
-[ProviderSettingsCoordinator.reconcileProviderSelection](../../extension/src/content/providerSettingsCoordinator.js) 优先保留仍存在的项目配置，不因 Native 默认项变化直接换服务；目录投影成功后，清密钥和上述普通 Save 均可使项目继续绑定原 Custom ID 的新 revision。
-`clearProviderSecret/saveProvider` 状态栏分别说明 Native 默认项回退和项目服务选择保持，避免把两处状态合成一次已完成的项目切换；实际提交仍以 `getRunSelection` 的 `providerSelection` 为准。
-端点修改后保留的 Custom 选择会在下一次 `resolveRunProvider` 中因缺少新披露被拒绝为 `provider_disclosure_required`；清密钥不会自动把该项目的新任务改投 Built-in。
-删除配置则使项目所选 ID 不再存在，协调器另走 Built-in 目录加载与项目提交；投影失败仍需保留其失败边界。运行中认证失败不触发自动改投。
+**Current behavior / Two selection states.** Native `activeProviderId` is the default; project `providerId/providerRevision` is the selection explicitly submitted by subsequent runs.
+When `clearProviderSecretUnlocked` in [providerStore.js](../../native-host/src/providerStore.js) clears the key for the current Native default service, it changes the default to Built-in while retaining the Custom profile and incrementing its revision.
+For an ordinary Save after changing the current default service's endpoint, `upsertProviderUnlocked` also clears the old disclosure and falls back to Built-in as the Native default; Save & Use separately saves the new disclosure.
+[ProviderSettingsCoordinator.reconcileProviderSelection](../../extension/src/content/providerSettingsCoordinator.js) prioritizes retaining an existing project configuration and does not directly switch services because the Native default changes. After successful catalog projection, both clearing the key and the ordinary Save described above can keep the project bound to the new revision of its original Custom ID.
+The `clearProviderSecret/saveProvider` status messages separately describe the Native default fallback and the retained project service selection, avoiding conflating the two states into a completed project switch. Actual submission still follows `providerSelection` from `getRunSelection`.
+A Custom selection retained after an endpoint change is rejected by the next `resolveRunProvider` as `provider_disclosure_required` because the new disclosure is missing. Clearing the key does not automatically redirect that project's new tasks to Built-in.
+Deleting the configuration removes the project's selected ID; the coordinator then separately loads the Built-in catalog and commits the project selection. Projection failure retains its own failure boundary. Authentication failure during a run does not trigger an automatic switch.
 
-Test 使用当前草稿和 secretMutation，可测尚未保存的连接；专用密钥无需先写入正式 secrets 文件。
-测试入口为 [codexProviderTest.js](../../native-host/src/codexProviderTest.js) 的 `runProviderConnectionTest`。
-它准备协议桥，在临时 Codex home 与只读 workspace 中启动 `codex exec`，要求先读一个文件取得第二个文件名，再读取随机验证 token。
-成功条件含退出码、验证 token 和未泄漏工具控制标记；目标覆盖两轮工具调用及结果衔接。
-该测试与正式任务复用 Provider launch/桥，但正式任务使用 app-server 生命周期；测试成功不能证明所有编辑、图像、长流或续传都已兼容。
-测试目录清理和终止进程由测试模块处理，完整退出保证仍需进程证据。
+Test uses the current draft and secretMutation and can test an unsaved connection; the dedicated key need not first be written to the permanent secrets file.
+The test entry point is `runProviderConnectionTest` in [codexProviderTest.js](../../native-host/src/codexProviderTest.js).
+It prepares the protocol bridge, starts `codex exec` in a temporary Codex home and read-only workspace, and requires reading one file to obtain a second filename before reading a random verification token.
+Success conditions include the exit code, verification token, and absence of leaked tool control markers. The test targets two tool-call rounds and continuity of their results.
+The test shares Provider launch and bridges with normal tasks, but normal tasks use the app-server lifecycle. Test success does not establish compatibility with all editing, images, long streams, or continuation.
+The test module handles directory cleanup and process termination; a complete exit guarantee still requires process evidence.
 
-Auto 协商由 `ProviderRuntime.testProvider` 实现：Responses → Chat → Anthropic，只有 `provider_protocol_incompatible` 才进入下一协议。
-Chat 且响应模式 Auto 时先 streaming；只有工具不兼容或流式工具解析失败允许再试 buffered。
-认证、限流、DNS、TLS、模型不存在、普通参数拒绝和超时均有独立错误类别，不能统称协议不支持。
-尚未有有效模型诊断的 Auto 正式运行，经 `resolveRunProviderForRun` 做一次兼容性协商，再用原 selection 重新解析。
-若并发编辑使 revision 改变，诊断可能不写入，第二次解析仍可拒绝运行；一次测试通过不能绕过后续身份检查。
-取消测试按 operationId 查找 activeTests 并 abort 对应 controller，旧弹窗返回另由当前 operationId guard 丢弃。[codexProviderTest](../../native-host/src/codexProviderTest.js) 在入口、`prepareProviderLaunch` 返回后、进程入口及实际 spawn 前核验取消；Auto 协商也同步承接已取消的 externalSignal。
-准备期间取消后不会继续派发子进程，已准备的 bridge/catalog 在 `finally` 关闭；已启动进程按既有有界停止流程核对退出，再清理测试目录。测试从准备开始即由 [nativeHelperLifecycle](../../native-host/src/nativeHelperLifecycle.js) 登记 Host 断连收尾，普通运行的 Cancel 不因此扩大范围。
-[providerTestCancellation](../../test/providerTestCancellation.test.js) 覆盖真实 loopback 桥 listen 等待、入口预取消、Auto externalSignal 和正常对照；[nativeHelperShutdown](../../test/nativeHelperShutdown.test.js) 检查真实 Host 断连与 helper 停止。模型边界为合成进程，实际第三方服务及跨平台退出仍需对应环境证据。
+Auto negotiation is implemented by `ProviderRuntime.testProvider`: Responses → Chat → Anthropic, advancing to the next protocol only for `provider_protocol_incompatible`.
+For Chat with response mode Auto, it tries streaming first. Only tool incompatibility or streaming tool parsing failure permits a subsequent buffered attempt.
+Authentication, rate limiting, DNS, TLS, missing models, ordinary parameter rejection, and timeouts each have separate error categories; they must not all be classified as unsupported protocols.
+A normal Auto run without valid model diagnostics performs one compatibility negotiation through `resolveRunProviderForRun`, then resolves again using the original selection.
+If a concurrent edit changes the revision, diagnostics may not be recorded, and the second resolution can still reject the run. A successful test cannot bypass subsequent identity checks.
+Test cancellation finds activeTests by operationId and aborts its controller; the current operationId guard separately discards results from old dialogs. [codexProviderTest](../../native-host/src/codexProviderTest.js) checks cancellation at entry, after `prepareProviderLaunch` returns, at process entry, and immediately before actual spawn. Auto negotiation also synchronously adopts an already-cancelled externalSignal.
+Cancellation during preparation prevents subsequent child-process dispatch, and the prepared bridge/catalog closes in `finally`. An already-started process follows the existing bounded stop flow, checking exit before cleaning the test directory. From the start of preparation, the test registers Host-disconnect cleanup with [nativeHelperLifecycle](../../native-host/src/nativeHelperLifecycle.js); this does not broaden the scope of Cancel for an ordinary run.
+[providerTestCancellation](../../test/providerTestCancellation.test.js) covers waiting for a real loopback bridge to listen, pre-cancelled entry, Auto externalSignal, and normal controls; [nativeHelperShutdown](../../test/nativeHelperShutdown.test.js) checks real Host disconnection and helper shutdown. The model boundary uses a synthetic process; actual third-party services and cross-platform exit still require evidence from the corresponding environment.
 
-## 5. 内建与自定义执行的共同边界
+## 5. Shared Boundaries of Built-in and Custom Execution
 
-两类服务都进入 Codex 的 agent、工具和线程执行路径；Custom 在 `prepareProviderLaunch` 中附加模型目录及本地协议桥。
+Both service types enter Codex's agent, tool, and thread execution paths; Custom adds a model catalog and a local protocol bridge in `prepareProviderLaunch`.
 
-**Built-in 的配置来源。** [providerRuntime.resolveRunProvider](../../native-host/src/providerRuntime.js) 对 Built-in 返回 `providerLaunch: null` 和 revision 0；[codexProviderLaunch.buildProviderConfigArgs](../../native-host/src/codexProviderLaunch.js) 随之返回空参数，不覆盖 Codex 的 `model_provider`。
-[codexHome.sanitizeCopiedCodexConfig](../../native-host/src/codexHome.js) 过滤用户 `config.toml` 时保留 `model_provider` 与 `[model_providers.*]`，关闭本地技能也不移除这些连接字段。实际 scope 由 [codexHomeScope](../../native-host/src/codexHomeScope.js) 发布同一次捕获的配置字节；其内部摘要只决定执行目录，不成为浏览器 Provider revision 或运行快照字段。[codexSessionRunner.runCodexAppServerProcess](../../native-host/src/codexSessionRunner.js) 把该 home 交给子进程，thread/start 与 thread/resume 的参数只指定本次 model、cwd、sandbox 等，未另行固定 Provider。
-因此 Built-in 的连接配置还受继承的 Codex 配置影响，插件的 Custom 端点披露及 profile revision 校验不覆盖这条来源。修改用户配置不会因此更新插件的 Built-in revision，固定的执行快照也不记录该配置的内容哈希。
-审计经 [contentRuntime.createAuditDraftForRun](../../extension/src/content/contentRuntime.js) 调用 [ProviderSettingsCoordinator.getProviderSnapshot](../../extension/src/content/providerSettingsCoordinator.js)，读取浏览器目录中的 Built-in 身份，端点为空；该记录不能作为继承配置实际网络目的地或当前认证状态的证明。file API-key 的继承行为见下文，其他配置及认证路线仍需按实际 Codex 版本和消费者核对，保留连接字段本身不证明已发送任何内容。配置过滤的 TOML 形式限制另见[技能继承与作用域](writing-style-and-skills.md#普通技能安装继承与作用域)。
+**Built-in configuration sources.** [providerRuntime.resolveRunProvider](../../native-host/src/providerRuntime.js) returns `providerLaunch: null` and revision 0 for Built-in; [codexProviderLaunch.buildProviderConfigArgs](../../native-host/src/codexProviderLaunch.js) consequently returns empty arguments and does not override Codex's `model_provider`.
+When filtering the user's `config.toml`, [codexHome.sanitizeCopiedCodexConfig](../../native-host/src/codexHome.js) retains `model_provider` and `[model_providers.*]`; disabling local skills does not remove these connection fields. [codexHomeScope](../../native-host/src/codexHomeScope.js) publishes the configuration bytes from the same capture to the actual scope. Its internal digest determines only the execution directory and does not become a browser Provider revision or run-snapshot field. [codexSessionRunner.runCodexAppServerProcess](../../native-host/src/codexSessionRunner.js) passes that home to the child process. The thread/start and thread/resume arguments specify only the current model, cwd, sandbox, and related settings without separately pinning the Provider.
+Built-in connection configuration therefore also depends on inherited Codex configuration. The extension's Custom endpoint disclosure and profile-revision validation do not cover that source. Editing user configuration does not update the extension's Built-in revision, and the fixed execution snapshot does not record a content hash of that configuration.
+The audit flows through [contentRuntime.createAuditDraftForRun](../../extension/src/content/contentRuntime.js) to [ProviderSettingsCoordinator.getProviderSnapshot](../../extension/src/content/providerSettingsCoordinator.js), reading the Built-in identity from the browser catalog with an empty endpoint. That record cannot prove the inherited configuration's actual network destination or current authentication state. File API-key inheritance is described below; other configuration and authentication routes still require checking the actual Codex version and consumer. Retaining connection fields alone does not prove that any content has been sent. See [skill inheritance and scope](writing-style-and-skills.md#ordinary-skill-installation-inheritance-and-scope) for the TOML-form limitations of configuration filtering.
 
-**认证副本的生命周期。** 用户 home 与插件 home 分离时，[codexInheritedAuth](../../native-host/src/codexInheritedAuth.js) 为实际复制的 `auth.json` 记录源路径和内容 SHA-256 指纹。来源缺失时，只有来源匹配且内容仍为已知副本的文件可清理；已经独立改写的认证、来源不同的副本及没有来源记录的旧文件保持。基础准备的 samehome 旧调用继续提前返回；本地技能目录发现或显式本地名单采用[独立 canonical home](writing-style-and-skills.md#普通技能安装继承与作用域)，再沿分离目录同步认证。升级前已丢失来源的无标记残留不会被猜测删除。
-实际执行 scope 经 [codexHomeScope](../../native-host/src/codexHomeScope.js) 同步 user→canonical→scope 两级来源。staging 不发布直接 user 来源的认证，后续准备以 canonical 为一致来源清理或更新当前 scope；复用 scope 也执行认证同步。来源轮换后采用新副本，来源移除后不再把该已知旧副本交给后续启动。
-清理会原子认领自己的来源记录和候选文件；读后发生独立替换时，保留非匹配内容或后来的目标文件。恢复采用排他发布，必要时保留私有副本，I/O错误向上传播并阻止继续启动，不能静默改成无认证成功。来源记录和副本同步提供有限的文件继承一致性，不构成全局账号事务；`clearPluginCodexHistory()` 仍只负责历史。
+**Lifecycle of authentication copies.** When the user home and extension home are separate, [codexInheritedAuth](../../native-host/src/codexInheritedAuth.js) records the source path and content SHA-256 fingerprint for an `auth.json` file it actually copies. If the source disappears, only a file with a matching source whose content remains a known copy can be cleaned up. Independently rewritten authentication, copies from another source, and legacy files without source records are retained. The legacy samehome call in base preparation continues to return early; local skill catalog discovery or an explicit local allowlist uses an [independent canonical home](writing-style-and-skills.md#ordinary-skill-installation-inheritance-and-scope), then synchronizes authentication through the separated directories. Untagged remnants whose source was already lost before upgrading are not deleted by guesswork.
+The actual execution scope synchronizes the two source levels user→canonical→scope through [codexHomeScope](../../native-host/src/codexHomeScope.js). Staging does not publish authentication whose direct source is user. Subsequent preparation uses canonical as the consistent source to clean up or update the current scope; reusing a scope also synchronizes authentication. A source rotation supplies a new copy, while source removal stops the known old copy from being passed to subsequent launches.
+Cleanup atomically claims its own source record and candidate file. If an independent replacement occurs after reading, nonmatching content or a later target file is retained. Recovery uses exclusive publication and retains a private copy when needed. I/O errors propagate upward and block startup; they cannot silently become unauthenticated success. Source records and copy synchronization provide limited file-inheritance consistency, not a global account transaction; `clearPluginCodexHistory()` continues to handle history only.
 
-**file API-key 消费范围。** `cli_auth_credentials_store="file"` 下，消费者从准备后的 `CODEX_HOME` 读取认证。[codexInheritedAuth](../../test/codexInheritedAuth.test.js) 与 [codexHomeScope](../../test/codexHomeScope.test.js) 覆盖来源移除、轮换、独立/无标记副本和交错发布；实际 CLI 的 login status、account/read 及请求头需要分别核对。macOS Codex CLI 0.160.0 的隔离消费者可验证已知来源移除后的未认证状态及独立认证保留；本机合成端点的接收结果不证明真实服务接受该 key。
-本地选择凭据、请求携带凭据和服务端接受凭据分别判断。ChatGPT/OAuth 刷新、`keyring/auto/ephemeral`、长驻 daemon 缓存及其他平台仍需对应验证；本机制不提供服务端撤销或跨应用统一注销。
+**File API-key consumer scope.** With `cli_auth_credentials_store="file"`, the consumer reads authentication from the prepared `CODEX_HOME`. [codexInheritedAuth](../../test/codexInheritedAuth.test.js) and [codexHomeScope](../../test/codexHomeScope.test.js) cover source removal, rotation, independent/untagged copies, and interleaved publication. The actual CLI's login status, account/read, and request headers require separate checks. Isolated consumers of macOS Codex CLI 0.160.0 can verify an unauthenticated state after removal of a known source and retention of independent authentication; receipt by a local synthetic endpoint does not prove that a real service accepts the key.
+Local credential selection, carrying credentials in a request, and server acceptance of credentials are assessed separately. ChatGPT/OAuth refresh, `keyring/auto/ephemeral`, long-lived daemon caches, and other platforms still require corresponding verification. This mechanism does not provide server-side revocation or unified logout across applications.
 
-**Custom 的 prepared launch。**
-`providerModelCatalog.prepareProviderModelCatalog` 写临时 `models.json`，定义 shell_command、上下文窗口、reasoning 和输入模态等 Codex 可见能力。
-目录文件使用 0600，prepared close 删除临时目录；配置值进入目录不能解释为服务商能力已被检测。
-源码见 [providerModelCatalog.js](../../native-host/src/providerModelCatalog.js)。
-Custom 的真实 API key 保留在上游 bridge launch 内存；传给 Codex 的 prepared launch 改为本地 URL、Responses wire API 与随机 bridge token。
-`buildProviderConfigArgs` 给 Codex 配置 `env_key=CODEX_OVERLEAF_PROVIDER_API_KEY`；正式 prepared 链中该环境值为本地 token。
-此函数本身也能接受未 prepared launch，检查凭据边界必须连同调用者，不能单看命令构造器。
-本地 HTTP server 绑定 `127.0.0.1`，请求需带随机 bearer token；关闭时 abort 活动上游请求并清除 history。
-`applyProviderEnvironment` 对本地地址加入 NO_PROXY，避免 loopback 请求被系统代理改道；它保留其他调用者环境规则。
-现有 app-server 会话包装在 finally 调用 prepared.close；连接测试也有对应 finally。
+**The Custom prepared launch.**
+`providerModelCatalog.prepareProviderModelCatalog` writes a temporary `models.json`, defining Codex-visible capabilities such as shell_command, context window, reasoning, and input modalities.
+The catalog file uses 0600, and prepared close deletes its temporary directory. A configuration value appearing in the catalog does not mean the service provider's capability has been detected.
+See [providerModelCatalog.js](../../native-host/src/providerModelCatalog.js) for the implementation.
+The real Custom API key stays in the upstream bridge launch's memory. The prepared launch passed to Codex substitutes a local URL, the Responses wire API, and a random bridge token.
+`buildProviderConfigArgs` configures Codex with `env_key=CODEX_OVERLEAF_PROVIDER_API_KEY`; in the normal prepared chain, this environment value is the local token.
+The function itself can also accept an unprepared launch. Credential boundaries therefore require checking callers along with the command builder.
+The local HTTP server binds to `127.0.0.1` and requires a random bearer token. Closing it aborts active upstream requests and clears history.
+`applyProviderEnvironment` adds the local address to NO_PROXY to prevent system proxies from rerouting loopback requests; it preserves the caller's other environment rules.
+The existing app-server session wrapper calls prepared.close in finally; connection tests have their corresponding finally block.
 
-## 6. 三种协议如何转换
+## 6. How the Three Protocols Are Converted
 
-共同路由分类由 [providerBridgeRoutes.js](../../native-host/src/providerBridgeRoutes.js) 的 `classifyResponsesRoute` 管理。
-三桥均接受 Responses 与 Responses Compact 的 POST 路径；“接受路径”与提供相同原生 compact 语义需要分别核对。
-`fullEndpoint` 决定是否继续拼接协议端点；queryParams、authMode 和 customHeaders 由各桥构造上游 URL/header。
-认证支持 bearer、x-api-key、api-key、自定义 header 与 none；专用 API key 控件提供具体值。
+Shared route classification is managed by `classifyResponsesRoute` in [providerBridgeRoutes.js](../../native-host/src/providerBridgeRoutes.js).
+All three bridges accept the POST paths for Responses and Responses Compact. Accepting a path and providing identical native compact semantics require separate checks.
+`fullEndpoint` determines whether a protocol endpoint is appended; each bridge constructs its upstream URL/headers from queryParams, authMode, and customHeaders.
+Authentication supports bearer, x-api-key, api-key, custom headers, and none; the dedicated API key control supplies the value.
 
-| 桥 | 请求转换与消费符号 | 输出与限制 |
+| Bridge | Request conversion and consumer symbols | Output and limitations |
 |---|---|---|
-| Responses | `prepareResponsesRequest/buildResponsesUrl` | 普通请求保持 Responses 形状；compact 检查 JSON 诊断，支持范围内的正常响应保留原字节 |
-| Chat | `buildChatRequest`、`appendResponsesInput`、`translateTools` | messages/tool_calls 转 Responses items，保留工具身份和结果 |
-| Anthropic | `buildAnthropicRequest/buildToolContext` | system、tool_use/tool_result、thinking 转 Responses items |
+| Responses | `prepareResponsesRequest/buildResponsesUrl` | Ordinary requests retain the Responses shape; compact checks JSON diagnostics and preserves the original bytes of normal responses within the supported scope |
+| Chat | `buildChatRequest`, `appendResponsesInput`, `translateTools` | Converts messages/tool_calls to Responses items, retaining tool identities and results |
+| Anthropic | `buildAnthropicRequest/buildToolContext` | Converts system, tool_use/tool_result, and thinking to Responses items |
 
-实现链接：[responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js)、[chatCompletionsBridge.js](../../native-host/src/chatCompletionsBridge.js)、[anthropicMessagesBridge.js](../../native-host/src/anthropicMessagesBridge.js)。
-转换规则链接：[chatBridgeRequest.js](../../native-host/src/chatBridgeRequest.js)、[chatBridgeResponse.js](../../native-host/src/chatBridgeResponse.js)、[anthropicBridgeRequest.js](../../native-host/src/anthropicBridgeRequest.js)、[anthropicBridgeResponse.js](../../native-host/src/anthropicBridgeResponse.js)。
-共同 HTTP 入口为 [providerHttp.js](../../native-host/src/providerHttp.js)：`fetchProvider` 管理逐跳重定向，`readProviderText/readProviderJson` 为普通正文读取报告活动；凭据边界与计时消费分别见第 8 节和第 7 节。
+Implementation links: [responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js), [chatCompletionsBridge.js](../../native-host/src/chatCompletionsBridge.js), and [anthropicMessagesBridge.js](../../native-host/src/anthropicMessagesBridge.js).
+Conversion rule links: [chatBridgeRequest.js](../../native-host/src/chatBridgeRequest.js), [chatBridgeResponse.js](../../native-host/src/chatBridgeResponse.js), [anthropicBridgeRequest.js](../../native-host/src/anthropicBridgeRequest.js), and [anthropicBridgeResponse.js](../../native-host/src/anthropicBridgeResponse.js).
+The shared HTTP entry point is [providerHttp.js](../../native-host/src/providerHttp.js): `fetchProvider` manages redirects hop by hop, while `readProviderText/readProviderJson` reports activity when reading ordinary bodies. Credential boundaries and timing consumers are covered in sections 8 and 7, respectively.
 
-### 6.1 Streaming、buffered 与工具调用
+### 6.1 Streaming, Buffered Responses, and Tool Calls
 
-Streaming 按事件转发 SSE，Responses 桥在完整事件诊断检查后转发；buffered 先拿到完整 JSON，再转换成 Codex 期待的 SSE 或 JSON。传输方式不改变工具结果需要回接原 call ID 的要求。
-三种普通协议请求均同时检查 Codex `requestBody.stream` 和 `launch.upstreamResponseMode`：客户端关闭流式或配置 buffered 时，上游请求 `stream: false`；Auto/streaming 继续沿各自原协议路线处理。buffered 可规避部分网关流式工具标记解析问题，不表示所有网关均已验证。
-Chat 响应根据真实 content-type 选择 SSE parser 或 JSON 转换器；流式终止信号可来自 finish_reason，不必一直等待 socket 关闭。
-工具参数 delta 累积后产生完整调用；命名空间和 custom 工具名称通过转换上下文恢复，原始控制标记泄漏会报错。
-Anthropic 转换 tool_use/tool_result、文本、带签名 thinking，并处理 cache usage；无工具选择时省略工具声明。
-`encrypted_content` 中的 Anthropic thinking 由带前缀 Base64URL JSON 编码，字段名不能证明该内容经过本地加密。
+Streaming forwards SSE event by event; the Responses bridge forwards each event after checking its complete diagnostics. Buffered mode first obtains complete JSON and then converts it to the SSE or JSON Codex expects. The transport mode does not change the requirement to connect a tool result back to its original call ID.
+All three ordinary protocol request paths check both Codex `requestBody.stream` and `launch.upstreamResponseMode`: if the client disables streaming or the configuration selects buffered, the upstream request uses `stream: false`; Auto/streaming continue through their original protocol paths. Buffered mode can avoid some gateway parsing problems with streaming tool markers, but does not establish compatibility with every gateway.
+Chat responses choose the SSE parser or JSON converter according to the actual content-type; finish_reason can signal stream termination without waiting for the socket to close.
+Accumulated tool-argument deltas produce a complete call. The conversion context restores namespace and custom tool names, and leaked raw control markers cause an error.
+Anthropic converts tool_use/tool_result, text, and signed thinking, and handles cache usage; tool declarations are omitted when no tools are selected.
+Anthropic thinking in `encrypted_content` is encoded as prefixed Base64URL JSON. The field name does not prove local encryption of that content.
 
-上游返回完整 JSON 后，Anthropic 继续使用 `convertAnthropicResponse` 与已有 SSE 转换器服务流式客户端。Responses 在原协议诊断清洗之后，由 `writeBufferedResponseAsSse` 生成客户端所需事件：保留多段文本、reasoning summary、refusal、function/custom 调用及 call ID、encrypted_content、usage 和 completed/incomplete/failed 终态；JSON 客户端保持 JSON 返回。
-Responses 的 buffered SSE 适配拒绝非终态 JSON，避免把尚未完成的结果标为 completed；每个生成事件沿用 `MAX_STREAM_BUFFER_BYTES` 限制，超限事件不先行写出。该适配不提供工具 schema 或业务语义验证，既有工具参数检查范围见第 7 节。
-Chat 和 Anthropic 合并 bodyOverrides 后覆盖受控字段。Responses 普通与 compact 请求也合并允许的 `launch.bodyOverrides`，调用方请求字段优先；普通请求的 stream 与输出预算仍由受控规则决定，`previous_response_id` 只取当前请求，配置不能另造响应链。核心字段及敏感键拒绝仍由 `normalizeBodyOverrides` 执行。
-Chat/Anthropic 的 compact alias 仍走各自普通请求转换，Responses compact 则转发到上游对应路由；不能承诺三者压缩机制相同。
-Responses compact 合并配置后保留调用方请求形状，不注入普通请求的默认 stream 或输出预算；响应的 JSON 对象、容量及诊断检查见第 8 节。
+After the upstream returns complete JSON, Anthropic continues to serve streaming clients with `convertAnthropicResponse` and its existing SSE converter. After sanitizing native protocol diagnostics, Responses uses `writeBufferedResponseAsSse` to generate the events its client needs, retaining multiple text segments, reasoning summary, refusal, function/custom calls and call IDs, encrypted_content, usage, and completed/incomplete/failed terminal states. JSON clients continue to receive JSON.
+The Responses buffered-to-SSE adapter rejects nonterminal JSON to avoid marking unfinished results as completed. Every generated event retains the `MAX_STREAM_BUFFER_BYTES` limit; an oversized event is not written before rejection. This adaptation does not validate tool schemas or business semantics; the scope of existing tool-argument checks is covered in section 7.
+Chat and Anthropic overwrite controlled fields after merging bodyOverrides. Responses ordinary and compact requests also merge allowed `launch.bodyOverrides`, with caller request fields taking precedence. Controlled rules still determine stream and output budgets for ordinary requests, and `previous_response_id` comes only from the current request; configuration cannot create a separate response chain. `normalizeBodyOverrides` continues to reject core fields and sensitive keys.
+The Chat/Anthropic compact aliases continue through their ordinary request converters, while Responses compact forwards to the corresponding upstream route. Identical compression mechanisms cannot be promised across all three.
+After merging configuration, Responses compact retains the caller's request shape without injecting the default stream or output budget used by ordinary requests. JSON-object, capacity, and diagnostic checks on its response are covered in section 8.
 
-### 6.2 Reasoning 能力
+### 6.2 Reasoning Capabilities
 
-[providerReasoning.js](../../native-host/src/providerReasoning.js) 的 `getReasoningControl` 决定 effort、toggle 或 none 的呈现。
-模型级配置可覆盖 Provider 配置；auto 会参考端点/模型识别适配器，无法识别时按声明或 none 处理。
-`resolveRunProvider` 将不支持的请求 effort 归到该模型默认值，实际发出的 effort 需以解析结果和 launch 为准。
-Chat `applyReasoningControl` 将选择映射成 reasoning_effort、thinking、enable_thinking、reasoning 或 reasoning_split。
-捕获的 launch.reasoningEffort 优先于 Codex 请求中的默认值，显式 none 也具有关闭含义。
-Anthropic `applyAnthropicThinking` 支持 adaptive 与预算方式，budget 受 max_tokens 约束，可写为 \(b=\min(b_{effort},\lfloor T/2\rfloor,T-1)\)。
-预算不足最低门槛时不启用 thinking；签名/预算导致的 HTTP 400 可能进入一次 `rectifyAnthropicRequestForRetry` 修正。
-签名修正可移除失效 thinking；预算修正保留既有 `budget_tokens: 32000`，仅当原 `max_tokens` 至少为 64000 时重试，且不改变该输出上限。较小上限无法采用这条兼容修正时，沿已有 `provider_upstream_error` 路径返回原 HTTP 400；不会自动选择另一套 thinking 预算。
-supportsParallelToolCalls、supportsStreamOptions 等字段也有具体 adapter 消费范围；应逐协议检查，避免仅调整表单即宣布生效。
+`getReasoningControl` in [providerReasoning.js](../../native-host/src/providerReasoning.js) selects the effort, toggle, or none presentation.
+Model-level configuration can override Provider configuration. Auto uses the endpoint/model to identify an adapter; if identification fails, it follows the declaration or none.
+`resolveRunProvider` maps an unsupported requested effort to the model's default. The actual effort sent must be established from the resolution result and launch.
+Chat's `applyReasoningControl` maps the selection to reasoning_effort, thinking, enable_thinking, reasoning, or reasoning_split.
+The captured launch.reasoningEffort takes precedence over defaults in the Codex request; an explicit none also means disabling reasoning.
+Anthropic's `applyAnthropicThinking` supports adaptive and budget modes. The budget is constrained by max_tokens and can be written as \(b=\min(b_{effort},\lfloor T/2\rfloor,T-1)\).
+Thinking is not enabled below the minimum budget threshold. An HTTP 400 caused by a signature or budget may enter one corrective `rectifyAnthropicRequestForRetry` attempt.
+Signature correction can remove invalid thinking. Budget correction retains the existing `budget_tokens: 32000` and retries only when the original `max_tokens` is at least 64000, without changing that output cap. When a smaller cap cannot support this compatibility correction, the existing `provider_upstream_error` path returns the original HTTP 400; it does not automatically select another thinking budget.
+Fields such as supportsParallelToolCalls and supportsStreamOptions also have specific adapter consumer scopes. Check each protocol before treating a form change as effective.
 
-### 6.3 输出预算的迁移、优先级与上限
+### 6.3 Output Budget Migration, Precedence, and Caps
 
-输出预算限制单次模型响应的 token 数量，与第 7 节按毫秒计算的请求时间预算分别处理。
-[providerProfile.js](../../native-host/src/providerProfile.js) 的 Provider 级 `normalizeMaxOutputTokens` 在字段省略时默认 65536，有限值在 256–65536 范围内归一化；新显式输入的 8192、32768 原样保留。
-当前表单 `readContext`、`normalizeProviderDraft` 和公共目录 `sanitizeProfile` 使用内部 `outputBudgetVersion: 1` 标记已经按当前规则解释的数值；浏览器 [providerProfiles.js](../../extension/src/shared/providerProfiles.js) 保留该标记，重复归一化与再次保存不会重新迁移这些显式值。该字段没有独立用户控件，也不等同 profile revision。
-[providerStore.normalizeStoredProfile](../../native-host/src/providerStore.js) 只对未标记的历史记录保留 8192/32768→65536 的旧默认迁移。其运行时对象与原始存储快照仍分开：清密钥等无关修改保持原始旧值及来源，显式 upsert 才持久化当前标记；公共目录提供已解析数值。没有历史来源信息时，无法据数值恢复原使用者的选择意图。
-模型级 `normalizeModelOutputTokens` 则将空值保留为 null，其他值要求为 256–65536 的整数，8192、32768 可原样保留。
+The output budget limits the token count of a single model response and is handled separately from the request-time budgets measured in milliseconds in section 7.
+Provider-level `normalizeMaxOutputTokens` in [providerProfile.js](../../native-host/src/providerProfile.js) defaults to 65536 when the field is omitted and normalizes finite values within 256–65536. New explicit inputs of 8192 and 32768 are retained unchanged.
+The current form `readContext`, `normalizeProviderDraft`, and public catalog `sanitizeProfile` use the internal marker `outputBudgetVersion: 1` for values already interpreted under the current rules. Browser [providerProfiles.js](../../extension/src/shared/providerProfiles.js) preserves that marker; repeated normalization and saving do not remigrate these explicit values. The field has no separate user control and is distinct from profile revision.
+[providerStore.normalizeStoredProfile](../../native-host/src/providerStore.js) retains the legacy default migration 8192/32768→65536 only for unmarked historical records. Runtime objects remain separate from raw stored snapshots: unrelated changes such as clearing a key preserve the original old values and provenance, while explicit upsert persists the current marker. The public catalog supplies resolved values. Without historical provenance, the numeric value alone cannot recover the original user's intent.
+Model-level `normalizeModelOutputTokens` retains empty values as null and requires other values to be integers in 256–65536; 8192 and 32768 can remain unchanged.
 
-`createProviderLaunch` 优先采用模型有效值，再采用 Provider 值。正常 launch 总有正输出预算；Chat、Anthropic 和普通 Responses 的请求构造均优先采用该值，即使 Codex requestBody 请求了更小预算。
-相关消费符号为 [chatBridgeRequest.js](../../native-host/src/chatBridgeRequest.js) 的 `buildChatRequest`、[anthropicBridgeRequest.js](../../native-host/src/anthropicBridgeRequest.js) 的 `buildAnthropicRequest` 及 [responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js) 的 `prepareResponsesRequest/resolveMaxOutputTokens`；Responses compact 合并允许配置与原 body，不经过普通请求的输出预算覆盖；响应另经 `forwardCompactResponse` 检查。
-Chat 的 [providerReasoning.js](../../native-host/src/providerReasoning.js) `resolveReasoningMaxOutputTokens` 保持捕获的输出上限，DeepSeek 的 xhigh/max 只调整 reasoning 参数，不再抬升 `max_tokens`。例如模型配置4096并选择 max，普通请求仍发送4096。
-对于正常归一化的 launch，三种普通协议请求均采用 \(T_{wire}=T_{launch}\)；Anthropic 的既有 HTTP 400 修正同样不增加该值，不能在上限内执行时返回上游错误。界面的“Maximum output tokens”限定请求预算；实际生成长度、服务端是否接受该预算与计费仍分别取证。
-[providerWireSettings.test.js](../../test/providerWireSettings.test.js) 沿表单捕获、临时 Store 保存/重载、目录与 launch 检查新显式值及旧记录迁移；同时检查旧记录的无关清密钥修改和模型级覆盖。[providerReliability.test.js](../../test/providerReliability.test.js) 保留默认预算、旧未标记目录及 Chat launch 预算优先级的对照。
-[providerBoundaryGuards.test.js](../../test/providerBoundaryGuards.test.js) 沿真实 Store、launch 与 loopback 上游检查 DeepSeek reasoning 和 Anthropic 预算修正的最终请求、上限边界及拒绝后的错误清洗。
+`createProviderLaunch` prefers a valid model value, then the Provider value. A normal launch always has a positive output budget. Chat, Anthropic, and ordinary Responses request construction all prefer that value, even when Codex requestBody requests a smaller budget.
+The relevant consumer symbols are `buildChatRequest` in [chatBridgeRequest.js](../../native-host/src/chatBridgeRequest.js), `buildAnthropicRequest` in [anthropicBridgeRequest.js](../../native-host/src/anthropicBridgeRequest.js), and `prepareResponsesRequest/resolveMaxOutputTokens` in [responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js). Responses compact merges allowed configuration with the original body and bypasses the ordinary request's output-budget override; `forwardCompactResponse` checks its response separately.
+Chat's `resolveReasoningMaxOutputTokens` in [providerReasoning.js](../../native-host/src/providerReasoning.js) preserves the captured output cap. DeepSeek xhigh/max changes only reasoning parameters and no longer raises `max_tokens`. For example, a model configured with 4096 and max still sends 4096 in an ordinary request.
+For a normally normalized launch, all three ordinary protocol requests use \(T_{wire}=T_{launch}\). Anthropic's existing HTTP 400 correction likewise does not increase this value and returns an upstream error when it cannot execute within the cap. The UI's “Maximum output tokens” constrains the request budget; actual generation length, server acceptance of the budget, and billing each require separate evidence.
+[providerWireSettings.test.js](../../test/providerWireSettings.test.js) follows form capture, temporary Store save/reload, catalog, and launch to check new explicit values and migration of legacy records. It also checks unrelated key-clearing changes to legacy records and model-level overrides. [providerReliability.test.js](../../test/providerReliability.test.js) retains controls for the default budget, old unmarked catalogs, and Chat launch budget precedence.
+[providerBoundaryGuards.test.js](../../test/providerBoundaryGuards.test.js) follows a real Store, launch, and loopback upstream to check the final requests for DeepSeek reasoning and Anthropic budget correction, cap boundaries, and error sanitization after rejection.
 
-## 7. 续传、请求中断与超时
+## 7. Continuation, Request Interruption, and Timeouts
 
-### 7.1 三类续传策略
+### 7.1 Three Continuation Strategies
 
-Responses `rememberResponse/buildReplayInput` 保存有限 response lineage；输出上限或仅 reasoning 输出可标记 continuationRequired。
-下一次引用本地已记录且标记 `continuationRequired` 的 response ID 时，本地重建 input、移除 previous_response_id 并附加继续提示；重建祖先链时遇历史缺失、循环、预算超限或重复无进展会拒绝。
-直接引用的 ID 未命中本地 history 时，`prepareResponsesRequest` 保留 `previous_response_id` 交给上游原生处理，不在本地统一拒绝；桥重启或记录淘汰后的错误来源需区分这两条分支。
-Chat 保存按 response ID 关联的 messages；仅 reasoning 或无工具的部分回答可建立 fallback anchor 并附加继续提示，次数受限。
-Anthropic `buildAnthropicHistoryContinuation` 仅对 max_output_tokens 且没有 tool_use 的部分结果创建续传材料。
-带签名 thinking 保留结构，未签名片段的有限尾部放入继续提示；其他 incomplete reason 不由该函数自动续传。
-这些 history 均随桥存活；关闭桥、进程退出或记录淘汰后，不能依赖其完成跨启动恢复。
+Responses `rememberResponse/buildReplayInput` retains bounded response lineage. An output cap or reasoning-only output can set continuationRequired.
+When the next request references a locally recorded response ID marked `continuationRequired`, the bridge reconstructs input locally, removes previous_response_id, and appends continuation instructions. Reconstructing the ancestor chain rejects missing history, cycles, exceeded budgets, or repeated lack of progress.
+If the directly referenced ID is absent from local history, `prepareResponsesRequest` retains `previous_response_id` for native upstream handling, without uniformly rejecting it locally. Error sources after bridge restart or record eviction must distinguish these two branches.
+Chat stores messages associated with response IDs. Reasoning-only output or a partial answer without tools can establish a fallback anchor and append continuation instructions, with a bounded attempt count.
+Anthropic `buildAnthropicHistoryContinuation` creates continuation material only for a partial result with max_output_tokens and no tool_use.
+Signed thinking retains its structure; a bounded tail of unsigned fragments is placed in the continuation prompt. This function does not automatically continue other incomplete reasons.
+These histories live only as long as the bridge. They cannot be relied on for recovery across startup after bridge close, process exit, or record eviction.
 
-**同桥续传归属。** [Chat](../../native-host/src/chatCompletionsBridge.js) 和 [Anthropic](../../native-host/src/anthropicMessagesBridge.js) 的 `handleRequest` 优先采用 `previous_response_id` 命中的 history；history 同时保存该响应的 messages 与 `continuationAttempts`。lineage 指一条响应由哪些先前响应接续而来，类似档案中的前驱编号。
-history 未命中时，只有请求没有 `previous_response_id`，或该 ID 与 `continuationState.responseId` 相同，才允许采用整桥 `anchorMessages` 及其次数。显式引用另一未知 ID 时，不借用旧锚点或旧次数；返回原链时仍受原续传上限约束。无 ID 的兼容 fallback 保留，不能据显式 ID 隔离推定所有缺省请求均具有独立 lineage。
-上层 [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) 的 `runCodexAppServerSession` 每次调用都会准备桥，并在 finally 关闭它，限制了锚点的存活范围。
-[providerBoundaryGuards.test.js](../../test/providerBoundaryGuards.test.js) 通过同一真实桥和 loopback 上游验证未知、匹配、缺省 ID 及续传次数隔离；实际 Codex 如何生成这些请求组合仍需对应调用链验收。
+**Continuation ownership within a bridge.** `handleRequest` in [Chat](../../native-host/src/chatCompletionsBridge.js) and [Anthropic](../../native-host/src/anthropicMessagesBridge.js) first uses history matched by `previous_response_id`. History stores both that response's messages and its `continuationAttempts`. Lineage describes which earlier responses a response continues from, like predecessor identifiers in an archive.
+If history does not match, the bridge-wide `anchorMessages` and attempt count may be used only when the request omits `previous_response_id` or that ID equals `continuationState.responseId`. An explicit reference to another unknown ID does not borrow the old anchor or count. Returning to the original chain still observes that chain's original continuation cap. The no-ID compatibility fallback remains; explicit-ID isolation does not imply independent lineage for every request that omits an ID.
+The upper-layer `runCodexAppServerSession` in [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) prepares a bridge for each call and closes it in finally, limiting anchor lifetime.
+[providerBoundaryGuards.test.js](../../test/providerBoundaryGuards.test.js) verifies unknown, matching, and omitted IDs and continuation-count isolation through the same real bridge and loopback upstream. How actual Codex generates these request combinations still requires acceptance checks along the corresponding call chain.
 
-### 7.2 中断不等同自动重发
+### 7.2 Interruption Does Not Imply Automatic Resending
 
-[providerStreamLifecycle.js](../../native-host/src/providerStreamLifecycle.js) 管理 idle/total 计时和 AbortController。
-客户端连接关闭触发上游 abort；流消费入口调用 `touch` 才会重置 idle，total 不随流量延长。
-三桥的 SSE 消费沿各自 parser 逐块报告活动；普通 JSON 经 [providerHttp.readProviderText/readProviderJson](../../native-host/src/providerHttp.js) 逐块调用 `touch`，增量 UTF-8 解码后再解析完整正文。HTTP 错误正文读取同样报告活动；Responses compact 保留 `forwardCompactResponse` 的独立逐块读取。
-对应入口为 [Chat](../../native-host/src/chatCompletionsBridge.js) 和 [Anthropic](../../native-host/src/anthropicMessagesBridge.js) 的 `handleRequest` JSON 分支，以及 [Responses](../../native-host/src/responsesPassthroughBridge.js) 的 JSON 分支；`Codex stream=true → launch buffered → 上游 JSON` 也经过这些 reader，完整正文随后转换为客户端所需输出。
-因此 idle 截止点随最近正文活动推进，total 截止点始终由请求开始时间与总预算决定。普通 JSON reader 保留原 `.text()`/`.json()` 的容量语义，没有新增总字节上限；SSE 帧、compact、history 和后续转换仍各有自己的限制，逐块读取不能推导为无限资源保证。
-[providerJsonActivity.test.js](../../test/providerJsonActivity.test.js) 通过真实 loopback 分块、UTF-8 边界、静默、持续数据、客户端取消与 HTTP 错误检查计时及输出；测试只缩尺生产 lifecycle 的外部定时调度，不替代真实长时网络验收。
+[providerStreamLifecycle.js](../../native-host/src/providerStreamLifecycle.js) manages idle/total timing and AbortController.
+Client connection closure triggers upstream abort. Idle resets only when the stream consumer calls `touch`; traffic does not extend total.
+SSE consumers in all three bridges report activity chunk by chunk through their parsers. Ordinary JSON calls `touch` per chunk through [providerHttp.readProviderText/readProviderJson](../../native-host/src/providerHttp.js), incrementally decodes UTF-8, and then parses the complete body. HTTP error body reading also reports activity; Responses compact retains its independent chunked reader in `forwardCompactResponse`.
+The relevant entry points are the JSON branches of `handleRequest` in [Chat](../../native-host/src/chatCompletionsBridge.js) and [Anthropic](../../native-host/src/anthropicMessagesBridge.js), and the JSON branch in [Responses](../../native-host/src/responsesPassthroughBridge.js). `Codex stream=true → launch buffered → upstream JSON` also passes through these readers, with the complete body subsequently converted to the client's required output.
+The idle deadline therefore advances with the latest body activity, while the total deadline always derives from the request start time and total budget. Ordinary JSON readers retain the capacity semantics of the original `.text()`/`.json()` without adding a total byte limit. SSE frames, compact, history, and subsequent conversion retain their own limits; chunked reading does not establish an unlimited-resource guarantee.
+[providerJsonActivity.test.js](../../test/providerJsonActivity.test.js) checks timing and output through real loopback chunking, UTF-8 boundaries, silence, continuous data, client cancellation, and HTTP errors. It only scales down the external timer scheduling of the production lifecycle and does not replace real long-duration network acceptance.
 
-Chat/Anthropic 的异常恢复分支要求已有可恢复文本或 reasoning，且尚未出现任何工具调用，才可能生成 incomplete；已有工具时的异常断流仍失败。
-工具完成还需参数 JSON 语法完整：[chatBridgeResponse.js](../../native-host/src/chatBridgeResponse.js) 的 `completeTool/normalizeToolCalls` 在标 completed 或生成最终工具项前调用 `assertCompleteToolArguments`；[anthropicBridgeResponse.js](../../native-host/src/anthropicBridgeResponse.js) 的 `canonicalArguments` 解析失败直接报错，`closeBlock` 在标 closed/completed 前完成该检查，覆盖 `content_block_stop` 和 EOF。
-残缺参数返回固定的 `provider_response_invalid`，错误文案不回显参数正文，也不将解析失败改成空对象。正常无参调用、custom/namespace 映射及多工具按原路线处理；完整合法参数在普通 EOF 的兼容完成仍保留，不强制新增终止标记要求。
-JSON 语法通过只证明参数可解析，不证明满足工具 schema、业务含义正确或实际工具执行成功。[providerToolCompletion.test.js](../../test/providerToolCompletion.test.js) 通过真实 loopback 桥验证完成前的拒绝、正常调用和断流保护，未执行真实 Codex 工具。
-Responses SSE 转发没有同样的 partial-output 恢复转换入口，错误可能结束为 response.failed 或请求失败。
-Anthropic 对特定 HTTP 400 最多修正一次并重新 fetch；普通错误无通用自动重发保证。
-[background.js](../../extension/src/background.js) 的 `getNativeRetryClass` 对 codex.providers.* 和 codex.models 当前落到 no_silent_retry；UI 明确刷新与 Auto 协商属于各自业务流程。
+Chat/Anthropic exception-recovery branches may generate incomplete only when recoverable text or reasoning already exists and no tool call has appeared. An abnormal stream interruption with existing tools still fails.
+Tool completion also requires syntactically complete argument JSON: `completeTool/normalizeToolCalls` in [chatBridgeResponse.js](../../native-host/src/chatBridgeResponse.js) calls `assertCompleteToolArguments` before marking completed or generating final tool items. `canonicalArguments` in [anthropicBridgeResponse.js](../../native-host/src/anthropicBridgeResponse.js) throws immediately on parse failure, and `closeBlock` completes this check before marking closed/completed, covering `content_block_stop` and EOF.
+Incomplete arguments return the fixed `provider_response_invalid`; error text neither echoes the argument body nor replaces parse failure with an empty object. Normal calls without arguments, custom/namespace mappings, and multiple tools follow their original paths. Compatibility completion at ordinary EOF remains for complete valid arguments, without imposing a new terminal-marker requirement.
+Passing JSON syntax checks proves only that arguments are parseable; it does not prove tool-schema conformance, correct business semantics, or successful tool execution. [providerToolCompletion.test.js](../../test/providerToolCompletion.test.js) verifies rejection before completion, normal calls, and interrupted-stream protection through real loopback bridges, without executing real Codex tools.
+Responses SSE forwarding has no equivalent partial-output recovery conversion entry point; an error may end as response.failed or request failure.
+Anthropic corrects and refetches at most once for specific HTTP 400 errors. Ordinary errors carry no generic automatic resend guarantee.
+`getNativeRetryClass` in [background.js](../../extension/src/background.js) currently classifies codex.providers.* and codex.models as no_silent_retry. Explicit UI refresh and Auto negotiation belong to their own business flows.
 
-| 预算 | 实际 owner | 当前默认/约束及限定 |
+| Budget | Actual owner | Current defaults/constraints and qualifications |
 |---|---|---|
-| 配置 requestTimeoutMs | `ProviderProfile.normalizeTimeout` | 5–120 秒，默认 30 秒 |
-| 单次连接测试子进程 | `runProviderConnectionTestProcess` | 使用上述 5–120 秒预算 |
-| 一次 Auto/Test 总预算 | `ProviderRuntime.testProvider` | 15–120 秒；UI 和运行协商请求 120 秒，多个尝试共享 |
-| 正式桥 idle | `resolveProviderIdleTimeoutMs` | 下限 120 秒，上限 300 秒；正常归一化配置最高 120 秒，因而该链通常为 120 秒 |
-| 正式桥 total | `resolveProviderTotalTimeoutMs` | 默认 30 分钟，上限 60 分钟，至少两倍 idle；totalRequestTimeoutMs 未由当前 profile/launch 正常传播 |
-| 本地 HTTP server requestTimeout | 三桥 start 函数 | total 加 5 秒；不同于完整 agent 运行预算 |
-| Codex 整轮/无事件超时 | CodexSessionRunner timing | 独立于单个模型 HTTP 请求，详见 Native 执行专题 |
+| Configured requestTimeoutMs | `ProviderProfile.normalizeTimeout` | 5–120 seconds, default 30 seconds |
+| One connection-test child process | `runProviderConnectionTestProcess` | Uses the 5–120 second budget above |
+| Total budget for one Auto/Test operation | `ProviderRuntime.testProvider` | 15–120 seconds; UI and run negotiation request 120 seconds, shared by multiple attempts |
+| Normal bridge idle | `resolveProviderIdleTimeoutMs` | Minimum 120 seconds, maximum 300 seconds; normally normalized configuration is at most 120 seconds, so this chain usually uses 120 seconds |
+| Normal bridge total | `resolveProviderTotalTimeoutMs` | Default 30 minutes, maximum 60 minutes, at least twice idle; totalRequestTimeoutMs is not propagated through the normal current profile/launch path |
+| Local HTTP server requestTimeout | The three bridges' start functions | Total plus 5 seconds; distinct from the budget for a complete agent run |
+| Codex whole-turn/no-event timeout | CodexSessionRunner timing | Independent of a single model HTTP request; detailed in the Native execution page |
 
-**维护目标**：调整超时前注明它测量的阶段；连接测试 30 秒不能直接解释成正式流 30 秒总超时。
+**Target contract**: identify the phase measured before changing a timeout. A 30-second connection test must not be interpreted directly as a 30-second total timeout for a normal stream.
 
-## 8. 凭据、其他敏感输入与存储事务
+## 8. Credentials, Other Sensitive Inputs, and Storage Transactions
 
-专用 API key 由 `secretMutation=unchanged/replace/clear` 传递；replace 值允许在表单和 RPC 内存短暂存在。
-`sanitizeProfile` 返回 hasSecret 和更新日期，省略专用 API key；运行快照与 `buildProviderSnapshot` 也不包含它。
-后台仅为 codex.run 创建 run journal，provider 配置请求不会按该路径将完整 request 持久化；pending request 仍短期持有输入。
-这些局部事实需要与 `ProviderSettingsDialog.readContext`、后台 request 路由和 Native 持久化一起检查。
+The dedicated API key is passed through `secretMutation=unchanged/replace/clear`; a replace value may briefly exist in form and RPC memory.
+`sanitizeProfile` returns hasSecret and the update date while omitting the dedicated API key. Run snapshots and `buildProviderSnapshot` also exclude it.
+The background creates a run journal only for codex.run. Provider configuration requests do not persist the full request through that path, although pending requests still briefly retain input.
+These local facts must be checked together with `ProviderSettingsDialog.readContext`, background request routing, and Native persistence.
 
-| 本地文件 | 内容与生命周期 |
+| Local file | Contents and lifecycle |
 |---|---|
-| providers.json | 公共配置、diagnostics、披露、activeProviderId、storeRevision |
-| provider-secrets.json | Provider ID 到专用 API key 的映射，与公共配置同 storeRevision |
-| provider-transaction.json | 提交前 public/secrets 副本；可能含旧 API key，成功后删除 |
-| provider-store.lock | 跨 Native Host 的写锁；有限等待与陈旧锁恢复 |
+| providers.json | Public configuration, diagnostics, disclosure, activeProviderId, storeRevision |
+| provider-secrets.json | Mapping from Provider IDs to dedicated API keys, sharing storeRevision with public configuration |
+| provider-transaction.json | Pre-commit public/secrets copies; may contain old API keys and is deleted after success |
+| provider-store.lock | A write lock across Native Hosts, with bounded waiting and stale-lock recovery |
 
-路径以 `getProviderStorePaths` 为准，默认位于用户目录 `.codex-overleaf`，可由专用环境变量覆盖。
-`commitProviderState` 先写恢复事务，再写 secrets/public，最后清理事务；启动读取时调用 `recoverInterruptedTransaction` 完成判定或恢复旧副本。
-这提供配套版本恢复，不能理解为秘密仅会出现在一个文件，也不能直接视为加密存储。
-目录请求 0700、原子写入临时文件请求 0600；chmod 失败被容忍，Windows/具体文件系统有效权限仍需验收。
+`getProviderStorePaths` is authoritative for paths. They default to `.codex-overleaf` in the user's home directory and can be overridden by dedicated environment variables.
+`commitProviderState` writes the recovery transaction first, then secrets/public, and finally removes the transaction. Startup reads call `recoverInterruptedTransaction` to determine completion or restore old copies.
+This provides recovery of coordinated versions. It does not imply that secrets can appear in only one file or constitute encrypted storage.
+Directories request 0700 and atomic-write temporary files request 0600. chmod failure is tolerated; effective permissions on Windows and particular file systems still require acceptance checks.
 
-**Current behavior / Store 容量。** [providerStore.js](../../native-host/src/providerStore.js) 的 `getStoreFileMaxBytes/serializeStoreJson` 按最终 JSON 的 UTF-8 字节执行读写预算：public、secrets 各为 `STORE_FILE_MAX_BYTES`（1 MiB），紧凑编码的恢复事务为 `STORE_TRANSACTION_MAX_BYTES`（2 MiB + 1024 字节）。事务需同时容纳两份旧快照及版本/编码标记，其预算与单份配置分别维护。
-`commitProviderState` 在首次替换文件前检查新配置、旧回滚快照与事务；超限返回 `provider_store_too_large`，保留原文件和 revision。累计 profiles、转义和多字节字符均计入最终字节数；字符数不能代替存储容量。
-运行时归一化数据与 `stored` 原始解析快照分别保存，`mergeStoredChanges` 只将实际变化合入存储值，避免清密钥、删除或写诊断时把无关默认字段扩写到旧数据。原文件为接近上限的紧凑 JSON 时可保留紧凑编码，事务的 `compactPublic/compactSecrets` 标记用于提交失败回滚及启动恢复；恢复也先检查两份副本再替换。
-[providerStoreCapacity.test.js](../../test/providerStoreCapacity.test.js) 覆盖临界容量、拒绝后可读性、旧数据管理与注入写入故障后的恢复。已经超出读取上限或损坏的旧文件仍返回 `provider_store_corrupt`，不会自动截断或删除；任意手写 JSON 的空白和转义拼写不提供逐字节恢复保证。存在大于旧版 1 MiB 上限的未完成事务时，降级到旧 Native 的恢复兼容性未验证。
+**Current behavior / Store capacity.** `getStoreFileMaxBytes/serializeStoreJson` in [providerStore.js](../../native-host/src/providerStore.js) enforces read/write budgets on the UTF-8 bytes of final JSON: public and secrets each use `STORE_FILE_MAX_BYTES` (1 MiB), while the compactly encoded recovery transaction uses `STORE_TRANSACTION_MAX_BYTES` (2 MiB + 1024 bytes). The transaction must hold both old snapshots and version/encoding markers; its budget is maintained separately from an individual configuration's budget.
+`commitProviderState` checks new configuration, old rollback snapshots, and the transaction before the first file replacement. Exceeding a limit returns `provider_store_too_large`, preserving the original files and revision. Accumulated profiles, escaping, and multibyte characters all count toward final bytes; character counts cannot substitute for storage capacity.
+Normalized runtime data and the raw parsed `stored` snapshots remain separate. `mergeStoredChanges` merges only actual changes into stored values, avoiding expansion of unrelated default fields into old data when clearing keys, deleting, or writing diagnostics. Compact encoding can be retained when the original file is compact JSON near the limit. The transaction's `compactPublic/compactSecrets` markers serve failed-commit rollback and startup recovery; recovery also checks both copies before replacement.
+[providerStoreCapacity.test.js](../../test/providerStoreCapacity.test.js) covers capacity thresholds, readability after rejection, legacy-data management, and recovery from injected write failures. Old files that already exceed the read limit or are corrupt still return `provider_store_corrupt`; they are not automatically truncated or deleted. Byte-for-byte recovery is not guaranteed for arbitrary handwritten JSON whitespace and escape spellings. Recovery compatibility after downgrading to an old Native version is unverified when an unfinished transaction exceeds the old 1 MiB limit.
 
-`normalizeBaseUrl` 拒绝 URL 用户名/密码、query、fragment，要求 HTTPS 或允许的 loopback HTTP。
-**网络目的地限定**：上述 URL 校验和 `resolveRunProvider` 的披露比较作用于配置值；三桥共同调用 [providerHttp.fetchProvider](../../native-host/src/providerHttp.js) 手动处理 HTTP 重定向，在每次发出下一跳前检查目的地。
-`carriesEndpointCredentials` 检查实际发送 headers 中的专用鉴权头名、credential-like 名称或已知 `launch.apiKey` 值。有这些凭据时，下一跳必须保持相同 origin，即 \((scheme,host,port)\) 三者一致；跨 origin 返回 `provider_upstream_error`，不向该目标发送 header 或请求体。该检查也适用于 Anthropic 的修正重试，不能只按 `authMode` 标签推定实际 header 没有凭据。
-同 origin 重定向保留 Fetch 的方法与正文语义：POST 的301/302及适用的303转为GET并去掉正文/正文header，307/308保留原方法和正文。没有检测到端点凭据的请求继续支持跨 origin 重定向；这项保护不限制所有匿名请求的正文目的地。
-重定向次数受 helper 内上限约束，非法或含用户名/密码的目的地拒绝。三桥没有固定 DNS 解析地址；任意普通字段中的秘密值识别、DNS/IP变化及服务商收到数据后的内部转发仍属于独立边界。
-[providerBoundaryGuards.test.js](../../test/providerBoundaryGuards.test.js) 使用真实 loopback HTTP 检查三桥鉴权方式、同 origin 方法/body兼容、跨 origin 首跳与后续跳拒绝、匿名兼容及低层实际header防护；不据这些测试宣称公网DNS或服务商行为已验收。
+`normalizeBaseUrl` rejects URL usernames/passwords, queries, and fragments, and requires HTTPS or permitted loopback HTTP.
+**Network destination boundaries**: the URL validation above and disclosure comparisons in `resolveRunProvider` operate on configuration values. All three bridges call [providerHttp.fetchProvider](../../native-host/src/providerHttp.js) to handle HTTP redirects manually and check each destination before issuing the next hop.
+`carriesEndpointCredentials` checks the headers actually sent for dedicated authentication header names, credential-like names, or the known `launch.apiKey` value. When such credentials exist, the next hop must keep the same origin, meaning all three components \((scheme,host,port)\) match. A cross-origin hop returns `provider_upstream_error` without sending headers or a request body to that target. The check also applies to Anthropic's corrective retry; `authMode` alone cannot establish that actual headers contain no credentials.
+Same-origin redirects preserve Fetch method and body semantics: 301/302 for POST and applicable 303 responses become GET and remove body/body headers; 307/308 retain the original method and body. Requests without detected endpoint credentials continue to support cross-origin redirects. This protection does not constrain the body destinations of every anonymous request.
+The helper's internal limit bounds redirect count. Invalid destinations and those containing usernames/passwords are rejected. The three bridges do not pin DNS resolution addresses. Detecting secret values in arbitrary ordinary fields, DNS/IP changes, and internal forwarding after a service provider receives data remain separate boundaries.
+[providerBoundaryGuards.test.js](../../test/providerBoundaryGuards.test.js) uses real loopback HTTP to check all three bridges' authentication modes, same-origin method/body compatibility, rejection of initial and later cross-origin hops, anonymous compatibility, and low-level protection based on actual headers. These tests do not establish acceptance of public DNS or service-provider behavior.
 
-headers/queryParams 通过 credential-like 键名 guard；bodyOverrides 递归检查敏感键，且禁止替换核心协议字段。
-guard 允许 cache key 等例外；`sanitizeProfile` 会复制允许的 headers/query/body 配置，不能将其统称为已脱敏秘密值。
-**Known gap / 范围限定**：当前检查主要识别键名，不会全局识别任意名称、路径或普通文字中的敏感值。
-例如普通字段内误填 token，不能凭“API key 已隔离”推断一定被剔除；新增字段必须明确 secret-shaped 输入策略。
+headers/queryParams pass through a credential-like key-name guard. bodyOverrides recursively checks sensitive keys and forbids replacing core protocol fields.
+The guard allows exceptions such as cache keys. `sanitizeProfile` copies allowed headers/query/body configuration; these values cannot collectively be described as redacted secrets.
+**Known gap / Scope limitation**: current checks primarily recognize key names and do not globally detect sensitive values under arbitrary names, paths, or ordinary text.
+For example, a token mistakenly entered into an ordinary field cannot be assumed to have been removed merely because the API key is isolated. New fields must specify their policy for secret-shaped input.
 
-[providerRedaction.js](../../native-host/src/providerRedaction.js) 的 `sanitizeProviderMessage` 支持精确替换已知 API key，并清洗部分 bearer/key/token 模式。
-桥错误和测试错误有传入精确 secret 的调用点，通用错误包装未必持有完整秘密集合，不能推导所有文本均安全。
-**Current behavior / HTTP 成功响应内的协议诊断。** HTTP 200 表示 HTTP 层返回成功状态，协议体仍可声明 `response.failed`。两层状态分别判定。[responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js) 的 `sanitizeProtocolErrors` 在普通 JSON、SSE 和 compact 出口使用 `launch.apiKey` 清洗显式 error 子树及失败 envelope 的 message/code/param/detail/details/reason/description，并递归检查 response 包装。正常模型 output、工具参数和任意 metadata 不进行通用秘密替换。
-`hasDuplicateJsonKeys` 检查有效 JSON 内每个对象的重复键，包括转义键名；出现重复时保守清洗协议诊断并重新编码，避免后面的 status/error 覆盖前值后，原始字节中的旧诊断仍被透传。工具参数字符串内部的 JSON 文字保持原义。普通 JSON 解析失败使用固定安全错误，不返回解析器包含的原正文片段。
-`forwardResponsesSse` 使用增量 UTF-8 解码，缓冲完整事件再检查，单事件上限为 `MAX_STREAM_BUFFER_BYTES`（8 MiB，含帧格式）。无重复键且无需诊断改写的正常事件保持原格式，多个事件可在上游结束前陆续转发；畸形、非法编码或超限事件走安全失败路径，该事件的原始诊断不会先行转发。维护该路径需同时覆盖 CRLF/分块、多行 data 与流结束时无空行的最后一帧。
-`forwardCompactResponse` 逐块读取并续期 idle，支持 UTF-8 JSON 对象且总响应不超过 `MAX_COMPACT_RESPONSE_BYTES`（32 MiB）；无重复键且无需诊断改写的正常响应保留原字节、HTTP status 与 content-type，包括 encrypted_content。诊断清洗后重新编码，畸形或超限响应返回明确错误。此对象类型及接收容量构成当前支持边界，不能继续把 compact 描述为无限制的任意正文透传。
-[responsesProtocolRedaction.test.js](../../test/responsesProtocolRedaction.test.js) 通过真实 loopback HTTP 桥检查出口、正常输出及上述边界。下游 [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) 的 app-server 错误事件和 [background.js](../../extension/src/background.js) 的 journal 未获得该 key 做全局精确匹配；真实 Codex 的具体错误投影与最终持久化仍需独立验收。
+`sanitizeProviderMessage` in [providerRedaction.js](../../native-host/src/providerRedaction.js) supports exact replacement of a known API key and sanitizes some bearer/key/token patterns.
+Bridge errors and test errors have call sites that pass the exact secret. Generic error wrappers may lack the complete set of secrets, so safety cannot be inferred for all text.
+**Current behavior / Protocol diagnostics in HTTP success responses.** HTTP 200 indicates a successful HTTP-layer status, but the protocol body can still declare `response.failed`; the two layers are assessed separately. `sanitizeProtocolErrors` in [responsesPassthroughBridge.js](../../native-host/src/responsesPassthroughBridge.js) uses `launch.apiKey` at ordinary JSON, SSE, and compact outputs to sanitize explicit error subtrees and message/code/param/detail/details/reason/description in failure envelopes, recursively checking response wrappers. Normal model output, tool arguments, and arbitrary metadata do not undergo generic secret replacement.
+`hasDuplicateJsonKeys` checks every object in valid JSON for duplicate keys, including escaped key names. When duplicates occur, it conservatively sanitizes protocol diagnostics and re-encodes them, preventing old diagnostics in the raw bytes from passing through after a later status/error overwrites an earlier value. JSON text inside tool-argument strings retains its meaning. Ordinary JSON parse failure returns a fixed safe error without the original body fragments included by a parser.
+`forwardResponsesSse` incrementally decodes UTF-8 and buffers complete events before inspection. Its per-event limit is `MAX_STREAM_BUFFER_BYTES` (8 MiB, including framing). Normal events without duplicate keys or a need to rewrite diagnostics retain their original format; multiple events can be forwarded progressively before the upstream ends. Malformed, invalidly encoded, or oversized events take a safe failure path, without first forwarding the event's original diagnostics. Maintenance must cover CRLF/chunk boundaries, multiline data, and a final frame without a blank line at stream end.
+`forwardCompactResponse` reads chunk by chunk and renews idle. It supports UTF-8 JSON objects with a total response no larger than `MAX_COMPACT_RESPONSE_BYTES` (32 MiB). Normal responses without duplicate keys or diagnostic rewrites preserve original bytes, HTTP status, and content-type, including encrypted_content. Diagnostic sanitization is followed by re-encoding; malformed or oversized responses return explicit errors. This object type and receive capacity define the current support boundary. Compact must not continue to be described as unrestricted passthrough of arbitrary bodies.
+[responsesProtocolRedaction.test.js](../../test/responsesProtocolRedaction.test.js) checks outputs, normal content, and these boundaries through a real loopback HTTP bridge. Downstream app-server error events in [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) and the journal in [background.js](../../extension/src/background.js) do not receive that key for global exact matching. Actual Codex error projection and final persistence still require independent acceptance checks.
 
-[debugLog.js](../../native-host/src/debugLog.js) 主要截断字段和摘要 content/files，未提供通用凭据清洗；三桥当前日志选择计数、状态和元数据。
-后台 journal 的模式清洗也不等于任意秘密检测；维护目标是从生产者阻止原密钥或任意配置 dump 进入日志、事件和诊断。
+[debugLog.js](../../native-host/src/debugLog.js) primarily truncates fields and summarizes content/files, without generic credential sanitization; the three bridges currently select counts, statuses, and metadata for logging.
+Pattern sanitization in the background journal likewise does not detect arbitrary secrets. The maintenance target is to prevent raw keys or arbitrary configuration dumps from entering logs, events, and diagnostics at the producer.
 
-## 9. 修改路由与最窄验证
+## 9. Change Routing and Narrowest Verification
 
-专项测试从仓库根目录运行，按改动选择直接相关的文件；各测试的装配方式和覆盖边界见下表。
+Run focused tests from the repository root, selecting the files directly related to the change. Test setups and coverage boundaries are listed below.
 
-| 修改意图 | 主改与联动 | 最窄命令及检查重点 |
+| Change intent | Primary changes and related modules | Narrowest command and checks |
 |---|---|---|
-| Save/Use、项目绑定 | dialog、coordinator、ProjectProviderSelection、store | `node --test test/providerUiContracts.test.js test/providerSessionBinding.test.js test/projectProviderRevision.test.js`；Native 默认与项目选择、运行中切换、同 ID revision、目录预加载、投影失败 |
-| secret/profile/schema | providerProfile、providerStore、浏览器 Profiles 和表单 | `node --test test/providerReliability.test.js test/providerStoreCapacity.test.js`；字段校验、专用凭据、revision、披露、最终字节预算和旧数据恢复 |
-| Responses 诊断与透传 | responsesPassthroughBridge、providerRedaction、stream lifecycle | `node --test test/responsesProtocolRedaction.test.js`；JSON/SSE/compact 诊断、重复键、正常输出与接收边界 |
-| 显式输出预算、buffered 与请求覆盖项 | dialog/Profiles、providerProfile/Store、launch、三协议请求及响应转换 | `node --test test/providerWireSettings.test.js test/providerReliability.test.js`；新值/旧迁移、实际 wire stream、SSE 内容和终态、允许字段与核心字段保护、取消 |
-| 续传身份、凭据重定向与协议预算修正 | 三桥、providerHttp、providerReasoning、anthropicBridgeRequest、Store/launch | `node --test test/providerBoundaryGuards.test.js`；显式/缺省 ID 与次数、真实 HTTP 每跳目标及 header/body、无auth兼容、输出上限与错误清洗 |
-| 普通 JSON 活动与请求截止 | providerHttp、三桥 JSON/错误分支、providerStreamLifecycle | `node --test test/providerJsonActivity.test.js`；UTF-8分块、buffered双出口、idle/total、取消与compact既有reader；定时调度缩尺 |
-| 内建/自定义发现 | codexModels、ProviderRuntime、ModelPicker | `node --test test/codexModels.test.js test/modelSelectionRecovery.test.js test/modelPickerCurrentError.test.js`；cache 优先级、当前错误与迟到结果、不可用模型与 fallback |
-| Built-in 配置继承 | codexHome、ProviderRuntime、codexSessionRunner、ProviderSettingsCoordinator 与审计 | `node --test test/codexHome.test.js test/codexSessionRunner.test.js`；分别检查配置保留与参数构造；file API-key 的真实消费者范围见第 5 节，其他认证方式、配置变更后的快照及审计投影需分别验证 |
-| Speed 参数映射 | ModelPicker、运行快照、codexSessionRunner、codexArgs | `node --test test/codexArgs.test.js test/codexSessionRunner.test.js`；standard/fast 的 exec 与 app-server 参数构造 |
-| Chat 转换/reasoning | chatBridgeRequest/Response、providerReasoning、launch | `node --test test/providerReliability.test.js test/providerToolCompletion.test.js`；工具命名空间、参数完整性、finish_reason、可选字段和认证路由 |
-| Anthropic 转换/续传 | anthropicBridgeRequest/Response、MessagesBridge | `node --test test/anthropicBridge.test.js test/providerToolCompletion.test.js`；工具往返、完成前参数检查、签名、限额续传与 cache usage |
-| 队列执行配置 | RunExecutionSnapshot、Native resolver、Provider catalog | `node --test test/runExecutionSnapshot.test.js test/providerReliability.test.js`；提交快照固定与消费时 revision 守卫 |
+| Save/Use and project binding | dialog, coordinator, ProjectProviderSelection, store | `node --test test/providerUiContracts.test.js test/providerSessionBinding.test.js test/projectProviderRevision.test.js`; Native default versus project selection, switching during runs, same-ID revisions, catalog preloading, projection failures |
+| secret/profile/schema | providerProfile, providerStore, browser Profiles and forms | `node --test test/providerReliability.test.js test/providerStoreCapacity.test.js`; field validation, dedicated credentials, revision, disclosure, final byte budgets, and legacy-data recovery |
+| Responses diagnostics and passthrough | responsesPassthroughBridge, providerRedaction, stream lifecycle | `node --test test/responsesProtocolRedaction.test.js`; JSON/SSE/compact diagnostics, duplicate keys, normal output, and receive boundaries |
+| Explicit output budgets, buffered mode, and request overrides | dialog/Profiles, providerProfile/Store, launch, request and response conversion for the three protocols | `node --test test/providerWireSettings.test.js test/providerReliability.test.js`; new values/legacy migration, actual wire stream, SSE content and terminal states, allowed fields and core-field protection, cancellation |
+| Continuation identity, credential redirects, and protocol budget correction | The three bridges, providerHttp, providerReasoning, anthropicBridgeRequest, Store/launch | `node --test test/providerBoundaryGuards.test.js`; explicit/omitted IDs and counts, real HTTP hop destinations and headers/bodies, no-auth compatibility, output caps, and error sanitization |
+| Ordinary JSON activity and request deadlines | providerHttp, the three bridges' JSON/error branches, providerStreamLifecycle | `node --test test/providerJsonActivity.test.js`; UTF-8 chunking, both buffered output modes, idle/total, cancellation, and compact's existing reader; scaled-down timer scheduling |
+| Built-in/Custom discovery | codexModels, ProviderRuntime, ModelPicker | `node --test test/codexModels.test.js test/modelSelectionRecovery.test.js test/modelPickerCurrentError.test.js`; cache priority, current errors and late results, unavailable models, and fallback |
+| Built-in configuration inheritance | codexHome, ProviderRuntime, codexSessionRunner, ProviderSettingsCoordinator, and audit | `node --test test/codexHome.test.js test/codexSessionRunner.test.js`; checks configuration retention and argument construction separately; actual file API-key consumer scope is covered in section 5, while other authentication methods, snapshots after configuration changes, and audit projections require separate verification |
+| Speed argument mapping | ModelPicker, run snapshots, codexSessionRunner, codexArgs | `node --test test/codexArgs.test.js test/codexSessionRunner.test.js`; standard/fast exec and app-server argument construction |
+| Chat conversion/reasoning | chatBridgeRequest/Response, providerReasoning, launch | `node --test test/providerReliability.test.js test/providerToolCompletion.test.js`; tool namespaces, argument completeness, finish_reason, optional fields, and authentication routing |
+| Anthropic conversion/continuation | anthropicBridgeRequest/Response, MessagesBridge | `node --test test/anthropicBridge.test.js test/providerToolCompletion.test.js`; tool round trips, argument checks before completion, signatures, bounded continuation, and cache usage |
+| Queued execution configuration | RunExecutionSnapshot, Native resolver, Provider catalog | `node --test test/runExecutionSnapshot.test.js test/providerReliability.test.js`; fixed submission snapshots and revision guards at consumption |
 
-Response passthrough、真实 bridge HTTP 中断及 profile→launch→最终 wire body 的组合行为，应继续核对相应测试覆盖和实际环境。
-单个 helper 的测试通过只证明对应输入边界；表单、持久配置、prepared launch、上游请求四段联动需要单独证据。
+Response passthrough, real bridge HTTP interruptions, and combined profile→launch→final wire body behavior still require checking the corresponding test coverage and actual environment.
+Passing an individual helper test proves only its input boundary. Coordination across the form, persisted configuration, prepared launch, and upstream request requires separate evidence.
 
-| 已有测试定义 | 装配方式与证据边界 |
+| Existing test definition | Setup and evidence boundary |
 |---|---|
-| [providerReliability.test.js](../../test/providerReliability.test.js) | Store 场景使用临时目录；能力、预算、URL/header 场景直接调用 helper；流转换使用构造的上游与 SSE 收集器。默认模型上下文和直接构造 catalog 的断言未覆盖 Provider 能力被模型默认值遮蔽的完整链路。 |
-| [providerStoreCapacity.test.js](../../test/providerStoreCapacity.test.js) | 真实 Store/Native dispatcher、临时目录和合成配置；临界容量、删除/清密钥、注入文件替换故障与重载恢复，不证明实际断电持久性。 |
-| [providerWireSettings.test.js](../../test/providerWireSettings.test.js) | 生产表单捕获函数配替身 DOM 字段，真实临时 Store/目录/launch、loopback 两协议桥及合成 key；检查预算重载、请求体、JSON/SSE 内容/终态、取消和既有接收限额，未运行真实 Codex 消费者或浏览器。 |
-| [providerBoundaryGuards.test.js](../../test/providerBoundaryGuards.test.js) | 真实临时 Store/launch、三桥与 loopback 上游；核对请求lineage、续传次数、HTTP重定向及最终预算。raw launch header控制明确低层边界，不代表普通UI会生成该配置；未调用真实模型或公网服务。 |
-| [providerJsonActivity.test.js](../../test/providerJsonActivity.test.js) | 真实HTTP、生产body reader/转换器/AbortController，仅将生产lifecycle的外部计时调度缩尺；覆盖持续/静默JSON、总截止、取消、错误正文及compact。不提供真实120秒墙钟或公网吞吐证据。 |
-| [providerUiContracts.test.js](../../test/providerUiContracts.test.js) | 生产 dialog 操作/协调器/项目选择配替身 UI、临时真实 Store 与 Native 配置接口；核对状态文案、确认前后及迟到目录/响应的运行守卫，未执行模型或真实浏览器持久化。 |
-| [responsesProtocolRedaction.test.js](../../test/responsesProtocolRedaction.test.js) | 真实桥与本地 HTTP 上游、合成 key、临时日志；检查出口与逐事件流动，不调用真实 Provider、Codex 或浏览器。 |
-| [anthropicBridge.test.js](../../test/anthropicBridge.test.js) | 直接调用请求/响应及续传 helper，流场景使用 Readable 与响应 sink；URL/header 断言未经历真实 HTTP 重定向、DNS 或认证传播。 |
-| [providerSessionBinding.test.js](../../test/providerSessionBinding.test.js)、[projectProviderRevision.test.js](../../test/projectProviderRevision.test.js) | 使用 FakeBroadcastChannel、替换的目录/Native 返回或内存项目状态，验证投影和 revision 分支；不能证明实际浏览器持久化与 Native 事务共同完成。 |
-| [modelSelectionRecovery.test.js](../../test/modelSelectionRecovery.test.js) | VM 中的选择控件和替换的 sendBackgroundNative 返回验证模型恢复与迟到结果守卫；未连接真实 Provider。 |
-| [modelPickerCurrentError.test.js](../../test/modelPickerCurrentError.test.js) | 生产 ModelPicker 配替身控件与合成 Native 响应，区分当前无 revision 错误、过期 generation、其他 Provider 和成功响应的 revision 守卫。 |
-| [codexArgs.test.js](../../test/codexArgs.test.js)、[codexSessionRunner.test.js](../../test/codexSessionRunner.test.js) 的 Speed 参数用例 | 直接调用 exec/app-server 参数构造器，断言 fast_mode 与 service_tier；不验证服务端档位支持、实际使用或费用。 |
+| [providerReliability.test.js](../../test/providerReliability.test.js) | Store scenarios use temporary directories; capability, budget, and URL/header scenarios call helpers directly; stream conversion uses constructed upstream data and SSE collectors. Default model-context and directly constructed catalog assertions do not cover the complete chain in which model defaults mask Provider capabilities. |
+| [providerStoreCapacity.test.js](../../test/providerStoreCapacity.test.js) | Real Store/Native dispatcher, temporary directories, and synthetic configuration; capacity thresholds, deletion/key clearing, injected file-replacement failures, and reload recovery. It does not prove durability under an actual power loss. |
+| [providerWireSettings.test.js](../../test/providerWireSettings.test.js) | Production form-capture functions with substitute DOM fields, a real temporary Store/catalog/launch, two loopback protocol bridges, and synthetic keys. Checks budget reload, request bodies, JSON/SSE content/terminal states, cancellation, and existing receive limits, without running an actual Codex consumer or browser. |
+| [providerBoundaryGuards.test.js](../../test/providerBoundaryGuards.test.js) | Real temporary Store/launch, all three bridges, and a loopback upstream. Checks request lineage, continuation counts, HTTP redirects, and final budgets. Raw launch-header controls establish the low-level boundary without implying that the ordinary UI produces such configuration; no real model or public service is called. |
+| [providerJsonActivity.test.js](../../test/providerJsonActivity.test.js) | Real HTTP and production body readers/converters/AbortController; only external timer scheduling for the production lifecycle is scaled down. Covers continuous/silent JSON, total deadlines, cancellation, error bodies, and compact. Does not provide actual 120-second wall-clock or public-network throughput evidence. |
+| [providerUiContracts.test.js](../../test/providerUiContracts.test.js) | Production dialog actions/coordinator/project selection with substitute UI, a real temporary Store, and Native configuration interfaces. Checks status text, run guards before/after confirmation, and late catalogs/responses, without model execution or actual browser persistence. |
+| [responsesProtocolRedaction.test.js](../../test/responsesProtocolRedaction.test.js) | Real bridge and local HTTP upstream, synthetic keys, and temporary logs. Checks outputs and event-by-event streaming without calling a real Provider, Codex, or browser. |
+| [anthropicBridge.test.js](../../test/anthropicBridge.test.js) | Calls request/response and continuation helpers directly; streaming scenarios use Readable and a response sink. URL/header assertions do not pass through real HTTP redirects, DNS, or authentication propagation. |
+| [providerSessionBinding.test.js](../../test/providerSessionBinding.test.js), [projectProviderRevision.test.js](../../test/projectProviderRevision.test.js) | Uses FakeBroadcastChannel, substituted catalog/Native returns, or in-memory project state to verify projection and revision branches; cannot prove that actual browser persistence and Native transactions complete together. |
+| [modelSelectionRecovery.test.js](../../test/modelSelectionRecovery.test.js) | Selection controls in a VM and substituted sendBackgroundNative returns verify model recovery and late-result guards; no real Provider is connected. |
+| [modelPickerCurrentError.test.js](../../test/modelPickerCurrentError.test.js) | Production ModelPicker with substitute controls and synthetic Native responses, distinguishing a current error without a revision, stale generations, other Providers, and revision guards for successful responses. |
+| Speed argument cases in [codexArgs.test.js](../../test/codexArgs.test.js) and [codexSessionRunner.test.js](../../test/codexSessionRunner.test.js) | Calls exec/app-server argument builders directly and asserts fast_mode and service_tier; does not verify server-side tier support, actual use, or pricing. |
 
-清密钥、改端点后普通 Save 的验证需同时检查 Native 默认项、项目选择、下一轮提交及状态文案；Store 或单独投影测试不能替代这四项组合。
-快捷预设维护需覆盖协议切换、手动覆盖的 authMode/reasoningAdapter、fullEndpoint、自定义 URL 与披露复位，分别检查最终草稿和 Native 保存结果。
-准备协议桥期间取消与随后测试 spawn 的进程边界见[Native 执行](native-execution.md)；DNS地址变化、真实长时网络和协议错误到实际Codex事件及journal的投影仍需独立验收。
-维护HTTP与续传链时，应保留现有受控端点对照：显式另一ID不带入旧锚点/次数、无IDfallback兼容、逐跳header/body边界、无auth重定向、持续JSON续期idle且仍服从total。已有桥出口测试不能替代下游错误投影或公网环境证据。
+Verification of key clearing and ordinary Save after endpoint edits must check the Native default, project selection, next run submission, and status text together. Store tests or isolated projection tests cannot replace that four-part combination.
+Maintaining quick presets requires covering protocol switches, manually overridden authMode/reasoningAdapter, fullEndpoint, custom URLs, and disclosure resets, checking the final draft and Native save result separately.
+See [Native execution](native-execution.md) for the process boundary between cancellation during protocol-bridge preparation and subsequent test spawn. DNS address changes, real long-duration networking, and projection of protocol errors into actual Codex events and the journal still require independent acceptance checks.
+When maintaining HTTP and continuation chains, preserve the existing controlled-endpoint comparisons: an explicit other ID does not bring along the old anchor/count; no-ID fallback remains compatible; each hop respects header/body boundaries; no-auth redirects remain supported; continuous JSON renews idle while still observing total. Existing bridge-output tests cannot replace downstream error-projection or public-network evidence.
 
-## 10. 边界场景与验证要点
+## 10. Boundary Scenarios and Verification Points
 
-1. **连接测试成功后的持久化。** 已保存模型且指纹匹配时会写 diagnostics；核对 storeRevision 增加、profile revision 保持，以及未保存模型跳过记录的分支。
-2. **不同协议的响应模式与 bodyOverrides。** Chat、Anthropic、Responses 的实际请求构造不同；使用本地模拟端点覆盖 UI→profile→launch→wire body，检查探测诊断与实际 stream 参数是否一致。
-3. **专用 API key 之外的敏感配置。** headers/query/body 的键名检查和日志调用者范围有限；使用合成标记检验未识别字段、错误回显、URL 路径及事务恢复文件，验证数据不得使用真实凭据。
-4. **流中断后的续传与工具调用。** 工具参数语法检查、内存 history、重复预算和 Anthropic incomplete 原因各有限定；分别验证 socket reset、idle、client close、history 淘汰、参数完整的 EOF 与残缺工具参数，检查失败、继续及不重放边界。
+1. **Persistence after a successful connection test.** Diagnostics are written when the model is saved and the fingerprint matches. Check the storeRevision increment, unchanged profile revision, and the branch that skips recording for an unsaved model.
+2. **Response modes and bodyOverrides across protocols.** Chat, Anthropic, and Responses construct actual requests differently. Use locally simulated endpoints to cover UI→profile→launch→wire body and check whether probe diagnostics agree with actual stream parameters.
+3. **Sensitive configuration beyond the dedicated API key.** Key-name checks for headers/query/body and the scope of logging callers are limited. Use synthetic markers to examine unrecognized fields, error echoes, URL paths, and transaction recovery files; verification data must not use real credentials.
+4. **Continuation and tool calls after stream interruption.** Tool-argument syntax checks, in-memory history, repeat budgets, and Anthropic incomplete reasons each have qualifications. Separately verify socket reset, idle, client close, history eviction, EOF with complete arguments, and incomplete tool arguments, checking the boundaries of failure, continuation, and non-replay.

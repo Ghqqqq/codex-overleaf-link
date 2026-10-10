@@ -1,49 +1,49 @@
-# 写作风格资产与技能
+# Writing-Style Assets and Skills
 
-初始参考源码基线：`2073ae74747431aab8d529803d4e9f8197262388`。当前行为随本仓库实现维护。
-本页说明风格资产的生成、发布、消费与普通技能的安装边界；源码推导、局部测试覆盖和完整生成验收分别说明。
-入口：[架构指南](README.md) · [功能修改索引](feature-map.md) · [运行状态与恢复](run-state-and-recovery.md)。
+Initial reference source baseline: `2073ae74747431aab8d529803d4e9f8197262388`. Current behavior is maintained against this repository's implementation.
+This page explains style-asset generation, publication, and consumption, and the installation boundaries of ordinary skills. Source-derived conclusions, local test coverage, and full generation acceptance are described separately.
+Entry points: [Architecture Guide](README.md) · [Feature Change Map](feature-map.md) · [Run State and Recovery](run-state-and-recovery.md).
 
-## 功能边界与术语
+## Feature Boundaries and Terminology
 
-Write in My Style 从参考资料提取有出处的表达习惯，为目标项目生成可复用的只读资产。
-生成使用当前模型和 Provider；后续任务捕获具体版本，按需将表达习惯应用于学术写作。
-普通 Skills 另有安装、发现与调用流程，两套生命周期须分别定位。
+Write in My Style extracts writing habits supported by identifiable sources and generates reusable, read-only assets for the target project.
+Generation uses the current model and Provider. Subsequent tasks capture a specific version and apply those writing habits to academic writing as needed.
+Ordinary Skills have separate installation, discovery, and invocation flows; these two lifecycles must be traced independently.
 
-| 对象 | 权威位置与作用 | 不应推导的保证 |
+| Object | Authoritative location and purpose | Guarantee that must not be inferred |
 | --- | --- | --- |
-| 本地 Codex skills | 继承本机 Codex 配置后由 app-server `skills/list` 发现；`loadCodexLocalSkills` 和逐项选择控制本插件运行 | 目录不枚举全部插件缓存；启用不证明模型在某次任务中一定使用该技能 |
-| Codex Overleaf skills | `getCodexOverleafSkillsRoot()` 下的 `<id>/SKILL.md` | 文件存在不证明内容可信或任务执行成功 |
-| 项目本地 skills | 镜像项目根的 `.codex-overleaf/skills/<id>.md`；兼容 API 及选定内容注入 | 当前 Settings 列表并未切换为项目 skills 列表 |
-| 参考草稿 | `WritingStyleSettings` 内存中的项目选择、PDF File、dirty 标记 | 修改草稿不会立即替换已有风格 |
-| 语料与证据 | 抽取正文、出处映射、精确引用及表达模式 | 参考论文的结论、方法和章节结构不成为目标论文要求 |
-| 风格版本包 | `versions/<uuid>/` 中的 Skill、references、corpus、manifest | 本地权限与哈希校验不等于完整安全沙箱 |
-| 运行风格快照 | 账号、目标项目、版本、manifest 哈希 | 当前 Settings 开关不追溯改写已提交快照 |
+| Local Codex skills | Discovered by app-server `skills/list` after inheriting the local Codex configuration; `loadCodexLocalSkills` and per-item selection control use in this plugin's runs | The catalog does not enumerate all plugin caches; enabling a skill does not prove that the model will use it in a particular task |
+| Codex Overleaf skills | `<id>/SKILL.md` under `getCodexOverleafSkillsRoot()` | File existence does not prove trustworthy content or successful task execution |
+| Project-local skills | `.codex-overleaf/skills/<id>.md` under the mirrored project root; compatibility API and selected-content injection | The current Settings list has not switched to listing project skills |
+| Reference draft | Project selection, PDF File, and dirty flag held in `WritingStyleSettings` memory | Editing the draft does not immediately replace an existing style |
+| Corpus and evidence | Extracted body text, source mappings, exact quotations, and writing patterns | Conclusions, methods, and section structure from reference papers do not become requirements for the target paper |
+| Style version bundle | Skill, references, corpus, and manifest in `versions/<uuid>/` | Local permissions and hash verification do not constitute a complete security sandbox |
+| Run style snapshot | Account, target project, version, and manifest hash | Current Settings toggles do not retroactively rewrite submitted snapshots |
 
-路径及技能 scope 的定义见 [localSkills](../../native-host/src/localSkills.js) 的 `SKILLS_DIR`、`CODEX_OVERLEAF_SKILL_SCOPE` 与 `getCodexOverleafSkillsRoot()`。
-生成画像的 `traits` 表示表达特征，例如句子节奏或转折习惯；`sections` 仅用于索引证据位置。
-章节标签像书签，帮助定位例句；生成器明确禁止把它升级成目标论文的结构模板。
+For path and skill-scope definitions, see `SKILLS_DIR`, `CODEX_OVERLEAF_SKILL_SCOPE`, and `getCodexOverleafSkillsRoot()` in [localSkills](../../native-host/src/localSkills.js).
+The generated profile's `traits` describe writing characteristics, such as sentence rhythm or transition habits; `sections` only index evidence locations.
+Section labels act like bookmarks for locating example sentences. The generator explicitly prohibits treating them as a structural template for the target paper.
 
-## 主 owner、协议与消费者
+## Primary Owners, Protocols, and Consumers
 
-| 决策或数据 | 主 owner 与实际符号 | 调用方或消费者 |
+| Decision or data | Primary owner and actual symbols | Caller or consumer |
 | --- | --- | --- |
-| 选择、开关、预览、生成 UI | [writingStyleSettings](../../extension/src/content/writingStyleSettings.js) `create/ensureLoaded/capture/generate` | [contentRuntime](../../extension/src/content/contentRuntime.js) 的 `writingStyleSettings` 组合位置 |
-| 已登录账号的参考项目目录与读取取消 | [referenceProjects](../../extension/src/page/referenceProjects.js) `create/listProjects/readProject/cancelRead` | [pageBridge](../../extension/src/pageBridge.js) dispatcher；content 注入的依赖 |
-| 引用快照及资源上限 | [shared/writingStyle](../../extension/src/shared/writingStyle.js) `normalizeSnapshot/REFERENCE_LIMITS` | Settings、Native、执行快照 codec、存储压缩 |
-| Native 配置、版本及生成 | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) `get/set/build/forRun` | [taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js)、[codexSessionRunner](../../native-host/src/codexSessionRunner.js) |
-| 生成结果的结构与证据 | [writingStyleProfile](../../native-host/src/writingStyleProfile.js) `validate/renderGuide/renderSection`；[writingStyleEvidence](../../native-host/src/writingStyleEvidence.js) `resolveExample/renderExample` | `build()` 的 `parseResult()` 和资产渲染 |
-| 普通技能 CRUD | [localSkills](../../native-host/src/localSkills.js) `installProjectSkill/installCodexOverleafSkill/removeCodexOverleafSkill` | `handleSkillsList/handleSkillsInstall/handleSkillsRemove` |
-| 本地 Codex 技能目录、身份与显式读取 | [codexLocalSkills](../../native-host/src/codexLocalSkills.js) `listCodexLocalSkills/createCodexLocalSkillIdentity/loadSelectedCodexLocalSkill` | `skills.list` 的 `codex-local` scope；`codexSessionRunner.loadCodexSkillInvocationContext` |
-| 技能发现环境 | [codexHome](../../native-host/src/codexHome.js) `preparePluginCodexHome/composePluginSkillsDirectory` | Codex app-server 启动；普通及 installer 轮次 |
+| Selection, toggles, preview, and generation UI | [writingStyleSettings](../../extension/src/content/writingStyleSettings.js) `create/ensureLoaded/capture/generate` | The `writingStyleSettings` composition site in [contentRuntime](../../extension/src/content/contentRuntime.js) |
+| Reference-project catalog for the signed-in account and read cancellation | [referenceProjects](../../extension/src/page/referenceProjects.js) `create/listProjects/readProject/cancelRead` | [pageBridge](../../extension/src/pageBridge.js) dispatcher; content-injected dependencies |
+| Reference snapshots and resource limits | [shared/writingStyle](../../extension/src/shared/writingStyle.js) `normalizeSnapshot/REFERENCE_LIMITS` | Settings, Native, execution snapshot codec, storage compaction |
+| Native configuration, versions, and generation | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) `get/set/build/forRun` | [taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js), [codexSessionRunner](../../native-host/src/codexSessionRunner.js) |
+| Generated-result structure and evidence | [writingStyleProfile](../../native-host/src/writingStyleProfile.js) `validate/renderGuide/renderSection`; [writingStyleEvidence](../../native-host/src/writingStyleEvidence.js) `resolveExample/renderExample` | `parseResult()` in `build()` and asset rendering |
+| Ordinary skill CRUD | [localSkills](../../native-host/src/localSkills.js) `installProjectSkill/installCodexOverleafSkill/removeCodexOverleafSkill` | `handleSkillsList/handleSkillsInstall/handleSkillsRemove` |
+| Local Codex skill catalog, identity, and explicit reading | [codexLocalSkills](../../native-host/src/codexLocalSkills.js) `listCodexLocalSkills/createCodexLocalSkillIdentity/loadSelectedCodexLocalSkill` | The `codex-local` scope of `skills.list`; `codexSessionRunner.loadCodexSkillInvocationContext` |
+| Skill discovery environment | [codexHome](../../native-host/src/codexHome.js) `preparePluginCodexHome/composePluginSkillsDirectory` | Codex app-server startup; ordinary and installer turns |
 
-Page RPC 名称为 `listReferenceProjects`、`getReferenceProjectSnapshot` 和 `cancelReferenceRead`。
-[pageRpcContract](../../extension/src/shared/pageRpcContract.js) 将前两者归为可安全重试的读取，取消归为幂等控制。
-目录与参考读取不要求当前编辑器项目身份；实际参考目标由 `readProject(params.projectId)` 校验。
-参考读取通过独立 `requestId` 取消，不能从通用 `content_abort` 标记推断其取消路径。
-Native 配置请求是 `writing-style.get/set`；生成复用 `codex.run`，以 `params.writingStyleBuild` 分流。
+The Page RPC names are `listReferenceProjects`, `getReferenceProjectSnapshot`, and `cancelReferenceRead`.
+[pageRpcContract](../../extension/src/shared/pageRpcContract.js) classifies the first two as safely retryable reads and cancellation as idempotent control.
+Catalog and reference reads do not require the current editor's project identity; `readProject(params.projectId)` validates the actual reference target.
+Reference reads are cancelled through a separate `requestId`; their cancellation path cannot be inferred from the generic `content_abort` flag.
+Native configuration requests are `writing-style.get/set`; generation reuses `codex.run`, routing through `params.writingStyleBuild`.
 
-## 从参考草稿到后续运行
+## From Reference Draft to Subsequent Run
 
 ```mermaid
 sequenceDiagram
@@ -55,62 +55,62 @@ sequenceDiagram
     participant R as Subsequent run
     S->>P: listReferenceProjects
     S->>P: getReferenceProjectSnapshot(projectId, readId)
-    P-->>S: 完整已保存 TeX 快照
-    S->>N: codex.run + writingStyleBuild + 附件
+    P-->>S: Complete saved TeX snapshot
+    S->>N: codex.run + writingStyleBuild + attachments
     N->>N: prepareSources → staging corpus
-    N->>A: 专用 builder + 只读语料
-    A-->>N: JSON 表达特征和证据
-    N->>N: profile/evidence 校验
-    N->>V: 写 bundle → rename → 更新 config
-    V-->>S: 元数据和版本快照
-    S->>R: capture() 固定版本和哈希
-    R->>V: forRun() 校验身份及全部资产
-    V-->>R: 只读 Skill 路径和入口指导
+    N->>A: Dedicated builder + read-only corpus
+    A-->>N: Writing traits and evidence as JSON
+    N->>N: Validate profile/evidence
+    N->>V: Write bundle → rename → update config
+    V-->>S: Metadata and version snapshot
+    S->>R: capture() captures version and hash
+    R->>V: forRun() validates identity and all assets
+    V-->>R: Read-only Skill path and entry guidance
 ```
 
-### 参考读取与封装
+### Reading and Packaging References
 
-`generate()` 复制本次选择，并在读取前捕获当前 model、reasoning effort、speed tier、Provider selection 和 locale。
-项目目录通过同域 `/project` 的已登录请求获取，排除回收站，保留归档项目。
-`parseCatalog()` 检测不完整目录；失败不回退为近期记录列表。
-`readProject()` 经 `snapshotRouter.fetchProjectZipSnapshot()` 获取指定参考项目的已保存内容，不切换编辑器。
-读取只保留提取器返回的 TeX 文件；其中缺内容、数量超限、字节超限，或 `skipped` 明确报告 TeX 被跳过时，参考读取失败。
-`referenceTextComplete: true` 还依赖快照的路径身份结果；`pathIdentityComplete:false` 时，`readProject()` 返回 `reference_project_incomplete`，不会宣称参考文本完整。[ZIP 字面文件名与路径身份](auto-edit-undo.md#zip-path-identity)保留 `100%.tex` 等字面名字，并将歧义及非法条目向上传播。该检查与 TeX 内容、数量和字节完整性分别执行。
+`generate()` copies the current selection and captures the current model, reasoning effort, speed tier, Provider selection, and locale before reading.
+The project catalog is fetched through an authenticated same-origin `/project` request, excluding trashed projects and retaining archived projects.
+`parseCatalog()` detects incomplete catalogs; failure does not fall back to a list of recent records.
+`readProject()` obtains the specified reference project's saved content through `snapshotRouter.fetchProjectZipSnapshot()` without switching the editor.
+The read retains only TeX files returned by the extractor. Missing content, an exceeded count or byte limit, or an explicit `skipped` report of omitted TeX causes the reference read to fail.
+`referenceTextComplete: true` also depends on the snapshot's path-identity result. When `pathIdentityComplete:false`, `readProject()` returns `reference_project_incomplete` and does not claim complete reference text. [Literal ZIP Filenames and Path Identity](auto-edit-undo.md#zip-path-identity) preserves literal names such as `100%.tex` and propagates ambiguous and invalid entries upstream. This check runs separately from TeX content, count, and byte completeness checks.
 
-PDF File 在 content 内存编码为 Base64；项目快照编码为 JSON 附件，随后与来源描述关联。
-来源描述仅用 `attachmentId` 引用附件；Native 再检查项目 ID、时间戳、文件路径和完整性标记。
-再次生成时，项目来源重新读取；已保存 PDF 来源可通过 `reuseSnapshot` 和 `sourceId` 复用抽取语料。
-复用先检查旧快照账号、项目与 manifest 哈希；旧 PDF 原始字节不属于版本包的必需资产。
-参考附件路径见 `readReferenceProjectAttachment()` 和 `prepareSources()`，不能直接套用普通聊天附件的物化规则。
+PDF File objects are encoded as Base64 in content memory; project snapshots are encoded as JSON attachments and then associated with source descriptions.
+Source descriptions reference attachments only by `attachmentId`; Native rechecks the project ID, timestamp, file paths, and completeness flags.
+On regeneration, project sources are reread. Saved PDF sources can reuse extracted corpora through `reuseSnapshot` and `sourceId`.
+Reuse first checks the old snapshot's account, project, and manifest hash; original bytes of an old PDF are not required version-bundle assets.
+For the reference-attachment path, see `readReferenceProjectAttachment()` and `prepareSources()`; ordinary chat-attachment materialization rules cannot be applied directly.
 
-### 专用生成与证据验证
+### Dedicated Generation and Evidence Validation
 
-`handleCodexRun()` 将 build 请求固定为 Ask，关闭 `useExistingMirror`，清空 `fileOverlays` 和 `writingStyle`。
-生成仍使用 Native 请求、项目锁、Provider 解析及取消控制；进入 `runCodexSession()` 后先分流到 `build()`。
-这条分支不要求普通编辑任务的镜像快照证据，也不进入普通附件物化及差异写回链。
+`handleCodexRun()` forces build requests to Ask, disables `useExistingMirror`, and clears `fileOverlays` and `writingStyle`.
+Generation still uses Native requests, project locks, Provider resolution, and cancellation control; after entering `runCodexSession()`, it branches into `build()` first.
+This branch does not require the mirror-snapshot evidence of ordinary editing tasks and does not enter ordinary attachment materialization or diff writeback.
 
-`projectDocument()` 选择主 TeX，递归展开 `input/include`，过滤导言、注释和参考文献，并记录源路径及行号。
-该过程采用启发式抽取，不执行完整 TeX 编译；缺失 include 和越界路径会失败。
-当前引用路径按引用文件所在目录拼接：`path.posix.join(path.posix.dirname(name), match[1].trim())`，规范化后先查原路径，再补 `.tex`。
-例如 `main.tex` 引用 `sections/methods.tex`，后者含 `\input{common}`，提取器会查找 `sections/common.tex`；即使项目根已有 `common.tex`，也不会回退到该文件。
-这限定了提取算法与项目目录布局的兼容范围；完整快照不保证提取成功，宏包或实际编译入口采用的路径规则也不能由该算法推定。
-PDF 经 [writingStylePdfWorker](../../native-host/src/writingStylePdfWorker.js) 的 PDF.js worker 提取文字、记录页码；没有 OCR。
-`prepareSources()` 过滤部分页眉页脚，检查可读性并按正文哈希去重，再把带编号语料写入 staging。
+`projectDocument()` selects the main TeX file, recursively expands `input/include`, filters the preamble, comments, and bibliography, and records source paths and line numbers.
+This is heuristic extraction without full TeX compilation; missing includes and out-of-bounds paths cause failure.
+Currently, referenced paths are joined relative to the referencing file's directory: `path.posix.join(path.posix.dirname(name), match[1].trim())`. After normalization, the original path is tried first, followed by a `.tex` suffix.
+For example, if `main.tex` references `sections/methods.tex` and that file contains `\input{common}`, the extractor looks for `sections/common.tex`. It does not fall back to `common.tex` even if that file exists at the project root.
+This limits compatibility between the extraction algorithm and project directory layouts. A complete snapshot does not guarantee successful extraction, and the algorithm does not establish the path rules used by packages or the actual compilation entry point.
+The PDF.js worker in [writingStylePdfWorker](../../native-host/src/writingStylePdfWorker.js) extracts PDF text and records page numbers; there is no OCR.
+`prepareSources()` filters some headers and footers, checks readability, deduplicates by body-text hash, and writes numbered corpora into staging.
 
-`build()` 使用 [writing-style-builder/SKILL.md](../../native-host/src/skills/writing-style-builder/SKILL.md) 作为专用任务。
-执行参数为新会话、`read-only`、`approvalPolicy: never`，关闭本地和 Overleaf skills，并剥离已知内建技能。
-`createRecoveringStyleRunner()` 可为兼容模型要求重选本地 CLI；其一次恢复重试与 JSON 校验后的修复重试分别计数。
-恢复入口见 [codexModelRecovery](../../native-host/src/codexModelRecovery.js)，模型、Provider 和输入保持本次选择。
+`build()` uses [writing-style-builder/SKILL.md](../../native-host/src/skills/writing-style-builder/SKILL.md) as its dedicated task.
+Execution uses a new session, `read-only`, and `approvalPolicy: never`, disables local and Overleaf skills, and strips known built-in skills.
+`createRecoveringStyleRunner()` can reselect a local CLI to meet model compatibility requirements. Its one recovery retry is counted separately from the repair retry after JSON validation.
+For the recovery entry, see [codexModelRecovery](../../native-host/src/codexModelRecovery.js); the model, Provider, and input retain the selection captured for this generation.
 
-`parseResult()` 解析返回 JSON；`validate()` 要求 3–8 个特征、至少三个维度及可追溯例句。
-每个例句必须支撑特征，多来源画像需引用至少两个来源；章节组拒绝 `guidance` 字段。
-`resolveExample()` 验证精确连续引用、语料行范围、完整句尾以及 TeX 括号和环境平衡。
-结构或证据验证失败可修复一次；证据不足、提取失败等错误不统一归为可修复 JSON 错误。
-这些校验保证结构及引用约束；表达观察的真实性和迁移质量仍需人工或专项评估。
+`parseResult()` parses the returned JSON; `validate()` requires 3–8 traits, at least three dimensions, and traceable example sentences.
+Each example must support its trait. A profile with multiple sources must cite at least two sources; section groups reject a `guidance` field.
+`resolveExample()` validates exact contiguous quotations, corpus line ranges, complete sentence endings, and balanced TeX braces and environments.
+A structure or evidence validation failure can receive one repair attempt. Errors such as insufficient evidence and extraction failure are not all classified as repairable JSON errors.
+These checks enforce structure and citation constraints; the accuracy of stylistic observations and the quality of transfer still require human or targeted evaluation.
 
-## 身份、资产发布与应用
+## Identity, Asset Publication, and Application
 
-风格身份分为资源作用域、视图代次和不可变引用：
+Style identity has three layers: resource scope, view epoch, and immutable reference:
 
 \[
 I_{scope}=(accountScopeId,projectId),\quad
@@ -118,178 +118,178 @@ I_{view}=(I_{scope},epoch),\quad
 I_{style}=(I_{scope},version,bundleHash).
 \]
 
-| 字段或记录 | owner | 含义与检查 |
+| Field or record | Owner | Meaning and checks |
 | --- | --- | --- |
-| `accountScopeId/projectId` | content 捕获，Native `scopeOf()` 验证 | 目标风格归属；参考项目 ID 另存于来源描述 |
-| `epoch` | Settings controller | 作用域切换后递增；迟到读取和 UI 响应不进入新视图 |
-| `revision` | Native `config.json` | 每次配置保存递增；生成结束时比较已读取的修订，决定是否沿用较新的启用偏好 |
-| `building.id/requestId/pid` | Native build/config | 构建所有权、取消路由及中断检测 |
-| `version` | Native UUID | 指向发布的版本目录；后续配置可切换当前版本 |
-| `bundleHash/files` | manifest 与 `safeBundleText()` | manifest SHA-256 加每个资产哈希，运行前验证 |
+| `accountScopeId/projectId` | Captured by content, validated by Native `scopeOf()` | Target-style ownership; reference-project IDs are stored separately in source descriptions |
+| `epoch` | Settings controller | Increments after a scope change; late reads and UI responses do not enter the new view |
+| `revision` | Native `config.json` | Increments with each configuration save; the revision read at generation completion determines whether a newer enablement preference is retained |
+| `building.id/requestId/pid` | Native build/config | Build ownership, cancellation routing, and interruption detection |
+| `version` | Native UUID | Points to the published version directory; subsequent configuration can switch the current version |
+| `bundleHash/files` | Manifest and `safeBundleText()` | Manifest SHA-256 plus each asset's hash, checked before a run |
 
-`scopeOf()` 默认使用插件私有根下 `writing-styles/<account-hash>/<project>/`；可由 `CODEX_OVERLEAF_WRITING_STYLE_ROOT` 覆盖根路径。
-配置保存由 [writingStyleStore.writeJson/withConfigLock](../../native-host/src/writingStyleStore.js) 管理：独占创建临时 JSON 文件后 rename，同一 scope 的配置读改写使用 `.config-lock` 短事务；版本在 `.build-<uuid>/bundle` 完整写好并通过消费校验后 rename 到 `versions/<uuid>`。
-manifest 记录账号哈希、目标项目、模型、来源元数据、特征索引、章节及文件哈希。
-资产文件创建权限为 `0400`，目录使用 `0700`；`versionRoot()` 和 `safeBundleText()` 拒绝版本目录或目标文件本身为符号链接，并检查哈希；平台权限效果仍有差异。
+By default, `scopeOf()` uses `writing-styles/<account-hash>/<project>/` beneath the plugin's private root; `CODEX_OVERLEAF_WRITING_STYLE_ROOT` can override the root path.
+[writingStyleStore.writeJson/withConfigLock](../../native-host/src/writingStyleStore.js) manages configuration saving: it exclusively creates a temporary JSON file and then renames it; same-scope configuration read-modify-write operations use short `.config-lock` transactions. A version is fully written in `.build-<uuid>/bundle`, passes consumer validation, and is then renamed to `versions/<uuid>`.
+The manifest records the account hash, target project, model, source metadata, trait index, sections, and file hashes.
+Asset files are created with `0400` permissions and directories with `0700`. `versionRoot()` and `safeBundleText()` reject a version directory or target file that is itself a symbolic link and check hashes; permission effects still differ by platform.
 
-构建初始化、`set()`、`get()` 的中断修复、发布及失败归属清理均在同 scope 锁内重读配置。发布将 `latest.building.id` 核对、版本 rename 和配置更新放在同一短事务中，归属已变化时停止发布。
-仅当锁内读取的 revision 等于构建开始后的预期值，才采用 `enableAfterBuild`；否则保留较新的启用偏好。资料提取和模型生成不持有该锁，其他进程可在生成期间保存偏好。
-锁使用 PID 与唯一 token，先准备 owner 再原子发布锁目录；只回收已明确退出进程的精确 owner，未知状态及权限不足保守保留。等待有界，冲突或文件系统失败沿既有错误流返回。[taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) 的进程内项目锁仍承担运行准入，不能代替这一跨进程配置锁。
-该锁只保护单机同 scope 配置事务。版本目录 rename 与 config 更新仍是两个文件系统步骤，崩溃可能留下未被引用的新版本；目录发布成功不单独证明当前配置已切换。
-既有版本不会在成功更新时删除；当前模块没有版本垃圾回收或专用删除 API。
+Build initialization, `set()`, interruption repair in `get()`, publication, and ownership cleanup after failure all reread configuration under the same scope lock. Publication combines the `latest.building.id` check, version rename, and configuration update in one short transaction, stopping if ownership has changed.
+`enableAfterBuild` applies only when the revision read under the lock equals the expected value after build startup; otherwise the newer enablement preference is retained. Reference extraction and model generation do not hold this lock, allowing other processes to save preferences during generation.
+The lock uses a PID and unique token, preparing its owner before atomically publishing the lock directory. It reclaims only the exact owner of a process confirmed to have exited, conservatively retaining owners with unknown status or insufficient permissions. Waiting is bounded; conflicts and filesystem failures follow the existing error flow. The in-process project lock in [taskRunnerRuntime](../../native-host/src/taskRunnerRuntime.js) still controls run admission and cannot replace this cross-process configuration lock.
+The lock protects only same-scope configuration transactions on one machine. Version-directory rename and config update remain two filesystem steps; a crash can leave an unreferenced new version. Successful directory publication alone does not prove that current configuration has switched.
+Existing versions are not deleted after a successful update; this module currently provides neither version garbage collection nor a dedicated deletion API.
 
-`capture()` 要求当前设置已加载；启用但未 ready 时拒绝提交，关闭时返回 null。
-`contentRuntime.runTask()` 在等待设置后复核账号及项目；排队任务通过原执行快照恢复风格。
-[runExecutionSnapshotCodec](../../extension/src/shared/runExecutionSnapshotCodec.js) 的 `normalizeSnapshot()` 固定风格字段；[storageRunActions](../../extension/src/shared/storageRunActions.js) 保留规范化引用。
-`forRun()` 根据快照读取指定版本，验证目标作用域、manifest 和全部声明资产，随后返回 Skill 路径及入口文本。
-普通 `get()` 通过 `readBundle()` 读取 manifest 后即可返回 `ready: true`，未逐一验证全部声明资产；`includePreview` 也只检查预览所读取的文件。
-因此当前元数据可读及全部资产仍可消费需要分别取证；发布时的全资产校验不保证文件在后续使用前未变化，见下文“限额与资料流向”。
-普通父任务与 broker worker prompt 使用同一风格上下文；installer 轮次跳过该上下文。
-快照为 null 时明确要求当前运行不沿用早前风格，避免同一模型会话中的历史指令残留。
-后续资产读取由 agent 按需求完成；引用版本不会扩大当前运行的编辑范围或改变 Track/Undo 规则。
+`capture()` requires current settings to be loaded; it rejects submission when enabled but not ready and returns null when disabled.
+`contentRuntime.runTask()` rechecks the account and project after waiting for settings; queued tasks restore style from their original execution snapshot.
+`normalizeSnapshot()` in [runExecutionSnapshotCodec](../../extension/src/shared/runExecutionSnapshotCodec.js) normalizes the style fields; [storageRunActions](../../extension/src/shared/storageRunActions.js) preserves the normalized reference.
+`forRun()` reads the version specified by the snapshot, validates the target scope, manifest, and all declared assets, then returns the Skill path and entry text.
+An ordinary `get()` can return `ready: true` after reading the manifest through `readBundle()`, without individually validating every declared asset. `includePreview` also checks only files read for the preview.
+Readable current metadata and continued consumability of all assets therefore require separate evidence. Full-asset validation at publication cannot guarantee that files remain unchanged before subsequent use; see “Limits and Data Flow” below.
+Ordinary parent tasks and broker worker prompts use the same style context; installer turns skip it.
+A null snapshot explicitly instructs the current run not to reuse earlier style, preventing lingering historical instructions in the same model session.
+The agent reads subsequent assets as needed. A referenced version does not expand the current run's editing scope or change Track/Undo rules.
 
-## 取消、导航与失败恢复
+## Cancellation, Navigation, and Failure Recovery
 
-| 情况 | 当前处理 | 需要保留的边界 |
+| Situation | Current handling | Boundary to preserve |
 | --- | --- | --- |
-| 读取阶段取消 | `cancel()` 调用 `cancelReferenceRead(readId)`；page AbortController 中止下载 | PDF 的 File 编码完成前后依赖取消检查，不代表编码瞬时中断 |
-| 生成阶段取消 | 已知 requestId 时发送 `codex.cancel`；requestId 迟到后再次检查 cancelled | 请求已发出与进程停止已确认分开取证 |
-| 切换账号/项目 | `alignScope()` 清空 UI 状态、增加 epoch，并取消仍在读取的引用 | 已进入 Native 的生成没有由此自动发送取消 |
-| 生成失败或取消 | 初始化在 `try/finally` 内；登记成功后才在锁内清除仍属于该 build 的 building 并写错误，保留已有 version | 配置不可用时保留原错误；未 ready 的首次生成仍无可应用版本 |
-| 当前版本目录或 manifest 损坏 | 关闭态 `get()` 返回 `enabled:false/ready:false/snapshot:null` 与错误 metadata，普通无风格提交可继续 | 启用态及显式 `includePreview` 仍严格拒绝；配置文件自身损坏不在此降级范围 |
-| Native 任务中断 | `get()` 根据 PID 存活及同进程 active request 检查纠正 building | PID 检查不构成跨重启的完整事务恢复证明 |
-| 进程停止未确认 | `keepStaging` 保留临时目录，并通知停止屏障 owner | 不能无条件宣称取消后临时语料已经删除 |
+| Cancellation during reference reading | `cancel()` calls `cancelReferenceRead(readId)`; the page AbortController aborts the download | PDF File encoding relies on cancellation checks before and after completion; this does not imply immediate interruption of encoding |
+| Cancellation during generation | Sends `codex.cancel` when requestId is known; rechecks cancelled when requestId arrives late | A sent request and confirmed process termination require separate evidence |
+| Account/project switch | `alignScope()` clears UI state, increments epoch, and cancels references still being read | This does not automatically send cancellation for generation already running in Native |
+| Generation failure or cancellation | Initialization sits inside `try/finally`; only after successful registration does cleanup, under the lock, clear building still owned by this build and write the error, retaining the existing version | If configuration is unavailable, the original error is retained; a first generation that never became ready still has no applicable version |
+| Corrupt current-version directory or manifest | Disabled-state `get()` returns `enabled:false/ready:false/snapshot:null` with error metadata, allowing ordinary submissions without style to continue | Enabled-state access and explicit `includePreview` still reject strictly; corruption of the configuration file itself is outside this fallback |
+| Interrupted Native task | `get()` corrects building by checking PID liveness and active requests in the same process | PID checking does not prove complete transaction recovery across restarts |
+| Unconfirmed process termination | `keepStaging` retains the temporary directory and notifies the stop-barrier owner | Temporary corpus deletion after cancellation cannot be claimed unconditionally |
 
-创建 staging、读取配置及首次登记均纳入 `build()` 的清理范围；未设置 `keepStaging` 时删除本次 staging，已发布版本另行保留。
-`writingStyleStore.writeJson()` 在失败收尾中只清理本次独占创建的临时文件，保留预存碰撞文件和其他构建资源；停止未确认时继续保留对应语料目录。
+Staging creation, configuration reading, and initial registration all fall within `build()` cleanup. Without `keepStaging`, this build's staging is deleted; published versions are retained separately.
+During failure cleanup, `writingStyleStore.writeJson()` removes only the temporary file exclusively created by that call, preserving preexisting colliding files and other builds' resources. Unconfirmed termination continues to preserve the relevant corpus directory.
 
-关闭风格时，[writingStyleRuntime.set()](../../native-host/src/writingStyleRuntime.js) 在锁内保存设置，再由 `get()` 返回 metadata。旧 bundle 读取失败不会使已保存的关闭状态变成 RPC 失败；[writingStyleSettings](../../extension/src/content/writingStyleSettings.js) 使用原消息区及语言映射显示资产不可用和配置忙提示。
-[contentRuntime.runTask()](../../extension/src/content/contentRuntime.js) 的 `ensureLoaded(true)` 可取得关闭态 metadata，随后 `capture()` 返回 null。启用风格、主动预览及已捕获快照的 `forRun()` 继续执行各自完整性检查，既有资产不被自动删除或重建。
-跨视图刷新用 `CHANGE_KEY` 写入账号、项目、时间和 nonce，然后其他 controller 重新向 Native 读取配置。
-该浏览器通知只负责失效提醒；Native `config.json` 才决定权威启用状态。
+When style is disabled, [writingStyleRuntime.set()](../../native-host/src/writingStyleRuntime.js) saves settings under the lock, then returns metadata through `get()`. Failure to read an old bundle does not turn the already-saved disabled state into an RPC failure. [writingStyleSettings](../../extension/src/content/writingStyleSettings.js) uses its existing message area and language mappings for asset-unavailable and configuration-busy notices.
+`ensureLoaded(true)` in [contentRuntime.runTask()](../../extension/src/content/contentRuntime.js) can obtain disabled-state metadata, after which `capture()` returns null. Enabling style, explicitly previewing it, and `forRun()` for captured snapshots continue their respective integrity checks; existing assets are not automatically deleted or rebuilt.
+Cross-view refresh writes the account, project, time, and nonce through `CHANGE_KEY`; other controllers then reread configuration from Native.
+This browser notification only signals invalidation; Native `config.json` determines the authoritative enablement state.
 
-## 限额与资料流向
+## Limits and Data Flow
 
-限额权威来源为 [writingStyle.REFERENCE_LIMITS](../../extension/src/shared/writingStyle.js)；Native 接收侧使用 [nativeQuotas](../../native-host/src/nativeQuotas.js) 的 `WRITING_STYLE_ATTACHMENT_QUOTAS`。
-当前为最多三份资料，PDF 单份 20 MiB、合计 40 MiB，项目 JSON 附件最多 4 MiB，总附件原始体积最多 44 MiB。
-PDF worker 超时为 90 秒、最多读 80 页；抽取后的正文按约 60,000 字符采样，单行加入时可能越过字符阈值。
-TeX 引用正文也有约 60,000 字符及 80 个文件遍历界限；目录与文件完整读取不表示全部内容最终进入模型语料。
+The authoritative limit source is [writingStyle.REFERENCE_LIMITS](../../extension/src/shared/writingStyle.js); the Native receiving side uses `WRITING_STYLE_ATTACHMENT_QUOTAS` in [nativeQuotas](../../native-host/src/nativeQuotas.js).
+Current limits are at most three sources, 20 MiB per PDF, 40 MiB total PDF data, 4 MiB per project JSON attachment, and 44 MiB total raw attachment size.
+The PDF worker has a 90-second timeout and reads at most 80 pages. Extracted body text is sampled to approximately 60,000 characters; adding one line can cross the character threshold.
+TeX reference text also has an approximately 60,000-character limit and an 80-file traversal limit. Reading the complete project file tree and file contents does not mean that all content ultimately enters the model corpus.
 
-输出资产另受 [writingStyleRuntime.safeBundleText()](../../native-host/src/writingStyleRuntime.js) 的单文件 `text.length <= 800000` 限制；这里按 JavaScript 字符串长度计数，与输入的 UTF-8 字节配额不同。
-`build()` 将全部 documents（包括正文及逐行 origins）序列化到 `references/source-index.json`。
-出处路径逐行重复会放大索引：例如三份各约 3,000 行、每行 20 字符、出处路径约 100 字符的 TeX，仅正文加重复路径就约为 \(3\times3000\times(20+100)=1{,}080{,}000\) 字符，尚未计 JSON 字段。
-短行与重复长出处路径可使符合输入配额的参考资料生成超限索引。发布前，`readBundleAtRoot()` 和同一个 `safeBundleText()` 会检查 staging 中的 manifest 及全部声明资产；超限或完整性失败时保留旧版本，不发布无法消费的新版本。输入字节预算、正文采样和消费字符限额仍分别生效，当前修复不提高限额。
+Output assets additionally face the per-file `text.length <= 800000` limit in [writingStyleRuntime.safeBundleText()](../../native-host/src/writingStyleRuntime.js). This counts JavaScript string length, unlike the UTF-8 byte quotas for input.
+`build()` serializes all documents, including body text and per-line origins, into `references/source-index.json`.
+Repeating a source path for each line can enlarge the index. For example, three TeX sources of approximately 3,000 lines each, with 20 characters per line and source paths of approximately 100 characters, already require approximately \(3\times3000\times(20+100)=1{,}080{,}000\) characters for text and repeated paths alone, before JSON fields.
+Short lines with repeated long source paths can produce an oversized index from references that satisfy input quotas. Before publication, `readBundleAtRoot()` and the same `safeBundleText()` check the staging manifest and all declared assets. An exceeded limit or integrity failure retains the old version and prevents publication of an unusable new one. Input byte budgets, body-text sampling, and consumer character limits still apply independently; the current fix does not raise these limits.
 
-Base64 字节预算为 \(E=4\lceil B/3\rceil\)，还需预留 JSON 和请求元数据。
-44 MiB 附件预算使编码结果加预留低于浏览器 64 MiB 消息上限；普通聊天附件配额保持独立。
-变更阈值须同时核对 UI、共享常量、Native 校验、PDF worker 和消息封装；只改错误提示无法扩容。
+The Base64 byte budget is \(E=4\lceil B/3\rceil\), with additional room needed for JSON and request metadata.
+The 44 MiB attachment budget keeps encoded output plus reserved overhead below the browser's 64 MiB message limit; ordinary chat-attachment quotas remain independent.
+Changing thresholds requires checking the UI, shared constants, Native validation, PDF worker, and message packaging together; changing an error message alone cannot increase capacity.
 
-| 数据 | 持久化与出站事实 |
+| Data | Persistence and outbound-flow facts |
 | --- | --- |
-| 项目目录与未提交 PDF | controller 内存持有；该 controller 不把列表或 PDF 字节存入浏览器持久状态 |
-| 参考 TeX/PDF 附件 | 经浏览器后台送 Native；build 独立抽取，不进入普通 turn attachments 物化 |
-| 抽取语料、出处、生成指导 | staging 及成功版本包落盘；Codex 可读取并交给所选模型处理 |
-| 原 PDF 字节 | 用于 worker 提取及文件哈希；build 未将原 PDF 写入版本包 |
-| 版本快照 | 可随队列及运行记录保存；仅包含身份、版本、哈希与标签，不含语料正文 |
-| Provider secret | 由独立 Provider 管理流程处理；风格资产不保存 API key |
+| Project catalog and unsubmitted PDFs | Held in controller memory; this controller does not save catalog or PDF bytes into persistent browser state |
+| Reference TeX/PDF attachments | Sent through the browser background to Native; build extracts them independently, outside ordinary turn-attachment materialization |
+| Extracted corpus, source origins, and generated guidance | Written to staging and successful version bundles; Codex can read them and send them to the selected model for processing |
+| Original PDF bytes | Used for worker extraction and file hashing; build does not write the original PDF into the version bundle |
+| Version snapshot | Can be saved with queue and run records; contains only identity, version, hash, and labels, without corpus text |
+| Provider secret | Managed through the separate Provider workflow; style assets do not store API keys |
 
-`generate()` 在读取选定项目快照后、`startBuild()` 前聚合项目文本，经组合根注入的 `preflightProjectReferences` 调用现有 `SensitivePreflight`。检查使用目标项目的治理规则及原确认政策，取消或账号/项目变化在异步等待后再次核验；预检结果沿 Settings 原消息区呈现。
-该检查只覆盖本次选定的项目文本，PDF、saved 语料及完整生成提示词没有因此获得同等扫描保证。`writingStyleRuntime` 的可读性、大小和证据校验继续独立执行。
-生成器提示将参考材料内的指令视为数据，资产入口要求服从当前任务与项目规则；这些提示需与实际权限边界分别评估。
+After reading selected project snapshots and before `startBuild()`, `generate()` aggregates project text and invokes existing `SensitivePreflight` through composition-root-injected `preflightProjectReferences`. Checking uses the target project's governance rules and existing confirmation policy. Cancellation and account/project changes are rechecked after asynchronous waits; preflight results appear in the existing Settings message area.
+This check covers only the project text selected for that generation. PDFs, saved corpora, and the complete generation prompt do not gain equivalent scanning coverage. Readability, size, and evidence checks in `writingStyleRuntime` remain independent.
+Generator prompts treat instructions inside references as data, and asset entry guidance requires compliance with the current task and project rules. These prompts must be evaluated separately from actual permission boundaries.
 
-## 普通技能安装、继承与作用域
+## Ordinary Skill Installation, Inheritance, and Scope
 
 <a id="local-skill-catalog"></a>
 
-### 目录、逐项选择与 `/` 调用
+### Catalogs, Per-Item Selection, and `/` Invocation
 
-Settings 的 Skills 页面分开呈现本地 Codex 与 Codex Overleaf 两份目录。[LocalSkillsPanel.refreshLocalSkills](../../extension/src/content/localSkillsPanel.js) 读取插件目录，并调用 runtime 的 `primeCodexLocalSkillsCatalog` 读取 `skills.list {scope:'codex-local'}`。本地项显示名称、描述、来源与启用开关；它们不能从该面板删除。插件项继续使用 `scope:'codex-overleaf'` 的安装与删除接口；旧项目 scope 仍要求项目 ID。
+The Skills page in Settings presents separate Local Codex and Codex Overleaf catalogs. [LocalSkillsPanel.refreshLocalSkills](../../extension/src/content/localSkillsPanel.js) reads the plugin catalog and calls runtime `primeCodexLocalSkillsCatalog` to fetch `skills.list {scope:'codex-local'}`. Local items display a name, description, source, and enablement toggle; they cannot be deleted from this panel. Plugin items continue to use installation and removal interfaces under `scope:'codex-overleaf'`; the legacy project scope still requires a project ID.
 
-[codexLocalSkills.listCodexLocalSkills](../../native-host/src/codexLocalSkills.js) 在继承本机配置的独立运行 home 中启动短期 Codex app-server，只执行初始化和 `skills/list`，不创建模型轮次。目录采用 Codex 当前发现结果，包含来源的 `enabled` 状态，并排除 Codex Overleaf 持久技能根；普通文件系统缓存扫描不充当启用目录。返回给 Content 的元数据不提供技能文件路径字段或技能正文，名称和描述仍来自实际目录。helper 通过 `runOwnedNativeHelper` 管理取消、超时、输出预算和进程退出；当前预算见同模块的 `DISCOVERY_TIMEOUT_MS/MAX_DISCOVERY_BYTES`。
+[codexLocalSkills.listCodexLocalSkills](../../native-host/src/codexLocalSkills.js) starts a short-lived Codex app-server in an isolated runtime home that inherits the local configuration. It performs only initialization and `skills/list`, creating no model turn. The catalog uses Codex's current discovery results, includes each source's `enabled` state, and excludes the persistent Codex Overleaf skill root. An ordinary filesystem-cache scan does not serve as the enabled catalog. Metadata returned to Content contains neither skill-file path fields nor skill bodies; names and descriptions still come from the actual catalog. The helper uses `runOwnedNativeHelper` to manage cancellation, timeout, output budgets, and process exit. Current budgets are `DISCOVERY_TIMEOUT_MS/MAX_DISCOVERY_BYTES` in the same module.
 
-本地条目的 ID 为 `local-` 加来源身份摘要：普通技能使用实际 `SKILL.md` 的 realpath，system 技能使用 system 名称，避免每个运行 home 重新生成 system 目录导致身份变化。相同物理来源的别名合并；独立来源的同名技能保持不同 ID，列表来源和 `/` 副标题为这些重名项附加 ID 短后缀以便区分。`scope:'codex-local'` 与插件的 `scope:'codex-overleaf'` 共同限定显式调用，名称相同不合并为一个技能。
+A local item's ID is `local-` plus a source-identity digest: ordinary skills use the actual `SKILL.md` realpath; system skills use the system name, avoiding identity changes when each runtime home regenerates its system directory. Aliases of the same physical source merge; same-named skills from independent sources retain distinct IDs. Catalog source labels and `/` subtitles append a short ID suffix to distinguish such duplicate names. `scope:'codex-local'` and plugin `scope:'codex-overleaf'` jointly constrain explicit invocation; equal names do not merge into one skill.
 
-全局偏好 `codexLocalSkillEnabled` 只保存使用者明确设置的布尔覆盖；某个 ID 缺失时继承目录的 `enabled`。目录本身仅保存在 Content 内存，并以账号、项目和 SPA 路由代次限定响应归属；重新打开 Skills 强制刷新，普通预取与提交可复用当前目录和在途 Promise。空目录是合法结果。Codex 的单项发现错误通过 `discoveryWarnings:[{code:'codex_local_skills_skipped',count}]` 提供固定代码与数量；有效项继续显示并参与普通任务，原页面以当前语言说明部分技能未加载，不向 UI 返回原错误中的路径或内容。CLI 整体失败或目录结构异常仍报错，保留草稿并允许重试；显式选择的项缺失仍拒绝启动。目录快照不持久化为会话配置，源技能更新和删除仍可能改变下一次发现结果。
+The global preference `codexLocalSkillEnabled` stores only boolean overrides explicitly set by the user; a missing ID inherits the catalog's `enabled` value. The catalog itself lives only in Content memory, with response ownership bounded by account, project, and SPA route epoch. Reopening Skills forces a refresh; ordinary prefetch and submission can reuse the current catalog and in-flight Promise. An empty catalog is valid. Codex discovery errors for individual items return a fixed code and count through `discoveryWarnings:[{code:'codex_local_skills_skipped',count}]`. Valid items remain visible and participate in ordinary tasks; the existing page explains in the current language that some skills were not loaded, without returning the original errors' paths or content to the UI. A whole-CLI failure or malformed catalog still raises an error, preserves the draft, and allows retry; a missing explicitly selected item still prevents startup. The catalog snapshot is not persisted as session configuration, and source-skill updates or deletions can still change the next discovery result.
 
-runtime 的 `getSlashCommands/activateCodexOverleafSkillComposerContext` 将启用的本地项加入 `/` 菜单并选择调用标签，命令和标签保留 scope 与稳定 ID；关闭主开关或单项后该项不再进入可用菜单。普通提交在首次异步等待前捕获两套开关和显式调用；启用本地技能时等待目录，再生成 `enabledCodexLocalSkillIds`。显式本地调用会强制刷新目录，已关闭或消失的选中项在派发前拒绝。队列另外保存捕获的名单和调用，详见[执行快照](run-state-and-recovery.md#31-执行快照)。
+Runtime `getSlashCommands/activateCodexOverleafSkillComposerContext` adds enabled local items to the `/` menu and selects their invocation tag. Commands and tags preserve scope and stable ID; disabling the main switch or an individual item removes that item from the available menu. Ordinary submission captures both sets of switches and the explicit invocation before the first asynchronous wait. With local skills enabled, it waits for the catalog and then generates `enabledCodexLocalSkillIds`. Explicit local invocation forces catalog refresh; a selected item that is disabled or missing is rejected before dispatch. The queue separately saves the captured list and invocation; see [Execution Snapshots](run-state-and-recovery.md#31-execution-snapshots).
 
-Native 的 `loadSelectedCodexLocalSkill` 重新通过权威目录解析传入 ID，并复核主开关、运行名单和源文件身份，只读取限制内的有效 UTF-8 `SKILL.md`；显式本地调用缺失或禁用时，session runner 以 `codex_local_skill_unavailable` 停止启动。`codexPromptAssembly.formatSkillInvocationContext` 把选中正文及实际源路径交给模型，源路径让相对引用能够定位到技能目录。发现、允许参与运行、显式注入与模型实际执行是四个独立环节；该入口不保证模型会遵循技能，也不提供任意文件读取隔离。
-`bridge.ping` 报告的 `localCodexSkills` 属于全局 `REQUIRED_CAPABILITIES`，防止旧 Native 在产品版本号相同的情况下忽略新增选择字段。能力缺失沿既有兼容门控和更新提示处理，具体分类与允许方法见[Native 兼容性门控](protocols-and-trust.md#4-native-兼容性门控的两个位置)。
-若源技能在提交前检查后失效，该错误沿既有运行失败呈现；`contentRuntime.restoreRejectedLocalSkillSubmission` 只在本次确实清空了输入且原账号、项目、会话和 composer 代次仍匹配时恢复原稿、选区、技能标签及内存附件。后来输入、主动清空、附件变化或切换归属均阻止回填；队列仍沿既有失败保留流程。该恢复不扩展附件的刷新持久化预算，细节见[已提交输入与草稿](ui-and-loading.md#已提交输入运行中草稿与编辑重发)。
+Native `loadSelectedCodexLocalSkill` resolves incoming IDs against the authoritative catalog again, rechecks the main switch, the run's allowlist, and source-file identity, and reads only a valid UTF-8 `SKILL.md` within limits. If an explicitly invoked local skill is missing or disabled, the session runner stops startup with `codex_local_skill_unavailable`. `codexPromptAssembly.formatSkillInvocationContext` gives the model the selected body and actual source path; the source path lets relative references resolve to the skill directory. Discovery, permission to participate in a run, explicit injection, and actual model execution are four separate stages. This entry point does not guarantee that the model follows the skill or provide arbitrary-file-read isolation.
+`localCodexSkills`, reported by `bridge.ping`, belongs to global `REQUIRED_CAPABILITIES`, preventing an older Native with the same product version from ignoring newly added selection fields. A missing capability follows existing compatibility gating and update notices; for classification and allowed methods, see [The Two Native Compatibility Gates](protocols-and-trust.md#4-the-two-native-compatibility-gates).
+If a source skill becomes unavailable after the pre-submission check, the error uses the existing run-failure presentation. `contentRuntime.restoreRejectedLocalSkillSubmission` restores the original draft, selection, skill tag, and in-memory attachments only if this submission actually cleared the input and its original account, project, session, and composer epoch still match. Later input, explicit clearing, attachment changes, or ownership switches prevent restoration. The queue continues to use its existing failure-retention flow. This recovery does not expand attachment persistence across refresh; see [Submitted Input and Drafts](ui-and-loading.md#submitted-input-drafts-during-a-run-and-edit--resend).
 
-### 插件安装与 Codex home 继承
+### Plugin Installation and Codex Home Inheritance
 
-`installCodexOverleafSkill()` 与 `installProjectSkill()` 校验安全 ID、文本类型、NUL、64 KiB 限额及符号链接路径。
-插件技能默认位于用户主目录 `.codex-overleaf/skills`；自定义根也必须留在该默认根内部。
-插件技能 scope 没有按 Overleaf 账号或项目进一步隔离；项目技能则依附具体镜像根。
+`installCodexOverleafSkill()` and `installProjectSkill()` validate safe IDs, text type, NUL, the 64 KiB limit, and symbolic-link paths.
+Plugin skills default to `.codex-overleaf/skills` under the user's home directory; a custom root must also remain within that default root.
+Plugin skill scope has no further isolation by Overleaf account or project; project skills are attached to a specific mirror root.
 
-官方 `annotated-rewrite` 和 `parallel-subagents` 由 `ensureDefaultCodexOverleafSkills()` 补装，删除接口禁止移除官方项。
-面板预取和普通提交共用 [contentRuntime.primeCodexOverleafSkillsCatalog](../../extension/src/content/contentRuntime.js) 的在途 Promise。普通提交启用插件技能且目录尚未读到时，等待所需目录，随后按点击时捕获的逐项开关筛选启用 ID；读取失败或空目录走已有任务启动失败提示，保留输入并停止 Native 任务派发。关闭插件技能的提交不强制读取；队列继续采用入队保存的上下文。已有非空缓存维持原复用边界，未建立运行中的目录快照。[skillsCatalogSubmission](../../test/skillsCatalogSubmission.test.js) 验证首次提交等待、失败、开关与提交归属。
-现有正常 `SKILL.md` 会保留；升级 bundled 文件不自动覆盖该已安装文件。安装接口的覆盖行为与补装行为分别核对。
-安装时的文本和路径校验不审查技能语义，也没有风格画像所用的证据验证和不可变版本发布。
+`ensureDefaultCodexOverleafSkills()` installs the official `annotated-rewrite` and `parallel-subagents` skills when missing; the removal API prohibits deleting official items.
+Panel prefetch and ordinary submission share the in-flight Promise in [contentRuntime.primeCodexOverleafSkillsCatalog](../../extension/src/content/contentRuntime.js). When an ordinary submission enables plugin skills and the catalog has not been read, submission waits for the required catalog, then filters enabled IDs using per-item switches captured at the click. Read failure or an empty catalog uses the existing task-start failure notice, retains input, and stops Native task dispatch. Submissions with plugin skills disabled do not force a read; the queue continues to use its saved enqueue-time context. An existing nonempty cache keeps its prior reuse boundary; no per-run catalog snapshot has been introduced. [skillsCatalogSubmission](../../test/skillsCatalogSubmission.test.js) verifies first-submission waiting, failure, toggles, and submission ownership.
+An existing valid `SKILL.md` is preserved; updating a bundled source file does not automatically overwrite that installed file. Installation overwrite behavior and missing-skill installation must be checked separately.
+Installation-time text and path validation does not review skill semantics, and it has neither the evidence validation nor immutable version publication used for style profiles.
 
-`preparePluginCodexHome()` 负责配置、认证及技能的基础准备，并移除继承的全局 AGENTS、rules、memories。实际 runner 和线程分叉通过 `buildCodexHomeEnv({…}, { isolateRuntimeHome: true, … })` 取得稳定的执行 scope；持久数据根由 `getPluginCodexHome()` 确定，下文称 canonical home。显式配置与用户 home 同路径的旧调用保留提前返回；目录发现的 `forceIsolatedSkillSettings` 或显式本地名单会改用独立 canonical home 后再创建 scope，避免逐项 `skills/config/write` 改写用户来源配置。
-开关决定用户 skills、plugins、superpowers 等继承；`vendor_imports` 有单独规则，不能将关闭本地技能描述为目录完全空白。
+`preparePluginCodexHome()` handles base preparation of configuration, authentication, and skills, and removes inherited global AGENTS, rules, and memories. Actual runners and thread forks obtain a stable execution scope through `buildCodexHomeEnv({…}, { isolateRuntimeHome: true, … })`. `getPluginCodexHome()` determines the persistent data root, called the canonical home below. Legacy calls explicitly configured to use the same path as the user's home retain their early return. Catalog discovery's `forceIsolatedSkillSettings`, or an explicit local allowlist, first selects an isolated canonical home and then creates a scope, preventing per-item `skills/config/write` from modifying the user's source configuration.
+Switches determine inheritance of user skills, plugins, superpowers, and related content. `vendor_imports` has separate rules, so disabling local skills cannot be described as leaving the directory completely empty.
 
-**TOML 过滤与配置路径。** [codexHome.sanitizeCopiedCodexConfig](../../native-host/src/codexHome.js) 依次执行 personality 过滤及按开关执行本地技能过滤。[tomlStatements](../../native-host/src/tomlStatements.js) 的 `splitTomlStatements` 保留完整值边界，`readTomlStatementPath/filterTomlRootKeys` 解码键的各段后判断目标 root。顶层 `personality` 始终移除；关闭本地技能时同时移除 `notify/skills/plugins/mcp_servers/marketplaces`。quoted、Unicode 转义、dotted、inline 和数组表形式遵循相同 root 规则。
-例如 `["mcp_servers".example]` 属于选定 root，`["mcp_servers.example"]` 是包含点的单一键，应保留；其他表中的同名字段也维持原义。字符串里的伪赋值/header 不成为新语句，未选正文与空白保持，CRLF 规范化为 LF。结构未闭合、括号错配或无效键转义会中止准备；这套处理不替代完整 TOML 或 Codex schema 校验。
-scope 的配置键和发布内容使用同一次捕获的来源字节；准备 staging 时跳过实时配置复制，再过滤捕获内容，避免来源变化把另一份配置发布到旧键。随后 [codexConfigPaths.rebaseCodexConfigPaths](../../native-host/src/codexConfigPaths.js) 将已知配置层路径锚定到原 canonical 目录，包括 SQLite、模型目录、指令文件等 `isConfigPath` 所列字段。`~/` 留给 CLI 展开，MCP 旧 `cwd` 保留原语义；字面含点的键不会被当成多段路径重写。维护 Codex 版本时须核对新增 path 字段及其解析位置。
-[codexConfigIsolation](../../test/codexConfigIsolation.test.js) 检查等价写法、完整值、未选字段和错误保护；[codexConfigPaths](../../test/codexConfigPaths.test.js) 检查路径锚与非目标值保持。实际 CLI 的配置接受和消费者行为仍需对应版本验证。
+**TOML filtering and configuration paths.** [codexHome.sanitizeCopiedCodexConfig](../../native-host/src/codexHome.js) applies personality filtering, followed by local-skill filtering according to the switch. `splitTomlStatements` in [tomlStatements](../../native-host/src/tomlStatements.js) preserves complete value boundaries; `readTomlStatementPath/filterTomlRootKeys` decode each key segment before determining the target root. Top-level `personality` is always removed. Disabling local skills also removes `notify/skills/plugins/mcp_servers/marketplaces`. Quoted, Unicode-escaped, dotted, inline, and array-of-tables forms follow the same root rule.
+For example, `["mcp_servers".example]` belongs to the selected root, while `["mcp_servers.example"]` is a single key containing a dot and must remain. Same-named fields in other tables also retain their original meaning. Apparent assignments/headers inside strings do not start new statements. Unselected body text and whitespace are preserved; CRLF is normalized to LF. Unclosed structures, mismatched brackets, or invalid key escapes abort preparation. This processing does not replace full TOML or Codex schema validation.
+A scope's configuration key and published content use the same captured source bytes. Staging preparation skips live configuration copying and then filters the captured content, preventing a changed source from publishing different configuration under an old key. [codexConfigPaths.rebaseCodexConfigPaths](../../native-host/src/codexConfigPaths.js) then anchors known configuration-level paths to the original canonical directory, including SQLite, model catalogs, instruction files, and other fields listed by `isConfigPath`. `~/` is left for CLI expansion; legacy MCP `cwd` retains its original meaning. Literal dotted keys are not rewritten as multi-segment paths. Codex version maintenance must check newly added path fields and their resolution sites.
+[codexConfigIsolation](../../test/codexConfigIsolation.test.js) checks equivalent syntax, complete values, unselected fields, and error protection; [codexConfigPaths](../../test/codexConfigPaths.test.js) checks path anchors and preservation of non-target values. Actual CLI configuration acceptance and consumer behavior still require verification against the corresponding version.
 
-**稳定执行目录与共享历史。** [codexHomeScope.prepareScopedPluginCodexHome](../../native-host/src/codexHomeScope.js) 按发现配置派生 `canonical/runtime-homes/<hash>`：键包含主开关、排序去重的启用/禁用 IDs、installer 角色、来源配置字节摘要和有效技能源目录身份。相同配置复用已发布目录，变化创建另一目录；首次准备在独立 staging 中完成后原子发布，竞争准备不会删除胜出目录。
-`composePluginSkillsDirectory()` 仅在新 scope 的 staging 组合技能，先本地后插件；同名插件使用原名称，本地来源通过 `preserveLocalSkillAlias` 保留另一链接，随后按真实来源身份选择。已发布 scope 的 skills 不再重建，父运行、worker、风格生成和 installer 的后续准备不会改掉彼此已发现的路径。技能正文继续通过来源链接读取，来源内容更新及使用者主动删除源文件仍会影响读取。
-scope 持久保留，`sessions/archived_sessions/history` 链接 canonical 的插件历史；`CODEX_OVERLEAF_CODEX_HOME` 保持 canonical，使 worker、分叉和清历史不会误入嵌套 scope。显式 `sqlite_home` 保留原选择及路径语义，已有 `CODEX_SQLITE_HOME` 继续传递，缺省才使用 canonical 环境默认值。`clearPluginCodexHistory` 清理同一物理插件历史，用户来源 home 的全局会话保持。
-该方案不持有整轮 home 锁，父任务等待 worker 时不会因该锁互相等待；项目写入互斥仍由 [taskRunnerRuntime.acquireProjectLock](../../native-host/src/taskRunnerRuntime.js) 管理。持久 scope 没有自动 GC；旧 rollout 的绝对路径仍可依赖它。
-普通 runner 将选定项目技能作为 prompt 内容传递，并向底层执行器传 `projectLocalSkills: null`；home 的项目技能物化能力另有调用条件。
-主开关及单技能启用 map 由 [projectSettingsCoordinator](../../extension/src/content/projectSettingsCoordinator.js) 与 [globalPreferences](../../extension/src/shared/globalPreferences.js) 协作保存。
-`loadSelectedCodexOverleafSkill()` 按主开关及 enabled IDs 检查显式调用；未提供 enabled IDs 的兼容请求默认允许所有项。
+**Stable execution directories and shared history.** [codexHomeScope.prepareScopedPluginCodexHome](../../native-host/src/codexHomeScope.js) derives `canonical/runtime-homes/<hash>` from discovery configuration. The key includes main switches, sorted and deduplicated enabled/disabled IDs, the installer role, a digest of source-configuration bytes, and effective skill-source-directory identities. Identical configuration reuses a published directory; changes create another directory. Initial preparation completes in separate staging and then publishes atomically; competing preparation does not delete the winning directory.
+`composePluginSkillsDirectory()` composes skills only in a new scope's staging, local first and then plugin. A same-named plugin keeps its original name; `preserveLocalSkillAlias` retains another link to the local source, followed by selection by actual source identity. Published scopes' skills are no longer rebuilt, so subsequent preparation by parents, workers, style generation, and installers does not change paths already discovered by one another. Skill bodies continue to be read through source links; source-content updates and users explicitly deleting source files still affect reads.
+Scopes persist, with `sessions/archived_sessions/history` linked to the canonical plugin history. `CODEX_OVERLEAF_CODEX_HOME` stays canonical so that workers, forks, and history clearing do not mistakenly enter nested scopes. Explicit `sqlite_home` retains its original selection and path semantics; an existing `CODEX_SQLITE_HOME` is still forwarded, and only its absence uses the canonical environment default. `clearPluginCodexHistory` clears the same physical plugin history, preserving global sessions in the user's source home.
+This design does not hold a whole-turn home lock, so a parent waiting for a worker cannot deadlock against it. Project write exclusion remains managed by [taskRunnerRuntime.acquireProjectLock](../../native-host/src/taskRunnerRuntime.js). Persistent scopes have no automatic GC; old rollout absolute paths may still depend on them.
+The ordinary runner passes selected project skills as prompt content and passes `projectLocalSkills: null` to the underlying executor; home-level project-skill materialization has separate invocation conditions.
+[projectSettingsCoordinator](../../extension/src/content/projectSettingsCoordinator.js) and [globalPreferences](../../extension/src/shared/globalPreferences.js) jointly persist main switches and per-skill enablement maps.
+`loadSelectedCodexOverleafSkill()` checks explicit invocations against the main switch and enabled IDs; compatibility requests without enabled IDs allow all items by default.
 
-**单技能开关与发现。** `runCodexSession` 把 `enabledCodexOverleafSkillIds` 与 `enabledCodexLocalSkillIds` 传入父执行器、worker 和 home 准备；列表缺失保留旧继承语义，显式空列表关闭对应来源的全部项。本地名单包含选择后的稳定 ID，来源原本关闭的项可由明确选择启用。线程分叉沿同一名单选择 home，worker 的 `disableCodexOverleafSkillIds` 另排除递归派发技能。
-组合目录按列表筛选插件项；[codexSkillIsolation.applyCodexSkillIsolation](../../native-host/src/codexSkillIsolation.js) 在实际运行的 `skills/list` 后按来源路径及 realpath 检查，通过当前独立 home 的 `skills/config/write` 禁用关闭项或启用名单中原本关闭的本地项。插件与本地技能分别判断，同名独立来源不会借用对方开关；installer 的 system `skill-installer` 保留原例外。名单约束参与 scope 身份，改变选择会得到另一运行目录；该配置不追溯撤销活动轮次和已有线程上下文。
-验收需分别核对显式 loader、实际发现列表和模型调用；[codexSkillDiscovery](../../test/codexSkillDiscovery.test.js) 的合成 RPC 覆盖来源判断，真实 CLI 列表可验证生效配置，模型自然触发及 Chrome 端到端另行验收。任意文件读取隔离、运行中撤销和历史上下文清除不由该开关提供。
+**Per-skill switches and discovery.** `runCodexSession` passes `enabledCodexOverleafSkillIds` and `enabledCodexLocalSkillIds` to the parent executor, workers, and home preparation. An absent list preserves legacy inheritance semantics; an explicit empty list disables every item from the corresponding source. The local list contains selected stable IDs, and explicit selection can enable an item disabled at its source. Thread forks select a home using the same lists; workers' `disableCodexOverleafSkillIds` additionally excludes recursive-dispatch skills.
+The composed directory filters plugin items by the list. After the actual run's `skills/list`, [codexSkillIsolation.applyCodexSkillIsolation](../../native-host/src/codexSkillIsolation.js) checks source paths and realpaths and uses `skills/config/write` in the current isolated home to disable excluded items or enable listed local items originally disabled. Plugin and local skills are evaluated separately; independent same-named sources do not borrow each other's switch. The installer's system `skill-installer` retains its existing exception. List constraints participate in scope identity, so changing selection produces another runtime directory; this configuration does not retroactively revoke active turns or existing thread context.
+Acceptance must separately check the explicit loader, actual discovery list, and model invocation. Synthetic RPC in [codexSkillDiscovery](../../test/codexSkillDiscovery.test.js) covers source classification; a real CLI list can verify effective configuration. Natural model triggering and Chrome end-to-end behavior require separate acceptance. These switches do not provide arbitrary-file-read isolation, mid-run revocation, or historical-context clearing.
 
-删除技能涉及持久目录与列表更新、Composer 调用清理两部分。[LocalSkillsPanel.removeCodexOverleafSkill()](../../extension/src/content/localSkillsPanel.js) 在 `skills.remove` 成功后，以生产 normalizer 的 `{ id, title, scope }` 形状核对当前调用；只有 scope 为 `codex-overleaf` 且 id 与删除目标相同，才执行 `clearComposerSkillInvocation()` 并立即重绘标签。删除失败保留选择；等待期间改选其他技能时，新的选择保持。随后刷新技能列表并保存状态。
-原生 `loadSelectedCodexOverleafSkill()` 仍按主开关、启用 ID 和实际文件存在性过滤显式调用。标签清除不取消已在执行的技能，也不证明整个发现目录或其他进程已经同步清理。Composer 标签旁的 `×` 继续提供原有手动清除入口。
+Skill deletion has two parts: updating the persistent directory and list, and clearing the Composer invocation. After `skills.remove` succeeds, [LocalSkillsPanel.removeCodexOverleafSkill()](../../extension/src/content/localSkillsPanel.js) checks the current invocation in the production normalizer's `{ id, title, scope }` shape. Only a `codex-overleaf` scope with the same ID as the deletion target triggers `clearComposerSkillInvocation()` and an immediate tag rerender. Deletion failure retains the selection; selecting another skill during the wait preserves the new selection. The skill list then refreshes and state is saved.
+Native `loadSelectedCodexOverleafSkill()` still filters explicit invocations by main switch, enabled IDs, and actual file existence. Clearing the tag does not cancel a skill already executing or prove that the entire discovery catalog or other processes have synchronized cleanup. The Composer tag's `×` retains its existing manual-clear entry point.
 
-`id:'skill-installer'` 且 scope 缺省或为 `builtin` 是特殊调用：工作目录改为插件技能根、沙箱为 workspace-write、`approvalPolicy: never`，拒绝附件和选区，并返回空项目 sync changes。具有 `codex-local/codex-overleaf` scope 的同名条目沿普通技能执行，不获得 installer 的目录或权限。
-installer 使用独立角色的稳定 scope，`$CODEX_HOME/skills` 固定映射到持久插件技能目录；普通、worker 和风格 scope 不替换该映射。按该路径完成的新安装留在持久根，后续目录准备可发现它；风格生成仍使用自己的资料 staging。
-installer 的工作目录、skills 实际解析目标和后续发现分别验证；路径保持不能替代安装产物验收。
-收到 app-server `commandExecution/requestApproval` 时，`decideSkillInstallerCommandApproval()` 委托 [commandApproval.evaluateSkillCommand](../../native-host/src/commandApproval.js) 判断。
-该审批规则认可限定根内的只读检查及合规 HTTPS git clone，拒绝危险参数、额外 shell 操作和嵌套符号链接逃逸；不能据此声称所有安装命令均经过审批，也不因此信任所有 HTTPS 内容。
-app-server 的 file-change approval 请求在 installer 轮次拒绝；该分支和底层 workspace-write 权限须分别理解。
-installer 完成由模型运行结果汇总，当前路径未统一核验是否产生预期 `SKILL.md`、完整目录、版本及后续可发现性；成功文案需结合实际文件与加载证据判断。
+`id:'skill-installer'` with a missing or `builtin` scope is a special invocation: its working directory becomes the plugin skill root, its sandbox is workspace-write, `approvalPolicy: never` applies, attachments and selections are rejected, and it returns empty project sync changes. A same-named item with `codex-local/codex-overleaf` scope executes as an ordinary skill, without the installer's directory or permissions.
+The installer uses a stable scope with a separate role; `$CODEX_HOME/skills` stays mapped to the persistent plugin skill directory. Ordinary, worker, and style scopes do not replace that mapping. New installations completed through that path remain in the persistent root and can be discovered during later catalog preparation; style generation still uses its own reference staging.
+The installer's working directory, actual skills-resolution target, and subsequent discovery must be verified separately. Path stability cannot replace installation-artifact acceptance.
+On an app-server `commandExecution/requestApproval`, `decideSkillInstallerCommandApproval()` delegates judgment to [commandApproval.evaluateSkillCommand](../../native-host/src/commandApproval.js).
+These approval rules allow read-only inspection within constrained roots and compliant HTTPS git clone, while rejecting dangerous arguments, additional shell operations, and nested symbolic-link escapes. They do not prove that every installation command undergoes approval or make all HTTPS content trustworthy.
+App-server file-change approval requests are rejected during installer turns; this branch and underlying workspace-write permissions must be understood separately.
+Installer completion is summarized from the model run result. The current path does not uniformly verify that it produced the expected `SKILL.md`, a complete directory, a version, or subsequent discoverability; success text must be assessed together with actual files and loading evidence.
 
-## 修改路由与验证定义
+## Change Routes and Verification Definitions
 
-| 修改意图 | 主改与必要联动 | 相关测试与验证范围 |
+| Change intent | Primary changes and required coordination | Relevant tests and verification scope |
 | --- | --- | --- |
-| 参考选择、状态和预览 | `writingStyleSettings`；content 组合、Settings 挂载和 epoch | [p2UiRegression](../../test/p2UiRegression.test.js)，仅相关 UI 协调覆盖 |
-| 项目读取与取消 | `referenceProjects`；snapshot router、page dispatcher、RPC 及加载清单 | [pageRpcContract](../../test/pageRpcContract.test.js)、[pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js) |
-| TeX 引用路径与正文提取 | `writingStyleRuntime.projectDocument/prepareSources/build` | 需增加嵌套引用、根目录与子目录同名文件、扩展名补全及越界路径的合成验证；实际编译路径语义另行验证 |
-| PDF/附件限额 | `REFERENCE_LIMITS`；`nativeQuotas`、worker、source preparation | [writingStyleLimits](../../test/writingStyleLimits.test.js)、[nativeQuotas](../../test/nativeQuotas.test.js) |
-| 表达画像和证据要求 | builder Skill；`writingStyleProfile`、`writingStyleEvidence`、bundle renderer | 需增加针对 JSON 修复、证据匹配和发布失败的行为验证 |
-| 版本捕获和队列恢复 | `capture/forRun`；execution snapshot codec、storage compaction、runner | [runExecutionSnapshot](../../test/runExecutionSnapshot.test.js)、[releaseBoundaryHelpers](../../test/releaseBoundaryHelpers.test.js) |
-| 配置保存与异常资产恢复 | [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js) 的 `get/set/build/saveConfig/safeBundleText`、[writingStyleStore](../../native-host/src/writingStyleStore.js) 的 `writeJson/withConfigLock`；Settings 的 `toggle/ensureLoaded` 与 runtime `runTask` | [writingStyleRecovery](../../test/writingStyleRecovery.test.js) 覆盖初始化清理、配置竞争、关闭坏资产、发布消费一致性；[writingStyleLimits](../../test/writingStyleLimits.test.js) 覆盖输入配额与编码预算 |
-| 项目参考敏感预检 | `WritingStyleSettings.generate`、组合根 `preflightProjectReferences`、`SensitivePreflight` 与 Native build | [writingStylePreflight](../../test/writingStylePreflight.test.js) 覆盖阻断/确认/关闭扫描和等待期间作用域变化；实际模型及浏览器呈现另行验收 |
-| 普通技能安装和开关 | `localSkills`、`codexHome/Scope`、`codexSkillIsolation`；panel、偏好、runner、command approval | [localSkills](../../test/localSkills.test.js)、[codexHomeScope](../../test/codexHomeScope.test.js)、[codexSkillDiscovery](../../test/codexSkillDiscovery.test.js)、[codexSessionRunner](../../test/codexSessionRunner.test.js)；显式 loader、发现配置、父/worker 参数、活跃路径与 installer 持久性，实际模型和浏览器另验 |
-| 本地 Codex 目录与逐项调用 | `codexLocalSkills`、`LocalSkillsPanel`、`contentRuntime.primeCodexLocalSkillsCatalog/getSlashCommands`、`codexSkillIsolation`；全局偏好、提交、队列及 fork | [codexLocalSkills](../../test/codexLocalSkills.test.js) 覆盖目录元数据、来源身份、显式读取和 helper 收尾；[localCodexSkillsPersistence](../../test/localCodexSkillsPersistence.test.js) 覆盖旧偏好、并发写入、名单缺失/空值与存储投影；[localCodexSkillsUi](../../test/localCodexSkillsUi.test.js) 与 [codexLocalSkillExecution](../../test/codexLocalSkillExecution.test.js) 分别定位界面/提交和 Native 父/worker 消费。真实 CLI、浏览器及模型执行另行验证 |
-| Codex 配置继承与过滤 | `codexHome.sanitizeCopiedCodexConfig`、[tomlStatements](../../native-host/src/tomlStatements.js) 的语句与 key path、[codexConfigPaths](../../native-host/src/codexConfigPaths.js) 的配置层锚点 | [codexConfigIsolation](../../test/codexConfigIsolation.test.js)、[codexConfigPaths](../../test/codexConfigPaths.test.js)、[codexHome](../../test/codexHome.test.js)；等价写法、未选字段、结构错误、samehome 与来源变化 |
-| 认证继承与历史目录 | `codexInheritedAuth`、`codexHomeScope`、canonical 环境身份 | [codexInheritedAuth](../../test/codexInheritedAuth.test.js)、[codexHomeScope](../../test/codexHomeScope.test.js)；已知副本、独立/旧认证、交错发布和共享历史；真实 CLI 的认证、路径与 read/resume/fork 消费另验 |
-| 删除当前选中的技能 | `LocalSkillsPanel.removeCodexOverleafSkill`、`contentRuntime.normalizeComposerSkillInvocation/clearComposerSkillInvocation/getEnabledCodexOverleafSkillIds`、Native 显式调用过滤 | [removedComposerSkill](../../test/removedComposerSkill.test.js) 串联真实 controller、生产 normalizer/标签重绘及临时技能库，覆盖匹配删除、失败、其他技能、installer、等待期间改选及原文件缺失检查；[contentPanelModules](../../test/contentPanelModules.test.js) 保留原删除按钮确认行为。浏览器呈现与实际点击另行验收 |
+| Reference selection, state, and preview | `writingStyleSettings`; content composition, Settings mounting, and epoch | [p2UiRegression](../../test/p2UiRegression.test.js), covering only the relevant UI coordination |
+| Project reading and cancellation | `referenceProjects`; snapshot router, page dispatcher, RPC, and loading manifests | [pageRpcContract](../../test/pageRpcContract.test.js), [pageBridgeSnapshotCache](../../test/pageBridgeSnapshotCache.test.js) |
+| TeX reference paths and body-text extraction | `writingStyleRuntime.projectDocument/prepareSources/build` | Synthetic verification must be added for nested references, same-named root/subdirectory files, extension completion, and out-of-bounds paths; actual compilation path semantics require separate verification |
+| PDF/attachment limits | `REFERENCE_LIMITS`; `nativeQuotas`, worker, source preparation | [writingStyleLimits](../../test/writingStyleLimits.test.js), [nativeQuotas](../../test/nativeQuotas.test.js) |
+| Writing profile and evidence requirements | Builder Skill; `writingStyleProfile`, `writingStyleEvidence`, bundle renderer | Behavioral verification must be added for JSON repair, evidence matching, and publication failure |
+| Version capture and queue recovery | `capture/forRun`; execution snapshot codec, storage compaction, runner | [runExecutionSnapshot](../../test/runExecutionSnapshot.test.js), [releaseBoundaryHelpers](../../test/releaseBoundaryHelpers.test.js) |
+| Configuration saving and recovery from invalid assets | `get/set/build/saveConfig/safeBundleText` in [writingStyleRuntime](../../native-host/src/writingStyleRuntime.js), `writeJson/withConfigLock` in [writingStyleStore](../../native-host/src/writingStyleStore.js); Settings `toggle/ensureLoaded` and runtime `runTask` | [writingStyleRecovery](../../test/writingStyleRecovery.test.js) covers initialization cleanup, configuration races, disabling corrupt assets, and publication/consumption consistency; [writingStyleLimits](../../test/writingStyleLimits.test.js) covers input quotas and encoding budgets |
+| Sensitive preflight of project references | `WritingStyleSettings.generate`, composition-root `preflightProjectReferences`, `SensitivePreflight`, and Native build | [writingStylePreflight](../../test/writingStylePreflight.test.js) covers blocking/confirmation/disabled scanning and scope changes while waiting; real models and browser presentation require separate acceptance |
+| Ordinary skill installation and switches | `localSkills`, `codexHome/Scope`, `codexSkillIsolation`; panel, preferences, runner, command approval | [localSkills](../../test/localSkills.test.js), [codexHomeScope](../../test/codexHomeScope.test.js), [codexSkillDiscovery](../../test/codexSkillDiscovery.test.js), [codexSessionRunner](../../test/codexSessionRunner.test.js); explicit loaders, discovery configuration, parent/worker parameters, active paths, and installer persistence; real models and browsers require separate verification |
+| Local Codex catalog and per-item invocation | `codexLocalSkills`, `LocalSkillsPanel`, `contentRuntime.primeCodexLocalSkillsCatalog/getSlashCommands`, `codexSkillIsolation`; global preferences, submission, queue, and fork | [codexLocalSkills](../../test/codexLocalSkills.test.js) covers catalog metadata, source identity, explicit reading, and helper cleanup; [localCodexSkillsPersistence](../../test/localCodexSkillsPersistence.test.js) covers old preferences, concurrent writes, absent/empty lists, and storage projection; [localCodexSkillsUi](../../test/localCodexSkillsUi.test.js) and [codexLocalSkillExecution](../../test/codexLocalSkillExecution.test.js) locate UI/submission and Native parent/worker consumption respectively. Real CLI, browser, and model execution require separate verification |
+| Codex configuration inheritance and filtering | `codexHome.sanitizeCopiedCodexConfig`, statements and key paths in [tomlStatements](../../native-host/src/tomlStatements.js), configuration-level anchors in [codexConfigPaths](../../native-host/src/codexConfigPaths.js) | [codexConfigIsolation](../../test/codexConfigIsolation.test.js), [codexConfigPaths](../../test/codexConfigPaths.test.js), [codexHome](../../test/codexHome.test.js); equivalent syntax, unselected fields, structural errors, samehome, and source changes |
+| Authentication inheritance and history directories | `codexInheritedAuth`, `codexHomeScope`, canonical environment identity | [codexInheritedAuth](../../test/codexInheritedAuth.test.js), [codexHomeScope](../../test/codexHomeScope.test.js); known copies, independent/legacy authentication, interleaved publication, and shared history; real CLI authentication, paths, and read/resume/fork consumption require separate verification |
+| Deleting the currently selected skill | `LocalSkillsPanel.removeCodexOverleafSkill`, `contentRuntime.normalizeComposerSkillInvocation/clearComposerSkillInvocation/getEnabledCodexOverleafSkillIds`, Native explicit-invocation filtering | [removedComposerSkill](../../test/removedComposerSkill.test.js) connects the real controller, production normalizer/tag rerendering, and a temporary skill library, covering matching deletion, failure, other skills, installer, selection changes while waiting, and missing-source-file checks; [contentPanelModules](../../test/contentPanelModules.test.js) preserves the original delete-button confirmation behavior. Browser presentation and actual clicks require separate acceptance |
 
-现有定义覆盖配额、RPC、快照、技能库与安装命令等契约；部分集成 harness 也加载参考模块。
-profile/evidence/build 的专项验证需覆盖 JSON 修复、引用匹配、资产发布及失败恢复，不能仅由配额或 UI 协调用例推导完整生成行为。
-完整链路验证应使用合成参考资料，分别证明取消、旧版本保留、跨项目迟到响应及资产损坏拒绝。
+Existing definitions cover contracts such as quotas, RPC, snapshots, skill libraries, and installation commands; some integration harnesses also load reference modules.
+Targeted profile/evidence/build verification must cover JSON repair, citation matching, asset publication, and failure recovery. Quota or UI-coordination cases alone cannot establish complete generation behavior.
+Full-chain verification should use synthetic references and separately demonstrate cancellation, old-version retention, late responses across projects, and rejection of corrupt assets.
 
-## 边界场景与验证要点
+## Boundary Scenarios and Verification Points
 
-- 调换参考 PDF 后执行排队任务：`dirty` 草稿与已发布版本各有生命周期，应验证排队任务仍沿用提交引用。
-- 生成中关闭 Settings 或切换项目：epoch 只阻止旧 UI 响应；Native 已开始的任务需要明确取消及停止证据。
-- 完整读取选定项目目录：提取仍受主文件、include 路径解析、采样和可读性边界约束，需检查实际引用目标及来源 metadata 的 truncated。
-- 生成章节例句：validator 拒绝章节 guidance，证据只支持表达特征；验证需确认目标事实和结构继续受当前请求约束。
-- 更新源码内官方 Skill：`ensureCodexOverleafSkillInstalled()` 保留已存在的正常文件，需分别检查首次补装与既有安装的内容。
-- 不同任务交错准备技能环境：核对活跃任务已发现路径是否仍可读取、installer 映射是否仍指向持久根，以及再次准备后新技能是否可发现。
+- Running queued tasks after replacing a reference PDF: the `dirty` draft and published version have separate lifecycles; verify that the queued task still uses its submitted reference.
+- Closing Settings or switching projects during generation: epoch only prevents old UI responses; a task already started in Native requires explicit cancellation and termination evidence.
+- Obtaining a complete snapshot of the selected project's TeX files: extraction remains bounded by the main file, include-path resolution, sampling, and readability; check the actual reference target and source metadata's truncated field.
+- Generating section examples: the validator rejects section guidance, and evidence supports writing traits only; verification must confirm that target facts and structure remain constrained by the current request.
+- Updating an official Skill in source: `ensureCodexOverleafSkillInstalled()` preserves an existing valid file; check initial missing-skill installation and the contents of existing installations separately.
+- Interleaved skill-environment preparation by different tasks: check that paths already discovered by active tasks remain readable, the installer mapping still targets the persistent root, and newly installed skills are discoverable after preparation runs again.
 
-`Target contract`：保留旧运行对旧版本的可解析引用；任何清理策略都需先定义队列、历史和活动运行的引用寿命。
-`Target contract`：新增资料类型须声明读取身份、字节/编码预算、抽取方式、出站、持久化、取消和清理条件。
-完整生成与恢复验收需要串联 Settings、Native build、版本发布、后续运行消费和异常恢复；局部测试及静态推导各自保留其适用范围。
+`Target contract`: preserve resolvable references from old runs to old versions. Any cleanup policy must first define reference lifetimes for queues, history, and active runs.
+`Target contract`: each new reference type must declare read identity, byte/encoding budgets, extraction method, outbound flow, persistence, cancellation, and cleanup conditions.
+Full generation and recovery acceptance must connect Settings, Native build, version publication, subsequent-run consumption, and abnormal recovery. Local tests and static derivation each retain their own scope of applicability.

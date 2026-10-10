@@ -1,80 +1,80 @@
-# Codex Overleaf Link 架构指南
+# Codex Overleaf Link Architecture Guide
 
-Codex Overleaf Link 将 Overleaf 项目读取、本地 Codex 执行、文件写回与撤销恢复连接起来。这套指南说明各功能的实现位置、状态归属、调用关系、已知限制及修改时需要联动的模块。
+Codex Overleaf Link connects Overleaf project reading, local Codex execution, file writeback, and Undo recovery. This guide explains where features are implemented, who owns their state, how they call each other, their known limitations, and which modules must change together.
 
-初始参考产品版本：`2.5.0`；初始运行时梳理基线：`2073ae74747431aab8d529803d4e9f8197262388`。指南随本仓库当前受维护代码同步，安装副本和浏览器已加载代码的版本需单独确认。
+Initial reference product version: `2.5.0`; initial runtime mapping baseline: `2073ae74747431aab8d529803d4e9f8197262388`. The guide stays in sync with the currently maintained code in this repository. Verify the versions of installed copies and browser-loaded code separately.
 
-新功能、debug 与其他代码修改统一执行[功能开发与故障修复 SOP](change-workflow.md)。维护时核对受影响章节及其基线声明；局部同步不代表全仓重新验收，具体变更可由 Git 历史定位。
+All new features, debugging, and other code changes follow the [Feature Development and Bug-Fix SOP](change-workflow.md). During maintenance, check the affected sections and their baseline statements. Updating part of the guide does not constitute a fresh acceptance review of the entire repository; Git history identifies specific changes.
 
-## 阅读路径
+## Reading Paths
 
-| 任务 | 对应章节 | 主要内容 |
+| Task | Chapter | Main topics |
 | --- | --- | --- |
-| 开始功能开发、debug 或其他代码修改 | [开发与修复 SOP](change-workflow.md) | 定位、契约/复现、实现验证、指南同步及完成条件 |
-| 首次理解项目 | [系统总览](system-overview.md) | 执行环境、加载入口、主调用链和领域概念 |
-| 定位一个功能的修改位置 | [功能修改索引](feature-map.md) | 入口、状态所有者、必要联动和测试 |
-| 修改文件写回、保存、Accept 或 Undo | [Auto 修改与撤销](auto-edit-undo.md) | 差异、补丁、文本及二进制传输、保存证据和恢复 |
-| 修改任务、队列、会话或刷新恢复 | [运行状态与恢复](run-state-and-recovery.md) | 执行快照、共享历史、持久化、分叉与状态投影 |
-| 修改本地消息、进程、取消或锁 | [Native 执行](native-execution.md) | 请求归属、app-server、重试、终态与退出证据 |
-| 修改消息准入、身份检查或兼容策略 | [协议与信任边界](protocols-and-trust.md) | 通道、发送者、Page token、Native gate 与方法消费者 |
-| 修改模型连接、协议或凭据配置 | [Provider 与协议](providers-and-protocols.md) | 配置修订、协议转换、流式生命周期和数据边界 |
-| 修改子代理调度或结果采用 | [并行子代理](parallel-subagents.md) | broker、遥测、共享文件、隔离与采纳 |
-| 修改风格参考、生成或技能应用 | [写作风格与技能](writing-style-and-skills.md) | 资料读取、资产版本、取消、运行引用和技能安装 |
-| 修改面板、设置、附件或模块加载 | [界面与加载](ui-and-loading.md) | 注册、控件状态、配置作用域和结果呈现 |
-| 修改安装、更新或发布 | [安装与更新](installation-and-updates.md) | 版本身份、授权、安全点、事务和分发 |
-| 修改扫描、上下文范围或写入规则 | [上下文与治理](context-and-governance.md) | 扫描输入、路径许可、放行条件与审计 |
+| Begin feature development, debugging, or another code change | [Development and Bug-Fix SOP](change-workflow.md) | Navigation, contracts/reproduction, implementation validation, guide synchronization, and completion criteria |
+| Understand the project for the first time | [System Overview](system-overview.md) | Execution contexts, loading entry points, primary call chains, and domain concepts |
+| Locate where to change a feature | [Feature Change Index](feature-map.md) | Entry points, state owners, required related changes, and tests |
+| Change file writeback, saving, Accept, or Undo | [Auto Editing and Undo](auto-edit-undo.md) | Diffs, patches, text and binary transfer, save evidence, and recovery |
+| Change tasks, queues, sessions, or refresh recovery | [Run State and Recovery](run-state-and-recovery.md) | Execution snapshots, shared history, persistence, forks, and state projections |
+| Change local messages, processes, cancellation, or locks | [Native Execution](native-execution.md) | Request ownership, app-server, retries, terminal states, and exit evidence |
+| Change message admission, identity checks, or compatibility policy | [Protocols and Trust Boundaries](protocols-and-trust.md) | Channels, senders, Page tokens, the Native gate, and method consumers |
+| Change model connections, protocols, or credential configuration | [Providers and Protocols](providers-and-protocols.md) | Configuration revisions, protocol conversion, streaming lifecycles, and data boundaries |
+| Change subagent scheduling or result adoption | [Parallel Subagents](parallel-subagents.md) | The broker, telemetry, shared files, isolation, and adoption |
+| Change style references, generation, or skill application | [Writing Styles and Skills](writing-style-and-skills.md) | Reference reading, asset versions, cancellation, run references, and skill installation |
+| Change the panel, settings, attachments, or module loading | [UI and Loading](ui-and-loading.md) | Registration, control state, configuration scope, and result presentation |
+| Change installation, updates, or releases | [Installation and Updates](installation-and-updates.md) | Version identity, authorization, safe points, transactions, and distribution |
+| Change scanning, context scope, or write rules | [Context and Governance](context-and-governance.md) | Scan inputs, path permissions, conditions for proceeding, and auditing |
 
-普通维护任务从功能索引进入相关领域页，再沿入口符号、调用方和最近测试读取代码。无需每次加载全部章节。跨领域功能由相关章节共同说明，例如 Undo 同时涉及页面操作、镜像基线与运行记录持久化。
+For routine maintenance, start from the feature index, open the relevant domain pages, and then read code through entry-point symbols, callers, and nearest tests. Loading every chapter is unnecessary. Related chapters jointly explain features that cross domains; for example, Undo involves page operations, mirror baselines, and run-record persistence.
 
-## 修改前需要确认的关系
+## Relationships to Confirm Before Making Changes
 
-1. **执行环境**：代码位于 content、页面主世界、扩展后台或 Native，分别具有不同权限与寿命。
-2. **状态所有者**：确认负责写入事实的模块，以及只展示或缓存该事实的消费者。
-3. **身份与时序**：检查账号、项目、会话、运行、请求和配置修订如何穿过异步调用。
-4. **失败与恢复**：对照取消、超时、部分成功、导航和重载分支，确认已经发生的操作及恢复材料如何保留。
-5. **联动范围**：同步检查协议、注册、兼容处理、持久化白名单、界面投影和测试。
+1. **Execution context**: code runs in content, the page main world, the extension background, or Native, each with different permissions and lifetimes.
+2. **State owner**: identify the module responsible for writing a fact, and the consumers that only display or cache it.
+3. **Identity and timing**: trace accounts, projects, sessions, runs, requests, and configuration revisions through asynchronous calls.
+4. **Failure and recovery**: examine cancellation, timeout, partial success, navigation, and reload branches to confirm how completed operations and recovery materials are preserved.
+5. **Related changes**: check protocols, registration, compatibility handling, persistence allowlists, UI projections, and tests together.
 
-领域页区分当前实现、目标契约和已知限制。当前实现以对应源码为依据；目标契约说明应维持的要求；已知限制说明哪些路径尚未满足要求或需要额外验证。局部 helper 的能力不能直接推广为完整运行链的保证。
+Domain pages distinguish current implementation, target contracts, and known limitations. Current implementation is grounded in the corresponding source; target contracts state requirements to preserve; known limitations identify paths that do not yet satisfy those requirements or require further validation. A local helper's capability does not automatically guarantee the complete run chain.
 
-## 按修改选择验证
+## Choosing Validation for a Change
 
-各领域页列出最近测试及其装配范围。纯函数、源码断言、模拟消息、合成子进程和真实浏览器场景提供不同层次的证据，需按改动选择。测试文件名中的 `browser` 或 `e2e` 不能独自说明运行了真实 Chrome 或模型；应核对测试装配、模拟替身和实际调用链。
+Each domain page lists the nearest tests and their integration scope. Pure functions, source assertions, simulated messages, synthetic subprocesses, and real-browser scenarios provide different levels of evidence; select them according to the change. A test filename containing `browser` or `e2e` does not by itself establish that real Chrome or a real model ran. Check the test setup, substitutes, and actual call chain.
 
-运行器支持指定文件与只列出选择：
+The runner supports selecting files and listing the selection without executing it:
 
 ```sh
 node scripts/run-tests.mjs --list test/ordinaryUndoRouting.test.js test/undoMirrorInvalidation.test.js
 node scripts/run-tests.mjs test/ordinaryUndoRouting.test.js test/undoMirrorInvalidation.test.js
 ```
 
-第一条仅列出测试；第二条执行所选测试。命令从仓库根目录运行。
+The first command only lists tests; the second executes the selected tests. Run both from the repository root.
 
-运行器的发现清单统一使用 `/` 路径分隔符，输入可使用文件名、`test/文件名`或Windows的反斜线路径；`--list`与实际专项执行共用选择逻辑。[testRunnerSelection.test.js](../../test/testRunnerSelection.test.js)同时核对选择函数和真实CLI的清单/执行入口。
+The runner's discovery list consistently uses `/` path separators. Inputs may be bare filenames, `test/<filename>`, or Windows paths with backslashes. `--list` and actual focused execution share the same selection logic. [testRunnerSelection.test.js](../../test/testRunnerSelection.test.js) checks both the selection function and the real CLI's listing/execution entry points.
 
-| 修改或验证目的 | 入口 | 作用与证据范围 |
+| Change or validation purpose | Entry point | Effect and evidence scope |
 | --- | --- | --- |
-| 文档入库与源码卫生 | `npm run verify:source`；`node --test test/architectureGuidePublication.test.js` | [源码规则](../../scripts/verify-release.mjs)仅放行指定正式指南，其他文档和本地交接仍拒绝；[专项测试](../../test/architectureGuidePublication.test.js)同时检查 `.gitignore` 对齐和 npm 排除。 |
-| 领域专项回归 | `node scripts/run-tests.mjs <文件…>`；带 `--list` 可先查看选择 | 直接运行所选文件；具体测试可能创建 fixture、子进程或构建产物。`npm run test:focus -- <文件…>` 还前置模块图检查。 |
-| 快速回归 | `npm run test:fast` | 执行 [run-tests.mjs](../../scripts/run-tests.mjs) 中 `FAST_TEST_FILE_NAMES` 的固定选集；不会自动按改动选测试，仍需补充相关专项。可用 `node scripts/run-tests.mjs --fast --list` 查看名单。 |
-| 完整 Node 测试 | `npm test` | 执行运行器在 `test/` 顶层发现的全部 `.test.js`；包含源码断言、VM 与合成进程等不同装配，不能据此宣布真实浏览器验收通过。 |
-| Content 加载与构建 | `npm run check:module-graph` | [检查脚本](../../scripts/check-content-module-graph.mjs)重新生成 bundle 与 metadata，核对输入、隐式依赖及包体限制。`npm test`、`test:fast`、`test:focus` 均前置此步骤。 |
-| 受预算约束的模块修改 | `npm run check:architecture` | [架构预算](../../scripts/check-architecture-budget.mjs)检查所列文件存在且行数不超过各自上限；通过只证明这些数值约束，完整职责与依赖关系仍需审阅。 |
-| 镜像、差异、补丁及大项目回归 | `npm run benchmark:large` | [合成基准](../../scripts/benchmark-large-project.mjs)调用生产模块并混用近似指标，创建并清理临时镜像；命令自带 `--gate`，耗时越界会失败。`--output <路径>` 会额外写报告。 |
-| OT 点击、滚动与重绘时序 | [真实 Chrome 本地夹具](../../test/browser/README.md) | `node scripts/serve-ui-regression.mjs` 启动本地 HTTP 服务，随后在 Chrome 中操作；要求真实指针点击。夹具不连接 Overleaf 或 Native，检查结束后需停止服务。 |
-| 已加载扩展与真实项目连接 | [项目 smoke 命令](../../README.zh-CN.md#开发)及 [smoke-extension.mjs](../../scripts/smoke-extension.mjs) | `npm run smoke:extension` 先构建，再启动 Chrome。探针覆盖面板、Native 握手、项目摘要和诊断入口；项目写回、保存、Accept、Undo 及模型执行需另有具体场景。默认临时 profile，指定 profile 会使用其登录状态；`--json` 写脱敏结果。 |
-| 安装本地构建供 Chrome 验收 | `npm run smoke:prepare:chrome` | 顺序执行构建、快速选集与真实 `install:managed`，会修改本机托管安装；随后仍需重载扩展和刷新 Overleaf，准备完成本身不构成验收证据。 |
+| Guide admission to the repository and source hygiene | `npm run verify:source`; `node --test test/architectureGuidePublication.test.js` | The [source rules](../../scripts/verify-release.mjs) allow only the designated official guide pages; other documentation and local handoff materials remain rejected. The [focused test](../../test/architectureGuidePublication.test.js) also checks `.gitignore` alignment and npm exclusion. |
+| Domain-focused regression | `node scripts/run-tests.mjs <files…>`; add `--list` to inspect the selection first | Runs the selected files directly. Individual tests may create fixtures, subprocesses, or build outputs. `npm run test:focus -- <files…>` also runs the module-graph check first. |
+| Fast regression | `npm run test:fast` | Runs the fixed selection in `FAST_TEST_FILE_NAMES` in [run-tests.mjs](../../scripts/run-tests.mjs). It does not automatically select tests based on the diff; add relevant focused checks. Use `node scripts/run-tests.mjs --fast --list` to inspect the list. |
+| Full Node test suite | `npm test` | Runs all top-level `.test.js` files discovered in `test/` by the runner. The suite includes different setups such as source assertions, VMs, and synthetic processes; it does not establish successful real-browser acceptance. |
+| Content loading and build | `npm run check:module-graph` | The [check script](../../scripts/check-content-module-graph.mjs) regenerates the bundle and metadata and checks inputs, implicit dependencies, and bundle-size limits. `npm test`, `test:fast`, and `test:focus` all run this step first. |
+| Changes to modules subject to budgets | `npm run check:architecture` | The [architecture budget](../../scripts/check-architecture-budget.mjs) checks that the listed files exist and do not exceed their individual line-count limits. Passing proves only those numerical constraints; full responsibilities and dependencies still require review. |
+| Mirror, diff, patch, and large-project regression | `npm run benchmark:large` | The [synthetic benchmark](../../scripts/benchmark-large-project.mjs) calls production modules and also uses approximate metrics. It creates and cleans up temporary mirrors. The command includes `--gate` and fails when timing limits are exceeded. `--output <path>` additionally writes a report. |
+| OT clicking, scrolling, and repaint timing | [Local fixture in real Chrome](../../test/browser/README.md) | `node scripts/serve-ui-regression.mjs` starts a local HTTP service for subsequent interaction in Chrome; real pointer clicks are required. The fixture does not connect to Overleaf or Native. Stop the service after the checks. |
+| Loaded extension and real-project connection | [Project smoke command](../../README.md#development) and [smoke-extension.mjs](../../scripts/smoke-extension.mjs) | `npm run smoke:extension` builds first, then starts Chrome. Probes cover the panel, Native handshake, project summary, and diagnostics entry point. Project writeback, saving, Accept, Undo, and model execution require additional specific scenarios. The default is a temporary profile; specifying a profile uses its login state. `--json` writes redacted results. |
+| Install a local build for Chrome acceptance | `npm run smoke:prepare:chrome` | Runs the build, fast selection, and real `install:managed` in order, modifying the local Managed installation. The extension must still be reloaded and Overleaf refreshed afterward; preparation alone is not acceptance evidence. |
 
-构建写入 [build-content-bundle.mjs](../../scripts/build-content-bundle.mjs) 所定义的 `extension/src/content/generated/content.bundle.js` 和配套 metadata；这些生成文件不手改。直接调用运行器的 `--list` 会在执行测试前返回；通过 npm 测试命令传入 `--list` 仍会先构建。
+The build writes `extension/src/content/generated/content.bundle.js` and its companion metadata as defined by [build-content-bundle.mjs](../../scripts/build-content-bundle.mjs); do not edit these generated files manually. Calling the runner directly with `--list` returns before test execution. Passing `--list` through an npm test command still builds first.
 
-合成基准中的镜像同步、状态、变更收集、diff 和 patch 调用生产模块；`snapshot.zip_parse_ms` 实际测量 `JSON.parse`，`context_tray.render_ms` 测量合成目录树构造，`storage.prepare_ms` 测量脚本内对象准备。它们用于固定合成输入的回归比较，真实 ZIP 解压、浏览器绘制和 IndexedDB 写入耗时需要分别取证。
+Mirror synchronization, status, change collection, diff, and patch in the synthetic benchmark call production modules. `snapshot.zip_parse_ms` actually measures `JSON.parse`, `context_tray.render_ms` measures construction of a synthetic directory tree, and `storage.prepare_ms` measures object preparation inside the script. These metrics compare regressions for fixed synthetic inputs. Real ZIP decompression, browser rendering, and IndexedDB write timings require separate evidence.
 
-跨平台验证参照 [CI](../../.github/workflows/test.yml) 的 macOS、Ubuntu、Windows 和 Node 版本配置；本机结果只覆盖实际执行的平台与路径。Chrome 加载、Overleaf DOM、真实保存与刷新恢复仍需对应交互验证。源码卫生与开发元数据使用 `npm run verify:source`；npm 包范围、更新边界，以及正式发布的打包、签名和更新演练见[安装与更新](installation-and-updates.md)。
+For cross-platform validation, refer to the macOS, Ubuntu, Windows, and Node version configuration in [CI](../../.github/workflows/test.yml). Local results cover only the platforms and paths actually executed. Chrome loading, the Overleaf DOM, real saving, and refresh recovery still require corresponding interaction checks. Use `npm run verify:source` for source hygiene and development metadata. See [Installation and Updates](installation-and-updates.md) for npm package scope, update boundaries, and packaging, signing, and update rehearsals for official releases.
 
-## 维护约定
+## Maintenance Conventions
 
-- 每次代码任务按 [SOP](change-workflow.md)完成指南影响判断；必要的正文和索引修改与代码一起交付，无需修改时说明核对范围和理由。
-- 入口、状态归属、协议、加载方式或恢复策略变化时，同步修改对应领域页和功能索引。
-- 源码常量与协议目录保持权威，指南使用仓库相对链接和实际符号，避免复制完整配置目录。
-- 文档描述项目的当前结构和行为；未来设计应明确标注其目标状态。
-- 已知限制放在所属功能章节，和受影响的调用链、源码及测试入口一起维护。
-- 正式指南按 Git 跟踪路径的精确白名单维护，新增页面须同步核对 [.gitignore](../../.gitignore) 与[源码卫生规则](../../scripts/verify-release.mjs)；npm 包和 release 归档仍排除 `docs/`。源码可协作范围与产品分发范围分别判断。
+- Every code task assesses guide impact according to the [SOP](change-workflow.md). Deliver necessary body and index changes with the code; when no changes are needed, state the reviewed scope and reasons.
+- When entry points, state ownership, protocols, loading, or recovery strategies change, update the corresponding domain pages and feature index.
+- Source constants and protocol catalogs remain authoritative. The guide uses repository-relative links and actual symbols, avoiding copies of complete configuration catalogs.
+- Documentation describes the project's current structure and behavior; clearly label the target state of future designs.
+- Keep known limitations in the owning feature chapter, alongside the affected call chain, source, and test entry points.
+- Maintain the official guide through an exact allowlist of Git-tracked paths. When adding a page, check [.gitignore](../../.gitignore) and the [source-hygiene rules](../../scripts/verify-release.mjs) together. npm packages and release archives still exclude `docs/`. Assess source collaboration scope separately from product distribution scope.
