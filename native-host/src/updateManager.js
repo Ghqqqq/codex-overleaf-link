@@ -1432,10 +1432,10 @@ function atomicWriteJson(target, value) {
 function atomicWriteText(target, value) {
   const temp = target + '.tmp-' + process.pid + '-' + crypto.randomBytes(6).toString('hex');
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(temp, value, { mode: 0o600 });
-  let descriptor;
+  let descriptor = fs.openSync(temp, 'wx', 0o600);
   try {
-    descriptor = fs.openSync(temp, 'r');
+    // Windows requires a writable handle for FlushFileBuffers (Node fsync).
+    fs.writeFileSync(descriptor, value);
     fs.fsyncSync(descriptor);
   } finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
   fs.renameSync(temp, target);

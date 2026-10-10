@@ -184,6 +184,8 @@ Native `applyStagedUpdate()`再次检查本地 gate、管理布局、事务及�
 4. `prepareBootstrapMigration()`先保存旧文件字节/权限与进度。进度记录采用WAL（预写日志）：先记下将要替换的文件，再原子替换并读回；中断后可由磁盘记录判断继续或恢复。新依赖先落盘，引用它的HTML随后更新，后台入口最后替换，入口始终保留一个文件。文件写入先flush临时文件、再rename、再flush父目录；Windows目录flush能力有限，不能据此宣称任意断电均可恢复。
 5. 独立watchdog握手成功后才进入文件替换。旧worker获得`reload_required`，沿`chrome.runtime.reload()`重载；新固定入口提供revision `3.1`，再次经过迁移安全检查后，Native核对目标磁盘摘要，将迁移phase置为`loaded`并返回`awaiting_health`。后台重新核对原待刷新文档身份，放回页面清单，才继续原页面、Native和版本健康检查；`update.confirm`同时要求事务身份、已加载revision与目标Bootstrap摘要相符。允许的重载次数及健康期限由[bootstrapUpdate.js](../../native-host/src/bootstrapUpdate.js)定义，避免跨worker无限重载。
 
+主事务、授权、候选与版本指针由[updateManager.atomicWriteText()](../../native-host/src/updateManager.js)原子写入：以独占可写句柄创建临时文件，在同一句柄上写入并`fsync`，关闭后再rename。Windows的文件flush需要可写句柄，不能关闭后以只读句柄重开。普通文件的权限或I/O错误继续使请求失败，未flush的临时文件不会替换目标；父目录flush单独沿既有Windows不支持错误集合处理，不能把该兼容规则用于普通文件。[updatePersistence.test.js](../../test/updatePersistence.test.js)通过签名更新请求链与文件故障注入核对该边界，实际Windows行为另由三平台CI验证。
+
 迁移期间仍使用原有更新状态界面，没有增加操作按钮或独立授权步骤。[managedUpdateProjection.js](../../extension/src/shared/managedUpdateProjection.js)将`bootstrap_pending`映射为既有`awaiting_health`，浏览器恢复分支继续使用`rolling_back/failed`；后台执行锁与Native的`assertBootstrapBusinessAvailable()`阻止业务穿过未完成的迁移，更新、ping与取消保留各自通道。
 
 文件进度的`prepared/applying/applied/restoring/restored`与主事务的`bootstrap_pending/awaiting_health/committed`分别属于文件替换和整体安装，不能互换。磁盘达到`applied`仍需重载证明实际执行的固定层；只有产品版本相等也不足以结算这条迁移。

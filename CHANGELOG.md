@@ -20,6 +20,7 @@
 - Retain per-file recovery copies and progress, verify the loaded Bootstrap revision before update confirmation, and coordinate timeout recovery through an independent Native monitor and the existing popup fallback. Unknown source changes or incomplete recovery evidence remain blocked.
 - Reconnect read-only save and idle checks after the first extension reload during migration, and preserve unsaved pages while waiting to refresh after a verified rollback.
 - Wait for npm publication to become publicly readable, then verify both registry metadata and the downloaded package against the release artifact within a shared time limit.
+- Flush update records through their writable file handles so Windows can persist update checks, authorization, and transactions without rejecting the operation.
 
 ### Documentation and validation
 

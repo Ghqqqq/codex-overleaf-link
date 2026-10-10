@@ -100,6 +100,7 @@ function bootstrapMigrationFixture(t, options = {}) {
   const signatureBytes = Buffer.from(JSON.stringify({ algorithm: 'Ed25519', keyId: 'fixture',
     signature: crypto.sign(null, manifestBytes, keys.privateKey).toString('base64') }));
   const updater = loadWithDependencies('native-host/src/updateManager.js', {
+    'node:fs': options.updateFs || fs,
     './updateTrust': { ...trust, verifySignedReleaseManifest: (bytes, signature, verifyOptions) =>
       trust.verifySignedReleaseManifest(bytes, signature, { ...verifyOptions, publicKeys: { fixture: keys.publicKey } }) }
   });
