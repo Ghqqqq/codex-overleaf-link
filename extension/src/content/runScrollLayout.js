@@ -7,7 +7,7 @@
 })(typeof window !== 'undefined' ? window : globalThis, function runScrollLayoutFactory() {
   'use strict';
 
-  const READING_ANCHORS = '.run-final-answer p, .run-final-answer li, .run-final-answer pre, .run-final-answer h1, .run-final-answer h2, .run-final-answer h3, .run-stream p, .run-stream li, .run-stream pre, [data-run-task], [data-run-status]';
+  const READING_ANCHORS = '.run-final-answer p, .run-final-answer li, .run-final-answer pre, .run-final-answer h1, .run-final-answer h2, .run-final-answer h3, .run-stream p, .run-stream li, .run-stream pre, .run-guidance-text, [data-run-task], [data-run-status]';
 
   function create({ getScroller, onLayoutChange, isFollowing = () => true, window: host = globalThis } = {}) {
     let current = null;
@@ -66,6 +66,25 @@
       captureAnchor(true);
     }
 
+    function revealGuidance(row) {
+      const scroller = getScroller();
+      if (!isFollowing() || !scroller?.contains?.(row)) return null;
+      const bounds = scroller.getBoundingClientRect?.(), start = row.getBoundingClientRect?.();
+      if (!bounds || !start || !start.height) return null;
+      const summary = row.closest?.('[data-run-id]')?.querySelector('[data-run-process-summary]');
+      const end = Math.max(start.bottom, summary?.getBoundingClientRect?.().bottom || start.bottom);
+      const bottom = Math.max(0, scroller.scrollHeight - scroller.clientHeight), shift = bottom - scroller.scrollTop;
+      const fitsAtBottom = start.top - shift >= bounds.top + 8 && end - shift <= bounds.bottom - 8;
+      // Default folded runs can show the new input and header while following.
+      // A long expanded runtime may require leaving its bottom; show the input
+      // without changing disclosure or asking the surrounding page to scroll.
+      if (fitsAtBottom) scroller.scrollTop = bottom;
+      else if (start.top < bounds.top + 8 || end > bounds.bottom - 8) {
+        scroller.scrollTop += start.top - bounds.top - 8;
+      }
+      return { following: fitsAtBottom || Math.abs(bottom - scroller.scrollTop) < 1 };
+    }
+
     function dispose() {
       resizeObserver?.disconnect();
       mutationObserver?.disconnect();
@@ -117,7 +136,7 @@
       }
     }
 
-    return Object.freeze({ bind, dispose, captureAnchor, snapshot, restore });
+    return Object.freeze({ bind, dispose, captureAnchor, snapshot, restore, revealGuidance });
   }
 
   return Object.freeze({ create });

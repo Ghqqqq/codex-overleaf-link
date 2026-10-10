@@ -173,6 +173,14 @@ textarea input → persistPanelInputs → readPanelInputs → updateActiveSessio
 
 composer 输入、运行状态变化和 turn 绑定仍会触发重绘。队列 coordinator 未建立或容器尚不存在时，重绘入口安全返回；容器建立后按需创建视图。重绘不调用保存、Resume 或任务调度，也不修改草稿与队列状态。维护该处应同时核对会话加载、恢复后的暂停状态和 DOM 重绘；验证入口为 [pendingQueuePanelRestore.test.js](../../test/pendingQueuePanelRestore.test.js)，真实页面重载和存储环境另行验收。
 
+**运行中补充指令的展示。** 点击队列中的 Steer 后，通过同步资格检查的输入立即投影为用户气泡，排列在原始用户消息下方、runtime 执行过程上方；发送等待期间显示当前语言的“补充指令 · 发送中…”，确认送达后去掉发送状态，保持同一气泡的位置。普通排队项继续留在 composer 上方的队列。临时气泡由 [RunGuidanceController](../../extension/src/content/runGuidanceController.js) 拥有，`getPendingGuidance` 为时间线提供内存投影，队列仍保留本次发送的所有权与恢复材料；投影不作为已送达事件保存。
+
+[RunGuidanceView.reconcileGuidance](../../extension/src/content/runGuidanceView.js) 把已确认事件与在途投影合并到 `data-run-guidance`，按消息 ID 原位更新并去重，保留文字相同但 ID 不同的真实发送；无 ID 的旧记录沿用已有兼容规则。[RunActivitySummary](../../extension/src/content/runActivitySummary.js) 从 runtime 展示块中分离 guidance，[RunTimelineView](../../extension/src/content/runTimelineView.js) 的无 activity presenter 路径使用同一投影方法。活动更新、历史重绘、运行完成或取消均采用该区域；折叠执行过程不隐藏用户输入。语言切换重绘自产标签，保留用户原文。发送失败或结果未知时移除临时投影，沿队列既有错误和暂停恢复路径处理，不能留下成功气泡或自动重发。
+
+新气泡经 `RunTimelineView.revealGuidance → RunScrollLayout.revealGuidance` 接入既有帧合并滚动。正在跟随最新内容时，优先让新输入和 runtime 页眉留在面板可视范围；展开的长执行过程要求离开底部时，暂时退出自动跟随，并以 `.run-guidance-text` 保持阅读锚点。既有“最新”按钮恢复跟随，runtime 展开状态保持原样。使用者已经翻阅历史，或在下一帧绘制前开始向上阅读时，不主动移动阅读位置；滚动仅作用于插件面板。过长的单条输入优先露出开头，余下内容通过面板滚动阅读。相关局部行为见 [runGuidanceScroll.test.js](../../test/runGuidanceScroll.test.js)。
+
+[runGuidancePresentation.test.js](../../test/runGuidancePresentation.test.js) 组合真实 activity model、guidance 与 runtime presenter，覆盖上下区域、确认原位更新、历史读取、重复发送、失败移除及中英文投影；DOM 使用替身。消息身份跨存储的验证见 [runGuidanceStorage.test.js](../../test/runGuidanceStorage.test.js)，真实页面的滚动和发送交互仍需浏览器验收。
+
 [RunTimelineView.configureEditButton](../../extension/src/content/runTimelineView.js) 对 cancelled/rejected 且通过 `canEditRun` 的记录提供编辑重发，当前存在运行时禁用该按钮。
 [PanelMaintenance.refillComposerForRetry](../../extension/src/content/panelMaintenance.js) 回填任务并调用 runtime 的 `prepareRetryReplacement`：符合资格的 cancelled/rejected 记录在无当前运行时回到草稿，并从列表移除原卡，恢复其模式、focused files 和选区；其他符合替换条件的失败重试会记录 `pendingRetryReplacement`，在新 run 创建时解析替换。
 资格规则由 [RunController.isRetryReplacementEligible/resolveRetryReplacement](../../extension/src/content/runController.js) 根据写入与恢复材料判断；附件不会随任务文字自动恢复，UI 会提示重新添加。

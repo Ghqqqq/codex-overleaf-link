@@ -111,6 +111,7 @@
 - 必须联动：[runGuidanceController](../../extension/src/content/runGuidanceController.js)、[scopedPersistenceTransaction](../../extension/src/shared/scopedPersistenceTransaction.js)、[nativeRequestIdentity](../../extension/src/shared/nativeRequestIdentity.js)。详细链路见[运行状态与恢复](run-state-and-recovery.md)。
 - 最近测试：[runSubmissionOwnership](../../test/runSubmissionOwnership.test.js)、[queueSubmissionContext](../../test/queueSubmissionContext.test.js)、[runInputQueueSnapshotRegression](../../test/runInputQueueSnapshotRegression.test.js)、[runQueueSchedulerDurability](../../test/runQueueSchedulerDurability.test.js)、[guidePersistenceRecovery](../../test/guidePersistenceRecovery.test.js)、[activeTurnControl](../../test/activeTurnControl.test.js)、[nativeDispatchCancellation](../../test/nativeDispatchCancellation.test.js)。
 - 官方技能目录的首次等待见 [skillsCatalogSubmission](../../test/skillsCatalogSubmission.test.js)；Guide 的 task-only 预检及兼容性等待后的身份复核见 [guideSensitivePreflight](../../test/guideSensitivePreflight.test.js)。Native 活动索引保留合法 RPC ID 原类型，并在准入前拒绝无效 ID，见 [nativeRunControlIdentity](../../test/nativeRunControlIdentity.test.js)。
+- Steer 的即时气泡与历史归位：`RunGuidanceController` 拥有在途内存投影，`getPendingGuidance → RunTimelineView/RunActivitySummary → RunGuidanceView.reconcileGuidance` 将补充输入固定在原输入与 runtime 之间。须联动队列隐藏/恢复、当前语言与阅读位置，并保留 StorageDb/SessionState 的 `guidanceId` 和发送时间；定位与验证见[补充指令展示](ui-and-loading.md#pending-queue-render)、[runGuidancePresentation](../../test/runGuidancePresentation.test.js)、[runGuidanceStorage](../../test/runGuidanceStorage.test.js)。
 
 ### 改刷新恢复、跨标签同步、删除会话或分叉
 

@@ -164,6 +164,21 @@ test('normal Guide persists the transition, sends once with original binding, an
   assert.equal(f.logs.guidance.length, 1);
 });
 
+test('an acknowledged Guide stays confirmed when the following session write fails', async () => {
+  const f = setup(); await f.enqueue(); activate(f);
+  const sent = trackSends(f, async () => { f.fault.nextWrite = true; return { ok: true }; });
+  await guideButton(f).click();
+  assert.equal(sent.length, 1);
+  assert.equal(f.logs.guidance.length, 1, 'acknowledged user input remains attached to its run');
+  assert.equal(f.queue.length, 0, 'a local save failure cannot restore an already accepted queue item');
+  assert.equal(f.logs.toasts.length, 1, 'the save error is still surfaced');
+  assert.equal(f.logs.saves.filter(save => save.mutation === 'transition').length, 1,
+    'no unknown-delivery recovery is written after a successful acknowledgement');
+  const recovered = Queue.normalizeQueue(storedQueue(f), { recoverActive: true });
+  assert.equal(recovered.every(item => item.status === 'paused'), true,
+    'any last durable steering state remains non-runnable after reload');
+});
+
 for (const faultName of ['nextWrite', 'nextSessionWrite', 'nextFinalize']) test(`Guide restores an actionable unsent item after ${faultName} failure`, async () => {
   const f = setup(); await f.enqueue(); activate(f); const sent = trackSends(f);
   const original = clone(f.queue[0]); f.fault[faultName] = true;

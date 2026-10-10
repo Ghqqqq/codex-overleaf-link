@@ -14,6 +14,7 @@
       RunActivityModel,
       SubagentActivityView,
       RunGuidanceView,
+      getPendingGuidance = () => [],
       RunResultActions,
       RunScrollLayout,
       RunFailureNotice,
@@ -68,6 +69,7 @@
   // drives the floating "jump to latest" button's counter.
   let scrollLogRafId = 0;
   let scrollLogPendingForce = false;
+  let pendingGuidanceReveal = null;
   let jumpToLatestButton = null;
   let unreadSinceDetach = 0;
   // Elapsed time belongs to the run; tool rows retain their own lifecycle.
@@ -90,7 +92,7 @@
     const displayed = displayRun(run);
     return displayed ? { ...displayed, events: (displayed.events || []).map(sanitizeRunEventForRender) } : displayed;
   };
-  const activitySummary = RunActivitySummary?.create({ RunActivityModel, SubagentActivityView, tx, findRunRecord: (...args) => displayLocalizedRun(findRunRecord(...args)), getPanel, cssEscape,
+  const activitySummary = RunActivitySummary?.create({ RunActivityModel, RunGuidanceView, getPendingGuidance, SubagentActivityView, tx, findRunRecord: (...args) => displayLocalizedRun(findRunRecord(...args)), getPanel, cssEscape,
     projectReviewResultEvent: sanitizeRunEventForRender,
     formatReviewResultFailure,
     formatEventTime, formatElapsed, renderMarkdownBlockText, renderRunEvent, formatEventDetail,
@@ -103,6 +105,7 @@
   function resetAutoFollow() {
     logAutoFollow = true;
     userScrollIntentUntil = 0;
+    pendingGuidanceReveal = null;
   }
 
   function bindLogAutoFollow() {
@@ -204,6 +207,7 @@
     if ((event?.type === 'wheel' && event.deltaY < 0) || ['ArrowUp', 'PageUp', 'Home'].includes(event?.key)) {
       logAutoFollow = false;
       scrollLogPendingForce = false;
+      pendingGuidanceReveal = null;
     }
   }
 
@@ -228,6 +232,7 @@
       userScrollIntentUntil = 0;
       unreadSinceDetach = 0;
       scrollLogPendingForce = true;
+      pendingGuidanceReveal = null;
     } else if (!logAutoFollow) {
       // The user has scrolled up: do not yank them. Just keep the jump button
       // state current.
@@ -262,7 +267,21 @@
       writeNow();
     });
   }
+  function revealGuidance(row) {
+    if (!logAutoFollow || activitySummary?.isSubagentViewOpen?.() || !getLogScrollContainer()?.contains?.(row)) return false;
+    pendingGuidanceReveal = row;
+    scrollLogToBottom();
+    return true;
+  }
   function setLogScrollPosition(scroller) {
+    const reveal = pendingGuidanceReveal;
+    pendingGuidanceReveal = null;
+    const result = reveal && scrollLayout?.revealGuidance(reveal);
+    if (result) {
+      logAutoFollow = result.following;
+      if (!logAutoFollow) scrollLayout.captureAnchor(true);
+      return;
+    }
     scroller.scrollTop = scroller.scrollHeight;
   }
   function collapseRunProcess(view, statusText) {
@@ -439,11 +458,7 @@
       truncated.textContent = tr('eventsTruncatedNote');
       events.append(truncated);
     }
-    const guidanceTarget = guidance;
-    const renderedGuidanceIds = new Set();
-    const completedLegacyGuidance = new Set((run.events || [])
-      .filter(event => event.kind === 'guidance' && !event.guidanceId && event.status === 'completed')
-      .map(event => event.title));
+    if (!activitySummary) RunGuidanceView.reconcileGuidance?.(guidance, (run.events || []).concat(getPendingGuidance(run)), tx, { active: run.status === 'running' });
     for (const event of run.events || []) {
       if (event.kind === 'report') {
         report.hidden = false;
@@ -451,16 +466,7 @@
       } else if (activitySummary || event.kind === 'technical') {
         continue;
       } else if (RunGuidanceView.getGuidanceText(event)) {
-        if (event.guidanceId && renderedGuidanceIds.has(event.guidanceId)) {
-          continue;
-        }
-        if (!event.guidanceId && event.status === 'queued' && completedLegacyGuidance.has(event.title)) {
-          continue;
-        }
-        if (event.guidanceId) {
-          renderedGuidanceIds.add(event.guidanceId);
-        }
-        guidanceTarget.append(renderRunEvent(event));
+        continue;
       } else if (event.kind === 'stream') {
         upsertStreamEvent({ events }, event);
       } else {
@@ -1128,6 +1134,8 @@
         const report = current.report || existing.querySelector('[data-run-report]');
         if (reportEvent && report) report.replaceChildren(renderCompletionReport(reportEvent, displayLocalizedRun(run)));
         activitySummary?.update(current);
+        if (!activitySummary) RunGuidanceView.reconcileGuidance?.(existing.querySelector('[data-run-guidance]'),
+          (run.events || []).concat(getPendingGuidance(run)), tx, { active: run.status === 'running' });
         continue;
       }
       const open = existing.querySelector('[data-run-process]')?.open;
@@ -1150,6 +1158,7 @@
       bindLogAutoFollow,
       bumpUnreadIfDetached,
       scrollLogToBottom,
+      revealGuidance,
       collapseRunProcess,
       startRunElapsedTick,
       stopRunElapsedTick,

@@ -3,7 +3,7 @@
 
   function create(deps = {}) {
     if (!deps.RunActivityModel) return null;
-    const { RunActivityModel: Model, tx, findRunRecord, getPanel, cssEscape, isGuidance,
+    const { RunActivityModel: Model, RunGuidanceView, getPendingGuidance = () => [], tx, findRunRecord, getPanel, cssEscape, isGuidance,
       formatElapsed, renderMarkdownBlockText, renderRunEvent, presence, classifyStatus, getProjectId, summarizeCommand, projectReviewResultEvent, formatReviewResultFailure,
       sanitizeAssistantVisibleText: sanitize = value => String(value || '') } = deps;
     const cards = new WeakMap();
@@ -530,6 +530,7 @@
       busy.setAttribute('role', 'status');
       events.after(busy);
       const card = { id: String(run.id), root, process, summary, events, metrics, attention,
+        guidance: root.querySelector('[data-run-guidance]'),
         busy, rows: new Map(), run, setup: setupEl, setupSummary, setupFold, setupSteps,
         peek, peekTrack, peekMore, peekRows: new Map() };
       const expand = () => { remember(card.id + ':run', true); process.open = true; update({ root, recordId: run.id }); };
@@ -552,6 +553,11 @@
     function render(card, run, incoming) {
       card.run = run;
       const result = Model.project(run, incoming, { isGuidance });
+      const guidanceEvents = (run.events || []).concat(incoming && !(run.events || []).includes(incoming) ? [incoming] : []);
+      RunGuidanceView?.reconcileGuidance(card.guidance,
+        guidanceEvents.concat(getPendingGuidance(run)),
+        tx, { active: run.status === 'running' });
+      result.blocks = result.blocks.filter(block => block.kind !== 'guidance');
       card.projection = result;
       subagentView?.update(card);
       const active = run.status === 'running';

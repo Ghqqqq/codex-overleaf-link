@@ -452,6 +452,7 @@
     RunActivityModel: Modules.RunActivityModel,
     SubagentActivityView: Modules.SubagentActivityView,
     RunGuidanceView: Modules.RunGuidanceView,
+    getPendingGuidance: run => runGuidanceController.getPending(run),
     RunResultActions: runResultActions,
     RunScrollLayout: Modules.RunScrollLayout,
     RunFailureNotice: Modules.RunFailureNotice,
@@ -2876,7 +2877,16 @@
   }
 
   const runGuidanceController = Modules.RunGuidanceController.create({
-    findRunRecord, appendRunEvent, getCurrentRunView: () => currentRunView,
+    findRunRecord, getCurrentRunView: () => getCurrentRunViewForRender(),
+    getActiveSessionId: () => state?.activeSessionId,
+    getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId(), generation: spaRouteGeneration }),
+    getSessionCreatedAt: sessionId => findSessionById(sessionId)?.createdAt,
+    getRunRoot: target => target.sessionId === state?.activeSessionId
+      ? panel?.querySelector(`[data-run-id="${cssEscape(target.recordId)}"]`) : null,
+    onRecordChanged: target => updateSessionById(target.sessionId, {}),
+    onPresentationError: error => console.warn('[codex-overleaf] guidance presentation failed', error),
+    RunGuidanceView: Modules.RunGuidanceView, tx, maxRunEvents: MAX_RUN_EVENTS,
+    revealGuidance: row => runTimelineView.revealGuidance(row),
     renderRunEvent, cssEscape, bumpUnreadIfDetached
   });
 
@@ -2928,6 +2938,8 @@
       getContainer: () => panel?.querySelector('[data-pending-inputs]'),
       createView: options => PendingInputView.create(options),
       appendEvent: (title, status) => appendRunEvent({ title, status }),
+      previewGuidance: runGuidanceController.preview,
+      clearGuidancePreview: runGuidanceController.clearPreview,
       appendGuidance: runGuidanceController.upsert,
       removeGuidance: runGuidanceController.remove,
       toast: (message, status) => showPluginToast(message, { status }),

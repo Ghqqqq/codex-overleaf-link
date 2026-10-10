@@ -745,6 +745,7 @@
           status: normalizeEventStatus(event.status),
           timestamp: typeof event.timestamp === 'string' ? redactSecretLikeText(event.timestamp) : '',
           kind: typeof event.kind === 'string' ? redactSecretLikeText(event.kind) : 'activity',
+          guidanceId: normalizeTextField(event.guidanceId, 160),
           streamKey: typeof event.streamKey === 'string' ? redactSecretLikeText(event.streamKey) : '',
           streamRole: typeof event.streamRole === 'string' ? redactSecretLikeText(event.streamRole) : ''
         };

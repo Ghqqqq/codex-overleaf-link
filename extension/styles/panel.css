@@ -3420,7 +3420,6 @@
 
 #codex-overleaf-panel .run-guidance-message {
   display: block;
-  border-top: 2px solid var(--tl-accent, #55b9f3);
   margin: 7px 0 4px auto;
   animation: tl-slide-in 140ms ease-out;
 }
@@ -3430,6 +3429,13 @@
   color: var(--tl-fg-1);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+#codex-overleaf-panel .run-guidance-label {
+  margin-top: 3px;
+  color: var(--tl-fg-3);
+  font-size: 10px;
+  line-height: 1.4;
 }
 
 /* A right-aligned toolbar: buttons sit together at the end of the row. Each
@@ -4037,9 +4043,8 @@
 }
 #codex-overleaf-panel .run-presentation-workflow .run-process:not([open]) + .run-activity-list { display: grid; }
 #codex-overleaf-panel .run-workflow-list { gap: 0; margin-top: 5px; }
-#codex-overleaf-panel .run-workflow-list[data-expanded="false"] > .run-work-block:not([data-kind="guidance"]) { display: none; }
-#codex-overleaf-panel .run-presentation-workflow .run-guidance-list:empty,
-#codex-overleaf-panel .run-workflow-guidance:empty { display: none; }
+#codex-overleaf-panel .run-workflow-list[data-expanded="false"] > .run-work-block { display: none; }
+#codex-overleaf-panel .run-presentation-workflow .run-guidance-list:empty { display: none; }
 #codex-overleaf-panel .run-workflow-message {
   color: var(--tl-fg-1);
   font-size: 13px;
@@ -4133,7 +4138,6 @@
 #codex-overleaf-panel .run-workflow-thought-full > :first-child { margin-top: 0; }
 #codex-overleaf-panel .run-workflow-thought-full > :last-child { margin-bottom: 0; }
 #codex-overleaf-panel .run-workflow-message > :last-child { margin-bottom: 0; }
-#codex-overleaf-panel .run-workflow-guidance { margin: 15px 0; min-width: 0; }
 #codex-overleaf-panel .run-workflow-tool { min-width: 0; max-width: 100%; margin: 3px 0; }
 #codex-overleaf-panel .run-workflow-tool-summary {
   display: flex;

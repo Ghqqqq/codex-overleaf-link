@@ -171,6 +171,15 @@
 
   function createCoordinator(options = {}) {
     let view = null;
+    const guidanceAttempts = new Map();
+    const guidanceKey = (sessionId, itemId) => JSON.stringify([sessionId, itemId]);
+    const matchesGuidanceItem = (item, identity) => item?.id === identity.itemId
+      && item.createdAt === identity.itemCreatedAt && item.text === identity.text
+      && item.clientUserMessageId === identity.clientUserMessageId;
+    const matchesGuidanceScope = expected => {
+      const scope = options.getGuideScope?.();
+      return !expected || ['projectId', 'accountScopeId', 'generation'].every(key => scope?.[key] === expected[key]);
+    };
     const guideErrorKeys = {
       codex_turn_not_ready: 'queuedInputGuideNotReady',
       codex_turn_mismatch: 'queuedInputGuideTurnChanged',
@@ -236,107 +245,143 @@
       const item = (session?.pendingInputs || []).find(entry => entry.id === itemId);
       const run = options.getCurrentRun?.();
       const binding = run?.activeTurn;
-      const guideScope = options.getGuideScope?.();
+      const initialScope = options.getGuideScope?.();
+      const guideScope = initialScope ? { ...initialScope } : null;
       if (!session || !item || item.status !== 'queued' || !run || run.sessionId !== session.id || !binding?.threadId || !binding?.turnId) {
         options.toast?.(options.tr?.('queuedInputGuideUnavailable'), 'warning');
         return;
       }
       const identity = { requestId: run.nativeRequestId, threadId: binding.threadId, turnId: binding.turnId,
-        text: item.text, clientUserMessageId: item.clientUserMessageId };
+        projectKey: run.runProjectId, recordId: run.recordId, sessionId: session.id, sessionCreatedAt: session.createdAt,
+        itemId, itemCreatedAt: item.createdAt, text: item.text, clientUserMessageId: item.clientUserMessageId };
+      const attemptKey = guidanceKey(identity.sessionId, itemId);
+      const attempt = { identity, scope: guideScope, previewToken: null };
+      const sameScope = () => matchesGuidanceScope(guideScope);
+      const ownedSession = () => {
+        const latest = options.getSession?.(identity.sessionId);
+        return sameScope() && latest?.createdAt === identity.sessionCreatedAt ? latest : null;
+      };
+      const ownedItemSession = (allowPaused = false) => {
+        const latest = ownedSession();
+        const current = latest?.pendingInputs?.find(entry => entry.id === itemId);
+        return guidanceAttempts.get(attemptKey) === attempt
+          && (current?.status === 'steering' || (allowPaused && current?.status === 'paused'))
+          && matchesGuidanceItem(current, identity) ? latest : null;
+      };
+      function clearPreview() {
+        const token = attempt.previewToken;
+        attempt.previewToken = null;
+        if (token) options.clearGuidancePreview?.(token);
+      }
       const assertCurrent = () => {
-        const scope = options.getGuideScope?.(), currentRun = options.getCurrentRun?.();
-        const current = options.getSession?.(session.id)?.pendingInputs?.find(entry => entry.id === itemId);
-        if (options.isGuideCancelled?.() || currentRun !== run || options.getActiveSession?.()?.id !== session.id
+        const currentRun = options.getCurrentRun?.();
+        if (options.isGuideCancelled?.() || currentRun !== run || options.getActiveSession?.()?.id !== identity.sessionId
           || currentRun?.nativeRequestId !== identity.requestId
+          || currentRun?.recordId !== identity.recordId || currentRun?.runProjectId !== identity.projectKey
           || currentRun?.activeTurn?.threadId !== identity.threadId || currentRun?.activeTurn?.turnId !== identity.turnId
-          || (guideScope && ['projectId', 'accountScopeId', 'generation'].some(key => scope?.[key] !== guideScope[key]))
-          || current?.status !== 'steering' || current.text !== identity.text || current.clientUserMessageId !== identity.clientUserMessageId) {
+          || !ownedItemSession()) {
           throw Object.assign(new Error(options.tr?.('queuedInputGuideUnavailable') || 'Guidance is no longer available for this turn.'), { code: 'codex_turn_mismatch' });
         }
       };
       async function restoreUnsent(error) {
         // No steer was dispatched. Restore only this attempt's still-owned item;
         // a concurrent removal, replacement or scope switch must stay untouched.
-        const liveScope = options.getGuideScope?.();
-        const sameScope = !guideScope || (liveScope?.projectId === guideScope.projectId
-          && liveScope?.accountScopeId === guideScope.accountScopeId && liveScope?.generation === guideScope.generation);
-        const latest = options.getSession?.(session.id);
-        const current = latest?.pendingInputs?.find(entry => entry.id === itemId);
-        if (sameScope && latest?.createdAt === session.createdAt && current?.status === 'steering'
-          && current.clientUserMessageId === item.clientUserMessageId && current.createdAt === item.createdAt
-          && current.text === item.text) {
-          options.setQueue?.(session.id, Queue.returnToQueue(latest.pendingInputs, itemId));
+        clearPreview();
+        const latest = ownedItemSession();
+        if (latest) {
+          options.setQueue?.(identity.sessionId, Queue.returnToQueue(latest.pendingInputs, itemId));
           render();
           try {
-            await options.save?.({ queueMutation: { type: 'transition', sessionId: session.id, itemId } });
+            await options.save?.({ queueMutation: { type: 'transition', sessionId: identity.sessionId, itemId } });
           } catch (recoveryError) {
             if (error && typeof error === 'object') error.persistenceRecoveryError = recoveryError?.message || String(recoveryError);
           }
         }
       }
       options.setQueue?.(session.id, Queue.markSteering(session.pendingInputs, itemId));
-      render();
+      guidanceAttempts.set(attemptKey, attempt);
       try {
-        const preflight = await options.preflightGuide?.({ task: identity.text, assertCurrent });
-        assertCurrent();
-        if (preflight?.blocked) throw Object.assign(new Error('Guidance was blocked before dispatch.'), { guidanceBlocked: true });
-        await options.save?.({
-          queueMutation: { type: 'transition', sessionId: session.id, itemId }
-        });
-        assertCurrent();
-      } catch (error) {
-        await restoreUnsent(error);
-        if (error?.guidanceBlocked) return { ok: false, blocked: true };
-        throw error;
-      }
-      try {
-        const response = await options.sendSteer?.({
-          requestId: run.nativeRequestId,
-          projectKey: run.runProjectId,
-          threadId: binding.threadId,
-          expectedTurnId: binding.turnId,
-          clientUserMessageId: item.clientUserMessageId,
-          input: [{ type: 'text', text: item.text }]
-        }, { assertCurrent });
-        const latest = options.getSession?.(session.id);
-        options.setQueue?.(
-          session.id,
-          response?.ok
-            ? Queue.remove(latest?.pendingInputs || [], itemId)
-            : Queue.returnToQueue(latest?.pendingInputs || [], itemId, response?.error?.code || 'steer_failed')
+        try {
+          attempt.previewToken = options.previewGuidance?.(identity.text, {
+            guidanceId: itemId, sessionId: identity.sessionId, recordId: identity.recordId,
+            sessionCreatedAt: identity.sessionCreatedAt
+          });
+          render();
+          const preflight = await options.preflightGuide?.({ task: identity.text, assertCurrent });
+          assertCurrent();
+          if (preflight?.blocked) throw Object.assign(new Error('Guidance was blocked before dispatch.'), { guidanceBlocked: true });
+          await options.save?.({
+            queueMutation: { type: 'transition', sessionId: identity.sessionId, itemId }
+          });
+          assertCurrent();
+        } catch (error) {
+          await restoreUnsent(error);
+          if (error?.guidanceBlocked) return { ok: false, blocked: true };
+          throw error;
+        }
+        let response;
+        try {
+          response = await options.sendSteer?.({
+            requestId: identity.requestId,
+            projectKey: identity.projectKey,
+            threadId: identity.threadId,
+            expectedTurnId: identity.turnId,
+            clientUserMessageId: identity.clientUserMessageId,
+            input: [{ type: 'text', text: identity.text }]
+          }, { assertCurrent });
+        } catch (error) {
+          if (error?.requestDispatched === false) { await restoreUnsent(error); throw error; }
+          clearPreview();
+          const latest = ownedItemSession(true);
+          if (latest) {
+            const paused = latest.pendingInputs.map(entry => entry.id === itemId
+              ? { ...entry, status: 'paused', pauseReason: 'steer_delivery_unknown' }
+              : entry);
+            options.setQueue?.(identity.sessionId, Queue.normalizeQueue(paused));
+          }
+          options.toast?.(formatGuideError(error), 'warning');
+          render();
+          if (latest) await options.save?.({
+            queueMutation: { type: 'transition', sessionId: identity.sessionId, itemId }
+          });
+          return;
+        }
+        // Cancellation can pause the owned row while a dispatched steer is
+        // awaiting acknowledgement. A confirmed receipt also consumes that
+        // paused copy, so Resume cannot send an already accepted input again.
+        const latest = ownedItemSession(Boolean(response?.ok));
+        if (latest) options.setQueue?.(
+          identity.sessionId,
+          response?.ok ? Queue.remove(latest.pendingInputs, itemId)
+            : Queue.returnToQueue(latest.pendingInputs, itemId, response?.error?.code || 'steer_failed')
         );
         if (response?.ok) {
-          if (typeof options.appendGuidance === 'function') {
-            options.appendGuidance(item.text, {
-              guidanceId: item.id,
-              sessionId: session.id,
-              recordId: run.recordId,
-              status: 'completed'
+          if (ownedSession() && typeof options.appendGuidance === 'function') {
+            options.appendGuidance(identity.text, {
+              guidanceId: itemId, sessionId: identity.sessionId, recordId: identity.recordId,
+              sessionCreatedAt: identity.sessionCreatedAt, status: 'completed',
+              timestamp: attempt.previewToken?.event?.timestamp
             });
-          } else {
+          } else if (ownedSession() && options.getCurrentRun?.() === run) {
             options.appendEvent?.(options.tr?.('queuedInputGuided'), 'completed');
           }
         } else {
           options.toast?.(formatGuideError(response?.error), 'warning');
         }
+        clearPreview();
         render();
-        await options.save?.({
+        // A Native acknowledgement is final delivery evidence. A later local
+        // save failure must not turn it into an unknown delivery or resend it.
+        if (latest) await options.save?.({
           queueMutation: response?.ok
-            ? { type: 'remove', sessionId: session.id, itemId }
-            : { type: 'transition', sessionId: session.id, itemId }
+            ? { type: 'remove', sessionId: identity.sessionId, itemId }
+            : { type: 'transition', sessionId: identity.sessionId, itemId }
         });
-      } catch (error) {
-        if (error?.requestDispatched === false) { await restoreUnsent(error); throw error; }
-        const latest = options.getSession?.(session.id);
-        const paused = (latest?.pendingInputs || []).map(entry => entry.id === itemId
-          ? { ...entry, status: 'paused', pauseReason: 'steer_delivery_unknown' }
-          : entry);
-        options.setQueue?.(session.id, Queue.normalizeQueue(paused));
-        options.toast?.(formatGuideError(error), 'warning');
+        else if (response?.ok && ownedSession()) await options.save?.();
+      } finally {
+        clearPreview();
+        if (guidanceAttempts.get(attemptKey) === attempt) guidanceAttempts.delete(attemptKey);
         render();
-        await options.save?.({
-          queueMutation: { type: 'transition', sessionId: session.id, itemId }
-        });
       }
     }
 
@@ -386,7 +431,13 @@
       }
       const session = options.getActiveSession?.();
       const run = options.getCurrentRun?.();
-      view?.render?.(session?.pendingInputs || [], {
+      const visibleQueue = (session?.pendingInputs || []).filter(item => {
+        const attempt = guidanceAttempts.get(guidanceKey(session.id, item.id));
+        return !attempt?.previewToken || !['steering', 'paused'].includes(item.status)
+          || !matchesGuidanceScope(attempt.scope)
+          || session.createdAt !== attempt.identity.sessionCreatedAt || !matchesGuidanceItem(item, attempt.identity);
+      });
+      view?.render?.(visibleQueue, {
         running: Boolean(run),
         canGuide: Boolean(run?.activeTurn?.turnId)
       });
