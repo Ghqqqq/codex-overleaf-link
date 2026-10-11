@@ -415,7 +415,7 @@
       ? await verifyPostWriteSaveState(applied, project, saveTarget)
       : { verification: { ok: false, state: 'not_checked', reason: 'No applied writeback operations were returned.' } };
     const saveVerification = confirmation.verification;
-    await settleWritebackRecovery?.(applied, project, saveVerification, saveTarget);
+    await settleWritebackRecovery?.(applied, project, saveVerification, saveTarget, runRequireReviewing);
     if (appliedPaths.length) {
       appendPostWriteSaveVerificationWarning(saveVerification, saveTarget);
       appendRunEvent({ kind: 'technical', title: 'Post-write save confirmation', status: 'info', detail: saveVerification });

@@ -73,7 +73,7 @@ The table describes the actual listener checks. Chrome's message-delivery condit
 
 | Message family | Admission owner | Current check scope |
 | --- | --- | --- |
-| `native-request`, run-journal list/ack, run-owner port | [background.isAllowedOverleafSender](../../extension/src/background.js) | With a tab, checks HTTPS and the three site hosts in `sender.tab.url`; does not separately check project path, `sender.url`, or frame. Without a tab, requires this extension's ID and extension-URL prefix |
+| `native-request`, run-journal list/known/ack, run-owner port | [background.isAllowedOverleafSender](../../extension/src/background.js) | With a tab, checks HTTPS and the three site hosts in `sender.tab.url`; does not separately check project path, `sender.url`, or frame. Without a tab, requires this extension's ID and extension-URL prefix |
 | `shared-sessions-v1`, shared-session-lock port | [backgroundSharedSessions.senderOrigin](../../extension/src/backgroundSharedSessions.js) | This extension's ID, a tab, `sender.url` preferred over tab URL, HTTPS on the three sites, and a `/project` path; frameId must be 0 when present |
 | global-preferences read/patch | [globalPreferences.installBackground](../../extension/src/shared/globalPreferences.js) | This extension's ID, tab URL, HTTPS on the three sites, and a `/project` path; no separate frame check |
 | Update coordinator `MESSAGE_TYPES` | [backgroundUpdateCoordinator.isAllowedSender](../../extension/src/backgroundUpdateCoordinator.js) | This extension's ID, with sender URL preferred; allows project paths on the three sites or the extension's `/bootstrap/popup.html` |

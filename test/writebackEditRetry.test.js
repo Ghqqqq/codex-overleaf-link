@@ -93,3 +93,24 @@ test('an untouched delete with an unreadable server copy is staged for Retry syn
   const body = extractFromContentScript('retryRunWriteback');
   assert.match(body, /op\.type === 'delete' \? \{ type: 'delete', path: op\.path \}/);
 });
+
+test('a Track Changes run keeps tracked writes for Retry sync after its run record was renormalized', async () => {
+  // Normalization replaces the run object during writeback and drops the in-memory retryRequireReviewing.
+  const record = { id: 'r1', runProjectId: 'p1', executionSnapshot: { requireReviewing: true } };
+  const settle = settleHarness(record);
+  const skipped = { applied: [], skipped: [{ operation: edit, result: openFailure }] };
+  const project = { files: [{ path: 'Tex/Chap_05.tex', content: '' }] };
+  await settle(skipped, project, { state: 'not_checked' }, {});
+  assert.equal(record.retryWriteback.requireReviewing, true, 'falls back to the submitted snapshot');
+  delete record.retryWriteback;
+  record.executionSnapshot = undefined;
+  await settle(skipped, project, { state: 'not_checked' }, {}, true);
+  assert.equal(record.retryWriteback.requireReviewing, true, 'the orchestrator passes the run mode explicitly');
+});
+
+test('Retry sync writes in the mode captured when the task was sent', () => {
+  const body = extractFromContentScript('retryRunWriteback');
+  assert.match(body, /requireReviewing: typeof record\.executionSnapshot\?\.requireReviewing === 'boolean'\s*\n?\s*\? record\.executionSnapshot\.requireReviewing : intent\.requireReviewing/);
+  const orchestrator = require('node:fs').readFileSync(require('node:path').join(__dirname, '../extension/src/content/writebackOrchestrator.js'), 'utf8');
+  assert.match(orchestrator, /settleWritebackRecovery\?\.\(applied, project, saveVerification, saveTarget, runRequireReviewing\)/);
+});

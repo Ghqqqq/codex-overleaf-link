@@ -86,6 +86,47 @@
       return response?.ok === true;
     }
 
+    async function knownJournals(requestIds) {
+      if (typeof runtime?.sendMessage !== 'function') return null;
+      const response = await runtime.sendMessage({ type: 'codex-overleaf/run-journal/known', requestIds });
+      return response?.ok && Array.isArray(response.known) ? new Set(response.known) : null;
+    }
+
+    // A running record whose Native request has no journal outlived the
+    // extension instance that owned it (reload, update or disable): Native
+    // already stopped it and no page can still settle it. Unknown answers and
+    // runs inside the start-up grace keep their status.
+    async function recoverOrphanedRuns(projectKey, options, result) {
+      const now = Date.now();
+      const candidates = [];
+      for (const session of options.listSessions?.() || []) {
+        if (session.projectId && session.projectId !== projectKey) continue;
+        if (options.accountScopeId && session.accountScopeId && session.accountScopeId !== options.accountScopeId) continue;
+        for (const record of session.runs || []) {
+          const started = Date.parse(record.startedAt);
+          if (record.status !== 'running' || !record.nativeRequestId || options.isLiveRun?.(record)
+            || (record.runProjectId && record.runProjectId !== projectKey)
+            || !Number.isFinite(started) || now - started < (options.orphanGraceMs ?? 60000)) continue;
+          candidates.push({ session, record });
+        }
+      }
+      if (!candidates.length) return;
+      const known = await knownJournals(candidates.map(item => item.record.nativeRequestId)).catch(() => null);
+      if (!known) return;
+      for (const { session, record } of candidates) {
+        if (known.has(record.nativeRequestId)) continue;
+        if (!record.runProjectId) record.runProjectId = projectKey;
+        options.normalizeInterruptedRun?.(record);
+        record.status = 'interrupted';
+        record.interruptedDraft = { requestId: record.nativeRequestId, threadId: session.codexThreadId || '',
+          turnId: record.codexTurnId || '', lastEventSeq: record.nativeEventSeq || 0, reason: 'extension_reloaded' };
+        options.pauseSessionQueue?.(session, 'page_reload');
+        result.changed = true;
+        result.recoveredRuns.push({ sessionId: session.id, runId: record.id,
+          projectId: projectKey, accountScopeId: options.accountScopeId });
+      }
+    }
+
     async function recoverJournals(options = {}) {
       const projectKey = String(options.projectKey || '');
       if (!projectKey) {
@@ -170,7 +211,9 @@
         recoveredRuns.push({ sessionId: session.id, runId: record.id,
           projectId: projectKey, accountScopeId: options.accountScopeId });
       }
-      return { changed, acknowledgeIds, recoveredRuns };
+      const result = { changed, acknowledgeIds, recoveredRuns };
+      await recoverOrphanedRuns(projectKey, options, result);
+      return result;
     }
 
     function destroy() {
@@ -187,7 +230,7 @@
     }
 
     connect();
-    return { acknowledge, bind, destroy, listJournals, recoverJournals, release };
+    return { acknowledge, bind, destroy, knownJournals, listJournals, recoverJournals, release };
   }
 
   return { create };

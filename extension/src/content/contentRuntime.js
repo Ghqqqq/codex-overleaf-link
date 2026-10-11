@@ -3308,6 +3308,8 @@
         locale: getLocale()
       })[0]),
       findSession: findSessionById,
+      listSessions: () => state?.sessions || [],
+      isLiveRun: record => currentRunView?.recordId === record.id,
       getActiveSession: () => getActiveSession(state),
       createInterruptedRun: journal => ({
           id: journal.clientRunId,
@@ -6990,16 +6992,20 @@
     assertCurrent();
   }
 
-  async function settleWritebackRecovery(applied, project, verification, target) {
+  async function settleWritebackRecovery(applied, project, verification, target, requireReviewing) {
     const record = findRunRecord(target.recordId, target.sessionId);
     if (!record) return;
+    // retryRequireReviewing is in-memory only; a renormalized run copy loses it.
+    const retryReviewing = typeof requireReviewing === 'boolean' ? requireReviewing
+      : typeof record.retryRequireReviewing === 'boolean' ? record.retryRequireReviewing
+        : record.executionSnapshot?.requireReviewing === true;
     const owner = recoveryOwner(target);
     const skippedPaths = new Set((applied.skipped || []).map(entry => entry.operation?.path));
     const creates = (record.retryWriteback?.operations || []).filter(op => skippedPaths.has(op.path));
     // Untouched edits (never opened / rejected) and deletes whose server check failed are safe to replay.
     const edits = (applied.skipped || []).filter(({ operation: op, result }) => result?.failure?.changedDocument === false && ((op?.type === 'edit'
       && (result.failure.stage === 'navigation' || result.failure.code === 'write_operation_failed')) || (op?.type === 'delete' && result.failure.code === 'source_zip_unavailable'))).map(entry => entry.operation);
-    const base = { ...(record.retryWriteback || { ...owner, id: crypto.randomUUID(), requireReviewing: record.retryRequireReviewing === true }),
+    const base = { ...(record.retryWriteback || { ...owner, id: crypto.randomUUID() }), requireReviewing: retryReviewing,
       baseFiles: project?.files || [], requestId: applied.receiptUnconfirmed ? applied.requestId || '' : '' };
     // An oversized edit pre-image must not cost the create retries (the intent has a 300 KiB ceiling).
     const safeRetry = [[...creates, ...edits], creates].filter(ops => ops.length).map(ops => Modules.SessionState
@@ -7067,7 +7073,9 @@
         // Edits replay against the run's original base files, so the stale guard still refuses changed documents.
         const result = await applySyncChangesToOverleaf(intent.operations.map(op => op.type === 'edit'
           ? { type: 'write', path: op.path, patches: op.patches, content: op.replaceAll } : op.type === 'delete' ? { type: 'delete', path: op.path } : { ...op, type: 'create' }),
-          { id: owner.projectId, files: intent.baseFiles }, { mode: 'auto', requireReviewing: intent.requireReviewing,
+          // The submitted snapshot owns the write mode; older intents may carry a lost value.
+          { id: owner.projectId, files: intent.baseFiles }, { mode: 'auto', requireReviewing: typeof record.executionSnapshot?.requireReviewing === 'boolean'
+            ? record.executionSnapshot.requireReviewing : intent.requireReviewing,
             autoRecompile: retryAutoRecompile,
             retryCreates: true, assistantMessage: tx('Retried the remaining file transfers for this task.', '已重试本轮未完成的文件同步。') });
         assertOwner();

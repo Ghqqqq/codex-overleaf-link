@@ -35,6 +35,13 @@ const ACTIVATION_DELAY_MS = 125;
 const APPLYING_TRANSACTION_STATES = new Set(['activation_pending', 'applying', 'awaiting_health',
   ...BootstrapUpdate.BOOTSTRAP_STATES]);
 const CONSENT_MIGRATION_TARGET_VERSION = '1.9.4';
+// Pure reads of user-owned stores that do not depend on update files. They stay
+// available while a migration or its recovery is unsettled.
+const READ_ONLY_DURING_UPDATE = new Set(['codex.providers.list']);
+// A user-requested return to the source version of a committed update. The
+// rolled-back target is skipped until a newer release replaces it.
+const USER_ROLLBACK_REASON = 'update_user_rollback';
+const USER_ROLLBACK_SKIP_MS = 365 * 24 * 60 * 60 * 1000;
 const UPDATE_METHODS = new Set([
   'update.status',
   'update.bootstrap',
@@ -107,6 +114,9 @@ async function handleUpdateRequest(request, options = {}) {
       case 'update.confirm':
         return okResponse(request.id, await withUpdateMutex(context, () => confirmUpdate(context, request.params || {})));
       case 'update.rollback':
+        if (request.params?.reasonCode === USER_ROLLBACK_REASON && !getApplyGate(options).idle) {
+          throw updateError('update_native_busy', 'Native host is still processing a Codex task.');
+        }
         return okResponse(request.id, await withUpdateMutex(context, () => rollbackUpdate(context, request.params || {})));
       case 'update.cancel':
         return okResponse(request.id, await cancelNetworkUpdate(context, request.params || {}));
@@ -264,7 +274,8 @@ async function recoverBootstrapTransaction(options, transactionId, token) {
 }
 
 function assertBootstrapBusinessAvailable(request, options = {}) {
-  if (isUpdateMethod(request?.method) || ['bridge.ping', 'codex.cancel'].includes(request?.method)) return;
+  if (isUpdateMethod(request?.method) || ['bridge.ping', 'codex.cancel'].includes(request?.method)
+    || READ_ONLY_DURING_UPDATE.has(request?.method)) return;
   const context = getManagedContext(options);
   if (!context.managed) return;
   const journal = readJournal(context);
@@ -352,9 +363,14 @@ async function checkForUpdate(context, params = {}, options = {}) {
     };
   }
   const cooldowns = readJsonSafe(path.join(context.updatesRoot, COOLDOWN_FILE), {});
-  if (Number(cooldowns[latestVersion]?.until || 0) > Date.now()) {
+  const cooldown = cooldowns[latestVersion];
+  // A version the user rolled back is skipped by automatic checks only; an
+  // explicit check offers it again.
+  if (Number(cooldown?.until || 0) > Date.now()
+    && !(cooldown.reasonCode === USER_ROLLBACK_REASON && params.manual === true)) {
     return { managed: true, available: false, reason: 'cooldown', currentVersion, latestVersion,
-      cooldownUntil: Number(cooldowns[latestVersion].until), etag: releaseResponse.headers.get('etag') || '' };
+      cooldownUntil: Number(cooldown.until), cooldownReason: cooldown.reasonCode || '',
+      etag: releaseResponse.headers.get('etag') || '' };
   }
 
   const manifestBytes = await fetchReleaseAsset(
@@ -393,6 +409,19 @@ async function checkForUpdate(context, params = {}, options = {}) {
     });
     return manual;
   }
+  try {
+    BootstrapUpdate.assertMigrationSource(context, manifest, currentVersion);
+  } catch (error) {
+    if (error.code !== 'update_bootstrap_source_mismatch') throw error;
+    // Never cached as an installable candidate: only a reinstall can replace
+    // startup files this release cannot migrate.
+    const manual = { managed: true, available: false, reason: 'manual_install_required', code: error.code,
+      currentVersion, latestVersion, manualInstall: {}, etag: releaseResponse.headers.get('etag') || '' };
+    atomicWriteJson(path.join(context.updatesRoot, MANUAL_CANDIDATE_FILE), { ...manual,
+      checkedAt: new Date().toISOString(), manifestBase64: manifestBytes.toString('base64'),
+      signatureBase64: signatureBytes.toString('base64') });
+    return manual;
+  }
   const candidate = {
     checkedAt: new Date().toISOString(),
     currentVersion,
@@ -416,8 +445,15 @@ function readManualCandidate(context, currentVersion, etag) {
       Buffer.from(manual.signatureBase64, 'base64'),
       { allowBootstrapMismatch: true }
     );
-    if (!isNewerStableVersion(manifest.version, currentVersion)
-      || manifest.bootstrapProtocol === BOOTSTRAP_PROTOCOL) return null;
+    if (!isNewerStableVersion(manifest.version, currentVersion)) return null;
+    if (manifest.bootstrapProtocol === BOOTSTRAP_PROTOCOL) {
+      // Same protocol: a hint only while the installed startup files still
+      // cannot be migrated by this signed release.
+      try { BootstrapUpdate.assertMigrationSource(context, manifest, currentVersion); return null; }
+      catch (error) { if (error.code !== 'update_bootstrap_source_mismatch') return null; }
+      return { managed: true, available: false, reason: 'manual_install_required', code: 'update_bootstrap_source_mismatch',
+        currentVersion, latestVersion: manifest.version, manualInstall: {}, etag };
+    }
     return {
       managed: true, available: false, reason: 'manual_install_required',
       currentVersion, latestVersion: manifest.version,
@@ -494,6 +530,7 @@ function authorizeUpdate(context, params = {}) {
       !isNewerStableVersion(targetVersion, activeVersion)) {
     throw updateError('update_consent_mismatch', 'Update authorization does not match the active signed candidate.');
   }
+  BootstrapUpdate.assertMigrationSource(context, manifest, activeVersion);
   const existing = readAuthorization(context);
   if (existing?.id === authorizationId &&
       existing.targetVersion === targetVersion &&
@@ -536,6 +573,11 @@ async function stageCandidate(context, options = {}) {
     throw updateError('update_candidate_stale', 'The staged update is no longer newer than the active version.');
   }
   const authorization = requireAuthorization(context, manifest.version, ['authorized', 'bound']);
+  try { BootstrapUpdate.assertMigrationSource(context, manifest, activeVersion); }
+  catch (error) {
+    if (authorization.state === 'authorized') settleAuthorization(context, authorization.id, 'revoked');
+    throw error;
+  }
   const existingJournal = readJournal(context);
   if (existingJournal?.state === 'staged' && existingJournal.targetVersion === manifest.version) {
     if (existingJournal.authorizationId !== authorization.id ||
@@ -832,12 +874,32 @@ function rollbackUpdate(context, params = {}) {
   if (journal.bootstrapMigration && !params.transactionId && journal.bootstrapMigration.phase !== 'pending') {
     throw updateError('update_transaction_mismatch', 'Bootstrap rollback must identify its update transaction.');
   }
+  const userRequested = params.reasonCode === USER_ROLLBACK_REASON;
+  // Check every precondition before writing the rolling-back state, so an
+  // unavailable request never turns a working installation into a recovery.
+  if (userRequested && (!params.transactionId
+    || (journal.state === 'committed' && !userRollbackAvailable(context, journal)))) {
+    throw updateError('update_rollback_unavailable', 'The previous version is no longer available for rollback.');
+  }
   const migration = Boolean(journal.bootstrapMigration);
   if (migration) writeJournal(context, { ...journal, state: 'bootstrap_rolling_back' });
-  const rollbackEvidence = rollbackFiles(context, journal, { deferSourceActivation: migration });
+  let rollbackEvidence;
+  try {
+    rollbackEvidence = rollbackFiles(context, journal, { deferSourceActivation: migration });
+  } catch (error) {
+    // The incomplete state remains. The failure record bounds automatic retries
+    // and lets status report the reason; explicit rollback requests still run.
+    const failed = readJournal(context);
+    if (failed?.id === journal.id) {
+      writeJournal(context, { ...failed, updatedAt: new Date().toISOString(), rollbackFailure: {
+        code: safeErrorCode(error), attempts: Number(failed.rollbackFailure?.attempts || 0) + 1,
+        at: new Date().toISOString() } });
+    }
+    throw error;
+  }
   const cooldowns = readJsonSafe(path.join(context.updatesRoot, COOLDOWN_FILE), {});
   cooldowns[journal.targetVersion] = {
-    until: Date.now() + 24 * 60 * 60 * 1000,
+    until: Date.now() + (userRequested ? USER_ROLLBACK_SKIP_MS : 24 * 60 * 60 * 1000),
     reasonCode: normalizeReasonCode(params.reasonCode)
   };
   atomicWriteJson(path.join(context.updatesRoot, COOLDOWN_FILE), cooldowns);
@@ -848,6 +910,7 @@ function rollbackUpdate(context, params = {}) {
     rolledBackAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     previousManifest: undefined,
+    rollbackFailure: undefined,
     rollbackEvidence,
     ...(migration ? { bootstrapMigration: { ...journal.bootstrapMigration, phase: 'restored',
       sourceUnchanged: rollbackEvidence.bootstrapSourceUnchanged === true },
@@ -865,6 +928,27 @@ function rollbackUpdate(context, params = {}) {
   cleanupStage(journal.stageRoot);
   cleanupOrphanStageRoots(context.updatesRoot);
   return { transactionId: journal.id, version: journal.sourceVersion, state: 'rolled_back', restoredPair: rollbackEvidence };
+}
+
+// A committed update can be returned to its source pair only while every
+// source layer is still on disk: the previous runtime slot, the source Native
+// version, the saved manifest and, for a Bootstrap migration, its backups.
+function userRollbackAvailable(context, journal) {
+  if (journal?.state !== 'committed' || !parseSemver(journal.sourceVersion) || !journal.previousManifest
+    || readVersionPointer(context.nativeRoot, 'active-version') !== journal.targetVersion) return false;
+  if (journal.bootstrapMigration
+    && !fs.existsSync(path.join(context.updatesRoot, 'bootstrap-migrations', journal.id, 'state.json'))) return false;
+  // Status runs often, so this reads only the version identities. rollbackFiles
+  // still verifies both full source trees before and after restoring them.
+  const previousRuntime = path.join(context.extensionRoot, 'slots', 'previous', 'runtime');
+  try {
+    const compatibility = fs.readFileSync(path.join(previousRuntime, 'src', 'shared', 'compatibility.js'), 'utf8');
+    const nativePackage = readJsonSafe(path.join(context.nativeRoot, 'versions', journal.sourceVersion, 'package.json'), null);
+    return compatibility.match(/BUILD_TARGET_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1] === journal.sourceVersion
+      && nativePackage?.version === journal.sourceVersion;
+  } catch (_) {
+    return false;
+  }
 }
 
 function revokeUpdate(context, params = {}) {
@@ -1003,7 +1087,12 @@ function recoverAndReadStatus(context, params = {}) {
   }
   journal = BootstrapUpdate.bindBootstrapMigration(context, journal, bootstrapDependencies(context));
   if (BootstrapUpdate.bootstrapExpired(journal, { recoveryRequested: params.bootstrapRecovery === true, context })) {
-    rollbackUpdate(context, { transactionId: journal.id, expectedState: journal.state, reasonCode: 'update_bootstrap_health_timeout' });
+    try {
+      rollbackUpdate(context, { transactionId: journal.id, expectedState: journal.state, reasonCode: 'update_bootstrap_health_timeout' });
+    } catch (_error) {
+      // Recorded as rollbackFailure on the journal; status still answers so
+      // the browser can show the reason instead of an unreadable state.
+    }
     journal = readJournal(context);
   }
   if (journal?.state === 'rolled_back' || journal?.state === 'superseded') {
@@ -1104,6 +1193,8 @@ function currentStatus(context, journal = readJournal(context)) {
       ...(journal.state === 'awaiting_health' && BootstrapUpdate.migrationHint(context, journal)
         && journal.bootstrapMigration?.phase !== 'loaded' ? { state: 'bootstrap_pending' } : {}) } : null,
     authorization: publicAuthorization(readAuthorization(context)),
+    rollbackAvailable: userRollbackAvailable(context, journal)
+      ? { transactionId: journal.id, sourceVersion: journal.sourceVersion, targetVersion: journal.targetVersion } : null,
     restoredPair,
     reinstalledPair
   };
@@ -1347,7 +1438,8 @@ function publicTransaction(journal) {
     supersededAt: journal.supersededAt,
     supersededByVersion: journal.supersededByVersion,
     supersededFromState: journal.supersededFromState,
-    reasonCode: journal.reasonCode || ''
+    reasonCode: journal.reasonCode || '',
+    rollbackFailureCode: journal.rollbackFailure?.code || ''
   };
 }
 

@@ -253,6 +253,8 @@ Domain guide: [Installation and updates](installation-and-updates.md).
 - See [updateStateReasonRecovery](../../test/updateStateReasonRecovery.test.js) for cooldown reasons, manual reinstall guidance for RC promotion with the same numeric version, finalization of old bound consent, and races between the two recovery entry points.
 - A complete same-version reinstall settles old recovery state only when Native supplies a superseded transaction and a valid `reinstalledPair`; cached manual guidance must bind to the current ETag, source version, and original signed material. See [updateManualInstall](../../test/updateManualInstall.test.js).
 
+- Restore previous version: `restorePreviousVersion()` in the coordinator, the `restore-previous` action and `[data-restore-previous-version]` settings button in UpdateNotice, and Native `userRollbackAvailable()`/`rollbackUpdate()` with `reasonCode: update_user_rollback`. The rolled-back target is skipped by automatic checks (`update_skipped_after_rollback`); check IndexedDB schema versions before raising them. See [updateUserRollback](../../test/updateUserRollback.test.js) and the [restore section](installation-and-updates.md#restoring-the-previous-version-on-request).
+
 ### Change installation, doctor, managed updates, or release packages
 
 - Entry points: [CLI](../../bin/codex-overleaf-link.mjs), [install-managed](../../scripts/install-managed.mjs), [bootstrap/background](../../extension/bootstrap/background.js), [release workflow](../../.github/workflows/release.yml).

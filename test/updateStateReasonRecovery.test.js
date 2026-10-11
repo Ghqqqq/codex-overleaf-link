@@ -84,13 +84,14 @@ function discoveryFixture(t) {
 }
 
 function renderExistingSettings(view, locale = 'en') {
-  const nodes = Object.fromEntries(['summary', 'state', 'button'].map(key => [key, { textContent: '', hidden: false, disabled: false }]));
-  const sandbox = { currentView: view, settingsRoot: { querySelector: selector => nodes[selector.includes('summary') ? 'summary' : selector.includes('state]') ? 'state' : 'button'] },
+  const nodes = Object.fromEntries(['summary', 'state', 'button', 'restore'].map(key => [key, { textContent: '', hidden: false, disabled: false }]));
+  const sandbox = { currentView: view, settingsRoot: { querySelector: selector => nodes[selector.includes('restore') ? 'restore'
+    : selector.includes('summary') ? 'summary' : selector.includes('state]') ? 'state' : 'button'] },
     chrome: { runtime: { getManifest: () => ({ version: '2.4.1' }) } }, ACTIVE_UPDATE_STATES: new Set(['downloading', 'staged', 'waiting_for_idle', 'applying', 'awaiting_health']),
     actionInFlight: false, settingsActionInFlight: false, cancellationInFlight: false, getLocale: () => locale, tx: (en, zh) => locale === 'zh' ? zh : en, Date };
   vm.createContext(sandbox);
   const notice = source('extension/src/content/updateNotice.js');
-  for (const name of ['manualReasonText', 'manualUpdateCommand', 'formatUpdateMessage', 'blockerCopy', 'blockersCopy', 'getCopy', 'renderSettings']) vm.runInContext(extractFunction(notice, name), sandbox);
+  for (const name of ['restorePreviousLabel', 'manualReasonText', 'manualUpdateCommand', 'formatUpdateMessage', 'blockerCopy', 'blockersCopy', 'getCopy', 'renderSettings']) vm.runInContext(extractFunction(notice, name), sandbox);
   sandbox.renderSettings();
   return { ...nodes, command: sandbox.manualUpdateCommand(view.state), copy: sandbox.getCopy(view.state) };
 }

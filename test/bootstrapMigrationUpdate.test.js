@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const { bootstrapMigrationFixture, nativeRequest, read, write, hash, oldBootstrap, repo } = require('./helpers/bootstrapMigrationFixture');
 
@@ -124,9 +125,75 @@ test('a signed descriptor cannot authorize unknown source hashes', async t => {
   const f = bootstrapMigrationFixture(t, { mutateManifest: manifest => {
     manifest.bootstrapMigration.files[0].sourceSha256 = 'a'.repeat(64);
   } });
-  await f.apply();
-  await assert.rejects(f.migrate(), /Bootstrap migration file identity is invalid/);
+  // The preflight sees that no installed bytes match before any download.
+  const checked = await f.request('update.check');
+  assert.equal(checked.available, false);
+  assert.equal(checked.reason, 'manual_install_required');
+  assert.equal(checked.code, 'update_bootstrap_source_mismatch');
+  await assert.rejects(f.request('update.authorize', { authorizationId: crypto.randomUUID(),
+    targetVersion: '2.5.1', currentVersion: '2.5.0' }), { code: 'update_candidate_missing' });
+  assert.equal(fs.existsSync(f.journalPath), false);
   assertSource(f);
+});
+
+test('installed Bootstrap that differs from the published source is refused before download and authorization', async t => {
+  const f = bootstrapMigrationFixture(t);
+  // A release candidate or local build carries the same version number.
+  fs.appendFileSync(path.join(f.context.extensionRoot, 'bootstrap/update.js'), '\n// release candidate bytes\n');
+  const checked = await f.request('update.check');
+  assert.equal(checked.reason, 'manual_install_required');
+  assert.equal(checked.code, 'update_bootstrap_source_mismatch');
+  assert.equal(fs.existsSync(path.join(f.context.updatesRoot, 'candidate.json')), false);
+  assert.equal(fs.readFileSync(path.join(f.context.nativeRoot, 'active-version'), 'utf8').trim(), '2.5.0');
+  assert.equal(fs.existsSync(f.journalPath), false);
+});
+
+test('a changed Bootstrap after authorization stops staging and revokes the unbound authorization', async t => {
+  const f = bootstrapMigrationFixture(t);
+  await f.request('update.check');
+  await f.request('update.authorize', { authorizationId: crypto.randomUUID(), targetVersion: '2.5.1', currentVersion: '2.5.0' });
+  fs.appendFileSync(path.join(f.context.extensionRoot, 'bootstrap/update.js'), '\n// changed later\n');
+  await assert.rejects(f.request('update.stage'), { code: 'update_bootstrap_source_mismatch' });
+  assert.equal(fs.existsSync(path.join(f.context.updatesRoot, 'authorization.json')), false);
+  assert.equal(fs.existsSync(f.journalPath), false);
+});
+
+test('pending migration over unpublished source bytes rolls back fully and keeps those bytes', async t => {
+  const f = bootstrapMigrationFixture(t);
+  await f.apply({ bind: false });
+  // Bytes changed after apply simulate an older installer that skipped the preflight.
+  const edited = path.join(f.context.extensionRoot, 'bootstrap/update.js');
+  fs.appendFileSync(edited, '\n// release candidate bytes\n');
+  const before = fs.readFileSync(edited);
+  await f.request('update.status');
+  const restored = await f.request('update.rollback', { transactionId: f.journal().id });
+  assert.equal(restored.state, 'rolled_back');
+  assert.equal(restored.version, '2.5.0');
+  assert.match(restored.restoredPair.bootstrapSha256, /^[a-f0-9]{64}$/);
+  assert.deepEqual(fs.readFileSync(edited), before, 'untouched startup files stay as installed');
+  assert.equal(fs.readFileSync(path.join(f.context.nativeRoot, 'active-version'), 'utf8').trim(), '2.5.0');
+  assert.equal(f.journal().sourceActivationPending, false);
+  const status = await f.request('update.status');
+  assert.equal(status.restoredPair.bootstrapSha256, restored.restoredPair.bootstrapSha256);
+  assert.doesNotThrow(() => f.updater.assertBootstrapBusinessAvailable({ method: 'codex.run' }, { env: f.env }));
+});
+
+test('a rollback that cannot finish records its reason, bounds automatic retries, and keeps provider reads available', async t => {
+  const f = bootstrapMigrationFixture(t);
+  await f.apply(); await f.migrate();
+  fs.rmSync(path.join(f.recordRoot(), 'state.json'));
+  const journal = f.journal(); journal.state = 'bootstrap_rolling_back'; f.setJournal(journal);
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const status = await f.request('update.status');
+    assert.equal(status.transaction.state, 'bootstrap_rolling_back');
+    assert.equal(status.transaction.rollbackFailureCode, 'update_bootstrap_record_missing');
+  }
+  assert.equal(f.journal().rollbackFailure.attempts, 3);
+  assert.throws(() => f.updater.assertBootstrapBusinessAvailable({ method: 'codex.run' }, { env: f.env }), { code: 'update_applying' });
+  assert.doesNotThrow(() => f.updater.assertBootstrapBusinessAvailable({ method: 'codex.providers.list' }, { env: f.env }));
+  const explicit = await f.response('update.rollback', { transactionId: f.journal().id });
+  assert.equal(explicit.error.code, 'update_bootstrap_record_missing');
+  assert.equal(f.journal().rollbackFailure.attempts, 4);
 });
 
 test('the journal manifest hash prevents swapping in another valid signed release', async t => {
@@ -422,7 +489,7 @@ test('a real watchdog survives a SIGKILL immediately after replacing the browser
 const fixture=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));
 const repo=process.argv[2],trust=require(path.join(repo,'native-host/src/updateTrust.js'));
 const {loadWithDependencies}=require(path.join(repo,'test/helpers/managedUpdateFixture.js'));
-const update=loadWithDependencies('native-host/src/updateManager.js',{'./updateTrust':{...trust,
+const update=loadWithDependencies('native-host/src/updateManager.js',{'../../package.json':{version:'2.5.1'},'./updateTrust':{...trust,
 verifySignedReleaseManifest:(bytes,sig,options)=>trust.verifySignedReleaseManifest(bytes,sig,{...options,publicKeys:{fixture:fixture.publicKey}})}});
 update.handleUpdateRequest({id:'killed-migration',method:'update.bootstrap',params:{transactionId:fixture.transactionId}},
 {env:process.env,bootstrapMigration:{fileHooks:{onStep(step){if(step.phase==='apply:replaced'&&step.path.endsWith('/bootstrap/background.js'))process.kill(process.pid,'SIGKILL');}}}})
@@ -460,7 +527,7 @@ const {loadWithDependencies}=require(process.argv[2]);
 const io={...fs,renameSync(from,to){if(to===path.join(root,'native/active-version')){
 const journal=JSON.parse(fs.readFileSync(journalPath,'utf8'));if(journal.sourceActivationPending)process.kill(process.pid,'SIGKILL');}
 return fs.renameSync(from,to);}};
-const updater=loadWithDependencies('native-host/src/updateManager.js',{'node:fs':io});
+const updater=loadWithDependencies('native-host/src/updateManager.js',{'../../package.json':{version:'2.5.1'},'node:fs':io});
 const journal=JSON.parse(fs.readFileSync(journalPath,'utf8'));
 updater.handleUpdateRequest({id:'killed-rollback',method:'update.rollback',params:{transactionId:journal.id}},{env:process.env})
 .then(result=>{process.stderr.write(JSON.stringify(result));process.exitCode=2;});`;
@@ -494,7 +561,7 @@ if(to===authorizationPath){
 const journal=JSON.parse(fs.readFileSync(journalPath,'utf8'));
 if(journal.state==='committed'&&journal.committedEvidence)process.kill(process.pid,'SIGKILL');}
 return fs.renameSync(from,to);}};
-const updater=loadWithDependencies('native-host/src/updateManager.js',{'node:fs':io});
+const updater=loadWithDependencies('native-host/src/updateManager.js',{'../../package.json':{version:'2.5.1'},'node:fs':io});
 const journal=JSON.parse(fs.readFileSync(journalPath,'utf8'));
 updater.handleUpdateRequest({id:'killed-confirm',method:'update.confirm',params:{transactionId:journal.id,
 extensionVersion:'2.5.1',nativeVersion:'2.5.1',bootstrapRevision:'3.1'}},{env:process.env})
@@ -565,3 +632,47 @@ test('interrupted commit cleanup keeps authorization and recovery archive when r
       });
     }
   });
+
+test('a committed migration can be returned to its source pair on request and the target is skipped', async t => {
+  const f = bootstrapMigrationFixture(t);
+  await f.apply(); await f.migrate(); await f.migrate('3.1'); await f.confirm();
+  const committed = await f.request('update.status');
+  assert.deepEqual(committed.rollbackAvailable, { transactionId: f.journal().id, sourceVersion: '2.5.0', targetVersion: '2.5.1' });
+  await assert.rejects(f.request('update.rollback', { reasonCode: 'update_user_rollback' }), { code: 'update_transaction_mismatch' });
+  const restored = await f.request('update.rollback', { transactionId: f.journal().id, expectedState: 'committed',
+    reasonCode: 'update_user_rollback' });
+  assertRestored(f, restored);
+  const status = await f.request('update.status');
+  assert.equal(status.rollbackAvailable, null);
+  assert.equal(status.restoredPair.bootstrapSha256, restored.restoredPair.bootstrapSha256);
+  const cooldown = read(path.join(f.context.updatesRoot, 'cooldowns.json'))['2.5.1'];
+  assert.equal(cooldown.reasonCode, 'update_user_rollback');
+  assert.ok(cooldown.until > Date.now() + 300 * 24 * 60 * 60 * 1000);
+  const automatic = await f.request('update.check');
+  assert.equal(automatic.reason, 'cooldown');
+  assert.equal(automatic.cooldownReason, 'update_user_rollback');
+  const manual = await f.request('update.check', { manual: true });
+  assert.equal(manual.available, true);
+});
+
+test('user rollback is refused without the previous source slot and leaves the committed pair unchanged', async t => {
+  const f = bootstrapMigrationFixture(t);
+  await f.apply(); await f.migrate(); await f.migrate('3.1'); await f.confirm();
+  fs.rmSync(path.join(f.context.extensionRoot, 'slots'), { recursive: true, force: true });
+  assert.equal((await f.request('update.status')).rollbackAvailable, null);
+  const before = fs.readFileSync(f.journalPath);
+  await assert.rejects(f.request('update.rollback', { transactionId: f.journal().id, reasonCode: 'update_user_rollback' }),
+    { code: 'update_rollback_unavailable' });
+  assert.deepEqual(fs.readFileSync(f.journalPath), before);
+  assert.equal(fs.readFileSync(path.join(f.context.nativeRoot, 'active-version'), 'utf8').trim(), '2.5.1');
+  assertTarget(f);
+});
+
+test('user rollback waits for Native work to finish', async t => {
+  const f = bootstrapMigrationFixture(t);
+  await f.apply(); await f.migrate(); await f.migrate('3.1'); await f.confirm();
+  const busy = await f.response('update.rollback', { transactionId: f.journal().id, reasonCode: 'update_user_rollback' },
+    { getWorkState: () => ({ runControllers: 1 }) });
+  assert.equal(busy.error.code, 'update_native_busy');
+  assert.equal(f.journal().state, 'committed');
+});

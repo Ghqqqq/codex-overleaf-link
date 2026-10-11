@@ -211,6 +211,7 @@
                 <p class="codex-set-row-help" data-update-settings-summary data-i18n="softwareUpdatesHelp">Automatically checks signed stable releases for the Extension and Native Host.</p>
                 <p class="codex-set-note" data-update-settings-state aria-live="polite" hidden></p>
                 <button type="button" class="codex-set-btn" data-check-updates data-i18n="checkForUpdates">Check for updates</button>
+                <button type="button" class="codex-set-btn" data-restore-previous-version hidden>Restore previous version</button>
               </div>
             </div>
           </details>

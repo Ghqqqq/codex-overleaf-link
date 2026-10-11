@@ -189,6 +189,16 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
         .catch(error => sendResponse({ ok: false, journals: [], error: getErrorMessage(error, 'Journal read failed.') }));
       return true;
     }
+    if (message?.type === 'codex-overleaf/run-journal/known') {
+      if (!isAllowedOverleafSender(sender)) {
+        sendResponse({ ok: false, known: [] });
+        return undefined;
+      }
+      knownRunJournals(Array.isArray(message.requestIds) ? message.requestIds.map(String).slice(0, 64) : [])
+        .then(known => sendResponse({ ok: true, known }))
+        .catch(error => sendResponse({ ok: false, known: [], error: getErrorMessage(error, 'Journal read failed.') }));
+      return true;
+    }
     if (message?.type === 'codex-overleaf/run-journal/ack') {
       if (!isAllowedOverleafSender(sender)) {
         sendResponse({ ok: false });
@@ -1174,6 +1184,18 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
         && !Array.from(ownerBindings.values()).some(binding => journalMatchesBinding(value, binding)))
       .sort((a, b) => String(a[1]?.createdAt || '').localeCompare(String(b[1]?.createdAt || '')));
     return entries.slice(-16).map(([_key, value]) => value);
+  }
+
+  // A run journal lives from the Native request until its owner settles the
+  // run. chrome.storage.session is cleared when the extension reloads, so a
+  // persisted running record without a journal lost its Native request.
+  async function knownRunJournals(requestIds) {
+    await Promise.allSettled(Array.from(journalLoads.values(), load => load.promise));
+    await Promise.allSettled(Array.from(journalWrites.values()));
+    const storage = chrome.storage?.session;
+    if (!storage) throw new Error('Run journal storage is unavailable.');
+    const values = requestIds.length ? await storage.get(requestIds.map(id => RUN_JOURNAL_PREFIX + id)) : {};
+    return requestIds.filter(id => runJournals.has(id) || Boolean(values?.[RUN_JOURNAL_PREFIX + id]));
   }
 
   function pruneInMemoryRunJournals() {

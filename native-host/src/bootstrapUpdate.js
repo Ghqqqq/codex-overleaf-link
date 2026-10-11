@@ -12,6 +12,7 @@ const Contract = require('./bootstrapMigrationContract');
 const { updateError } = require('./updateTrust');
 
 const BOOTSTRAP_DEADLINE_MS = 120000;
+const MAX_AUTOMATIC_ROLLBACK_ATTEMPTS = 3;
 const BOOTSTRAP_STATES = new Set(['bootstrap_pending', 'bootstrap_rolling_back']);
 const backupRoot = context => path.join(context.updatesRoot, 'bootstrap-migrations');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -157,7 +158,7 @@ function restoreBootstrap(context, journal) {
     if (journal.bootstrapMigration && journal.bootstrapMigration.phase !== 'pending') {
       throw updateError('update_bootstrap_record_missing', 'Bootstrap recovery material is missing.');
     }
-    if (journal.bootstrapMigration) return assertSourceBootstrap(context, journal);
+    if (journal.bootstrapMigration) return untouchedBootstrap(context, journal);
   }
   return plan ? Files.restoreBootstrapMigration(plan) : null;
 }
@@ -169,29 +170,64 @@ function bootstrapEvidence(context, journal, expected) {
       || journal.bootstrapMigration.phase === 'restored' && journal.bootstrapMigration.sourceUnchanged === true)) {
       throw updateError('update_bootstrap_record_missing', 'Bootstrap recovery material is missing.');
     }
-    return assertSourceBootstrap(context, journal);
+    return untouchedBootstrap(context, journal);
   }
   return plan ? Files.verifyBootstrapMigration(plan, { expected }) : null;
 }
 
-function assertSourceBootstrap(context, journal) {
-  for (const [relative, expected] of Object.entries(Contract.BOOTSTRAP_MIGRATION_BASELINE)) {
-    const filename = path.join(context.extensionRoot, relative);
-    if (expected === null ? fs.existsSync(filename)
-      : !fs.existsSync(filename) || !fs.lstatSync(filename).isFile() || hash(fs.readFileSync(filename)) !== expected) {
-      throw updateError('update_bootstrap_source_mismatch', 'Bootstrap source bytes cannot be confirmed.');
+// Without a file plan this transaction never wrote Bootstrap, so recovery only
+// leaves it in place. Published source bytes keep the baseline digest; any other
+// installed bytes (an earlier release candidate or local build) are recorded as
+// observed. Later reads compare the same digest, so changes still block.
+function untouchedBootstrap(context, journal) {
+  let knownSource = true;
+  const entries = Object.entries(Contract.BOOTSTRAP_MIGRATION_BASELINE).sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([relative, expected]) => {
+      const actual = readBootstrapFileHash(context, relative);
+      if (actual !== expected) knownSource = false;
+      return [relative, actual];
+    });
+  return { transactionId: journal.id, migrationId: 'bootstrap-v3.1-from-2.5.0',
+    state: 'restored', expected: 'source', digest: hash(JSON.stringify(entries)), unmodified: true, knownSource };
+}
+
+function readBootstrapFileHash(context, relative) {
+  const filename = path.join(context.extensionRoot, relative);
+  if (!fs.existsSync(filename)) return null;
+  if (!fs.lstatSync(filename).isFile()) {
+    throw updateError('update_bootstrap_source_mismatch', 'Bootstrap source bytes cannot be confirmed.');
+  }
+  return hash(fs.readFileSync(filename));
+}
+
+// Runs before staging and in the update check. A signed migration starts only
+// from the exact source bytes it names; other installations need a full
+// reinstall instead of a transaction that cannot finish. This reads only the
+// descriptor's file list, so later migration contracts use the same check.
+function assertMigrationSource(context, manifest, sourceVersion) {
+  const descriptor = manifest?.bootstrapMigration;
+  if (!descriptor || !Array.isArray(descriptor.sourceVersions) || !descriptor.sourceVersions.includes(sourceVersion)
+    || !Array.isArray(descriptor.files)) return;
+  for (const file of descriptor.files) {
+    const relative = String(file?.path || '');
+    if (!/^bootstrap\/[A-Za-z0-9._-]+$/.test(relative)) {
+      throw updateError('update_bootstrap_manifest_mismatch', 'Bootstrap migration file identity is invalid.');
+    }
+    if (readBootstrapFileHash(context, relative) !== (file.sourceSha256 ?? null)) {
+      throw updateError('update_bootstrap_source_mismatch',
+        'The installed startup files do not match the published source of this update.');
     }
   }
-  const entries = Object.entries(Contract.BOOTSTRAP_MIGRATION_BASELINE).sort((a, b) => a[0].localeCompare(b[0]));
-  return { transactionId: journal.id, migrationId: 'bootstrap-v3.1-from-2.5.0',
-    state: 'restored', expected: 'source', digest: hash(JSON.stringify(entries)), unmodified: true };
 }
 
 function bootstrapExpired(journal, { recoveryRequested = false, context } = {}) {
   const migration = journal?.bootstrapMigration;
   if (!migration || !['bootstrap_pending', 'bootstrap_rolling_back', 'awaiting_health'].includes(journal.state)) return false;
-  return journal.state === 'bootstrap_rolling_back'
-    || (migration.deadline && Date.now() >= migration.deadline)
+  // Automatic retries are bounded; an explicit update.rollback still runs.
+  if (journal.state === 'bootstrap_rolling_back') {
+    return Number(journal.rollbackFailure?.attempts || 0) < MAX_AUTOMATIC_ROLLBACK_ATTEMPTS;
+  }
+  return (migration.deadline && Date.now() >= migration.deadline)
     || (recoveryRequested && migration.phase !== 'pending' && !watchdogAlive(migration, context, journal));
 }
 
@@ -228,6 +264,6 @@ function startWatchdog(context, journal, token) {
 
 function readJson(filename) { try { return JSON.parse(fs.readFileSync(filename, 'utf8')); } catch (_) { return null; } }
 
-module.exports = { BOOTSTRAP_DEADLINE_MS, BOOTSTRAP_STATES, migrationHint, bindBootstrapMigration,
-  advanceBootstrapMigration, assertBootstrapConfirmation, restoreBootstrap, bootstrapEvidence,
-  bootstrapExpired, watchdogAlive };
+module.exports = { BOOTSTRAP_DEADLINE_MS, BOOTSTRAP_STATES, MAX_AUTOMATIC_ROLLBACK_ATTEMPTS, migrationHint,
+  bindBootstrapMigration, advanceBootstrapMigration, assertBootstrapConfirmation, assertMigrationSource,
+  restoreBootstrap, bootstrapEvidence, bootstrapExpired, watchdogAlive };

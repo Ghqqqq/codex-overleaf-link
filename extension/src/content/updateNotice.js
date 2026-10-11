@@ -85,7 +85,18 @@
       } catch (_) { manualCommandCopied = false; }
       return;
     }
+    if (action === 'restore-previous' && !window.confirm(restorePreviousConfirmText())) return;
     return runUpdateAction(action);
+  }
+
+  function restorePreviousLabel() {
+    const version = currentView?.restorePrevious?.version || '';
+    return version ? tx(`Restore v${version}`, `恢复到 v${version}`) : tx('Restore previous version', '恢复到上一版本');
+  }
+
+  function restorePreviousConfirmText() {
+    return tx('Restore the previous version? The extension reloads, and saved, idle Overleaf tabs are refreshed. Sessions, settings and provider keys are kept.',
+      '恢复到上一版本？扩展会重新加载，已保存且空闲的 Overleaf 标签页会被刷新。会话、设置和模型服务的密钥都会保留。');
   }
 
   async function runUpdateAction(action) {
@@ -105,7 +116,8 @@
         cancel: 'codex-overleaf/consent-update-cancel',
         recover: 'codex-overleaf/consent-update-recover',
         dismiss: 'codex-overleaf/consent-update-dismiss',
-        reload: 'codex-overleaf/consent-update-reload'
+        reload: 'codex-overleaf/consent-update-reload',
+        'restore-previous': 'codex-overleaf/consent-update-rollback'
       }[action]);
       if (sequence === actionSequence) currentView = view;
     } catch (error) {
@@ -225,6 +237,13 @@
     if (button && button.dataset.updateSettingsBound !== 'true') {
       button.dataset.updateSettingsBound = 'true';
       button.addEventListener('click', handleSettingsAction);
+    }
+    const restore = panel.querySelector?.('[data-restore-previous-version]');
+    if (restore && restore.dataset.updateSettingsBound !== 'true') {
+      restore.dataset.updateSettingsBound = 'true';
+      restore.addEventListener('click', () => {
+        if (window.confirm(restorePreviousConfirmText())) void runUpdateAction('restore-previous');
+      });
     }
     renderSettings();
   }
@@ -356,7 +375,12 @@
     let statusText = '';
     let buttonText = tx('Check for updates', '检查更新');
 
-    if (stateName === 'idle' && state.code === 'update_cooldown') {
+    if (stateName === 'idle' && state.code === 'update_skipped_after_rollback') {
+      statusText = tx(
+        `v${latestVersion} is skipped because you restored the previous version. Check for updates to install it again.`,
+        `你已恢复到上一版本，自动更新会跳过 v${latestVersion}。点“检查更新”可以重新安装。`
+      );
+    } else if (stateName === 'idle' && state.code === 'update_cooldown') {
       const until = Number(state.cooldownUntil || 0);
       const time = until > 0 && Number.isFinite(until) ? new Date(until).toLocaleString(getLocale() || undefined) : '';
       statusText = tx(
@@ -404,11 +428,19 @@
     } else {
       button.disabled = actionInFlight || settingsActionInFlight || ACTIVE_UPDATE_STATES.has(stateName);
     }
+    const restore = settingsRoot.querySelector?.('[data-restore-previous-version]');
+    if (restore) {
+      restore.hidden = !currentView?.actions?.restorePrevious;
+      restore.textContent = restorePreviousLabel();
+      restore.disabled = actionInFlight || settingsActionInFlight;
+    }
   }
 
   function visibleActions(state) {
     const value = currentView?.state || {};
-    if (value.recoveryPending) return [{ id: 'recover', label: tx('Check recovery', '检查恢复状态'), primary: true }];
+    const restore = currentView?.actions?.restorePrevious
+      ? [{ id: 'restore-previous', label: restorePreviousLabel(), primary: false }] : [];
+    if (value.recoveryPending) return [...restore, { id: 'recover', label: tx('Check recovery', '检查恢复状态'), primary: true }];
     if (value.cancelRequested || ['checking', 'downloading'].includes(state)) {
       return [{ id: 'cancel', label: value.cancelRequested
         ? value.code ? tx('Retry cancellation', '重试取消') : tx('Cancelling…', '正在取消…')
@@ -442,7 +474,7 @@
       ];
     }
     if (state === 'committed') {
-      return [{ id: 'dismiss', label: tx('Done', '完成'), primary: true }];
+      return [...restore, { id: 'dismiss', label: tx('Done', '完成'), primary: true }];
     }
     return [];
   }
@@ -512,7 +544,9 @@
       rolled_back: {
         eyebrow: tx('Previous version restored', '已恢复上一版本'),
         title: state.currentVersion ? 'v' + state.currentVersion : '',
-        detail: tx('The replacement failed its health check.', '替换版本未通过健康检查。')
+        detail: state.code === 'update_user_rollback'
+          ? tx('You restored the previous version. Automatic updates skip the version you left.', '你已恢复到上一版本，自动更新会跳过刚才退出的版本。')
+          : tx('The replacement failed its health check.', '替换版本未通过健康检查。')
       },
       failed: {
         eyebrow: tx('Update could not continue', '更新无法继续'),
@@ -536,6 +570,7 @@
       update_not_applied: ['The update was stopped before installation. Retry when ready.', '更新已在安装前停止，可准备就绪后重试。'],
       update_recovery_pending: ['The update result is being checked. Recovery has not been confirmed.', '正在确认更新结果，恢复状态尚未确认。'],
       update_rolled_back: ['The previous version has been restored.', '已恢复上一版本。'],
+      update_user_rollback: ['You restored the previous version.', '你已恢复到上一版本。'],
       update_not_managed: ['Run install-managed once to enable coordinated automatic updates.', '请先运行一次 install-managed，以启用扩展与本机服务的协调更新。'],
       update_native_busy: ['Native Host is still processing a Codex task.', 'Native Host 仍在处理 Codex 任务。'],
       update_revoke_too_late: ['The update is already being installed. Wait for its result.', '更新已进入安装，请等待结果。'],
@@ -549,7 +584,7 @@
     if (messages[code]) return tx(...messages[code]);
     if (['update_health_failed', 'update_request_failed', 'update_failed'].includes(code)) return tx('The updated components could not be confirmed. Check recovery before retrying.', '尚未确认更新后的组件正常，请先检查恢复状态。');
     if (['update_bootstrap_health_timeout', 'update_bootstrap_reload_failed'].includes(code)) return tx('The updated startup components did not finish restarting and confirming. Check recovery before retrying.', '更新后的启动组件未能完成重启和确认，请先检查恢复状态。');
-    if (['update_bootstrap_source_mismatch', 'update_bootstrap_source_version_mismatch'].includes(code)) return tx('The installed startup files do not match a supported update source. Check recovery before retrying.', '已安装的启动文件与支持的升级来源不一致，请先检查恢复状态。');
+    if (['update_bootstrap_source_mismatch', 'update_bootstrap_source_version_mismatch'].includes(code)) return tx('The installed startup files do not match a supported update source. Restore the previous version in Settings, or reinstall once.', '已安装的启动文件与支持的升级来源不一致。请在设置中恢复到上一版本，或重新安装一次。');
     if (['update_bootstrap_record_missing', 'update_bootstrap_record_invalid', 'update_bootstrap_backup_mismatch', 'update_bootstrap_already_restoring'].includes(code)) return tx('The startup recovery material could not be confirmed. The update result remains unconfirmed.', '尚未确认启动组件的恢复材料有效，更新结果仍待确认。');
     if (['update_bootstrap_confirmation_pending', 'update_bootstrap_native_restart_required'].includes(code)) return tx('Waiting for the updated startup components and Native Host to finish restarting and confirming.', '正在等待更新后的启动组件和本机服务完成重启及确认。');
     if (code === 'update_bootstrap_monitor_unavailable') return tx('The update recovery monitor could not start. Check recovery before retrying.', '更新恢复监护程序未能启动，请先检查恢复状态。');
@@ -606,6 +641,10 @@
     if (state.code === 'prerelease_promotion_requires_manual_update') {
       return tx('The installed release candidate has the same version number as the stable release. Reinstall to use the stable release.',
         '已安装的候选版与稳定版使用相同版本号。请重新安装以使用稳定版。');
+    }
+    if (state.code === 'update_bootstrap_source_mismatch') {
+      return tx('The installed startup files differ from the published release this update starts from, for example after a release candidate or local build. Reinstall once to continue.',
+        '已安装的启动文件与这次更新所基于的正式版不一致（例如装过候选版或本地构建）。重新安装一次即可继续。');
     }
     const reason = state.manualReason || {};
     return tx(reason.en || reason.zh || '', reason.zh || reason.en || '');

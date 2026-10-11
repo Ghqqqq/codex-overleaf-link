@@ -37,8 +37,11 @@
     'codex-overleaf/consent-update-cancel',
     'codex-overleaf/consent-update-recover',
     'codex-overleaf/consent-update-dismiss',
-    'codex-overleaf/consent-update-reload'
+    'codex-overleaf/consent-update-reload',
+    'codex-overleaf/consent-update-rollback'
   ]);
+  const USER_ROLLBACK_REASON = 'update_user_rollback';
+  const RECOVERABLE_TRANSACTION_STATES = new Set(['awaiting_health', 'bootstrap_pending', 'bootstrap_rolling_back']);
 
   const policy = root.CodexOverleafUpdateConsent;
   const revocation = root.CodexOverleafUpdateRevocation;
@@ -156,6 +159,8 @@
         return dismissCompletedUpdate();
       case 'codex-overleaf/consent-update-reload':
         return reloadInstalledRuntime();
+      case 'codex-overleaf/consent-update-rollback':
+        return restorePreviousVersion();
       default:
         throw codedError('unknown_update_action', 'Unknown update action.');
     }
@@ -174,7 +179,7 @@
         code: '', message: '', blocker: '', blockers: [], cooldownUntil: 0, postponeUntil: LEGACY_GUARD }, { operation });
       try {
         const result = await withTimeout(requestNative('update.check', {
-          operationId: operation.id, currentVersion: currentVersion(), etag: currentState.etag || ''
+          operationId: operation.id, currentVersion: currentVersion(), etag: currentState.etag || '', manual: manual === true
         }), CHECK_REQUEST_TIMEOUT_MS, codedError('update_check_timeout', 'The managed update check did not complete in time.'));
         assertOperation(operation);
         const checkedAt = Date.now();
@@ -198,7 +203,8 @@
             currentVersion: result.currentVersion || currentVersion(), latestVersion: result.latestVersion,
             managed: true, etag: result.etag || currentState.etag || '', lastCheckedAt: checkedAt,
             postponeUntil: LEGACY_GUARD, code: result.reason === 'prerelease_promotion_requires_manual_update'
-              ? result.reason : 'update_bootstrap_upgrade_required', message: '', cooldownUntil: 0,
+              ? result.reason : result.code === 'update_bootstrap_source_mismatch'
+                ? result.code : 'update_bootstrap_upgrade_required', message: '', cooldownUntil: 0,
             manualReason: result.manualInstall?.reason || {}, cancelRequested: false
           }, { operation });
         } else {
@@ -207,9 +213,11 @@
             latestVersion: result.latestVersion || result.currentVersion || currentVersion(),
             // A 304 without a verified Native candidate is a cache miss. Drop
             // its validator so the next normal check can obtain fresh bytes.
-            etag: result.reason === 'not_modified' ? '' : result.etag || currentState.etag || '', lastCheckedAt: checkedAt,
+            // A skipped version also needs fresh bytes when checked explicitly.
+            etag: ['not_modified', 'cooldown'].includes(result.reason) ? '' : result.etag || currentState.etag || '', lastCheckedAt: checkedAt,
             postponeUntil: LEGACY_GUARD, transactionId: '',
-            code: result.reason === 'cooldown' ? 'update_cooldown' : '',
+            code: result.reason === 'cooldown'
+              ? (result.cooldownReason === USER_ROLLBACK_REASON ? 'update_skipped_after_rollback' : 'update_cooldown') : '',
             cooldownUntil: result.reason === 'cooldown' ? Number(result.cooldownUntil || 0) : 0,
             manualReason: {}, message: '', cancelRequested: false
           }, { operation });
@@ -765,6 +773,12 @@
       now: Date.now()
     });
     view.runtime = runtime;
+    // Native decides availability: a committed pair with its source still on
+    // disk, or any unsettled installation that recovery must finish anyway.
+    view.restorePrevious = !state.cancelRequested && !activeOperation
+      && (runtime.rollbackAvailable?.sourceVersion || (state.recoveryPending && state.transactionId))
+      ? { version: runtime.rollbackAvailable?.sourceVersion || '' } : null;
+    view.actions = { ...view.actions, restorePrevious: Boolean(view.restorePrevious) };
     const pending = (await chrome.storage.local.get(MANUAL_RELOAD_TABS_KEY))?.[MANUAL_RELOAD_TABS_KEY];
     const pagesPending = runtime.state === 'aligned' && pending?.targetVersion === runtime.installedVersion && pending.tabIds?.length;
     if (runtime.state === 'reload_required' || pagesPending) {
@@ -784,9 +798,9 @@
     runtimeStatusRead = withTimeout(requestNative('update.status'), 4000,
       codedError('update_status_timeout', 'Installed version inspection timed out.')).then(status => {
       runtimeStatusAt = Date.now();
-      runtimeStatus = root.CodexOverleafUpdateRuntimeIdentity.inspectInstalledRuntime(status, {
+      runtimeStatus = { ...root.CodexOverleafUpdateRuntimeIdentity.inspectInstalledRuntime(status, {
         extensionVersion: chrome.runtime.getManifest().version, runtimeVersion: currentVersion()
-      });
+      }), rollbackAvailable: status.rollbackAvailable || null };
       return runtimeStatus;
     }).catch(() => ({ state: 'unknown' })).finally(() => { runtimeStatusRead = null; });
     return runtimeStatusRead;
@@ -815,6 +829,58 @@
     await chrome.storage.local.set({ [MANUAL_RELOAD_TABS_KEY]: {
       targetVersion: runtime.installedVersion, tabIds: tabs.map(tab => tab.id)
     } });
+    setTimeout(() => chrome.runtime.reload(), 0);
+    return getView();
+  }
+
+  // Returns a committed update, or an update whose installation or recovery is
+  // unsettled, to the source pair Native still holds. Native owns the decision;
+  // the browser only supplies the transaction it observed and reloads after an
+  // exact readback.
+  async function restorePreviousVersion() {
+    if (activeOperation || cancellationPromise) {
+      throw codedError('update_transaction_in_progress', 'Another update operation is in progress.');
+    }
+    const status = await requestNative('update.status');
+    const transaction = status.transaction;
+    const committed = transaction?.state === 'committed' && status.rollbackAvailable?.transactionId === transaction.id;
+    if (!transaction?.id || (!committed && !RECOVERABLE_TRANSACTION_STATES.has(transaction.state))) {
+      throw codedError('update_rollback_unavailable', 'No installed update can be restored to its previous version.');
+    }
+    // Page refresh happens after restoration, so it waits for the same saved
+    // and idle point as a reload of an installed update.
+    const tabs = await requireReloadSafePoint();
+    const generation = ++operationGeneration;
+    clearIdleRetryTimer();
+    await setUpdateState({ state: 'rolling_back', transactionId: transaction.id,
+      currentVersion: transaction.targetVersion, latestVersion: transaction.targetVersion,
+      recoveryPending: false, cancelRequested: false, operationId: '', code: '', message: ''
+    }, { observed: true, generation });
+    try {
+      const rolledBack = await requestNative('update.rollback', { transactionId: transaction.id,
+        expectedState: transaction.state, reasonCode: USER_ROLLBACK_REASON });
+      const readback = await requestNative('update.status');
+      if (rolledBack.state !== 'rolled_back' || rolledBack.version !== transaction.sourceVersion
+        || readback.transaction?.id !== transaction.id || readback.transaction.state !== 'rolled_back'
+        || readback.activeVersion !== transaction.sourceVersion || readback.installedAligned !== true
+        || readback.restoredPair?.extensionSha256 !== rolledBack.restoredPair?.extensionSha256
+        || readback.restoredPair?.nativeSha256 !== rolledBack.restoredPair?.nativeSha256) {
+        throw codedError('update_rollback_unconfirmed', 'Rollback returned incomplete evidence.');
+      }
+    } catch (error) {
+      await setUpdateState({ state: 'failed', transactionId: transaction.id, recoveryPending: true,
+        cancelRequested: false, code: safeCode(error), message: safeMessage(error)
+      }, { observed: true, generation }).catch(() => {});
+      throw error;
+    }
+    await chrome.storage.local.set({ [UPDATE_RELOAD_TABS_KEY]: tabs.map(tab => tab.id) });
+    await setUpdateAndConsentState({ state: 'rolled_back', transactionId: transaction.id,
+      currentVersion: transaction.sourceVersion, latestVersion: transaction.targetVersion,
+      recoveryPending: false, cancelRequested: false, blocker: '', blockers: [],
+      code: USER_ROLLBACK_REASON, message: 'You restored the previous version.'
+    }, policy.normalizeConsentState({}), { observed: true, generation });
+    runtimeStatus = null;
+    // The fixed Bootstrap refreshes the saved tabs after it observes rolled_back.
     setTimeout(() => chrome.runtime.reload(), 0);
     return getView();
   }
