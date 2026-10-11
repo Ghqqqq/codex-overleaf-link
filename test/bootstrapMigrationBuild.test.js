@@ -12,7 +12,8 @@ const Contract = require('../native-host/src/bootstrapMigrationContract');
 const { buildRuntimeFileManifest, installRuntimeFromPackage } = require('../native-host/src/runtimeInstaller');
 const { isAllowedUpdatePath } = require('../native-host/src/updateArchive');
 const repoRoot = path.resolve(__dirname, '..');
-const descriptor = () => Contract.buildBootstrapMigrationDescriptor({ packageRoot: repoRoot, version: '2.5.1' });
+const { migrationPackageRoot, migrationTemplate } = require('./helpers/bootstrapMigrationPackage');
+const descriptor = () => Contract.buildBootstrapMigrationDescriptor({ packageRoot: migrationPackageRoot(), version: '2.5.1' });
 
 async function boundary() {
   const previous = process.env.CODEX_OVERLEAF_TEST_IMPORT;
@@ -58,7 +59,7 @@ test('descriptor rejects widened versions, protocols, paths, source hashes, miss
 });
 
 test('Bootstrap migration preserves all manifest shape fields including permissions and extension key', () => {
-  const template = JSON.parse(fs.readFileSync(path.join(repoRoot, 'extension/bootstrap/manifest.template.json')));
+  const template = migrationTemplate();
   assert.doesNotThrow(() => Contract.assertBootstrapManifestShape(template, { version: '2.5.1' }));
   for (const changed of [{ ...template, key: 'different' }, { ...template, permissions: [...template.permissions, 'tabs'] },
     { ...template, action: {} }, { ...template, version: '2.5.0' }]) {
@@ -161,7 +162,7 @@ test('artifact verification checks identical signed Bootstrap payloads and requi
     write('native', 'native-host/bootstrap-payload/' + file.path, bytes);
     write('update', 'native-runtime/native-host/bootstrap-payload/' + file.path, bytes);
   }
-  const template = fs.readFileSync(path.join(repoRoot, 'extension/bootstrap/manifest.template.json'));
+  const template = Buffer.from(JSON.stringify(migrationTemplate(), null, 2) + '\n');
   write('native', 'native-host/bootstrap-payload/manifest.template.json', template);
   write('update', 'native-runtime/native-host/bootstrap-payload/manifest.template.json', template);
   for (const source of Contract.BOOTSTRAP_MIGRATION_IMPLEMENTATION_FILES) {

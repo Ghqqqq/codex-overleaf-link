@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.5.5 - 2026-10-11
+
+### Added
+
+- Restore the previous version from the update banner or the Software updates card after a completed update, or while an installation or its recovery is unsettled. Restoration waits until Overleaf is saved and idle, verifies the restored files before reloading, and skips the version you left in automatic checks; Check for updates still offers it.
+
+### Fixed
+
+- Refuse an update before download when the installed startup files differ from the published release it migrates from, for example after a release candidate or local build, and show the existing reinstall guidance instead.
+- Let a pending startup-file migration roll back without requiring unpublished startup bytes to match, bound automatic rollback retries, report the rollback failure reason, and keep saved model providers visible while an update is unsettled.
+- Settle runs that stayed marked as running after the extension reloaded or updated, instead of showing a spinner indefinitely.
+- Keep Track Changes for the follow-up sync of files that were not written in the first pass, so a tracked run no longer writes its remaining files in Editing mode.
+
 ## v2.5.1 - 2026-10-10
 
 ### Added

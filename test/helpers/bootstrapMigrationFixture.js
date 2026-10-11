@@ -10,6 +10,7 @@ const trust = require('../../native-host/src/updateTrust');
 const contract = require('../../native-host/src/bootstrapMigrationContract');
 const { createUpdateBundleArchive } = require('../../native-host/src/updateArchive');
 const oldBootstrap = require('../fixtures/bootstrap-v2.5.0.json');
+const { migrationPackageRoot, writeMigrationTemplate } = require('./bootstrapMigrationPackage');
 const repo = path.resolve(__dirname, '../..');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const read = filename => JSON.parse(fs.readFileSync(filename, 'utf8'));
@@ -74,7 +75,8 @@ function bootstrapMigrationFixture(t, options = {}) {
   const bootstrapPayload = path.join(payload, 'native-runtime/native-host/bootstrap-payload');
   fs.mkdirSync(bootstrapPayload, { recursive: true });
   fs.cpSync(path.join(repo, 'extension/bootstrap'), path.join(bootstrapPayload, 'bootstrap'), { recursive: true });
-  fs.copyFileSync(path.join(repo, 'extension/bootstrap/manifest.template.json'), path.join(bootstrapPayload, 'manifest.template.json'));
+  writeMigrationTemplate(path.join(bootstrapPayload, 'manifest.template.json'));
+  writeMigrationTemplate(path.join(bootstrapPayload, 'bootstrap/manifest.template.json'));
   options.mutatePayload?.(payload);
   const entries = [];
   function walk(directory, relative = '') {
@@ -89,7 +91,7 @@ function bootstrapMigrationFixture(t, options = {}) {
   createUpdateBundleArchive({ outputPath: archive, entries });
   const bundle = fs.readFileSync(archive);
   const keys = crypto.generateKeyPairSync('ed25519');
-  const descriptor = contract.buildBootstrapMigrationDescriptor({ packageRoot: repo, version: '2.5.1' });
+  const descriptor = contract.buildBootstrapMigrationDescriptor({ packageRoot: migrationPackageRoot(), version: '2.5.1' });
   const manifest = { schemaVersion: 2, repository: 'Ghqqqq/codex-overleaf-link', channel: 'stable',
     version: '2.5.1', tag: 'v2.5.1', bootstrapProtocol: trust.BOOTSTRAP_PROTOCOL,
     gitCommit: 'a'.repeat(40), createdAt: new Date().toISOString(), artifacts: [],
@@ -100,6 +102,8 @@ function bootstrapMigrationFixture(t, options = {}) {
   const signatureBytes = Buffer.from(JSON.stringify({ algorithm: 'Ed25519', keyId: 'fixture',
     signature: crypto.sign(null, manifestBytes, keys.privateKey).toString('base64') }));
   const updater = loadWithDependencies('native-host/src/updateManager.js', {
+    // The migration runs inside the 2.5.1 Native it installed, whatever the checkout version.
+    '../../package.json': { ...require('../../package.json'), version: '2.5.1' },
     'node:fs': options.updateFs || fs,
     './updateTrust': { ...trust, verifySignedReleaseManifest: (bytes, signature, verifyOptions) =>
       trust.verifySignedReleaseManifest(bytes, signature, { ...verifyOptions, publicKeys: { fixture: keys.publicKey } }) }

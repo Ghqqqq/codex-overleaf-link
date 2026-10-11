@@ -12,6 +12,7 @@ const migration = require('../native-host/src/bootstrapMigration');
 const { buildBootstrapMigrationDescriptor, BOOTSTRAP_MIGRATION_BASELINE } = require('../native-host/src/bootstrapMigrationContract');
 const old = require('./fixtures/bootstrap-v2.5.0.json');
 const repo = path.resolve(__dirname, '..');
+const { writeMigrationTemplate } = require('./helpers/bootstrapMigrationPackage');
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bootstrap-migration-'));
@@ -22,6 +23,7 @@ function fixture(t) {
   fs.mkdirSync(path.join(extensionRoot, 'bootstrap'), { recursive: true });
   fs.mkdirSync(payloadRoot, { recursive: true });
   fs.cpSync(path.join(repo, 'extension/bootstrap'), path.join(payloadRoot, 'bootstrap'), { recursive: true });
+  writeMigrationTemplate(path.join(payloadRoot, 'bootstrap/manifest.template.json'));
   for (const [relative, contents] of Object.entries(old.files)) {
     fs.writeFileSync(path.join(extensionRoot, relative), contents);
     fs.chmodSync(path.join(extensionRoot, relative), 0o644);
