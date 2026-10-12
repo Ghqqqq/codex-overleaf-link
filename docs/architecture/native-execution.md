@@ -138,6 +138,12 @@ This path has its own 30-second timer and pending table, and registers Host-disc
 
 Provider connection tests register their helper lifecycle through `runProviderConnectionTest` in [codexProviderTest.js](../../native-host/src/codexProviderTest.js) before preparation begins. Cancellation is checked at entry, after `prepareProviderLaunch` returns, and before actual spawn. Prepared bridge/catalog resources close in finally, and the temporary test directory is removed after child-process stop handling finishes. `providerRuntime.testProvider` immediately adopts an already-aborted externalSignal so Auto negotiation cannot miss an earlier abort. Cancellation accepted during preparation prevents later dispatch of the connection-test child process. The Provider entry point still manages independent test cancellation and budgets; see [Providers and Protocols](providers-and-protocols.md).
 
+### Context Telemetry and Compression Events
+
+`runCodexAppServerProcess` forwards accepted app-server notifications in `codex.session.event.detail` with their method and params. The existing background journal/forwarding path retains `thread/tokenUsage/updated`, including the latest response usage and reported model window. Content consumes this report before filtering invisible activity; cumulative `tokenUsage.total` is not the current context estimate. Missing telemetry remains an unsupported observation rather than a synthesized statistic.
+
+Modern compression uses `item/started` and `item/completed` with `params.item.type=contextCompaction`. `inferNotificationStatus` also marks the legacy `thread/compacted` notification completed. The shared `RunActivityModel.contextCompactionState` parser handles both forms for the transcript and UI projection; see [context usage and compact presentation](ui-and-loading.md#context-usage-beside-the-model). These existing event methods add no Native request or manual compression capability. Parent-thread/turn ownership and normal cancellation remain unchanged.
+
 ## 5. Mutual Exclusion, Run Registration, and Exit Evidence
 
 | Mechanism | Current role | Guarantees it cannot establish |

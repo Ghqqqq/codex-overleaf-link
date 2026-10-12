@@ -2,16 +2,19 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory({
       getFailureReasons: function getFailureReasonsCjs() { return require('./failureReasons.js'); },
-      getI18n: function getI18nCjs() { return require('./i18n.js'); }
+      getI18n: function getI18nCjs() { return require('./i18n.js'); },
+      RunActivityModel: require('./runActivityModel.js')
     });
   } else {
     root.CodexOverleafModuleRegistry.define('AgentTranscript', [
       'FailureReasons',
-      'I18n'
-    ], function createAgentTranscript(FailureReasons, I18n) {
+      'I18n',
+      'RunActivityModel'
+    ], function createAgentTranscript(FailureReasons, I18n, RunActivityModel) {
       return factory({
         getFailureReasons: function getFailureReasonsWindow() { return FailureReasons; },
-        getI18n: function getI18nWindow() { return I18n; }
+        getI18n: function getI18nWindow() { return I18n; },
+        RunActivityModel
       });
     });
   }
@@ -632,16 +635,11 @@
   }
 
   function isContextCompactionEvent(event = {}) {
-    const type = String(event.type || '');
-    const method = String(event.detail?.method || event.title || '');
-    const label = `${type} ${method}`;
-    return /(compact|compaction|compacted)/i.test(label)
-      && /(context|thread|turn|conversation|codex)/i.test(label);
+    return Boolean(deps.RunActivityModel.contextCompactionState(event));
   }
 
   function formatContextCompactionCheckpoint(event = {}, locale = 'en') {
-    const method = String(event.detail?.method || event.title || '');
-    const running = event.status === 'running' || /(started|starting|begin|prepar)/i.test(method);
+    const running = deps.RunActivityModel.contextCompactionState(event) === 'running';
     return {
       kind: 'checkpoint',
       visible: true,

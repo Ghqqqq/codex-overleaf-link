@@ -12,12 +12,13 @@
       require('./subagentActivityModel'),
       require('./writebackIntent'),
       require('./directoryCleanupProof'),
-      require('./undoOperations')
+      require('./undoOperations'),
+      require('./contextUsage')
     );
   } else {
     root.CodexOverleafModuleRegistry.define(
       'SessionState',
-      ['I18n', 'SettlementFacts', 'RunInputQueue', 'SelectionContext', 'LineReferences', 'PathRedaction', 'SessionTitle', 'RunActivityModel', 'SubagentActivityModel', 'WritebackIntent', 'DirectoryCleanupProof', 'UndoOperations'],
+      ['I18n', 'SettlementFacts', 'RunInputQueue', 'SelectionContext', 'LineReferences', 'PathRedaction', 'SessionTitle', 'RunActivityModel', 'SubagentActivityModel', 'WritebackIntent', 'DirectoryCleanupProof', 'UndoOperations', 'ContextUsage'],
       factory
     );
   }
@@ -33,7 +34,8 @@
   SubagentActivityModel,
   WritebackIntent,
   DirectoryCleanupProof,
-  UndoOperations
+  UndoOperations,
+  ContextUsage
 ) {
   'use strict';
 
@@ -250,6 +252,7 @@
       selectionContext: SelectionContext.normalize(session.selectionContext),
       projectReferenceFiles: normalizeProjectReferenceFiles(session.projectReferenceFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
+      contextUsage: ContextUsage.normalize(session.contextUsage),
       forkedFromSessionId: typeof session.forkedFromSessionId === 'string' ? session.forkedFromSessionId : '',
       forkedFromRunId: typeof session.forkedFromRunId === 'string' ? session.forkedFromRunId : '',
       pendingInputs: normalizePendingInputs(
@@ -330,6 +333,7 @@
       focusFiles: normalizeFocusFiles(active.focusFiles),
       projectReferenceFiles: normalizeProjectReferenceFiles(active.projectReferenceFiles),
       codexThreadId: active.codexThreadId || '',
+      contextUsage: ContextUsage.normalize(active.contextUsage),
       providerId: state.providerId || 'builtin'
     };
     state.runs = Array.isArray(active.runs) ? active.runs : [];
@@ -374,6 +378,7 @@
       selectionContext: SelectionContext.normalize(overrides.selectionContext),
       projectReferenceFiles: normalizeProjectReferenceFiles(overrides.projectReferenceFiles),
       codexThreadId: typeof overrides.codexThreadId === 'string' ? overrides.codexThreadId : '',
+      contextUsage: ContextUsage.normalize(overrides.contextUsage),
       forkedFromSessionId: typeof overrides.forkedFromSessionId === 'string' ? overrides.forkedFromSessionId : '',
       forkedFromRunId: typeof overrides.forkedFromRunId === 'string' ? overrides.forkedFromRunId : '',
       pendingInputs: normalizePendingInputs(overrides.pendingInputs)
@@ -726,6 +731,7 @@
       ...(run.undoOwnerProtocol === 1 ? { undoOwnerProtocol: 1 } : {}),
       nativeRequestId: sanitizeAssistantVisibleText(run.nativeRequestId),
       codexThreadId: sanitizeAssistantVisibleText(run.codexThreadId), codexTurnId: sanitizeAssistantVisibleText(run.codexTurnId),
+      contextUsage: run.forkSnapshot === true ? null : ContextUsage.normalize(run.contextUsage),
       forkSnapshot: run.forkSnapshot === true,
       forkSourceRunId: sanitizeAssistantVisibleText(run.forkSourceRunId),
       nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,
@@ -1244,6 +1250,7 @@
       selectionContext: SelectionContext.normalize(session.selectionContext),
       projectReferenceFiles: normalizeProjectReferenceFiles(session.projectReferenceFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
+      contextUsage: ContextUsage.normalize(session.contextUsage),
       forkedFromSessionId: normalizeTextField(session.forkedFromSessionId, 160),
       forkedFromRunId: normalizeTextField(session.forkedFromRunId, 160),
       pendingInputs: normalizePendingInputs(session.pendingInputs)
@@ -1346,6 +1353,7 @@
       ...(run.undoOwnerProtocol === 1 ? { undoOwnerProtocol: 1 } : {}),
       nativeRequestId: normalizeTextField(run.nativeRequestId, 160),
       codexThreadId: normalizeTextField(run.codexThreadId, 160), codexTurnId: normalizeTextField(run.codexTurnId, 160),
+      contextUsage: run.forkSnapshot === true ? null : ContextUsage.normalize(run.contextUsage),
       forkSnapshot: run.forkSnapshot === true,
       forkSourceRunId: normalizeTextField(run.forkSourceRunId, 160),
       nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,

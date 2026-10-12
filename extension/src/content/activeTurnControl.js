@@ -247,6 +247,9 @@
             record.nativeEventSeq = sequence;
             continue;
           }
+          // Non-display state (for example context usage) must also recover
+          // from the journal, after the owning thread/turn has been bound.
+          options.onRawEvent?.(raw, { record, session, sequence, journal });
           const recovered = options.mapEvent?.(raw, journal);
           if (recovered) {
             if (recovered.kind === 'stream') {

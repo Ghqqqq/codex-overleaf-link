@@ -762,6 +762,7 @@
       || { providerId: state?.providerId || 'builtin', providerRevision: 0 },
     readSelectedSpeedInput,
     getRenderedModelEntries,
+    onSelectionRendered: renderContextUsage,
     persistPanelInputs,
     closeDiagnosticsMenu,
     closeCustomInstructionsSettings,
@@ -985,6 +986,7 @@
   let settingsPanelInstance = null;
   let diagnosticsPanelInstance = null;
   let composerPanelInstance = null;
+  let contextUsageView = null;
   let state = null;
   let storageKey = LEGACY_STORAGE_KEY;
   let globalPreferencesController = null;
@@ -1369,7 +1371,7 @@
           onAttachClick: () => panel.querySelector('[data-attach-input]')?.click(),
           onAttachInput: handleAttachInputChange,
           onContextRefresh: () => loadContextFiles({ force: true }),
-          onModelConfigToggle: () => toggleModelConfigPopover(),
+          onModelConfigToggle: () => { contextUsageView?.close(); toggleModelConfigPopover(); },
           onModelConfigChoiceClick: event => {
             handleModelConfigChoiceClick(event).catch(error => {
               appendPlainLog(tx(`Failed to update model settings: ${error.message}`, `更新模型设置失败：${error.message}`));
@@ -1382,6 +1384,15 @@
         }
       });
 
+      contextUsageView = Modules.ContextUsageView.create({
+        getPanel: () => panel, getLocale, tr,
+        onOpen: () => {
+          closeModelConfigPopover();
+          closeContextTray();
+          closeSlashMenu();
+        }
+      });
+      renderContextUsage();
       installContextDismiss();
       installModelConfigDismiss();
       bindLogAutoFollow();
@@ -1634,6 +1645,7 @@
     renderModelConfigChoices();
     updateModelDisplay();
     renderSessionList();
+    renderContextUsage();
     renderContextSelection();
     renderContextSummary();
     renderPendingInputs();
@@ -1907,6 +1919,7 @@
       queueItemId: queuedInput?.id || '',
       replaceRunId
     });
+    renderContextUsage();
     if (!queuedInput && pendingRetryReplacement === submittedRetryReplacement) pendingRetryReplacement = null;
     const runSessionId = currentRunView.sessionId;
     let runAuditDraft = null;
@@ -2239,6 +2252,7 @@
         const userChoice = await showThreadResumeFailedPrompt();
         if (userChoice === 'new') {
           updateSessionById(runSessionId, { codexThreadId: '' });
+          renderContextUsage();
           const StorageDb = Modules.StorageDb;
           if (StorageDb) {
             const record = await StorageDb.getRecord('sessions', runSessionId);
@@ -3322,6 +3336,7 @@
         && currentRunView.sessionId === session.id && currentRunView.runProjectId === projectKey,
       getActiveSession: () => getActiveSession(state),
       createInterruptedRun: journal => ActiveTurnControl.createInterruptedRun(journal, projectKey, tr('restoredRunStoppedStatus')),
+      onRawEvent: (raw, { record, session, sequence }) => storeContextUsage(raw, record, session, sequence),
       mapEvent: (raw, journal) => ActiveTurnControl.mapRecoveredEvent(raw, journal, {
         mapActivity: value => mapAgentEventToActivity(value, { locale: getLocale() }),
         sanitizeText: sanitizeAssistantVisibleText, sanitizeValue: sanitizeAssistantVisibleValue
@@ -5517,6 +5532,7 @@
           focusFiles: session.focusFiles || [], selectionContext: session.selectionContext?.projectId === projectId ? session.selectionContext : null,
           projectReferenceFiles: session.projectReferenceFiles || [],
           codexThreadId: session.codexThreadId || '',
+          contextUsage: session.contextUsage || null,
           forkedFromSessionId: session.forkedFromSessionId || '',
           forkedFromRunId: session.forkedFromRunId || '',
           createdAt: session.createdAt,
@@ -5930,6 +5946,7 @@
     readPanelInputs();
     renderModelConfigChoices();
     updateModelDisplay();
+    renderContextUsage();
     // Save feedback is per-card now (settingsPanel flashSaved); the global
     // header chip and its Saving/Saved lifecycle are gone.
     await saveState();
@@ -6108,6 +6125,7 @@
   }
 
   function applyStateToPanel(options = {}) {
+    contextUsageView?.close();
     selectionContextView.render();
     writingStyleSettings.sync();
     applyPanelTheme(getThemePreference());
@@ -6184,6 +6202,33 @@
       if (record) configureWritebackButton(root, record, { running });
     });
     renderPendingInputs();
+    renderContextUsage();
+  }
+
+  function renderContextUsage() {
+    if (!contextUsageView || !state) return;
+    const session = getActiveSession(state);
+    const run = currentRunView?.sessionId === session?.id
+      ? findRunRecord(currentRunView.recordId, currentRunView.sessionId) : null;
+    const selection = providerSettingsCoordinator.getRunSelection(state.providerId);
+    const runningSelection = run?.status === 'running' && run.model === state.model
+      && (run.providerId || 'builtin') === (state.providerId || 'builtin');
+    const scope = {
+      threadId: session?.codexThreadId || '',
+      providerId: state.providerId || 'builtin',
+      providerRevision: runningSelection ? Number(run.providerRevision || 0)
+        : selection?.providerRevision ?? ((state.providerId || 'builtin') === 'builtin' ? 0 : null),
+      model: state.model || ''
+    };
+    // The composer can select the next turn's model while this turn runs.
+    // Only show statistics produced by the selected model and provider.
+    const matchesRun = run && run.model === scope.model
+      && (run.providerId || 'builtin') === scope.providerId
+      && Number(run.providerRevision || 0) === scope.providerRevision;
+    contextUsageView.setState({
+      usage: Modules.ContextUsage.select(session, scope),
+      compacting: Boolean(matchesRun && Modules.RunActivityModel.project(run).compacting)
+    });
   }
 
   function prepareRetryReplacement(run, task) {
@@ -6374,6 +6419,7 @@
       ].filter(Boolean).join(' · ');
       collapseRunProcess(visibleView, statusText);
     }
+    renderContextUsage();
   }
 
 
@@ -6388,6 +6434,11 @@
     }
 
     const owner = currentRunView && findRunRecord(currentRunView.recordId, currentRunView.sessionId);
+    if (storeContextUsage(event, owner, findSessionById(currentRunView?.sessionId), journalSeq)) {
+      scheduleRunStateSave('stream');
+      renderContextUsage();
+      return;
+    }
     if (owner && Modules.SubagentActivityModel.ingest(owner, event, {
       locale: getLocale(), sanitize: sanitizeAssistantVisibleText, nativeEventSeq: journalSeq
     })) {
@@ -6416,6 +6467,20 @@
       replaceText: activity.replaceText,
       nativeEventSeq: journalSeq
     });
+    if (activity.kind !== 'stream') renderContextUsage();
+  }
+
+  function storeContextUsage(event, record, session, sequence) {
+    if (!record) return false;
+    const usage = Modules.ContextUsage.fromEvent(event, {
+      ...record, providerRevision: Number(record.providerRevision || 0), eventSeq: sequence
+    });
+    if (!usage || !Modules.ContextUsage.isNewer(usage, record.contextUsage)) return false;
+    record.contextUsage = usage;
+    record.nativeEventSeq = Math.max(Number(record.nativeEventSeq || 0), Number(sequence || 0));
+    if (session?.codexThreadId === usage.threadId
+      && Modules.ContextUsage.isNewer(usage, session.contextUsage)) session.contextUsage = usage;
+    return true;
   }
 
   function bindActiveTurn(detail = {}, journalSeq = 0) {
@@ -6434,6 +6499,7 @@
       updateSessionById(currentRunView.sessionId, { codexThreadId: threadId });
     }
     renderPendingInputs();
+    renderContextUsage();
     saveState().catch(() => {});
   }
 

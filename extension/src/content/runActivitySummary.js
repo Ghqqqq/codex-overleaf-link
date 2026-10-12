@@ -589,12 +589,13 @@
         || block.meta?.state === 'running');
       // The presence header already narrates the live state.
       card.busy.hidden = !active || hasActive || Boolean(presence);
-      text(card.busy, result.stage === 'local_completed'
+      text(card.busy, result.compacting ? tx('Compacting context…', '正在压缩上下文…') : result.stage === 'local_completed'
         ? (run.mode === 'ask' ? tx('Preparing the answer…', '正在整理回答…') : tx('Preparing writeback and verification…', '正在准备写回与验证…'))
         : result.stage === 'preparing' ? tx('Preparing project context…', '正在准备项目上下文…') : tx('Working…', '正在处理…'));
     }
     // Live header: long phases are named; otherwise a rarely-changing word. Tool steps stay in the round list.
     function runningLabel(result, run) {
+      if (result.compacting) return { kind: 'stage', text: tx('Compacting context', '正在压缩上下文') };
       if (result.stage === 'sync') return { kind: 'stage', text: tx('Syncing changes to Overleaf', '正在同步改动到 Overleaf') };
       // Before the model's first response the header names the real start-up step, not a playful word.
       if (result.setup && !result.setup.done) return { kind: 'stage', text: setupLiveLabel(result.setup) };

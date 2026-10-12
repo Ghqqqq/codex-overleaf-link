@@ -7,6 +7,7 @@ const Db = require('../extension/src/shared/storageDb');
 const Panel = require('../extension/src/content/scopedPersistencePanelState');
 const Sessions = require('../extension/src/content/sessionPersistence');
 const Transfer = require('../extension/src/shared/sharedSessionTransfer');
+const ContextUsage = require('../extension/src/shared/contextUsage');
 
 const scope = { accountScopeId: 'account-one', projectId: 'project-one' };
 const record = (id, task = '') => ({ id, ...scope, task,
@@ -26,7 +27,14 @@ test('saved conversation text and recovery survive a new page without crossing a
     const text = '中文🙂 manuscript password=example-value';
     const recovery = { undoOperations: [{ type: 'edit', path: 'main.tex', replaceAll: '' }],
       undoBaseFiles: [{ path: 'main.tex', content: text }], undoExpectedFiles: [{ path: 'main.tex', content: '' }] };
-    const session = { ...record('s', text), runs: [{ id: 'r', task: text, mode: 'auto', status: 'completed',
+    const owner = { id: 'r', codexThreadId: 'thread-one', codexTurnId: 'turn-one',
+      providerId: 'builtin', providerRevision: 0, model: 'example-model' };
+    const contextUsage = ContextUsage.fromEvent({ type: 'codex.session.event', nativeEventSeq: 3,
+      timestamp: '2026-10-12T00:00:00Z', detail: { method: 'thread/tokenUsage/updated',
+        params: { threadId: owner.codexThreadId, turnId: owner.codexTurnId,
+          tokenUsage: { last: { totalTokens: 218700 }, total: { totalTokens: 9876543 }, modelContextWindow: 1000000 } } } }, owner);
+    const session = { ...record('s', text), codexThreadId: owner.codexThreadId, contextUsage,
+      runs: [{ ...owner, contextUsage, task: text, mode: 'auto', status: 'completed',
       runProjectId: scope.projectId, ...recovery, events: [{ kind: 'report', title: 'Answer', status: 'completed', detail: text }] }] };
     const state = State.normalizePanelState({ activeSessionId: 's', sessions: [session] });
     await persist(connect(network, 1), state);
@@ -37,6 +45,12 @@ test('saved conversation text and recovery survive a new page without crossing a
     assert.equal(restored.runs[0].events[0].detail, text);
     assert.deepEqual(restored.runs[0].undoBaseFiles, recovery.undoBaseFiles);
     assert.deepEqual(restored.runs[0].undoExpectedFiles, recovery.undoExpectedFiles);
+    assert.equal(contextUsage.usedTokens, 218700);
+    assert.deepEqual(restored.session.contextUsage, contextUsage);
+    assert.deepEqual(restored.runs[0].contextUsage, contextUsage);
+    assert.deepEqual(ContextUsage.select(restored.sessions[0], owner), contextUsage);
+    assert.equal(ContextUsage.select(restored.sessions[0], { ...owner, providerRevision: 1 }), null);
+    assert.equal(ContextUsage.select(restored.sessions[0], { ...owner, codexThreadId: 'replacement-thread' }), null);
     assert.equal((await connect(network, 3, 'other-account').getAllByIndex('sessions', 'projectId', scope.projectId)).length, 0);
   } finally { network.close(); }
 });

@@ -80,6 +80,14 @@ See [Providers and protocols](providers-and-protocols.md) for model execution an
 - Verification: When changing selection, verify the actual submitted model/Provider and the affected delayed or failed catalog response. The core suite has no Provider-selection UI test.
 - Selection protection during active runs connects to the Coordinator through `ProjectProviderSelection.assertSwitchAllowed/commit`; checks continue before repainting an asynchronous model catalog, while configuration saving and project selection remain separately managed. A failed current model request is classified as stale only by its actual generation/identity; a missing revision in an error packet does not automatically make it a late result.
 
+### Change Context Usage or the Compact Status
+
+- Entry points: [contentRuntime.appendNativeEvent/renderContextUsage](../../extension/src/content/contentRuntime.js), [ContextUsageView.create](../../extension/src/content/contextUsageView.js), and the model-adjacent slot in [ComposerPanel](../../extension/src/content/composerPanel.js).
+- State owner: [ContextUsage](../../extension/src/shared/contextUsage.js) validates the latest parent-thread report; session/run snapshots retain its model and Provider revision. Latest response totals and cumulative usage have different meanings. Capacity comes from the report, with unknown values kept unknown.
+- Required coordination: [SessionState](../../extension/src/shared/sessionState.js), [StorageDb](../../extension/src/shared/storageDb.js), runtime hydration, model-picker redraws, Provider/thread replacement and fork isolation. See [context usage](ui-and-loading.md#context-usage-beside-the-model) for selection and display rules.
+- Compact lifecycle: [RunActivityModel.contextCompactionState/capture/project](../../extension/src/shared/runActivityModel.js) is shared by [AgentTranscript](../../extension/src/shared/agentTranscript.js), [RunActivitySummary](../../extension/src/content/runActivitySummary.js), and the runtime indicator. [codexSessionRunner.inferNotificationStatus](../../native-host/src/codexSessionRunner.js) treats legacy `thread/compacted` as completed. Preserve modern item identity and clear the display at completion/cancellation without adding rows.
+- Verification: extend the existing [sessionDurability](../../test/sessionDurability.test.js) contract for persisted snapshots. Use a short live check for actual usage delivery, locale changes, model/session switching and the compact header; temporary lifecycle/DOM probes can verify start/completion and the unchanged three-row window without forcing a costly real compaction.
+
 ### Change Ask/Auto, send controls, or Edit Selection
 
 - Entry points: [ComposerPanel.create](../../extension/src/content/composerPanel.js), [SelectionContextView.attach](../../extension/src/content/selectionContextView.js), runtime `safeRunTask`.

@@ -525,6 +525,7 @@
         readSelectedSpeedInput() === 'fast' ? tx('Fast mode', '快速模式') : tx('Standard speed', '标准速度')
       ].filter(Boolean).join(' · ');
     }
+    deps.onSelectionRendered?.();
   }
 
     return {

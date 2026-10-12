@@ -1316,6 +1316,7 @@ function emitCodexEvent(emit, type, title, detail = {}, status = 'running') {
 }
 
 function inferNotificationStatus(message) {
+  if (message.method === 'thread/compacted') return 'completed';
   if (message.method === 'turn/completed') {
     const error = getTurnCompletionError(message.params?.turn || {});
     if (error) return error.code === 'codex_cancelled' ? 'cancelled' : 'failed';

@@ -29,6 +29,8 @@
     'ComposerPanel',
     'ContentRuntime',
     'ContextTray',
+    'ContextUsage',
+    'ContextUsageView',
     'DiagnosticsController',
     'DiagnosticsExport',
     'DiagnosticsPanel',

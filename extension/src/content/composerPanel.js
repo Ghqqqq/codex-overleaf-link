@@ -62,6 +62,21 @@
         <div class="codex-composer-toolbar">
           <button type="button" data-add-context title="Add @ context" aria-label="Add @ context" aria-expanded="false">＋</button>
           <div class="codex-model-config" data-model-config>
+            <div class="codex-context-usage" data-context-usage data-unknown="true">
+              <button type="button" class="codex-context-usage-button" data-context-usage-toggle aria-expanded="false">
+                <svg class="codex-context-usage-ring" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                  <circle class="codex-context-usage-track" cx="10" cy="10" r="7.5"></circle>
+                  <circle class="codex-context-usage-fill" cx="10" cy="10" r="7.5" pathLength="100"></circle>
+                </svg>
+                <span data-context-usage-percent>—</span>
+              </button>
+              <div class="codex-context-usage-popover" data-context-usage-popover role="region" tabindex="0" hidden>
+                <div class="codex-context-usage-heading" data-context-usage-title></div>
+                <div class="codex-context-usage-amount" data-context-usage-amount></div>
+                <div class="codex-context-usage-bar" aria-hidden="true"><span></span></div>
+                <div class="codex-context-usage-note" data-context-usage-note></div>
+              </div>
+            </div>
             <button type="button" class="codex-model-config-button" data-model-config-toggle aria-haspopup="menu" aria-expanded="false">
               <span class="codex-model-speed-indicator" data-speed-indicator hidden aria-hidden="true">
                 <svg viewBox="0 0 16 16" focusable="false">

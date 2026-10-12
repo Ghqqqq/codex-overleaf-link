@@ -1,7 +1,7 @@
 (function initStorageDb(root, factory) {
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(require('./storageRunActions'), require('./runInputQueue'),
-      require('./settlementFacts'), require('./storageSessionClaims'), require('./sessionState'), require('./runActivityModel'), require('./sharedSessionBridge'), require('./subagentActivityModel'), require('./storageValuePruning'), require('./composerAttachmentDraft'), require('./sharedSessionTransfer'));
+      require('./settlementFacts'), require('./storageSessionClaims'), require('./sessionState'), require('./runActivityModel'), require('./sharedSessionBridge'), require('./subagentActivityModel'), require('./storageValuePruning'), require('./composerAttachmentDraft'), require('./sharedSessionTransfer'), require('./contextUsage'));
   } else {
     root.CodexOverleafModuleRegistry.define('StorageDb', [
       'StorageRunActions',
@@ -14,10 +14,11 @@
       'SubagentActivityModel',
       'StorageValuePruning',
       'ComposerAttachmentDraft',
-      'SharedSessionTransfer'
+      'SharedSessionTransfer',
+      'ContextUsage'
     ], factory);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue, SettlementFacts, StorageSessionClaims, SessionState, RunActivityModel, SharedSessionBridge, SubagentActivityModel, StorageValuePruning, ComposerAttachmentDraft, SharedSessionTransfer) {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function storageDbFactory(StorageRunActions, RunInputQueue, SettlementFacts, StorageSessionClaims, SessionState, RunActivityModel, SharedSessionBridge, SubagentActivityModel, StorageValuePruning, ComposerAttachmentDraft, SharedSessionTransfer, ContextUsage) {
   'use strict';
   const { removeEmptySummaryFields, removeEmptyFields } = StorageValuePruning;
   if (!StorageRunActions?.compactRunsForStorage || !StorageRunActions?.compactRunActionPayload || !StorageRunActions?.compactProviderSnapshot || !StorageRunActions?.compactRunExecutionSnapshot || !StorageRunActions?.compactStructuredEventValue || !StorageRunActions?.hashString || !RunInputQueue?.compactForStorage || !SettlementFacts?.compactSettlementFacts || !StorageSessionClaims?.createSessionClaimer) {
@@ -276,6 +277,7 @@
       title: normalizeSessionTitleForStorage(input.title, titleSource),
       titleSource: titleSource,
       codexThreadId: typeof input.codexThreadId === 'string' ? input.codexThreadId : '',
+      contextUsage: ContextUsage.normalize(input.contextUsage),
       forkedFromSessionId: normalizeTextField(input.forkedFromSessionId, 160),
       forkedFromRunId: normalizeTextField(input.forkedFromRunId, 160),
       status: typeof input.status === 'string' && input.status ? input.status : 'active',
@@ -709,6 +711,7 @@
       ...(run.undoOwnerProtocol === 1 ? { undoOwnerProtocol: 1 } : {}),
       nativeRequestId: normalizeTextField(run.nativeRequestId, 160),
       codexThreadId: normalizeTextField(run.codexThreadId, 160), codexTurnId: normalizeTextField(run.codexTurnId, 160),
+      contextUsage: run.forkSnapshot === true ? null : ContextUsage.normalize(run.contextUsage),
       nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,
       queueItemId: normalizeTextField(run.queueItemId, 160)
     };

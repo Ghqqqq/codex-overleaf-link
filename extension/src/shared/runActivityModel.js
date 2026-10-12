@@ -86,6 +86,27 @@
       written: Number.isSafeInteger(fileCount) ? fileCount : undefined, output: version }, sanitize);
   }
 
+  function contextCompactionState(event = {}) {
+    if (event.activity?.kind === 'lifecycle' && event.activity.target === 'context_compaction') {
+      return event.activity.state === 'running' ? 'running' : 'completed';
+    }
+    const raw = event.technicalDetail || (event.kind === 'technical' ? event.detail : null) || event;
+    const type = text(raw.type);
+    const method = text(raw.detail?.method || (type === 'codex.session.event' ? raw.title : ''));
+    if (raw.detail?.params?.item?.type === 'contextCompaction') {
+      if (method === 'item/started') return 'running';
+      if (method === 'item/completed') return 'completed';
+    }
+    // The legacy completion notification can carry an incorrectly inferred
+    // `running` status. The protocol method is authoritative in both versions.
+    if (method === 'thread/compacted') return 'completed';
+    const label = type + ' ' + method;
+    if (!/(compact|compaction|compacted)/i.test(label)
+      || !/(context|thread|turn|conversation|codex)/i.test(label)) return '';
+    if (/(completed|compacted|finished)/i.test(label)) return 'completed';
+    return raw.status === 'running' || /(started|starting|begin|prepar)/i.test(label) ? 'running' : 'completed';
+  }
+
   function capture(event = {}, sanitize = text) {
     if (event.activity?.v === 1) return normalize(event.activity, sanitize);
     if (event.kind === 'report' || event.kind === 'guidance' || event.kind === 'stream') return undefined;
@@ -103,6 +124,10 @@
     const scope = JSON.stringify([thread, turn]);
     const id = itemId ? JSON.stringify([thread, turn, itemId]) : '';
     const base = { id, scope, state: event.status };
+    const compactState = contextCompactionState(event);
+    if (compactState) {
+      return normalize({ ...base, kind: 'lifecycle', target: 'context_compaction', state: compactState }, sanitize);
+    }
     if (NOTICE_SOURCES.has(method)) {
       return normalize({ ...base, kind: 'notice', noticeSource: method,
         output: text(params.details), state: event.status === 'failed' ? 'failed' : 'warning' }, sanitize);
@@ -231,6 +256,7 @@
     const diagnostics = [];
     const diagnosticNotices = new Set();
     const byId = new Map();
+    const compactions = new Map();
     const report = events.filter(event => event?.kind === 'report').at(-1);
     const finalText = text(report?.detailStructured?.conclusion
       || report?.detail?.Conclusion || report?.detail?.['结论']).trim();
@@ -301,6 +327,22 @@
       }
       const meta = event.activity?.v === 1 ? event.activity : capture(event);
       clipped ||= meta?.clipped === true;
+      if (meta?.kind === 'lifecycle' && meta.target === 'context_compaction') {
+        startWork(event);
+        const identity = meta.id || meta.scope;
+        if (meta.state !== 'running') {
+          compactions.set(identity, { scope: meta.scope, running: false });
+          // Legacy completions have no item id and close the scope's active item.
+          if (!meta.id) for (const entry of compactions.values()) {
+            if (entry.scope === meta.scope) entry.running = false;
+          }
+        } else if (!meta.id || !compactions.has(identity)) {
+          compactions.set(identity, { scope: meta.scope, running: true });
+        }
+        diagnostics.push({ key, event });
+        if (stage === 'preparing') stage = 'working';
+        return;
+      }
       if (isDiagnosticNotice(event, meta)) {
         const noticeKey = JSON.stringify([meta?.noticeSource || '', event.title]);
         if (!diagnosticNotices.has(noticeKey)) diagnostics.push({ key, event });
@@ -317,7 +359,10 @@
       } else if (!meta && /^(?:Note: |提示：)/.test(text(event.title))) addSetupStep('note', event);
       if (!meta || meta.kind === 'lifecycle' || event.kind === 'technical') {
         diagnostics.push({ key, event });
-        if (meta?.kind === 'lifecycle') stage = meta.target;
+        if (meta?.kind === 'lifecycle') {
+          stage = meta.target;
+          if (stage === 'local_completed') compactions.clear();
+        }
         return;
       }
       const identity = meta.id ? 'item:' + meta.scope + ':' + meta.id : 'event:' + key;
@@ -359,8 +404,10 @@
     }
     const legacy = diagnostics.some(({ event }) => event.kind !== 'technical' && !event.technicalDetail && !event.activity);
     if (stage === 'local_completed') startWork({});
-    return { blocks, diagnostics, notices, stage, setup, fileCount: files.size, clipped, hasReport: Boolean(report), legacy };
+    const compacting = run.status === 'running' && stage !== 'local_completed'
+      && [...compactions.values()].some(entry => entry.running);
+    return { blocks, diagnostics, notices, stage, compacting, setup, fileCount: files.size, clipped, hasReport: Boolean(report), legacy };
   }
 
-  return { normalize, capture, project, normalizePhase: phase, isRoutineCancellationEvent };
+  return { normalize, capture, project, contextCompactionState, normalizePhase: phase, isRoutineCancellationEvent };
 });
