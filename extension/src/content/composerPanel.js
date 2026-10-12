@@ -68,10 +68,12 @@
                   <circle class="codex-context-usage-track" cx="10" cy="10" r="7.5"></circle>
                   <circle class="codex-context-usage-fill" cx="10" cy="10" r="7.5" pathLength="100"></circle>
                 </svg>
-                <span data-context-usage-percent>—</span>
               </button>
               <div class="codex-context-usage-popover" data-context-usage-popover role="region" tabindex="0" hidden>
-                <div class="codex-context-usage-heading" data-context-usage-title></div>
+                <div class="codex-context-usage-heading">
+                  <span data-context-usage-title></span>
+                  <span data-context-usage-percent hidden></span>
+                </div>
                 <div class="codex-context-usage-amount" data-context-usage-amount></div>
                 <div class="codex-context-usage-bar" aria-hidden="true"><span></span></div>
                 <div class="codex-context-usage-note" data-context-usage-note></div>

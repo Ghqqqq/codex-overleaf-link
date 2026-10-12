@@ -5103,14 +5103,10 @@
 }
 
 #codex-overleaf-panel .codex-context-usage-button {
-  gap: 4px;
   padding: 0 4px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--tl-fg-3);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -5162,7 +5158,8 @@
 }
 
 #codex-overleaf-panel .codex-context-usage-popover[hidden] { display: none; }
-#codex-overleaf-panel .codex-context-usage-heading { color: var(--tl-fg-1); font-weight: 600; }
+#codex-overleaf-panel .codex-context-usage-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--tl-fg-1); font-weight: 600; }
+#codex-overleaf-panel [data-context-usage-percent] { color: var(--tl-fg-3); font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
 #codex-overleaf-panel .codex-context-usage-amount { margin-top: 6px; font-variant-numeric: tabular-nums; }
 #codex-overleaf-panel .codex-context-usage-note { margin-top: 10px; color: var(--tl-fg-3); font-size: 11px; }
 #codex-overleaf-panel .codex-context-usage-bar { height: 6px; margin-top: 12px; overflow: hidden; border-radius: 3px; background: var(--tl-border-strong); }

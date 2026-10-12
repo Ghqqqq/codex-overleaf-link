@@ -138,9 +138,12 @@
       host.dataset.compacting = state.compacting ? 'true' : 'false';
       host.dataset.unknown = percent === null ? 'true' : 'false';
       host.style.setProperty('--context-usage-percent', String(Math.max(0, Math.min(100, percent || 0))));
-      button.title = state.compacting ? tr('contextUsageCompacting') : summary;
+      button.title = state.compacting ? tr('contextUsageCompacting')
+        : used === null ? tr('contextUsageUnavailable') : summary;
       button.setAttribute('aria-label', button.title);
-      host.querySelector('[data-context-usage-percent]').textContent = percentage;
+      const percentageLabel = host.querySelector('[data-context-usage-percent]');
+      percentageLabel.textContent = percent === null ? '' : percentage;
+      percentageLabel.hidden = percent === null;
       host.querySelector('[data-context-usage-title]').textContent = tr('contextUsageTitle');
       host.querySelector('[data-context-usage-amount]').textContent = amount;
       const note = host.querySelector('[data-context-usage-note]');
