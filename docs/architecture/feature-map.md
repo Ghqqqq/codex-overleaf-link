@@ -126,7 +126,7 @@ The UI paths for editing/resubmitting and drafts during a run are also described
 ### Change session creation, renaming, handling of the last session, or history clearing
 
 - Entry points: `startNewSession/switchSession/commitSessionRename/deleteSessionWithConfirm` in [SessionManager](../../extension/src/content/sessionManager.js); [PanelMaintenance.clearAllHistoryWithConfirm](../../extension/src/content/panelMaintenance.js) provides a separate cleanup entry point.
-- State owners: `SessionState` handles empty-session reuse, title sources, capacity, and replacement sessions after deletion; the shared store, site-local auxiliary store, and Native history each have their own cleanup scope.
+- State owners: `SessionManager.startNewSession` decides empty-session reuse and capacity confirmation; [SessionState](../../extension/src/shared/sessionState.js) owns title rules, displayability, normalization limits, and replacement of the last deleted session. The shared store, site-local auxiliary store, and Native history each have their own cleanup scope.
 - Required coordination: currently reachable PanelRenderer/SessionPanel callbacks, persistence tombstones, `clearHistoryComposer`, complete in-memory reset, and strict save acknowledgments; auxiliary failures must not restore deleted old in-memory state. See [session lifecycle](run-state-and-recovery.md#session-lifecycle) and [history-clearing state](run-state-and-recovery.md#clear-history-state).
 - Verification: [sessionDurability](../../test/sessionDurability.test.js) covers durable history and deleted-session protection. When changing these controls, use disposable sessions and inspect the result after refresh.
 

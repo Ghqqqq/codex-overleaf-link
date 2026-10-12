@@ -58,7 +58,7 @@ Pre-run Provider resolution begins only after the project lock is acquired. Auto
 | Data | Authoritative owner | Browser-side representation |
 |---|---|---|
 | Custom configuration and profile revision | ProviderStore | Catalog projection without the dedicated API key |
-| Connection configuration inherited by Built-in | The user's Codex `config.toml`, passed to the child process through `codexHome.copyUserCodexFile` | Built-in identity; the inherited endpoint and configuration version are not projected |
+| Connection configuration inherited by Built-in | The user's Codex `config.toml`, captured, filtered, and written to the child process's isolated home by [codexHomeScope.prepareScopedPluginCodexHome](../../native-host/src/codexHomeScope.js). This path sets `skipCopiedUserConfig`; `codexHome.copyUserCodexFile` remains part of legacy non-scoped preparation. See section 5. | Built-in identity; the inherited endpoint and configuration version are not projected |
 | Dedicated API key | ProviderStore secrets | Form value during input and a short-lived request payload |
 | Current project selection | ProjectProviderSelection and project state | providerId/revision, model, reasoning, speed |
 | Submitted run selection | RunExecutionSnapshot | Fixed execution identity and settings, without the Provider API key |
