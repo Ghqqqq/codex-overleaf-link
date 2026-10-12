@@ -77,6 +77,16 @@
                 <div class="codex-context-usage-amount" data-context-usage-amount></div>
                 <div class="codex-context-usage-bar" aria-hidden="true"><span></span></div>
                 <div class="codex-context-usage-note" data-context-usage-note></div>
+                <div class="codex-context-usage-breakdown" data-context-usage-breakdown hidden>
+                  <div class="codex-context-usage-heading" data-context-usage-breakdown-title></div>
+                  <div class="codex-context-usage-detail-row"><span data-context-usage-input-label></span><span data-context-usage-input></span></div>
+                  <div class="codex-context-usage-detail-row"><span data-context-usage-output-label></span><span data-context-usage-output></span></div>
+                  <div class="codex-context-usage-note" data-context-usage-breakdown-basis></div>
+                  <div class="codex-context-usage-cache" data-context-usage-cache>
+                    <div class="codex-context-usage-detail-row"><span data-context-usage-cached-label></span><span data-context-usage-cached></span></div>
+                    <div class="codex-context-usage-detail-row"><span data-context-usage-cache-rate-label></span><span data-context-usage-cache-rate></span></div>
+                  </div>
+                </div>
               </div>
             </div>
             <button type="button" class="codex-model-config-button" data-model-config-toggle aria-haspopup="menu" aria-expanded="false">

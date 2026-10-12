@@ -710,6 +710,7 @@
       undoStatus: normalizeDisplayTextForStorage(run.undoStatus, SESSION_STORAGE_LIMITS.statusTextChars),
       ...(run.undoOwnerProtocol === 1 ? { undoOwnerProtocol: 1 } : {}),
       nativeRequestId: normalizeTextField(run.nativeRequestId, 160),
+      ...(run.operation === 'compact' ? { operation: 'compact' } : {}),
       codexThreadId: normalizeTextField(run.codexThreadId, 160), codexTurnId: normalizeTextField(run.codexTurnId, 160),
       contextUsage: run.forkSnapshot === true ? null : ContextUsage.normalize(run.contextUsage),
       nativeEventSeq: Number.isFinite(Number(run.nativeEventSeq)) ? Number(run.nativeEventSeq) : 0,

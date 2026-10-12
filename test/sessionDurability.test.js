@@ -32,7 +32,8 @@ test('saved conversation text and recovery survive a new page without crossing a
     const contextUsage = ContextUsage.fromEvent({ type: 'codex.session.event', nativeEventSeq: 3,
       timestamp: '2026-10-12T00:00:00Z', detail: { method: 'thread/tokenUsage/updated',
         params: { threadId: owner.codexThreadId, turnId: owner.codexTurnId,
-          tokenUsage: { last: { totalTokens: 218700 }, total: { totalTokens: 9876543 }, modelContextWindow: 1000000 } } } }, owner);
+          tokenUsage: { last: { totalTokens: 218700, inputTokens: 210000, outputTokens: 8700, cachedInputTokens: 150000 },
+            total: { totalTokens: 9876543 }, modelContextWindow: 1000000 } } } }, owner);
     const session = { ...record('s', text), codexThreadId: owner.codexThreadId, contextUsage,
       runs: [{ ...owner, contextUsage, task: text, mode: 'auto', status: 'completed',
       runProjectId: scope.projectId, ...recovery, events: [{ kind: 'report', title: 'Answer', status: 'completed', detail: text }] }] };

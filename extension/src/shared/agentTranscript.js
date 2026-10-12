@@ -30,6 +30,10 @@
 
   // Only explicit product producers may attach these semantic identities.
   const PRODUCT_CONCLUSIONS = {
+    "context_compacted": ["Conversation context compacted.", "会话上下文已压缩。"],
+    "compact_busy": ["Wait for the current task to finish before compacting context.", "请等待当前任务结束后再压缩上下文。"],
+    "compact_unsupported": ["This local Codex connection does not support manual compaction. Update Codex and reload the extension.", "当前本地 Codex 连接不支持手动压缩，请更新 Codex 并重新加载扩展。"],
+    "compact_failed": ["Context compaction did not complete. Check Technical Details before retrying.", "上下文压缩未完成，请查看技术详情后再重试。"],
     "full_project_unread": [
       "This run did not continue: the full Overleaf project was not read.",
       "这轮没有继续：没有读到完整的 Overleaf 项目内容。"

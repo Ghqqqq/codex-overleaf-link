@@ -123,6 +123,38 @@
       return new Intl.NumberFormat(locale, { maximumFractionDigits: unit === 1 ? 0 : 1 }).format(value / unit) + suffix;
     }
 
+    function formatPercent(value) {
+      return value === null ? '—' : new Intl.NumberFormat(
+        deps.getLocale?.() === 'zh' ? 'zh-CN' : 'en-US',
+        { style: 'percent', maximumFractionDigits: 1 }
+      ).format(value);
+    }
+
+    function renderBreakdown() {
+      const section = host.querySelector('[data-context-usage-breakdown]');
+      const input = number(state.usage?.inputTokens), output = number(state.usage?.outputTokens);
+      const cachedValue = number(state.usage?.cachedInputTokens);
+      const cached = input !== null && cachedValue !== null && cachedValue <= input ? cachedValue : null;
+      const total = input !== null && output !== null && Number.isSafeInteger(input + output)
+        && input + output > 0 ? input + output : null;
+      section.hidden = input === null && output === null;
+      const text = (name, value) => { host.querySelector('[data-context-usage-' + name + ']').textContent = value; };
+      const share = value => formatTokens(value) + (value !== null && total !== null
+        ? ' · ' + formatPercent(value / total) : '');
+      text('breakdown-title', tr('contextUsageBreakdownTitle'));
+      text('input-label', tr('contextUsageInput'));
+      text('output-label', tr('contextUsageOutput'));
+      text('input', share(input));
+      text('output', share(output));
+      text('breakdown-basis', tr('contextUsageBreakdownBasis'));
+      host.querySelector('[data-context-usage-breakdown-basis]').hidden = total === null;
+      text('cached-label', tr('contextUsageCachedInput'));
+      text('cache-rate-label', tr('contextUsageCacheHitRate'));
+      text('cached', formatTokens(cached));
+      text('cache-rate', formatPercent(input > 0 && cached !== null ? cached / input : null));
+      host.querySelector('[data-context-usage-cache]').hidden = input === null;
+    }
+
     function render() {
       if (!mount()) return;
       const used = number(state.usage?.usedTokens);
@@ -150,6 +182,7 @@
       note.textContent = state.compacting ? tr('contextUsageCompacting')
         : used === null ? tr('contextUsageUnavailable')
           : capacity === null ? tr('contextUsageCapacityUnknown') : tr('contextUsageEstimate');
+      renderBreakdown();
       popover.setAttribute('aria-label', tr('contextUsageTitle'));
       position();
     }

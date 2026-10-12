@@ -1822,7 +1822,8 @@
     // Capture the click before any preparation can yield to another draft/session.
     readPanelInputs();
     const queuedInput = options.queuedInput || null;
-    const task = String(queuedInput?.text || state.task || '').trim();
+    const compact = !queuedInput && options.operation === 'compact';
+    const task = compact ? '/compact' : String(queuedInput?.text || state.task || '').trim();
     if (!task) {
       appendLog(tx('Enter a task first.', '请先输入任务。'));
       return;
@@ -1830,32 +1831,36 @@
     const submittedSessionId = state.activeSessionId;
     const submittedSession = runController.captureSessionContext(state);
     const submittedThreadId = getActiveSession(state)?.codexThreadId || '';
+    if (compact && !submittedThreadId) {
+      showPluginToast(tr('compactNoThread'), { status: 'info' });
+      return;
+    }
     const submittedDraft = state.task;
     const submittedRetryReplacement = pendingRetryReplacement;
     const submittedWritingStyleScope = { accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId() };
     const submittedPanelState = {
-      mode: state.mode,
+      mode: compact ? 'ask' : state.mode,
       providerId: state.providerId,
       model: state.model,
       reasoningEffort: state.reasoningEffort,
       speedTier: state.speedTier,
       autoRecompile: state.autoRecompile !== false,
       requireReviewing: state.requireReviewing === true,
-      focusFiles: getActiveFocusFiles(),
-      selectionContext: selectionContextView.capture()
+      focusFiles: compact ? [] : getActiveFocusFiles(),
+      selectionContext: compact ? null : selectionContextView.capture()
     };
     const queuedContext = queuedInput
       ? RunInputQueue.normalizeSubmissionContext(queuedInput.payload?.submissionContext) : null;
     const submittedCustomInstructions = queuedContext ? queuedContext.customInstructions : getCustomInstructionsForCurrentProject();
     const submittedSkillLoadingSettings = queuedContext ? queuedContext.skillLoadingSettings : getSkillLoadingSettings();
-    const submittedAttachments = queuedInput ? [] : getComposerAttachmentsForRun();
-    const submittedSkillInvocation = queuedContext ? queuedContext.skillInvocation : getComposerSkillInvocationForRun();
+    const submittedAttachments = queuedInput || compact ? [] : getComposerAttachmentsForRun();
+    const submittedSkillInvocation = compact ? null : queuedContext ? queuedContext.skillInvocation : getComposerSkillInvocationForRun();
     let submittedEnabledSkillIds = queuedContext ? queuedContext.enabledCodexOverleafSkillIds : getEnabledCodexOverleafSkillIds();
     const submittedSkillEnabled = { ...state.codexOverleafSkillEnabled };
     const submittedLocalSkillEnabled = { ...state.codexLocalSkillEnabled };
     const submittedSelectionRevision = selectionContextView.getRevision?.();
-    let submittedEnabledLocalSkillIds = queuedContext ? queuedContext.enabledCodexLocalSkillIds : [];
-    if (!queuedInput && submittedSkillLoadingSettings.loadCodexLocalSkills !== false) {
+    let submittedEnabledLocalSkillIds = queuedContext ? queuedContext.enabledCodexLocalSkillIds : compact ? getEnabledCodexLocalSkillIds() : [];
+    if (!compact && !queuedInput && submittedSkillLoadingSettings.loadCodexLocalSkills !== false) {
       const localSkills = await primeCodexLocalSkillsCatalog({ required: true, force: submittedSkillInvocation?.scope === 'codex-local' });
       submittedEnabledLocalSkillIds = localSkills.filter(skill => Object.hasOwn(submittedLocalSkillEnabled, skill.id)
         ? submittedLocalSkillEnabled[skill.id] !== false : skill.enabled !== false).map(skill => skill.id);
@@ -1865,7 +1870,7 @@
       throw new Error(tx('The selected local Codex skill is unavailable or disabled. Select an enabled skill and try again.',
         '所选 Codex 本地技能不可用或已关闭，请选择已启用的技能后重试。'));
     }
-    if (!queuedInput && submittedSkillLoadingSettings.loadCodexOverleafSkills !== false) {
+    if (!compact && !queuedInput && submittedSkillLoadingSettings.loadCodexOverleafSkills !== false) {
       const skills = await primeCodexOverleafSkillsCatalog({ required: true });
       submittedEnabledSkillIds = skills.map(skill => String(skill?.id || '').trim())
         .filter(id => id && submittedSkillEnabled[id] !== false);
@@ -1874,17 +1879,18 @@
     const pendingMirror = getPendingMirrorRefresh?.();
     if (pendingMirror) await pendingMirror.catch(() => {});
     await providerSettingsCoordinator.ensureLoaded();
-    if (!queuedInput) await writingStyleSettings.ensureLoaded(true);
+    if (!queuedInput && !compact) await writingStyleSettings.ensureLoaded(true);
     if (submittedWritingStyleScope.accountScopeId !== cachedAccountScopeId
       || submittedWritingStyleScope.projectId !== getCurrentProjectId()) {
       throw new Error(tx('The active project changed before submission. Submit the task again.',
         '提交前活动项目已改变，请重新提交任务。'));
     }
-    if (!findSessionById(submittedSessionId) || currentRunView) {
+    if (!findSessionById(submittedSessionId) || currentRunView
+      || (compact && findSessionById(submittedSessionId)?.codexThreadId !== submittedThreadId)) {
       throw new Error(tx('The submitted session changed before submission. Submit the task again.',
         '提交所属会话已改变，请重新提交任务。'));
     }
-    submittedPanelState.writingStyle = queuedInput ? null : writingStyleSettings.capture();
+    submittedPanelState.writingStyle = queuedInput || compact ? null : writingStyleSettings.capture();
     const executionSnapshot = queuedInput
       ? RunExecutionSnapshot.resolveForExecution(
         RunExecutionSnapshot.fromQueuePayload(queuedInput.payload),
@@ -1894,7 +1900,7 @@
     // Freeze submitted run identity before the panel can change during the run.
     const submittedMode = executionSnapshot.mode;
     const submittedRequireReviewing = executionSnapshot.requireReviewing === true;
-    const replaceRunId = queuedInput ? '' : runController.resolveRetryReplacement({
+    const replaceRunId = queuedInput || compact ? '' : runController.resolveRetryReplacement({
       candidate: submittedRetryReplacement,
       activeSessionId: submittedSessionId,
       runs: findSessionById(submittedSessionId)?.runs,
@@ -1908,6 +1914,7 @@
       sessionId: submittedSessionId,
       sessionContext: submittedSession,
       codexThreadId: submittedThreadId,
+      operation: compact ? 'compact' : undefined,
       task,
       mode: submittedMode,
       model: executionSnapshot.model,
@@ -1920,11 +1927,46 @@
       replaceRunId
     });
     renderContextUsage();
-    if (!queuedInput && pendingRetryReplacement === submittedRetryReplacement) pendingRetryReplacement = null;
+    if (!queuedInput && !compact && pendingRetryReplacement === submittedRetryReplacement) pendingRetryReplacement = null;
     const runSessionId = currentRunView.sessionId;
     let runAuditDraft = null;
     let localSkillRestorePoint = null;
     try {
+      if (compact) {
+        announceCrossTabRunStart();
+        if (state.activeSessionId === submittedSessionId && panel?.querySelector('[data-task]')?.value === submittedDraft) {
+          panel.querySelector('[data-task]').value = '';
+          updateSessionById(submittedSessionId, { task: '' });
+          composerDraftRevision += 1;
+          autosizeTaskTextarea();
+          closeSlashMenu();
+          syncComposerSendAvailability(true);
+        }
+        appendRunEvent({ title: tr('contextUsageCompacting'), status: 'running',
+          activity: { v: 1, kind: 'lifecycle', state: 'running', target: 'context_compaction' } });
+        renderContextUsage();
+        const response = await awaitRunStep(sendTrackedCodexRun({
+          operation: 'compact', task: '/compact', mode: 'ask',
+          projectId: currentRunView.runProjectId, accountScopeId: currentRunView.runAccountScopeId,
+          clientRunId: currentRunView.recordId, clientSessionId: runSessionId,
+          threadId: submittedThreadId, model: executionSnapshot.model,
+          reasoningEffort: executionSnapshot.reasoningEffort, speedTier: executionSnapshot.speedTier,
+          providerSelection: RunExecutionSnapshot.toProviderSelection(executionSnapshot),
+          locale: getLocale(), ...submittedSkillLoadingSettings,
+          enabledCodexOverleafSkillIds: submittedEnabledSkillIds,
+          enabledCodexLocalSkillIds: submittedEnabledLocalSkillIds
+        }));
+        if (!response?.ok) throw Object.assign(new Error(response?.error?.message || 'Compaction failed'), response?.error);
+        if (response.result?.operation !== 'compact' || response.result?.status !== 'completed'
+          || response.result?.threadId !== submittedThreadId) {
+          throw Object.assign(new Error('Compaction completion was not confirmed'), { code: 'codex_compact_unconfirmed' });
+        }
+        throwIfRunCancellationRequested();
+        appendCompletionReport({ conclusion: tr('compactCompleted'), conclusionKey: 'context_compacted',
+          status: 'completed', mode: 'ask', operations: [], applyResults: [] });
+        await finishRunView(tr('compactCompleted'), 'completed');
+        return;
+      }
       if (queuedInput?.id) {
         await runQueueScheduler?.markExecuting(runSessionId, queuedInput.id, currentRunView.recordId);
       }
@@ -2559,6 +2601,17 @@
         void finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
         return;
       }
+      if (compact) {
+        const key = error.code === 'codex_compact_unsupported' ? 'compactUnsupported'
+          : ['project_locked', 'codex_compact_thread_busy'].includes(error.code) ? 'compactBusy' : 'compactFailed';
+        appendRunEvent({ title: tr(key), status: 'failed',
+          technicalDetail: { code: error.code || '', message: error.message } });
+        appendCompletionReport({ conclusion: tr(key), conclusionKey: key === 'compactUnsupported'
+          ? 'compact_unsupported' : key === 'compactBusy' ? 'compact_busy' : 'compact_failed',
+          status: 'failed', mode: 'ask', operations: [], applyResults: [] });
+        await finishRunView(tr(key), 'failed');
+        return;
+      }
       // codexReturned: assistantMessage arrived on the stream before the
       // exception escaped, so Codex's answer is preserved in the conversation
       // — the fallback conclusion must reflect that instead of saying
@@ -2868,9 +2921,14 @@
     return runController.truncateSessionHistoryText(value, maxLength);
   }
 
-  function safeRunTask() {
+  function safeRunTask(options = {}) {
     if (updateIdleClient?.isApplying()) {
       showPluginToast(tx('An update is being applied. Codex will be available again after reload.', '正在应用更新，重新加载后即可继续使用 Codex。'), { status: 'info' });
+      return;
+    }
+    const compact = options.operation === 'compact' || panel?.querySelector('[data-task]')?.value.trim() === '/compact';
+    if (compact && (currentRunView || runSubmissionPending)) {
+      showPluginToast(tr('compactBusy'), { status: 'info' });
       return;
     }
     if (currentRunView) {
@@ -2878,7 +2936,7 @@
     }
     if (runSubmissionPending) return;
     runSubmissionPending = true;
-    runTask().catch(error => {
+    runTask(compact ? { operation: 'compact' } : {}).catch(error => {
       if (!currentRunView) {
         setRunning(false);
         nativeChannel.clearActiveRequest();
@@ -3285,6 +3343,9 @@
     if (!compatibilityGate.ok) {
       return compatibilityGate.response;
     }
+    if (params.operation === 'compact' && compatibilityGate.compatibility?.native?.capabilities?.threadCompact !== true) {
+      return { ok: false, error: { code: 'codex_compact_unsupported', message: 'This Native host does not support context compaction.' } };
+    }
     const tracked = nativeChannel.sendNativeTracked(nativeCompatibilityController.attachEvidence({
       method: 'codex.run',
       params
@@ -3525,6 +3586,7 @@
 
   function getSlashCommands() {
     const commands = [
+      { id: 'compact', kind: 'compact', title: '/compact', subtitle: tr('slashCompactSubtitle') },
       {
         id: 'install-skill',
         kind: 'installer',
@@ -3914,6 +3976,11 @@
     }
     if (command.kind === 'at-file') {
       applyAtFileSelection(command);
+      return;
+    }
+    if (command.kind === 'compact') {
+      closeSlashMenu();
+      safeRunTask({ operation: 'compact' });
       return;
     }
     clearSlashTriggerFromTaskInput();
@@ -6262,6 +6329,7 @@
     sessionId = state.activeSessionId,
     sessionContext = runController.captureSessionContext(state),
     codexThreadId = '',
+    operation,
     task,
     mode,
     model,
@@ -6278,6 +6346,7 @@
     resetAutoFollow();
     const record = {
       id: createRunId(),
+      ...(operation === 'compact' ? { operation } : {}),
       task,
       mode,
       ...providerSettingsCoordinator.getProviderSnapshot(executionSnapshot?.providerId || state?.providerId),
@@ -6307,7 +6376,7 @@
       runAccountScopeId: cachedAccountScopeId || ''
     };
     const active = findSessionById(sessionId);
-    const titlePatch = active?.titleSource !== 'manual'
+    const titlePatch = operation !== 'compact' && active?.titleSource !== 'manual'
       ? {
         title: deriveSessionTitle([], task),
         titleSource: 'auto'
@@ -6332,6 +6401,7 @@
     applySessionLabel();
 
     return {
+      operation,
       sessionId,
       sessionContext,
       codexThreadId,
@@ -6489,10 +6559,17 @@
     }
     const threadId = String(detail.threadId || '');
     const turnId = String(detail.turnId || '');
-    currentRunView.activeTurn = { threadId, turnId };
+    currentRunView.activeTurn = currentRunView.operation === 'compact' ? null : { threadId, turnId };
     const record = findRunRecord(currentRunView.recordId, currentRunView.sessionId);
     if (record) {
       record.codexThreadId = threadId; record.codexTurnId = turnId;
+      if (record.operation === 'compact') {
+        const session = findSessionById(currentRunView.sessionId);
+        if (session?.contextUsage?.threadId === threadId
+          && Date.parse(session.contextUsage.observedAt) < Date.parse(record.startedAt)) {
+          session.contextUsage = null;
+        }
+      }
       record.nativeEventSeq = Math.max(Number(record.nativeEventSeq || 0), Number(journalSeq || 0));
     }
     if (threadId) {

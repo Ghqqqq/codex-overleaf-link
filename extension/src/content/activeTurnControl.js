@@ -228,6 +228,14 @@
         }
         if (record.runProjectId && record.runProjectId !== projectKey) continue;
         if (!record.runProjectId) record.runProjectId = projectKey;
+        if (journal.operation === 'compact') {
+          record.operation = 'compact';
+          if (!record.codexThreadId) record.codexThreadId = String(journal.threadId || '');
+          if (session.contextUsage?.threadId === record.codexThreadId
+            && Date.parse(session.contextUsage.observedAt || '') < Date.parse(record.startedAt || '')) {
+            session.contextUsage = null;
+          }
+        }
         if (record.status === 'running') {
           options.normalizeInterruptedRun?.(record);
         }
@@ -313,6 +321,7 @@
 
   function createInterruptedRun(journal, projectKey, statusText) {
     return { id: journal.clientRunId, task: journal.task || 'interrupted task', mode: journal.mode || 'ask',
+      ...(journal.operation === 'compact' ? { operation: 'compact', codexThreadId: String(journal.threadId || '') } : {}),
       model: journal.model || '', status: 'interrupted', statusText, runProjectId: projectKey,
       startedAt: journal.createdAt || new Date().toISOString(), finishedAt: journal.updatedAt || new Date().toISOString(),
       events: [], attachments: [], undoOperations: [], undoTrackedChanges: [], undoExpectedFiles: [] };

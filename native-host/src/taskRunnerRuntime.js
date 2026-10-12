@@ -72,7 +72,7 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
       platform: getNativeRuntimePlatform({ env }),
       protocolVersion: 2,
       supportedProtocol: { ...SUPPORTED_NATIVE_PROTOCOL },
-      capabilities: { ...Object.fromEntries(REQUIRED_CAPABILITIES.map(capability => [capability, true])), literalProjectPaths: true },
+      capabilities: { ...Object.fromEntries(REQUIRED_CAPABILITIES.map(capability => [capability, true])), literalProjectPaths: true, threadCompact: true },
       minExtensionVersion: MIN_COMPATIBLE_EXTENSION_VERSION,
       version: PACKAGE_VERSION,
       environment: summarizeNativeEnvironment(env)
@@ -213,6 +213,13 @@ async function handleCodexRun(request, env, emit) {
   const identity = NativeRequestIdentity.validate(request.id);
   if (!identity.ok) return errorResponse(request.id, identity.error.code, identity.error.message, identity.error.details);
   let params = request.params || {};
+  if (params.operation === 'compact') {
+    if (typeof params.threadId !== 'string' || !params.threadId.trim() || params.threadId.length > 160
+      || typeof params.projectId !== 'string' || !params.projectId.trim()) {
+      return errorResponse(request.id, 'codex_compact_thread_required', 'Compaction requires an existing project conversation.');
+    }
+    params = { ...params, threadId: params.threadId.trim(), mode: 'ask', writingStyleBuild: undefined };
+  }
   if (params.writingStyleBuild != null) {
     if (typeof params.writingStyleBuild !== 'object' || Array.isArray(params.writingStyleBuild)) {
       return errorResponse(request.id, 'writing_style_invalid_build', 'Writing style build settings must be an object.');
@@ -272,7 +279,9 @@ async function handleCodexRun(request, env, emit) {
     }
 
     abortController.signal.throwIfAborted();
-    if (params.useExistingMirror) {
+    // Compaction only updates the captured thread; it neither refreshes the
+    // project mirror nor accepts document overlays as part of this request.
+    if (params.operation !== 'compact' && params.useExistingMirror) {
       const { getMirrorStatus, applyFileOverlays } = require('./mirrorWorkspace');
       const rootDir = env.CODEX_OVERLEAF_MIRROR_ROOT;
       const status = getMirrorStatus(projectKey, { rootDir });
@@ -301,7 +310,7 @@ async function handleCodexRun(request, env, emit) {
       if (!isOtWarmMirrorReuseRequest(params) && Array.isArray(params.fileOverlays) && params.fileOverlays.length) {
         await applyFileOverlays({ projectId: projectKey, overlays: params.fileOverlays, rootDir });
       }
-    } else if (!params.writingStyleBuild && !isSnapshotlessSkillInstallerRun(params) && !hasRunnableProjectSnapshotEvidence(params)) {
+    } else if (params.operation !== 'compact' && !params.writingStyleBuild && !isSnapshotlessSkillInstallerRun(params) && !hasRunnableProjectSnapshotEvidence(params)) {
       return errorResponse(
         request.id,
         'codex_run_requires_snapshot_evidence',
@@ -376,6 +385,9 @@ async function handleCodexSteer(request) {
   const entry = findActiveRunEntry(params);
   if (!entry?.control) {
     return errorResponse(request.id, 'codex_turn_not_ready', 'The active Codex turn is not ready for guidance.');
+  }
+  if (entry.control.operation === 'compact') {
+    return errorResponse(request.id, 'codex_compact_not_steerable', 'Wait for context compaction to finish before sending a message.');
   }
   const expectedThreadId = String(params.threadId || '');
   const expectedTurnId = String(params.expectedTurnId || params.turnId || '');
@@ -688,7 +700,7 @@ function isCancellationError(error = {}) {
 }
 
 function shouldPassthroughCodexRunError(error = {}) {
-  return CODEX_RUN_PASSTHROUGH_ERROR_CODES.has(error.code);
+  return CODEX_RUN_PASSTHROUGH_ERROR_CODES.has(error.code) || String(error.code || '').startsWith('codex_compact_');
 }
 
 function isCodexMissing(env = process.env) {

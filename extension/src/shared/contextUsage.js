@@ -23,8 +23,15 @@
       || providerRevision === null || !observedAt) return null;
     const capacity = count(value.contextWindow);
     const eventSeq = count(value.eventSeq);
+    const inputTokens = count(value.inputTokens), outputTokens = count(value.outputTokens);
+    const cachedInput = count(value.cachedInputTokens);
+    // Cache reads are a subset of input, never an additional category. Older
+    // snapshots and providers without these counters retain unknown values.
+    const cachedInputTokens = inputTokens !== null && cachedInput !== null && cachedInput <= inputTokens
+      ? cachedInput : null;
     return { v: 1, threadId, turnId, runId, providerId, providerRevision, model,
       usedTokens, contextWindow: capacity > 0 ? capacity : null,
+      inputTokens, outputTokens, cachedInputTokens,
       eventSeq: eventSeq > 0 ? eventSeq : null, observedAt };
   }
 
@@ -46,11 +53,13 @@
     const threadId = identity(params.threadId), turnId = identity(params.turnId);
     if (!threadId || !turnId || threadId !== identity(owner.threadId || owner.codexThreadId)
       || turnId !== identity(owner.turnId || owner.codexTurnId) || owner.forkSnapshot === true) return null;
-    const usedTokens = count(params.tokenUsage?.last?.totalTokens);
+    const last = params.tokenUsage?.last;
+    const usedTokens = count(last?.totalTokens);
     if (usedTokens === null) return null;
     return normalize({ v: 1, threadId, turnId, runId: owner.runId || owner.id,
       providerId: owner.providerId, providerRevision: owner.providerRevision, model: owner.model,
       usedTokens, contextWindow: params.tokenUsage?.modelContextWindow,
+      inputTokens: last?.inputTokens, outputTokens: last?.outputTokens, cachedInputTokens: last?.cachedInputTokens,
       eventSeq: event.nativeEventSeq ?? event.eventSeq ?? event.seq ?? owner.eventSeq,
       observedAt: timestamp(event.timestamp || event.at) || timestamp(owner.observedAt) || new Date().toISOString() });
   }
@@ -70,9 +79,16 @@
     const inThread = value => value && value.threadId === identity(scope.threadId || scope.codexThreadId)
       && value.providerId === identity(scope.providerId)
       && value.providerRevision === count(scope.providerRevision);
+    // A dispatched compaction can change this thread even when its completion
+    // is lost on reload. Do not re-display a pre-compaction sample as current.
+    const runs = Array.isArray(session.runs) ? session.runs : [];
+    const compactedAfter = runs.reduce((latest, run) =>
+      run?.operation === 'compact' && !run.forkSnapshot
+        && run.codexThreadId === identity(scope.threadId || scope.codexThreadId)
+        ? Math.max(latest, Date.parse(run.startedAt || '') || 0) : latest, 0);
     let selected = normalize(session.contextUsage);
     if (!inThread(selected)) selected = null;
-    for (const run of Array.isArray(session.runs) ? session.runs : []) {
+    for (const run of runs) {
       if (run?.forkSnapshot === true) continue;
       const candidate = normalize(run.contextUsage);
       if (!inThread(candidate) || candidate.runId !== run.id) continue;
@@ -80,7 +96,7 @@
     }
     // A later turn can grow this thread using another model. Selecting an older
     // model again must not resurrect its obsolete, smaller context estimate.
-    return selected?.model === identity(scope.model) ? selected : null;
+    return selected?.model === identity(scope.model) && Date.parse(selected.observedAt) >= compactedAfter ? selected : null;
   }
 
   return { normalize, fromEvent, matches, isNewer, select };

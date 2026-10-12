@@ -48,6 +48,28 @@ const { materializeTurnAttachments } = require('./turnAttachments');
 
 async function runCodexSession({ params = {}, env = process.env, emit = () => {}, rootDir, executeCodex, providerLaunch, signal, onControlReady, onStopUnconfirmed, onProcessStarted } = {}) {
   throwIfAborted(signal);
+  if (params.operation === 'compact') {
+    const mirror = getProjectMirror(params.projectId, { rootDir });
+    let result;
+    try {
+      result = await (executeCodex || runCodexAppServerSession)({
+        operation: 'compact', threadId: params.threadId, workspacePath: mirror.workspacePath,
+        mode: 'ask', model: params.model || '', speedTier: normalizeSpeedTier(params.speedTier),
+        sandboxMode: 'read-only', approvalPolicy: 'never',
+        ...normalizeSkillLoadingSettings(params),
+        enabledCodexOverleafSkillIds: params.enabledCodexOverleafSkillIds,
+        enabledCodexLocalSkillIds: params.enabledCodexLocalSkillIds,
+        providerLaunch, env, emit, signal, onControlReady, onProcessStarted
+      });
+    } catch (error) {
+      if (error?.code === 'codex_process_stop_unconfirmed') onStopUnconfirmed?.(error);
+      throw error;
+    }
+    throwIfAborted(signal);
+    return { operation: 'compact', status: 'completed', projectId: mirror.projectKey,
+      workspacePath: mirror.workspacePath, threadId: result.threadId, turnId: result.turnId,
+      assistantMessage: '', syncChanges: [], unsupportedChanges: [] };
+  }
   if (params.writingStyleBuild) {
     return WritingStyleRuntime.build({
       params, env, signal, providerLaunch, onControlReady, onStopUnconfirmed,
@@ -657,6 +679,7 @@ function runCodexAppServerProcess(input) {
     let stderr = '';
     let activeThreadId = String(input.threadId || '');
     let activeTurnId = '';
+    let compactRequested = false;
     let controlPublished = false;
     const assistantMessages = new Map();
     const assistantMessageOrder = [];
@@ -747,11 +770,28 @@ function runCodexAppServerProcess(input) {
         emit: input.emit
       });
 
+      if (input.operation === 'compact') {
+        if (!input.threadId) throw compactError('thread_required', 'Compaction requires an existing conversation.');
+        const existing = await request('thread/read', { threadId: input.threadId, includeTurns: false });
+        const thread = existing?.thread;
+        if (thread?.id !== input.threadId || thread.parentThreadId || !sameWorkspace(thread.cwd, input.workspacePath)) {
+          throw compactError('thread_mismatch', 'The conversation does not belong to this project.');
+        }
+        if (thread.status?.type === 'active') {
+          throw compactError('thread_busy', 'Wait for the current conversation turn to finish before compacting.');
+        }
+      }
+
       if (input.threadId) {
         try {
           const resumeResponse = await request('thread/resume', buildThreadResumeParams(input));
-          activeThreadId = resumeResponse?.thread?.id || resumeResponse?.threadId || input.threadId;
+          const resumedThreadId = resumeResponse?.thread?.id || resumeResponse?.threadId;
+          if (input.operation === 'compact' && resumedThreadId !== input.threadId) {
+            throw compactError('thread_mismatch', 'The resumed conversation changed before compaction.');
+          }
+          activeThreadId = resumedThreadId || input.threadId;
         } catch (resumeError) {
+          if (String(resumeError.code || '').startsWith('codex_compact_')) throw resumeError;
           const error = new Error(resumeError.message || 'thread/resume failed');
           error.code = 'thread_resume_failed';
           throw error;
@@ -764,6 +804,18 @@ function runCodexAppServerProcess(input) {
         }
       }
 
+      if (input.operation === 'compact') {
+        compactRequested = true;
+        try {
+          await request('thread/compact/start', { threadId: activeThreadId });
+        } catch (error) {
+          if (error.code === -32601) throw compactError('unsupported', 'This Codex version does not support manual compaction.');
+          throw error;
+        }
+        // The empty RPC response acknowledges dispatch only. turn/started
+        // supplies the identity; matching turn/completed settles this process.
+        return;
+      }
       const turnResponse = await startTurnWithSummaryFallback(activeThreadId);
       activeTurnId = turnResponse?.turn?.id || '';
       publishActiveTurnControl();
@@ -859,6 +911,7 @@ function runCodexAppServerProcess(input) {
         if (subagentObserver.observe(message)) return;
         if (!eventScope.accepts(message.params)) return;
         if (message.method === 'turn/started') {
+          if (input.operation === 'compact' && !compactRequested) return;
           const threadId = message.params?.thread?.id || message.params?.threadId;
           if (!activeTurnId && threadId === activeThreadId) activeTurnId = message.params?.turn?.id || message.params?.turnId || '';
           publishActiveTurnControl();
@@ -959,6 +1012,7 @@ function runCodexAppServerProcess(input) {
       const control = Object.freeze({
         threadId: activeThreadId,
         turnId: activeTurnId,
+        ...(input.operation === 'compact' ? { operation: 'compact' } : {}),
         steer: ({ input: steerInput, clientUserMessageId } = {}) => request('turn/steer', {
           threadId: activeThreadId,
           expectedTurnId: activeTurnId,
@@ -969,9 +1023,11 @@ function runCodexAppServerProcess(input) {
       });
       input.onControlReady?.(control);
       if (settled || stopping) return;
-      emitCodexEvent(input.emit, 'codex.turn.bound', 'Codex turn is ready for follow-up guidance', {
+      emitCodexEvent(input.emit, 'codex.turn.bound', input.operation === 'compact'
+        ? 'Codex context compaction is running' : 'Codex turn is ready for follow-up guidance', {
         threadId: activeThreadId,
-        turnId: activeTurnId
+        turnId: activeTurnId,
+        ...(input.operation === 'compact' ? { operation: 'compact' } : {})
       }, 'running');
     }
 
@@ -998,7 +1054,8 @@ function runCodexAppServerProcess(input) {
         assistantMessage: buildFinalAssistantMessage(assistantMessages, assistantMessageOrder, {
           turnCompleted: turn.status === undefined || turn.status === 'completed'
         }),
-        threadId: activeThreadId
+        threadId: activeThreadId,
+        ...(input.operation === 'compact' ? { turnId: activeTurnId } : {})
       };
       return stopCodexAppServer(child, { processGroup: process.platform !== 'win32' }).then(() => {
         settled = true;
@@ -1030,6 +1087,19 @@ function runCodexAppServerProcess(input) {
       input.signal?.removeEventListener('abort', onAbort);
     }
   });
+}
+
+function compactError(reason, message) {
+  return Object.assign(new Error(message), { code: `codex_compact_${reason}` });
+}
+
+function sameWorkspace(actual, expected) {
+  if (typeof actual !== 'string' || !actual || !expected) return false;
+  const canonical = value => {
+    try { return fs.realpathSync.native(value); } catch (_error) { return path.resolve(value); }
+  };
+  const actualPath = canonical(actual), expectedPath = canonical(expected);
+  return process.platform === 'win32' ? actualPath.toLowerCase() === expectedPath.toLowerCase() : actualPath === expectedPath;
 }
 
 function decideCommandApproval({ mode = 'auto', params = {}, skillInvocation = null, env = process.env, workspacePath = '' } = {}) {

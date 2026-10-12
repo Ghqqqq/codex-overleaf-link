@@ -1022,6 +1022,9 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
       clientRunId: String(params.clientRunId || ''),
       sessionId: String(params.clientSessionId || ''),
       task: sanitizeJournalString(params.task).slice(0, 12000),
+      ...(params.operation === 'compact' ? {
+        operation: 'compact', threadId: String(params.threadId || '').slice(0, 160)
+      } : {}),
       mode: String(params.mode || ''),
       model: String(params.model || ''),
       ownerTabId: pendingRequest.tabId,
