@@ -74,6 +74,7 @@ function contentPipeline(h, approve) {
     formatOperationFiles: operations => operations.map(op => op.path).join(', '), getAppliedEntries, getSkippedEntries };
   const window = {}; new Function('window', fs.readFileSync(path.join(__dirname, '../extension/src/content/writebackOrchestrator.js'), 'utf8'))(window);
   const orchestrator = window.CodexOverleafWritebackOrchestrator.create({ ...deps, ...Plan.create(deps),
+    compileAdapter: require('../extension/src/shared/compileAdapter'),
     getState: () => ({ mode: 'auto', autoRecompile: false, requireReviewing: false }), getCurrentProjectId: () => h.state.projectId,
     getCurrentRunView: () => ({ runProjectId: h.state.projectId, recordId: 'r', sessionId: 's' }),
     getLocale: () => 'en', getAssistantAnswerForCurrentRun: () => '', cleanFinalAnswer: value => value,

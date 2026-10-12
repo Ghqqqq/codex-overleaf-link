@@ -25,6 +25,202 @@
     ? deps.getI18n
     : function noI18n() { return null; };
 
+  // Only explicit product producers may attach these semantic identities.
+  const PRODUCT_CONCLUSIONS = {
+    "full_project_unread": [
+      "This run did not continue: the full Overleaf project was not read.",
+      "这轮没有继续：没有读到完整的 Overleaf 项目内容。"
+    ],
+    "empty_result": [
+      "Codex completed, but it produced no assistant response and no local file changes.",
+      "Codex 已完成，但没有产生助手回复，也没有产生本地文件改动。"
+    ],
+    "skill_installer_completed": [
+      "Skill installer completed.",
+      "Skill installer 已完成。"
+    ],
+    "launch_not_started": [
+      "This task did not start: Codex did not run and no files were written.",
+      "这轮任务没有开始：Codex 没有运行，也没有写入文件。"
+    ],
+    "cancelled": [
+      "This run was cancelled. It did not continue syncing or writing to Overleaf.",
+      "这轮已中断，没有继续同步或写入 Overleaf。"
+    ],
+    "ask_inspected": [
+      "This run only inspected and explained; no files were written.",
+      "这轮只做了检查和说明，没有写入文件。"
+    ],
+    "delete_handled": [
+      "Changes were written, and delete items were handled after your confirmation.",
+      "已写入修改，并按你的确认处理删除项。"
+    ],
+    "delete_rejected": [
+      "Non-delete changes were kept; delete items were not written.",
+      "已保留非删除修改；删除项没有写入。"
+    ],
+    "run_complete": [
+      "This run is complete.",
+      "这轮任务已完成。"
+    ],
+    "withheld_changes": [
+      "Some generated changes were blocked.",
+      "部分生成的改动已被阻止。"
+    ],
+    "ask_ignored_changes": [
+      "Codex finished in Ask mode. Any local file changes were ignored and were not synced to Overleaf.",
+      "Codex 已在 Ask 模式完成；本地文件改动已忽略，未同步到 Overleaf。"
+    ],
+    "no_sync_changes": [
+      "Codex finished locally. There are no changes to sync back to Overleaf.",
+      "Codex 已完成本地处理，没有需要同步回 Overleaf 的改动。"
+    ],
+    "no_approved_changes": [
+      "No approved changes were written back to Overleaf.",
+      "没有已确认的改动写回 Overleaf。"
+    ],
+    "reviewing_unavailable": [
+      "No files were written: Track is enabled, but Codex could not verify Overleaf Reviewing/Track Changes.",
+      "这轮没有写入：已开启“留痕”要求，但 Codex 没能确认 Overleaf 正在用 Reviewing/Track Changes。"
+    ],
+    "sensitive_blocked": [
+      "This run was blocked before Codex received project context because sensitive content was detected.",
+      "检测到敏感内容，本轮已在向 Codex 发送项目上下文前阻止。"
+    ],
+    "synced": [
+      "Local Codex changes were synced back to Overleaf.",
+      "本地 Codex 改动已同步回 Overleaf。"
+    ],
+    "partial_sync": [
+      "Local Codex changes were sent to Overleaf, but some items were skipped.",
+      "本地 Codex 改动已尝试同步回 Overleaf，但有部分项目被跳过。"
+    ],
+    "unconfirmed_sync": [
+      "Codex tried to write local changes to Overleaf, but the write result did not confirm any applied or skipped entries.",
+      "Codex 已尝试把本地改动写入 Overleaf，但写入结果没有确认任何已写入或已跳过条目。"
+    ],
+    "partial_sync_note": [
+      "Sync note: local Codex changes were sent to Overleaf, but some items were skipped.",
+      "同步提示：本地 Codex 改动已尝试写回 Overleaf，但有部分项目被跳过。"
+    ],
+    "unconfirmed_sync_note": [
+      "Writeback note: Codex could not confirm any Overleaf write result entries, so local mirror refresh and auto compile were skipped.",
+      "写入提示：Codex 没能确认任何 Overleaf 写入结果条目，因此已跳过本地 mirror 刷新和自动编译。"
+    ],
+    "retry_sync": [
+      "Retried the remaining file transfers for this task.",
+      "已重试本轮未完成的文件同步。"
+    ],
+    "default_no_write": [
+      "This task completed without writing Overleaf files.",
+      "这轮任务已完成，没有写入 Overleaf 文件。"
+    ],
+    "default_complete": [
+      "This task completed.",
+      "这轮任务已完成。"
+    ],
+    "warm_mirror_stale": [
+      "This run did not continue: Overleaf did not provide the full project, and the local workspace is not fresh enough.",
+      "这轮没有继续：Overleaf 没有提供完整项目内容，本地 workspace 也不够新。"
+    ]
+  };
+
+  const ERROR_CONCLUSIONS = {
+    "local_skill_unavailable": {
+      "code": "codex_local_skill_unavailable"
+    },
+    "local_skills_failed": {
+      "code": "codex_local_skills_failed"
+    },
+    "mode_removed": {
+      "message": "suggest_mode_removed"
+    },
+    "mode_write_required": {
+      "message": "Mode must be \"ask\" or \"auto\""
+    },
+    "invalid_json": {
+      "message": "Agent returned invalid JSON"
+    },
+    "invalid_output": {
+      "message": "Could not parse Codex output"
+    },
+    "timeout": {
+      "message": "timed out"
+    },
+    "output_limit": {
+      "message": "output limit exceeded"
+    },
+    "codex_not_found": {
+      "message": "codex_not_found"
+    },
+    "project_locked": {
+      "message": "project_locked"
+    },
+    "reasoning_unsupported": {
+      "message": "unsupported_parameter reasoning.summary"
+    },
+    "storage_quota": {
+      "message": "quota"
+    },
+    "checkpoint": {
+      "message": "checkpoint"
+    },
+    "stale_source": {
+      "message": "changed while Codex was working"
+    },
+    "post_processing": {
+      "codexReturned": true
+    },
+    "ask_failed": {
+      "mode": "ask"
+    },
+    "auto_failed": {
+      "mode": "auto"
+    },
+    "provider_revision_conflict": {
+      "message": "provider_revision_conflict"
+    },
+    "provider_auth_rejected": {
+      "message": "provider_auth_rejected"
+    },
+    "provider_model_not_found": {
+      "message": "provider_model_not_found"
+    },
+    "provider_model_not_configured": {
+      "message": "provider_model_not_configured"
+    },
+    "provider_protocol_unverified": {
+      "message": "provider_protocol_unverified"
+    },
+    "provider_protocol_incompatible": {
+      "message": "provider_protocol_incompatible"
+    },
+    "provider_rate_limited": {
+      "message": "provider_rate_limited"
+    },
+    "provider_connection_timeout": {
+      "message": "provider_connection_timeout"
+    },
+    "provider_dns_failed": {
+      "message": "provider_dns_failed"
+    },
+    "provider_tls_failed": {
+      "message": "provider_tls_failed"
+    },
+    "provider_not_found": {
+      "message": "provider_not_found"
+    },
+    "provider_store_corrupt": {
+      "message": "provider_store_corrupt"
+    },
+    "provider_store_unavailable": {
+      "message": "provider_store_unavailable"
+    },
+    "provider_response_invalid": {
+      "message": "provider_response_invalid"
+    }
+  };
+
   const TECHNICAL_EVENT_PATTERNS = [
     /^agent\.command\./,
     /^native\.task\./,
@@ -728,7 +924,7 @@
     };
   }
 
-  function translateRawError(message, context = {}) {
+  function translateRawErrorCopy(message, context = {}) {
     const locale = normalizeLocale(context);
     const text = String(message || '');
     // Each branch returns the user-visible {conclusion, nextStep} pair and,
@@ -871,12 +1067,74 @@
     };
   }
 
+  function productConclusionText(key, locale = 'en') {
+    if (Object.hasOwn(PRODUCT_CONCLUSIONS, key)) return PRODUCT_CONCLUSIONS[key][locale === 'zh' ? 1 : 0];
+    const error = key.startsWith('error:') && Object.hasOwn(ERROR_CONCLUSIONS, key.slice(6)) && ERROR_CONCLUSIONS[key.slice(6)];
+    return error ? translateRawErrorCopy(error.message || '', { ...error, locale }).conclusion : null;
+  }
+
+  function translateRawError(message, context = {}) {
+    const translated = translateRawErrorCopy(message, context), locale = normalizeLocale(context);
+    const key = Object.keys(ERROR_CONCLUSIONS).find(id => productConclusionText(`error:${id}`, locale) === translated.conclusion);
+    return { ...translated, ...(key ? { conclusionKey: `error:${key}` } : {}) };
+  }
+
+  function normalizeConclusionSource(source) {
+    if (source?.origin !== 'product' || typeof source.key !== 'string') return null;
+    if (productConclusionText(source.key) !== null) return { origin: 'product', key: source.key };
+    if (source.key !== 'writeback' || !['synced', 'partial_sync', 'unconfirmed_sync'].includes(source.outcome)) return null;
+    return { origin: 'product', key: 'writeback', outcome: source.outcome,
+      prefixLength: Number.isSafeInteger(source.prefixLength) && source.prefixLength >= 0 ? source.prefixLength : -1,
+      prefixKey: source.prefixKey === 'retry_sync' ? 'retry_sync' : '',
+      hasCompile: source.hasCompile === true,
+      compileStatus: typeof source.compileStatus === 'string' ? source.compileStatus : '',
+      compileReason: typeof source.compileReason === 'string' ? source.compileReason : '',
+      errorCount: Number.isSafeInteger(source.errorCount) && source.errorCount >= 0 ? source.errorCount : 0,
+      errors: Array.isArray(source.errors) ? source.errors.slice(0, 3).filter(value => typeof value === 'string') : [],
+      warningCount: Number.isSafeInteger(source.warningCount) && source.warningCount >= 0 ? source.warningCount : 0 };
+  }
+
+  function projectProductConclusion(source, locale = 'en', localizeCompileReason = value => value, raw = '') {
+    const identity = normalizeConclusionSource(source);
+    if (!identity) return null;
+    if (identity.key !== 'writeback') return productConclusionText(identity.key, locale);
+    if (identity.prefixLength < 0 || identity.prefixLength > raw.length) return null;
+    const originalPrefix = raw.slice(0, identity.prefixLength);
+    if (identity.prefixKey && !['en', 'zh'].some(language => productConclusionText(identity.prefixKey, language) === originalPrefix)) return null;
+    const compose = (language, projectReason) => {
+      const tx = (en, zh) => language === 'zh' ? zh : en;
+      const prefix = projectReason && identity.prefixKey ? productConclusionText(identity.prefixKey, language) : originalPrefix;
+      const note = productConclusionText(identity.outcome + (prefix && identity.outcome !== 'synced' ? '_note' : ''), language);
+      const conclusion = prefix ? [prefix, identity.outcome === 'synced' ? '' : note].filter(Boolean).join('\n\n') : note;
+      const { compileStatus: status, errors, errorCount, warningCount: warnings } = identity;
+      if (!identity.hasCompile) return conclusion;
+      const reason = projectReason ? localizeCompileReason(identity.compileReason) : identity.compileReason;
+      const summary = errorCount
+        ? tx(`Post-write compile check: ${errorCount} remaining error(s): ${errors.slice(0, 3).join('; ')}`,
+          `写后编译检查：仍有 ${errorCount} 个错误：${errors.slice(0, 3).join('；')}`)
+        : status === 'success' ? (warnings
+          ? tx(`Post-write compile check succeeded with ${warnings} warning(s).`, `写后编译检查已通过，但仍有 ${warnings} 个警告。`)
+          : tx('Post-write compile check succeeded with no reported errors.', '写后编译检查已通过，未发现错误。'))
+        : status === 'triggered' ? (warnings
+          ? tx(`Post-write compile was triggered; latest log shows ${warnings} warning(s).`, `已触发写后编译；最新日志显示 ${warnings} 个警告。`)
+          : tx('Post-write compile was triggered; Overleaf may still be updating the result.', '已触发写后编译；Overleaf 可能仍在更新结果。'))
+        : status === 'failed' ? tx(`Post-write compile check failed: ${reason || 'unknown reason'}`,
+          `写后编译检查失败：${reason || '未知原因'}`)
+        : tx(`Post-write compile finished with status: ${status || 'unknown'}.`, `写后编译完成，状态：${status || '未知'}。`);
+      return [conclusion, summary].filter(Boolean).join('\n');
+    };
+    // A compacted or changed raw answer must never be reconstructed from metadata.
+    if (!['en', 'zh'].some(language => compose(language, false) === raw)) return null;
+    return compose(locale, true);
+  }
+
   function buildHumanCompletionReport(input = {}) {
     const locale = normalizeLocale(input);
     const applyResults = normalizeApplyResults(input.applyResults);
     const appliedCount = countApplyResultEntries(applyResults, 'applied');
     const skippedCount = countApplyResultEntries(applyResults, 'skipped');
-    const translatedError = input.errorMessage ? translateRawError(input.errorMessage, { mode: input.mode, locale }) : null;
+    const translatedError = input.errorMessage ? translateRawError(input.errorMessage, { mode: input.mode, locale,
+      codexReturned: input.conclusionKey === 'error:post_processing' }) : null;
     const userReport = normalizeUserReport(input.userReport);
     const report = userReport || buildFallbackReport(input, {
       appliedCount,
@@ -982,7 +1240,8 @@
     }
 
     if (report.saveState) meta.push({ key: 'saveState', label: textFor(locale, '保存', 'Save'), value: report.saveState });
-    return { conclusion, body: bodySections.join('\n\n'), meta };
+    return { conclusion, body: bodySections.join('\n\n'), meta,
+      ...(normalizeConclusionSource(report.conclusionSource) ? { conclusionSource: normalizeConclusionSource(report.conclusionSource) } : {}) };
   }
 
   function formatHumanReport(report = {}, locale = 'en') {
@@ -1028,8 +1287,13 @@
         ? textFor(locale, '这轮任务已完成，没有写入 Overleaf 文件。', 'This task completed without writing Overleaf files.')
         : textFor(locale, '这轮任务已完成。', 'This task completed.'));
 
+    const conclusionSource = counts.translatedError?.conclusionKey
+      ? { origin: 'product', key: counts.translatedError.conclusionKey }
+      : input.conclusionKey ? { origin: 'product', key: input.conclusionKey }
+      : input.conclusionSource || (!input.conclusion && !input.notes
+        ? { origin: 'product', key: noWrites ? 'default_no_write' : 'default_complete' } : null);
     return {
-      conclusion,
+      conclusion, conclusionSource: normalizeConclusionSource(conclusionSource),
       checked: normalizeStringList(input.checked || input.userReport?.checked),
       findings: normalizeStringList(input.findings),
       plannedChanges: counts.appliedCount ? [] : operations.map(operation => formatOperationLine(operation, locale)),
@@ -1756,6 +2020,7 @@
 
   return {
     buildHumanCompletionReport,
+    projectProductConclusion,
     buildStructuredHumanReport,
     formatFallbackFinalReport,
     formatFailureBlock,

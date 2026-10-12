@@ -18,10 +18,12 @@ button{padding:8px 14px;margin-right:12px}output,pre{display:block;white-space:p
 <header><button id="repaint">Complete run and repaint</button><button id="switch-session">Switch session</button></header>
 <output id="scroll-result">Scroll upward into a historical paragraph, then click Complete run and repaint.</output>
 <div id="panel" class="codex-thread-section"><div data-log tabindex="0"></div></div>
-<script>window.CodexOverleafModuleRegistry={define:(name,deps,factory)=>{window[name]=factory();}};</script>
+<script src="/extension/src/content/moduleRegistryKernel.js"></script>
+<script src="/extension/src/shared/projectFiles.js"></script>
 <script src="/extension/src/content/otWarmMirrorController.js"></script>
 <script src="/extension/src/content/otWarmMirror.js"></script>
 <script src="/extension/src/content/runScrollLayout.js"></script>
+<script src="/extension/src/content/runRecoveryActions.js"></script>
 <script src="/extension/src/content/runTimelineView.js"></script>
 <script>
 const noop=()=>{};
@@ -53,7 +55,7 @@ const makeRun=(id,title,paragraphs,status='completed')=>({id,status,statusText:s
       ': Historical reading position must survive a terminal repaint. Stable paragraph identity is the anchor.').join('\n')}]});
 let state={runs:[makeRun('history','Historical answer',40),makeRun('active','Current task',5,'running')]};
 const view=window.CodexOverleafRunTimelineView.create({
-  RunScrollLayout:window.RunScrollLayout,RunGuidanceView:{getGuidanceText:()=>''},
+  RunScrollLayout:window.CodexOverleafRunScrollLayout,RunGuidanceView:{getGuidanceText:()=>''},
   RunResultActions:{configureResultActions:noop},tr:key=>key,tx:en=>en,getLocale:()=>'en',
   getPanel:()=>panel,getState:()=>state,getCurrentRunView:()=>null,
   cssEscape:CSS.escape,formatModeLabel:()=> 'Ask',formatEventTime:value=>value,renderAttachmentPreviewList:noop,

@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.5.5 - 2026-10-11
+## v2.5.5 - 2026-10-12
 
 ### Added
 
@@ -12,6 +12,8 @@
 - Let a pending startup-file migration roll back without requiring unpublished startup bytes to match, bound automatic rollback retries, report the rollback failure reason, and keep saved model providers visible while an update is unsettled.
 - Settle runs that stayed marked as running after the extension reloaded or updated, including runs still inside the startup grace period, while preserving active browser-only sync retries on other pages.
 - Keep Track Changes for the follow-up sync of files that were not written in the first pass, so a tracked run no longer writes its remaining files in Editing mode.
+- Keep Undo and Accept attached to their original run while draft or file-context updates rebuild the current view, and settle their outcomes on the current record without weakening project, account, session, or recovery-evidence checks.
+- Render product-generated completion conclusions in the selected interface language after history reloads and language changes, while preserving user and model text and conservatively handling older reports without reliable origin information.
 
 ## v2.5.1 - 2026-10-10
 

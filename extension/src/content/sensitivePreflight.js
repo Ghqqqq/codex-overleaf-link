@@ -62,7 +62,7 @@
       }
       // Blocking an extra message must not finish the task already in progress.
       if (guidance) return { blocked: true, findings };
-      appendCompletionReport({
+      appendCompletionReport({ conclusionKey: 'sensitive_blocked',
         conclusion: tx(
           'This run was blocked before Codex received project context because sensitive content was detected.',
           '检测到敏感内容，本轮已在向 Codex 发送项目上下文前阻止。'

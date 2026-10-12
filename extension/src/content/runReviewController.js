@@ -68,7 +68,7 @@
     async function withSharedReviewOwnership(runId, work) {
       const db = Modules.StorageDb;
       if (db?.sharedSessionsEnabled?.() !== true) return work();
-      const run = findRunRecord(runId);
+      let run = findRunRecord(runId);
       if (!run || trackedChangeInFlight.has(runId)) return;
       const assertCurrent = undoOwner(run);
       const sessionId = getState().activeSessionId;
@@ -78,7 +78,7 @@
         try {
           assertCurrent();
           const session = await db.getRecord('sessions', sessionId);
-          assertCurrent();
+          run = assertCurrent();
           const latest = session?.runs?.find(record => record.id === runId);
           if (!latest || session.projectId !== getRunProjectIdForWriteback(run) || session.accountScopeId !== getAccountScopeId())
             throw Object.assign(new Error('The shared Undo run is no longer available in its original scope.'), { code: 'review_context_changed' });
@@ -162,9 +162,9 @@
       trackedChangeInFlight.set(runId, 'reject'); refreshRunCardControls(runId);
       try { return await work(); }
       catch (error) {
-        let current = true; try { assertOwner(); } catch (_stale) { current = false; }
-        if (current && findRunRecord(runId) === run) {
-          if (run.undoStatus === 'running') setRunUndoStatus(runId, 'partial');
+        let current; try { current = assertOwner(); } catch (_stale) {}
+        if (current && error.code !== 'review_context_changed') {
+          if (current.undoStatus === 'running') setRunUndoStatus(runId, 'partial');
           appendRunRecordEvent(runId, { title: tr('undoNoTraceTitle'), status: 'failed',
             detail: { [tr('detailReason')]: error.message } });
         }
@@ -179,13 +179,38 @@
     const undoRunTrackedChanges = (runId, run) => withUndoLock(runId, () => executeTrackedUndo(runId, run));
 
 function undoOwner(run) {
-    const captured = getState(), sessionId = captured.activeSessionId;
+    const sessionId = getState().activeSessionId;
     const scope = [getCurrentProjectId?.(), getAccountScopeId?.(), getRouteGeneration?.()];
+    const provenance = value => JSON.stringify([value?.id, value?.runProjectId || '', value?.startedAt || '',
+      value?.runAccountScopeId || scope[1] || '', value?.nativeEventSeq || 0, value?.codexThreadId || '', value?.codexTurnId || '', value?.executionSnapshot || null]);
+    const sessionScope = () => {
+      const session = getState().sessions?.find(item => item.id === sessionId);
+      return JSON.stringify([session?.projectId || '', session?.accountScopeId || '']);
+    };
+    const source = provenance(run), owningSession = sessionScope();
     return () => {
       reviewOwners.get(run.id)?.();
-      if (getState() !== captured || captured.activeSessionId !== sessionId || findRunRecord(run.id) !== run
+      const live = findRunRecord(run.id);
+      if (getState().activeSessionId !== sessionId || sessionScope() !== owningSession || !live
+        || !(live === run || Modules.SessionState?.sameRunIdentity?.(run, live)) || provenance(live) !== source
         || JSON.stringify(scope) !== JSON.stringify([getCurrentProjectId?.(), getAccountScopeId?.(), getRouteGeneration?.()]))
         throw Object.assign(new Error('The Undo project, account or session changed.'), { code: 'review_context_changed' });
+      return live;
+    };
+  }
+
+  function checkpointGuard(run, assertOwner) {
+    const snapshot = value => {
+      const normalized = Modules.SessionState?.normalizeRuns?.([value])?.[0] || value;
+      return JSON.stringify(['appliedOperations', 'undoOperations', 'undoBaseFiles', 'undoExpectedFiles',
+        'undoTrackedChanges', 'trackedChangeCaptures', 'undoStatus', 'trackedChangeStatus', 'forkSnapshot']
+        .map(key => normalized[key]));
+    };
+    const expected = snapshot(run);
+    return () => {
+      const live = assertOwner();
+      if (snapshot(live) !== expected) throw Object.assign(new Error('The Undo project, account or session changed.'), { code: 'review_context_changed' });
+      return live;
     };
   }
 
@@ -198,9 +223,10 @@ function undoOwner(run) {
   }
 
 async function executeUndo(runId) {
-    const run = findRunRecord(runId);
+    let run = findRunRecord(runId);
     if (run) Object.assign(run, Modules.UndoOperations.prepareRunUndo(run));
     const assertCurrent = undoOwner(run);
+    let assertInputs = checkpointGuard(run, assertCurrent);
     if (!getRunUndoCount(run) || run.undoStatus === 'applied') {
       return;
     }
@@ -210,7 +236,7 @@ async function executeUndo(runId) {
     const pendingMirror = getPendingMirrorRefresh?.();
     if (pendingMirror) {
       await pendingMirror.catch(() => {});
-      assertCurrent();
+      run = assertInputs();
     }
 
     if ((Array.isArray(run.undoTrackedChanges) && run.undoTrackedChanges.length) || hasTrackedEditorUndo(run)
@@ -272,8 +298,9 @@ async function executeUndo(runId) {
       }
     }
 
-    assertCurrent();
+    run = assertInputs();
     const deadlineAt = await prepareUndoDispatch(runId);
+    run = assertInputs();
     setRunUndoStatus(runId, 'running');
     appendRunRecordEvent(runId, {
       title: tr('undoNoTraceStarted'),
@@ -281,7 +308,8 @@ async function executeUndo(runId) {
       detail: { [tr('detailWillUndo')]: formatOperationFiles(selectedOperations) }
     });
 
-      await persistUndoOwnerMarker(runId); assertCurrent();
+      assertInputs = checkpointGuard(run, assertCurrent);
+      await persistUndoOwnerMarker(runId); run = assertInputs();
       const result = await callPageBridge('applyOperations', {
         operations: selectedOperations, deadlineAt, reviewOwnerToken: reviewOwners.get(runId)?.token,
         baseFiles: run.undoBaseFiles || [],
@@ -289,7 +317,7 @@ async function executeUndo(runId) {
         // Undo remains bound to its original project, including after navigation.
         runProjectId: getRunProjectIdForWriteback(run)
       });
-      assertCurrent();
+      run = assertInputs();
       const undoApplied = isUndoResultEffectivelyApplied(run, result);
       writebackOrchestrator.invalidateMirrorAfterUndo(runId, getRunProjectIdForWriteback(run), result);
       appendUndoReviewingPolicyEvent(runId, result.reviewingPolicy);
@@ -321,6 +349,7 @@ async function executeUndo(runId) {
 
 async function executeTrackedUndo(runId, run) {
     const assertCurrent = undoOwner(run);
+    let assertInputs = checkpointGuard(run, assertCurrent);
     const fileUndoOperations = Modules.UndoOperations.getFileUndoOperations(run);
     const textRun = Modules.UndoOperations.textUndoRun(run);
     const trackedUndo = textRun.undoTrackedChanges.length > 0;
@@ -343,8 +372,9 @@ async function executeTrackedUndo(runId, run) {
       return;
     }
 
-    assertCurrent();
+    run = assertInputs();
     const deadlineAt = await prepareUndoDispatch(runId);
+    run = assertInputs();
     // Keep the review lifecycle until every pending part has settled.
     // Its local lock stays active while verified recovery progress is persisted.
     const lifecycleReject = (trackedUndo || fileUndoOperations.length > 0) && isTrackedChangeLifecycleRun(run);
@@ -363,7 +393,8 @@ async function executeTrackedUndo(runId, run) {
 
     let result;
     try {
-      await persistUndoOwnerMarker(runId); assertCurrent();
+      assertInputs = checkpointGuard(run, assertCurrent);
+      await persistUndoOwnerMarker(runId); run = assertInputs();
       const trackedUndoPostFilesAtDispatch = buildTrackedUndoPostFiles(textRun);
       result = hasTextUndo ? await callPageBridge('rejectTrackedChanges', {
         trackedChanges: textRun.undoTrackedChanges || [], deadlineAt, reviewOwnerToken: reviewOwners.get(runId)?.token,
@@ -375,12 +406,13 @@ async function executeTrackedUndo(runId, run) {
         // The page-side project guard still refuses writes after navigation.
         runProjectId: getRunProjectIdForWriteback(run)
       }) : { ok: true, applied: [], skipped: [] };
-      assertCurrent();
+      run = assertInputs();
       if (hasTextUndo) WritebackSettlement.attachUndoNotVerifiedFailure(textRun, result, {
         buildFailure: buildContentFailure, postFiles: trackedUndoPostFilesAtDispatch });
       if (fileUndoOperations.length && lifecycleReject && hasTextUndo) {
         WritebackSettlement.attachUndoNotVerifiedFailure(textRun, result, { buildFailure: buildContentFailure, postFiles: trackedUndoPostFilesAtDispatch });
         await applyTrackedChangeSettlement(runId, 'reject', { ...result, ok: false }, { assertCurrent });
+        run = assertCurrent(); assertInputs = checkpointGuard(run, assertCurrent);
       }
       if (fileUndoOperations.length) {
         let createdResult;
@@ -399,7 +431,7 @@ async function executeTrackedUndo(runId, run) {
             operation, result: { ok: false, code: 'undo_operation_failed', reason: error.message }
           })) };
         }
-        assertCurrent();
+        run = assertInputs();
         result = Modules.UndoOperations.mergeFileUndoResult(result, createdResult, fileUndoOperations);
       }
       appendRunRecordEvent(runId, {
@@ -436,23 +468,24 @@ async function executeTrackedUndo(runId, run) {
   }
 
 function reviewOwner(run) {
-    const owner = { run, state: getState(), sessionId: getState().activeSessionId,
-      projectId: getCurrentProjectId(), accountScopeId: getAccountScopeId(), generation: getRouteGeneration() };
+    const projectId = getCurrentProjectId(), accountScopeId = getAccountScopeId();
+    const assertRun = undoOwner(run);
     const assert = () => {
-      reviewOwners.get(run.id)?.();
-      if (!owner.projectId || !owner.accountScopeId || run.runProjectId !== owner.projectId
-        || getCurrentProjectId() !== owner.projectId || getAccountScopeId() !== owner.accountScopeId
-        || getRouteGeneration() !== owner.generation || getState() !== owner.state
-        || getState().activeSessionId !== owner.sessionId || findRunRecord(run.id) !== run
-        || (run.runAccountScopeId && run.runAccountScopeId !== owner.accountScopeId))
+      let live;
+      try { live = assertRun(); } catch (error) {
+        if (error.code === 'review_context_changed') error.message = 'The original review project, account or session changed.';
+        throw error;
+      }
+      if (!projectId || !accountScopeId || live.runProjectId !== projectId
+        || (live.runAccountScopeId && live.runAccountScopeId !== accountScopeId))
         throw Object.assign(new Error('The original review project, account or session changed.'), { code: 'review_context_changed' });
-      return run;
+      return live;
     };
-    assert(); return { ...owner, assert };
+    assert(); return { projectId, accountScopeId, assert };
   }
 
 async function executeAcceptRun(runId) {
-    const run = findRunRecord(runId);
+    let run = findRunRecord(runId);
     if (!run || !isTrackedChangeLifecycleRun(run)) {
       return;
     }
@@ -471,6 +504,7 @@ async function executeAcceptRun(runId) {
     }
 
     const owner = reviewOwner(run);
+    const assertInputs = checkpointGuard(run, owner.assert);
     trackedChangeInFlight.set(runId, 'accept');
     refreshRunCardControls(runId);
     appendRunRecordEvent(runId, {
@@ -481,6 +515,7 @@ async function executeAcceptRun(runId) {
 
     try {
       const deadlineAt = await prepareUndoDispatch(runId);
+      run = assertInputs();
       const result = await callPageBridge('acceptTrackedChanges', { deadlineAt, reviewOwnerToken: reviewOwners.get(runId)?.token,
         trackedChanges: run.undoTrackedChanges || [],
         expectedFiles: run.undoExpectedFiles || [],
@@ -488,7 +523,7 @@ async function executeAcceptRun(runId) {
         appliedOperations: Array.isArray(run.appliedOperations) ? run.appliedOperations : [],
         runProjectId: owner.projectId, accountScopeId: owner.accountScopeId
       });
-      owner.assert();
+      run = assertInputs();
       appendAcceptDiagnosticEvents(runId, Array.isArray(result.diagnostics) ? result.diagnostics : []);
       appendRunRecordEvent(runId, {
         title: tr('runAcceptTrackedResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
@@ -565,7 +600,7 @@ async function applyLegacyUndoSettlement(runId, undoStatus, result) {
       })
     );
     await Modules.ScopedPersistenceCoordinator.applyReviewTransition({ getState, runId, transition,
-      legacyUndo: true, persist: flushQueuedSaveState, assertCurrent });
+      legacyUndo: true, persist: flushQueuedSaveState, assertCurrent, SessionState: Modules.SessionState });
     refreshRunCardControls(runId);
   }
     return { recoverInterruptedUndoStatuses, undoRun, undoRunTrackedChanges, acceptRun, applyLegacyUndoSettlement };

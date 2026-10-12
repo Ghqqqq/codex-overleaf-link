@@ -130,7 +130,7 @@
       const skipped = withheldOnly.map(buildWithheldEntry);
       const hasSelectionViolation = withheldOnly.some(change => change.reason === 'selection_scope_violation');
       const applied = { ok: false, applied: [], skipped };
-      appendCompletionReport({ conclusion: assistantMessage || tx('Some generated changes were blocked.', '部分生成的改动已被阻止。'),
+      appendCompletionReport({ conclusionKey: options.assistantMessageKey || (!assistantMessage ? 'withheld_changes' : undefined), conclusion: assistantMessage || tx('Some generated changes were blocked.', '部分生成的改动已被阻止。'),
         status: 'failed', operations: [], applyResults: [applied], mode: runMode,
         nextStep: hasSelectionViolation
           ? selectionViolationNextStep()
@@ -151,7 +151,7 @@
         ),
         status: 'warning'
       });
-      appendCompletionReport({
+      appendCompletionReport({ conclusionKey: options.assistantMessageKey || (!assistantMessage ? 'ask_ignored_changes' : undefined),
         conclusion: assistantMessage || tx(
           'Codex finished in Ask mode. Any local file changes were ignored and were not synced to Overleaf.',
           'Codex 已在 Ask 模式完成；本地文件改动已忽略，未同步到 Overleaf。'
@@ -228,7 +228,7 @@
         title: tx('Codex did not produce file changes that need to sync back to Overleaf.', 'Codex 没有产生需要同步回 Overleaf 的文件改动。'),
         status: 'completed'
       });
-      appendCompletionReport({
+      appendCompletionReport({ conclusionKey: options.assistantMessageKey || (!assistantMessage ? 'no_sync_changes' : undefined),
         conclusion: assistantMessage || tx('Codex finished locally. There are no changes to sync back to Overleaf.', 'Codex 已完成本地处理，没有需要同步回 Overleaf 的改动。'),
         status: additionalSkippedEntries.length ? 'failed' : runMode === 'ask' ? tr('modeAsk') : 'completed',
         failure: blockedFailure,
@@ -295,7 +295,7 @@
         title: tx('No approved file changes remain to sync back to Overleaf.', '没有剩余已确认的文件改动需要同步回 Overleaf。'),
         status: 'completed'
       });
-      appendCompletionReport({
+      appendCompletionReport({ conclusionKey: options.assistantMessageKey || (!assistantMessage ? 'no_approved_changes' : undefined),
         conclusion: assistantMessage || tx('No approved changes were written back to Overleaf.', '没有已确认的改动写回 Overleaf。'),
         status: additionalSkippedEntries.length ? 'failed' : runMode === 'ask' ? tr('modeAsk') : 'completed',
         failure: approvalFailure,
@@ -326,7 +326,7 @@
     if (!reviewing.ok) {
       const blocked = buildReviewingBlockedApplyResult(operations, reviewing);
       appendApplyResult(blocked);
-      appendCompletionReport({
+      appendCompletionReport({ conclusionKey: 'reviewing_unavailable',
         conclusion: tx(
           'No files were written: Track is enabled, but Codex could not verify Overleaf Reviewing/Track Changes.',
           '这轮没有写入：已开启“留痕”要求，但 Codex 没能确认 Overleaf 正在用 Reviewing/Track Changes。'
@@ -453,7 +453,7 @@
           title: tx(`Post-write compile failed: ${error.message}`, `写后编译出错：${error.message}`),
           status: 'failed'
         });
-        return buildPostWriteCompileSummary({ error });
+        return compileAdapter.buildPostWriteCompileSummary({ error });
       })
       : null;
     const hasSkippedApplyResult = skippedEntries.length > 0;
@@ -485,6 +485,10 @@
         : tx('Review the synced file in Overleaf.', '请在 Overleaf 中查看同步后的文件。');
     appendCompletionReport({
       conclusion: appendCompileSummaryToConclusion(writebackConclusion, compileSummary),
+      conclusionSource: { origin: 'product', key: 'writeback',
+        outcome: !hasConfirmedApplyResult ? 'unconfirmed_sync' : hasSkippedApplyResult ? 'partial_sync' : 'synced',
+        prefixLength: assistantMessage.length, prefixKey: options.assistantMessageKey, hasCompile: Boolean(compileSummary), compileStatus: compileSummary?.status || '',
+        compileReason: compileAdapter.localizeCompileReason(compileSummary?.reason || '', getLocale()), errors: compileSummary?.errors?.slice(0, 3) || [], errorCount: compileSummary?.errors?.length || 0, warningCount: compileSummary?.warnings?.length || 0 },
       status: writebackIncomplete ? 'failed' : 'completed',
       operations,
       applyResults: [applied],
@@ -764,21 +768,17 @@
         } else {
           appendRunEvent({ title: tx(`Compile finished with status: ${compile?.status || 'unknown'}`, `编译完成，状态：${compile?.status || '未知'}`), status: 'completed', activity: activity(compile?.status === 'failed' ? 'failed' : 'unknown') });
         }
-        return buildPostWriteCompileSummary({ result, logResult });
+        return compileAdapter.buildPostWriteCompileSummary({ result, logResult });
       } else {
         const reason = CompileAdapter.localizeCompileReason(result?.reason, getLocale()) || tx('unknown reason', '未知原因');
         appendRunEvent({ title: tx(`Post-write compile did not succeed: ${reason}`, `写后编译未成功：${reason}`), status: 'failed', activity: activity('failed', reason) });
-        return buildPostWriteCompileSummary({ result });
+        return compileAdapter.buildPostWriteCompileSummary({ result });
       }
     } catch (error) {
       const reason = CompileAdapter.localizeCompileReason(error.message, getLocale());
       appendRunEvent({ title: tx(`Post-write compile failed: ${reason}`, `写后编译出错：${reason}`), status: 'failed', activity: activity('failed', reason) });
-      return buildPostWriteCompileSummary({ error });
+      return compileAdapter.buildPostWriteCompileSummary({ error });
     }
-  }
-
-  function buildPostWriteCompileSummary(input = {}) {
-    return compileAdapter.buildPostWriteCompileSummary(input);
   }
 
   // Use the same normalized failure selection as settlement and its UI, while

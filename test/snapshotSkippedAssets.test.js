@@ -290,6 +290,7 @@ test('successful text writeback settles while skipped-asset refresh invalidates 
     throw new Error('Unexpected Page method ' + method);
   };
   const orchestrator = outer.window.CodexOverleafWritebackOrchestrator.create({
+    compileAdapter: require('../extension/src/shared/compileAdapter'),
     ...plan, tr, tx, getLocale: () => 'en', getState: () => ({ mode: 'auto', requireReviewing: false }),
     getCurrentRunView: () => view, getCurrentProjectId: () => h.projectId,
     getAssistantAnswerForCurrentRun: () => 'Text updated.', cleanFinalAnswer: value => value,

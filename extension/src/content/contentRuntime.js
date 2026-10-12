@@ -2052,7 +2052,7 @@
             fileCount: (project?.files || []).length
           }
         });
-        appendCompletionReport({
+        appendCompletionReport({ conclusionKey: 'full_project_unread',
           conclusion: tx('This run did not continue: the full Overleaf project was not read.', '这轮没有继续：没有读到完整的 Overleaf 项目内容。'),
           status: 'blocked',
           operations: [],
@@ -2360,7 +2360,7 @@
           detail: response.error
         });
         appendCompletionReport({
-          conclusion: translated.conclusion,
+          conclusion: translated.conclusion, conclusionKey: translated.conclusionKey,
           status: response.error?.code === 'project_locked' ? 'blocked' : 'failed',
           operations: [],
           applyResults: [],
@@ -2410,7 +2410,7 @@
           status: 'failed',
           failure: emptyFailure
         });
-        appendCompletionReport({
+        appendCompletionReport({ conclusionKey: 'empty_result',
           conclusion: emptyResultConclusion,
           status: 'failed',
           operations: [],
@@ -2578,7 +2578,7 @@
         }
       });
       appendCompletionReport({
-        conclusion: translated.conclusion,
+        conclusion: translated.conclusion, conclusionKey: translated.conclusionKey,
         status: 'failed',
         operations: [],
         applyResults: [],
@@ -2688,7 +2688,7 @@
         failure: translatedFailure
       });
       appendCompletionReport({
-        conclusion: translated.conclusion,
+        conclusion: translated.conclusion, conclusionKey: translated.conclusionKey,
         status: 'failed',
         operations: [],
         applyResults: [],
@@ -2706,7 +2706,7 @@
     }
 
     const assistantMessage = response.result?.assistantMessage || getAssistantAnswerForCurrentRun();
-    appendCompletionReport({
+    appendCompletionReport({ conclusionKey: !assistantMessage ? 'skill_installer_completed' : undefined,
       conclusion: assistantMessage || tx('Skill installer completed.', 'Skill installer 已完成。'),
       status: 'completed',
       operations: [],
@@ -2828,7 +2828,7 @@
         reviewing: result?.reviewing || null
       }
     });
-    appendCompletionReport({
+    appendCompletionReport({ conclusionKey: 'launch_not_started',
       conclusion: tx('This task did not start: Codex did not run and no files were written.', '这轮任务没有开始：Codex 没有运行，也没有写入文件。'),
       status: 'blocked',
       operations: [],
@@ -3438,7 +3438,7 @@
       status: 'info',
       activity: { v: 1, kind: 'lifecycle', state: 'cancelled', target: 'cancelled' }
     });
-    appendCompletionReport({
+    appendCompletionReport({ conclusionKey: 'cancelled',
       conclusion: tx('This run was cancelled. It did not continue syncing or writing to Overleaf.', '这轮已中断，没有继续同步或写入 Overleaf。'),
       status: 'cancelled',
       operations: [],
@@ -4590,7 +4590,7 @@
         operations: [],
         status: tr('modeAsk')
       });
-      appendCompletionReport({
+      appendCompletionReport({ conclusionKey: !notes ? 'ask_inspected' : undefined,
         conclusion: notes || tx('This run only inspected and explained; no files were written.', '这轮只做了检查和说明，没有写入文件。'),
         status: tr('modeAsk'),
         notes,
@@ -4632,7 +4632,7 @@
           applyResults,
           status: 'applied with delete plan'
         });
-        appendCompletionReport({
+        appendCompletionReport({ conclusionKey: !notes ? 'delete_handled' : undefined,
           conclusion: notes || tx('Changes were written, and delete items were handled after your confirmation.', '已写入修改，并按你的确认处理删除项。'),
           status: 'applied with delete plan',
           notes,
@@ -4655,7 +4655,7 @@
         status: 'applied without deletes',
         deletePlanRejected: true
       });
-      appendCompletionReport({
+      appendCompletionReport({ conclusionKey: 'delete_rejected',
         conclusion: tx('Non-delete changes were kept; delete items were not written.', '已保留非删除修改；删除项没有写入。'),
         status: 'applied without deletes',
         notes,
@@ -4685,7 +4685,7 @@
       applyResults: [applied],
       status: result.status || 'completed'
     });
-    appendCompletionReport({
+    appendCompletionReport({ conclusionKey: !notes ? 'run_complete' : undefined,
       conclusion: notes || tx('This run is complete.', '这轮任务已完成。'),
       status: result.status || 'completed',
       notes,
@@ -6908,7 +6908,7 @@
     }
     await Modules.ScopedPersistenceCoordinator.applyReviewTransition({
       getState: () => state, runId, transition: WritebackSettlement.applySettlementTransition(run, settlement),
-      persist: flushQueuedSaveState, assertCurrent: options.assertCurrent
+      persist: flushQueuedSaveState, assertCurrent: options.assertCurrent, SessionState: Modules.SessionState
     });
   }
 
@@ -7070,7 +7070,7 @@
           { id: owner.projectId, files: intent.baseFiles }, { mode: 'auto', requireReviewing: typeof record.executionSnapshot?.requireReviewing === 'boolean'
             ? record.executionSnapshot.requireReviewing : intent.requireReviewing,
             autoRecompile: retryAutoRecompile,
-            retryCreates: true, assistantMessage: tx('Retried the remaining file transfers for this task.', '已重试本轮未完成的文件同步。') });
+            retryCreates: true, assistantMessageKey: 'retry_sync', assistantMessage: tx('Retried the remaining file transfers for this task.', '已重试本轮未完成的文件同步。') });
         assertOwner();
         if (result.settlement?.facts) live().settlement = WritebackSettlement.mergeRetrySettlement(live().settlement, result.settlement.facts); // Keep files outside the retry.
         await finishRunView(result.hasSkippedOperations ? tx('Sync incomplete', '同步未完成') : tx('Synced', '已同步'),
@@ -7370,6 +7370,7 @@
       guidanceId: sanitizeAssistantVisibleText(event.guidanceId)
     };
     if (event.failure) normalized.failure = sanitizeAssistantVisibleValue(event.failure);
+    if (event.detailStructured) normalized.detailStructured = sanitizeAssistantVisibleValue(event.detailStructured);
     record.events = [...(record.events || []), normalized].slice(-MAX_RUN_EVENTS);
     saveStateSoon();
 

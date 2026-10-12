@@ -895,7 +895,7 @@
         appendLog(tx(`Cannot continue: ${formatProjectSnapshotWarning(warning)}`, `无法继续：${formatProjectSnapshotWarning(warning)}`));
       }
       appendCompletionReport({
-        conclusion: tr('warmMirrorStaleBlockedConclusion'),
+        conclusion: tr('warmMirrorStaleBlockedConclusion'), conclusionKey: 'warm_mirror_stale',
         status: 'blocked',
         operations: [],
         applyResults: [],

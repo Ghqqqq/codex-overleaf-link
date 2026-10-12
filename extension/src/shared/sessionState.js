@@ -665,7 +665,17 @@
       ...(value.directoryCleanup === true ? { directoryCleanup: true, ...(value.coreRetained === true ? { coreRetained: true } : {}) } : {}) };
   }
 
+  // Normalization makes UI copies of the same record. This identity is page-local:
+  // it never travels through JSON/storage and is never shared by a replacement run.
+  const runIdentities = new WeakMap();
+  function sameRunIdentity(left, right) {
+    return Boolean(left && right && (left === right
+      || (runIdentities.has(left) && runIdentities.get(left) === runIdentities.get(right))));
+  }
+
   function normalizeRun(run, options = {}) {
+    const sourceRun = run;
+
     if (options.restoreRunningRuns === true || options.recoverSettledRuns === true) run = recoverSettledRunningRun(run);
     run = recoverRecordedRunFailure(run, options.locale);
     const shouldStopRestoredRun = options.restoreRunningRuns === true && run.status === 'running';
@@ -744,6 +754,9 @@
     applyTrackedChangeStatus(normalized, run.trackedChangeStatus);
     Object.assign(normalized, pickWritebackRecovery(run));
 
+    const identity = runIdentities.get(sourceRun) || {};
+    runIdentities.set(sourceRun, identity);
+    runIdentities.set(normalized, identity);
     return normalized;
   }
 
@@ -1744,6 +1757,7 @@
   }
 
   return {
+    sameRunIdentity,
     normalizeRecoveryRetention,
     pruneRunRecoveryScope,
     pickWritebackRecovery,

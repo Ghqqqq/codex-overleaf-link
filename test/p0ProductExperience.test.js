@@ -1025,7 +1025,7 @@ test('post-write compile summaries are included in the final completion report',
 
   assert.match(applyBody, /const compileSummary = appliedPaths\.length/);
   assert.match(applyBody, /appendCompileSummaryToConclusion\(writebackConclusion,\s*compileSummary\)/);
-  assert.match(compileBody, /return buildPostWriteCompileSummary/);
+  assert.match(compileBody, /return compileAdapter\.buildPostWriteCompileSummary/);
   assert.match(compileBody, /callPageBridge\('getCompileLog'/);
   assert.match(contentScript, /function appendCompileSummaryToConclusion/);
 });
@@ -4360,7 +4360,8 @@ test('markdown renderer recognizes multi-character headings with project line ra
 test('completion reports render the answer without a Conclusion label', () => {
   const body = extractFunction(getContentScriptSource(), 'renderCompletionReport');
   assert.doesNotMatch(body, /formatConclusionMarkdown|Conclusion:|结论：/);
-  assert.match(body, /mainSections\.push\(String\(structured\.conclusion\)\)/);
+  assert.match(body, /mainSections\.push\(RunResultActions\.projectCompletionConclusion/);
+  assert.match(body, /\?\? String\(structured\.conclusion\)/);
 
   // Older stored reports still begin with the prefix; the decorator drops it.
   const { decorateCompletionReport } = require('../extension/src/content/markdownDomRenderer');

@@ -41,6 +41,7 @@ async function scenario(mode, fields, { explicitError = false, explicitErrorMess
     CODEX_OVERLEAF_ENV_READY: '1', CODEX_OVERLEAF_CODEX_PATH: writeFixtureCommand(root),
     CODEX_OVERLEAF_USER_CODEX_HOME: userHome, CODEX_HOME: userHome,
     CODEX_OVERLEAF_CODEX_HOME: path.join(root, 'plugin-codex-home'),
+    CODEX_OVERLEAF_PROVIDER_STORE_DIR: path.join(root, 'providers'),
     CODEX_OVERLEAF_SKILLS_ROOT: path.join(root, '.codex-overleaf', 'skills'),
     CODEX_OVERLEAF_WRITING_STYLE_ROOT: path.join(root, 'writing-styles'),
     CODEX_OVERLEAF_MIRROR_ROOT: path.join(root, 'mirrors'),

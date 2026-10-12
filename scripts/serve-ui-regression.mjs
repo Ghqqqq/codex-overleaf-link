@@ -7,9 +7,12 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const fixture = '/test/browser/p2-click-and-repaint.html';
 const allowed = new Set([fixture,
+  '/extension/src/content/moduleRegistryKernel.js',
+  '/extension/src/shared/projectFiles.js',
   '/extension/src/content/otWarmMirrorController.js',
   '/extension/src/content/otWarmMirror.js',
   '/extension/src/content/runScrollLayout.js',
+  '/extension/src/content/runRecoveryActions.js',
   '/extension/src/content/runTimelineView.js'
 ]);
 const port = Number(process.env.PORT || 43187);

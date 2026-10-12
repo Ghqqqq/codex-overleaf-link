@@ -19,6 +19,7 @@ const ProjectFiles = req('extension/src/shared/projectFiles.js');
 const Governance = req('extension/src/shared/governanceRules.js');
 const Settlement = req('extension/src/shared/writebackSettlement.js');
 const WritebackIntent = req('extension/src/shared/writebackIntent.js');
+const ActiveTurnControl = req('extension/src/content/activeTurnControl.js');
 const SessionState = req('extension/src/shared/sessionState.js');
 const StaleGuard = req('extension/src/shared/staleGuard.js');
 const WriteGuard = req('extension/src/page/writeGuard.js');
@@ -74,9 +75,16 @@ function createHarness({ existing, pending = true, zipOptions = {}, content = '%
   if (pending) record.retryWriteback = { ...owner, id: 'fixture-recovery', operations: [clone(op)], baseFiles: [], requireReviewing: false };
   const session = { id: owner.sessionId, runs: [record] }, state = { mode: 'auto', requireReviewing: false, autoRecompile: false };
   const durableRows = new Map();
+  // Keep the production owner controller; this fixture supplies Chrome's
+  // acknowledged port transport, while cross-page ownership has separate tests.
+  const activeTurnControl = ActiveTurnControl.create({ chrome: { runtime: { connect() {
+    let receive;
+    return { onMessage: { addListener: fn => { receive = fn; } }, onDisconnect: { addListener: noop },
+      postMessage(message) { if (message.type === 'bind') receive?.({ ...message, type: 'bound' }); }, disconnect: noop };
+  } } } });
   const runtime = vm.createContext({ Modules: { WritebackIntent, SessionState, UndoOperations: Undo,
       StorageDb: { ...Storage, getRecord: async (_store, id) => clone(durableRows.get(id)) } }, WritebackSettlement: Settlement,
-    spaRouteGeneration: 0, updateIdleClient: null,
+    spaRouteGeneration: 0, updateIdleClient: null, activeTurnControl,
     crypto, AbortController, TextEncoder, Date, console, state, currentRunView: null,
     trackedChangeInFlight: new Set(), cachedAccountScopeId: owner.accountScopeId,
     runCancellationRequested: false, runCancellationController: null,
@@ -104,6 +112,7 @@ function createHarness({ existing, pending = true, zipOptions = {}, content = '%
     formatOperationFiles: () => '', getAppliedEntries, getSkippedEntries });
   const orchestratorModule = new Function('window', orchestratorSource + '\nreturn window.CodexOverleafWritebackOrchestrator;')({});
   const orchestrator = orchestratorModule.create({
+    compileAdapter: require('../../extension/src/shared/compileAdapter'),
     ...plan, tr, tx, getLocale: () => 'en', getState: () => state, getCurrentRunView: () => runtime.currentRunView,
     getCurrentProjectId: () => owner.projectId, getAssistantAnswerForCurrentRun: () => 'fixture answer', cleanFinalAnswer: x => x,
     appendRunEvent: noop, appendRunRecordEvent: noop, appendChangeSummary: () => 'summary',

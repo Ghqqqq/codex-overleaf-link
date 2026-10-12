@@ -18,6 +18,7 @@ const Governance = req('extension/src/shared/governanceRules');
 const Settlement = req('extension/src/shared/writebackSettlement');
 const Persistence = req('extension/src/content/runSettlementPersistence');
 const Intent = req('extension/src/shared/writebackIntent');
+const ActiveTurnControl = req('extension/src/content/activeTurnControl');
 const Session = req('extension/src/shared/sessionState');
 const Undo = req('extension/src/shared/undoOperations');
 const Transcript = req('extension/src/shared/agentTranscript');
@@ -36,6 +37,13 @@ const skippedEntries = result => Array.isArray(result?.skipped) ? result.skipped
 
 function createFlow(options = {}) {
   const h = harness(), c = h.context;
+  // Use the production owner controller for Retry; only Chrome's port transport
+  // is synthetic, and acknowledges the exact binding sent by that controller.
+  c.activeTurnControl = ActiveTurnControl.create({ chrome: { runtime: { connect() {
+    let receive;
+    return { onMessage: { addListener: fn => { receive = fn; } }, onDisconnect: { addListener: no },
+      postMessage(message) { if (message.type === 'bind') receive?.({ ...message, type: 'bound' }); }, disconnect: no };
+  } } } });
   const trace = [], brokerResults = [], summaries = [], applications = [], reportInputs = [], toasts = [];
   const config = { editNoMutation: false, truncateReceipt: false, rawBrokerBypass: false,
     saveUnknown: false, snapshotUnavailable: false, ...options };

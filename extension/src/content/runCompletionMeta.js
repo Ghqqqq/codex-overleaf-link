@@ -4,6 +4,33 @@
 })(typeof window !== 'undefined' ? window : globalThis, function (FailureReasons, I18n, AgentTranscript) {
   'use strict';
 
+  function projectCompletionConclusion(event, run, locale = 'en', options = {}) {
+    const structured = event?.detailStructured;
+    const raw = options.flat ? options.text : String(structured?.conclusion || '');
+    if (structured?.conclusionSource) {
+      if (structured.conclusionSource.key !== 'writeback'
+        && !['en', 'zh'].some(language => AgentTranscript.projectProductConclusion(structured.conclusionSource, language) === raw)) return raw;
+      return AgentTranscript.projectProductConclusion(structured.conclusionSource, locale, options.localizeCompileReason, raw) ?? raw;
+    }
+    // Legacy cancellation has a unique adjacent producer-owned lifecycle event.
+    // Text alone, status alone, and a user's/model's matching answer confer no identity.
+    const events = Array.isArray(run?.events) ? run.events : [];
+    const matches = events.map((item, index) => ({ item, index })).filter(({ item }) => item.kind === 'report'
+      && (structured ? item.detailStructured === structured : item.detail === event.detail));
+    const previous = matches.length === 1 ? events[matches[0].index - 1] : null;
+    if (run?.status !== 'cancelled' || event.kind !== 'report' || event.status !== 'completed'
+      || !['Task report', '本轮完成报告'].includes(event.title)
+      || previous?.activity?.kind !== 'lifecycle' || previous.activity.state !== 'cancelled'
+      || previous.activity.target !== 'cancelled' || previous.streamRole || previous.guidanceId
+      || !['Current Codex task was cancelled.', '已中断当前 Codex 任务。'].includes(previous.title)) return raw;
+    const source = { origin: 'product', key: 'cancelled' };
+    const en = AgentTranscript.projectProductConclusion(source, 'en'), zh = AgentTranscript.projectProductConclusion(source, 'zh');
+    const known = options.flat ? [`Conclusion: ${en}`, `结论：${zh}`] : [en, zh];
+    if (!known.includes(raw)) return raw;
+    const projected = AgentTranscript.projectProductConclusion(source, locale);
+    return options.flat ? (locale === 'zh' ? `结论：${projected}` : `Conclusion: ${projected}`) : projected;
+  }
+
   const FLAT_REPORT_STATUS_SECTIONS = [
     { key: 'saveState', prefixes: ['Save:', '保存：'], en: 'Save', zh: '保存' },
     { key: 'unchangedReason', prefixes: ['Why nothing changed:', '未修改原因：'], en: 'Why nothing changed', zh: '未修改原因' },
@@ -340,5 +367,5 @@
     return { facts, open: attention, warnKeys };
   }
 
-  return { splitFlatCompletionReport, projectCompletionBody, projectCompletionMeta, summarizeCompletionMeta };
+  return { splitFlatCompletionReport, projectCompletionConclusion, projectCompletionBody, projectCompletionMeta, summarizeCompletionMeta };
 });

@@ -788,7 +788,7 @@
       main.className = 'run-final-answer';
       const mainSections = [];
       if (structured.conclusion) {
-        mainSections.push(String(structured.conclusion));
+        mainSections.push(RunResultActions.projectCompletionConclusion?.(event, run, tx('en', 'zh'), { localizeCompileReason }) ?? String(structured.conclusion));
       }
       if (structured.body) {
         mainSections.push(RunResultActions.projectCompletionBody?.(structured.body, tx) ?? structured.body);
@@ -816,7 +816,8 @@
     const split = splitFlatCompletionReport(flatText);
     const body = document.createElement('div');
     body.className = 'run-final-answer';
-    renderMarkdownBlockText(body, split.body || flatText);
+    renderMarkdownBlockText(body, RunResultActions.projectCompletionConclusion?.(event, run, tx('en', 'zh'),
+      { flat: true, text: split.body || flatText, localizeCompileReason }) ?? (split.body || flatText));
     decorateCompletionReport(body, { tx });
     report.append(body);
     appendCompileFix(report);

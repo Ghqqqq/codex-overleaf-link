@@ -31,12 +31,18 @@ async function harness(network, tab, input, page) {
   let timer, dispatches=0, cancels=0, writes=0;const notices=[];
   const viewScope={projectId:'project-one',accountScopeId:'account-one',generation:1};
   const findRunRecord=()=>state.sessions[0].runs[0];
-  const persist=async()=>PanelPersistence.persistPanelState({state,compactState:State.prepareStateForStorage(state),projectId:'project-one',StorageDb:db,SessionPersistence,Migration:{loadPrefs:async()=>({}),savePrefs:async()=>{},loadSessionTombstones:async()=>({})},persistenceContext:{scope:client.scope},normalizeExperimentalOtByProject:v=>v||{},normalizeGovernanceRulesByProject:v=>v||{},normalizeCustomInstructionsByProject:v=>v||{}});
+  const persist=async(options = {})=>PanelPersistence.persistPanelState({reviewRunIds: options.reviewRunIds,state,compactState:State.prepareStateForStorage(state),projectId:'project-one',StorageDb:db,SessionPersistence,Migration:{loadPrefs:async()=>({}),savePrefs:async()=>{},loadSessionTombstones:async()=>({})},persistenceContext:{scope:client.scope},normalizeExperimentalOtByProject:v=>v||{},normalizeGovernanceRulesByProject:v=>v||{},normalizeCustomInstructionsByProject:v=>v||{}});
   const writer={findRunRecord,refreshRunCardControls(){},pendingSaveStateOptions:null,saveStateInFlight:false,saveStateTimer:null,mergeSaveStateOptions:()=>null,setTimeout(fn,delay){timer={fn,delay};return 1;},clearTimeout(){},runQueuedSaveState:persist};
   vm.createContext(writer);
   for(const name of ['saveStateSoon','setRunUndoStatus']) vm.runInContext(extractFunction(runtime,name),writer);
   const flight=new Map();
-  const controller=Review.create({Modules:{StorageDb:db,SessionState:State,UndoOperations:Undo,ScopedPersistenceCoordinator:PanelPersistence},WritebackSettlement:Settlement,trackedChangeInFlight:flight,findRunRecord,getRunUndoCount:r=>r.undoOperations.length,isTrackedChangeLifecycleRun:()=>false,hasTrackedEditorUndo:()=>false,buildNoTraceUndoRestore:r=>({operations:r.undoOperations,snapshotRestore:true}),findUnsafeFullFileUndoOperation:()=>null,showPluginConfirm:page?.confirm|| (async()=>true),tr:k=>k,truncateRunTitle:v=>v,formatOperationFiles:()=> 'main.tex',getPageBridgeTimeoutMs:()=>120000,
+  const settlementContext = { Modules: { ScopedPersistenceCoordinator: PanelPersistence, SessionState: State, UndoOperations: Undo },
+    WritebackSettlement: Settlement, FailureReasons: require('../extension/src/shared/failureReasons'), findRunRecord,
+    advanceRunUndoProgress: (run, result) => Undo.advanceUndoCheckpoint(run, result, () => true), flushQueuedSaveState: persist };
+  Object.defineProperty(settlementContext, 'state', { get: () => state });
+  vm.createContext(settlementContext);
+  vm.runInContext(extractFunction(runtime, 'applyTrackedChangeSettlement'), settlementContext);
+  const controller=Review.create({Modules:{StorageDb:db,SessionState:State,UndoOperations:Undo,ScopedPersistenceCoordinator:PanelPersistence},WritebackSettlement:Settlement,trackedChangeInFlight:flight,findRunRecord,getRunUndoCount:r=>r.undoOperations.length,isTrackedChangeLifecycleRun:r=>Boolean(r.trackedChangeStatus),hasTrackedEditorUndo:()=>false,buildNoTraceUndoRestore:r=>({operations:r.undoOperations,snapshotRestore:true}),findUnsafeFullFileUndoOperation:()=>null,showPluginConfirm:page?.confirm|| (async()=>true),tr:k=>k,truncateRunTitle:v=>v,formatOperationFiles:()=> 'main.tex',getPageBridgeTimeoutMs:()=>120000,
     callPageBridge:async(method,params)=>{
       if(method==='cancelActiveWrite'){cancels++;Context.cancelOwner(params.reviewOwnerToken);return {ok:true};}
       dispatches++;
@@ -45,10 +51,15 @@ async function harness(network, tab, input, page) {
         // Retain this request's guard across the pending external operation.
         const blocked=scoped.reviewGuard();
         if(blocked) throw Object.assign(new Error(blocked.reason),{reviewFailure:blocked});
+        if (page?.error) throw new Error(page.error);
         writes++;
+        if (method === 'acceptTrackedChanges') return { ok: true, verified: true,
+          applied: params.trackedChanges.map(trackedChange => ({ trackedChange, result: { ok: true, verified: true } })), skipped: [] };
         return {ok:true,applied:params.operations.map(operation=>({operation,result:{ok:true,changedDocument:true}})),skipped:[]};
       });
-    },setRunUndoStatus:writer.setRunUndoStatus,appendRunRecordEvent(){},getRunProjectIdForWriteback:r=>r.runProjectId,refreshRunCardControls(){},getState:()=>state,getCurrentProjectId:()=>viewScope.projectId,getAccountScopeId:()=>viewScope.accountScopeId,getRouteGeneration:()=>viewScope.generation,tx:en=>en,notify:message=>notices.push(message),
+    },formatTrackedChangeFiles:()=> 'main.tex',buildTrackedUndoPostFiles:r=>r.appliedOperations.map(op=>({path:op.path,content:op.verifiedContent})),
+    applyTrackedChangeSettlement:settlementContext.applyTrackedChangeSettlement,formatBridgeResultReason:()=>'',
+    buildContentFailure: Settlement.buildContentFailure,setRunUndoStatus:writer.setRunUndoStatus,appendRunRecordEvent(){},getRunProjectIdForWriteback:r=>r.runProjectId,refreshRunCardControls(){},getState:()=>state,getCurrentProjectId:()=>viewScope.projectId,getAccountScopeId:()=>viewScope.accountScopeId,getRouteGeneration:()=>viewScope.generation,tx:en=>en,notify:message=>notices.push(message),
     isUndoResultEffectivelyApplied:()=>true,writebackOrchestrator:{invalidateMirrorAfterUndo(){}},appendUndoReviewingPolicyEvent(){},formatOperationType:v=>v,formatApplyResultReason:()=>'',advanceRunUndoProgress:(r,result)=>Undo.advanceUndoCheckpoint(r,result,()=>true),flushQueuedSaveState:persist});
   function button(){
     const existing={cloneNode(){return {...this};},replaceWith(b){this.replacement=b;},addEventListener(){}};
@@ -58,7 +69,7 @@ async function harness(network, tab, input, page) {
   }
   return {client,db,viewScope,get state(){return state;},replaceState:next=>{state=next;},controller,persist,button,notices,run:findRunRecord,counts:()=>({dispatches,cancels,writes}),saveTimer:async()=>{assert.equal(timer.delay,120);timer.fn();await drain();}};
 }
-function seed(n){const session=RawDb.buildSessionRecord(initialSession(),{preserveRunActionPayload:true});n.db.seed('sessions',{accountScopeId:session.accountScopeId,projectId:session.projectId,id:session.id,record:session,revision:1});return session;}
+function seed(n, source = initialSession()){const session=RawDb.buildSessionRecord(source,{preserveRunActionPayload:true});n.db.seed('sessions',{accountScopeId:session.accountScopeId,projectId:session.projectId,id:session.id,record:session,revision:1});return session;}
 function stored(n){return n.db.peek('sessions',['account-one','s']).record;}
 async function expire(n){for(const [key,value] of Object.entries(n.local).filter(([key])=>key.startsWith(leaseKey+':'))) await n.chromeApi.storage.local.set({[key]:{...value,deadlineAt:Date.now()-1}});}
 
@@ -334,4 +345,270 @@ for(const field of ['projectId','accountScopeId','generation'])test(`an old reco
     t.mock.timers.tick(30000);await drain();assert.equal(h.run().undoStatus,'running');
     assert.equal(n.messages.filter(message=>message.message.method==='review-owner').length,1);assert.equal(h.counts().dispatches,0);
   }finally{n.close();}
+});
+
+
+test('ordinary Undo continues after clearing context during its durable owner marker save', async () => {
+  const n = createNetwork();
+  try {
+    const h = await harness(n, 1, seed(n));
+    h.replaceState(State.updateActiveSession(h.state, { focusFiles: ['main.tex'] }));
+    const held = n.holdMessage('put', 1);
+    const pending = h.controller.undoRun('r');
+    // Capture a rejection immediately so the old bug is an assertion failure.
+    const outcome = pending.then(() => null, error => error);
+    await held.entered.promise;
+    const oldState = h.state, oldRun = h.run();
+    const tray = require('../extension/src/content/contextTray').createContextTrayController({
+      getState: () => h.state, setState: h.replaceState, updateActiveSession: State.updateActiveSession,
+      saveState: async () => {}, getCurrentProjectId: () => h.viewScope.projectId
+    });
+    await tray.clearFocusFile();
+    assert.notEqual(h.state, oldState);
+    assert.notEqual(h.run(), oldRun);
+    await n.deliver(held.envelope);
+    assert.equal(await outcome, null);
+    assert.equal(h.counts().dispatches, 1);
+    assert.equal(h.counts().writes, 1);
+    assert.equal(h.run().undoStatus, 'applied');
+    assert.equal(stored(n).runs[0].undoStatus, 'applied');
+    assert.deepEqual(h.state.focusFiles, []);
+  } finally { n.close(); }
+});
+
+for (const phase of ['Page result', 'terminal save']) test(`ordinary Undo settles the live run after draft/context changes during ${phase}`, async () => {
+  const n = createNetwork(), gate = deferred(), entered = deferred();
+  try {
+    const h = await harness(n, 1, seed(n), { gate, entered });
+    const pending = h.controller.undoRun('r').then(() => null, error => error);
+    await entered.promise;
+    let held;
+    if (phase === 'terminal save') {
+      held = n.holdMessage('put', 1);
+      gate.resolve();
+      await held.entered.promise;
+    }
+    const oldRun = h.run();
+    const tray = require('../extension/src/content/contextTray').createContextTrayController({
+      getState: () => h.state, setState: h.replaceState, updateActiveSession: State.updateActiveSession,
+      saveState: async () => {}, getCurrentProjectId: () => h.viewScope.projectId
+    });
+    await tray.clearFocusFile();
+    h.replaceState(State.updateActiveSession(h.state, { task: 'A later draft' }));
+    if (held) await n.deliver(held.envelope); else gate.resolve();
+    assert.equal(await pending, null);
+    assert.notEqual(h.run(), oldRun);
+    assert.equal(h.counts().writes, 1);
+    assert.equal(h.run().undoStatus, 'applied');
+    assert.equal(stored(n).runs[0].undoStatus, 'applied');
+    assert.equal(h.state.task, 'A later draft');
+    const reloaded = await harness(n, 2, stored(n));
+    assert.equal(reloaded.run().undoStatus, 'applied');
+    assert.equal(reloaded.button().disabled, true);
+  } finally { n.close(); }
+});
+
+
+function trackedSession() {
+  const session = initialSession();
+  Object.assign(session.runs[0], { trackedChangeStatus: 'pending',
+    undoTrackedChanges: [{ key: 'native:doc-one:change-one', id: 'change-one', path: 'main.tex' }],
+    executionSnapshot: { mode: 'auto', requireReviewing: true, source: 'submitted' } });
+  return session;
+}
+for (const phase of ['Page result', 'terminal save']) test(`Accept settles the live run after context changes during ${phase}`, async () => {
+  const n = createNetwork(), gate = deferred(), entered = deferred();
+  try {
+    const h = await harness(n, 1, seed(n, trackedSession()), { gate, entered });
+    const pending = h.controller.acceptRun('r').then(() => null, error => error);
+    await entered.promise;
+    let held;
+    if (phase === 'terminal save') {
+      held = n.holdMessage('put', 1); gate.resolve(); await held.entered.promise;
+    }
+    const tray = require('../extension/src/content/contextTray').createContextTrayController({
+      getState: () => h.state, setState: h.replaceState, updateActiveSession: State.updateActiveSession,
+      saveState: async () => {}, getCurrentProjectId: () => h.viewScope.projectId
+    });
+    await tray.clearFocusFile();
+    h.replaceState(State.updateActiveSession(h.state, { task: 'Later draft' }));
+    if (held) await n.deliver(held.envelope); else gate.resolve();
+    assert.equal(await pending, null);
+    assert.equal(h.run().trackedChangeStatus, 'accepted');
+    assert.equal(stored(n).runs[0].trackedChangeStatus, 'accepted');
+    assert.equal(h.counts().writes, 1);
+    assert.deepEqual(h.run().undoTrackedChanges, []);
+    assert.equal(h.state.task, 'Later draft');
+  } finally { n.close(); }
+});
+
+const ownershipChanges = {
+  'project': h => { h.viewScope.projectId = 'project-two'; },
+  'account': h => { h.viewScope.accountScopeId = 'account-two'; },
+  'route generation': h => { h.viewScope.generation++; },
+  'active session': h => { h.replaceState({ ...h.state, activeSessionId: 'other-session' }); },
+  'owning session account': h => { h.state.sessions[0].accountScopeId = 'account-two'; },
+  'owning session project': h => { h.state.sessions[0].projectId = 'project-two'; },
+  'run account': h => { h.run().runAccountScopeId = 'account-two'; },
+  'run turn': h => { h.run().codexTurnId = 'different-turn'; },
+  'same-ID replacement': h => { h.replaceState(State.updateActiveSession(h.state, { runs: [{ ...h.run() }] })); },
+  'replacement checkpoint': h => {
+    h.replaceState(State.updateActiveSession(h.state, { runs: [{ ...h.run(), undoBaseFiles: [{ path: 'main.tex', content: 'Different source' }] }] }));
+  },
+  'in-place checkpoint': h => { h.run().undoBaseFiles[0].content = 'Different source'; },
+  'terminal status': h => { h.run().undoStatus = 'applied'; }
+};
+for (const [change, mutate] of Object.entries(ownershipChanges)) test(`Undo rejects changed ${change} while confirmation is open`, async () => {
+  const n = createNetwork(), confirming = deferred(), answer = deferred();
+  try {
+    const h = await harness(n, 1, seed(n), { confirm: () => { confirming.resolve(); return answer.promise; } });
+    const pending = h.controller.undoRun('r').then(() => null, error => error);
+    await confirming.promise;
+    mutate(h);
+    const changedRun = JSON.stringify(h.run());
+    answer.resolve(true);
+    assert.equal((await pending)?.code, 'review_context_changed');
+    assert.equal(h.counts().dispatches, 0);
+    assert.equal(JSON.stringify(h.run()), changedRun, 'old action cannot update the changed record');
+  } finally { n.close(); }
+});
+
+for (const action of ['undoRun', 'acceptRun']) test(`${action} rejects changed evidence after Page dispatch without settling a stale result`, async () => {
+  const n = createNetwork(), gate = deferred(), entered = deferred();
+  try {
+    const h = await harness(n, 1, seed(n, action === 'acceptRun' ? trackedSession() : initialSession()), { gate, entered });
+    const pending = h.controller[action]('r').then(() => null, error => error);
+    await entered.promise;
+    h.run().undoBaseFiles[0].content = 'Replacement checkpoint';
+    const changedRun = JSON.stringify(h.run());
+    gate.resolve();
+    assert.equal((await pending)?.code, 'review_context_changed');
+    assert.equal(JSON.stringify(h.run()), changedRun);
+  } finally { n.close(); }
+});
+
+test('ordinary Undo leaves a retryable live record when Page fails after context was cleared', async () => {
+  const n = createNetwork(), gate = deferred(), entered = deferred();
+  try {
+    const h = await harness(n, 1, seed(n), { gate, entered, error: 'Synthetic Page failure' });
+    const pending = h.controller.undoRun('r').then(() => null, error => error);
+    await entered.promise;
+    h.replaceState(State.updateActiveSession(h.state, { focusFiles: [], task: 'Next task' }));
+    gate.resolve();
+    assert.equal((await pending)?.message, 'Synthetic Page failure');
+    assert.equal(h.run().undoStatus, 'partial');
+    assert.equal(h.button().disabled, false);
+    assert.equal(h.run().undoOperations.length, 1);
+    await h.saveTimer();
+    assert.equal(stored(n).runs[0].undoStatus, 'partial');
+  } finally { n.close(); }
+});
+
+for (const action of ['undoRun', 'acceptRun']) test(`${action} compensates the live clone when terminal persistence fails`, async () => {
+  const n = createNetwork(), gate = deferred(), entered = deferred();
+  try {
+    const h = await harness(n, 1, seed(n, action === 'acceptRun' ? trackedSession() : initialSession()), { gate, entered });
+    const pending = h.controller[action]('r').then(() => null, error => error);
+    await entered.promise;
+    const held = n.holdMessage('put', 1);
+    gate.resolve(); await held.entered.promise;
+    h.replaceState(State.updateActiveSession(h.state, { focusFiles: [], task: 'Preserve the new draft' }));
+    held.envelope.resolve({ ok: false, error: { code: 'shared_store_unavailable', message: 'Synthetic durable store failure' } });
+    assert.equal((await pending)?.code, 'shared_store_unavailable');
+    assert.equal(h.run()[action === 'acceptRun' ? 'trackedChangeStatus' : 'undoStatus'], action === 'acceptRun' ? 'needs_review' : 'partial');
+    assert.equal(h.run().undoOperations.length, 1);
+    assert.equal(h.run().undoBaseFiles[0].content, 'Before.\n% added\n');
+    if (action === 'acceptRun') assert.equal(h.run().undoTrackedChanges.length, 1);
+    assert.equal(h.state.task, 'Preserve the new draft');
+    assert.notEqual(stored(n).runs[0].undoStatus, 'applied');
+    assert.notEqual(stored(n).runs[0].trackedChangeStatus, 'accepted');
+  } finally { n.close(); }
+});
+
+
+for (const action of ['undoRun', 'acceptRun']) test(`${action} rebinds a draft clone while its dispatch lease is being saved`, async () => {
+  const n = createNetwork();
+  try {
+    const h = await harness(n, 1, seed(n, action === 'acceptRun' ? trackedSession() : initialSession()));
+    const held = n.holdMessage('review-dispatched', 1);
+    const pending = h.controller[action]('r').then(() => null, error => error);
+    await held.entered.promise;
+    h.replaceState(State.updateActiveSession(h.state, { task: 'Next draft', focusFiles: [] }));
+    await n.deliver(held.envelope);
+    assert.equal(await pending, null);
+    assert.equal(h.counts().dispatches, 1);
+    assert.equal(h.run()[action === 'acceptRun' ? 'trackedChangeStatus' : 'undoStatus'], action === 'acceptRun' ? 'accepted' : 'applied');
+  } finally { n.close(); }
+});
+
+test('ordinary Undo reconciles distinct active-run aliases with the same normalization identity', async () => {
+  const n = createNetwork();
+  try {
+    const h = await harness(n, 1, seed(n));
+    h.replaceState({ ...h.state, runs: State.normalizeRuns(h.state.runs) });
+    assert.notEqual(h.state.runs[0], h.run());
+    await h.controller.undoRun('r');
+    assert.equal(h.state.runs[0].undoStatus, 'applied');
+    assert.equal(h.run().undoStatus, 'applied');
+    assert.equal(stored(n).runs[0].undoStatus, 'applied');
+  } finally { n.close(); }
+});
+
+for (const action of ['undoRun', 'acceptRun']) for (const failSave of [false, true])
+test(`${action} preserves late mirror evidence and warning events when terminal save ${failSave ? 'fails' : 'succeeds'}`, async () => {
+  const n = createNetwork(), gate = deferred(), entered = deferred();
+  try {
+    const h = await harness(n, 1, seed(n, action === 'acceptRun' ? trackedSession() : initialSession()), { gate, entered });
+    const pending = h.controller[action]('r').then(() => null, error => error);
+    await entered.promise;
+    const held = n.holdMessage('put', 1);
+    gate.resolve(); await held.entered.promise;
+    h.replaceState(State.updateActiveSession(h.state, { task: 'Newer draft' }));
+    require('../extension/src/content/runSettlementPersistence').create({ writebackSettlement: Settlement,
+      findRunRecord: h.run, getCurrentProjectId: () => h.viewScope.projectId, saveStateSoon() {}
+    }).settleMirrorRefresh({ recordId: 'r', sessionId: 's', runProjectId: 'project-one', state: 'complete' });
+    const context = { window: {} };
+    vm.runInNewContext(read('extension/src/content/writebackOrchestrator.js'), context);
+    const orchestrator = context.window.CodexOverleafWritebackOrchestrator.create({
+      getCurrentProjectId: () => 'project-one', tx: en => en,
+      appendRunRecordEvent: (_id, event) => h.run().events.push(event),
+      sendBackgroundNative: async () => { throw new Error('Synthetic mirror invalidation warning'); }
+    });
+    await orchestrator.invalidateMirrorAfterUndo('r', 'project-one', { changedDocument: true });
+    const warnings = structuredClone(h.run().events);
+    assert.equal(warnings.length, 1, 'the actual mirror failure appends its warning');
+    if (failSave) held.envelope.resolve({ ok: false, error: { code: 'shared_store_unavailable', message: 'Synthetic durable save failure' } });
+    else await n.deliver(held.envelope);
+    const error = await pending;
+    assert.equal(error?.code || null, failSave ? 'shared_store_unavailable' : null);
+    assert.equal(h.run()[action === 'acceptRun' ? 'trackedChangeStatus' : 'undoStatus'],
+      action === 'acceptRun' ? (failSave ? 'needs_review' : 'accepted') : (failSave ? 'partial' : 'applied'));
+    assert.equal(h.run().settlement.evidence.mirrored, 'complete');
+    assert.deepEqual(structuredClone(h.run().events), warnings);
+    assert.equal(h.state.task, 'Newer draft');
+    if (failSave) assert.equal(h.run().undoOperations.length, 1);
+  } finally { n.close(); }
+});
+
+
+for (const action of ['undoRun', 'acceptRun']) for (const change of ['status', 'checkpoint', 'settled evidence', 'readback evidence', 'save evidence', 'per-file evidence'])
+test(`${action} does not overwrite a conflicting ${change} during terminal persistence`, async () => {
+  const n = createNetwork(), gate = deferred(), entered = deferred();
+  try {
+    const h = await harness(n, 1, seed(n, action === 'acceptRun' ? trackedSession() : initialSession()), { gate, entered });
+    const pending = h.controller[action]('r').then(() => null, error => error);
+    await entered.promise;
+    const held = n.holdMessage('put', 1); gate.resolve(); await held.entered.promise;
+    h.replaceState(State.updateActiveSession(h.state, { task: 'Later draft' }));
+    if (change === 'status') h.run()[action === 'acceptRun' ? 'trackedChangeStatus' : 'undoStatus'] = action === 'acceptRun' ? 'rejected' : 'partial';
+    if (change === 'checkpoint') h.run().undoBaseFiles = [{ path: 'main.tex', content: 'A different checkpoint' }];
+    if (change === 'settled evidence') h.run().settlement.evidence.settled = 'needs-review';
+    if (change === 'readback evidence') h.run().settlement.evidence.readBack = 'mismatch';
+    if (change === 'save evidence') h.run().settlement.evidence.saved = 'unconfirmed';
+    if (change === 'per-file evidence') h.run().settlement.fileSettlements = [{ path: 'main.tex', readBack: 'mismatch' }];
+    const changed = structuredClone(h.run());
+    await n.deliver(held.envelope);
+    assert.equal((await pending)?.code, 'review_state_not_persisted');
+    assert.deepEqual(structuredClone(h.run()), changed);
+  } finally { n.close(); }
 });

@@ -15,7 +15,50 @@
     return JSON.parse(JSON.stringify(value));
   }
 
-  async function applyReviewTransition({ getState, runId, transition, persist, legacyUndo = false, assertCurrent }) {
+  // Review owns recovery progress and its settlement decision. Log events,
+  // compilation/mirror evidence, and later draft/display data have other writers.
+  const REVIEW_FIELDS = ['appliedOperations', 'undoOperations', 'undoBaseFiles', 'undoTrackedChanges',
+    'undoExpectedFiles', 'undoStatus', 'trackedChangeStatus', 'trackedChangeCaptures', 'interruptedDraft',
+    'retryWriteback', 'saveCheck'];
+  const REVIEW_FACT_FIELDS = ['documentEffect', 'fileSettlements', 'failures', 'recoveryAvailability', 'recoveryDisposition'];
+  const AUXILIARY_EVIDENCE = ['mirrored', 'compiled'];
+  const REVIEW_SOURCE_FIELDS = ['id', 'runProjectId', 'runAccountScopeId', 'startedAt', 'nativeEventSeq',
+    'codexThreadId', 'codexTurnId', 'executionSnapshot', 'forkSnapshot'];
+  const factsOf = record => record?.settlement || record?.settlementFacts || {};
+  function reviewSnapshot(record, SessionState) {
+    const normalized = SessionState?.normalizeRuns?.([record])?.[0] || record;
+    const facts = factsOf(normalized);
+    return JSON.stringify([
+      [...REVIEW_SOURCE_FIELDS, ...REVIEW_FIELDS].map(key => normalized[key]),
+      REVIEW_FACT_FIELDS.map(key => facts[key]),
+      Object.entries(facts.evidence || {}).filter(([key]) => !AUXILIARY_EVIDENCE.includes(key)).sort(([a], [b]) => a.localeCompare(b))
+    ]);
+  }
+  function restoreReviewFields(record, previous, staged, legacyUndo) {
+    for (const key of REVIEW_FIELDS) {
+      if (Object.hasOwn(previous, key)) record[key] = cloneSnapshot(previous[key]);
+      else delete record[key];
+    }
+    Object.assign(record, legacyUndo ? { undoStatus: 'partial' } : { trackedChangeStatus: 'needs_review' });
+    const currentFacts = factsOf(record), stagedFacts = factsOf(staged);
+    const restored = cloneSnapshot(factsOf(previous));
+    const preserveLateFields = (target, current, initial, excluded) => {
+      for (const key of new Set([...Object.keys(current), ...Object.keys(initial)])) {
+        if (excluded.includes(key) || JSON.stringify(current[key]) === JSON.stringify(initial[key])) continue;
+        if (Object.hasOwn(current, key)) target[key] = cloneSnapshot(current[key]); else delete target[key];
+      }
+    };
+    preserveLateFields(restored, currentFacts, stagedFacts, [...REVIEW_FACT_FIELDS, 'evidence']);
+    const evidence = { ...(restored.evidence || {}) };
+    const currentEvidence = currentFacts.evidence || {}, stagedEvidence = stagedFacts.evidence || {};
+    preserveLateFields(evidence, currentEvidence, stagedEvidence,
+      [...Object.keys(currentEvidence), ...Object.keys(stagedEvidence)].filter(key => !AUXILIARY_EVIDENCE.includes(key)));
+    if (Object.keys(evidence).length) restored.evidence = evidence; else delete restored.evidence;
+    delete record.settlementFacts;
+    if (Object.keys(restored).length) record.settlement = restored; else delete record.settlement;
+  }
+
+  async function applyReviewTransition({ getState, runId, transition, persist, legacyUndo = false, assertCurrent, SessionState }) {
     const targets = () => Array.from(new Set([
       ...(getState().runs || []),
       ...(getState().sessions || []).flatMap(session => session.runs || [])
@@ -33,22 +76,28 @@
         (Date.parse(session.lastActivityAt) || 0) + 1)).toISOString();
       session.lastActivityAt = session.updatedAt;
     }
-    const staged = records.map(record => JSON.stringify(record));
+    const snapshot = record => reviewSnapshot(record, SessionState);
+    const stagedRecords = records.map(cloneSnapshot), staged = records.map(snapshot);
+    const sameRecord = (original, record) => original === record
+      || (assertCurrent && SessionState?.sameRunIdentity?.(original, record));
+    const stillStaged = record => records.some((original, index) =>
+      sameRecord(original, record) && snapshot(record) === staged[index]);
+    const sameView = () => getState().activeSessionId === capturedSessionId
+      && (getState() === capturedState || (assertCurrent && SessionState?.sameRunIdentity));
     try {
       await persist({ preserveRunActionPayload: true, reviewRunIds: [runId], requireDurable: true });
       assertCurrent?.();
-      if (getState() !== capturedState || getState().activeSessionId !== capturedSessionId
-        || records.some(record => !targets().includes(record))) throw reviewPersistenceError();
+      const current = targets();
+      if (!sameView() || !current.length || current.some(record => !stillStaged(record))
+        || records.some(original => !current.some(record => sameRecord(original, record))))
+        throw reviewPersistenceError();
     } catch (error) {
       try { assertCurrent?.(); } catch (_stale) { throw error; }
       // The remote action may have succeeded. Keep its recovery data and expose uncertainty.
-      for (const record of records) {
-        if (getState() !== capturedState || !targets().includes(record)
-          || JSON.stringify(record) !== staged[records.indexOf(record)]) continue;
-        Object.assign(record, cloneSnapshot(previous), legacyUndo ? { undoStatus: 'partial' } : { trackedChangeStatus: 'needs_review' });
-        for (const field of ['settlement', 'settlementFacts']) {
-          if (!Object.prototype.hasOwnProperty.call(previous, field)) delete record[field];
-        }
+      for (const record of targets()) {
+        if (!sameView() || !stillStaged(record)) continue;
+        const index = records.findIndex((original, index) => sameRecord(original, record) && snapshot(record) === staged[index]);
+        restoreReviewFields(record, previous, stagedRecords[index], legacyUndo);
       }
       throw error;
     }

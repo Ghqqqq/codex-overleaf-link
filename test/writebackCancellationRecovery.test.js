@@ -155,6 +155,7 @@ function harness({ dropApply = false, cancelAfterBroker = false, partial = false
   vm.runInContext(orchestratorSource, outer, { filename: 'writebackOrchestrator.js' });
   const noop = () => {};
   const orchestrator = outer.window.CodexOverleafWritebackOrchestrator.create({
+    compileAdapter: require('../extension/src/shared/compileAdapter'),
     ...plan, tr, tx, getLocale: () => 'en', getState: () => state, getCurrentRunView: () => view,
     getCurrentProjectId: () => projectId, getAssistantAnswerForCurrentRun: () => 'synthetic result', cleanFinalAnswer: x => x,
     appendRunEvent: event => events.push(event), appendRunRecordEvent: noop, appendChangeSummary: () => 'summary',
