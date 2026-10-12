@@ -221,7 +221,12 @@
 
   function project(run = {}, incoming, options = {}) {
     const saved = Array.isArray(run.events) ? run.events : [];
-    const events = incoming && !saved.includes(incoming) ? saved.concat(incoming) : saved;
+    // Stream updates are saved before rendering; buffering and localization copy
+    // their objects. Keep the current saved event instead of its incoming copy.
+    const incomingStreamKey = incoming?.kind === 'stream' ? text(incoming.streamKey) : '';
+    const alreadySaved = incoming && saved.some(event => event === incoming
+      || (incomingStreamKey && event?.kind === 'stream' && event.streamKey === incomingStreamKey));
+    const events = incoming && !alreadySaved ? saved.concat(incoming) : saved;
     const ordered = [];
     const diagnostics = [];
     const diagnosticNotices = new Set();

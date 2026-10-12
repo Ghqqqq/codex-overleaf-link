@@ -19,12 +19,14 @@ Domain guide: [UI and loading](ui-and-loading.md).
 - Required coordination: [panel.css](../../extension/styles/panel.css), [sessionState](../../extension/src/shared/sessionState.js); preserve the settings, session, and composer lifecycles.
 - Verification: When changing this surface, open/close and resize the actual panel; verify its affected layout after refresh.
 
-### Change reading follow behavior, the latest button, or answer copying
+### Change runtime activity, reading follow behavior, the latest button, or answer copying
 
 - Entry points: [RunTimelineView.bindLogAutoFollow/scrollLogToBottom](../../extension/src/content/runTimelineView.js), `configureCopyButton` in [RunResultActions](../../extension/src/content/runResultActions.js).
 - State owner: the timeline manages follow intent, unread steps, and forced jumps; [RunScrollLayout](../../extension/src/content/runScrollLayout.js) preserves the reading anchor before repaint. Copying uses the rendered answer text, excluding the run log and raw Markdown.
 - Required coordination: streaming output, collapsing, repainting, font and width changes, the Clipboard API/fallback, and action failure notices. See [UI and loading](ui-and-loading.md) for details.
+- Collapsed activity: [RunActivityModel.project](../../extension/src/shared/runActivityModel.js) combines saved events with incoming display snapshots by stream identity; [RunActivitySummary.renderPeek](../../extension/src/content/runActivitySummary.js) owns the three-row window. Coordinate runtime `appendRunEvent`/`upsertRunStreamRecordEvent`, session normalization, and the timeline's stream and elapsed-timer refreshes; see [activity projection](ui-and-loading.md#activity-projection-and-post-write-receipts).
 - Verification: When changing this path, use a long answer to check manual scrolling, the latest button, and copied conclusion text.
+- For activity-only changes, check that repeated updates of one Thinking stream preserve the three rows and their node identity, while a new stream can advance the window. Include current-record updates after session normalization, completion and history reconstruction; source-string and CSS assertions do not establish these behaviors.
 
 ### Add settings or change their categories or scope
 

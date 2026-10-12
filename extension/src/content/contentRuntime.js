@@ -6498,20 +6498,19 @@
           })).filter(item => item.path)
         : undefined
     };
+    // Keep the activity timestamp current without retaining a run reference
+    // across session normalization, which replaces run and event objects.
+    const nowMs = Date.now();
+    if (nowMs - lastRunActivityBumpMs > 60000
+      && findRunRecord(currentRunView.recordId, currentRunView.sessionId)) {
+      lastRunActivityBumpMs = nowMs;
+      state = updateActiveSession(state, {});
+    }
     const record = findRunRecord(currentRunView.recordId, currentRunView.sessionId);
     let renderedEvent = event;
     if (record) {
       if (Number.isFinite(Number(input.nativeEventSeq))) {
         record.nativeEventSeq = Math.max(Number(record.nativeEventSeq || 0), Number(input.nativeEventSeq || 0));
-      }
-      // v1.8.1: keep the session's activity timestamp honest DURING a run —
-      // it was pinned to run start, so the dashboard's 30-minute zombie
-      // heuristic mislabeled any long live run as interrupted (fleet P1).
-      // Throttled to once a minute; updateActiveSession stamps updatedAt.
-      const nowMs = Date.now();
-      if (nowMs - lastRunActivityBumpMs > 60000) {
-        lastRunActivityBumpMs = nowMs;
-        state = updateActiveSession(state, {});
       }
       renderedEvent = event.kind === 'stream'
         ? upsertRunStreamRecordEvent(record, event)
