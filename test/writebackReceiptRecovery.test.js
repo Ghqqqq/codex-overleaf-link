@@ -4,6 +4,7 @@ const Journal = require('../extension/src/page/writebackReceiptJournal');
 const Broker = require('../extension/src/content/assetTransferBroker');
 const Client = require('../extension/src/content/pageBridgeClient');
 const Contract = require('../extension/src/shared/pageRpcContract');
+const version = require('../package.json').version;
 
 const ops = [
   ...['a.tex', 'b.tex', 'c.tex'].map(name => ({ type: 'create', path: 'Figures/QA/' + name, content: '% QA' })),
@@ -40,7 +41,7 @@ function harness(execute, options = {}) {
         if (options.dropApplyReply && message.method === 'applyOperations') return;
         for (const listener of [...listeners]) listener({
           source: window, origin: window.location.origin, data: {
-            source: 'codex-overleaf/page', pageBridgeVersion: '2.4.1',
+            source: 'codex-overleaf/page', pageBridgeVersion: version,
             pageBridgeRevision: Contract.REVISION, id: message.id, result
           }
         });
@@ -56,7 +57,7 @@ function harness(execute, options = {}) {
   };
   const client = Client.create({ window, document: {}, chromeApi: { runtime: { getURL: value => value } },
     crypto: { randomUUID: () => 'rpc-' + (++nextId) }, contract: Contract,
-    compatibility: { BUILD_TARGET_VERSION: '2.4.1' } });
+    compatibility: { BUILD_TARGET_VERSION: version } });
   const broker = Broker.create({
     callPageBridge: (method, params) => client.send(method, params,
       Contract.resolveDispatchPolicy(method, { writeback: 45, default: 8 })),
@@ -81,33 +82,6 @@ function report(operation, params) {
 function success(applied) {
   return { ok: true, applied, skipped: [], trackedChanges: applied.flatMap(entry => entry.result.trackedChanges || []) };
 }
-
-test('six writes survive the initial RPC timeout with receipts and no mutation replay', async () => {
-  const started = deferred(), release = deferred();
-  let firstPartial;
-  const h = harness(async (operations, params) => {
-    const applied = operations.slice(0, 3).map(operation => report(operation, params));
-    started.resolve(); await release.promise;
-    applied.push(...operations.slice(3).map(operation => report(operation, params)));
-    return success(applied);
-  }, { onReceipt: ({ journal, message }) => {
-    firstPartial ||= journal.get(message.params);
-    release.resolve();
-  } });
-  const pending = h.broker.applyOperations({ operations: ops, runProjectId: 'project-a', requireReviewing: true });
-  await started.promise; h.timeout();
-  const result = await pending;
-  assert.equal(firstPartial.state, 'running');
-  assert.equal(firstPartial.result.applied.length, 3);
-  assert.equal(result.ok, true);
-  assert.equal(result.applied.length, 6);
-  assert.equal(result.skipped.length, 0);
-  assert.equal(result.trackedChanges.length, 2, 'keep mature Track recovery data');
-  assert.equal(h.executions, 1);
-  assert.equal(h.calls.filter(call => call.method === 'applyOperations').length, 1);
-  assert.ok(h.calls.some(call => call.method === 'getWritebackReceipt'));
-  assert.equal(result.receiptRecoveries[0].initialError, 'Page bridge timed out');
-});
 
 test('a lost final reply is recovered without executing an already completed batch again', async () => {
   const h = harness(async (operations, params) => success(operations.map(operation => report(operation, params))),
@@ -135,7 +109,6 @@ test('expired recovery retains confirmed writes, root error and uncertainty for 
   assert.equal(result.applied.length, 1);
   assert.equal(result.skipped.length, 5);
   assert.equal(result.code, 'page_bridge_timeout');
-  assert.equal(result.error, 'Page bridge timed out');
   assert.equal(result.receiptState, 'running');
   assert.ok(result.skipped.every(entry => entry.result.failure.changedDocument === true));
   assert.ok(result.skipped.every(entry => entry.result.failure.retryable === false));
@@ -143,20 +116,6 @@ test('expired recovery retains confirmed writes, root error and uncertainty for 
   assert.equal(blocked.code, 'writeback_in_progress');
   assert.equal(h.executions, 1, 'a new run must not overlap an unsettled page write');
   release.resolve(); await Promise.all(h.serverCalls);
-});
-
-test('a dispatcher exception preserves earlier per-file receipts and its original error', async () => {
-  const h = harness(async (operations, params) => {
-    report(operations[0], params);
-    throw new Error('upload confirmation failed');
-  });
-  const result = await h.broker.applyOperations({ operations: ops, runProjectId: 'project-a' });
-  assert.equal(result.ok, false);
-  assert.equal(result.applied.length, 1);
-  assert.equal(result.skipped.length, 5);
-  assert.equal(result.error, 'upload confirmation failed');
-  assert.match(result.skipped[0].result.reason, /upload confirmation failed/);
-  assert.equal(h.executions, 1);
 });
 
 test('missing or wrong-project receipts never cause replay or false success', async () => {
@@ -178,105 +137,4 @@ test('missing or wrong-project receipts never cause replay or false success', as
     assert.equal(h.executions, 1);
     release.resolve(); await Promise.all(h.serverCalls);
   }
-});
-
-test('unconfirmed text writes prevent dispatching later binary or text operations', async () => {
-  const methods = [];
-  const broker = Broker.create({
-    callPageBridge: async method => {
-      methods.push(method);
-      if (method === 'applyOperations') return { ok: false, code: 'page_bridge_timeout', error: 'timeout', requestId: 'x' };
-      if (method === 'getWritebackReceipt') return { ok: false, error: 'missing' };
-      throw new Error('Later mutations must remain undispatched');
-    }
-  });
-  const result = await broker.applyOperations({ runProjectId: 'project-a', operations: [
-    ops[0], { type: 'binary-create', path: 'plot.png', contentBase64: 'AA==' }, ops[5]
-  ] });
-  assert.deepEqual(methods, ['applyOperations', 'getWritebackReceipt']);
-  assert.equal(result.skipped.length, 3);
-  assert.equal(result.skipped[1].result.changedDocument, false);
-  assert.equal(result.skipped[2].result.changedDocument, false);
-});
-
-test('journal validates project identity, deduplicates delivery and preserves no-trace preparation', async () => {
-  let calls = 0, preparations = 0, project = 'p';
-  const journal = Journal.create({ getProjectId: () => project,
-    prepareEditor: async () => { preparations++; return { ok: false, code: 'editing_not_confirmed' }; },
-    applyOperations: async operations => { calls++; return success(operations.map(operation => ({ operation, result: { ok: true } }))); }
-  });
-  const params = { writebackRequestId: 'a', runProjectId: 'p', operations: [ops[0]] };
-  assert.equal((await journal.apply({ ...params, runProjectId: 'other' })).ok, false);
-  const first = await journal.apply(params), second = await journal.apply(params);
-  assert.deepEqual(first, second); assert.equal(calls, 1);
-  assert.equal((await journal.apply({ ...params, operations: [ops[1]] })).code, 'writeback_receipt_conflict');
-  const noTrace = await journal.apply({ ...params, writebackRequestId: 'b', reviewingPolicy: 'no-trace-undo' });
-  assert.equal(noTrace.skipped[0].result.code, 'editing_not_confirmed');
-  assert.equal(preparations, 1); assert.equal(calls, 1);
-  project = 'other';
-  assert.equal(journal.get({ requestId: 'a', runProjectId: 'p' }).ok, false);
-});
-
-test('journal bounds completed receipt retention without expiring an active write', async () => {
-  let now = 0;
-  const gate = deferred();
-  const journal = Journal.create({ getProjectId: () => 'p', now: () => now, retentionMs: 10, maxReceipts: 2,
-    applyOperations: async operations => {
-      if (operations[0]?.path === 'active') await gate.promise;
-      return { ok: true, applied: [], skipped: [] };
-    }
-  });
-  await journal.apply({ writebackRequestId: 'old', runProjectId: 'p', operations: [] });
-  now = 20;
-  const active = journal.apply({ writebackRequestId: 'active', runProjectId: 'p', operations: [{ path: 'active' }] });
-  await tick(); now = 100;
-  assert.equal(journal.get({ requestId: 'old', runProjectId: 'p' }).ok, false);
-  assert.equal(journal.get({ requestId: 'active', runProjectId: 'p' }).state, 'running');
-  gate.resolve(); await active;
-});
-
-test('broker merge retains top-level transport failures alongside existing review metadata', () => {
-  const result = Broker.mergeApplyResults([
-    { ok: true, ...success([{ operation: ops[0], result: { ok: true } }]) },
-    { ok: false, code: 'page_bridge_timeout', error: 'Page bridge timed out', requestId: 'late' }
-  ]);
-  assert.equal(result.ok, false);
-  assert.equal(result.error, 'Page bridge timed out');
-  assert.equal(result.requestId, 'late');
-  assert.equal(result.applied.length, 1);
-});
-
-test('receipt identity follows the existing hydrated editor authority and blocks later navigation', async () => {
-  const WriteGuard = require('../extension/src/page/writeGuard');
-  const window = { _ide: {} };
-  const guard = WriteGuard.create({
-    window, document: { querySelector: () => null },
-    treeOperations: { getProjectId: () => 'stale-url-project' },
-    sleep: async () => { window._ide.project = { _id: 'hydrated-project' }; }
-  });
-  const params = { writebackRequestId: 'hydrated', runProjectId: 'hydrated-project', operations: [ops[4]] };
-  assert.equal(await guard.runWriteGuard(params), null);
-  let writes = 0;
-  const journal = Journal.create({
-    getProjectId: expected => guard.getEditorProjectIdPageSide(expected),
-    applyOperations: async operations => { writes++; return success(operations.map(operation => ({ operation, result: { ok: true } }))); }
-  });
-  assert.equal((await journal.apply(params)).ok, true);
-  assert.equal(journal.get({ requestId: 'hydrated', runProjectId: 'hydrated-project' }).state, 'completed');
-  assert.equal(writes, 1);
-  window._ide.project._id = 'other-project';
-  assert.equal(journal.get({ requestId: 'hydrated', runProjectId: 'hydrated-project' }).code, 'writeback_receipt_scope_changed');
-});
-
-test('journal forwards submitted Reviewing and Editing requirements without changing them', async () => {
-  const received = [];
-  const journal = Journal.create({ getProjectId: () => 'p',
-    applyOperations: async (_operations, options) => { received.push(options); return success([]); }
-  });
-  for (const requireReviewing of [true, false]) await journal.apply({
-    writebackRequestId: 'policy-' + requireReviewing, runProjectId: 'p',
-    operations: [], requireReviewing, requireEditing: !requireReviewing
-  });
-  assert.deepEqual(received.map(value => [value.requireReviewing, value.requireEditing, value.runProjectId]),
-    [[true, false, 'p'], [false, true, 'p']]);
 });

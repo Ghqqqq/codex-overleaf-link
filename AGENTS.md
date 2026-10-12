@@ -58,6 +58,8 @@ Before editing, locate the owning execution context, state owner, protocol bound
 
 ## Documentation and Validation
 
+Maintain a small, durable test suite. Keep permanent tests only for consequential user-visible contracts with no equivalent retained coverage: document bytes and recovery, identity/ownership, durable history, transport and installation/update integrity. Extend an existing contract before adding a new test file. Avoid source-string/order checks, private-function extraction, exact UI copy/CSS assertions, architecture line budgets, synthetic performance gates and exhaustive state permutations. Temporary debugging probes normally remain temporary. `npm test` runs the core suite; `npm run test:platform` runs actual isolated installation/process contracts. Real Chrome acceptance stays short and expands only for the changed behavior. Do not restore retired checks or broad release matrices without a concrete uncovered risk.
+
 When entry points, state ownership, protocols, loading, or recovery strategies change, update the corresponding guide pages and feature index. Use repository-relative links and actual symbols in documentation; refer important numerical values to their authoritative constants where possible.
 
 When adding an official guide page, update the exact allowlists in `.gitignore` and `scripts/verify-release.mjs`; private materials and reports remain excluded. Maintain Git tracking scope separately from npm and release distribution scope.

@@ -38,37 +38,23 @@ Domain pages distinguish current implementation, target contracts, and known lim
 
 ## Choosing Validation for a Change
 
-Each domain page lists the nearest tests and their integration scope. Pure functions, source assertions, simulated messages, synthetic subprocesses, and real-browser scenarios provide different levels of evidence; select them according to the change. A test filename containing `browser` or `e2e` does not by itself establish that real Chrome or a real model ran. Check the test setup, substitutes, and actual call chain.
+The maintained suite is intentionally small. Its contracts protect document integrity, operation ownership, durable recovery, transport boundaries and installation. They exercise production modules and replace external I/O where necessary. Passing these checks does not establish full browser, model or operating-system coverage.
 
-The runner supports selecting files and listing the selection without executing it:
-
-```sh
-node scripts/run-tests.mjs --list test/ordinaryUndoRouting.test.js test/undoMirrorInvalidation.test.js
-node scripts/run-tests.mjs test/ordinaryUndoRouting.test.js test/undoMirrorInvalidation.test.js
-```
-
-The first command only lists tests; the second executes the selected tests. Run both from the repository root.
-
-The runner's discovery list consistently uses `/` path separators. Inputs may be bare filenames, `test/<filename>`, or Windows paths with backslashes. `--list` and actual focused execution share the same selection logic. [testRunnerSelection.test.js](../../test/testRunnerSelection.test.js) checks both the selection function and the real CLI's listing/execution entry points.
-
-| Change or validation purpose | Entry point | Effect and evidence scope |
+| Purpose | Entry point | Evidence scope |
 | --- | --- | --- |
-| Guide admission to the repository and source hygiene | `npm run verify:source`; `node --test test/architectureGuidePublication.test.js` | The [source rules](../../scripts/verify-release.mjs) allow only the designated official guide pages; other documentation and local handoff materials remain rejected. The [focused test](../../test/architectureGuidePublication.test.js) also checks `.gitignore` alignment and npm exclusion. |
-| Domain-focused regression | `node scripts/run-tests.mjs <files…>`; add `--list` to inspect the selection first | Runs the selected files directly. Individual tests may create fixtures, subprocesses, or build outputs. `npm run test:focus -- <files…>` also runs the module-graph check first. |
-| Fast regression | `npm run test:fast` | Runs the fixed selection in `FAST_TEST_FILE_NAMES` in [run-tests.mjs](../../scripts/run-tests.mjs). It does not automatically select tests based on the diff; add relevant focused checks. Use `node scripts/run-tests.mjs --fast --list` to inspect the list. |
-| Full Node test suite | `npm test` | Runs all top-level `.test.js` files discovered in `test/` by the runner. The suite includes different setups such as source assertions, VMs, and synthetic processes; it does not establish successful real-browser acceptance. |
-| Content loading and build | `npm run check:module-graph` | The [check script](../../scripts/check-content-module-graph.mjs) regenerates the bundle and metadata and checks inputs, implicit dependencies, and bundle-size limits. `npm test`, `test:fast`, and `test:focus` all run this step first. |
-| Changes to modules subject to budgets | `npm run check:architecture` | The [architecture budget](../../scripts/check-architecture-budget.mjs) checks that the listed files exist and do not exceed their individual line-count limits. Passing proves only those numerical constraints; full responsibilities and dependencies still require review. |
-| Mirror, diff, patch, and large-project regression | `npm run benchmark:large` | The [synthetic benchmark](../../scripts/benchmark-large-project.mjs) calls production modules and also uses approximate metrics. It creates and cleans up temporary mirrors. The command includes `--gate` and fails when timing limits are exceeded. `--output <path>` additionally writes a report. |
-| OT clicking, scrolling, and repaint timing | [Local fixture in real Chrome](../../test/browser/README.md) | `node scripts/serve-ui-regression.mjs` starts a local HTTP service for subsequent interaction in Chrome; real pointer clicks are required. The fixture does not connect to Overleaf or Native. Stop the service after the checks. |
-| Loaded extension and real-project connection | [Project smoke command](../../README.md#development) and [smoke-extension.mjs](../../scripts/smoke-extension.mjs) | `npm run smoke:extension` builds first, then starts Chrome. Probes cover the panel, Native handshake, project summary, and diagnostics entry point. Project writeback, saving, Accept, Undo, and model execution require additional specific scenarios. The default is a temporary profile; specifying a profile uses its login state. `--json` writes redacted results. |
-| Install a local build for Chrome acceptance | `npm run smoke:prepare:chrome` | Runs the build, fast selection, and real `install:managed` in order, modifying the local Managed installation. The extension must still be reloaded and Overleaf refreshed afterward; preparation alone is not acceptance evidence. |
+| Core behavior and content build | `npm test` | Builds the actual content bundle, then runs the small top-level contract suite in `test/`. Core JavaScript behavior runs once on Ubuntu in CI. |
+| Focused change | `node --test test/<contract>.test.js` | Runs an existing relevant contract directly. For UI or external integration changes, use a temporary reproduction or the affected real interaction as needed. |
+| Native installation and recovery | `npm run test:platform` | Isolated real installation, framed Native startup/confirmation, rollback retry, and child-process shutdown. CI runs these on macOS, Ubuntu and Windows; local execution proves only the local platform. |
+| Source and metadata | `npm run verify:source` | Checks the repository's admitted files and development version metadata. The official guide has a separate Git allowlist and remains excluded from npm packages. |
+| Release artifacts and compatibility | `npm run build:release`, `npm run verify:release-artifacts`, `npm run verify:update-boundary`, `npm run verify:update-hop:local` | Validates actual packages, fixed-layer compatibility and an isolated upgrade from a supported published version. Use the release skill for signing and publication; local rehearsal uses a temporary test key. |
+| Short Chrome acceptance | Existing logged-in QA project, using the Chrome smoke skill | Confirm loaded build and connection, Ask with zero writes, two-file reversible write/Undo, actual editor cleanup and refreshed history. Add only interactions affected by the change. Use Luna and verify it before every submission. |
+| Prepare local runtime acceptance | `npm run smoke:prepare:chrome` | Runs the core checks and updates the existing Managed installation. User-operated extension Reload and actual Chrome acceptance still follow. |
 
-The build writes `extension/src/content/generated/content.bundle.js` and its companion metadata as defined by [build-content-bundle.mjs](../../scripts/build-content-bundle.mjs); do not edit these generated files manually. Calling the runner directly with `--list` returns before test execution. Passing `--list` through an npm test command still builds first.
+The build writes `extension/src/content/generated/content.bundle.js` and its metadata through [build-content-bundle.mjs](../../scripts/build-content-bundle.mjs); do not edit generated files manually. `check:module-graph` is a compatibility command for the actual content build. No source-line, file-size or synthetic performance budget gates remain.
 
-Mirror synchronization, status, change collection, diff, and patch in the synthetic benchmark call production modules. `snapshot.zip_parse_ms` actually measures `JSON.parse`, `context_tray.render_ms` measures construction of a synthetic directory tree, and `storage.prepare_ms` measures object preparation inside the script. These metrics compare regressions for fixed synthetic inputs. Real ZIP decompression, browser rendering, and IndexedDB write timings require separate evidence.
+The [runner](../../scripts/run-tests.mjs) expands the small suite for Node and Windows without relying on shell globbing. Platform files live under `test/platform/`. [CI](../../.github/workflows/test.yml) and the [release workflow](../../.github/workflows/release.yml) share this selection. The final signed release follows its own artifact and update-hop checks; running the core suite cannot substitute for them.
 
-For cross-platform validation, refer to the macOS, Ubuntu, Windows, and Node version configuration in [CI](../../.github/workflows/test.yml). Local results cover only the platforms and paths actually executed. Chrome loading, the Overleaf DOM, real saving, and refresh recovery still require corresponding interaction checks. Use `npm run verify:source` for source hygiene and development metadata. See [Installation and Updates](installation-and-updates.md) for npm package scope, update boundaries, and packaging, signing, and update rehearsals for official releases.
+A permanent test must protect a consequential observable failure that the retained suite does not already cover. Prefer extending one existing contract. Do not add tests for internal names, source spelling/order, exact UI copy, CSS snippets, line counts, fixed tool versions or every combination of equivalent states. Temporary diagnostic probes need not become permanent release requirements. Intentional public-contract changes and external platform changes can still require test maintenance.
 
 ## Maintenance Conventions
 

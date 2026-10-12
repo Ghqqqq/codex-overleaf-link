@@ -376,16 +376,13 @@ flowchart TD
 
 ```bash
 npm ci
-npm run build:content
 npm test
+npm run test:platform
 npm run verify:source
-npm run verify:npm-package
 npm run verify:update-boundary
-npm run check:architecture
-npm run benchmark:large
 ```
 
-There are no npm runtime dependencies. Development uses a pinned **esbuild**; the Markdown and math libraries are vendored into the extension. Tests use Node's built-in runner, including VM-based browser integration tests. [CI](.github/workflows/test.yml) runs on macOS, Ubuntu and Windows with Node 24.18.0 and rehearses the managed-update hop on Ubuntu.
+There are no npm runtime dependencies. Development uses a pinned **esbuild**; the Markdown and math libraries are vendored into the extension. Tests use Node's built-in runner. A small core suite checks consequential behavior once on Ubuntu; isolated installation, rollback and process checks run on macOS, Ubuntu and Windows. [CI](.github/workflows/test.yml) also rehearses the managed-update hop once. For focused checks, run `node --test test/<contract>.test.js`. Real Chrome acceptance covers reading, reversible writing/Undo and refresh, with additional checks only for affected behavior. See the [validation policy](docs/architecture/README.md#choosing-validation-for-a-change).
 
 The content script is bundled from [content-entry.mjs](extension/entries/content-entry.mjs). Edit the modules, run `npm run build:content`, and reload the extension. To push a local build into an existing managed install, run `npm run install:managed`, then reload the extension and Overleaf. `npm run bridge` starts the native host on stdio for protocol work.
 

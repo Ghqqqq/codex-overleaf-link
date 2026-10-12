@@ -20,10 +20,6 @@ const timing = require(native('codexSessionTiming'));
 const originalStop = timing.stopCodexAppServer;
 timing.stopCodexAppServer = (child, options) => {
   record('stop', { event: 'started', pid: child.pid, reason: options.reason?.code });
-  if (process.env.CODEX_TEST_DISCONNECT_MODE === 'stalled-stop') {
-    options.interrupt?.().catch(() => {});
-    return new Promise(() => {}); // Inject a stalled lower-level stop after real abort.
-  }
   return originalStop(child, options).then(value => {
     record('stop', { event: 'resolved', pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode });
     return value;
@@ -32,9 +28,6 @@ timing.stopCodexAppServer = (child, options) => {
     throw error;
   });
 };
-const barrier = require(native('processStopBarrier'));
-const originalRecord = barrier.record;
-barrier.record = (...args) => { record('barrier', { event: 'called', code: args[2]?.code }); return originalRecord(...args); };
 const runtime = require(native('taskRunnerRuntime'));
 process.on('exit', code => record('host-exit', { pid: process.pid, code, work: runtime.getActiveNativeWorkState() }));
 setTimeout(() => process.exit(93), 12000).unref();

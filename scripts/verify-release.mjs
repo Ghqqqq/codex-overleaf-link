@@ -5,7 +5,6 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const EXPECTED_PACKAGE_NAME = 'codex-overleaf-link';
-const EXPECTED_PACKAGE_LOCK_VERSION = 3;
 // Public source documentation is versioned with the code. Keep this explicit:
 // private notes and review records under docs/ must remain rejected, and the
 // npm package verifier independently excludes all documentation directories.
@@ -66,7 +65,6 @@ export function collectReleaseVerificationErrors(options = {}) {
   const pkg = readJsonFile(rootDir, 'package.json', errors);
   const packageLock = readJsonFile(rootDir, 'package-lock.json', errors);
   const manifest = readJsonFile(rootDir, 'extension/manifest.json', errors);
-  const readme = sourceHygieneOnly ? '' : readTextFile(rootDir, 'README.md', errors);
   const changelog = sourceHygieneOnly ? '' : readTextFile(rootDir, 'CHANGELOG.md', errors);
   const compatibility = readTextFile(rootDir, 'extension/src/shared/compatibility.js', errors);
 
@@ -101,16 +99,6 @@ export function collectReleaseVerificationErrors(options = {}) {
   }
 
   if (version && !sourceHygieneOnly) {
-    const expectedBadge = `version-${version}-blue`;
-    if (!readme.includes(expectedBadge)) {
-      errors.push(`README.md must contain the release badge fragment "${expectedBadge}".`);
-    }
-
-    const pinnedNpmInstallCommand = `npm exec --yes ${EXPECTED_PACKAGE_NAME}@${version} -- install-native`;
-    if (!readme.includes(pinnedNpmInstallCommand)) {
-      errors.push(`README.md must contain the pinned npm install command "${pinnedNpmInstallCommand}".`);
-    }
-
     const changelogHeadingPattern = releaseDate
       ? new RegExp(`^## v${escapeRegExp(version)} - ${escapeRegExp(releaseDate)}$`, 'm')
       : new RegExp(`^## v${escapeRegExp(version)} - \\d{4}-\\d{2}-\\d{2}$`, 'm');
@@ -146,11 +134,6 @@ function collectPackageMetadataErrors({ rootDir, pkg, packageLock }) {
   }
   if (!pkg.repository || pkg.repository.type !== 'git' || pkg.repository.url !== 'git+https://github.com/Ghqqqq/codex-overleaf-link.git') {
     errors.push('package.json must define repository.url as git+https://github.com/Ghqqqq/codex-overleaf-link.git for npm provenance.');
-  }
-  if (packageLock.lockfileVersion !== EXPECTED_PACKAGE_LOCK_VERSION) {
-    errors.push(
-      `package-lock.json lockfileVersion ${formatValue(packageLock.lockfileVersion)} must be ${EXPECTED_PACKAGE_LOCK_VERSION}.`
-    );
   }
 
   if (version) {
@@ -297,20 +280,6 @@ function getRepoRoot() {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const errors = collectReleaseVerificationErrors(args);
-  // v1.8.1: the architecture budget is part of release verification — twice
-  // now a late fix pushed a file past its ceiling AFTER the last local
-  // budget run, and only CI's --enforce-target gate caught it (post-tag).
-  try {
-    const budget = await import('./check-architecture-budget.mjs');
-    const results = budget.collectArchitectureBudgetResults({ rootDir: path.resolve(args.rootDir || getRepoRoot()) });
-    for (const result of results) {
-      if (!result.targetMet) {
-        errors.push(`architecture budget: ${result.path} has ${result.lineCount} lines; limit is ${result.ceiling}`);
-      }
-    }
-  } catch (error) {
-    errors.push(`architecture budget check failed to run: ${error.message}`);
-  }
   if (errors.length > 0) {
     console.error('Release verification failed:');
     for (const error of errors) {

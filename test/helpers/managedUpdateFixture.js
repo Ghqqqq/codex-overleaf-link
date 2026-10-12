@@ -96,7 +96,7 @@ function loadWithDependencies(relative, overrides) {
   return module.exports;
 }
 
-function pingInstalled(fixture, method = 'bridge.ping') {
+function pingInstalled(fixture, method = 'bridge.ping', params = {}) {
   return new Promise((resolve, reject) => {
     const invocation = buildDoctorBridgeSpawnInvocation(fixture.bridge, { platform: process.platform, env: fixture.env });
     const child = spawn(invocation.command, invocation.args, { env: fixture.env, stdio: ['pipe', 'pipe', 'pipe'],
@@ -112,12 +112,12 @@ function pingInstalled(fixture, method = 'bridge.ping') {
     });
     child.on('error', reject);
     child.on('close', code => { clearTimeout(timer); response ? resolve(response) : reject(new Error(`Fixture bridge exited ${code}: ${stderr}`)); });
-    const body = Buffer.from(JSON.stringify({ id: 'fixture-ping', method, params: {} }));
+    const body = Buffer.from(JSON.stringify({ id: 'fixture-ping', method, params }));
     const frame = Buffer.alloc(4 + body.length); frame.writeUInt32LE(body.length); body.copy(frame, 4); child.stdin.write(frame);
   });
 }
 
-async function stageLocalUpdate(fixture, version = '2.5.0') {
+async function stageLocalUpdate(fixture, version, { tamper } = {}) {
   const payload = path.join(fixture.root, 'bundle-' + crypto.randomUUID());
   const tree = path.join(payload, 'managed-extension');
   installer.buildManagedExtensionTree({ packageRoot: fixture.packageFor(version), targetRoot: tree, version });
@@ -142,14 +142,18 @@ async function stageLocalUpdate(fixture, version = '2.5.0') {
     gitCommit: 'a'.repeat(40), createdAt: new Date().toISOString(), artifacts: [],
     updateBundle: { name: `codex-overleaf-update-v${version}.tar.gz`, size: bytes.length,
       sha256: crypto.createHash('sha256').update(bytes).digest('hex') } }));
+  const signatureBytes = crypto.sign(null, manifest, keys.privateKey);
+  if (tamper === 'signature') signatureBytes[0] ^= 1;
   const signature = Buffer.from(JSON.stringify({ algorithm: 'Ed25519', keyId: 'fixture',
-    signature: crypto.sign(null, manifest, keys.privateKey).toString('base64') }));
+    signature: signatureBytes.toString('base64') }));
+  const downloadedBytes = Buffer.from(bytes);
+  if (tamper === 'archive') downloadedBytes[Math.floor(downloadedBytes.length / 2)] ^= 1;
   const updater = loadWithDependencies('native-host/src/updateManager.js', { './updateTrust': {
     ...trust, verifySignedReleaseManifest: (body, sig, options) => trust.verifySignedReleaseManifest(body, sig,
       { ...options, publicKeys: { fixture: keys.publicKey } })
   } });
   const fetch = async (url, options) => {
-    const body = url.endsWith('.json') ? manifest : url.endsWith('.sig') ? signature : bytes;
+    const body = url.endsWith('.json') ? manifest : url.endsWith('.sig') ? signature : downloadedBytes;
     return { ok: true, status: 200,
       url: options.method === 'HEAD' ? 'https://github.com/Ghqqqq/codex-overleaf-link/releases/tag/v' + version : url,
       headers: { get: key => key === 'content-length' ? String(body.length) : key === 'etag' ? 'fixture' : '' },

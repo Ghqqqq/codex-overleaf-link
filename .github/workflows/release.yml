@@ -9,48 +9,11 @@ permissions:
   contents: read
 
 jobs:
-  test-matrix:
-    permissions:
-      contents: read
-
-    strategy:
-      matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
-
-    runs-on: ${{ matrix.os }}
-    # Permanent hygiene: the suite takes 2-4 minutes; a hung runner must never
-    # hold the release hostage for the 360-minute default timeout.
-    timeout-minutes: 25
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24.18.0
-          registry-url: https://registry.npmjs.org
-
-      - name: Install locked development dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-      - name: Run architecture budget check
-        run: npm run check:architecture
-
-      - name: Verify managed update boundary
-        run: npm run verify:update-boundary
-
-      - name: Run synthetic large-project benchmark
-        run: npm run benchmark:large
+  checks:
+    uses: ./.github/workflows/test.yml
 
   release:
-    needs: test-matrix
+    needs: checks
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -65,7 +28,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 24.18.0
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
       - name: Set up npm CLI

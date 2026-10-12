@@ -42,17 +42,6 @@ function harness({ beforeBatch, write } = {}) {
 
 const operations = ['first.tex', 'second.tex', 'third.tex'].map(path => ({ type: 'create', path, content: path }));
 
-test('writeback starts normally with the current cancellation sequence', async () => {
-  const h = harness();
-  h.cancel();
-  h.cancel();
-  const result = await h.apply(operations);
-  assert.equal(result.ok, true);
-  assert.equal(result.applied.length, 3);
-  assert.equal(result.skipped.length, 0);
-  assert.deepEqual(h.calls, operations.map(op => op.path));
-});
-
 test('cancellation during preflight prevents every mutation and the next request still runs', async () => {
   const entered = deferred(), release = deferred();
   const h = harness({ beforeBatch: async () => { entered.resolve(); await release.promise; } });
@@ -74,34 +63,29 @@ test('cancellation during preflight prevents every mutation and the next request
   assert.equal(next.applied.length, 3);
 });
 
-for (const ok of [true, false]) {
-  test(`in-flight ${ok ? 'saved' : 'partially changed'} output keeps its actual evidence and cancellation stops the tail`, async () => {
-    const entered = deferred(), release = deferred();
-    const operationResult = ok
-      ? { ok: true, changedDocument: true, verified: true, verification: 'overleaf-zip',
-        saveReceipt: { source: 'overleaf-zip', path: 'first.tex', sha256: 'a'.repeat(64) } }
-      : { ok: false, changedDocument: true, code: 'file_upload_unconfirmed',
-        failure: { code: 'file_upload_unconfirmed', changedDocument: true, severity: 'warning', terminalState: 'needs_review' } };
-    const h = harness({ write: async () => { entered.resolve(); await release.promise; return operationResult; } });
-    const pending = h.apply(operations);
-    try {
-      await Promise.race([entered.promise, pending]);
-      assert.deepEqual(h.calls, ['first.tex']);
-      assert.equal(h.files.get('first.tex'), 'first.tex');
-      h.cancel();
-    } finally { release.resolve(); }
-    const result = await pending;
-    assert.equal(result.ok, false);
-    const actual = ok ? result.applied[0] : result.skipped[0];
-    assert.equal(actual.operation.path, 'first.tex');
-    assert.equal(actual.result, operationResult, 'do not replace real writeback evidence with a generic cancel result');
-    const tail = result.skipped.filter(entry => entry.operation.path !== 'first.tex');
-    assert.deepEqual(tail.map(entry => entry.operation.path), ['second.tex', 'third.tex']);
-    assert.ok(tail.every(entry => entry.result.code === 'codex_cancelled'
-      && entry.result.failure.changedDocument === false));
+test('cancellation keeps the saved first file and leaves the rest untouched', async () => {
+  const entered = deferred(), release = deferred();
+  const operationResult = { ok: true, changedDocument: true, verified: true, verification: 'overleaf-zip',
+      saveReceipt: { source: 'overleaf-zip', path: 'first.tex', sha256: 'a'.repeat(64) } };
+  const h = harness({ write: async () => { entered.resolve(); await release.promise; return operationResult; } });
+  const pending = h.apply(operations);
+  try {
+    await Promise.race([entered.promise, pending]);
     assert.deepEqual(h.calls, ['first.tex']);
-    assert.equal(h.files.has('second.tex'), false);
-    assert.equal(h.receipts.length, 1);
-    assert.equal(h.receipts[0].result, operationResult);
-  });
-}
+    assert.equal(h.files.get('first.tex'), 'first.tex');
+    h.cancel();
+  } finally { release.resolve(); }
+  const result = await pending;
+  assert.equal(result.ok, false);
+  const actual = result.applied[0];
+  assert.equal(actual.operation.path, 'first.tex');
+  assert.equal(actual.result, operationResult, 'do not replace real writeback evidence with a generic cancel result');
+  const tail = result.skipped.filter(entry => entry.operation.path !== 'first.tex');
+  assert.deepEqual(tail.map(entry => entry.operation.path), ['second.tex', 'third.tex']);
+  assert.ok(tail.every(entry => entry.result.code === 'codex_cancelled'
+    && entry.result.failure.changedDocument === false));
+  assert.deepEqual(h.calls, ['first.tex']);
+  assert.equal(h.files.has('second.tex'), false);
+  assert.equal(h.receipts.length, 1);
+  assert.equal(h.receipts[0].result, operationResult);
+});

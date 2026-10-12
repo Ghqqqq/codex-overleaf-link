@@ -376,16 +376,13 @@ flowchart TD
 
 ```bash
 npm ci
-npm run build:content
 npm test
+npm run test:platform
 npm run verify:source
-npm run verify:npm-package
 npm run verify:update-boundary
-npm run check:architecture
-npm run benchmark:large
 ```
 
-项目没有 npm 运行时依赖。开发时使用固定版本的 **esbuild**，Markdown 和数学公式渲染库直接打包在扩展里。测试使用 Node 自带的测试运行器，包含基于 VM 的浏览器集成测试。[CI](.github/workflows/test.yml) 在 macOS、Ubuntu 和 Windows 上用 Node 24.18.0 运行，并在 Ubuntu 上演练托管更新。
+项目没有 npm 运行时依赖。开发时使用固定版本的 **esbuild**，Markdown 和数学公式渲染库直接打包在扩展里。测试使用 Node 自带的运行器。少量核心行为测试在 Ubuntu 执行一次；真实的隔离安装、回滚和进程检查在 macOS、Ubuntu、Windows 执行。[CI](.github/workflows/test.yml) 另执行一次托管更新演练。局部检查使用 `node --test test/<contract>.test.js`。真实 Chrome 验收保留读取、可撤销写入/Undo、刷新，仅针对本次影响的行为追加检查。详见[验证规范](docs/architecture/README.md#choosing-validation-for-a-change)。
 
 内容脚本由 [content-entry.mjs](extension/entries/content-entry.mjs) 打包生成。修改模块后执行 `npm run build:content`，再重新加载扩展。要把本地构建装进已有的托管安装，执行 `npm run install:managed`，然后重新加载扩展并刷新 Overleaf。`npm run bridge` 会直接在 stdio 上启动 native host，方便调协议。
 

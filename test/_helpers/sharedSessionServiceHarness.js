@@ -8,10 +8,7 @@ const root = path.resolve(__dirname, '../..');
 const plain = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
 const BridgeModule = require(path.join(root, 'extension/src/shared/sharedSessionBridge.js'));
-const QueuePolicy = require(path.join(root, 'extension/src/shared/scopedPersistenceQueuePolicy.js'));
 function deferred() { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; }
-const flush = () => new Promise(resolve => setImmediate(resolve));
-async function drain(count = 25) { for (let i = 0; i < count; i++) await flush(); }
 function event() {
   const listeners = new Set();
   return { addListener: f => listeners.add(f), removeListener: f => listeners.delete(f),
@@ -101,15 +98,12 @@ function memoryDb() {
 function createNetwork() {
   const db = memoryDb(), local = {}, messages = [], ports = [], changeEvent = event();
   const onMessage = event(), onConnect = event();
-  const holds = [], getGates = [];
-  const metaPrefix = 'codex-overleaf-scoped-persistence-v1:';
+  const holds = [];
   const extensionId = 'synthetic-extension-022-027';
   const chromeApi = { runtime: { id: extensionId, onMessage, onConnect }, storage: {
     onChanged: changeEvent,
     local: {
       async get(keys) {
-        const gate = getGates.find(g => !g.used && typeof keys === 'string' && keys.startsWith(metaPrefix));
-        if (gate) { gate.used = true; gate.entered.resolve(); await gate.release.promise; }
         const selected = keys == null ? Object.keys(local) : Array.isArray(keys) ? keys : [keys];
         return Object.fromEntries(selected.filter(key => Object.hasOwn(local, key)).map(key => [key, plain(local[key])]));
       },
@@ -169,41 +163,11 @@ function createNetwork() {
       setTimeout: (...args) => { const timer = setTimeout(...args); timer.unref(); return timer; }, clearTimeout,
       setInterval: (...args) => { const timer = setInterval(...args); timer.unref(); return timer; }, clearInterval };
     const bridge = BridgeModule.createBridge(environment);
-    const adapterContext = { module: { exports: {} }, require(name) {
-      if (name === './sharedSessionBridge') return bridge;
-      if (name === './scopedPersistenceQueuePolicy') return QueuePolicy;
-      throw new Error('unexpected adapter dependency ' + name);
-    } };
-    vm.runInNewContext(read('extension/src/shared/scopedPersistenceBrowserAdapter.js'), adapterContext);
-    const adapter = adapterContext.module.exports.createBrowserAdapter();
-    return { bridge, adapter, environment, sender, scope: { accountScopeId: account, projectId: project },
-      disconnect() { const pair = ports.findLast(p => p.tabId === tabId && !p.closed); assert.ok(pair, 'live port required'); pair.front.disconnect(); } };
+    return { bridge, scope: { accountScopeId: account, projectId: project } };
   }
   return { db, chromeApi, service, local, messages, ports, client, deliver,
-    restartBackground() {
-      for (const pair of ports) pair.front.disconnect();
-      onMessage.clear(); onConnect.clear();
-      const replacement = serviceContext.module.exports.createService({ chromeApi, indexedDB: db.indexedDB, IDBKeyRange: db.ranges,
-        mergeSessionReviewState: require(path.join(root, 'extension/src/shared/storageRunActions.js')).mergeSessionReviewState });
-      replacement.install(); return replacement;
-    },
     holdMessage(method, tabId) { const item = { method, tabId, used: false, entered: deferred() }; holds.push(item); return item; },
-    holdMetaRead() { const item = { used: false, entered: deferred(), release: deferred() }; getGates.push(item); return item; },
-    async notifyExternal(projectId = 'project-one') { await chromeApi.storage.local.set({
-      'codex-overleaf-shared-sessions-changed-v1': { accountScopeId: 'account-one', projectId, clientId: 'synthetic-external-store', nonce: 'synthetic' }
-    }); },
-    meta(scope) { return plain(local[metaPrefix + encodeURIComponent(scope.accountScopeId) + ':' + encodeURIComponent(scope.projectId)] || {}); },
     close() { for (const pair of ports) pair.front.disconnect(); }
   };
 }
-function clockedViewSync() {
-  const timers = [];
-  const context = { module: { exports: {} },
-    setTimeout(callback) { const timer = { callback, cancelled: false }; timers.push(timer); return timer; },
-    clearTimeout(timer) { if (timer) timer.cancelled = true; } };
-  vm.runInNewContext(read('extension/src/content/sharedSessionViewSync.js'), context);
-  return { api: context.module.exports,
-    async tick() { const timer = timers.find(t => !t.cancelled); assert.ok(timer, 'scheduled passive refresh required'); timer.cancelled = true; timer.callback(); await drain(); },
-    pending: () => timers.filter(t => !t.cancelled).length };
-}
-module.exports = { root, plain, read, deferred, flush, drain, createNetwork, clockedViewSync };
+module.exports = { deferred, createNetwork };
