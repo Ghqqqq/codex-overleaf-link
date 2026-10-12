@@ -194,8 +194,9 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
         sendResponse({ ok: false, known: [] });
         return undefined;
       }
-      knownRunJournals(Array.isArray(message.requestIds) ? message.requestIds.map(String).slice(0, 64) : [])
-        .then(known => sendResponse({ ok: true, known }))
+      knownRunJournals(Array.isArray(message.requestIds) ? message.requestIds.map(String).slice(0, 64) : [],
+        Array.isArray(message.owners) ? message.owners.slice(0, 64) : [])
+        .then(result => sendResponse({ ok: true, ...result }))
         .catch(error => sendResponse({ ok: false, known: [], error: getErrorMessage(error, 'Journal read failed.') }));
       return true;
     }
@@ -276,6 +277,9 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
         return;
       }
       if (message.type === 'release') {
+        const current = ownerBindings.get(portConnection);
+        if (!current || ['requestId', 'projectKey', 'clientRunId', 'sessionId'].some(key => current[key] !== message[key])
+          || (current.browserOnly && current.ownerToken !== message.ownerToken)) return;
         ownerBindings.delete(portConnection);
         clearTimeout(ownerCancelTimers.get(requestId));
         ownerCancelTimers.delete(requestId);
@@ -288,9 +292,20 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
           documentId: String(portConnection.sender?.documentId || ''),
           tabId: portConnection.sender?.tab?.id,
           clientRunId: String(message.clientRunId || ''),
-          sessionId: String(message.sessionId || '')
+          sessionId: String(message.sessionId || ''),
+          browserOnly: message.browserOnly === true,
+          ownerToken: String(message.ownerToken || '')
         };
+        if (binding.browserOnly && (!binding.projectKey || !binding.clientRunId || !binding.sessionId || !binding.ownerToken)) return;
+        if (binding.browserOnly && managedUpdateExecutionLocked) {
+          try { portConnection.postMessage?.({ type: 'bound', ...binding, ok: false }); } catch (_error) { /* port disconnected */ }
+          return;
+        }
         ownerBindings.set(portConnection, binding);
+        if (binding.browserOnly) {
+          try { portConnection.postMessage?.({ type: 'bound', ...binding }); } catch (_error) { /* port disconnected */ }
+          return;
+        }
         restoreRunJournal(binding).then(journal => {
           if (ownerBindings.get(portConnection) !== binding || !journal || runJournals.get(requestId) !== journal) return;
           clearTimeout(ownerCancelTimers.get(requestId));
@@ -305,7 +320,7 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
     portConnection.onDisconnect.addListener(() => {
       const binding = ownerBindings.get(portConnection);
       ownerBindings.delete(portConnection);
-      if (!binding?.requestId) {
+      if (!binding?.requestId || binding.browserOnly) {
         return;
       }
       const timer = setTimeout(() => interruptOwnerlessRun(binding), 150);
@@ -405,7 +420,8 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
       payload = { ...payload, params: { ...payload.params,
         bootstrapRevision: String(globalThis.__CODEX_OVERLEAF_BOOTSTRAP_REVISION__ || '') } };
     }
-    if (managedBootstrapRuntime && payload?.method === 'update.apply') {
+    if (managedBootstrapRuntime && (payload?.method === 'update.apply'
+      || (payload?.method === 'update.rollback' && payload?.params?.reasonCode === 'update_user_rollback'))) {
       const gate = await verifyManagedUpdateSafety();
       if (!gate.ok) {
         return gate;
@@ -460,6 +476,7 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
     }
     const pendingState = globalThis.CodexOverleafNativeBridge?.getPendingState?.() || {};
     const backgroundBlockers = Number(pendingState.executionRequests || 0) > 0
+      || Array.from(ownerBindings.values()).some(binding => binding.browserOnly)
       ? ['background_execution_pending']
       : [];
     const blockers = [
@@ -1186,16 +1203,44 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
     return entries.slice(-16).map(([_key, value]) => value);
   }
 
-  // A run journal lives from the Native request until its owner settles the
-  // run. chrome.storage.session is cleared when the extension reloads, so a
-  // persisted running record without a journal lost its Native request.
-  async function knownRunJournals(requestIds) {
+  // Browser-only retries outlive their original Native journal. Protect only
+  // a live port whose request/project/session/run matches the queried record.
+  async function knownRunJournals(requestIds, owners = []) {
     await Promise.allSettled(Array.from(journalLoads.values(), load => load.promise));
     await Promise.allSettled(Array.from(journalWrites.values()));
     const storage = chrome.storage?.session;
     if (!storage) throw new Error('Run journal storage is unavailable.');
     const values = requestIds.length ? await storage.get(requestIds.map(id => RUN_JOURNAL_PREFIX + id)) : {};
-    return requestIds.filter(id => runJournals.has(id) || Boolean(values?.[RUN_JOURNAL_PREFIX + id]));
+    const matches = (candidate, binding) => ['requestId', 'projectKey', 'clientRunId', 'sessionId']
+      .every(key => Boolean(candidate?.[key]) && candidate[key] === binding?.[key]);
+    const known = requestIds.filter(id => runJournals.has(id) || Boolean(values?.[RUN_JOURNAL_PREFIX + id])
+      || owners.some(candidate => candidate?.requestId === id && Array.from(ownerBindings.values()).some(binding => matches(candidate, binding))));
+    const missing = owners.filter(candidate => requestIds.includes(candidate?.requestId) && !known.includes(candidate.requestId));
+    if (!missing.length) return { known, ownersChecked: true };
+    // A worker restart drops ports before hidden pages can process reconnect
+    // timers. The page's existing health receiver can still report its binding.
+    const unknown = () => ({ known, ownersChecked: false, retryAfterMs: 1000 });
+    const tabs = await chrome.tabs.query({ url: MANAGED_OVERLEAF_MATCHES }).catch(() => null);
+    if (!Array.isArray(tabs)) return unknown();
+    const projects = new Set(missing.map(candidate => candidate.projectKey));
+    const relevant = tabs.filter(tab => isManagedEditorTab(tab) && !tab.discarded && tab.status !== 'unloaded'
+      && projects.has(new URL(tab.url).pathname.split('/')[2]));
+    const responses = await Promise.all(relevant.map(async tab => {
+      let timer;
+      try {
+        return await Promise.race([
+          chrome.tabs.sendMessage(tab.id, { type: 'codex-overleaf/runtime-health-probe' }, { frameId: 0 }),
+          new Promise(resolve => { timer = setTimeout(() => resolve(null), 1500); })
+        ]);
+      } catch (_error) { return null; }
+      finally { clearTimeout(timer); }
+    }));
+    if (responses.some(response => response?.ok !== true || response.runOwnerProtocol !== 1 || !Array.isArray(response.runOwners))) return unknown();
+    for (const candidate of missing) {
+      if (responses.some(response => response.runOwners.some(binding => matches(candidate, binding)))
+        || Array.from(ownerBindings.values()).some(binding => matches(candidate, binding))) known.push(candidate.requestId);
+    }
+    return { known, ownersChecked: true };
   }
 
   function pruneInMemoryRunJournals() {

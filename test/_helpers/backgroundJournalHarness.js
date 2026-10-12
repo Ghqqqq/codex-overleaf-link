@@ -23,8 +23,8 @@ function timers() {
     clear() { pending.clear(); } };
 }
 function memoryStorage() {
-  const values = {}, trace = []; let hold = null, readHold = null;
-  return { values, trace,
+  const values = {}, trace = []; const runtimeOwners = []; let hold = null, readHold = null;
+  return { values, trace, runtimeOwners,
     delayNextCompletion(predicate) { const gate = deferred(); hold = { predicate, gate, used: false }; return gate; },
     delayNextRead(predicate) { const gate = deferred(); readHold = { predicate, gate, used: false }; return gate; },
     async get(keys) {
@@ -58,7 +58,14 @@ function background(storage) {
         disconnect() { chrome.runtime.lastError = { message: 'Synthetic Native transport disconnect' }; for (const fn of disconnect) fn(); chrome.runtime.lastError = null; } };
       ports.push(port); return port;
     } }, storage: { session: storage, local: memoryStorage(), onChanged: { addListener() {} } },
-    tabs: { sendMessage(tab, message, cb) { forwarded.push({ tab, message: clone(message) }); cb?.(); } } };
+    tabs: {
+      async query() { return Array.from(new Map(storage.runtimeOwners.map(owner => [owner.sender.tab.id, owner.sender.tab])).values()); },
+      sendMessage(tab, message, cb) {
+        if (message.type === 'codex-overleaf/runtime-health-probe') return Promise.resolve({ ok: true, runOwnerProtocol: 1,
+          runOwners: storage.runtimeOwners.filter(owner => owner.sender.tab.id === tab).flatMap(owner => [owner.read()].filter(Boolean)) });
+        forwarded.push({ tab, message: clone(message) }); if (typeof cb === 'function') cb();
+      }
+    } };
   const context = vm.createContext({ chrome, URL, Date: Clock, console: { ...console, error: (...args) => { throw new Error('Unexpected background diagnostic: ' + args.join(' ')); } },
     CodexOverleafUpdateCoordinator: { init() {} }, // unrelated update scheduling is not part of this probe
     crypto: { randomUUID: () => 'fixture-uuid-' + (++uuid) },
@@ -77,16 +84,19 @@ function background(storage) {
     return new Promise(resolve => { for (const fn of listeners) fn(clone(message), actualSender, resolve); });
   }
   function connectOwner(actualSender = sender) {
-    const serverMessages = [], serverDisconnect = [], clientDisconnect = [];
+    const serverMessages = [], serverDisconnect = [], clientDisconnect = [], clientMessages = [];
     const server = { name: 'codex-overleaf/run-owner', sender: actualSender,
+      postMessage: value => clientMessages.forEach(fn => fn(clone(value))),
       onMessage: { addListener: fn => serverMessages.push(fn) }, onDisconnect: { addListener: fn => serverDisconnect.push(fn) } };
     for (const fn of connections) fn(server);
     return { postMessage: value => serverMessages.forEach(fn => fn(clone(value))),
+      onMessage: { addListener: fn => clientMessages.push(fn) },
       onDisconnect: { addListener: fn => clientDisconnect.push(fn) },
       disconnect: () => serverDisconnect.forEach(fn => fn()),
       workerLost: () => clientDisconnect.forEach(fn => fn()) };
   }
   return { ports, timer, forwarded, send, connectOwner,
+    registerOwnerHealth(actualSender, read) { storage.runtimeOwners.push({ sender: actualSender, read }); },
     pending: () => clone(context.CodexOverleafNativeBridge.getPendingState()),
     run(id, overrides = {}) { return send({ type: 'codex-overleaf/native-request', payload: { id, method: 'codex.run', params: {
       projectId: 'project-one', clientSessionId: 'session-one', clientRunId: 'client-' + id,
@@ -103,6 +113,7 @@ function ownerClient(route, actualSender = sender) {
     connect() { const port = route.current.connectOwner(actualSender); ports.push(port); return port; },
     sendMessage: message => route.current.send(message)
   } } });
+  route.current.registerOwnerHealth(actualSender, () => control.getOwner());
   return { control, ports, timer };
 }
 function recoveryOptions(id, shared = true) {

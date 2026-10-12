@@ -158,9 +158,9 @@ function createHarness(options = {}) {
   vm.runInContext(markdownSource, markdown);
   const sanitizers = markdown.window.CodexOverleafMarkdownText.create({});
   const context = vm.createContext({
-    state, currentRunView: null, cachedAccountScopeId: accountScopeId,
+    state, currentRunView: null, spaRouteGeneration: 0, cachedAccountScopeId: accountScopeId,
     storageKey: 'synthetic-storage-036', chrome, fetch: denyFetch, structuredClone,
-    activeTurnControl, RunInputQueue, MAX_RUN_EVENTS: 300, PANEL_DEFAULT_WIDTH: 380,
+    activeTurnControl, ActiveTurnControl, RunInputQueue, MAX_RUN_EVENTS: 300, PANEL_DEFAULT_WIDTH: 380,
     composerDraftPersistence: null,
     composerAttachmentController: { serializePersistableAttachments: () => [], clear() {}, restorePersistedAttachments() {} },
     saveStateSoon() {},

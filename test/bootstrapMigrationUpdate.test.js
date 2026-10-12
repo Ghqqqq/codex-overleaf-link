@@ -452,6 +452,74 @@ test('source activation remains blocked if restored Bootstrap changed after the 
   assert.equal(fs.readFileSync(path.join(f.context.nativeRoot, 'active-version'), 'utf8').trim(), '2.5.1');
 });
 
+test('pending source activation requires the recorded Bootstrap digest even without a file WAL', async t => {
+  for (const condition of ['changed-file', 'removed-file', 'missing-digest', 'missing-runtime-evidence']) {
+    await t.test(condition, async tt => {
+      const f = bootstrapMigrationFixture(tt);
+      await f.apply();
+      await f.request('update.rollback', { transactionId: f.journal().id });
+      const journal = f.journal();
+      journal.sourceActivationPending = true;
+      if (condition === 'missing-digest') delete journal.rollbackEvidence.bootstrapSha256;
+      if (condition === 'missing-runtime-evidence') delete journal.rollbackEvidence;
+      f.setJournal(journal);
+      const activePath = path.join(f.context.nativeRoot, 'active-version');
+      fs.writeFileSync(activePath, '2.5.1\n');
+      const startupPath = path.join(f.context.extensionRoot, 'bootstrap/update.js');
+      if (condition === 'changed-file') fs.appendFileSync(startupPath, '\n// changed after recovery\n');
+      if (condition === 'removed-file') fs.rmSync(startupPath);
+      const before = fs.readFileSync(f.journalPath);
+      const response = await f.response('update.status');
+      assert.equal(response.ok, false);
+      assert.equal(response.error.code, condition === 'missing-runtime-evidence'
+        ? 'update_rollback_unconfirmed' : 'update_bootstrap_source_mismatch');
+      assert.deepEqual(fs.readFileSync(f.journalPath), before);
+      assert.equal(fs.readFileSync(activePath, 'utf8').trim(), '2.5.1');
+    });
+  }
+});
+
+test('pending source activation preserves an unchanged observed local Bootstrap without a file WAL', async t => {
+  const f = bootstrapMigrationFixture(t);
+  await f.apply();
+  // Model an older updater reaching migration pending with an unpublished source.
+  const startupPath = path.join(f.context.extensionRoot, 'bootstrap/update.js');
+  fs.appendFileSync(startupPath, '\n// pre-existing local build\n');
+  const installedBytes = fs.readFileSync(startupPath);
+  const restored = await f.request('update.rollback', { transactionId: f.journal().id });
+  const journal = f.journal();
+  journal.sourceActivationPending = true;
+  f.setJournal(journal);
+  fs.writeFileSync(path.join(f.context.nativeRoot, 'active-version'), '2.5.1\n');
+  const status = await f.request('update.status');
+  assert.equal(status.activeVersion, '2.5.0');
+  assert.equal(f.journal().sourceActivationPending, false);
+  assert.equal(status.restoredPair.bootstrapSha256, restored.restoredPair.bootstrapSha256);
+  assert.deepEqual(fs.readFileSync(startupPath), installedBytes);
+});
+
+test('pending source activation refuses missing Bootstrap evidence after a file WAL existed', async t => {
+  for (const condition of ['missing-digest', 'missing-file-wal']) {
+    await t.test(condition, async tt => {
+      const f = bootstrapMigrationFixture(tt);
+      await f.apply(); await f.migrate();
+      await f.request('update.rollback', { transactionId: f.journal().id });
+      const journal = f.journal();
+      journal.sourceActivationPending = true;
+      if (condition === 'missing-digest') delete journal.rollbackEvidence.bootstrapSha256;
+      else fs.rmSync(path.join(f.recordRoot(), 'state.json'));
+      f.setJournal(journal);
+      fs.writeFileSync(path.join(f.context.nativeRoot, 'active-version'), '2.5.1\n');
+      // The watchdog and a status request share this exact activation guard.
+      await assert.rejects(f.updater.recoverBootstrapTransaction({ env: f.env }, journal.id,
+        journal.bootstrapMigration.watchdogToken), { code: condition === 'missing-digest'
+        ? 'update_bootstrap_source_mismatch' : 'update_bootstrap_record_missing' });
+      assert.equal(f.journal().sourceActivationPending, true);
+      assert.equal(fs.readFileSync(path.join(f.context.nativeRoot, 'active-version'), 'utf8').trim(), '2.5.1');
+    });
+  }
+});
+
 test('a real detached watchdog restores the whole transaction after the persisted health deadline expires', { timeout: 10000 }, async t => {
   const f = bootstrapMigrationFixture(t);
   await f.apply();
@@ -633,26 +701,56 @@ test('interrupted commit cleanup keeps authorization and recovery archive when r
     }
   });
 
-test('a committed migration can be returned to its source pair on request and the target is skipped', async t => {
+test('a committed migration can be returned to its source pair without blocking the restored updater', async t => {
   const f = bootstrapMigrationFixture(t);
   await f.apply(); await f.migrate(); await f.migrate('3.1'); await f.confirm();
   const committed = await f.request('update.status');
   assert.deepEqual(committed.rollbackAvailable, { transactionId: f.journal().id, sourceVersion: '2.5.0', targetVersion: '2.5.1' });
   await assert.rejects(f.request('update.rollback', { reasonCode: 'update_user_rollback' }), { code: 'update_transaction_mismatch' });
+  const cooldownPath = path.join(f.context.updatesRoot, 'cooldowns.json');
+  const unrelatedCooldown = { until: Date.now() + 86400000, reasonCode: 'update_health_failed' };
+  write(cooldownPath, {
+    '2.5.1': { until: Date.now() + 365 * 86400000, reasonCode: 'update_user_rollback' },
+    '2.5.2': unrelatedCooldown
+  });
   const restored = await f.request('update.rollback', { transactionId: f.journal().id, expectedState: 'committed',
     reasonCode: 'update_user_rollback' });
   assertRestored(f, restored);
   const status = await f.request('update.status');
   assert.equal(status.rollbackAvailable, null);
   assert.equal(status.restoredPair.bootstrapSha256, restored.restoredPair.bootstrapSha256);
+  assert.deepEqual(read(cooldownPath), { '2.5.2': unrelatedCooldown });
+  const automatic = await f.request('update.check');
+  assert.equal(automatic.available, true, 'only the browser snoozes automatic prompts');
+  const manual = await f.request('update.check', { manual: true });
+  assert.equal(manual.available, true);
+});
+
+test('health rollback retains its 24-hour Native cooldown for both automatic and manual checks', async t => {
+  const f = bootstrapMigrationFixture(t);
+  await f.apply();
+  const before = Date.now();
+  await f.request('update.rollback', { transactionId: f.journal().id, reasonCode: 'update_health_failed' });
   const cooldown = read(path.join(f.context.updatesRoot, 'cooldowns.json'))['2.5.1'];
-  assert.equal(cooldown.reasonCode, 'update_user_rollback');
-  assert.ok(cooldown.until > Date.now() + 300 * 24 * 60 * 60 * 1000);
+  assert.equal(cooldown.reasonCode, 'update_health_failed');
+  assert.ok(cooldown.until >= before + 86400000 && cooldown.until <= Date.now() + 86400000);
+  for (const manual of [false, true]) {
+    const checked = await f.request('update.check', { manual });
+    assert.equal(checked.available, false);
+    assert.equal(checked.reason, 'cooldown');
+    assert.equal(checked.cooldownReason, 'update_health_failed');
+  }
+});
+
+test('existing user-rollback cooldown records remain readable and manual checks can bypass them', async t => {
+  const f = bootstrapMigrationFixture(t);
+  write(path.join(f.context.updatesRoot, 'cooldowns.json'), {
+    '2.5.1': { until: Date.now() + 365 * 86400000, reasonCode: 'update_user_rollback' }
+  });
   const automatic = await f.request('update.check');
   assert.equal(automatic.reason, 'cooldown');
   assert.equal(automatic.cooldownReason, 'update_user_rollback');
-  const manual = await f.request('update.check', { manual: true });
-  assert.equal(manual.available, true);
+  assert.equal((await f.request('update.check', { manual: true })).available, true);
 });
 
 test('user rollback is refused without the previous source slot and leaves the committed pair unchanged', async t => {
@@ -675,4 +773,31 @@ test('user rollback waits for Native work to finish', async t => {
     { getWorkState: () => ({ runControllers: 1 }) });
   assert.equal(busy.error.code, 'update_native_busy');
   assert.equal(f.journal().state, 'committed');
+});
+
+test('user rollback rechecks Native work after waiting for the update mutation lock', async t => {
+  let lockPath = '', signalContention;
+  const contended = new Promise(resolve => { signalContention = resolve; });
+  const f = bootstrapMigrationFixture(t, { updateFs: { ...fs, openSync(filename, flags, ...args) {
+    if (filename === lockPath && flags === 'wx' && fs.existsSync(lockPath)) signalContention();
+    return fs.openSync(filename, flags, ...args);
+  } } });
+  await f.apply(); await f.migrate('3.1'); await f.confirm();
+  const journalBefore = fs.readFileSync(f.journalPath);
+  lockPath = path.join(f.context.updatesRoot, 'mutation.lock');
+  write(lockPath, { token: crypto.randomUUID(), pid: process.pid,
+    createdAt: Date.now(), expiresAt: Date.now() + 60000 });
+  let busy = false;
+  const rollback = f.response('update.rollback', { transactionId: f.journal().id,
+    expectedState: 'committed', reasonCode: 'update_user_rollback' },
+  { getWorkState: () => ({ runControllers: busy ? 1 : 0 }) });
+  await contended;
+  busy = true;
+  fs.rmSync(lockPath);
+  const result = await rollback;
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, 'update_native_busy');
+  assert.deepEqual(fs.readFileSync(f.journalPath), journalBefore);
+  assert.equal(fs.readFileSync(path.join(f.context.nativeRoot, 'active-version'), 'utf8').trim(), '2.5.1');
+  assertTarget(f);
 });

@@ -1081,7 +1081,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'codex-overleaf/runtime-health-probe') {
       sendResponse?.({
-        ok: true,
+        ok: true, runOwnerProtocol: 1, runOwners: [activeTurnControl.getOwner()].filter(Boolean),
         version: CodexOverleafCompatibility?.BUILD_TARGET_VERSION || chrome.runtime.getManifest().version
       });
       return false;
@@ -3298,10 +3298,19 @@
   }
 
   async function recoverInterruptedRunJournals() {
-    const projectKey = getCurrentProjectId();
+    const projectKey = getCurrentProjectId(), accountScopeId = cachedAccountScopeId;
+    const generation = spaRouteGeneration;
+    const isCurrent = () => generation === spaRouteGeneration
+      && projectKey === getCurrentProjectId() && accountScopeId === cachedAccountScopeId;
     const recovery = await activeTurnControl.recoverJournals({
       projectKey,
-      accountScopeId: cachedAccountScopeId,
+      accountScopeId,
+      isCurrent,
+      onRecheck: async () => {
+        if (!isCurrent()) return;
+        await recoverInterruptedRunJournals();
+        if (isCurrent()) applyStateToPanel();
+      },
       requireOwnerLost: Modules.StorageDb.sharedSessionsEnabled?.() === true,
       normalizeInterruptedRun: record => Object.assign(record, Modules.SessionState.normalizeRuns([record], {
         restoreRunningRuns: true,
@@ -3309,49 +3318,23 @@
       })[0]),
       findSession: findSessionById,
       listSessions: () => state?.sessions || [],
-      isLiveRun: record => currentRunView?.recordId === record.id,
+      isLiveRun: (record, session) => currentRunView?.recordId === record.id
+        && currentRunView.sessionId === session.id && currentRunView.runProjectId === projectKey,
       getActiveSession: () => getActiveSession(state),
-      createInterruptedRun: journal => ({
-          id: journal.clientRunId,
-          task: journal.task || 'interrupted task',
-          mode: journal.mode || 'ask',
-          model: journal.model || '',
-          status: 'interrupted',
-          statusText: tr('restoredRunStoppedStatus'),
-          runProjectId: projectKey,
-          startedAt: journal.createdAt || new Date().toISOString(),
-          finishedAt: journal.updatedAt || new Date().toISOString(),
-          events: [],
-          attachments: [],
-          undoOperations: [],
-          undoTrackedChanges: [],
-          undoExpectedFiles: []
+      createInterruptedRun: journal => ActiveTurnControl.createInterruptedRun(journal, projectKey, tr('restoredRunStoppedStatus')),
+      mapEvent: (raw, journal) => ActiveTurnControl.mapRecoveredEvent(raw, journal, {
+        mapActivity: value => mapAgentEventToActivity(value, { locale: getLocale() }),
+        sanitizeText: sanitizeAssistantVisibleText, sanitizeValue: sanitizeAssistantVisibleValue
       }),
-      mapEvent: (raw, journal) => {
-        const activity = mapAgentEventToActivity(raw, { locale: getLocale() });
-        if (!activity?.visible || activity.kind === 'technical') {
-          return null;
-        }
-        return {
-          kind: activity.kind || 'activity',
-          title: sanitizeAssistantVisibleText(activity.title) || 'Event',
-          status: activity.status || 'running',
-          detail: sanitizeAssistantVisibleValue(activity.detail),
-          timestamp: raw.timestamp || journal.updatedAt || new Date().toISOString(),
-          streamKey: sanitizeAssistantVisibleText(activity.streamKey),
-          streamRole: sanitizeAssistantVisibleText(activity.streamRole),
-          appendText: sanitizeAssistantVisibleText(activity.appendText),
-          replaceText: activity.replaceText
-        };
-      },
       upsertStream: upsertRunStreamRecordEvent,
       pauseSessionQueue: (session, reason) => {
         session.pendingInputs = RunInputQueue.pauseAll(session.pendingInputs || [], reason);
       },
       maxEvents: MAX_RUN_EVENTS
     });
+    if (!isCurrent()) return;
     if (recovery.changed) {
-      if (await saveState({ recoveryRuns: recovery.recoveredRuns }) !== true) return;
+      if (await saveState({ recoveryRuns: recovery.recoveredRuns }) !== true || !isCurrent()) return;
       for (const requestId of recovery.acknowledgeIds) {
         await activeTurnControl.acknowledge(requestId).catch(() => false);
       }
@@ -4383,6 +4366,7 @@
 
   async function onSpaRouteChange() {
     const generation = ++spaRouteGeneration;
+    activeTurnControl.cancelRecovery();
     const url = new URL(window.location.href);
     const pathname = url.pathname;
     const previousProjectId = activeProjectId;
@@ -7045,26 +7029,35 @@
     let finished = false;
     runCancellationRequested = false;
     runCancellationController = new AbortController();
-    record.status = 'running';
-    record.retryingWriteback = true;
-    renderRunHistory({ preserveScroll: true });
-    const root = panel.querySelector(`[data-run-id="${cssEscape(runId)}"]`);
-    currentRunView = { root, recordId: runId, sessionId: session.id, runProjectId: owner.projectId,
+    const generation = spaRouteGeneration;
+    const requestId = record.nativeRequestId || `writeback:${owner.sessionId}:${runId}`;
+    const ownerToken = crypto.randomUUID();
+    const retryView = { recordId: runId, sessionId: session.id, runProjectId: owner.projectId,
       runAccountScopeId: owner.accountScopeId, executionSnapshot: record.executionSnapshot,
-      startedAt: Date.now(), writebackRetry: true, events: root?.querySelector('[data-run-events]'),
-      report: root?.querySelector('[data-run-report]'), status: root?.querySelector('[data-run-status]'),
-      runProcess: root?.querySelector('[data-run-process]'), processLabel: root?.querySelector('[data-run-process-summary]') };
+      startedAt: Date.now(), writebackRetry: true };
+    currentRunView = retryView;
     setRunning(true);
     const assertOwner = () => {
-      if (runCancellationRequested || currentRunView?.recordId !== runId) {
+      if (runCancellationRequested || currentRunView !== retryView) {
         throw Object.assign(new Error('Save checking was cancelled.'), { code: 'codex_cancelled' });
       }
-      if (owner.projectId !== getCurrentProjectId() || owner.accountScopeId !== cachedAccountScopeId) {
+      if (generation !== spaRouteGeneration || owner.projectId !== getCurrentProjectId() || owner.accountScopeId !== cachedAccountScopeId) {
         throw Object.assign(new Error('The project or account changed.'), { code: 'aborted_project_changed' });
       }
     };
     try {
+      const bound = await activeTurnControl.bindBrowserRun({ requestId, projectKey: owner.projectId,
+        clientRunId: runId, sessionId: session.id, ownerToken });
       assertOwner();
+      if (!bound) throw new Error(tx('Could not start sync. Reload the page and try again.', '无法开始同步，请刷新页面后重试。'));
+      // Publish running only after another page can observe this browser owner.
+      live().status = 'running';
+      live().retryingWriteback = true;
+      renderRunHistory({ preserveScroll: true });
+      const root = panel.querySelector(`[data-run-id="${cssEscape(runId)}"]`);
+      Object.assign(retryView, { root, events: root?.querySelector('[data-run-events]'),
+        report: root?.querySelector('[data-run-report]'), status: root?.querySelector('[data-run-status]'),
+        runProcess: root?.querySelector('[data-run-process]'), processLabel: root?.querySelector('[data-run-process-summary]') });
       if (intent?.requestId) {
         const receipt = await callPageBridge('getWritebackReceipt', { requestId: intent.requestId, runProjectId: owner.projectId });
         if (receipt?.state === 'running') throw new Error(tx('The previous upload is still finishing. Try again shortly.', '上一轮上传仍在收尾，请稍后再试。'));
@@ -7102,11 +7095,19 @@
     } finally {
       // Only finishRunView settles a new terminal status; every other exit
       // returns the card to the status it had before the retry.
+      if (currentRunView !== retryView) {
+        activeTurnControl.release(requestId, ownerToken);
+        return;
+      }
       for (const copy of new Set([record, live()])) {
         delete copy.retryingWriteback;
         if (!finished && copy.status === 'running') copy.status = originalStatus;
       }
-      if (currentRunView?.recordId === runId) currentRunView = null;
+      saveStateSoon();
+      await flushQueuedSaveState().catch(() => {});
+      activeTurnControl.release(requestId, ownerToken);
+      if (currentRunView !== retryView) return;
+      currentRunView = null;
       runCancellationRequested = false;
       runCancellationController = null;
       setRunning(false);

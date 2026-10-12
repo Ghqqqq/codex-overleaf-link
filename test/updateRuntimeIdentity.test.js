@@ -36,3 +36,20 @@ test('a lower installed version does not become a misleading reload offer', () =
     extensionVersion: '2.3.5', runtimeVersion: '2.3.5'
   }).state, 'repair_required');
 });
+
+test('only a verified rollback to the transaction source offers a downgrade reload', () => {
+  const restoredPair = { extensionVersion: '2.5.1', nativeVersion: '2.5.1',
+    extensionSha256: 'a'.repeat(64), nativeSha256: 'b'.repeat(64), bootstrapSha256: 'c'.repeat(64) };
+  const transaction = { id: 'restore-one', sourceVersion: '2.5.1', targetVersion: '2.5.5', state: 'rolled_back', bootstrapRevision: '3.1' };
+  const value = status({ activeVersion: '2.5.1', runtimeVersion: '2.5.5', transaction, restoredPair });
+  const options = { extensionVersion: '2.5.5', runtimeVersion: '2.5.5' };
+  assert.equal(inspectInstalledRuntime(value, options).state, 'reload_required');
+  for (const invalid of [
+    { restoredPair: null }, { restoredPair: { ...restoredPair, nativeSha256: '' } },
+    { restoredPair: { ...restoredPair, bootstrapSha256: '' } },
+    { restoredPair: { ...restoredPair, nativeVersion: '2.5.0' } },
+    { transaction: { ...transaction, targetVersion: '2.5.4' } },
+    { transaction: { ...transaction, sourceVersion: '2.5.0' } },
+    { runtimeVersion: '2.5.6' }
+  ]) assert.equal(inspectInstalledRuntime({ ...value, ...invalid }, options).state, 'repair_required');
+});

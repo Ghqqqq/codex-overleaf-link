@@ -186,7 +186,7 @@
         if (result.available) {
           const latestVersion = result.latestVersion || currentState.latestVersion;
           await setConsentState({ ...consent,
-            ...(latestVersion !== consent.snoozedVersion ? { snoozedVersion: '', snoozedUntil: 0 } : {}),
+            ...(manual || latestVersion !== consent.snoozedVersion ? { snoozedVersion: '', snoozedUntil: 0 } : {}),
             lastPromptedVersion: latestVersion,
             lastPromptedAt: manual ? checkedAt : consent.lastPromptedAt
           }, { operation });
@@ -516,7 +516,7 @@
   async function cancelUpdateCore() {
     const [state, consent] = await Promise.all([getUpdateState(), getConsentState()]);
     if (['applying', 'awaiting_health', 'rolling_back'].includes(state.state)
-      || activeOperation?.phase === 'applying' || state.recoveryPending) {
+      || ['applying', 'rolling_back'].includes(activeOperation?.phase) || state.recoveryPending) {
       throw codedError('update_revoke_too_late', 'The update is being installed or recovered.');
     }
     const operation = activeOperation;
@@ -571,6 +571,7 @@
 
 
   function reconcileRecoveryState() {
+    if (activeOperation?.phase === 'rolling_back') return getUpdateState();
     if (recoveryPromise) return recoveryPromise;
     recoveryPromise = (async () => {
       if (!await waitForBootstrapOwnership()) return getUpdateState();
@@ -660,10 +661,35 @@
         if (transaction?.state === 'rolled_back' && status.installedAligned
           && status.activeVersion === transaction.sourceVersion
           && (!state.transactionId || transaction.id === state.transactionId)) {
-          const restored = await setUpdateState({ state: 'rolled_back', currentVersion: transaction.sourceVersion,
+          const userRestore = transaction.reasonCode === USER_ROLLBACK_REASON;
+          if ((userRestore || state.code === 'update_rollback_unconfirmed')
+            && !root.CodexOverleafUpdateRuntimeIdentity?.verifiedRollback(status)) {
+            throw codedError('update_rollback_unconfirmed', 'Rollback returned incomplete evidence.');
+          }
+          if (userRestore) {
+            const pending = (await chrome.storage.local.get(MANUAL_RELOAD_TABS_KEY))?.[MANUAL_RELOAD_TABS_KEY];
+            const tabs = await chrome.tabs.query({ url: OVERLEAF_MATCHES });
+            await assertRecoveryOwner(recoveryOwner);
+            await chrome.storage.local.set({ [UPDATE_RELOAD_TABS_KEY]: [],
+              [MANUAL_RELOAD_TABS_KEY]: pending?.targetVersion === transaction.sourceVersion ? pending : {
+                targetVersion: transaction.sourceVersion, tabIds: tabs.filter(isUsableEditorTab).map(tab => tab.id)
+              } });
+          }
+          const value = { state: 'rolled_back', currentVersion: transaction.sourceVersion,
             transactionId: transaction.id, recoveryPending: false, cancelRequested: false,
             code: transaction.reasonCode || 'update_rolled_back', message: 'The previous version has been restored.'
-          }, recoveryOptions);
+          };
+          const restored = userRestore
+            ? (await setUpdateAndConsentState({ ...value, latestVersion: transaction.targetVersion,
+              postponeUntil: LEGACY_GUARD, etag: '', cooldownUntil: 0
+            }, policy.normalizeConsentState({ snoozedVersion: transaction.targetVersion,
+              snoozedUntil: Date.now() + SNOOZE_MS }), recoveryOptions)).updateState
+            : await setUpdateState(value, recoveryOptions);
+          runtimeStatus = null;
+          if (userRestore) {
+            try { await requireReloadSafePoint(); } catch (_error) { return restored; }
+          }
+          if (recoveryOwner.generation !== operationGeneration) return getUpdateState();
           setTimeout(() => chrome.runtime.reload(), 0);
           return restored;
         }
@@ -781,7 +807,7 @@
     view.actions = { ...view.actions, restorePrevious: Boolean(view.restorePrevious) };
     const pending = (await chrome.storage.local.get(MANUAL_RELOAD_TABS_KEY))?.[MANUAL_RELOAD_TABS_KEY];
     const pagesPending = runtime.state === 'aligned' && pending?.targetVersion === runtime.installedVersion && pending.tabIds?.length;
-    if (runtime.state === 'reload_required' || pagesPending) {
+    if (!state.recoveryPending && (runtime.state === 'reload_required' || pagesPending)) {
       view.showPanel = true;
       view.state = { ...state, state: pagesPending ? 'reload_tabs_required' : 'reload_required',
         currentVersion: runtime.extensionVersion, latestVersion: runtime.installedVersion,
@@ -822,6 +848,9 @@
   }
 
   async function reloadInstalledRuntime() {
+    if ((await getUpdateState()).recoveryPending) {
+      throw codedError('update_rollback_unconfirmed', 'Confirm update recovery before reloading.');
+    }
     const runtime = await readRuntimeStatus(true);
     if (runtime.state === 'aligned') { await finishManualRuntimeReload(); return getView(); }
     if (runtime.state !== 'reload_required') throw codedError('update_reload_unavailable', 'No verified installed update is awaiting reload.');
@@ -841,51 +870,72 @@
     if (activeOperation || cancellationPromise) {
       throw codedError('update_transaction_in_progress', 'Another update operation is in progress.');
     }
-    const status = await requestNative('update.status');
-    const transaction = status.transaction;
-    const committed = transaction?.state === 'committed' && status.rollbackAvailable?.transactionId === transaction.id;
-    if (!transaction?.id || (!committed && !RECOVERABLE_TRANSACTION_STATES.has(transaction.state))) {
-      throw codedError('update_rollback_unavailable', 'No installed update can be restored to its previous version.');
-    }
-    // Page refresh happens after restoration, so it waits for the same saved
-    // and idle point as a reload of an installed update.
-    const tabs = await requireReloadSafePoint();
-    const generation = ++operationGeneration;
-    clearIdleRetryTimer();
-    await setUpdateState({ state: 'rolling_back', transactionId: transaction.id,
-      currentVersion: transaction.targetVersion, latestVersion: transaction.targetVersion,
-      recoveryPending: false, cancelRequested: false, operationId: '', code: '', message: ''
-    }, { observed: true, generation });
+    const operation = beginOperation();
+    operation.phase = 'rolling_back';
     try {
-      const rolledBack = await requestNative('update.rollback', { transactionId: transaction.id,
-        expectedState: transaction.state, reasonCode: USER_ROLLBACK_REASON });
-      const readback = await requestNative('update.status');
-      if (rolledBack.state !== 'rolled_back' || rolledBack.version !== transaction.sourceVersion
-        || readback.transaction?.id !== transaction.id || readback.transaction.state !== 'rolled_back'
-        || readback.activeVersion !== transaction.sourceVersion || readback.installedAligned !== true
-        || readback.restoredPair?.extensionSha256 !== rolledBack.restoredPair?.extensionSha256
-        || readback.restoredPair?.nativeSha256 !== rolledBack.restoredPair?.nativeSha256) {
-        throw codedError('update_rollback_unconfirmed', 'Rollback returned incomplete evidence.');
+      const status = await requestNative('update.status');
+      assertOperation(operation);
+      const transaction = status.transaction;
+      const committed = transaction?.state === 'committed' && status.rollbackAvailable?.transactionId === transaction.id;
+      if (!transaction?.id || (!committed && !RECOVERABLE_TRANSACTION_STATES.has(transaction.state))) {
+        throw codedError('update_rollback_unavailable', 'No installed update can be restored to its previous version.');
       }
-    } catch (error) {
-      await setUpdateState({ state: 'failed', transactionId: transaction.id, recoveryPending: true,
-        cancelRequested: false, code: safeCode(error), message: safeMessage(error)
-      }, { observed: true, generation }).catch(() => {});
-      throw error;
-    }
-    await chrome.storage.local.set({ [UPDATE_RELOAD_TABS_KEY]: tabs.map(tab => tab.id) });
-    await setUpdateAndConsentState({ state: 'rolled_back', transactionId: transaction.id,
-      currentVersion: transaction.sourceVersion, latestVersion: transaction.targetVersion,
-      recoveryPending: false, cancelRequested: false, blocker: '', blockers: [],
-      code: USER_ROLLBACK_REASON, message: 'You restored the previous version.'
-    }, policy.normalizeConsentState({}), { observed: true, generation });
-    runtimeStatus = null;
-    // The fixed Bootstrap refreshes the saved tabs after it observes rolled_back.
-    setTimeout(() => chrome.runtime.reload(), 0);
-    return getView();
+      // Page refresh happens after restoration, so it waits for the same saved
+      // and idle point as a reload of an installed update.
+      const tabs = await requireReloadSafePoint();
+      assertOperation(operation);
+      const generation = operation.generation;
+      clearIdleRetryTimer();
+      await setUpdateState({ state: 'rolling_back', transactionId: transaction.id,
+        currentVersion: transaction.targetVersion, latestVersion: transaction.targetVersion,
+        recoveryPending: false, cancelRequested: false, operationId: '', code: '', message: ''
+      }, { observed: true, generation });
+      try {
+        // Old source runtimes consume this key through their saved/idle check.
+        // The fixed Bootstrap's legacy list would refresh tabs unconditionally.
+        await chrome.storage.local.set({ [UPDATE_RELOAD_TABS_KEY]: [],
+          [MANUAL_RELOAD_TABS_KEY]: { targetVersion: transaction.sourceVersion, tabIds: tabs.map(tab => tab.id) } });
+        assertOperation(operation);
+        const rolledBack = await requestNative('update.rollback', { transactionId: transaction.id,
+          expectedState: transaction.state, reasonCode: USER_ROLLBACK_REASON });
+        assertOperation(operation);
+        const readback = await requestNative('update.status');
+        assertOperation(operation);
+        if (rolledBack.transactionId !== transaction.id || rolledBack.state !== 'rolled_back'
+          || rolledBack.version !== transaction.sourceVersion || readback.transaction?.id !== transaction.id
+          || readback.transaction.sourceVersion !== transaction.sourceVersion
+          || readback.transaction.targetVersion !== transaction.targetVersion
+          || !root.CodexOverleafUpdateRuntimeIdentity?.verifiedRollback({ ...readback,
+            transaction: { ...readback.transaction, bootstrapRevision: transaction.bootstrapRevision } })
+          || !['extensionVersion', 'nativeVersion', 'extensionSha256', 'nativeSha256', 'bootstrapSha256']
+            .every(key => readback.restoredPair[key] === rolledBack.restoredPair?.[key])) {
+          throw codedError('update_rollback_unconfirmed', 'Rollback returned incomplete evidence.');
+        }
+      } catch (error) {
+        await setUpdateState({ state: 'failed', transactionId: transaction.id, recoveryPending: true,
+          cancelRequested: false, code: safeCode(error), message: safeMessage(error)
+        }, { observed: true, generation }).catch(() => {});
+        throw error;
+      }
+      await setUpdateAndConsentState({ state: 'rolled_back', transactionId: transaction.id,
+        currentVersion: transaction.sourceVersion, latestVersion: transaction.targetVersion,
+        recoveryPending: false, cancelRequested: false, blocker: '', blockers: [],
+        postponeUntil: LEGACY_GUARD, etag: '', cooldownUntil: 0,
+        code: USER_ROLLBACK_REASON, message: 'You restored the previous version.'
+      }, policy.normalizeConsentState({ snoozedVersion: transaction.targetVersion,
+        snoozedUntil: Date.now() + SNOOZE_MS }), { observed: true, generation });
+      runtimeStatus = null;
+      // The disk restore is complete even if new work now prevents a reload.
+      // Keep the existing Reload action available without attempting rollback again.
+      try { await requireReloadSafePoint(); } catch (_error) { return getView(); }
+      assertOperation(operation);
+      setTimeout(() => chrome.runtime.reload(), 0);
+      return getView();
+    } finally { finishOperation(operation); }
   }
 
   async function finishManualRuntimeReload() {
+    if ((await getUpdateState()).recoveryPending) return;
     const pending = (await chrome.storage.local.get(MANUAL_RELOAD_TABS_KEY))?.[MANUAL_RELOAD_TABS_KEY];
     if (!pending || !Array.isArray(pending.tabIds)) return;
     const runtime = await readRuntimeStatus(true);

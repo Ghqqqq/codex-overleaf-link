@@ -12,6 +12,18 @@
     return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
   }
 
+  function verifiedRollback(status = {}) {
+    const transaction = status.transaction;
+    const pair = status.restoredPair;
+    const digest = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+    return Boolean(transaction?.id && transaction.state === 'rolled_back'
+      && version(transaction.sourceVersion) && version(transaction.targetVersion)
+      && status.installedAligned === true && status.activeVersion === transaction.sourceVersion
+      && pair?.extensionVersion === transaction.sourceVersion && pair.nativeVersion === transaction.sourceVersion
+      && digest(pair.extensionSha256) && digest(pair.nativeSha256)
+      && (!transaction.bootstrapRevision || digest(pair.bootstrapSha256)));
+  }
+
   function inspectInstalledRuntime(status = {}, options = {}) {
     const result = { installedVersion: version(status.activeVersion), nativeVersion: version(status.runtimeVersion),
       extensionVersion: version(options.extensionVersion), runtimeVersion: version(options.runtimeVersion), state: 'unknown' };
@@ -24,9 +36,11 @@
     if (status.installedAligned !== true) return { ...result, state: 'repair_required' };
     const loaded = [result.nativeVersion, result.extensionVersion, result.runtimeVersion];
     if (loaded.every(value => value === result.installedVersion)) return { ...result, state: 'aligned' };
-    return { ...result, state: loaded.every(value => compare(result.installedVersion, value) >= 0)
+    const rollbackReload = verifiedRollback(status) && loaded.every(value =>
+      value === status.transaction.sourceVersion || value === status.transaction.targetVersion);
+    return { ...result, state: rollbackReload || loaded.every(value => compare(result.installedVersion, value) >= 0)
       ? 'reload_required' : 'repair_required' };
   }
 
-  return Object.freeze({ inspectInstalledRuntime });
+  return Object.freeze({ inspectInstalledRuntime, verifiedRollback });
 });

@@ -545,7 +545,7 @@
         eyebrow: tx('Previous version restored', '已恢复上一版本'),
         title: state.currentVersion ? 'v' + state.currentVersion : '',
         detail: state.code === 'update_user_rollback'
-          ? tx('You restored the previous version. Automatic updates skip the version you left.', '你已恢复到上一版本，自动更新会跳过刚才退出的版本。')
+          ? tx('You restored the previous version. Automatic reminders for this version are paused for 24 hours. Check for updates to install it again.', '已恢复到上一版本，刚才退出的版本将暂停自动提醒 24 小时。点“检查更新”可以重新安装。')
           : tx('The replacement failed its health check.', '替换版本未通过健康检查。')
       },
       failed: {

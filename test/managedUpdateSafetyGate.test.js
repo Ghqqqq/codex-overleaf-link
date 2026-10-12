@@ -33,9 +33,10 @@ async function createHarness(scenario) {
     [UPDATE_KEY]: { state: 'idle', currentVersion: VERSION, latestVersion: VERSION },
     [CONSENT_KEY]: {}
   };
-  const messages = [], native = [], queries = [], probes = [], loaded = [];
+  const messages = [], native = [], queries = [], probes = [], loaded = [], connections = [];
   const timers = new Map();
   let timerId = 0, reloads = 0, active = false;
+  let finishRollback;
   let reloadDone;
   const reloaded = new Promise(resolve => { reloadDone = resolve; });
   let startupDone;
@@ -47,7 +48,7 @@ async function createHarness(scenario) {
       getURL: relative => `chrome-extension://proj114/${relative}`,
       getManifest: () => ({ version: VERSION, background: { service_worker: 'bootstrap/background.js' } }),
       onMessage: { addListener(listener) { messages.push(listener); } },
-      onConnect: noListener,
+      onConnect: { addListener(listener) { connections.push(listener); } },
       reload() { reloads += 1; reloadDone(); },
       connectNative(host) {
         assert.equal(host, 'com.codex.overleaf');
@@ -68,6 +69,11 @@ async function createHarness(scenario) {
               case 'update.canApply': result = { idle: true, blockers: [] }; break;
               case 'update.apply': result = { state: 'awaiting_health', targetVersion: TARGET, transactionId: TRANSACTION }; break;
               case 'update.revoke': result = { revoked: true }; break;
+              case 'update.rollback':
+                finishRollback = ok => listeners.forEach(listener => listener({ id: request.id, ok, result: { state: 'rolled_back' }, error: { code: 'synthetic_rollback_failed' } }));
+                if (!scenario.holdRollback) queueMicrotask(() => finishRollback(true));
+                return;
+              case 'codex.run': result = { status: 'completed' }; break;
               default: throw new Error(`Unexpected Native method: ${request.method}`);
             }
             queueMicrotask(() => listeners.forEach(listener => listener({ id: request.id, ok: true, result })));
@@ -161,6 +167,19 @@ async function createHarness(scenario) {
   active = true;
   return {
     data, native, queries, probes, loaded,
+    request: payload => sandbox.CodexOverleafNativeBridge.requestInternal(payload),
+    bindBrowserOnly() {
+      const handlers = [], replies = [];
+      const port = { name: 'codex-overleaf/run-owner', sender: { id: 'proj114', tab: EDITOR },
+        onMessage: { addListener: fn => handlers.push(fn) }, onDisconnect: noListener,
+        postMessage: value => replies.push(value) };
+      connections.forEach(fn => fn(port));
+      const binding = { type: 'bind', requestId: 'browser-request', projectKey: 'synthetic-114',
+        clientRunId: 'browser-run', sessionId: 'browser-session', browserOnly: true, ownerToken: 'browser-attempt' };
+      handlers.forEach(fn => fn(binding));
+      return replies;
+    },
+    finishRollback: ok => finishRollback(ok),
     reloads: () => reloads,
     hasIdleRetry: () => [...timers.values()].some(timer => timer.delay === 15000),
     async runIdleRetry() {
@@ -234,3 +253,39 @@ for (const scenario of scenarios) {
     } finally { harness.dispose(); }
   });
 }
+
+
+for (const success of [true, false]) test(`user rollback fences new Native execution and ${success ? 'keeps the fence until reload' : 'releases it after failure'}`, async () => {
+  const h = await createHarness({ empty: true, holdRollback: true });
+  try {
+    const rollback = h.request({ id: 'user-rollback', method: 'update.rollback', params: { reasonCode: 'update_user_rollback' } });
+    await new Promise(setImmediate);
+    const during = await h.request({ id: 'run-during', method: 'codex.run', params: { task: 'Synthetic task', mode: 'ask' } });
+    assert.equal(during.ok, false); assert.equal(during.error.code, 'update_applying');
+    assert.equal(h.bindBrowserOnly()[0]?.ok, false, 'browser-only retry must also stay outside the activation window');
+    assert.equal(h.queries.length, 1, 'user rollback repeats the actual background safe-point gate');
+    h.finishRollback(success); assert.equal((await rollback).ok, success);
+    const after = await h.request({ id: 'run-after', method: 'codex.run', params: { task: 'Synthetic task', mode: 'ask' } });
+    assert.equal(after.ok, !success);
+    if (success) assert.equal(after.error.code, 'update_applying');
+  } finally { h.dispose(); }
+});
+
+test('automatic rollback recovery keeps its existing internal dispatch path', async () => {
+  const h = await createHarness({ empty: true });
+  try {
+    const result = await h.request({ id: 'automatic-rollback', method: 'update.rollback', params: { reasonCode: 'update_health_timeout' } });
+    assert.equal(result.ok, true); assert.equal(h.queries.length, 0);
+  } finally { h.dispose(); }
+});
+
+
+test('a browser-only retry binding blocks the final rollback safe point even without a Native request', async () => {
+  const h = await createHarness({ empty: true });
+  try {
+    assert.notEqual(h.bindBrowserOnly()[0]?.ok, false);
+    const response = await h.request({ id: 'busy-rollback', method: 'update.rollback', params: { reasonCode: 'update_user_rollback' } });
+    assert.equal(response.ok, false); assert.equal(response.error.code, 'update_not_idle');
+    assert.equal(h.native.some(request => request.method === 'update.rollback'), false);
+  } finally { h.dispose(); }
+});

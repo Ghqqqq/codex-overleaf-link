@@ -13,6 +13,11 @@
     let binding = null;
     let reconnectTimer = null;
     let destroyed = false;
+    let bindingWaiter = null;
+    let bindingSequence = 0;
+    let recoveryTimer = null;
+    let recoveryGeneration = 0;
+    const inventoryRetries = new Map();
 
     function connect() {
       if (destroyed || port || typeof runtime?.connect !== 'function') {
@@ -21,6 +26,11 @@
       try {
         const nextPort = runtime.connect({ name: 'codex-overleaf/run-owner' });
         port = nextPort;
+        nextPort.onMessage?.addListener?.(message => {
+          if (port !== nextPort || message?.type !== 'bound' || !bindingWaiter || !binding) return;
+          if (['requestId', 'projectKey', 'clientRunId', 'sessionId'].every(key => message[key] === binding[key])
+            && message.browserOnly === true && message.ownerToken === binding.ownerToken) bindingWaiter(message.ok !== false);
+        });
         nextPort.onDisconnect?.addListener?.(() => {
           if (port === nextPort) {
             port = null;
@@ -46,20 +56,39 @@
     }
 
     function bind(value = {}) {
+      bindingWaiter?.(false);
       binding = {
         requestId: String(value.requestId || ''),
         projectKey: String(value.projectKey || ''),
         clientRunId: String(value.clientRunId || ''),
-        sessionId: String(value.sessionId || '')
+        sessionId: String(value.sessionId || ''),
+        ...(value.browserOnly === true ? { browserOnly: true, ownerToken: String(value.ownerToken || `browser-${++bindingSequence}`) } : {})
       };
       connect();
       postBinding('bind', binding);
     }
 
-    function release(requestId) {
-      if (!binding || (requestId && binding.requestId !== requestId)) {
+    async function bindBrowserRun(value) {
+      bind({ ...value, browserOnly: true });
+      if (destroyed || !port) return false;
+      return new Promise(resolve => {
+        const timeout = setTimeout(() => complete(false), 5000);
+        const complete = ok => {
+          clearTimeout(timeout);
+          if (bindingWaiter === complete) bindingWaiter = null;
+          resolve(ok);
+        };
+        bindingWaiter = complete;
+        postBinding('bind', binding);
+      });
+    }
+
+    function release(requestId, ownerToken) {
+      if (!binding || (requestId && binding.requestId !== requestId)
+        || (ownerToken && ownerToken !== binding.ownerToken)) {
         return;
       }
+      bindingWaiter?.(false);
       postBinding('release', binding);
       binding = null;
     }
@@ -86,53 +115,90 @@
       return response?.ok === true;
     }
 
-    async function knownJournals(requestIds) {
+    async function knownJournals(requestIds, owners = [], onRetry) {
       if (typeof runtime?.sendMessage !== 'function') return null;
-      const response = await runtime.sendMessage({ type: 'codex-overleaf/run-journal/known', requestIds });
-      return response?.ok && Array.isArray(response.known) ? new Set(response.known) : null;
+      const known = new Set();
+      for (let offset = 0; offset < requestIds.length; offset += 64) {
+        const ids = requestIds.slice(offset, offset + 64);
+        const response = await runtime.sendMessage({ type: 'codex-overleaf/run-journal/known',
+          requestIds: ids, owners: owners.slice(offset, offset + 64) });
+        // An older background cannot rule out browser-only owners.
+        if (!response?.ok || !Array.isArray(response.known) || response.ownersChecked !== true) {
+          if (Number.isFinite(response?.retryAfterMs) && response.retryAfterMs > 0) onRetry?.(response.retryAfterMs);
+          return null;
+        }
+        for (const id of response.known) if (ids.includes(id)) known.add(id);
+      }
+      return known;
     }
 
-    // A running record whose Native request has no journal outlived the
-    // extension instance that owned it (reload, update or disable): Native
-    // already stopped it and no page can still settle it. Unknown answers and
-    // runs inside the start-up grace keep their status.
-    async function recoverOrphanedRuns(projectKey, options, result) {
-      const now = Date.now();
-      const candidates = [];
-      for (const session of options.listSessions?.() || []) {
-        if (session.projectId && session.projectId !== projectKey) continue;
-        if (options.accountScopeId && session.accountScopeId && session.accountScopeId !== options.accountScopeId) continue;
+    // Native journals and live browser-only owners are separate evidence. A
+    // missing journal alone cannot establish that another page stopped retrying.
+    async function recoverOrphanedRuns(projectKey, options, result, isCurrent) {
+      const now = Date.now(), candidates = [];
+      let recheckAfterMs = Infinity;
+      const sessions = () => options.listSessions?.() || [];
+      const eligible = (session, record) => record.status === 'running' && record.nativeRequestId
+        && !options.isLiveRun?.(record, session)
+        && (!session.projectId || session.projectId === projectKey)
+        && (!options.accountScopeId || !session.accountScopeId || session.accountScopeId === options.accountScopeId)
+        && (!record.runProjectId || record.runProjectId === projectKey);
+      for (const session of sessions()) {
         for (const record of session.runs || []) {
+          if (!eligible(session, record)) continue;
           const started = Date.parse(record.startedAt);
-          if (record.status !== 'running' || !record.nativeRequestId || options.isLiveRun?.(record)
-            || (record.runProjectId && record.runProjectId !== projectKey)
-            || !Number.isFinite(started) || now - started < (options.orphanGraceMs ?? 60000)) continue;
-          candidates.push({ session, record });
+          if (!Number.isFinite(started)) continue;
+          const remaining = started + (options.orphanGraceMs ?? 60000) - now;
+          if (remaining > 0) { recheckAfterMs = Math.min(recheckAfterMs, remaining); continue; }
+          candidates.push({ session, record, requestId: record.nativeRequestId });
         }
       }
+      result.recheckAfterMs = Number.isFinite(recheckAfterMs) ? recheckAfterMs : null;
       if (!candidates.length) return;
-      const known = await knownJournals(candidates.map(item => item.record.nativeRequestId)).catch(() => null);
-      if (!known) return;
-      for (const { session, record } of candidates) {
-        if (known.has(record.nativeRequestId)) continue;
+      const known = await knownJournals(candidates.map(item => item.requestId), candidates.map(({ session, record, requestId }) => ({
+        requestId, projectKey, clientRunId: record.id, sessionId: session.id
+      })), delay => {
+        const key = `${options.accountScopeId || ''}:${projectKey}`;
+        const attempts = inventoryRetries.get(key) || 0;
+        if (attempts >= 3) return;
+        inventoryRetries.set(key, attempts + 1);
+        result.recheckAfterMs = Math.min(result.recheckAfterMs ?? Infinity, delay);
+      }).catch(() => null);
+      if (!known || !isCurrent()) return;
+      inventoryRetries.delete(`${options.accountScopeId || ''}:${projectKey}`);
+      for (const { session, record, requestId } of candidates) {
+        const currentSession = sessions().find(value => value.id === session.id);
+        // State normalization can replace run objects while inventory is pending.
+        if (!currentSession?.runs?.includes(record) || !eligible(currentSession, record)
+          || record.nativeRequestId !== requestId || known.has(requestId)) continue;
         if (!record.runProjectId) record.runProjectId = projectKey;
         options.normalizeInterruptedRun?.(record);
         record.status = 'interrupted';
-        record.interruptedDraft = { requestId: record.nativeRequestId, threadId: session.codexThreadId || '',
+        record.interruptedDraft = { requestId, threadId: currentSession.codexThreadId || '',
           turnId: record.codexTurnId || '', lastEventSeq: record.nativeEventSeq || 0, reason: 'extension_reloaded' };
-        options.pauseSessionQueue?.(session, 'page_reload');
+        options.pauseSessionQueue?.(currentSession, 'page_reload');
         result.changed = true;
-        result.recoveredRuns.push({ sessionId: session.id, runId: record.id,
+        result.recoveredRuns.push({ sessionId: currentSession.id, runId: record.id,
           projectId: projectKey, accountScopeId: options.accountScopeId });
       }
     }
 
+    function cancelRecovery() {
+      recoveryGeneration++;
+      clearTimeout(recoveryTimer);
+      recoveryTimer = null;
+    }
+
     async function recoverJournals(options = {}) {
+      cancelRecovery();
+      const generation = recoveryGeneration;
+      const isCurrent = () => !destroyed && generation === recoveryGeneration && options.isCurrent?.() !== false;
       const projectKey = String(options.projectKey || '');
       if (!projectKey) {
         return { changed: false, acknowledgeIds: [] };
       }
       const journals = await listJournals(projectKey).catch(() => []);
+      if (!isCurrent()) return { changed: false, acknowledgeIds: [], recoveredRuns: [] };
       let changed = false;
       const acknowledgeIds = [];
       const recoveredRuns = [];
@@ -157,7 +223,7 @@
             session.runs = [...(session.runs || []), record].slice(-20);
           }
         }
-        if (!record) {
+        if (!record || options.isLiveRun?.(record, session)) {
           continue;
         }
         if (record.runProjectId && record.runProjectId !== projectKey) continue;
@@ -212,12 +278,20 @@
           projectId: projectKey, accountScopeId: options.accountScopeId });
       }
       const result = { changed, acknowledgeIds, recoveredRuns };
-      await recoverOrphanedRuns(projectKey, options, result);
+      await recoverOrphanedRuns(projectKey, options, result, isCurrent);
+      if (isCurrent() && result.recheckAfterMs !== null && typeof options.onRecheck === 'function') {
+        recoveryTimer = setTimeout(() => {
+          recoveryTimer = null;
+          if (isCurrent()) Promise.resolve(options.onRecheck()).catch(() => {});
+        }, Math.min(result.recheckAfterMs, 2147483647));
+      }
       return result;
     }
 
     function destroy() {
       destroyed = true;
+      cancelRecovery();
+      bindingWaiter?.(false);
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
       try {
@@ -230,8 +304,26 @@
     }
 
     connect();
-    return { acknowledge, bind, destroy, knownJournals, listJournals, recoverJournals, release };
+    return { acknowledge, bind, bindBrowserRun, cancelRecovery, destroy, getOwner: () => binding ? { ...binding } : null,
+      knownJournals, listJournals, recoverJournals, release };
   }
 
-  return { create };
+  function createInterruptedRun(journal, projectKey, statusText) {
+    return { id: journal.clientRunId, task: journal.task || 'interrupted task', mode: journal.mode || 'ask',
+      model: journal.model || '', status: 'interrupted', statusText, runProjectId: projectKey,
+      startedAt: journal.createdAt || new Date().toISOString(), finishedAt: journal.updatedAt || new Date().toISOString(),
+      events: [], attachments: [], undoOperations: [], undoTrackedChanges: [], undoExpectedFiles: [] };
+  }
+
+  function mapRecoveredEvent(raw, journal, options) {
+    const activity = options.mapActivity(raw);
+    if (!activity?.visible || activity.kind === 'technical') return null;
+    return { kind: activity.kind || 'activity', title: options.sanitizeText(activity.title) || 'Event',
+      status: activity.status || 'running', detail: options.sanitizeValue(activity.detail),
+      timestamp: raw.timestamp || journal.updatedAt || new Date().toISOString(),
+      streamKey: options.sanitizeText(activity.streamKey), streamRole: options.sanitizeText(activity.streamRole),
+      appendText: options.sanitizeText(activity.appendText), replaceText: activity.replaceText };
+  }
+
+  return { create, createInterruptedRun, mapRecoveredEvent };
 });

@@ -150,3 +150,119 @@ test('old owner-loss completion cannot cancel a replacement request with the sam
   assert.equal(f.storage.values[prefix+id].task,'Replacement request');assert.equal(f.storage.values[prefix+id].ownerLost,false);
   f.first.ports[0].emit({id,ok:true,result:{status:'completed'}});await next;
 });
+
+
+test('a browser-only retry owner protects shared running history without restoring or cancelling its old Native request', async () => {
+  const id = 'retry-without-journal', storage = memoryStorage(), bg = background(storage), route = { current: bg };
+  const owner = ownerClient(route), view = observer(route, id);
+  view.target.session.runs[0].nativeRequestId = id;
+  view.target.options.listSessions = () => [view.target.session];
+  assert.equal(await owner.control.bindBrowserRun({ requestId: id, projectKey: 'project-one',
+    clientRunId: 'client-' + id, sessionId: 'session-one' }), true);
+  assert.equal((await view.recover()).changed, false);
+  assert.equal(view.target.session.runs[0].status, 'running');
+  assert.equal(storage.values[prefix + id], undefined, 'browser ownership must not resurrect the old journal');
+  owner.control.destroy();
+  await bg.timer.fire(150);
+  assert.equal(bg.ports.length, 0, 'losing a browser-only owner must not dispatch Native cancellation');
+  assert.equal((await view.recover()).changed, true);
+  assert.equal(view.target.session.runs[0].status, 'interrupted');
+  view.client.control.destroy();
+});
+
+test('a browser owner for a different session or run cannot protect a journal-free running record', async () => {
+  for (const difference of [{ sessionId: 'other-session' }, { clientRunId: 'other-run' }, { projectKey: 'other-project' }]) {
+    const id = 'mismatch-retry', bg = background(memoryStorage()), route = { current: bg };
+    const owner = ownerClient(route), view = observer(route, id);
+    view.target.session.runs[0].nativeRequestId = id;
+    view.target.options.listSessions = () => [view.target.session];
+    assert.equal(await owner.control.bindBrowserRun({ requestId: id, projectKey: 'project-one',
+      clientRunId: 'client-' + id, sessionId: 'session-one', ...difference }), true);
+    assert.equal((await view.recover()).changed, true);
+    owner.control.destroy(); view.client.control.destroy();
+  }
+});
+
+
+test('browser-only ownership rebinds after worker replacement and an old release cannot remove the new attempt', async () => {
+  const id = 'retry-reconnect', storage = memoryStorage(), first = background(storage), route = { current: first };
+  const owner = ownerClient(route), view = observer(route, id);
+  const binding = { requestId: id, projectKey: 'project-one', clientRunId: 'client-' + id, sessionId: 'session-one' };
+  view.target.session.runs[0].nativeRequestId = id;
+  view.target.options.listSessions = () => [view.target.session];
+  assert.equal(await owner.control.bindBrowserRun({ ...binding, ownerToken: 'old' }), true);
+  assert.equal(await owner.control.bindBrowserRun({ ...binding, ownerToken: 'new' }), true);
+  owner.control.release(id, 'old');
+  assert.equal((await view.recover()).changed, false);
+  const second = background(storage); route.current = second;
+  owner.ports.at(-1).workerLost();
+  assert.equal((await view.recover()).changed, false, 'a restarted worker must probe the page before its reconnect timer fires');
+  await owner.timer.fire(50);
+  assert.equal((await view.recover()).changed, false);
+  assert.equal(second.ports.length, 0);
+  owner.control.release(id, 'new');
+  assert.equal((await view.recover()).changed, true);
+  owner.control.destroy(); view.client.control.destroy();
+});
+
+
+test('the actual Retry sync entry waits for owner ACK, protects another page, and releases after writeback', async () => {
+  const vm = require('node:vm');
+  const { extractFromContentScript } = require('./_helpers/contentScriptSource');
+  const WritebackIntent = require('../extension/src/shared/writebackIntent');
+  const id = 'runtime-retry', bg = background(memoryStorage()), route = { current: bg };
+  const owner = ownerClient(route), view = observer(route, id);
+  const record = view.target.session.runs[0];
+  record.nativeRequestId = id; record.status = 'failed';
+  record.retryWriteback = { id: 'retry-intent', projectId: 'project-one', accountScopeId: 'account-one',
+    sessionId: 'session-one', runId: record.id, operations: [{ type: 'create', path: 'qa.tex', content: 'x' }], baseFiles: [] };
+  let permitBind, finishWrite, writeStarted = false;
+  const bindGate = new Promise(resolve => { permitBind = resolve; });
+  const writeGate = new Promise(resolve => { finishWrite = resolve; });
+  const bind = owner.control.bindBrowserRun;
+  const context = vm.createContext({
+    currentRunView: null, trackedChangeInFlight: new Set(), state: {},
+    getActiveSession: () => view.target.session, Modules: { WritebackIntent },
+    getCurrentProjectId: () => 'project-one', cachedAccountScopeId: 'account-one', spaRouteGeneration: 0,
+    findRunRecord: () => record, AbortController, crypto: { randomUUID: () => 'owner-attempt' },
+    activeTurnControl: { ...owner.control, bindBrowserRun: async value => { await bindGate; return bind(value); } },
+    setRunning() {}, renderRunHistory() {}, panel: { querySelector: () => null }, cssEscape: value => value,
+    tx: en => en, showPluginToast() {}, saveStateSoon() {}, flushQueuedSaveState: async () => {},
+    applySyncChangesToOverleaf: async () => { writeStarted = true; await writeGate; return { hasSkippedOperations: false }; },
+    finishRunView: async (_title, status) => { record.status = status; }
+  });
+  vm.runInContext(extractFromContentScript('retryRunWriteback'), context);
+  const retry = context.retryRunWriteback(record.id);
+  await flush();
+  assert.equal(record.status, 'failed'); assert.equal(writeStarted, false, 'no write may precede owner ACK');
+  permitBind(); await flush();
+  assert.equal(record.status, 'running'); assert.equal(writeStarted, true);
+  view.target.options.listSessions = () => [view.target.session];
+  assert.equal((await view.recover()).changed, false);
+  finishWrite(); await retry;
+  assert.equal(record.status, 'completed'); assert.equal(context.currentRunView, null);
+  assert.equal(record.retryingWriteback, undefined);
+  const known = await owner.control.knownJournals([id], [{ requestId: id, projectKey: 'project-one',
+    clientRunId: record.id, sessionId: 'session-one' }]);
+  assert.equal(known.size, 0, 'completed retry must not leave a permanent browser owner');
+  owner.control.destroy(); view.client.control.destroy();
+});
+
+
+test('an unreadable live-page owner probe never proves a retry is orphaned', async () => {
+  const id = 'unreadable-owner', storage = memoryStorage(), first = background(storage), route = { current: first };
+  const owner = ownerClient(route), view = observer(route, id);
+  assert.equal(await owner.control.bindBrowserRun({ requestId: id, projectKey: 'project-one', clientRunId: 'client-' + id, sessionId: 'session-one' }), true);
+  view.target.session.runs[0].nativeRequestId = id;
+  view.target.options.listSessions = () => [view.target.session];
+  route.current = background(storage);
+  owner.ports.at(-1).workerLost();
+  const entry = storage.runtimeOwners.find(value => value.read()?.requestId === id), originalRead = entry.read;
+  entry.read = () => { throw new Error('Synthetic page unavailable'); };
+  const result = await view.recover();
+  assert.equal(result.changed, false); assert.equal(result.recheckAfterMs, 1000);
+  assert.equal(view.target.session.runs[0].status, 'running');
+  entry.read = originalRead;
+  assert.equal((await view.recover()).changed, false);
+  owner.control.destroy(); view.client.control.destroy();
+});

@@ -227,7 +227,7 @@ test('the real background retries an unacknowledged standard probe through the t
   const h = harness();
   const source = fs.readFileSync(path.join(ROOT, 'extension/src/background.js'), 'utf8');
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'extension/bootstrap/updateStatus.js'), 'utf8'), h.background);
-  Object.assign(h.background, { migrationSafety: h.recovery, MANAGED_OVERLEAF_MATCHES: ['https://www.overleaf.com/project/*'],
+  Object.assign(h.background, { migrationSafety: h.recovery, ownerBindings: new Map(), MANAGED_OVERLEAF_MATCHES: ['https://www.overleaf.com/project/*'],
     isManagedEditorTab: () => true, sendNativeRequest: async () => ({ ok: true, result: { idle: true, blockers: [] } }) });
   vm.runInContext(extractFunction(source, 'probeManagedUpdateTab'), h.background);
   vm.runInContext(extractFunction(source, 'verifyManagedUpdateSafety'), h.background);

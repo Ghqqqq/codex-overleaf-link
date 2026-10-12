@@ -38,10 +38,8 @@ const CONSENT_MIGRATION_TARGET_VERSION = '1.9.4';
 // Pure reads of user-owned stores that do not depend on update files. They stay
 // available while a migration or its recovery is unsettled.
 const READ_ONLY_DURING_UPDATE = new Set(['codex.providers.list']);
-// A user-requested return to the source version of a committed update. The
-// rolled-back target is skipped until a newer release replaces it.
+// A user-requested return to the source version of an applied update.
 const USER_ROLLBACK_REASON = 'update_user_rollback';
-const USER_ROLLBACK_SKIP_MS = 365 * 24 * 60 * 60 * 1000;
 const UPDATE_METHODS = new Set([
   'update.status',
   'update.bootstrap',
@@ -114,10 +112,12 @@ async function handleUpdateRequest(request, options = {}) {
       case 'update.confirm':
         return okResponse(request.id, await withUpdateMutex(context, () => confirmUpdate(context, request.params || {})));
       case 'update.rollback':
-        if (request.params?.reasonCode === USER_ROLLBACK_REASON && !getApplyGate(options).idle) {
-          throw updateError('update_native_busy', 'Native host is still processing a Codex task.');
-        }
-        return okResponse(request.id, await withUpdateMutex(context, () => rollbackUpdate(context, request.params || {})));
+        return okResponse(request.id, await withUpdateMutex(context, () => {
+          if (request.params?.reasonCode === USER_ROLLBACK_REASON && !getApplyGate(options).idle) {
+            throw updateError('update_native_busy', 'Native host is still processing a Codex task.');
+          }
+          return rollbackUpdate(context, request.params || {});
+        }));
       case 'update.cancel':
         return okResponse(request.id, await cancelNetworkUpdate(context, request.params || {}));
       case 'update.revoke': {
@@ -364,8 +364,8 @@ async function checkForUpdate(context, params = {}, options = {}) {
   }
   const cooldowns = readJsonSafe(path.join(context.updatesRoot, COOLDOWN_FILE), {});
   const cooldown = cooldowns[latestVersion];
-  // A version the user rolled back is skipped by automatic checks only; an
-  // explicit check offers it again.
+  // Read legacy user-rollback cooldowns, allowing explicit checks to bypass
+  // them. New user rollbacks defer browser prompts without a Native cooldown.
   if (Number(cooldown?.until || 0) > Date.now()
     && !(cooldown.reasonCode === USER_ROLLBACK_REASON && params.manual === true)) {
     return { managed: true, available: false, reason: 'cooldown', currentVersion, latestVersion,
@@ -898,10 +898,16 @@ function rollbackUpdate(context, params = {}) {
     throw error;
   }
   const cooldowns = readJsonSafe(path.join(context.updatesRoot, COOLDOWN_FILE), {});
-  cooldowns[journal.targetVersion] = {
-    until: Date.now() + (userRequested ? USER_ROLLBACK_SKIP_MS : 24 * 60 * 60 * 1000),
-    reasonCode: normalizeReasonCode(params.reasonCode)
-  };
+  if (userRequested) {
+    // The restored Native may predate manual-check exemptions. Keep its
+    // original check usable; the coordinator snoozes automatic prompts.
+    delete cooldowns[journal.targetVersion];
+  } else {
+    cooldowns[journal.targetVersion] = {
+      until: Date.now() + 24 * 60 * 60 * 1000,
+      reasonCode: normalizeReasonCode(params.reasonCode)
+    };
+  }
   atomicWriteJson(path.join(context.updatesRoot, COOLDOWN_FILE), cooldowns);
   const restoredJournal = {
     ...journal,
@@ -1124,7 +1130,11 @@ function finishSourceActivation(context, journal) {
   if (!sameRuntimeEvidence(actual, journal.rollbackEvidence)) {
     throw updateError('update_rollback_unconfirmed', 'The recovered source files changed before activation.');
   }
-  BootstrapUpdate.bootstrapEvidence(context, journal, 'source');
+  const bootstrap = BootstrapUpdate.bootstrapEvidence(context, journal, 'source');
+  if (journal.bootstrapMigration
+    && (!bootstrap?.digest || bootstrap.digest !== journal.rollbackEvidence?.bootstrapSha256)) {
+    throw updateError('update_bootstrap_source_mismatch', 'The recovered Bootstrap bytes changed before activation.');
+  }
   settleAuthorization(context, journal.authorizationId, 'revoked');
   atomicWriteText(path.join(context.nativeRoot, 'active-version'), journal.sourceVersion + '\n');
   const finished = { ...journal, sourceActivationPending: false };
