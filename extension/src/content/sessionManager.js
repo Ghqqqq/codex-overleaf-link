@@ -31,6 +31,7 @@
       saveStateSoon,
       readPanelInputs,
       flushComposerDraft,
+      setSessionTransition,
       getDraftScope,
       applyStateToPanel,
       syncSessionProvider,
@@ -62,7 +63,31 @@
       closeSessionMenu
     } = sessionMenuView;
 
-  async function startNewSession() {
+  let transitionToken = null;
+
+  async function withSessionTransition(change) {
+    if (transitionToken) return;
+    const token = {};
+    transitionToken = token;
+    const scope = getDraftScope?.();
+    try {
+      // Lock before the first wait, including an outstanding IME commit.
+      await setSessionTransition?.(true);
+      if (getDraftScope?.() !== scope) return;
+      return await change(scope);
+    } finally {
+      if (transitionToken === token) {
+        transitionToken = null;
+        setSessionTransition?.(false);
+      }
+    }
+  }
+
+  function startNewSession() {
+    return withSessionTransition(createNewSession);
+  }
+
+  async function createNewSession(draftScope) {
     // Leaving a still-running session is allowed but never silent: the run
     // keeps going in the background and lands in its own session.
     const runningActive = getActiveSession(getState());
@@ -76,7 +101,7 @@
         return;
       }
     }
-    const draftScope = getDraftScope?.();
+    if (getDraftScope?.() !== draftScope) return;
     readPanelInputs();
     await flushComposerDraft?.();
     if (getDraftScope?.() !== draftScope) return;
@@ -104,6 +129,7 @@
       if (!evictionApproved) {
         return;
       }
+      if (getDraftScope?.() !== draftScope) return;
     }
     const session = createSession({
       mode: getState().mode,
@@ -119,15 +145,22 @@
       activeSessionId: session.id
     }));
     applyStateToPanel();
+    const destinationScope = getDraftScope?.();
     await syncSessionProvider?.();
+    if (getDraftScope?.() !== destinationScope) return;
     await saveState();
+    if (getDraftScope?.() !== destinationScope) return;
     getPanel().querySelector('[data-task]')?.focus();
   }
 
-  async function switchSession(sessionId) {
+  function switchSession(sessionId) {
     if (sessionId === getState().activeSessionId) {
       return;
     }
+    return withSessionTransition(scope => switchToSession(sessionId, scope));
+  }
+
+  async function switchToSession(sessionId, draftScope) {
     const runningActive = getActiveSession(getState());
     if (runningActive && isSessionRunning(runningActive)) {
       const approved = await showPluginConfirm({
@@ -139,13 +172,15 @@
         return;
       }
     }
-    const draftScope = getDraftScope?.();
+    if (getDraftScope?.() !== draftScope) return;
     readPanelInputs();
     await flushComposerDraft?.();
     if (getDraftScope?.() !== draftScope) return;
     setState(setActiveSession(getState(), sessionId));
     applyStateToPanel();
+    const destinationScope = getDraftScope?.();
     await syncSessionProvider?.();
+    if (getDraftScope?.() !== destinationScope) return;
     await saveState();
   }
 
@@ -303,6 +338,7 @@
       bindActiveSessionHeader,
       startNewSession,
       switchSession,
+      isTransitioning: () => transitionToken !== null,
       deleteSessionWithConfirm,
       renderSessionList,
       commitSessionRename,

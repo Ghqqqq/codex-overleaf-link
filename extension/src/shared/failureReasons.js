@@ -846,13 +846,23 @@
   function formatFailureReasonForDisplay(failure, locale, i18nLookup) {
     const display = recoverDisplayFailure(failure);
     const lookup = typeof i18nLookup === 'function' ? i18nLookup : () => undefined;
-    const key = display?.code ? 'failureReason_' + display.code + '_user' : '';
+    const messageCode = getFailureMessageCode(display);
+    const key = messageCode ? 'failureReason_' + messageCode + '_user' : '';
     const template = key ? lookup(key) : '';
     const file = safeDisplayProjectPath(display?.file);
     const localized = localizeFailureReason(display ? { ...display, file } : display, locale, lookup);
     const message = template?.includes('{file}') ? localized.userMessage
       : [file, localized.userMessage].filter(Boolean).join(': ');
     return { ...localized, code: display?.code, message, file, localized: Boolean(template && template !== key) };
+  }
+
+  function getFailureMessageCode(failure) {
+    // Reload recovery retains its historical retry code. Only its presentation
+    // identifies the page interruption instead of a failed bridge request.
+    if (failure?.code === 'native_request_failed' && failure.source === 'panel_reload') {
+      return 'panel_reload_interrupted';
+    }
+    return typeof failure?.code === 'string' ? failure.code : '';
   }
 
   function localizeFailureMessage(message, locale, i18nLookup) {
@@ -966,7 +976,7 @@
       const value = typeof i18nLookup === 'function' ? i18nLookup(key) : undefined;
       return value && value !== key ? value : undefined;
     };
-    const code = failure && typeof failure.code === 'string' ? failure.code : '';
+    const code = getFailureMessageCode(failure);
     const userTemplate = code ? lookup('failureReason_' + code + '_user') : undefined;
     const nextTemplate = (code ? lookup('failureReason_' + code + '_next') : undefined)
       || (REVIEW_DISPLAY_CODES.has(code) ? lookup('failureReason_review_detail_next') : undefined);

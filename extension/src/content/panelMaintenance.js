@@ -181,6 +181,7 @@
   // the failed task usually needs a tweak before it is worth resending.
   function refillComposerForRetry(run, textOverride) {
     const input = getPanel()?.querySelector('[data-task]');
+    if (input?.readOnly) return;
     const task = typeof textOverride === 'string' && textOverride.trim()
       ? textOverride
       : String(run?.task || '');

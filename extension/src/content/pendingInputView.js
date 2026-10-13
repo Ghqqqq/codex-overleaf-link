@@ -115,7 +115,7 @@
     // Pull a queued message back into the composer. A typed draft is never overwritten.
     function pullBack(item) {
       const task = container?.parentElement?.querySelector('[data-task]');
-      if (!task || (item.status || 'queued') !== 'queued') return;
+      if (!task || task.readOnly || (item.status || 'queued') !== 'queued') return;
       if (String(task.value || '').trim()) { options.onToast?.(tr('queuedInputEditBlocked')); return; }
       options.onRemove?.(item.id);
       task.value = item.text;

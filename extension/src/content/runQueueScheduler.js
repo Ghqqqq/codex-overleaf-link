@@ -444,12 +444,16 @@
     }
 
     async function startQueuedInput(item, sessionId) {
-      if (options.canStart?.(sessionId) === false || options.getCurrentRun?.()) {
-        const error = new Error('Queued input cannot start in the current session.');
-        error.code = 'queue_session_not_active';
-        throw error;
-      }
+      const assertCanStart = () => {
+        if (options.canStart?.(sessionId) === false || options.getCurrentRun?.()) {
+          const error = new Error('Queued input cannot start in the current session.');
+          error.code = 'queue_session_not_active';
+          throw error;
+        }
+      };
+      assertCanStart();
       await options.applyQueuedInput?.(item);
+      assertCanStart();
       await options.run?.(item);
     }
 

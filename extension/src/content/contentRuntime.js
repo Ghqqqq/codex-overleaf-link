@@ -532,6 +532,20 @@
     saveStateSoon,
     readPanelInputs,
     flushComposerDraft: () => flushComposerDraft({ requireDurable: true }),
+    setSessionTransition: pending => {
+      if (pending) {
+        closeSlashMenu();
+        contextUsageView?.close();
+      }
+      const ready = composerPanelInstance?.setSessionTransition(pending);
+      syncComposerSendAvailability();
+      if (!pending && deferredSessionStart) {
+        const deferred = deferredSessionStart;
+        deferredSessionStart = null;
+        if (deferred.scope === getComposerDraftScope()) runQueueScheduler?.scheduleOne(deferred.sessionId);
+      }
+      return ready;
+    },
     getDraftScope: getComposerDraftScope,
     applyStateToPanel, syncSessionProvider: () => providerSettingsCoordinator.syncSessionProvider(),
     getPanel: () => panel,
@@ -1002,6 +1016,7 @@
   let runSubmissionPending = false;
   let pendingRetryReplacement = null;
   let runQueueScheduler = null;
+  let deferredSessionStart = null;
   let runInputCoordinator = null;
   const activeTurnControl = ActiveTurnControl.create({ chrome });
   let saveStateTimer = null;
@@ -1369,6 +1384,8 @@
         attachmentController: composerAttachmentController,
         callbacks: {
           onSubmit: () => safeRunTask(),
+          getTaskScope: getComposerDraftScope,
+          getTaskValue: () => state.task,
           isRunning: () => Boolean(currentRunView),
           onCancel: () => cancelActiveRun(),
           onPaste: handleComposerPaste,
@@ -2972,6 +2989,7 @@
   }
 
   function safeRunTask(options = {}) {
+    if (sessionManager.isTransitioning()) return;
     if (updateIdleClient?.isApplying()) {
       showPluginToast(tx('An update is being applied. Codex will be available again after reload.', '正在应用更新，重新加载后即可继续使用 Codex。'), { status: 'info' });
       return;
@@ -3020,7 +3038,7 @@
       getActiveSession: () => getActiveSession(state),
       setQueue: (sessionId, pendingInputs) => updateSessionById(sessionId, { pendingInputs }),
       getCurrentRun: () => currentRunView,
-      canStart: sessionId => state?.activeSessionId === sessionId && isProjectEditorRoute(window.location),
+      canStart: canStartQueuedSession,
       readInputs: readPanelInputs,
       getTask: () => panel?.querySelector('[data-task]')?.value || '',
       hasAttachments: () => getComposerAttachmentsForRun().length > 0,
@@ -3102,7 +3120,17 @@
     });
   }
 
+  function canStartQueuedSession(sessionId) {
+    if (state?.activeSessionId !== sessionId || !isProjectEditorRoute(window.location)) return false;
+    if (sessionManager.isTransitioning()) {
+      deferredSessionStart = { sessionId, scope: getComposerDraftScope() };
+      return false;
+    }
+    return true;
+  }
+
   function queueComposerInput() {
+    if (sessionManager.isTransitioning()) return;
     if (getSkillLoadingSettings().loadCodexLocalSkills !== false && !Array.isArray(getCodexLocalSkillsCatalog())) {
       primeCodexLocalSkillsCatalog({ required: true }).catch(() => {});
       showPluginToast(tx('Local Codex skills are still loading. Try submitting again when loading finishes.',
@@ -3595,7 +3623,8 @@
     const running = typeof runningOverride === 'boolean'
       ? runningOverride
       : Boolean(currentRunView);
-    const action = running && !hasInput ? 'cancel' : 'send';
+    const transitioning = sessionManager.isTransitioning();
+    const action = running && (!hasInput || transitioning) ? 'cancel' : 'send';
     const label = action === 'cancel'
       ? tr('cancelRun')
       : running
@@ -3604,13 +3633,17 @@
     runButton.dataset.action = action;
     runButton.disabled = action === 'cancel'
       ? runCancellationRequested
-      : !hasInput;
+      : !hasInput || transitioning;
     runButton.title = label;
     runButton.setAttribute('aria-label', label);
-    if (currentRunView?.writebackRetry && hasInput) runButton.disabled = true;
+    if (currentRunView?.writebackRetry && hasInput && action !== 'cancel') runButton.disabled = true;
   }
 
   function handleTaskInputKeydown(event) {
+    if (sessionManager.isTransitioning()) {
+      if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) event.preventDefault();
+      return;
+    }
     if (handleSlashMenuKeydown(event)) {
       return;
     }
@@ -4085,6 +4118,7 @@
   }
 
   function selectSlashCommand(commandId) {
+    if (sessionManager.isTransitioning()) return;
     const command = renderedSlashCommands.get(commandId);
     if (!command) {
       closeSlashMenu();
@@ -6501,7 +6535,7 @@
   }
 
   function getCompactAvailability() {
-    if (updateIdleClient?.isApplying() || currentRunView || runSubmissionPending) return { ok: false, reason: 'compactBusy' };
+    if (sessionManager.isTransitioning() || updateIdleClient?.isApplying() || currentRunView || runSubmissionPending) return { ok: false, reason: 'compactBusy' };
     if (!getActiveSession(state)?.codexThreadId) return { ok: false, reason: 'compactNoThread' };
     return { ok: true };
   }

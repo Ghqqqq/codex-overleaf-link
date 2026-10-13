@@ -164,6 +164,8 @@ Legacy conclusions without an identity remain opaque except for a narrowly evide
 
 ### Submitted Input, Drafts During a Run, and Edit & Resend
 
+New/switch session operations briefly protect the composer while the old draft's composition and durable save finish. [ComposerPanel.setSessionTransition](../../extension/src/content/composerPanel.js) keeps task text readable and preserves Cancel; `SessionManager.isTransitioning` guards sending, slash commands and queue promotion. Programmatic queue pull-back and Edit & resend check the read-only input before consuming their source or replacing text. Outside this transition, input during a model run remains editable. See [draft ownership and scheduling](run-state-and-recovery.md#composer-draft-persistence).
+
 These three states resemble a letter already sent, a draft on the desk, and a letter waiting to be sent: a submitted run consumes its execution snapshot, new input in the current textarea writes the active session's `task`, and queued items retain their own text/payload. Locate each owner separately when a run ends, a session switches, or the view is redrawn.
 
 ```text
@@ -314,6 +316,8 @@ When changing activity or written-change display, check one representative live 
 <a id="failure-settlement-actions"></a>
 
 ### Sources of Failures, Settlement, and Recovery Actions
+
+For the saved pair `native_request_failed` / `source: panel_reload`, [FailureReasons.getFailureMessageCode](../../extension/src/shared/failureReasons.js) displays the page-refresh interruption reason and resend guidance in the current language. This is a display mapping: original records and recovery codes remain intact, including Edit & resend. Errors without the explicit refresh source retain their normal messages. A higher-priority uncertain-write failure continues to direct the user to the existing review action.
 
 **Current behavior.** Failure explanations, terminal run states, writeback evidence, and clickable actions are produced through different paths. When investigating a report that says completed while showing a warning, or a retry notice without a button, check each producer and consumer in the table separately.
 

@@ -174,6 +174,7 @@
 
     return {
       setRunning: running => setRunning(instance, running),
+      setSessionTransition: pending => setSessionTransition(instance, pending),
       setModels: models => setModels(instance, models),
       setMode: mode => setMode(instance, mode),
       focus: () => focus(instance),
@@ -195,15 +196,31 @@
     bind(instance, form, 'drop', event => instance.callbacks.onDrop?.(event));
     bind(instance, instance.container.querySelector('[data-run]'), 'click', event => {
       event.preventDefault();
-      if (instance.callbacks.isRunning?.() && !String(task?.value || '').trim()) {
+      if (instance.container.querySelector('[data-run]')?.dataset.action === 'cancel') {
         instance.callbacks.onCancel?.();
         return;
       }
       form?.requestSubmit?.();
     });
     bind(instance, task, 'keydown', event => instance.callbacks.onTaskKeydown?.(event));
-    bind(instance, task, 'input', event => instance.callbacks.onTaskInput?.(event));
-    bind(instance, task, 'compositionend', event => instance.callbacks.onInputChange?.(event));
+    bind(instance, task, 'input', event => {
+      if (acceptTaskInput(instance, task)) instance.callbacks.onTaskInput?.(event);
+    });
+    bind(instance, task, 'compositionstart', () => {
+      const composition = { scope: instance.callbacks.getTaskScope?.() };
+      composition.done = new Promise(resolve => { composition.resolve = resolve; });
+      instance.composition = composition;
+    });
+    bind(instance, task, 'compositionend', event => {
+      const composition = instance.composition;
+      if (acceptTaskInput(instance, task)) instance.callbacks.onInputChange?.(event);
+      // Chrome may emit the final input after compositionend. Keep its original
+      // owner until that event batch has finished, before a session can change.
+      if (composition) setTimeout(() => {
+        if (instance.composition === composition) instance.composition = null;
+        composition.resolve();
+      }, 0);
+    });
     bind(instance, instance.container.querySelector('[data-slash-menu]'), 'click', event => instance.callbacks.onSlashMenuClick?.(event));
     bind(instance, instance.container.querySelector('[data-composer-skill-clear]'), 'click', () => instance.callbacks.onClearSkillInvocation?.());
     bind(instance, instance.container.querySelector('[data-add-context]'), 'click', () => instance.callbacks.onAddContext?.());
@@ -220,8 +237,11 @@
     }
     for (const selector of ['[data-model]', '[data-reasoning]', '[data-speed]', '[data-mode]', '[data-task]', '[data-require-reviewing]', '[data-auto-recompile]']) {
       const element = instance.container.querySelector(selector);
-      bind(instance, element, 'change', event => instance.callbacks.onInputChange?.(event));
-      bind(instance, element, 'input', event => instance.callbacks.onInputChange?.(event));
+      const changed = event => {
+        if (element !== task || acceptTaskInput(instance, task)) instance.callbacks.onInputChange?.(event);
+      };
+      bind(instance, element, 'change', changed);
+      bind(instance, element, 'input', changed);
     }
   }
 
@@ -249,6 +269,25 @@
     }
   }
 
+  function acceptTaskInput(instance, task) {
+    if (instance.composition && instance.composition.scope !== instance.callbacks.getTaskScope?.()) {
+      task.value = instance.callbacks.getTaskValue?.() || '';
+      return false;
+    }
+    return !instance.sessionTransition || Boolean(instance.composition);
+  }
+
+  function setSessionTransition(instance, pending) {
+    const task = instance.container.querySelector('[data-task]');
+    if (pending && !instance.sessionTransition) instance.previousReadOnly = task?.readOnly === true;
+    instance.sessionTransition = pending;
+    const composition = instance.composition;
+    if (pending && composition) task?.blur();
+    if (task) task.readOnly = pending || instance.previousReadOnly === true;
+    setRunning(instance, Boolean(instance.callbacks.isRunning?.()));
+    return pending ? composition?.done : undefined;
+  }
+
   function setRunning(target, running) {
     const instance = target?._instance || target;
     const runButton = instance?.container?.querySelector('[data-run]');
@@ -256,14 +295,14 @@
       return;
     }
     const hasInput = Boolean(String(instance?.container?.querySelector('[data-task]')?.value || '').trim());
-    const action = running && !hasInput ? 'cancel' : 'send';
+    const action = running && (!hasInput || instance.sessionTransition) ? 'cancel' : 'send';
     const label = action === 'cancel'
       ? t(instance, 'cancelRun')
       : running
         ? t(instance, 'queueNextInput')
         : t(instance, 'send');
     runButton.dataset.action = action;
-    runButton.disabled = action === 'send' && !hasInput;
+    runButton.disabled = action === 'send' && (!hasInput || instance.sessionTransition);
     runButton.title = label;
     runButton.setAttribute('aria-label', label);
   }
@@ -332,6 +371,7 @@
   }
 
   function destroy(instance) {
+    instance.composition?.resolve();
     instance.menuResizeObserver?.disconnect();
     for (const { target, type, listener } of instance.listeners.splice(0)) {
       target.removeEventListener?.(type, listener);
