@@ -41,6 +41,7 @@ import '../src/shared/writebackOperationEvidence.js';
 import '../src/shared/writebackSettlement.js';
 import '../src/shared/sessionTitle.js';
 import '../src/shared/contextUsage.js';
+import '../src/shared/panelIcons.js';
 import '../src/shared/sessionState.js';
 import '../src/shared/changeHistoryModel.js';
 import '../src/shared/storageKeys.js';

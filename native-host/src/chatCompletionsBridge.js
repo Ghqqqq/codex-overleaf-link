@@ -13,6 +13,7 @@ const { classifyResponsesRoute } = require('./providerBridgeRoutes');
 const { providerError } = require('./providerProfile');
 const { fetchProvider, readProviderText, readProviderJson } = require('./providerHttp');
 const { sanitizeProviderMessage } = require('./providerRedaction');
+const { isContextLimitError } = require('./providerContextError');
 const { logDebug } = require('./debugLog');
 const {
   createProviderStreamLifecycle,
@@ -174,7 +175,7 @@ async function handleRequest({
     }, launch);
     lifecycle.touch();
     if (!upstream.ok) {
-      await forwardUpstreamError(upstream, res, launch.apiKey, lifecycle.touch);
+      await forwardUpstreamError(upstream, res, launch.apiKey, lifecycle.touch, requestBody.stream !== false);
       return;
     }
     const context = {
@@ -254,6 +255,10 @@ async function handleRequest({
     });
     if (controller.signal.aborted) {
       throw providerError('provider_connection_timeout', 'The provider request was cancelled or timed out.');
+    }
+    if (error?.code === 'context_length_exceeded' && !res.headersSent) {
+      sendContextLimitError(res, sanitizeProviderMessage(error.message, [launch.apiKey]), requestBody.stream !== false);
+      return;
     }
     throw error;
   } finally {
@@ -382,6 +387,7 @@ function normalizeBridgeErrorCode(value) {
     'provider_reasoning_continuation_exhausted',
     'provider_stream_tool_parse_failed',
     'provider_protocol_incompatible',
+    'context_length_exceeded',
     'provider_upstream_error'
   ].includes(value) ? value : 'provider_bridge_failed';
 }
@@ -392,14 +398,35 @@ function bridgeErrorMessage(code) {
     : 'The local provider bridge failed.';
 }
 
-async function forwardUpstreamError(upstream, res, apiKey, onActivity) {
+async function forwardUpstreamError(upstream, res, apiKey, onActivity, clientStream) {
   const text = (await readProviderText(upstream, onActivity)).slice(0, MAX_ERROR_BYTES);
   let message = `Provider returned HTTP ${upstream.status}.`;
+  let error;
   try {
     const parsed = JSON.parse(text);
+    error = parsed?.error || parsed;
     message = parsed?.error?.message || parsed?.message || message;
   } catch (_error) {}
+  if ([400, 413, 422].includes(upstream.status) && isContextLimitError(error || text)) {
+    sendContextLimitError(res, sanitizeProviderMessage(error ? message : text, [apiKey]), clientStream);
+    return;
+  }
   sendJsonError(res, upstream.status, 'provider_upstream_error', sanitizeProviderMessage(message, [apiKey]));
+}
+
+function sendContextLimitError(res, message, stream) {
+  const error = { type: 'invalid_request_error', code: 'context_length_exceeded', message };
+  if (!stream) {
+    sendJson(res, 400, { error });
+    return;
+  }
+  // Non-2xx JSON is a generic HTTP failure to the installed Codex client.
+  // Its typed context recovery consumes a Responses failure event instead.
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(`event: response.failed\ndata: ${JSON.stringify({
+    type: 'response.failed', sequence_number: 0,
+    response: { id: `resp_${crypto.randomUUID()}`, object: 'response', status: 'failed', error }
+  })}\n\n`);
 }
 
 function rememberHistory(history, responseId, messages, metadata = {}) {

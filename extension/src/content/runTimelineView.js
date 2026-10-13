@@ -11,6 +11,7 @@
     const {
       RunActivitySummary,
       RunPresence,
+      PanelIcons,
       RunActivityModel,
       SubagentActivityView,
       RunGuidanceView,
@@ -20,6 +21,7 @@
       RunFailureNotice,
       I18n,
       FailureReasons,
+      projectContextLimitEvent = value => value,
       localizeVisibleReason = value => value,
       localizeCompileReason = value => value,
       tr,
@@ -92,7 +94,7 @@
     const displayed = displayRun(run);
     return displayed ? { ...displayed, events: (displayed.events || []).map(sanitizeRunEventForRender) } : displayed;
   };
-  const activitySummary = RunActivitySummary?.create({ RunActivityModel, RunGuidanceView, getPendingGuidance, SubagentActivityView, tx, findRunRecord: (...args) => displayLocalizedRun(findRunRecord(...args)), getPanel, cssEscape,
+  const activitySummary = RunActivitySummary?.create({ RunActivityModel, RunGuidanceView, getPendingGuidance, SubagentActivityView, PanelIcons, tx, findRunRecord: (...args) => displayLocalizedRun(findRunRecord(...args)), getPanel, cssEscape,
     projectReviewResultEvent: sanitizeRunEventForRender,
     formatReviewResultFailure,
     formatEventTime, formatElapsed, renderMarkdownBlockText, renderRunEvent, formatEventDetail,
@@ -567,6 +569,7 @@
   }
 
   function sanitizeRunEventForRender(event = {}) {
+    event = projectContextLimitEvent(event);
     const streamRole = sanitizeAssistantVisibleText(event.streamRole);
     const title = sanitizeAssistantVisibleText(event.title);
     const activity = !streamRole && (!event.kind || event.kind === 'activity') && !event.guidanceId;

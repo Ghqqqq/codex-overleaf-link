@@ -2,9 +2,11 @@
 
 const crypto = require('node:crypto');
 const { requiresReasoningContentReplay } = require('./providerReasoning');
+const { isContextLimitError } = require('./providerContextError');
 const MAX_STREAM_BUFFER_BYTES = 8 * 1024 * 1024;
 
 function convertChatResponse(chat = {}, context = {}) {
+  if (chat.error) throwUpstreamError(chat.error);
   const choice = Array.isArray(chat.choices) ? chat.choices[0] || {} : {};
   const message = choice.message || {};
   assertNoLeakedToolControlTokens(message);
@@ -131,7 +133,7 @@ function writeConvertedResponseAsSse(res, converted, context = {}, onComplete = 
 
 function processChatChunk(state, res, chunk) {
   if (!chunk || typeof chunk !== 'object') return;
-  if (chunk.error) throw new Error(normalizeText(chunk.error.message) || 'Upstream provider returned an error.');
+  if (chunk.error) throwUpstreamError(chunk.error);
   if (chunk.id && !state.upstreamId) {
     state.upstreamId = chunk.id;
   }
@@ -489,6 +491,13 @@ function mapChatFinishReason(value) {
     return { status: 'incomplete', incompleteReason: 'provider_resource_exhausted' };
   }
   return { status: 'completed', incompleteReason: null };
+}
+
+function throwUpstreamError(detail) {
+  throw responseError(
+    normalizeText(detail?.message) || normalizeText(detail) || 'Upstream provider returned an error.',
+    isContextLimitError(detail) ? 'context_length_exceeded' : 'provider_upstream_error'
+  );
 }
 
 function responseError(message, code = 'provider_response_invalid') {

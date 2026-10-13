@@ -157,6 +157,9 @@
     "output_limit": {
       "message": "output limit exceeded"
     },
+    "context_limit": {
+      "code": "codex_context_limit"
+    },
     "codex_not_found": {
       "message": "codex_not_found"
     },
@@ -951,6 +954,13 @@
         failureCode: 'codex_local_skills_failed'
       };
     }
+    if (getFailureReasonsModule()?.isContextLimitError(text, context.code)) {
+      return {
+        conclusion: textFor(locale, '本轮已停止：上下文超出模型的容量限制。', 'This run stopped because the model context limit was exceeded.'),
+        nextStep: textFor(locale, '请重试任务；如果再次超限，可使用 /compact，或新建会话并减少上下文。', 'Retry the task. If the context limit is reached again, use /compact or start a new conversation with less context.'),
+        failureCode: 'codex_context_limit'
+      };
+    }
     const providerError = translateProviderError(text, locale);
     if (providerError) {
       return providerError;
@@ -1081,6 +1091,38 @@
     return { ...translated, ...(key ? { conclusionKey: `error:${key}` } : {}) };
   }
 
+  // Old Native failures retained the real transport error even when their
+  // product summary used the generic empty-result category. Re-project only
+  // those identified product events; model prose and stored records stay intact.
+  function projectContextLimitEvent(event, locale = 'en') {
+    const failure = event?.failure;
+    if (event?.status !== 'failed' || event.streamRole || event.guidanceId || event.subagent) return event;
+    if (failure?.code === 'codex_context_limit' && failure.stage === 'codex'
+      && (!event.kind || event.kind === 'activity')
+      && ['en', 'zh'].some(language => productConclusionText('error:context_limit', language) === event.title)) {
+      return { ...event, title: productConclusionText('error:context_limit', locale) };
+    }
+    if (failure?.code !== 'codex_no_usable_result' || failure.stage !== 'codex'
+      || !getFailureReasonsModule()?.isContextLimitError(failure.technicalMessage)) return event;
+    const generic = ['ask_failed', 'auto_failed'].flatMap(key => ['en', 'zh'].map(language =>
+      productConclusionText(`error:${key}`, language)));
+    const translated = translateRawError(failure.technicalMessage, { locale });
+    const projectedFailure = { ...failure, code: translated.failureCode,
+      userMessage: translated.conclusion, nextAction: translated.nextStep };
+    if ((!event.kind || event.kind === 'activity') && generic.includes(event.title)) {
+      return { ...event, title: translated.conclusion, failure: projectedFailure };
+    }
+    const structured = event.detailStructured, source = structured?.conclusionSource;
+    if (event.kind !== 'report' || source?.origin !== 'product'
+      || !['error:ask_failed', 'error:auto_failed'].includes(source.key)
+      || !generic.includes(structured.conclusion)) return event;
+    const oldNext = ['en', 'zh'].map(language => translateRawError('', { locale: language }).nextStep);
+    return { ...event, failure: projectedFailure, detailStructured: { ...structured,
+      conclusion: translated.conclusion, conclusionSource: { origin: 'product', key: translated.conclusionKey },
+      meta: (structured.meta || []).map(row => row.key === 'nextStep' && oldNext.includes(row.value)
+        ? { ...row, value: translated.nextStep } : row) } };
+  }
+
   function normalizeConclusionSource(source) {
     if (source?.origin !== 'product' || typeof source.key !== 'string') return null;
     if (productConclusionText(source.key) !== null) return { origin: 'product', key: source.key };
@@ -1135,7 +1177,7 @@
     const applyResults = normalizeApplyResults(input.applyResults);
     const appliedCount = countApplyResultEntries(applyResults, 'applied');
     const skippedCount = countApplyResultEntries(applyResults, 'skipped');
-    const translatedError = input.errorMessage ? translateRawError(input.errorMessage, { mode: input.mode, locale,
+    const translatedError = input.errorMessage ? translateRawError(input.errorMessage, { mode: input.mode, locale, code: input.failure?.code,
       codexReturned: input.conclusionKey === 'error:post_processing' }) : null;
     const userReport = normalizeUserReport(input.userReport);
     const report = userReport || buildFallbackReport(input, {
@@ -2023,6 +2065,7 @@
   return {
     buildHumanCompletionReport,
     projectProductConclusion,
+    projectContextLimitEvent,
     buildStructuredHumanReport,
     formatFallbackFinalReport,
     formatFailureBlock,

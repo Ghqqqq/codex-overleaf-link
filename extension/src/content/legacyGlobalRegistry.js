@@ -57,6 +57,7 @@
     'PostNavigationSettlementPersistence',
     'ProjectFiles',
     'ProjectProviderSelection',
+    'PanelIcons',
     'ProjectSettingsCoordinator',
     'ProviderSettingsCoordinator',
     'RecentProjects',

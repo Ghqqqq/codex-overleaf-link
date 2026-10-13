@@ -37,13 +37,17 @@ test('saved conversation text and recovery survive a new page without crossing a
     const session = { ...record('s', text), codexThreadId: owner.codexThreadId, contextUsage,
       runs: [{ ...owner, contextUsage, task: text, mode: 'auto', status: 'completed',
       runProjectId: scope.projectId, ...recovery, events: [{ kind: 'report', title: 'Answer', status: 'completed', detail: text }] }] };
-    const state = State.normalizePanelState({ activeSessionId: 's', sessions: [session] });
+    let state = State.normalizePanelState({ activeSessionId: 's', sessions: [session] });
+    const liveRun = state.runs[0], draft = '下一轮草稿：中文输入🙂';
+    state = State.updateActiveSessionDraft(state, draft);
+    liveRun.events.push({ kind: 'assistant', title: 'Later response', status: 'completed', detail: 'Arrived while typing' });
     await persist(connect(network, 1), state);
     const loaded = await connect(network, 2).getRecord('sessions', 's');
     const restored = State.normalizePanelState({ activeSessionId: 's', sessions: [loaded] });
-    assert.equal(restored.task, text);
+    assert.equal(restored.task, draft);
     assert.equal(restored.runs[0].task, text);
     assert.equal(restored.runs[0].events[0].detail, text);
+    assert.equal(restored.runs[0].events.at(-1).detail, 'Arrived while typing');
     assert.deepEqual(restored.runs[0].undoBaseFiles, recovery.undoBaseFiles);
     assert.deepEqual(restored.runs[0].undoExpectedFiles, recovery.undoExpectedFiles);
     assert.equal(contextUsage.usedTokens, 218700);

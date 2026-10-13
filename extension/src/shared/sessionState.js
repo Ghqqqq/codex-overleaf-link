@@ -444,6 +444,34 @@
     });
   }
 
+  // Composer input changes only the draft on an already normalized state.
+  // Keep live run/event objects intact so typing cannot detach their writers.
+  function updateActiveSessionDraft(state, task) {
+    const active = getActiveSession(state);
+    if (!active) {
+      return mirrorActiveSession({ ...state });
+    }
+    const draft = sanitizeAssistantVisibleText(task);
+    if (draft === active.task && draft === state.task) {
+      return state;
+    }
+    const rawTitle = typeof active.title === 'string' ? active.title.trim() : '';
+    const derivedTitle = deriveSessionTitle(active.runs, task);
+    const titleSource = normalizeTitleSource(active.titleSource, rawTitle, derivedTitle);
+    const next = {
+      ...active,
+      task: draft,
+      updatedAt: new Date().toISOString(),
+      title: normalizeSessionTitle(rawTitle, derivedTitle, titleSource),
+      titleSource
+    };
+    return {
+      ...state,
+      sessions: state.sessions.map(session => session === active ? next : session),
+      task: next.task
+    };
+  }
+
   function setActiveSession(state, sessionId) {
     if (!(state.sessions || []).some(session => session.id === sessionId)) {
       return mirrorActiveSession(state);
@@ -1783,6 +1811,7 @@
     selectVisibleSessionsForList,
     setActiveSession,
     updateActiveSession,
+    updateActiveSessionDraft,
     normalizeRuns,
     normalizeRunStatus,
     recoverRecordedRunFailure,

@@ -22,7 +22,7 @@
 
   const RETRYABLE_FAILURE_CODES = new Set([
     'native_request_failed', 'codex_timeout', 'codex_no_usable_result',
-    'codex_output_limit', 'stale_source_changed', 'patch_anchor_not_found',
+    'codex_output_limit', 'codex_context_limit', 'stale_source_changed', 'patch_anchor_not_found',
     'target_editor_not_ready', 'write_timeout', 'partial_write_needs_review',
     'write_operation_failed'
   ]);

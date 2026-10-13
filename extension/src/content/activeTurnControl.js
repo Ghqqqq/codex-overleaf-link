@@ -7,6 +7,12 @@
 })(typeof window !== 'undefined' ? window : globalThis, function activeTurnControlFactory() {
   'use strict';
 
+  // Startup has an owner before a Native request exists. This identity is only
+  // for ownership probes; nativeRequestId remains reserved for the actual RPC.
+  function getStartupRequestId(sessionId, runId) {
+    return `startup:${encodeURIComponent(sessionId)}:${encodeURIComponent(runId)}`;
+  }
+
   function create(options = {}) {
     const runtime = options.chrome?.runtime;
     let port = null;
@@ -123,7 +129,9 @@
         const response = await runtime.sendMessage({ type: 'codex-overleaf/run-journal/known',
           requestIds: ids, owners: owners.slice(offset, offset + 64) });
         // An older background cannot rule out browser-only owners.
-        if (!response?.ok || !Array.isArray(response.known) || response.ownersChecked !== true) {
+        const needsStartupInventory = owners.slice(offset, offset + 64).some(owner => owner.preDispatch === true);
+        if (!response?.ok || !Array.isArray(response.known) || response.ownersChecked !== true
+          || (needsStartupInventory && response.preDispatchChecked !== true)) {
           if (Number.isFinite(response?.retryAfterMs) && response.retryAfterMs > 0) onRetry?.(response.retryAfterMs);
           return null;
         }
@@ -138,7 +146,8 @@
       const now = Date.now(), candidates = [];
       let recheckAfterMs = Infinity;
       const sessions = () => options.listSessions?.() || [];
-      const eligible = (session, record) => record.status === 'running' && record.nativeRequestId
+      const requestIdFor = (session, record) => record.nativeRequestId || getStartupRequestId(session.id, record.id);
+      const eligible = (session, record) => record.status === 'running' && session.id && record.id
         && !options.isLiveRun?.(record, session)
         && (!session.projectId || session.projectId === projectKey)
         && (!options.accountScopeId || !session.accountScopeId || session.accountScopeId === options.accountScopeId)
@@ -150,13 +159,14 @@
           if (!Number.isFinite(started)) continue;
           const remaining = started + (options.orphanGraceMs ?? 60000) - now;
           if (remaining > 0) { recheckAfterMs = Math.min(recheckAfterMs, remaining); continue; }
-          candidates.push({ session, record, requestId: record.nativeRequestId });
+          candidates.push({ session, record, requestId: requestIdFor(session, record) });
         }
       }
       result.recheckAfterMs = Number.isFinite(recheckAfterMs) ? recheckAfterMs : null;
       if (!candidates.length) return;
       const known = await knownJournals(candidates.map(item => item.requestId), candidates.map(({ session, record, requestId }) => ({
-        requestId, projectKey, clientRunId: record.id, sessionId: session.id
+        requestId, projectKey, clientRunId: record.id, sessionId: session.id,
+        ...(!record.nativeRequestId ? { preDispatch: true } : {})
       })), delay => {
         const key = `${options.accountScopeId || ''}:${projectKey}`;
         const attempts = inventoryRetries.get(key) || 0;
@@ -170,7 +180,7 @@
         const currentSession = sessions().find(value => value.id === session.id);
         // State normalization can replace run objects while inventory is pending.
         if (!currentSession?.runs?.includes(record) || !eligible(currentSession, record)
-          || record.nativeRequestId !== requestId || known.has(requestId)) continue;
+          || requestIdFor(currentSession, record) !== requestId || known.has(requestId)) continue;
         if (!record.runProjectId) record.runProjectId = projectKey;
         options.normalizeInterruptedRun?.(record);
         record.status = 'interrupted';
@@ -337,5 +347,5 @@
       appendText: options.sanitizeText(activity.appendText), replaceText: activity.replaceText };
   }
 
-  return { create, createInterruptedRun, mapRecoveredEvent };
+  return { create, createInterruptedRun, mapRecoveredEvent, getStartupRequestId };
 });

@@ -74,18 +74,27 @@
     return Date.parse(next.observedAt) > Date.parse(previous.observedAt);
   }
 
-  function select(session, scope = {}) {
-    if (!session || session.forkSnapshot === true) return null;
+  // `scope.compactedAt` (epoch ms) carries an automatic compaction completed
+  // inside a normal turn; manual compact runs are read from the session.
+  // `pending` means the old sample is invalid; `compacted` additionally requires
+  // successful completion of the most recent compaction that invalidated it.
+  function status(session, scope = {}) {
+    if (!session || session.forkSnapshot === true) return { usage: null, pending: false, compacted: false };
     const inThread = value => value && value.threadId === identity(scope.threadId || scope.codexThreadId)
       && value.providerId === identity(scope.providerId)
       && value.providerRevision === count(scope.providerRevision);
     // A dispatched compaction can change this thread even when its completion
     // is lost on reload. Do not re-display a pre-compaction sample as current.
     const runs = Array.isArray(session.runs) ? session.runs : [];
-    const compactedAfter = runs.reduce((latest, run) =>
-      run?.operation === 'compact' && !run.forkSnapshot
-        && run.codexThreadId === identity(scope.threadId || scope.codexThreadId)
-        ? Math.max(latest, Date.parse(run.startedAt || '') || 0) : latest, 0);
+    let invalidatedAfter = Number.isFinite(scope.compactedAt) && scope.compactedAt > 0 ? scope.compactedAt : 0;
+    let completedAfter = invalidatedAfter;
+    for (const run of runs) {
+      if (run?.operation !== 'compact' || run.forkSnapshot
+        || run.codexThreadId !== identity(scope.threadId || scope.codexThreadId)) continue;
+      const startedAt = Date.parse(run.startedAt || '') || 0;
+      invalidatedAfter = Math.max(invalidatedAfter, startedAt);
+      if (run.status === 'completed') completedAfter = Math.max(completedAfter, startedAt);
+    }
     let selected = normalize(session.contextUsage);
     if (!inThread(selected)) selected = null;
     for (const run of runs) {
@@ -94,10 +103,23 @@
       if (!inThread(candidate) || candidate.runId !== run.id) continue;
       if (isNewer(candidate, selected)) selected = candidate;
     }
+    const beforeCompaction = !selected || Date.parse(selected.observedAt) < invalidatedAfter;
     // A later turn can grow this thread using another model. Selecting an older
     // model again must not resurrect its obsolete, smaller context estimate.
-    return selected?.model === identity(scope.model) && Date.parse(selected.observedAt) >= compactedAfter ? selected : null;
+    const usage = selected?.model === identity(scope.model) && !beforeCompaction ? selected : null;
+    const pending = !usage && invalidatedAfter > 0 && beforeCompaction;
+    return { usage, pending, compacted: pending && completedAfter >= invalidatedAfter };
   }
 
-  return { normalize, fromEvent, matches, isNewer, select };
+  function select(session, scope = {}) {
+    return status(session, scope).usage;
+  }
+
+  // Presentation level of a reported share of the window, in percent.
+  function level(percent) {
+    if (typeof percent !== 'number' || !Number.isFinite(percent)) return '';
+    return percent >= 90 ? 'near-limit' : percent >= 70 ? 'high' : 'normal';
+  }
+
+  return { normalize, fromEvent, matches, isNewer, select, status, level };
 });

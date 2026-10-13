@@ -13,6 +13,7 @@
       attachmentController: options.attachmentController || null,
       listeners: []
     };
+    const icon = name => options.icons?.svg(name) || '';
 
     container.innerHTML = `
       <div class="codex-pending-inputs" data-pending-inputs hidden></div>
@@ -20,9 +21,9 @@
         <div class="codex-attachment-strip codex-attachment-preview-list" data-attachment-strip hidden></div>
         <div class="codex-composer-selection" data-composer-selection hidden></div>
         <div class="codex-composer-skill-context" data-composer-skill-context hidden>
-          <span class="codex-composer-skill-icon" aria-hidden="true">◇</span>
+          <span class="codex-composer-skill-icon" aria-hidden="true">${icon('sparkle')}</span>
           <span data-composer-skill-label></span>
-          <button type="button" data-composer-skill-clear title="Clear skill" aria-label="Clear skill">×</button>
+          <button type="button" data-composer-skill-clear title="Clear skill" aria-label="Clear skill">${icon('close')}</button>
         </div>
         <textarea data-task rows="3" placeholder="Ask Codex anything. Type @ to add context"></textarea>
         <div class="codex-context-summary" data-context-summary hidden></div>
@@ -60,32 +61,39 @@
           </div>
         </div>
         <div class="codex-composer-toolbar">
-          <button type="button" data-add-context title="Add @ context" aria-label="Add @ context" aria-expanded="false">＋</button>
+          <button type="button" data-add-context title="Add @ context" aria-label="Add @ context" aria-expanded="false">${icon('plus')}</button>
           <div class="codex-model-config" data-model-config>
             <div class="codex-context-usage" data-context-usage data-unknown="true">
               <button type="button" class="codex-context-usage-button" data-context-usage-toggle aria-expanded="false">
-                <svg class="codex-context-usage-ring" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                  <circle class="codex-context-usage-track" cx="10" cy="10" r="7.5"></circle>
-                  <circle class="codex-context-usage-fill" cx="10" cy="10" r="7.5" pathLength="100"></circle>
+                <svg class="codex-context-usage-ring" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                  <circle class="codex-context-usage-track" cx="8" cy="8" r="6.4" pathLength="100"></circle>
+                  <circle class="codex-context-usage-fill" cx="8" cy="8" r="2.55" pathLength="100"></circle>
+                  <circle class="codex-context-usage-orbit" cx="8" cy="8" r="6.4" pathLength="100"></circle>
                 </svg>
               </button>
               <div class="codex-context-usage-popover" data-context-usage-popover role="region" tabindex="0" hidden>
-                <div class="codex-context-usage-heading">
-                  <span data-context-usage-title></span>
-                  <span data-context-usage-percent hidden></span>
-                </div>
-                <div class="codex-context-usage-amount" data-context-usage-amount></div>
-                <div class="codex-context-usage-bar" aria-hidden="true"><span></span></div>
-                <div class="codex-context-usage-note" data-context-usage-note></div>
-                <div class="codex-context-usage-breakdown" data-context-usage-breakdown hidden>
-                  <div class="codex-context-usage-heading" data-context-usage-breakdown-title></div>
-                  <div class="codex-context-usage-detail-row"><span data-context-usage-input-label></span><span data-context-usage-input></span></div>
-                  <div class="codex-context-usage-detail-row"><span data-context-usage-output-label></span><span data-context-usage-output></span></div>
-                  <div class="codex-context-usage-note" data-context-usage-breakdown-basis></div>
-                  <div class="codex-context-usage-cache" data-context-usage-cache>
-                    <div class="codex-context-usage-detail-row"><span data-context-usage-cached-label></span><span data-context-usage-cached></span></div>
-                    <div class="codex-context-usage-detail-row"><span data-context-usage-cache-rate-label></span><span data-context-usage-cache-rate></span></div>
+                <div class="codex-context-usage-head">
+                  <div class="codex-context-usage-head-text">
+                    <div class="codex-context-usage-title" data-context-usage-title></div>
+                    <div class="codex-context-usage-amount" data-context-usage-amount></div>
                   </div>
+                  <div class="codex-context-usage-figure" data-context-usage-figure>
+                    <span class="codex-context-usage-spinner" data-context-usage-spinner hidden>${icon('spin')}</span>
+                    <span class="codex-context-usage-chip" data-context-usage-chip hidden></span>
+                    <span class="codex-context-usage-percent" data-context-usage-percent-wrap><span data-context-usage-percent></span><small data-context-usage-percent-sign>%</small></span>
+                    <span class="codex-context-usage-level" data-context-usage-level hidden></span>
+                  </div>
+                </div>
+                <div class="codex-context-usage-note" data-context-usage-note hidden>${icon('compact')}<span data-context-usage-note-text></span></div>
+                <div class="codex-context-usage-bar" data-context-usage-bar aria-hidden="true"><i data-seg="cached"></i><i data-seg="input"></i><i data-seg="output"></i></div>
+                <div class="codex-context-usage-legend" data-context-usage-breakdown hidden>
+                  <div class="codex-context-usage-row"><i class="codex-context-usage-swatch" data-seg="input"></i><span data-context-usage-input-label></span><b data-context-usage-input></b><em data-context-usage-input-share></em></div>
+                  <div class="codex-context-usage-row" data-sub data-context-usage-cache><i class="codex-context-usage-swatch" data-seg="cached"></i><span data-context-usage-cached-label></span><b data-context-usage-cached></b><em data-context-usage-cache-rate></em></div>
+                  <div class="codex-context-usage-row"><i class="codex-context-usage-swatch" data-seg="output"></i><span data-context-usage-output-label></span><b data-context-usage-output></b><em data-context-usage-output-share></em></div>
+                </div>
+                <div class="codex-context-usage-foot">
+                  <span data-context-usage-reported hidden></span>
+                  <button type="button" class="codex-context-usage-compact" data-context-usage-compact>${icon('compact')}<span data-context-usage-compact-label></span></button>
                 </div>
               </div>
             </div>
@@ -126,7 +134,10 @@
               </div>
             </div>
           </div>
-          <button type="submit" data-run data-action="send" title="Send" aria-label="Send">↑</button>
+          <button type="submit" data-run data-action="send" title="Send" aria-label="Send">
+            <span class="codex-run-glyph" data-run-glyph="send">${icon('send')}</span>
+            <span class="codex-run-glyph" data-run-glyph="cancel">${icon('stop')}</span>
+          </button>
         </div>
         <div class="codex-slash-menu" data-slash-menu hidden>
           <button type="button" data-slash-command="install-skill" data-slash-command-kind="installer">
@@ -146,9 +157,9 @@
                 </svg>
                 <span class="codex-context-sync-copy" data-context-sync-copy></span>
               </span>
-              <button type="button" class="codex-attach-button" data-attach-file title="Attach files (PDF, images)" aria-label="Attach files (PDF, images)">⌲</button>
+              <button type="button" class="codex-attach-button" data-attach-file title="Attach files (PDF, images)" aria-label="Attach files (PDF, images)">${icon('attach')}</button>
               <input type="file" data-attach-input multiple hidden>
-              <button type="button" data-context-refresh title="Refresh file list" aria-label="Refresh file list">↻</button>
+              <button type="button" data-context-refresh title="Refresh file list" aria-label="Refresh file list">${icon('refresh')}</button>
             </span>
           </div>
           <div class="codex-context-selection" data-context-selection></div>
@@ -192,6 +203,7 @@
     });
     bind(instance, task, 'keydown', event => instance.callbacks.onTaskKeydown?.(event));
     bind(instance, task, 'input', event => instance.callbacks.onTaskInput?.(event));
+    bind(instance, task, 'compositionend', event => instance.callbacks.onInputChange?.(event));
     bind(instance, instance.container.querySelector('[data-slash-menu]'), 'click', event => instance.callbacks.onSlashMenuClick?.(event));
     bind(instance, instance.container.querySelector('[data-composer-skill-clear]'), 'click', () => instance.callbacks.onClearSkillInvocation?.());
     bind(instance, instance.container.querySelector('[data-add-context]'), 'click', () => instance.callbacks.onAddContext?.());

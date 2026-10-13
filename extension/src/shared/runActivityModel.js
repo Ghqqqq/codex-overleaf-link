@@ -244,6 +244,17 @@
       && /(?:^|[\/\s"';&|])(?:latexmk|pdflatex|xelatex|lualatex|bibtex|biber)(?=\s|["']|$)/i.test(meta.command);
   }
 
+  // Read the completion watermark without building a full timeline for every
+  // older run when the composer refreshes its context indicator.
+  function getCompactedAt(run = {}) {
+    return (Array.isArray(run.events) ? run.events : []).reduce((latest, event) => {
+      if (!event || event.kind === 'report') return latest;
+      const meta = event.activity?.v === 1 ? event.activity : capture(event);
+      return meta?.kind === 'lifecycle' && meta.target === 'context_compaction' && meta.state === 'completed'
+        ? Math.max(latest, Date.parse(event.timestamp || '') || 0) : latest;
+    }, 0);
+  }
+
   function project(run = {}, incoming, options = {}) {
     const saved = Array.isArray(run.events) ? run.events : [];
     // Stream updates are saved before rendering; buffering and localization copy
@@ -257,6 +268,7 @@
     const diagnosticNotices = new Set();
     const byId = new Map();
     const compactions = new Map();
+    let compactedAt = 0;
     const report = events.filter(event => event?.kind === 'report').at(-1);
     const finalText = text(report?.detailStructured?.conclusion
       || report?.detail?.Conclusion || report?.detail?.['结论']).trim();
@@ -331,6 +343,7 @@
         startWork(event);
         const identity = meta.id || meta.scope;
         if (meta.state !== 'running') {
+          if (meta.state === 'completed') compactedAt = Math.max(compactedAt, Date.parse(event.timestamp || '') || 0);
           compactions.set(identity, { scope: meta.scope, running: false });
           // Legacy completions have no item id and close the scope's active item.
           if (!meta.id) for (const entry of compactions.values()) {
@@ -406,8 +419,9 @@
     if (stage === 'local_completed') startWork({});
     const compacting = run.status === 'running' && stage !== 'local_completed'
       && [...compactions.values()].some(entry => entry.running);
-    return { blocks, diagnostics, notices, stage, compacting, setup, fileCount: files.size, clipped, hasReport: Boolean(report), legacy };
+    // Latest completed compaction in this run, in epoch milliseconds; 0 when none completed.
+    return { blocks, diagnostics, notices, stage, compacting, compactedAt, setup, fileCount: files.size, clipped, hasReport: Boolean(report), legacy };
   }
 
-  return { normalize, capture, project, contextCompactionState, normalizePhase: phase, isRoutineCancellationEvent };
+  return { normalize, capture, project, getCompactedAt, contextCompactionState, normalizePhase: phase, isRoutineCancellationEvent };
 });

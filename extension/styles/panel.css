@@ -4537,40 +4537,47 @@
 
 #codex-overleaf-panel .codex-slash-menu {
   position: absolute;
-  left: 8px;
-  right: 8px;
+  left: 6px;
+  right: 6px;
   bottom: calc(100% + 6px);
   z-index: 2147483647;
   display: grid;
   grid-auto-rows: max-content;
   align-content: start;
-  gap: 2px;
+  gap: 1px;
   box-sizing: border-box;
-  max-height: min(360px, var(--codex-slash-menu-space, 50vh));
+  max-height: min(390px, var(--codex-slash-menu-space, 50vh));
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
   border: 1px solid var(--tl-border-strong);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--tl-surface-2);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
-  padding: 5px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.48), 0 2px 6px rgba(0, 0, 0, 0.24);
+  padding: 4px 4px 0;
 }
+
+#codex-overleaf-panel[data-theme="light"] .codex-slash-menu { box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16), 0 2px 6px rgba(15, 23, 42, 0.06); }
 
 #codex-overleaf-panel .codex-slash-menu[hidden] {
   display: none;
 }
 
+#codex-overleaf-panel .codex-slash-menu-group { padding: 8px 8px 4px; color: var(--tl-fg-3); font-size: 11px; font-weight: 500; }
+#codex-overleaf-panel .codex-slash-menu-group:first-child { padding-top: 5px; }
+
 #codex-overleaf-panel .codex-slash-menu button {
   display: grid;
-  gap: 2px;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
   width: 100%;
   min-width: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   color: var(--tl-fg-1);
-  padding: 7px 8px;
+  padding: 5px 8px 5px 5px;
   text-align: left;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -4578,20 +4585,77 @@
 
 #codex-overleaf-panel .codex-slash-menu button[data-active="true"],
 #codex-overleaf-panel .codex-slash-menu button:hover {
-  background: var(--tl-accent-wash);
+  background: var(--tl-hover);
   color: var(--tl-fg-1);
 }
 
+#codex-overleaf-panel .codex-slash-menu-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--tl-surface-1);
+  box-shadow: inset 0 0 0 1px var(--tl-border);
+  color: var(--tl-fg-2);
+  transition: background-color var(--tl-m-fast), color var(--tl-m-fast);
+}
+#codex-overleaf-panel .codex-slash-menu-icon .codex-glyph { width: 14px; height: 14px; stroke-width: 1.5; }
+#codex-overleaf-panel .codex-slash-menu button[data-active="true"] .codex-slash-menu-icon {
+  background: var(--tl-accent-wash);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tl-accent) 32%, transparent);
+  color: var(--tl-accent);
+}
+#codex-overleaf-panel .codex-slash-menu-text { display: grid; gap: 1px; min-width: 0; }
+#codex-overleaf-panel .codex-slash-menu-title { font-size: 12.5px; font-weight: 500; line-height: 1.35; }
+#codex-overleaf-panel .codex-slash-menu-title code { margin: 0 0 0 7px; padding: 0; border: 0; background: none; color: var(--tl-fg-3); font: 400 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+#codex-overleaf-panel .codex-slash-menu mark { background: none; color: var(--tl-accent); font-weight: 600; }
+#codex-overleaf-panel .codex-slash-menu-meta { padding: 1px 6px; border-radius: 5px; background: var(--tl-surface-1); box-shadow: inset 0 0 0 1px var(--tl-border); color: var(--tl-fg-3); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+#codex-overleaf-panel .codex-slash-menu-meta[data-level="high"] { color: var(--tl-review); }
+#codex-overleaf-panel .codex-slash-menu-meta[data-level="near-limit"] { color: var(--tl-fail); }
+
+/* The hint row stays visible while the list scrolls; keyboard reveal subtracts its height. */
+#codex-overleaf-panel .codex-slash-menu-foot {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 3px -4px 0;
+  padding: 7px 12px;
+  border-top: 1px solid var(--tl-border);
+  background: var(--tl-surface-2);
+  color: var(--tl-fg-3);
+  font-size: 10.5px;
+}
+#codex-overleaf-panel .codex-slash-menu-foot kbd {
+  display: inline-block;
+  min-width: 9px;
+  margin-right: 4px;
+  padding: 0 4px;
+  border: 1px solid var(--tl-border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  color: var(--tl-fg-2);
+  font: 10px/14px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+}
+#codex-overleaf-panel .codex-slash-menu-foot kbd + kbd { margin-left: -2px; }
+
 #codex-overleaf-panel .codex-slash-menu-note {
-  padding: 8px 10px;
+  padding: 8px 10px 12px;
   color: var(--tl-fg-3);
   font-size: 12px;
 }
 
 #codex-overleaf-panel .codex-slash-menu small {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   color: var(--tl-fg-3);
   font-size: 11px;
-  line-height: 1.3;
+  line-height: 1.35;
 }
 
 #codex-overleaf-panel .codex-composer-skill-context {
@@ -4615,9 +4679,12 @@
 }
 
 #codex-overleaf-panel .codex-composer-skill-icon {
+  display: inline-grid;
   color: var(--tl-accent);
-  font-size: 13px;
 }
+
+#codex-overleaf-panel .codex-composer-skill-icon .codex-glyph { width: 13px; height: 13px; stroke-width: 1.4; }
+#codex-overleaf-panel .codex-composer-skill-context button .codex-glyph { width: 11px; height: 11px; stroke-width: 1.7; }
 
 #codex-overleaf-panel .codex-composer-skill-context [data-composer-skill-label] {
   overflow: hidden;
@@ -4985,6 +5052,8 @@
   min-width: 26px;
 }
 
+#codex-overleaf-panel .codex-composer-toolbar [data-add-context] .codex-glyph { width: 15px; height: 15px; stroke-width: 1.6; }
+
 /* Independent native checkbox preferences; the visual check is decorative. */
 #codex-overleaf-panel .codex-write-preferences {
   display: flex;
@@ -5122,23 +5191,44 @@
   outline-offset: 2px;
 }
 
+/* Pie indicator: a hairline outline plus a solid wedge. A stroke as wide as
+   twice the inner radius turns the dash length into a filled sector. */
+#codex-overleaf-panel .codex-context-usage {
+  --context-usage-level: var(--tl-fg-2);
+  --context-usage-seg-input: var(--tl-accent);
+  --context-usage-seg-output: var(--tl-run);
+  --context-usage-seg-cached: repeating-linear-gradient(135deg, var(--tl-accent) 0 1.6px,
+    color-mix(in srgb, var(--tl-accent) 38%, transparent) 1.6px 3.4px);
+}
+#codex-overleaf-panel .codex-context-usage[data-level="high"] { --context-usage-level: var(--tl-review); }
+#codex-overleaf-panel .codex-context-usage[data-level="near-limit"] { --context-usage-level: var(--tl-fail); }
 #codex-overleaf-panel .codex-context-usage-ring {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  overflow: visible;
   fill: none;
-  stroke-width: 2.5;
   transform: rotate(-90deg);
 }
-
-#codex-overleaf-panel .codex-context-usage-track { stroke: var(--tl-border-strong); }
+#codex-overleaf-panel .codex-context-usage-track { stroke: var(--tl-fg-3); stroke-width: 1.1; }
 #codex-overleaf-panel .codex-context-usage-fill {
-  stroke: var(--tl-accent);
+  stroke: var(--context-usage-level);
+  stroke-width: 5.1;
   stroke-dasharray: var(--context-usage-percent, 0) 100;
+  transition: stroke-dasharray var(--tl-m-slow) var(--tl-m-ease), stroke var(--tl-m-base) var(--tl-m-ease);
 }
+#codex-overleaf-panel .codex-context-usage[data-level="normal"] .codex-context-usage-button:is(:hover, [aria-expanded="true"]) .codex-context-usage-fill { stroke: var(--tl-fg-1); }
 #codex-overleaf-panel .codex-context-usage[data-unknown="true"] .codex-context-usage-fill { visibility: hidden; }
-#codex-overleaf-panel .codex-context-usage[data-compacting="true"] .codex-context-usage-ring { animation: tl-spin var(--tl-m-spin) linear infinite; }
-#codex-overleaf-panel .codex-context-usage[data-compacting="true"] .codex-context-usage-fill { visibility: visible; stroke-dasharray: 25 100; }
+/* Track dashes use pathLength units (100 per circumference). */
+#codex-overleaf-panel .codex-context-usage[data-unknown="true"] .codex-context-usage-track { stroke: var(--tl-fg-4); stroke-dasharray: 3.5 4.3; }
+#codex-overleaf-panel .codex-context-usage[data-pending="true"] .codex-context-usage-track { stroke: var(--tl-fg-3); stroke-width: 1.3; }
+/* Compaction keeps the reading still and dimmed; only an accent arc circles the
+   outline. Rotating the whole ring would replace its -90deg start offset. */
+#codex-overleaf-panel .codex-context-usage-orbit { visibility: hidden; stroke: var(--tl-accent); stroke-width: 1.6; stroke-linecap: round; stroke-dasharray: 26 74; transform-box: fill-box; transform-origin: center; }
+#codex-overleaf-panel .codex-context-usage[data-compacting="true"] .codex-context-usage-orbit { visibility: visible; animation: codex-context-usage-orbit 1s linear infinite; }
+#codex-overleaf-panel .codex-context-usage[data-compacting="true"] .codex-context-usage-track { stroke: var(--tl-fg-4); stroke-dasharray: none; }
+#codex-overleaf-panel .codex-context-usage[data-compacting="true"] .codex-context-usage-fill { stroke: var(--tl-fg-3); }
+@keyframes codex-context-usage-orbit { to { transform: rotate(360deg); } }
 
 #codex-overleaf-panel .codex-context-usage-popover {
   box-sizing: border-box;
@@ -5146,32 +5236,61 @@
   z-index: 2147483647;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 14px;
+  padding: 12px 12px 10px;
   border: 1px solid var(--tl-border-strong);
   border-radius: 10px;
   background: var(--tl-surface-2);
   color: var(--tl-fg-2);
-  box-shadow: 0 8px 24px #00000030;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.48), 0 2px 6px rgba(0, 0, 0, 0.24);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.45;
   overflow-wrap: anywhere;
+  animation: tl-slide-in 160ms var(--tl-m-ease);
 }
-
-#codex-overleaf-panel .codex-context-usage-popover[hidden] { display: none; }
-#codex-overleaf-panel .codex-context-usage-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--tl-fg-1); font-weight: 600; }
-#codex-overleaf-panel [data-context-usage-percent] { color: var(--tl-fg-3); font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
-#codex-overleaf-panel .codex-context-usage-amount { margin-top: 6px; font-variant-numeric: tabular-nums; }
-#codex-overleaf-panel .codex-context-usage-note { margin-top: 10px; color: var(--tl-fg-3); font-size: 11px; }
-#codex-overleaf-panel .codex-context-usage-bar { height: 6px; margin-top: 12px; overflow: hidden; border-radius: 3px; background: var(--tl-border-strong); }
-#codex-overleaf-panel .codex-context-usage-bar > span { display: block; width: calc(var(--context-usage-percent, 0) * 1%); height: 100%; border-radius: inherit; background: var(--tl-accent); }
-#codex-overleaf-panel .codex-context-usage[data-unknown="true"] .codex-context-usage-bar > span { display: none; }
-#codex-overleaf-panel .codex-context-usage-breakdown,
-#codex-overleaf-panel .codex-context-usage-cache { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--tl-border); }
-#codex-overleaf-panel .codex-context-usage-breakdown [hidden],
-#codex-overleaf-panel .codex-context-usage-breakdown[hidden] { display: none; }
-#codex-overleaf-panel .codex-context-usage-detail-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 6px; color: var(--tl-fg-3); }
-#codex-overleaf-panel .codex-context-usage-detail-row > :last-child { flex-shrink: 0; color: var(--tl-fg-2); font-variant-numeric: tabular-nums; }
-#codex-overleaf-panel .codex-context-usage-breakdown .codex-context-usage-note { margin-top: 6px; }
+#codex-overleaf-panel[data-theme="light"] .codex-context-usage-popover { box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16), 0 2px 6px rgba(15, 23, 42, 0.06); }
+#codex-overleaf-panel .codex-context-usage-popover[hidden],
+#codex-overleaf-panel .codex-context-usage-popover [hidden] { display: none; }
+#codex-overleaf-panel .codex-context-usage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+#codex-overleaf-panel .codex-context-usage-head-text { min-width: 0; }
+#codex-overleaf-panel .codex-context-usage-title { color: var(--tl-fg-1); font-size: 12.5px; font-weight: 600; }
+#codex-overleaf-panel .codex-context-usage-amount { margin-top: 2px; color: var(--tl-fg-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+#codex-overleaf-panel .codex-context-usage-figure { flex: 0 0 auto; text-align: right; }
+#codex-overleaf-panel .codex-context-usage-percent { display: block; color: var(--tl-fg-1); font-size: 22px; font-weight: 600; line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#codex-overleaf-panel .codex-context-usage-percent small { margin-left: 1px; color: var(--tl-fg-3); font-size: 12px; font-weight: 500; letter-spacing: 0; }
+#codex-overleaf-panel .codex-context-usage:is([data-level="high"], [data-level="near-limit"]) .codex-context-usage-percent { color: var(--context-usage-level); }
+#codex-overleaf-panel .codex-context-usage[data-unknown="true"] .codex-context-usage-percent { color: var(--tl-fg-4); }
+#codex-overleaf-panel .codex-context-usage-spinner { display: inline-grid; color: var(--tl-accent); }
+#codex-overleaf-panel .codex-context-usage-spinner .codex-glyph { width: 18px; height: 18px; stroke-width: 1.5; animation: tl-spin 900ms linear infinite; }
+#codex-overleaf-panel .codex-context-usage-chip { display: inline-block; padding: 2px 7px; border-radius: 999px; background: var(--tl-accent-wash); color: var(--tl-accent); font-size: 11px; font-weight: 500; }
+#codex-overleaf-panel .codex-context-usage-level { display: block; margin-top: 5px; color: var(--context-usage-level); font-size: 10.5px; font-weight: 500; }
+#codex-overleaf-panel .codex-context-usage-note { margin-top: 10px; color: var(--tl-fg-3); font-size: 11.5px; }
+#codex-overleaf-panel .codex-context-usage-note .codex-glyph { display: none; }
+#codex-overleaf-panel .codex-context-usage-note[data-kind="compacting"]:not([hidden]) { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; background: var(--tl-accent-wash); color: var(--tl-fg-2); }
+#codex-overleaf-panel .codex-context-usage-note[data-kind="compacting"] .codex-glyph { display: block; flex: 0 0 13px; width: 13px; height: 13px; stroke-width: 1.5; color: var(--tl-accent); }
+#codex-overleaf-panel .codex-context-usage-bar { display: flex; height: 6px; margin: 12px 0 10px; overflow: hidden; border-radius: 3px; background: var(--tl-border); }
+#codex-overleaf-panel .codex-context-usage-bar > i { display: block; flex: 0 0 auto; height: 100%; box-shadow: 1px 0 0 var(--tl-surface-2); transition: width var(--tl-m-slow) var(--tl-m-ease); }
+#codex-overleaf-panel .codex-context-usage[data-unknown="true"]:not([data-compacting="true"]) .codex-context-usage-bar { height: 4px; border: 1px dashed var(--tl-border-strong); background: none; }
+/* Without a sample, compaction sweeps an empty bar; a sample keeps its segments. */
+#codex-overleaf-panel .codex-context-usage[data-compacting="true"][data-unknown="true"] .codex-context-usage-bar { background: linear-gradient(90deg, var(--tl-border) 0%, var(--tl-accent) 50%, var(--tl-border) 100%); background-size: 200% 100%; animation: codex-context-usage-sweep 1.6s linear infinite; }
+#codex-overleaf-panel .codex-context-usage [data-seg="input"] { background: var(--context-usage-seg-input); }
+#codex-overleaf-panel .codex-context-usage [data-seg="output"] { background: var(--context-usage-seg-output); }
+#codex-overleaf-panel .codex-context-usage [data-seg="cached"] { background: var(--context-usage-seg-cached); }
+#codex-overleaf-panel .codex-context-usage-legend { display: grid; gap: 5px; }
+#codex-overleaf-panel .codex-context-usage-row { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto 34px; align-items: center; gap: 8px; color: var(--tl-fg-2); }
+#codex-overleaf-panel .codex-context-usage-row[data-sub] { margin-left: 16px; color: var(--tl-fg-3); font-size: 11.5px; }
+#codex-overleaf-panel .codex-context-usage-row b { color: var(--tl-fg-1); font-weight: 500; font-variant-numeric: tabular-nums; }
+#codex-overleaf-panel .codex-context-usage-row[data-sub] b { color: var(--tl-fg-2); font-weight: 400; }
+#codex-overleaf-panel .codex-context-usage-row em { color: var(--tl-fg-3); font-style: normal; text-align: right; font-variant-numeric: tabular-nums; }
+#codex-overleaf-panel .codex-context-usage-swatch { width: 8px; height: 8px; border-radius: 2px; }
+#codex-overleaf-panel .codex-context-usage-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 11px; padding-top: 9px; border-top: 1px solid var(--tl-border); color: var(--tl-fg-3); font-size: 11px; }
+#codex-overleaf-panel .codex-context-usage-compact { display: inline-flex; align-items: center; gap: 5px; height: 24px; margin-left: auto; padding: 0 8px; border: 1px solid var(--tl-border-strong); border-radius: 6px; color: var(--tl-fg-2); font-size: 11.5px; }
+#codex-overleaf-panel .codex-context-usage-compact:hover:not(:disabled) { background: var(--tl-hover); color: var(--tl-fg-1); }
+#codex-overleaf-panel .codex-context-usage-compact:disabled { opacity: 0.45; cursor: not-allowed; background: transparent; }
+#codex-overleaf-panel .codex-context-usage-compact .codex-glyph { width: 13px; height: 13px; stroke-width: 1.5; }
+@keyframes codex-context-usage-sweep { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  #codex-overleaf-panel .codex-context-usage *, #codex-overleaf-panel .codex-context-usage-popover { animation: none !important; transition: none !important; }
+}
 
 #codex-overleaf-panel .codex-model-config-button {
   flex: 1 1 auto;
@@ -5351,39 +5470,20 @@
   transition: background 120ms ease, filter 120ms ease;
 }
 
-#codex-overleaf-panel .codex-composer-toolbar [data-run][data-action="cancel"] {
-  color: transparent;
-}
-
 #codex-overleaf-panel .codex-composer-toolbar [data-run][data-action="cancel"]:hover {
   background: var(--tl-fail);
   filter: none;
-}
-
-#codex-overleaf-panel .codex-composer-toolbar [data-run][data-action="cancel"]::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  box-sizing: border-box;
-  width: 13px;
-  height: 13px;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  border-top-color: #ffffff;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  animation: codex-run-spin var(--tl-m-spin, 800ms) linear infinite;
 }
 
 #codex-overleaf-panel .codex-composer-toolbar [data-run]:hover {
   filter: brightness(1.1);
 }
 
-@keyframes codex-run-spin {
-  to {
-    transform: translate(-50%, -50%) rotate(360deg);
-  }
-}
+/* Send and Stop share one button; data-action selects the visible glyph. */
+#codex-overleaf-panel .codex-composer-toolbar [data-run] .codex-run-glyph { display: none; }
+#codex-overleaf-panel .codex-composer-toolbar [data-run][data-action="send"] [data-run-glyph="send"],
+#codex-overleaf-panel .codex-composer-toolbar [data-run][data-action="cancel"] [data-run-glyph="cancel"] { display: grid; place-items: center; }
+#codex-overleaf-panel .codex-composer-toolbar [data-run] .codex-glyph { width: 14px; height: 14px; stroke-width: 1.9; }
 
 /* Queued follow-ups: one card docked on top of the composer (shares its border). */
 #codex-overleaf-panel .codex-pending-inputs {
@@ -5574,6 +5674,8 @@
   border-radius: 4px;
   color: var(--tl-fg-3);
 }
+
+#codex-overleaf-panel .codex-context-head button .codex-glyph { width: 14px; height: 14px; stroke-width: 1.5; }
 
 #codex-overleaf-panel .codex-context-selection {
   margin-top: 6px;
@@ -7114,4 +7216,132 @@
 #codex-overleaf-panel .run-written-row del { padding: 0 1px; border-radius: 2px; background: color-mix(in srgb, var(--tl-fail) 16%, transparent); color: var(--tl-fg-3); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--tl-fail) 70%, transparent); }
 @media (prefers-reduced-motion: reduce) {
   #codex-overleaf-panel .run-written-body, #codex-overleaf-panel .run-written-file-sum::before { animation: none; transition: none; }
+}
+
+/* Context compaction marks. A manual /compact run renders as a command tag and
+   a divider; an automatic compaction leaves a divider above that turn's answer.
+   Neither occupies the three-row activity window. */
+#codex-overleaf-panel .run-compaction { margin: 12px 0 6px; }
+#codex-overleaf-panel .run-compaction[hidden] { display: none; }
+#codex-overleaf-panel .run-compaction[data-kind="auto"] { margin: 10px 0 12px; }
+#codex-overleaf-panel .run-compaction-line { display: grid; grid-template-columns: minmax(12px, 1fr) auto minmax(12px, 1fr); align-items: center; gap: 10px; color: var(--tl-fg-2); font-size: 12px; }
+#codex-overleaf-panel .run-compaction-line::before,
+#codex-overleaf-panel .run-compaction-line::after { content: ""; height: 1px; background: var(--tl-border-strong); }
+#codex-overleaf-panel .run-compaction-label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
+#codex-overleaf-panel .run-compaction-title { overflow: hidden; text-overflow: ellipsis; }
+#codex-overleaf-panel .run-compaction-glyph { display: inline-grid; place-items: center; color: var(--tl-accent); }
+#codex-overleaf-panel .run-compaction-glyph .codex-glyph { width: 13px; height: 13px; stroke-width: 1.5; }
+#codex-overleaf-panel .run-compaction[data-state="running"] .run-compaction-glyph::before { content: ""; box-sizing: border-box; width: 11px; height: 11px; border: 2px solid var(--tl-border-strong); border-top-color: var(--tl-accent); border-radius: 50%; animation: tl-spin var(--tl-m-spin) linear infinite; }
+#codex-overleaf-panel .run-compaction-time { color: var(--tl-fg-4); font-variant-numeric: tabular-nums; }
+#codex-overleaf-panel .run-compaction-time:empty { display: none; }
+#codex-overleaf-panel .run-compaction-sub { margin-top: 6px; color: var(--tl-fg-3); font-size: 11px; line-height: 1.5; text-align: center; text-wrap: balance; }
+#codex-overleaf-panel .run-compaction-sub[hidden] { display: none; }
+#codex-overleaf-panel .run-compaction[data-state="running"] .run-compaction-line::before,
+#codex-overleaf-panel .run-compaction[data-state="running"] .run-compaction-line::after { background: linear-gradient(90deg, var(--tl-border-strong) 0%, var(--tl-accent) 50%, var(--tl-border-strong) 100%); background-size: 200% 100%; animation: codex-context-usage-sweep 1.8s linear infinite; }
+#codex-overleaf-panel .run-compaction:is([data-state="failed"], [data-state="interrupted"]) :is(.run-compaction-label, .run-compaction-glyph) { color: var(--tl-fail); }
+#codex-overleaf-panel .run-compaction:is([data-state="failed"], [data-state="interrupted"]) .run-compaction-line::before,
+#codex-overleaf-panel .run-compaction:is([data-state="failed"], [data-state="interrupted"]) .run-compaction-line::after { background: color-mix(in srgb, var(--tl-fail) 40%, transparent); }
+#codex-overleaf-panel .run-compaction[data-state="cancelled"] :is(.run-compaction-label, .run-compaction-glyph) { color: var(--tl-fg-3); }
+
+#codex-overleaf-panel .run-card[data-operation="compact"] .run-prompt { padding: 3px 8px; border-color: var(--tl-border); border-radius: 6px; color: var(--tl-fg-2); font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+#codex-overleaf-panel .run-card[data-operation="compact"] :is(.run-turn-meta, .run-result-actions, .run-final-answer__facts) { display: none; }
+/* Running and completed compactions are fully described by the divider; other
+   outcomes keep the status row and report so technical details stay reachable. */
+#codex-overleaf-panel .run-card[data-operation="compact"]:is([data-status="running"], [data-status="completed"]) :is(.run-process, .run-activity-list, .run-workflow-busy, .run-peek, .run-peek-more, .run-setup, .run-workflow-attention, .run-report) { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  #codex-overleaf-panel .run-compaction *, #codex-overleaf-panel .run-compaction-line::before, #codex-overleaf-panel .run-compaction-line::after,
+  #codex-overleaf-panel .run-compaction-glyph::before { animation: none !important; }
+}
+
+/* Native selects draw their option list with the surrounding surface where the
+   browser supports customizable selects. The element keeps its value, change
+   events, keyboard and accessibility behavior; other browsers keep the system
+   popup. Each surface maps its own tokens onto the --codex-select-* set. */
+#codex-overleaf-panel select.codex-set-select,
+.codex-provider-dialog-root select {
+  --codex-select-surface: var(--tl-surface-2, #232323);
+  --codex-select-line: var(--tl-border-strong, #3a3a3a);
+  --codex-select-fg: var(--tl-fg-1, #e4e4e4);
+  --codex-select-muted: var(--tl-fg-3, #8a8a8a);
+  --codex-select-hover: var(--tl-hover, #2a2d2e);
+  --codex-select-accent: var(--tl-accent, #6f9fd8);
+}
+#codex-overleaf-panel .codex-settings-workbench select.codex-set-select,
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] select {
+  --codex-select-surface: var(--wb-surface);
+  --codex-select-line: var(--wb-line);
+  --codex-select-fg: var(--wb-fg);
+  --codex-select-muted: var(--wb-muted);
+  --codex-select-hover: var(--wb-input);
+  --codex-select-accent: var(--wb-green);
+}
+.codex-provider-dialog-root:not([data-embedded="true"]) select {
+  --codex-select-surface: var(--provider-surface-raised);
+  --codex-select-line: var(--provider-line);
+  --codex-select-fg: var(--provider-text);
+  --codex-select-muted: var(--provider-muted);
+  --codex-select-hover: var(--provider-hover);
+  --codex-select-accent: var(--provider-accent);
+}
+@supports (appearance: base-select) {
+  :is(#codex-overleaf-panel select.codex-set-select, .codex-provider-dialog-root select),
+  :is(#codex-overleaf-panel select.codex-set-select, .codex-provider-dialog-root select)::picker(select) { appearance: base-select; }
+  :is(#codex-overleaf-panel select.codex-set-select, .codex-provider-dialog-root select) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  :is(#codex-overleaf-panel select.codex-set-select, .codex-provider-dialog-root select)::picker-icon {
+    content: "";
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    background: var(--codex-select-muted);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    transition: rotate 140ms ease;
+  }
+  :is(#codex-overleaf-panel select.codex-set-select, .codex-provider-dialog-root select):open::picker-icon { rotate: 180deg; }
+  /* This shell already draws its own chevron. */
+  .codex-provider-test-select-shell select::picker-icon { display: none; }
+  :is(#codex-overleaf-panel select.codex-set-select, .codex-provider-dialog-root select)::picker(select) {
+    box-sizing: border-box;
+    margin: 4px 0;
+    padding: 4px;
+    border: 1px solid var(--codex-select-line);
+    border-radius: 8px;
+    background: var(--codex-select-surface);
+    color: var(--codex-select-fg);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.3), 0 2px 6px rgba(0, 0, 0, 0.14);
+  }
+  :is(#codex-overleaf-panel select.codex-set-select, .codex-provider-dialog-root select) option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 30px;
+    padding: 0 10px 0 9px;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--codex-select-fg);
+    font: inherit;
+    font-size: 12.5px;
+    line-height: 1.3;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  :is(#codex-overleaf-panel select.codex-set-select, .codex-provider-dialog-root select) option:is(:hover, :focus-visible) { background: var(--codex-select-hover); outline: none; }
+  :is(#codex-overleaf-panel select.codex-set-select, .codex-provider-dialog-root select) option:checked { font-weight: 500; }
+  :is(#codex-overleaf-panel select.codex-set-select, .codex-provider-dialog-root select) option:disabled { opacity: 0.5; cursor: default; }
+  :is(#codex-overleaf-panel select.codex-set-select, .codex-provider-dialog-root select) option::checkmark {
+    order: 1;
+    display: block;
+    width: 12px;
+    height: 12px;
+    margin-left: auto;
+    content: "";
+    background: var(--codex-select-accent);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-6' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-6' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
 }

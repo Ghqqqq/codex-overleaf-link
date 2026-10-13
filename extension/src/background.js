@@ -1214,15 +1214,18 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
     const storage = chrome.storage?.session;
     if (!storage) throw new Error('Run journal storage is unavailable.');
     const values = requestIds.length ? await storage.get(requestIds.map(id => RUN_JOURNAL_PREFIX + id)) : {};
-    const matches = (candidate, binding) => ['requestId', 'projectKey', 'clientRunId', 'sessionId']
+    // A persisted startup snapshot may lag behind its owner's Native dispatch.
+    // Keep that same project/session/run alive through the request-id transition.
+    const matches = (candidate, binding) => (candidate?.preDispatch === true
+      ? ['projectKey', 'clientRunId', 'sessionId'] : ['requestId', 'projectKey', 'clientRunId', 'sessionId'])
       .every(key => Boolean(candidate?.[key]) && candidate[key] === binding?.[key]);
     const known = requestIds.filter(id => runJournals.has(id) || Boolean(values?.[RUN_JOURNAL_PREFIX + id])
       || owners.some(candidate => candidate?.requestId === id && Array.from(ownerBindings.values()).some(binding => matches(candidate, binding))));
     const missing = owners.filter(candidate => requestIds.includes(candidate?.requestId) && !known.includes(candidate.requestId));
-    if (!missing.length) return { known, ownersChecked: true };
+    if (!missing.length) return { known, ownersChecked: true, preDispatchChecked: true };
     // A worker restart drops ports before hidden pages can process reconnect
     // timers. The page's existing health receiver can still report its binding.
-    const unknown = () => ({ known, ownersChecked: false, retryAfterMs: 1000 });
+    const unknown = () => ({ known, ownersChecked: false, preDispatchChecked: false, retryAfterMs: 1000 });
     const tabs = await chrome.tabs.query({ url: MANAGED_OVERLEAF_MATCHES }).catch(() => null);
     if (!Array.isArray(tabs)) return unknown();
     const projects = new Set(missing.map(candidate => candidate.projectKey));
@@ -1238,12 +1241,14 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
       } catch (_error) { return null; }
       finally { clearTimeout(timer); }
     }));
-    if (responses.some(response => response?.ok !== true || response.runOwnerProtocol !== 1 || !Array.isArray(response.runOwners))) return unknown();
+    const needsStartupInventory = missing.some(candidate => candidate.preDispatch === true);
+    if (responses.some(response => response?.ok !== true || ![1, 2].includes(response.runOwnerProtocol)
+      || (needsStartupInventory && response.runOwnerProtocol !== 2) || !Array.isArray(response.runOwners))) return unknown();
     for (const candidate of missing) {
       if (responses.some(response => response.runOwners.some(binding => matches(candidate, binding)))
         || Array.from(ownerBindings.values()).some(binding => matches(candidate, binding))) known.push(candidate.requestId);
     }
-    return { known, ownersChecked: true };
+    return { known, ownersChecked: true, preDispatchChecked: true };
   }
 
   function pruneInMemoryRunJournals() {

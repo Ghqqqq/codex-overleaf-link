@@ -15,6 +15,7 @@ const { buildCodexHomeEnv } = require('./codexHome');
 const { applyCodexSkillIsolation } = require('./codexSkillIsolation');
 const { buildCodexSpeedArgs } = require('./codexArgs');
 const { truncateText } = require('./debugLog');
+const { isContextLimitError } = require('./providerContextError');
 const {
   reduceTaskResult
 } = require('./nativeTransportEnvelope');
@@ -939,7 +940,9 @@ function runCodexAppServerProcess(input) {
           return;
         }
         if (message.method === 'error') {
-          fail(new Error(message.params?.error?.message || 'Codex turn failed'));
+          const error = new Error(extractCodexAppServerErrorMessage(message.params) || 'Codex turn failed');
+          if (isContextLimitError(message.params)) error.code = 'codex_context_limit';
+          fail(error);
         }
       }
     }
@@ -1408,7 +1411,8 @@ function getTurnCompletionError(turn) {
   const invalid = status !== undefined && !['completed', 'failed', 'interrupted'].includes(status);
   const error = new Error(extractCodexAppServerErrorMessage(turn) || (interrupted
     ? 'Codex turn was interrupted.' : invalid ? 'Codex turn ended with an invalid terminal status.' : 'Codex turn failed.'));
-  error.code = interrupted ? 'codex_cancelled' : invalid ? 'codex_turn_status_invalid' : 'codex_turn_failed';
+  error.code = interrupted ? 'codex_cancelled' : invalid ? 'codex_turn_status_invalid'
+    : isContextLimitError(turn) ? 'codex_context_limit' : 'codex_turn_failed';
   error.turnStatus = status;
   return error;
 }

@@ -30,6 +30,8 @@
       saveState,
       saveStateSoon,
       readPanelInputs,
+      flushComposerDraft,
+      getDraftScope,
       applyStateToPanel,
       syncSessionProvider,
       getPanel,
@@ -74,7 +76,10 @@
         return;
       }
     }
+    const draftScope = getDraftScope?.();
     readPanelInputs();
+    await flushComposerDraft?.();
+    if (getDraftScope?.() !== draftScope) return;
     // Reuse an already-empty, idle active session instead of minting a ghost.
     // Empty sessions are invisible in the list yet still consume the storage cap
     // (slice(-20) / maxSessions), so spamming "New Session" could silently evict
@@ -134,7 +139,10 @@
         return;
       }
     }
+    const draftScope = getDraftScope?.();
     readPanelInputs();
+    await flushComposerDraft?.();
+    if (getDraftScope?.() !== draftScope) return;
     setState(setActiveSession(getState(), sessionId));
     applyStateToPanel();
     await syncSessionProvider?.();

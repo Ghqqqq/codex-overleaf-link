@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { providerError } = require('./providerProfile');
 
 const {
   applyReasoningControl,
@@ -58,7 +59,15 @@ function appendResponsesInput(messages, input, { replayReasoning = false, toolKi
   }
   if (!Array.isArray(input)) return;
   let pendingToolCalls = [];
+  let pendingToolOutputContent = [];
   let pendingReasoning = '';
+  const flushToolOutputContent = () => {
+    if (!pendingToolOutputContent.length) return;
+    // Chat tool messages accept text only. Attach images after the complete
+    // tool-result group so a user message cannot split parallel tool results.
+    messages.push({ role: 'user', content: pendingToolOutputContent });
+    pendingToolOutputContent = [];
+  };
   const flushToolCalls = () => {
     if (!pendingToolCalls.length) return;
     const assistant = {
@@ -73,6 +82,9 @@ function appendResponsesInput(messages, input, { replayReasoning = false, toolKi
   };
   for (const item of input) {
     if (!item || typeof item !== 'object') continue;
+    const isToolOutput = item.type === 'function_call_output' || item.type === 'custom_tool_call_output'
+      || item.type === 'computer_call_output' || item.type === 'tool_search_output';
+    if (!isToolOutput && item.type !== 'reasoning') flushToolOutputContent();
     if (item.type === 'reasoning') {
       flushToolCalls();
       pendingReasoning = extractReasoningText(item);
@@ -83,12 +95,22 @@ function appendResponsesInput(messages, input, { replayReasoning = false, toolKi
       continue;
     }
     flushToolCalls();
-    if (item.type === 'function_call_output' || item.type === 'custom_tool_call_output' || item.type === 'computer_call_output' || item.type === 'tool_search_output') {
+    if (isToolOutput) {
+      const callId = normalizeText(item.call_id) || normalizeText(item.id);
+      const imageContent = translateImageToolOutput(item.output);
       messages.push({
         role: 'tool',
-        tool_call_id: normalizeText(item.call_id) || normalizeText(item.id),
-        content: normalizeToolOutput(item.output)
+        tool_call_id: callId,
+        content: imageContent
+          ? 'The tool output, including images, is attached after the tool results.'
+          : normalizeToolOutput(item.output)
       });
+      if (imageContent) {
+        pendingToolOutputContent.push(
+          { type: 'text', text: `Output from tool call ${callId}:` },
+          ...imageContent
+        );
+      }
       continue;
     }
     if (item.type === 'message' || item.role) {
@@ -105,6 +127,38 @@ function appendResponsesInput(messages, input, { replayReasoning = false, toolKi
     }
   }
   flushToolCalls();
+  flushToolOutputContent();
+}
+
+function translateImageToolOutput(output) {
+  const parts = Array.isArray(output) ? output : [output];
+  if (!parts.some(isImagePart)) return null;
+  return parts.map(part => {
+    if (isImagePart(part)) {
+      const image = translateImagePart(part);
+      if (!image) {
+        throw providerError('provider_request_invalid', 'A tool image requires an image URL or data URL for Chat Completions.');
+      }
+      return image;
+    }
+    const text = ['input_text', 'output_text', 'text'].includes(part?.type)
+      ? normalizeText(part.text)
+      : normalizeToolOutput(part);
+    return { type: 'text', text };
+  });
+}
+
+function isImagePart(part) {
+  return part?.type === 'input_image' || part?.type === 'image_url' || part?.type === 'computer_screenshot';
+}
+
+function translateImagePart(part) {
+  const url = normalizeText(part.image_url?.url || part.image_url || part.url);
+  if (!url) return null;
+  const detail = normalizeText(part.image_url?.detail || part.detail);
+  const image = { type: 'image_url', image_url: { url } };
+  if (['auto', 'low', 'high'].includes(detail)) image.image_url.detail = detail;
+  return image;
 }
 
 function extractReasoningText(item) {
@@ -142,10 +196,10 @@ function translateMessageContent(content) {
     if (part.type === 'input_text' || part.type === 'output_text' || part.type === 'text') {
       parts.push({ type: 'text', text: normalizeText(part.text) });
     } else if (part.type === 'input_image' || part.type === 'image_url') {
-      const url = normalizeText(part.image_url?.url || part.image_url || part.url);
-      if (url) {
+      const image = translateImagePart(part);
+      if (image) {
         hasStructuredPart = true;
-        parts.push({ type: 'image_url', image_url: { url } });
+        parts.push(image);
       }
     }
   }

@@ -5,15 +5,27 @@
 ### Added
 
 - Restore the previous version from the update banner or the Software updates card after a completed update, or while an installation or its recovery is unsettled. Restoration waits until Overleaf is saved and idle, verifies the restored files before reloading, and pauses automatic reminders for the version you left for 24 hours; Check for updates still offers it.
+- See how full the conversation's context window is from a small pie beside the model. It turns amber at 70% and red at 90%; its details show the latest reported input, cached input and output, when they were reported, and a Compact action.
+- Compact the conversation context with `/compact` or the Compact action in the context details. Compaction keeps the same conversation and never reads or changes documents. It appears in the conversation as a divider, and an automatic compaction during a task leaves a divider above that task's answer; usage shows as waiting until Codex reports it again.
+
+### Changed
+
+- Draw composer controls with one set of line icons, and group the `/` menu into commands and skills with icons, highlighted matches, local skill descriptions and keyboard hints.
+- Show dropdown lists in settings and model provider forms in the panel's own style instead of the operating system menu, where Chrome supports it.
 
 ### Fixed
 
+- Recover interrupted task preparation even when no Native request was sent, so stale Starting records no longer keep a conversation busy or block deletion; preserve live preparation on other pages and settle startup rendering failures.
+- Keep composer typing independent of unchanged run history, coalesce draft autosaves, and flush pending drafts at session/submission boundaries while preserving live activity and recovery records.
 - Refuse an update before download when the installed startup files differ from the published release it migrates from, for example after a release candidate or local build, and show the existing reinstall guidance instead.
 - Let a pending startup-file migration roll back without requiring unpublished startup bytes to match, bound automatic rollback retries, report the rollback failure reason, and keep saved model providers visible while an update is unsettled.
 - Settle runs that stayed marked as running after the extension reloaded or updated, including runs still inside the startup grace period, while preserving active browser-only sync retries on other pages.
 - Keep Track Changes for the follow-up sync of files that were not written in the first pass, so a tracked run no longer writes its remaining files in Editing mode.
 - Keep Undo and Accept attached to their original run while draft or file-context updates rebuild the current view, and settle their outcomes on the current record without weakening project, account, session, or recovery-evidence checks.
 - Render product-generated completion conclusions in the selected interface language after history reloads and language changes, while preserving user and model text and conservatively handling older reports without reliable origin information.
+- Keep streamed thinking steady in the three-row activity preview instead of repeating an earlier snapshot.
+- Keep pre-compaction usage hidden across later turns, show Compacted only with confirmed completion, and preserve every composer draft when compaction starts from the context details.
+- Preserve images returned by tools as structured Chat content instead of sending their Base64 as text, while keeping parallel tool results together. Forward context-limit failures in the Responses format Codex recognizes for subsequent compaction, and explain these failures in the selected interface language.
 
 ## v2.5.1 - 2026-10-10
 

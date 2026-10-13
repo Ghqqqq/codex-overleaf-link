@@ -3,7 +3,7 @@
 
   function create(deps = {}) {
     if (!deps.RunActivityModel) return null;
-    const { RunActivityModel: Model, RunGuidanceView, getPendingGuidance = () => [], tx, findRunRecord, getPanel, cssEscape, isGuidance,
+    const { RunActivityModel: Model, RunGuidanceView, getPendingGuidance = () => [], PanelIcons, tx, findRunRecord, getPanel, cssEscape, isGuidance,
       formatElapsed, renderMarkdownBlockText, renderRunEvent, presence, classifyStatus, getProjectId, summarizeCommand, projectReviewResultEvent, formatReviewResultFailure,
       sanitizeAssistantVisibleText: sanitize = value => String(value || '') } = deps;
     const cards = new WeakMap();
@@ -492,6 +492,74 @@
       if (!choices.has(row.key)) row.el.open = items.some(item => card.projection.notices.some(notice => notice.key === item.key));
     }
 
+    // Compaction marks sit outside the activity rows: a manual /compact run is
+    // shown as a divider, and a completed automatic compaction leaves one above
+    // that turn's answer.
+    function mountCompaction(root, run) {
+      const node = make('div', 'run-compaction');
+      node.hidden = true;
+      const line = make('div', 'run-compaction-line');
+      const label = make('span', 'run-compaction-label');
+      const glyph = make('span', 'run-compaction-glyph');
+      glyph.setAttribute('aria-hidden', 'true');
+      const title = make('span', 'run-compaction-title');
+      const time = make('span', 'run-compaction-time');
+      label.append(glyph, title, time);
+      line.append(label);
+      const sub = make('div', 'run-compaction-sub');
+      node.append(line, sub);
+      if (run.operation === 'compact') {
+        root.dataset.operation = 'compact';
+        node.dataset.kind = 'manual';
+        root.querySelector('[data-run-task]')?.after(node);
+      } else {
+        node.dataset.kind = 'auto';
+        root.querySelector('[data-run-report]')?.before(node);
+      }
+      return { node, glyph, title, time, sub, icon: '' };
+    }
+    function renderCompaction(card, run, result) {
+      const view = card.compaction;
+      if (!view) return;
+      const clock = value => {
+        const date = new Date(value || '');
+        return Number.isFinite(date.getTime())
+          ? new Intl.DateTimeFormat(tx('en-US', 'zh-CN'), { hour: '2-digit', minute: '2-digit' }).format(date) : '';
+      };
+      const setIcon = name => {
+        if (view.icon === name) return;
+        view.icon = name;
+        view.glyph.innerHTML = name ? PanelIcons?.svg(name) || '' : '';
+      };
+      if (view.node.dataset.kind === 'manual') {
+        const state = run.status === 'running' ? 'running' : run.status === 'completed' ? 'completed'
+          : ['cancelled', 'rejected'].includes(run.status) ? 'cancelled' : run.status === 'interrupted' ? 'interrupted' : 'failed';
+        view.node.dataset.state = state;
+        view.node.hidden = false;
+        setIcon(state === 'running' ? '' : state === 'completed' ? 'compact' : 'alert');
+        text(view.title, ({
+          running: tx('Compacting context', '正在压缩上下文'),
+          completed: tx('Context compacted', '上下文已压缩'),
+          cancelled: tx('Compaction stopped', '已停止压缩'),
+          interrupted: tx('Compaction interrupted', '压缩已中断'),
+          failed: tx('Compaction did not finish', '压缩未完成')
+        })[state]);
+        text(view.time, state === 'running' ? '' : clock(run.finishedAt));
+        text(view.sub, state === 'running' ? tx('You can keep typing; messages send after compaction.', '可以继续输入，消息会在压缩完成后发送。')
+          : state === 'completed' ? tx('Earlier turns were summarized.', '此前的对话已整理为摘要。') : '');
+        view.sub.hidden = !view.sub.textContent;
+        return;
+      }
+      view.node.hidden = !result.compactedAt;
+      if (!result.compactedAt) return;
+      view.node.dataset.state = 'completed';
+      setIcon('compact');
+      text(view.title, tx('Context compacted automatically', '上下文已自动压缩'));
+      text(view.time, clock(result.compactedAt));
+      text(view.sub, tx('Codex summarized earlier turns partway through this turn, then continued.',
+        'Codex 在这一轮中途整理了此前的对话，然后继续处理。'));
+      view.sub.hidden = false;
+    }
     function mount(root, run) {
       if (!Model || cards.has(root)) return;
       const process = root.querySelector('[data-run-process]');
@@ -532,7 +600,7 @@
       const card = { id: String(run.id), root, process, summary, events, metrics, attention,
         guidance: root.querySelector('[data-run-guidance]'),
         busy, rows: new Map(), run, setup: setupEl, setupSummary, setupFold, setupSteps,
-        peek, peekTrack, peekMore, peekRows: new Map() };
+        peek, peekTrack, peekMore, peekRows: new Map(), compaction: mountCompaction(root, run) };
       const expand = () => { remember(card.id + ':run', true); process.open = true; update({ root, recordId: run.id }); };
       peek.addEventListener('click', expand);
       peekMore.addEventListener('click', expand);
@@ -575,6 +643,7 @@
       else if (!choices.has(card.id + ':setup')) card.setup.open = false;
       if (!card.process.open) card.setup.hidden = true;
       renderPeek(card, result, run, active);
+      renderCompaction(card, run, result);
       card.noticeCount = result.notices.length;
       const latestNotice = result.notices.at(-1);
       card.attention.hidden = card.process.open || !latestNotice;

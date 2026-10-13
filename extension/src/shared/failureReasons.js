@@ -363,6 +363,11 @@
       fallbackUserMessage: 'Local Codex skills could not be loaded. This run did not start.',
       fallbackNextAction: 'Open Skills to reload the local catalog, then submit again.'
     },
+    codex_context_limit: {
+      stage: 'codex', severity: 'error', defaultRetryable: true,
+      fallbackUserMessage: 'This run stopped because the model context limit was exceeded.',
+      fallbackNextAction: 'Retry the task. If the context limit is reached again, use /compact or start a new conversation with less context.'
+    },
     codex_no_usable_result: {
       stage: 'codex', severity: 'error', defaultRetryable: true,
       fallbackUserMessage: 'Local Codex returned no usable final report or operations.',
@@ -791,8 +796,20 @@
     return !path.startsWith('/') && !/^[A-Za-z]:/.test(path) && !path.split('/').includes('..') ? path : '';
   }
 
+  function isContextLimitError(message, code) {
+    const text = String(message || '');
+    return ['codex_context_limit', 'context_length_exceeded', 'context_window_exceeded'].includes(code)
+      || /\b(?:codex_context_limit|context_length_exceeded|context_window_exceeded)\b/i.test(text)
+      || /Codex ran out of room in the model['’]s context window/i.test(text)
+      || /maximum context length is \d+ tokens[\s\S]*?(?:you requested|resulted in) \d+ tokens/i.test(text);
+  }
+
   function recoverDisplayFailure(failure, allowFilePrefix = true) {
     if (!failure || typeof failure !== 'object') return failure;
+    if (failure.code === 'codex_no_usable_result' && failure.stage === 'codex'
+      && isContextLimitError(failure.technicalMessage)) return { ...failure, code: 'codex_context_limit',
+        userMessage: FAILURE_CODE_CATALOG.codex_context_limit.fallbackUserMessage,
+        nextAction: FAILURE_CODE_CATALOG.codex_context_limit.fallbackNextAction };
     const originalCode = failure.evidence?.originalCode;
     const displayCodeAllowed = code => REVIEW_DISPLAY_CODES.has(code)
       && (code !== 'native_untracked_undo_pending_changes'
@@ -989,6 +1006,7 @@
     selectPrimaryFailure,
     localizeFailureReason,
     formatFailureReasonForDisplay,
-    localizeFailureMessage
+    localizeFailureMessage,
+    isContextLimitError
   };
 });

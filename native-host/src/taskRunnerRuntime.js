@@ -50,7 +50,7 @@ const activeRunEntries = new Map();
 // Overleaf tab was reloaded — the requestId lived in content-side JS state
 // and is gone, but the native-host-side controller is still running).
 const activeRunByProject = new Map();
-const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result', 'codex_process_stop_unconfirmed', 'selected_context_unresolved', 'codex_local_skill_unavailable']);
+const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result', 'codex_context_limit', 'codex_process_stop_unconfirmed', 'selected_context_unresolved', 'codex_local_skill_unavailable']);
 
 async function handleRequest(request, env = process.env, emit = () => {}) {
   if (!request || typeof request !== 'object') {
@@ -693,7 +693,7 @@ function createCancellationError() {
 }
 
 function isCancellationError(error = {}) {
-  if (['codex_turn_failed', 'codex_turn_status_invalid'].includes(error.code)) return false;
+  if (['codex_turn_failed', 'codex_turn_status_invalid', 'codex_context_limit'].includes(error.code)) return false;
   return error.code === 'codex_cancelled'
     || error.name === 'AbortError'
     || /cancelled by the user|was cancelled/i.test(error.message || '');

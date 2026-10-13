@@ -98,7 +98,8 @@
     recordSessionResult,
     selectVisibleSessionsForList,
     setActiveSession,
-    updateActiveSession
+    updateActiveSession,
+    updateActiveSessionDraft
   } = Modules.SessionState;
   const LineReferences = Modules.LineReferences;
   const { getProjectStorageKey } = Modules.StorageKeys;
@@ -446,6 +447,7 @@
   const runTimelineView = Modules.RunTimelineView.create({
     RunActivitySummary: Modules.RunActivitySummary,
     RunPresence: Modules.RunPresence,
+    PanelIcons: Modules.PanelIcons,
     // recentProjects is composed below; the empty state only reads it after startup.
     getProjectName: () => { try { return recentProjects.readCurrentProjectNameFromDom(); } catch { return ''; } },
     getCurrentProjectId: () => getCurrentProjectId(),
@@ -458,6 +460,7 @@
     RunFailureNotice: Modules.RunFailureNotice,
     I18n: i18n,
     FailureReasons,
+    projectContextLimitEvent: event => Modules.AgentTranscript.projectContextLimitEvent(event, getLocale()),
     localizeVisibleReason: value => localizeVisibleReason(value),
     localizeCompileReason: value => Modules.CompileAdapter.localizeCompileReason(value, getLocale()),
     tr,
@@ -528,6 +531,8 @@
     saveState,
     saveStateSoon,
     readPanelInputs,
+    flushComposerDraft: () => flushComposerDraft({ requireDurable: true }),
+    getDraftScope: getComposerDraftScope,
     applyStateToPanel, syncSessionProvider: () => providerSettingsCoordinator.syncSessionProvider(),
     getPanel: () => panel,
     getState: () => state,
@@ -845,8 +850,11 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       refreshDashboardSoon();
+    } else {
+      flushComposerDraftOnLeave();
     }
   });
+  window.addEventListener('pagehide', flushComposerDraftOnLeave);
 
   const recentProjects = Modules.RecentProjects.create({
     ProjectSessionCleanup: Modules.ProjectSessionCleanup,
@@ -997,6 +1005,10 @@
   let runInputCoordinator = null;
   const activeTurnControl = ActiveTurnControl.create({ chrome });
   let saveStateTimer = null;
+  const DRAFT_SAVE_DELAY_MS = 800;
+  const DRAFT_SAVE_MAX_WAIT_MS = 4000;
+  let draftSaveTimer = null;
+  let pendingDraftSave = null;
   // Two-phase saveState scheduling. `saveStateInFlight` flips to true while
   // an async saveState() is actually writing; `saveStateRunAfterFlight` is
   // set when a fresh saveStateSoon() fires during the in-flight phase. When
@@ -1053,7 +1065,7 @@
     getBusyState: () => ({
       run: Boolean(currentRunView),
       cancelling: runCancellationRequested,
-      storage: saveStateInFlight || Boolean(saveStateTimer),
+      storage: saveStateInFlight || Boolean(saveStateTimer) || Boolean(pendingDraftSave),
       reviewAction: trackedChangeInFlight.size > 0,
       dialog: Boolean(pluginConfirmController?.isOpen())
     }),
@@ -1083,7 +1095,7 @@
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === 'codex-overleaf/runtime-health-probe') {
       sendResponse?.({
-        ok: true, runOwnerProtocol: 1, runOwners: [activeTurnControl.getOwner()].filter(Boolean),
+        ok: true, runOwnerProtocol: 2, runOwners: [activeTurnControl.getOwner()].filter(Boolean),
         version: CodexOverleafCompatibility?.BUILD_TARGET_VERSION || chrome.runtime.getManifest().version
       });
       return false;
@@ -1353,6 +1365,7 @@
       composerPanelInstance = ComposerPanel.create({
         container: panelRendererInstance.composerSlot,
         i18n: { tr },
+        icons: Modules.PanelIcons,
         attachmentController: composerAttachmentController,
         callbacks: {
           onSubmit: () => safeRunTask(),
@@ -1390,7 +1403,10 @@
           closeModelConfigPopover();
           closeContextTray();
           closeSlashMenu();
-        }
+        },
+        getCompactAvailability,
+        level: Modules.ContextUsage.level,
+        onCompact: () => safeRunTask({ operation: 'compact' })
       });
       renderContextUsage();
       installContextDismiss();
@@ -1646,6 +1662,7 @@
     updateModelDisplay();
     renderSessionList();
     renderContextUsage();
+    if (panel.querySelector('[data-slash-menu]')?.hidden === false) updateSlashMenuForTaskInput();
     renderContextSelection();
     renderContextSummary();
     renderPendingInputs();
@@ -1860,6 +1877,8 @@
     const submittedLocalSkillEnabled = { ...state.codexLocalSkillEnabled };
     const submittedSelectionRevision = selectionContextView.getRevision?.();
     let submittedEnabledLocalSkillIds = queuedContext ? queuedContext.enabledCodexLocalSkillIds : compact ? getEnabledCodexLocalSkillIds() : [];
+    // Capture submission first; a save must not adopt text typed while it waits.
+    if (!queuedInput) await flushComposerDraft({ requireDurable: true });
     if (!compact && !queuedInput && submittedSkillLoadingSettings.loadCodexLocalSkills !== false) {
       const localSkills = await primeCodexLocalSkillsCatalog({ required: true, force: submittedSkillInvocation?.scope === 'codex-local' });
       submittedEnabledLocalSkillIds = localSkills.filter(skill => Object.hasOwn(submittedLocalSkillEnabled, skill.id)
@@ -1910,31 +1929,44 @@
     runCancellationRequested = false;
     runCancellationController = new AbortController();
     setRunning(true);
-    currentRunView = startRunView({
-      sessionId: submittedSessionId,
-      sessionContext: submittedSession,
-      codexThreadId: submittedThreadId,
-      operation: compact ? 'compact' : undefined,
-      task,
-      mode: submittedMode,
-      model: executionSnapshot.model,
-      reasoningEffort: executionSnapshot.reasoningEffort,
-      speedTier: executionSnapshot.speedTier,
-      executionSnapshot,
-      attachments: submittedAttachments,
-      skillInvocation: submittedSkillInvocation,
-      queueItemId: queuedInput?.id || '',
-      replaceRunId
-    });
-    renderContextUsage();
-    if (!queuedInput && !compact && pendingRetryReplacement === submittedRetryReplacement) pendingRetryReplacement = null;
-    const runSessionId = currentRunView.sessionId;
+    const runSessionId = submittedSessionId;
     let runAuditDraft = null;
     let localSkillRestorePoint = null;
     try {
+      currentRunView = startRunView({
+        sessionId: submittedSessionId,
+        sessionContext: submittedSession,
+        codexThreadId: submittedThreadId,
+        operation: compact ? 'compact' : undefined,
+        task,
+        mode: submittedMode,
+        model: executionSnapshot.model,
+        reasoningEffort: executionSnapshot.reasoningEffort,
+        speedTier: executionSnapshot.speedTier,
+        executionSnapshot,
+        attachments: submittedAttachments,
+        skillInvocation: submittedSkillInvocation,
+        queueItemId: queuedInput?.id || '',
+        replaceRunId
+      });
+      // Preparation can await project/audit work before a Native request exists.
+      // Give other pages a live owner to check throughout that interval.
+      const bound = await awaitRunStep(activeTurnControl.bindBrowserRun({
+        requestId: ActiveTurnControl.getStartupRequestId(runSessionId, currentRunView.recordId),
+        projectKey: currentRunView.runProjectId, clientRunId: currentRunView.recordId,
+        sessionId: runSessionId, ownerToken: crypto.randomUUID()
+      }));
+      throwIfRunCancellationRequested();
+      if (!bound) throw new Error(tx('Could not start the task. Reload the page and try again.',
+        '无法启动任务，请刷新页面后重试。'));
+      renderContextUsage();
+      if (!queuedInput && !compact && pendingRetryReplacement === submittedRetryReplacement) pendingRetryReplacement = null;
       if (compact) {
         announceCrossTabRunStart();
-        if (state.activeSessionId === submittedSessionId && panel?.querySelector('[data-task]')?.value === submittedDraft) {
+        // Only the slash-command text is consumed; a draft kept while compacting from the popover stays.
+        if (options.consumeCompactDraft === true && state.activeSessionId === submittedSessionId
+          && /^\/[^\s/]*$/.test(String(submittedDraft || '').trim())
+          && panel?.querySelector('[data-task]')?.value === submittedDraft) {
           panel.querySelector('[data-task]').value = '';
           updateSessionById(submittedSessionId, { task: '' });
           composerDraftRevision += 1;
@@ -2347,15 +2379,20 @@
         // Structured FailureReason (§9.7): split bridge-availability from
         // Codex-side errors. `native_connection_failed` / `native_unavailable`
         // / `native_update_required` indicate the bridge itself is missing,
-        // so emit `native_bridge_unavailable` (blocked, retryable). All other
-        // native errors are treated as a Codex-side surface error and emit
-        // `codex_no_usable_result` (error, retryable).
+        // so emit `native_bridge_unavailable` (blocked, retryable). Recognized
+        // Codex failures retain their specific cause; only unmatched errors
+        // fall back to `codex_no_usable_result` (error, retryable).
         // Map native/codex failures onto their SPECIFIC catalog codes — the
         // timeout/not-found/output-limit entries (and their bilingual next
         // steps) existed but were never emitted, so everything collapsed into
         // "no usable result" and pointed users at the wrong recovery.
         const runErrorMessage = String(response.error?.message || '');
-        const codexRunFailure = response.error?.code === 'codex_local_skill_unavailable'
+        const codexRunFailure = translated.failureCode === 'codex_context_limit'
+          ? buildContentFailure('codex_context_limit', { path: 'codex.run' }, {
+            technicalMessage: runErrorMessage,
+            evidence: { errorCode: response.error?.code || '' }
+          })
+          : response.error?.code === 'codex_local_skill_unavailable'
           ? buildContentFailure('codex_local_skill_unavailable', { path: 'codex.run' }, { technicalMessage: runErrorMessage })
           : translated.failureCode === 'codex_local_skills_failed'
             ? buildContentFailure('codex_local_skills_failed', { path: 'codex.run' }, { technicalMessage: runErrorMessage })
@@ -2570,7 +2607,9 @@
         if (returnedThreadId && returnedThreadId !== codexThreadId) {
           updateSessionById(runSessionId, { codexThreadId: returnedThreadId });
           const StorageDb = Modules.StorageDb;
-          if (StorageDb) {
+          // The live session is saved below with its latest draft. Writing an
+          // older DB snapshot here can give stale text a newer timestamp.
+          if (StorageDb && !findSessionById(runSessionId)) {
             const record = await StorageDb.getRecord('sessions', runSessionId);
             if (record) {
               record.codexThreadId = returnedThreadId;
@@ -2604,12 +2643,19 @@
       if (compact) {
         const key = error.code === 'codex_compact_unsupported' ? 'compactUnsupported'
           : ['project_locked', 'codex_compact_thread_busy'].includes(error.code) ? 'compactBusy' : 'compactFailed';
-        appendRunEvent({ title: tr(key), status: 'failed',
+        const contextLimit = FailureReasons.isContextLimitError(error.message, error.code)
+          ? translateRawError(error.message, { locale: getLocale(), code: error.code }) : null;
+        const failure = contextLimit ? buildContentFailure('codex_context_limit', { path: 'codex.run' }, {
+          technicalMessage: error.message, evidence: { errorCode: error.code || '' }
+        }) : undefined;
+        const conclusion = contextLimit?.conclusion || tr(key);
+        appendRunEvent({ title: conclusion, status: 'failed', failure,
           technicalDetail: { code: error.code || '', message: error.message } });
-        appendCompletionReport({ conclusion: tr(key), conclusionKey: key === 'compactUnsupported'
-          ? 'compact_unsupported' : key === 'compactBusy' ? 'compact_busy' : 'compact_failed',
+        appendCompletionReport({ conclusion, conclusionKey: contextLimit?.conclusionKey || (key === 'compactUnsupported'
+          ? 'compact_unsupported' : key === 'compactBusy' ? 'compact_busy' : 'compact_failed'),
+          nextStep: contextLimit?.nextStep, failure,
           status: 'failed', mode: 'ask', operations: [], applyResults: [] });
-        await finishRunView(tr(key), 'failed');
+        await finishRunView(conclusion, 'failed');
         return;
       }
       // codexReturned: assistantMessage arrived on the stream before the
@@ -2617,7 +2663,7 @@
       // — the fallback conclusion must reflect that instead of saying
       // 'local Codex returned no usable result'.
       const codexReturned = Boolean(getAssistantAnswerForCurrentRun());
-      const translated = translateRawError(error.message, { mode: submittedMode, locale: getLocale(), codexReturned });
+      const translated = translateRawError(error.message, { mode: submittedMode, locale: getLocale(), code: error.code, codexReturned });
       // When translateRawError maps the raw error to a FailureReason code,
       // attach the structured failure to the run-event and completion-report
       // so the run record carries machine-readable failure data alongside
@@ -2659,6 +2705,10 @@
         blockedFiles: [{ path: 'task', reason: error.message }]
       });
       await finishRunView(tx('Task failed', '任务失败'), 'failed');
+      // A failed initial card render must still leave a visible terminal record.
+      if (currentRunView?.sessionId === state.activeSessionId && !getCurrentRunViewForRender()) {
+        renderRunHistory({ preserveScroll: true });
+      }
     } finally {
       const settledView = currentRunView;
       const settledRecord = settledView ? findRunRecord(settledView.recordId, settledView.sessionId) : null;
@@ -2926,7 +2976,9 @@
       showPluginToast(tx('An update is being applied. Codex will be available again after reload.', '正在应用更新，重新加载后即可继续使用 Codex。'), { status: 'info' });
       return;
     }
-    const compact = options.operation === 'compact' || panel?.querySelector('[data-task]')?.value.trim() === '/compact';
+    const submittedCompactCommand = options.operation !== 'compact'
+      && panel?.querySelector('[data-task]')?.value.trim() === '/compact';
+    const compact = options.operation === 'compact' || submittedCompactCommand;
     if (compact && (currentRunView || runSubmissionPending)) {
       showPluginToast(tr('compactBusy'), { status: 'info' });
       return;
@@ -2936,7 +2988,7 @@
     }
     if (runSubmissionPending) return;
     runSubmissionPending = true;
-    runTask(compact ? { operation: 'compact' } : {}).catch(error => {
+    runTask(compact ? { operation: 'compact', consumeCompactDraft: options.consumeCompactDraft === true || submittedCompactCommand } : {}).catch(error => {
       if (!currentRunView) {
         setRunning(false);
         nativeChannel.clearActiveRequest();
@@ -3586,10 +3638,12 @@
 
   function getSlashCommands() {
     const commands = [
-      { id: 'compact', kind: 'compact', title: '/compact', subtitle: tr('slashCompactSubtitle') },
+      { id: 'compact', kind: 'compact', group: 'commands', title: tr('slashCompactTitle'), slug: '/compact',
+        subtitle: tr('slashCompactSubtitle') },
       {
         id: 'install-skill',
         kind: 'installer',
+        group: 'commands',
         title: tr('slashInstallSkillTitle'),
         subtitle: tr('slashInstallSkillSubtitle')
       }
@@ -3608,6 +3662,7 @@
       commands.push({
         id: `skill:${id}`,
         kind: 'codex-overleaf-skill',
+        group: 'overleaf',
         scope: 'codex-overleaf',
         skillId: id,
         title,
@@ -3618,11 +3673,13 @@
     for (const skill of localSkills) {
       if (!isSafeSkillId(skill.id) || !isCodexLocalSkillEnabled(skill.id, skill)) continue;
       const sameName = localSkills.filter(other => String(other.title || other.name || other.id) === String(skill.title || skill.name || skill.id)).length > 1;
-      commands.push({ id: `local-skill:${skill.id}`, kind: 'codex-local-skill', scope: 'codex-local', skillId: skill.id,
+      // Source and duplicate hints lead so a truncated preview cannot hide them.
+      commands.push({ id: `local-skill:${skill.id}`, kind: 'codex-local-skill', group: 'local', scope: 'codex-local', skillId: skill.id,
         title: String(skill.title || skill.name || skill.id).trim().slice(0, 80),
         searchName: String(skill.name || ''),
-        subtitle: tr('slashUseLocalSkillSubtitle') + (skill.sourceKind === 'plugin' && skill.sourceLabel ? ' · ' + skill.sourceLabel : '')
-          + (sameName ? ' · ' + (skill.sourceHint || skill.id.slice(-8)) : '') });
+        subtitle: [skill.sourceKind === 'plugin' && skill.sourceLabel ? skill.sourceLabel : '',
+          sameName ? skill.sourceHint || skill.id.slice(-8) : '',
+          String(skill.preview || '').trim() || tr('slashUseLocalSkillSubtitle')].filter(Boolean).join(' · ') });
     }
     return commands;
   }
@@ -3669,7 +3726,7 @@
           || command.id.toLowerCase().includes(query)
           || String(command.searchName || '').toLowerCase().includes(query);
       });
-      renderSlashMenu(commands);
+      renderSlashMenu(commands, { query });
       return;
     }
     const atTrigger = getAtFileTrigger();
@@ -3767,7 +3824,7 @@
       closeSlashMenu();
       return;
     }
-    renderSlashMenu(entries);
+    renderSlashMenu(entries, { query });
   }
 
   // Lazy one-shot load: the tray's file list is usually warm (panel open
@@ -3850,7 +3907,22 @@
     };
   }
 
-  function renderSlashMenu(commands = []) {
+  const SLASH_MENU_GROUPS = { commands: 'slashGroupCommands', overleaf: 'slashGroupOverleafSkills', local: 'slashGroupLocalSkills' };
+  const SLASH_MENU_ICONS = { compact: 'compact', installer: 'install', 'codex-overleaf-skill': 'book', 'codex-local-skill': 'terminal' };
+
+  function appendHighlightedText(node, value, query) {
+    const text = String(value || '');
+    const at = query ? text.toLowerCase().indexOf(query) : -1;
+    if (at < 0) {
+      node.append(text);
+      return;
+    }
+    const mark = document.createElement('mark');
+    mark.textContent = text.slice(at, at + query.length);
+    node.append(text.slice(0, at), mark, text.slice(at + query.length));
+  }
+
+  function renderSlashMenu(commands = [], { query = '' } = {}) {
     const menu = panel?.querySelector('[data-slash-menu]');
     if (!menu) {
       return;
@@ -3860,7 +3932,17 @@
       menu.hidden = true;
       return;
     }
+    const usage = commands.some(command => command.kind === 'compact') ? getContextUsageDisplay().usage : null;
+    const percent = usage?.contextWindow > 0 ? usage.usedTokens / usage.contextWindow * 100 : null;
+    let group = '';
     commands.forEach((command, index) => {
+      if (command.group && command.group !== group) {
+        group = command.group;
+        const label = document.createElement('div');
+        label.className = 'codex-slash-menu-group';
+        label.textContent = tr(SLASH_MENU_GROUPS[group]);
+        menu.append(label);
+      }
       const button = document.createElement('button');
       button.type = 'button';
       button.dataset.slashCommand = command.id;
@@ -3872,13 +3954,44 @@
         button.dataset.slashSkillScope = command.scope;
       }
       button.dataset.active = index === 0 ? 'true' : 'false';
+      const icon = document.createElement('span');
+      icon.className = 'codex-slash-menu-icon';
+      icon.innerHTML = Modules.PanelIcons.svg(SLASH_MENU_ICONS[command.kind] || 'file');
+      const text = document.createElement('span');
+      text.className = 'codex-slash-menu-text';
       const title = document.createElement('span');
-      title.textContent = command.title;
+      title.className = 'codex-slash-menu-title';
+      appendHighlightedText(title, command.title, query);
+      if (command.slug) {
+        const slug = document.createElement('code');
+        appendHighlightedText(slug, command.slug, query);
+        title.append(slug);
+      }
       const subtitle = document.createElement('small');
       subtitle.textContent = command.subtitle;
-      button.append(title, subtitle);
+      subtitle.title = command.subtitle;
+      text.append(title, subtitle);
+      button.append(icon, text);
+      if (command.kind === 'compact' && percent !== null) {
+        const meta = document.createElement('span');
+        meta.className = 'codex-slash-menu-meta';
+        meta.dataset.level = Modules.ContextUsage.level(percent);
+        meta.title = tr('contextUsageTitle');
+        meta.textContent = new Intl.NumberFormat(getLocale() === 'zh' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 0 }).format(percent) + '%';
+        button.append(meta);
+      }
       menu.append(button);
     });
+    const foot = document.createElement('div');
+    foot.className = 'codex-slash-menu-foot';
+    foot.dataset.slashMenuFoot = '';
+    for (const [keys, label] of [[['↑', '↓'], 'slashKeyMove'], [['Enter'], 'slashKeyRun'], [['Esc'], 'slashKeyClose']]) {
+      const hint = document.createElement('span');
+      for (const key of keys) hint.append(Object.assign(document.createElement('kbd'), { textContent: key }));
+      hint.append(tr(label));
+      foot.append(hint);
+    }
+    menu.append(foot);
     renderedSlashCommands = new Map(commands.map(command => [command.id, command]));
     menu.dataset.activeIndex = '0';
     menu.hidden = false;
@@ -3953,10 +4066,16 @@
     });
     const active = buttons[index];
     if (!active || !menu.clientHeight) return;
+    // Wrapping to the first item also reveals its group label.
+    if (index === 0) {
+      menu.scrollTop = 0;
+      return;
+    }
     const viewport = menu.getBoundingClientRect();
     const item = active.getBoundingClientRect();
     const top = viewport.top + menu.clientTop;
-    const bottom = top + menu.clientHeight;
+    // The sticky key-hint footer covers the bottom of the scroll area.
+    const bottom = top + menu.clientHeight - (menu.querySelector('[data-slash-menu-foot]')?.offsetHeight || 0);
     // Scroll only this popup; scrollIntoView may move the chat or editor too.
     if (item.height > menu.clientHeight || item.top < top) {
       menu.scrollTop += item.top - top;
@@ -3980,7 +4099,7 @@
     }
     if (command.kind === 'compact') {
       closeSlashMenu();
-      safeRunTask({ operation: 'compact' });
+      safeRunTask({ operation: 'compact', consumeCompactDraft: true });
       return;
     }
     clearSlashTriggerFromTaskInput();
@@ -4258,7 +4377,7 @@
     Bridge: Modules.SharedSessionBridge, StorageDb: Modules.StorageDb,
     getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId(), generation: spaRouteGeneration }),
     getState: () => state, setState: next => { state = next; },
-    isBusy: () => Boolean(readLiveRunViewForSaveStateGuard() || document.querySelector('dialog[open]')),
+    isBusy: () => Boolean(pendingDraftSave || readLiveRunViewForSaveStateGuard() || document.querySelector('dialog[open]')),
     normalize: normalizePanelState, render: applyStateToPanel,
     notice: error => appendStorageNoticeOnce('shared-history-refresh', tx(
       `Could not refresh shared history: ${error.message}`,
@@ -4447,6 +4566,13 @@
   }
 
   async function onSpaRouteChange() {
+    // Snapshot the departing draft before hydration replaces state. The detached
+    // writer retains its original account/project and never reads the new view's attachments.
+    if (pendingDraftSave?.projectId === activeProjectId
+      && pendingDraftSave?.accountScopeId === cachedAccountScopeId) {
+      void saveState({ draftScope: pendingDraftSave });
+    }
+    resetDraftSave();
     const generation = ++spaRouteGeneration;
     activeTurnControl.cancelRecovery();
     const url = new URL(window.location.href);
@@ -5679,9 +5805,8 @@
       // Settlement owns a run after navigation away from its project. Ordinary
       // view saves must not write that run into the current route's project.
       // An explicit override is reserved for callers that own a detached scope.
-      const projectIdOverride = options && typeof options.projectIdOverride === 'string'
-        ? options.projectIdOverride
-        : '';
+      const projectIdOverride = options?.draftScope?.projectId || (options && typeof options.projectIdOverride === 'string'
+        ? options.projectIdOverride : '');
       const urlProjectId = getCurrentProjectId();
       const projectId = projectIdOverride || urlProjectId;
       if (!projectId) {
@@ -5699,6 +5824,8 @@
         ));
         if (options?.requireDurable || options?.reviewRunIds?.length) throw new Error('Persistence project changed.'); return;
       }
+      const savedDraft = !projectIdOverride && pendingDraftSave?.scope === getComposerDraftScope()
+        ? pendingDraftSave : null;
       const compactState = prepareStateForStorage(state, { onAggressive: notifyAggressiveCompactionOnce });
       compactState.autoRecompile = state.autoRecompile;
       compactState.loadCodexLocalSkills = state.loadCodexLocalSkills !== false;
@@ -5731,7 +5858,9 @@
         normalizeCustomInstructionsByProject,
         persistenceContext
         });
-        await getComposerDraftPersistence().save({ accountScopeId: persistenceContext.scope.accountScopeId, projectId });
+        if (!options?.draftScope) {
+          await getComposerDraftPersistence().save({ accountScopeId: persistenceContext.scope.accountScopeId, projectId });
+        }
       };
 
       const persistenceCoordinator = getScopedPersistenceCoordinator();
@@ -5740,17 +5869,16 @@
           code: 'scoped_persistence_unavailable'
         });
       } else {
-        const committed = await persistenceCoordinator.commit(
-          projectId,
-          {
+        const commitOptions = {
             detached: Boolean(projectIdOverride),
             rebase: true,
             queueMutation: options?.queueMutation,
             queueMutations: options?.queueMutations,
             sessionTombstones: options?.deletedSessionIds
-          },
-          persistScopedState
-        );
+        };
+        const committed = options?.draftScope
+          ? await persistenceCoordinator.commitDetached(projectId, options.draftScope.accountScopeId, commitOptions, persistScopedState)
+          : await persistenceCoordinator.commit(projectId, commitOptions, persistScopedState);
         if (!committed.ok && (
           options?.requireDurable || options?.reviewRunIds?.length || options?.recoveryRuns?.length || options?.queueMutation
           || options?.queueMutations?.length
@@ -5761,6 +5889,16 @@
           });
         }
         if (committed.ok) {
+          if (savedDraft && pendingDraftSave === savedDraft) {
+            const capturedTask = stateSnapshot.sessions.find(item => item.id === stateSnapshot.activeSessionId)?.task;
+            const storedTask = StorageDb.buildSessionRecord({ task: capturedTask }).task;
+            if (!(written || []).some(session => session.id === stateSnapshot.activeSessionId && session.task === storedTask)) {
+              throw Object.assign(new Error(tx('The latest draft could not be saved. It is still available in this page.',
+                '最新草稿未能保存，内容仍保留在当前页面。')), { code: 'draft_state_not_persisted' });
+            }
+            // A newer input revision keeps its own timer, even if this save finishes later.
+            resetDraftSave();
+          }
           const retentionUpdates = StorageDb.projectRetentionUpdates?.({ liveState: state, capturedState: stateSnapshot, written,
             capturedScope: retentionScope, currentScope: { accountScopeId: typeof cachedAccountScopeId === 'string' ? cachedAccountScopeId : '',
               projectId: getCurrentProjectId(), generation: typeof spaRouteGeneration === 'number' ? spaRouteGeneration : null } }) || [];
@@ -5776,6 +5914,8 @@
       }
     } catch (error) {
       if (options?.requireDurable) throw error;
+      // A departing draft must never fall back using the destination page's state/scope.
+      if (options?.draftScope) return;
       if (error?.code === 'recovery_scope_changed') return;
       if (
         error?.code === 'account_scope_unavailable' &&
@@ -5893,6 +6033,61 @@
     }, delayMs);
   }
 
+  function getComposerDraftScope() {
+    return JSON.stringify([cachedAccountScopeId, getCurrentProjectId(), spaRouteGeneration, state.activeSessionId]);
+  }
+
+  function resetDraftSave() {
+    if (draftSaveTimer) clearTimeout(draftSaveTimer);
+    draftSaveTimer = null;
+    pendingDraftSave = null;
+  }
+
+  function captureComposerDraft() {
+    const input = panel?.querySelector('[data-task]');
+    if (!input || !state.activeSessionId) return;
+    const next = updateActiveSessionDraft(state, input.value);
+    if (next === state) return;
+    state = next;
+    const now = Date.now(), scope = getComposerDraftScope();
+    pendingDraftSave = {
+      scope,
+      projectId: getCurrentProjectId(),
+      accountScopeId: cachedAccountScopeId,
+      firstAt: pendingDraftSave?.scope === scope ? pendingDraftSave.firstAt : now
+    };
+    if (draftSaveTimer) clearTimeout(draftSaveTimer);
+    const delay = Math.max(0, Math.min(DRAFT_SAVE_DELAY_MS, pendingDraftSave.firstAt + DRAFT_SAVE_MAX_WAIT_MS - now));
+    draftSaveTimer = setTimeout(() => {
+      draftSaveTimer = null;
+      if (pendingDraftSave?.scope !== getComposerDraftScope()) { resetDraftSave(); return; }
+      pendingDraftSave.firstAt = Date.now();
+      // Join the existing writer immediately; never reset its timer on every key.
+      saveStateSoon(0);
+    }, delay);
+  }
+
+  async function flushComposerDraft({ requireDurable = false } = {}) {
+    if (!pendingDraftSave) return;
+    const scope = getComposerDraftScope();
+    if (pendingDraftSave.scope !== scope) { resetDraftSave(); return; }
+    if (draftSaveTimer) clearTimeout(draftSaveTimer);
+    draftSaveTimer = null;
+    pendingDraftSave.firstAt = Date.now();
+    await flushQueuedSaveState(requireDurable ? { requireDurable: true } : null);
+    if (requireDurable && scope !== getComposerDraftScope()) {
+      throw new Error(tx('The active session changed while saving the draft. Try again.',
+        '保存草稿时活动会话已改变，请重试。'));
+    }
+  }
+
+  function flushComposerDraftOnLeave() {
+    // Lifecycle events cannot await completion; periodic saves remain the primary protection.
+    flushComposerDraft().catch(error => appendStorageNoticeOnce('save-failed', tx(
+      `Failed to save session state: ${localizeVisibleReason(error.message)}`,
+      `保存会话状态失败：${localizeVisibleReason(error.message)}`)));
+  }
+
   function runQueuedSaveState() {
     if (saveStateInFlightPromise) {
       saveStateRunAfterFlight = true;
@@ -5993,13 +6188,11 @@
   async function persistPanelInputs(event) {
     const globalWrite = getGlobalPreferences().handleInput(event);
     if (globalWrite) return globalWrite;
-    // Typing in the task box is the hottest write path: a full saveState per
-    // keystroke serializes every session/run/event and rewrites IndexedDB, so
-    // panels get slower as history grows. Drafts take the debounced saver;
-    // committed control changes keep the immediate full save below.
-    if (event?.type === 'input' && event?.target?.matches?.('[data-task]')) {
-      readPanelInputs();
-      saveStateSoon();
+    // Draft edits retain run/event identity. Composition updates also capture the
+    // current text; compositionend captures its committed value if no final input fires.
+    if (event?.target?.matches?.('[data-task]')) {
+      captureComposerDraft();
+      if (event.type === 'change') await flushComposerDraft();
       return;
     }
     if (event?.target?.matches?.('[data-speed]')) {
@@ -6192,6 +6385,7 @@
   }
 
   function applyStateToPanel(options = {}) {
+    if (pendingDraftSave && pendingDraftSave.scope !== getComposerDraftScope()) resetDraftSave();
     contextUsageView?.close();
     selectionContextView.render();
     writingStyleSettings.sync();
@@ -6274,6 +6468,10 @@
 
   function renderContextUsage() {
     if (!contextUsageView || !state) return;
+    contextUsageView.setState(getContextUsageDisplay());
+  }
+
+  function getContextUsageDisplay() {
     const session = getActiveSession(state);
     const run = currentRunView?.sessionId === session?.id
       ? findRunRecord(currentRunView.recordId, currentRunView.sessionId) : null;
@@ -6292,10 +6490,20 @@
     const matchesRun = run && run.model === scope.model
       && (run.providerId || 'builtin') === scope.providerId
       && Number(run.providerRevision || 0) === scope.providerRevision;
-    contextUsageView.setState({
-      usage: Modules.ContextUsage.select(session, scope),
-      compacting: Boolean(matchesRun && Modules.RunActivityModel.project(run).compacting)
-    });
+    // Starting another turn must not revive statistics from before an automatic
+    // compaction. Retain the watermark across this thread's saved normal runs.
+    const compactedAt = (session?.runs || []).reduce((latest, candidate) => candidate && !candidate.forkSnapshot
+      && candidate.operation !== 'compact' && scope.threadId && candidate.codexThreadId === scope.threadId
+      ? Math.max(latest, Modules.RunActivityModel.getCompactedAt(candidate)) : latest, 0);
+    const { usage, pending, compacted } = Modules.ContextUsage.status(session, { ...scope, compactedAt });
+    const compacting = Boolean(matchesRun && Modules.RunActivityModel.project(run).compacting);
+    return { usage, pending, compacted, compacting, compactingKind: compacting ? (run.operation === 'compact' ? 'manual' : 'auto') : '' };
+  }
+
+  function getCompactAvailability() {
+    if (updateIdleClient?.isApplying() || currentRunView || runSubmissionPending) return { ok: false, reason: 'compactBusy' };
+    if (!getActiveSession(state)?.codexThreadId) return { ok: false, reason: 'compactNoThread' };
+    return { ok: true };
   }
 
   function prepareRetryReplacement(run, task) {
@@ -6382,6 +6590,14 @@
         titleSource: 'auto'
       }
       : {};
+    // Establish the in-memory owner before publishing or rendering the record.
+    // If presentation throws, runTask still has the identity needed to settle it.
+    const view = currentRunView = {
+      operation, sessionId, sessionContext, codexThreadId, recordId: record.id,
+      runProjectId: record.runProjectId, runAccountScopeId: record.runAccountScopeId,
+      executionSnapshot: record.executionSnapshot, startedAt: Date.now(), queueItemId,
+      nativeRequestId: '', activeTurn: null
+    };
     updateSessionById(sessionId, {
       runs: runController.replaceRunForRetry(active?.runs, replaceRunId, record),
       ...titlePatch
@@ -6390,6 +6606,16 @@
 
     const log = panel.querySelector('[data-log]');
     const root = renderRunCard(record);
+    Object.assign(view, {
+      root,
+      runProcess: root.querySelector('[data-run-process]'),
+      processLabel: root.querySelector('[data-run-process-summary]'),
+      events: root.querySelector('[data-run-events]'),
+      report: root.querySelector('[data-run-report]'),
+      status: root.querySelector('[data-run-status]'),
+      // Seed references before warm-mirror resolution produces its snapshot.
+      projectFiles: getCurrentProjectReferenceFiles()
+    });
     if (state.activeSessionId === sessionId) {
       removeEmptyRunsMessage(log);
       if (replaceRunId) log.querySelector(`[data-run-id="${cssEscape(replaceRunId)}"]`)?.remove();
@@ -6400,33 +6626,7 @@
     renderSessionList();
     applySessionLabel();
 
-    return {
-      operation,
-      sessionId,
-      sessionContext,
-      codexThreadId,
-      recordId: record.id,
-      // Mirror the immutable runProjectId on the view so writeback /
-      // accept / undo dispatches don't need to re-look up the record.
-      runProjectId: record.runProjectId,
-      runAccountScopeId: record.runAccountScopeId,
-      executionSnapshot: record.executionSnapshot,
-      root,
-      runProcess: root.querySelector('[data-run-process]'),
-      processLabel: root.querySelector('[data-run-process-summary]'),
-      events: root.querySelector('[data-run-events]'),
-      report: root.querySelector('[data-run-report]'),
-      status: root.querySelector('[data-run-status]'),
-      // A run starts before warm-mirror resolution has produced its lightweight
-      // project snapshot. Seed references from the already-prefetched project
-      // inventory so early stream events and fast Ask responses can still
-      // resolve project-relative locations.
-      projectFiles: getCurrentProjectReferenceFiles(),
-      startedAt: Date.now(),
-      queueItemId,
-      nativeRequestId: '',
-      activeTurn: null
-    };
+    return view;
   }
 
   function touchSessionForTerminalRun(sessionId, finishedAt) {
@@ -6597,7 +6797,7 @@
   function appendRunEvent(input = {}) {
     const { title, status = 'info', detail, timestamp } = input;
     const safeTitle = sanitizeAssistantVisibleText(title) || 'Event';
-    if (!currentRunView?.events) {
+    if (!currentRunView) {
       appendPlainLog(safeTitle);
       return;
     }
