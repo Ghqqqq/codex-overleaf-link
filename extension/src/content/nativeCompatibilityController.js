@@ -88,7 +88,7 @@
         requiredVersion: compatibility.requiredVersion || Compatibility?.BUILD_TARGET_VERSION || '',
         releaseUrl: compatibility.releaseUrl || ''
       };
-      notifyBlocked(error, compatibility);
+      notifyBlocked(error, compatibility, method);
       return { ok: false, compatibility, response: { ok: false, error } };
     }
 
@@ -103,7 +103,7 @@
       };
     }
 
-    function notifyBlocked(error, compatibility = {}) {
+    function notifyBlocked(error, compatibility = {}, method) {
       const message = error?.message || String(error || '');
       if (options.getCurrentRunView?.()) {
         options.appendRunEvent?.({ title: message, status: 'failed' });
@@ -111,7 +111,17 @@
         return;
       }
       showUpdateGuidance(compatibility);
-      options.showPluginToast?.(message, { status: 'failed', sticky: true });
+      const missing = compatibility.status === 'native_missing';
+      options.showPluginToast?.(missing ? tr('nativeCompatibilityMissingGuidance') : message, {
+        status: 'failed',
+        sticky: true,
+        ...(missing ? {
+          title: tr('nativeCompatibilityMissingTitle'),
+          groupKey: 'native-missing',
+          groupItem: method || 'native request',
+          groupSummary: count => tr('nativeCompatibilityUnavailableFeatures', { count })
+        } : {})
+      });
     }
 
     async function refreshBadge() {
@@ -197,11 +207,24 @@
       );
       const card = options.document.createElement('section');
       card.className = 'codex-plugin-confirm-card';
+      const head = options.document.createElement('div');
+      head.className = 'codex-plugin-confirm-head';
+      const icon = options.document.createElement('img');
+      icon.className = 'codex-plugin-confirm-icon';
+      icon.alt = '';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.src = options.getIconUrl?.() || '';
+      const titleWrap = options.document.createElement('div');
+      const brand = options.document.createElement('div');
+      brand.className = 'codex-plugin-confirm-brand';
+      brand.textContent = 'Codex Overleaf Link';
       const title = options.document.createElement('div');
       title.className = 'codex-plugin-confirm-title';
       title.textContent = nativeMissing
         ? tx('One step left: install the native host', '还差一步：安装 Native host')
         : tx('Native host update available', 'Native host 可更新');
+      titleWrap.append(brand, title);
+      head.append(icon, titleWrap);
       const body = options.document.createElement('div');
       body.className = 'codex-plugin-confirm-body';
       body.textContent = [
@@ -222,20 +245,16 @@
               ? tx(' Use PowerShell.', ' 请使用 PowerShell。') : '')
       ].join('\n\n');
       const commandCode = options.document.createElement('code');
+      commandCode.className = 'codex-native-guidance-command';
       commandCode.textContent = command;
-      Object.assign(commandCode.style, {
-        display: 'block',
-        whiteSpace: 'pre-wrap',
-        marginTop: '0.75rem'
-      });
       body.append(commandCode);
       if (releaseUrl) {
         const link = options.document.createElement('a');
+        link.className = 'codex-native-guidance-link';
         link.href = releaseUrl;
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
         link.textContent = tx('Open GitHub Release', '打开 GitHub Release');
-        Object.assign(link.style, { display: 'block', marginTop: '0.75rem' });
         body.append(link);
       }
       const actions = options.document.createElement('div');
@@ -256,7 +275,7 @@
       close.textContent = tx('Close', '关闭');
       close.addEventListener('click', () => overlay.remove());
       actions.append(close, copy);
-      card.append(title, body, actions);
+      card.append(head, body, actions);
       overlay.append(card);
       overlay.addEventListener('click', event => {
         if (event.target === overlay) overlay.remove();

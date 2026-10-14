@@ -1296,7 +1296,8 @@
 
   function renderTemplatePicker(instance, detail) {
     const tx = instance.tx;
-    detail.innerHTML = '<div class="codex-provider-template-head"><button type="button" class="codex-provider-inline-button" data-provider-action="templates-back">'
+    detail.innerHTML = '<div class="codex-provider-template-head"><button type="button" class="codex-provider-inline-button codex-provider-back-button" data-provider-action="templates-back">'
+      + '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m9.8 3.6-4.4 4.4 4.4 4.4"/></svg>'
       + escapeHtml(tx('Back', '返回')) + '</button><h3>' + escapeHtml(tx('Add a connection', '添加连接')) + '</h3></div>'
       + '<p class="codex-provider-help">' + escapeHtml(tx(
         'Service shortcuts default to Anthropic Messages. Chat Completions remains available; preset addresses follow the selected protocol. Add the matching API key and model IDs separately.',

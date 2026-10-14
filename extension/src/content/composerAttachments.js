@@ -7,6 +7,7 @@
     const tr = typeof options.tr === 'function' ? options.tr : (key) => key;
     const appendPlainLog = typeof options.appendPlainLog === 'function' ? options.appendPlainLog : () => {};
     const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
+    const icons = options.icons || null;
     const limits = options.limits || {};
     const maxAttachments = Number(limits.maxAttachments) || 8;
     const maxAttachmentBytes = Number(limits.maxAttachmentBytes) || 12 * 1024 * 1024;
@@ -159,6 +160,7 @@
         root: getPanel() || document.body,
         tr,
         tx,
+        icons,
         removable: true,
         onRemove: removeAttachment
       });
@@ -333,6 +335,7 @@
         root: getPanel() || document.body,
         tr,
         tx,
+        icons,
         ...options
       }),
       clear,
@@ -408,6 +411,12 @@
       .slice(0, 180) || '';
   }
 
+  function setCloseGlyph(button, icons) {
+    const glyph = icons?.svg?.('close', 'codex-close-glyph');
+    if (glyph) button.innerHTML = glyph;
+    else button.textContent = '×';
+  }
+
   function renderAttachmentPreviewList(attachments = [], container, options = {}) {
     if (!container) return;
     container.replaceChildren();
@@ -455,7 +464,7 @@
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'codex-attachment-preview-remove';
-        remove.textContent = '×';
+        setCloseGlyph(remove, options.icons);
         const removeLabel = options.tx ? options.tx('Remove ' + label, '移除 ' + label) : 'Remove ' + label;
         remove.title = removeLabel;
         remove.setAttribute('aria-label', removeLabel);
@@ -486,7 +495,7 @@
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'codex-attachment-preview-dialog-close';
-    close.textContent = '×';
+    setCloseGlyph(close, options.icons);
     close.title = options.tr ? options.tr('close') : 'Close';
     close.setAttribute('aria-label', options.tr ? options.tr('close') : 'Close');
     const image = document.createElement('img');

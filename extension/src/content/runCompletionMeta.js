@@ -364,7 +364,9 @@
           : pendingFileUndo || run?.undoStatus === 'partial'
             ? (hasUndoProgress(run) ? tx('Partly undone', '已撤销部分修改') : tx('Undo incomplete', '撤销未完成'))
             : undoable ? tx(`${undoable} undoable`, `可撤销 ${undoable} 项`)
-              : failed || retentionOmitted ? '' : tx('Nothing to undo', '无可撤销写入');
+              // With nothing written, "Nothing to undo" repeats the write fact; the
+              // expanded details still carry the full Undo row.
+              : failed || retentionOmitted || !wrote ? '' : tx('Nothing to undo', '无可撤销写入');
     if (undo) facts.push({ key: 'undo', text: undo });
     if (retentionOmitted) facts.push({ key: 'recoveryRetention', tone: 'warn',
       text: run.recoveryRetention.coreRetained === true

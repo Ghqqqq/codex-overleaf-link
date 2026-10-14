@@ -227,20 +227,20 @@
 
   function collectMarkdownTargetReferences(text, mode, refs) {
     const normalizedText = stripReferenceQueryAndHash(String(text || '').trim());
-    const match = normalizedText.match(new RegExp(`^(.+?\\.${TEXT_EXTENSION_PATTERN}):(\\d+)(?::(\\d+))?$`, 'i'));
+    const match = normalizedText.match(new RegExp(`^(.+?\\.${TEXT_EXTENSION_PATTERN}):(\\d+)(?:[-–](\\d+)|:(\\d+))?$`, 'i'));
     if (!match) {
       return;
     }
-    const line = parsePositiveInteger(match[2]);
-    const column = match[3] ? parsePositiveInteger(match[3]) : null;
-    if (!line || (match[3] && !column)) {
+    const span = parseLineSpan(match[2], match[3]);
+    const column = match[4] ? parsePositiveInteger(match[4]) : null;
+    if (!span || (match[4] && !column)) {
       return;
     }
     refs.push({
       rawText: text,
       displayText: text,
       rawPath: match[1],
-      line,
+      ...span,
       column,
       source: mode,
       index: 0
@@ -248,12 +248,14 @@
   }
 
   function collectColonReferences(text, mode, refs) {
-    const pattern = new RegExp(`${REFERENCE_PREFIX_PATTERN}${PATH_PATTERN}:(\\d+)(?::(\\d+))?(?![-:\\d])`, 'gi');
+    // Range/column suffixes are mutually exclusive; malformed spans must not
+    // backtrack into a shorter reference, including decimal/exponent endpoints.
+    const pattern = new RegExp(`${REFERENCE_PREFIX_PATTERN}${PATH_PATTERN}:(\\d+)(?:[-–](\\d+)(?!\\.\\d|e[+-]?\\d)|:(\\d+))?(?![-–:\\d]|(?:\\.\\d+)?(?:e[+-]?\\d+)?[-–])`, 'gi');
     let match;
     while ((match = pattern.exec(text)) !== null) {
-      const line = parsePositiveInteger(match[3]);
-      const column = match[4] ? parsePositiveInteger(match[4]) : null;
-      if (!line || (match[4] && !column)) {
+      const span = parseLineSpan(match[3], match[4]);
+      const column = match[5] ? parsePositiveInteger(match[5]) : null;
+      if (!span || (match[5] && !column)) {
         continue;
       }
       const prefixLength = match[1].length;
@@ -262,7 +264,7 @@
         rawText,
         displayText: rawText,
         rawPath: match[2],
-        line,
+        ...span,
         column,
         source: mode,
         index: match.index + prefixLength
@@ -271,20 +273,20 @@
   }
 
   function collectLineWordReferences(text, mode, refs) {
-    const pattern = new RegExp(`${REFERENCE_PREFIX_PATTERN}${PATH_PATTERN}\\s+line\\s+(\\d+)(?![-:\\d])`, 'gi');
+    const pattern = new RegExp(`${REFERENCE_PREFIX_PATTERN}${PATH_PATTERN}\\s+line(?:s(?=\\s+\\d+[-–]))?\\s+(\\d+)(?:[-–](\\d+)(?!\\.\\d|e[+-]?\\d))?(?![-–:\\d]|(?:\\.\\d+)?(?:e[+-]?\\d+)?[-–])`, 'gi');
     let match;
     while ((match = pattern.exec(text)) !== null) {
-      const line = parsePositiveInteger(match[3]);
-      if (!line) {
+      const span = parseLineSpan(match[3], match[4]);
+      if (!span) {
         continue;
       }
       const prefixLength = match[1].length;
       const rawText = match[0].slice(prefixLength);
       refs.push({
         rawText,
-        displayText: `${match[2]}:${line}`,
+        displayText: `${match[2]}:${span.line}${span.endLine ? `–${span.endLine}` : ''}`,
         rawPath: match[2],
-        line,
+        ...span,
         column: null,
         source: mode,
         index: match.index + prefixLength
@@ -293,20 +295,20 @@
   }
 
   function collectChineseLineReferences(text, mode, refs) {
-    const pattern = new RegExp(`${REFERENCE_PREFIX_PATTERN}${PATH_PATTERN}\\s+第\\s*(\\d+)\\s*行`, 'gi');
+    const pattern = new RegExp(`${REFERENCE_PREFIX_PATTERN}${PATH_PATTERN}\\s+第\\s*(\\d+)(?:\\s*[-–至]\\s*(\\d+))?\\s*行`, 'gi');
     let match;
     while ((match = pattern.exec(text)) !== null) {
-      const line = parsePositiveInteger(match[3]);
-      if (!line) {
+      const span = parseLineSpan(match[3], match[4]);
+      if (!span) {
         continue;
       }
       const prefixLength = match[1].length;
       const rawText = match[0].slice(prefixLength);
       refs.push({
         rawText,
-        displayText: `${match[2]}:${line}`,
+        displayText: `${match[2]}:${span.line}${span.endLine ? `–${span.endLine}` : ''}`,
         rawPath: match[2],
-        line,
+        ...span,
         column: null,
         source: mode,
         index: match.index + prefixLength
@@ -361,13 +363,13 @@
       projectFiles
     });
     if (resolved) {
-      return `${resolved.path}:${ref.line}${ref.column ? `:${ref.column}` : ''}`;
+      return `${resolved.path}:${ref.line}${ref.endLine ? `-${ref.endLine}` : ref.column ? `:${ref.column}` : ''}`;
     }
-    return formatLocalPathPlaceholder(ref.line, placeholderBrackets);
+    return formatLocalPathPlaceholder(ref.line, placeholderBrackets, ref.endLine);
   }
 
-  function formatLocalPathPlaceholder(line, includeBrackets) {
-    const value = line ? `local path:${line}` : 'local path';
+  function formatLocalPathPlaceholder(line, includeBrackets, endLine) {
+    const value = line ? `local path:${line}${endLine ? `-${endLine}` : ''}` : 'local path';
     return includeBrackets ? `[${value}]` : value;
   }
 
@@ -383,7 +385,7 @@
   }
 
   function stripReferenceQueryAndHash(value) {
-    return String(value || '').replace(/([:.]\d+(?::\d+)?)(?:[?#].*)$/, '$1');
+    return String(value || '').replace(/([:.]\d+(?:[-–]\d+|:\d+)?)(?:[?#].*)$/, '$1');
   }
 
   function collectTextProjectFiles(projectFiles) {
@@ -423,16 +425,11 @@
   function shouldSkipReference(ref) {
     const rawPath = String(ref.rawPath || '');
     return /^https?:\/\//i.test(rawPath)
-      || isEmailLikePath(rawPath)
-      || hasUnsafeLineRange(ref.rawText);
+      || isEmailLikePath(rawPath);
   }
 
   function isEmailLikePath(rawPath) {
     return /^[^@\s/\\]+@[^@\s/\\]+$/.test(rawPath);
-  }
-
-  function hasUnsafeLineRange(rawText) {
-    return /:\d+-\d+(?=$|[^\d])/.test(rawText);
   }
 
   function hasUnsafePathSegments(path) {
@@ -453,6 +450,15 @@
       return null;
     }
     return parsed;
+  }
+
+  function parseLineSpan(rawLine, rawEndLine) {
+    const line = parsePositiveInteger(rawLine);
+    const endLine = rawEndLine === undefined ? null : parsePositiveInteger(rawEndLine);
+    if (!line || (rawEndLine !== undefined && (!endLine || endLine < line))) {
+      return null;
+    }
+    return { line, ...(endLine > line ? { endLine } : {}) };
   }
 
   function getBasename(path) {
@@ -477,6 +483,7 @@
       displayText: ref.displayText,
       rawPath: ref.rawPath,
       line: ref.line,
+      ...(ref.endLine ? { endLine: ref.endLine } : {}),
       column: ref.column,
       source: ref.source
     };

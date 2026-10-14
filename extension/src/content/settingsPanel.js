@@ -11,6 +11,7 @@
     const icons = {
       appearance: '<path d="M8 2.2v1.1"/><path d="M8 12.7v1.1"/><path d="M2.2 8h1.1"/><path d="M12.7 8h1.1"/><path d="m3.9 3.9.8.8"/><path d="m11.3 11.3.8.8"/><path d="m12.1 3.9-.8.8"/><path d="m4.7 11.3-.8.8"/><circle cx="8" cy="8" r="2.4"/>',
       bolt: '<path d="M8.9 1.8 3.8 8.8h3.3l-.5 5.4 5.5-7.5H8.8z"/>',
+      close: '<path d="m4.6 4.6 6.8 6.8M11.4 4.6l-6.8 6.8"/>',
       database: '<ellipse cx="8" cy="4" rx="4.5" ry="1.9"/><path d="M3.5 4v4c0 1 2 1.9 4.5 1.9s4.5-.9 4.5-1.9V4"/><path d="M3.5 8v4c0 1 2 1.9 4.5 1.9s4.5-.9 4.5-1.9V8"/>',
       flask: '<path d="M6 2.5h4"/><path d="M7 2.5v4.1l-3.4 5.3A1.4 1.4 0 0 0 4.8 14h6.4a1.4 1.4 0 0 0 1.2-2.1L9 6.6V2.5"/><path d="M5.3 10.5h5.4"/>',
       history: '<path d="M4.2 3.4h7.6"/><path d="M4.2 8h7.6"/><path d="M4.2 12.6h4.6"/><path d="M2.2 3.4h.1"/><path d="M2.2 8h.1"/><path d="M2.2 12.6h.1"/>',

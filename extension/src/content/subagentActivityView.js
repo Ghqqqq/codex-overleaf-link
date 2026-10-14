@@ -3,7 +3,12 @@
 })(typeof globalThis !== 'undefined' ? globalThis : window, function subagentActivityViewFactory(Agents, Activity) {
   'use strict';
   function create(deps) {
-    const { tx, getPanel, plain, make, icon, formatElapsed, renderBlocks } = deps;
+    const { tx, getPanel, plain, make, icon, formatElapsed, renderBlocks, glyph = () => '' } = deps;
+    const withGlyph = (node, name, label) => {
+      node.insertAdjacentHTML('beforeend', glyph(name));
+      const text = make('span', ''); text.textContent = label; node.append(text);
+      return node;
+    };
     let viewer = null;
     function statusLabel(status) {
       return ({ pending: tx('Starting', '启动中'), running: tx('Running', '运行中'),
@@ -42,9 +47,9 @@
       shell.setAttribute('aria-label', tx('Subagent conversation', '子代理对话'));
       const header = make('header', 'codex-subagent-view-head');
       const back = make('button', 'codex-subagent-back');
-      back.type = 'button'; back.textContent = tx('Back to main task', '返回主任务');
+      back.type = 'button'; withGlyph(back, 'chevronLeft', tx('Back to main task', '返回主任务'));
       back.addEventListener('click', close);
-      const readonly = make('span', 'codex-subagent-readonly'); readonly.textContent = tx('Read only', '只读');
+      const readonly = withGlyph(make('span', 'codex-subagent-readonly'), 'lock', tx('Read only', '只读'));
       header.append(back, readonly);
       const parent = make('div', 'codex-subagent-parent');
       const parentLabel = make('span', 'codex-subagent-parent-label');
@@ -112,7 +117,7 @@
           const mark = icon('agent'), copy = make('span', 'run-subagent-copy');
           const name = make('span', 'run-subagent-name'), activity = make('span', 'run-subagent-activity');
           copy.append(name, activity);
-          const tail = make('span', 'run-subagent-tail'), status = make('span', ''), time = make('span', 'run-subagent-time');
+          const tail = make('span', 'run-subagent-tail'), status = make('span', 'run-subagent-status'), time = make('span', 'run-subagent-time');
           tail.append(status, time);
           el.append(mark, copy, tail);
           el.addEventListener('click', () => open(card, agent.key, el));
@@ -154,6 +159,7 @@
       const childStatus = Agents.effectiveStatus(agent, card.run);
       viewer.title.textContent = plain(agent.title || agent.jobId || agent.threadId);
       viewer.meta.textContent = [statusLabel(childStatus), elapsed(agent, card.run), agent.model, agent.reasoningEffort].filter(Boolean).join(' · ');
+      viewer.meta.dataset.state = childStatus;
       viewer.prompt.textContent = plain(agent.task);
       viewer.assignment.hidden = !viewer.prompt.textContent;
       const parent = Activity.project(card.run), last = parent.blocks.at(-1);
@@ -163,6 +169,7 @@
         ? parentWork || tx('Working', '处理中') : tx('Run ended', '本轮已结束'));
       const running = (card.run.subagents || []).filter(item => ['pending', 'running'].includes(Agents.effectiveStatus(item, card.run))).length;
       viewer.parentCount.textContent = tx(running + ' subagents active', running + ' 个子任务进行中');
+      viewer.parentCount.hidden = running === 0;
       for (const sibling of card.run.subagents || []) {
         let button = viewer.siblingRows.get(sibling.key);
         if (!button) {
@@ -172,7 +179,8 @@
         }
         button.textContent = plain(sibling.title || sibling.jobId || sibling.threadId);
         button.setAttribute('aria-pressed', String(sibling.key === agent.key));
-        button.title = statusLabel(Agents.effectiveStatus(sibling, card.run));
+        button.dataset.state = Agents.effectiveStatus(sibling, card.run);
+        button.title = statusLabel(button.dataset.state);
       }
       const childRun = { id: card.id + ':' + agent.key, status: ['pending', 'running'].includes(childStatus) ? 'running' : childStatus,
         events: agent.events || [], mode: 'ask' };

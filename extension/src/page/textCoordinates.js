@@ -6,7 +6,7 @@
   'use strict';
 
   function resolveJumpToPositionRange(params, text, filePath) {
-    if (params.line === undefined && params.column === undefined) {
+    if (params.line === undefined && params.column === undefined && params.endLine === undefined) {
       return {
         ok: true,
         from: params.from,
@@ -31,6 +31,22 @@
         line: lineNumber,
         lineCount
       });
+    }
+
+    if (params.endLine !== undefined) {
+      const endLineNumber = Number(params.endLine);
+      if (!Number.isInteger(endLineNumber) || endLineNumber < lineNumber) {
+        return jumpPositionOutOfRange('line_out_of_range', filePath, {
+          line: lineNumber,
+          endLine: Number.isInteger(endLineNumber) ? endLineNumber : params.endLine,
+          lineCount
+        });
+      }
+      return {
+        ok: true,
+        from: line.start,
+        to: lines[Math.min(endLineNumber, lineCount) - 1].end
+      };
     }
 
     const lineLength = line.end - line.start;

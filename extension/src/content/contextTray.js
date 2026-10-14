@@ -32,6 +32,7 @@
     closeDiagnosticsMenu = () => {},
     closeCustomInstructionsSettings = () => {},
     closeSlashMenu = () => {},
+    icons = null,
     projectFiles: projectFilesDep,
     exactFileListZipTimeoutMs: exactFileListZipTimeoutMsDep
   } = {}) {
@@ -39,6 +40,11 @@
       || root.document
       || (typeof globalThis !== 'undefined' ? globalThis.document : null);
     const getLocationHref = getLocationHrefDep || (() => root.location?.href || '');
+    const setCloseGlyph = button => {
+      const glyph = icons?.svg?.('close', 'codex-close-glyph');
+      if (glyph) button.innerHTML = glyph;
+      else button.textContent = '×';
+    };
     const projectFiles = projectFilesDep || ProjectFiles;
     const exactFileListZipTimeoutMs = Number(exactFileListZipTimeoutMsDep) ||
       DEFAULT_CONTEXT_EXACT_FILE_LIST_ZIP_TIMEOUT_MS;
@@ -556,7 +562,7 @@
         clear.dataset.contextClear = '';
         clear.title = tr('clearFiles');
         clear.setAttribute('aria-label', tr('clearFiles'));
-        clear.textContent = '×';
+        setCloseGlyph(clear);
         clear.addEventListener('click', clearFocusFile);
         chip.append(clear);
       }
@@ -603,7 +609,7 @@
         remove.setAttribute('data-context-summary-remove', '');
         remove.title = tr('removeContextFile', { path });
         remove.setAttribute('aria-label', tr('removeContextFile', { path }));
-        remove.textContent = '×';
+        setCloseGlyph(remove);
         remove.addEventListener('click', event => {
           event.preventDefault();
           event.stopPropagation();

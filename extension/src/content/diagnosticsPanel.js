@@ -19,9 +19,14 @@
       <div class="codex-diagnostics-wrap">
         <button type="button" class="codex-diagnostics-trigger" data-diagnostics-menu title="Diagnostics" aria-label="Diagnostics" aria-expanded="false">
           <span class="codex-diagnostics-dot" data-diagnostics-health-dot data-health="unknown"></span>
+          <span class="codex-diagnostics-label" data-diagnostics-health-label></span>
         </button>
         <div class="codex-diagnostics-menu" data-diagnostics-popover hidden>
           <div class="codex-diagnostics-hint" data-i18n="diagnosticsHint">Use when Codex cannot run, write, or read files</div>
+          <button type="button" data-refresh>
+            <span class="codex-diagnostics-refresh-title">${options.icons?.svg?.('refresh') || ''}<span data-i18n="refreshProbeTitle">Refresh file status</span></span>
+            <small data-i18n="refreshProbeSubtitle">Re-reads Overleaf state; does not sync or modify files</small>
+          </button>
           <button type="button" class="codex-diagnostics-runall" data-diagnostics-run-all>
             <span data-i18n="diagnosticsRunAllTitle">Run all checks</span>
             <small data-i18n="diagnosticsRunAllSubtitle">Connection, write access, project read, OT mirror</small>
@@ -81,6 +86,10 @@
 
   function bindStaticActions(instance) {
     const root = instance.container;
+    root.querySelector('[data-refresh]')?.addEventListener('click', () => {
+      closeMenu(instance);
+      instance.callbacks.onRefresh?.();
+    });
     root.querySelector('[data-diagnostics-menu]')?.addEventListener('click', () => toggleMenu(instance));
     root.querySelector('[data-diagnostics-run-all]')?.addEventListener('click', () => instance.callbacks.onRunAll?.());
     root.querySelector('[data-diagnostics-native-env]')?.addEventListener('click', () => instance.callbacks.onNativeEnvironment?.());
@@ -488,6 +497,15 @@
       const tooltip = t(instance, tooltipKey);
       trigger.title = tooltip;
       trigger.setAttribute('aria-label', tooltip);
+      trigger.dataset.health = health;
+    }
+    const label = instance?.container?.querySelector('[data-diagnostics-health-label]');
+    if (label) {
+      label.textContent = t(instance, {
+        ok: 'diagnosticsPillOk',
+        warn: 'diagnosticsPillWarn',
+        fail: 'diagnosticsPillFail'
+      }[health] || 'diagnosticsPillUnknown');
     }
   }
 

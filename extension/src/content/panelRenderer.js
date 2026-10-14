@@ -12,6 +12,7 @@
       plus: '<path d="M8 3.2v9.6"/><path d="M3.2 8h9.6"/>',
       panel: '<rect x="2.3" y="2.3" width="11.4" height="11.4" rx="2"/><path d="M9.2 2.5v11"/><path d="M5.1 6.1h1.5M5.1 8h1.5M5.1 9.9h1.5"/>',
       collapse: '<path d="m6.1 3.3 4.7 4.7-4.7 4.7"/>',
+      chevronDown: '<path d="m4.4 6.4 3.6 3.6 3.6-3.6"/>',
       settings: '<path d="M3.4 5.2h5.9"/><path d="M11.7 5.2h.9"/><path d="M10.1 3.6v3.2"/><path d="M3.4 10.8h1"/><path d="M6.8 10.8h5.8"/><path d="M5.9 9.2v3.2"/>'
     };
     const safeName = Object.prototype.hasOwnProperty.call(icons, name) ? name : 'settings';
@@ -53,8 +54,15 @@
       <div class="codex-panel-resize-handle" data-panel-resize-handle title="Drag to resize the Codex panel. Double click to reset." aria-label="Drag to resize the Codex panel. Double click to reset." role="separator"></div>
       <div class="codex-vscode-head" data-panel-header>
         <div class="codex-vscode-title">CODEX</div>
+        <div class="codex-thread-title codex-head-session" data-session-label>
+          <button type="button" class="codex-thread-title-trigger" data-session-menu-trigger aria-haspopup="menu" aria-expanded="false">
+            <span class="codex-thread-title-text" data-session-label-text></span>
+            <span class="codex-thread-title-chevron">${codexIcon('chevronDown')}</span>
+          </button>
+          <input type="text" class="codex-thread-title-input" data-session-rename-input maxlength="80" hidden>
+          <div class="codex-session-menu" data-session-menu role="menu" hidden></div>
+        </div>
         <div class="codex-vscode-head-actions" aria-label="Codex actions">
-          <button type="button" data-refresh title="Refresh current file status. This will not sync or modify files." aria-label="Refresh current file status. This will not sync or modify files.">${codexIcon('refresh')}</button>
           <div data-diagnostics-slot></div>
           <button type="button" data-new-session title="New Session" aria-label="New Session">${codexIcon('plus')}</button>
           <button type="button" data-custom-instructions-settings title="Project Settings" aria-label="Project Settings" aria-expanded="false">${codexIcon('settings')}</button>
@@ -86,7 +94,6 @@
 
     bind(instance, panelEl, 'click', event => event.stopPropagation());
     bind(instance, panelEl, 'mousedown', event => event.stopPropagation());
-    bind(instance, panelEl.querySelector('[data-refresh]'), 'click', () => callbacks.onRefresh?.());
     bind(instance, panelEl.querySelector('[data-new-session]'), 'click', () => callbacks.onNewSession?.());
     bind(instance, panelEl.querySelector('[data-custom-instructions-settings]'), 'click', () => callbacks.onSettingsClick?.());
     bind(instance, panelEl.querySelector('[data-close-panel]'), 'click', () => callbacks.onClosePanel?.());

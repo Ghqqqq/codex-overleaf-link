@@ -2,84 +2,87 @@
 
 const { truncateText } = require('./debugLog');
 const { formatOverleafWorkspaceRules } = require('./overleafWorkspaceRules');
+const { buildReadProgressRules } = require('./readProgressGuard');
 
 const PROJECT_CUSTOM_INSTRUCTIONS_MAX_CHARS = 12000;
 const NATIVE_MESSAGE_PROMPT_MAX_CHARS = 1024 * 1024;
 
-/**
- * Build the full Codex turn prompt from run parameters.
- * @param {Object} options
- * @param {string} options.task - User task text.
- * @param {string} options.customInstructions - Project custom instructions (may be empty).
- * @param {Array} options.skills - Array of { id, name, content } loaded skill objects.
- * @param {Object|null} options.skillInvocation - { skillId, forced } if slash-selected.
- * @param {Array} options.attachments - Array of { name, relativePath } staged attachment refs.
- * @param {string} options.activePath - Currently focused file path.
- * @param {Array<string>} options.contextFiles - Selected context file paths.
- * @param {Object} options.compileContext - { enabled, logSummary } compile context.
- * @returns {{ systemPrompt: string, userPrompt: string }}
- */
+/** Stable parent-thread guidance; the active mode and task belong to the turn. */
+function buildCodexDeveloperInstructions(options = {}) {
+  const params = options.params && typeof options.params === 'object' ? options.params : options;
+  const locale = (options.locale ?? params.locale) === 'zh' ? 'Chinese (zh)' : 'English (en)';
+  const skillInvocation = options.skillInvocation || params.skillInvocation;
+  return [
+    'You are Codex working inside the Codex Overleaf Link panel, helping an academic author with their LaTeX project in Overleaf. The user reads your answer in a narrow (~380px) side panel.',
+    [
+      'Reply language and style:',
+      `- Reply in the language of the user's latest request. If unclear, use the UI language: ${locale}. Keep LaTeX source, file paths, and identifiers unchanged.`,
+      '- Lead with the answer or outcome. Use short paragraphs and lists; avoid wide tables and long code dumps. Do not restate the request.',
+      '- Complete the requested analysis or edit within this turn. Do not end with only a plan or a promise to act later.',
+      '- For edits, summarize what changed per file with citations. The panel already shows written files, diffs, and Undo; do not paste whole diffs.'
+    ].join('\n'),
+    ...(isSkillInstallerInvocation(skillInvocation) ? [] : [formatOverleafWorkspaceRules()]),
+    ['Project location citation rules:', formatProjectLocationCitationRules()].join('\n'),
+    ['Answer formatting:', formatMathOutputRules()].join('\n'),
+    [
+      'Academic integrity:',
+      '- Never invent citations, BibTeX entries, data, results, or quotations.',
+      '- When a claim needs a source you cannot verify in the project, say so and suggest what kind of source is needed instead of adding one.'
+    ].join('\n'),
+    [
+      'Editing discipline for writable turns:',
+      '- Change only what the request needs. Keep unrelated text, whitespace, and formatting untouched; small diffs keep Overleaf tracked changes and Undo reviewable.',
+      '- Keep \\label, \\ref, and \\cite keys and file names stable unless asked to change them.',
+      '- Keep the document compilable, with balanced braces and environments.'
+    ].join('\n'),
+    [
+      'Modes:',
+      '- Each turn states its active mode. These modes govern project work; explicit skill-install turns follow their separate installation scope.',
+      '- Ask is read-only: inspect and explain. When suggesting edits, show short LaTeX snippets with citations and mention that Auto mode can apply them.',
+      '- Auto may edit the local workspace. The browser bridge handles authorization, deletion approval, and syncing to Overleaf.'
+    ].join('\n'),
+    buildReadProgressRules()
+  ].join('\n\n');
+}
+
+/** Build dynamic per-turn context and the current user request. */
 function buildCodexTurnPrompt(options = {}) {
   const context = normalizePromptOptions(options);
-
-  const systemPrompt = [
-    'Same Codex Overleaf session context:',
-    `Session id: ${context.session.id || 'none'}`,
-    '',
-    'Recent turns in this UI session:',
-    formatSessionHistory(context.session.history),
-    '',
-    'Current Overleaf workspace:',
-    `- Project: ${context.projectKey || context.projectId || 'unknown'}`,
-    ...formatWorkspaceSnapshotContext(context.unreadFiles),
-    ...(isSkillInstallerInvocation(context.skillInvocation) ? [] : ['', formatOverleafWorkspaceRules()]),
-    '',
-    'Project location citation rules:',
-    formatProjectLocationCitationRules(),
-    formatMathOutputRules(),
-    '',
-    'Focused project file inventory:',
-    formatFocusedProjectFileInventory(context.focusFiles),
-    '',
-    'Focus files:',
-    formatFocusFiles(context.focusFiles),
-    '',
-    'Compilation context (@compile-log):',
-    formatCompileLogContext(context),
-    '',
-    'Project custom instructions:',
-    formatCustomInstructionsContext(context.customInstructions),
-    '',
-    'Project local skills:',
-    formatProjectLocalSkillsContext(context),
-    '',
-    'Codex skill loading:',
-    formatCodexSkillLoadingContext(context),
-    '',
-    'Selected Codex skill:',
-    formatSkillInvocationContext(context),
-    '',
-    'Attachments for this turn:',
-    formatTurnAttachmentsContext(context.attachments),
-    '',
-    'Mode for this turn:',
-    `- ${context.mode}`,
-    '- ask: inspect and explain only; do not edit files.',
-    '- auto: edit the local workspace directly when the request calls for changes. The browser bridge handles authorization, deletion approval, and syncing back to Overleaf.',
-    '',
-    'Write expectation for this turn:',
-    formatWriteExpectation({
-      mode: context.mode,
-      task: context.userTask,
-      skillInvocation: context.skillInvocation
-    })
-  ].join('\n');
-
-  const userPrompt = [
-    'Current user request:',
-    context.userTask || '(empty request)'
-  ].join('\n');
-
+  const sections = [
+    `Mode for this turn: ${context.mode}`,
+    ['Write expectation for this turn:', formatWriteExpectation(context)].join('\n')
+  ];
+  if (!isSkillInstallerInvocation(context.skillInvocation)) {
+    sections.push([
+      'Current Overleaf workspace:',
+      ...(context.projectKey || context.projectId ? [`- Project: ${context.projectKey || context.projectId}`] : []),
+      ...formatWorkspaceSnapshotContext(context.unreadFiles)
+    ].join('\n'));
+  }
+  if (!context.threadId && Array.isArray(context.session.history) && context.session.history.length) {
+    sections.push(['Recent turns in this UI session:', formatSessionHistory(context.session.history)].join('\n'));
+  }
+  if (context.focusFiles.length) {
+    sections.push(['Focus files:', formatFocusFiles(context.focusFiles)].join('\n'));
+  }
+  if (String(context.compileLog || '').trim()) {
+    sections.push(['Compilation context (@compile-log):', formatCompileLogContext(context)].join('\n'));
+  }
+  if (String(context.customInstructions || '').trim()) {
+    sections.push(['Project custom instructions:', formatCustomInstructionsContext(context.customInstructions)].join('\n'));
+  }
+  if (context.selectedSkillIds.length && (context.projectLocalSkills.skills?.length || context.projectLocalSkills.missing?.length)) {
+    sections.push(['Project local skills:', formatProjectLocalSkillsContext(context)].join('\n'));
+  }
+  if (normalizeSkillInvocation(context.skillInvocation) || normalizeSkillInvocation(context.codexSkillInvocationContext?.invocation)
+      || context.codexSkillInvocationContext?.ignored?.length || context.codexSkillInvocationContext?.missing?.length) {
+    sections.push(['Selected Codex skill:', formatSkillInvocationContext(context)].join('\n'));
+  }
+  if (context.attachments.length) {
+    sections.push(['Attachments for this turn:', formatTurnAttachmentsContext(context.attachments)].join('\n'));
+  }
+  const systemPrompt = sections.join('\n\n');
+  const userPrompt = ['Current user request:', context.userTask || '(empty request)'].join('\n');
   return { systemPrompt, userPrompt };
 }
 
@@ -87,10 +90,12 @@ function buildCodexTurnPrompt(options = {}) {
  * Validate prompt size against native messaging limits.
  * @param {string} systemPrompt
  * @param {string} userPrompt
+ * @param {string} developerInstructions
  * @returns {{ ok: boolean, totalChars: number, exceedsLimit: boolean }}
  */
-function validatePromptSize(systemPrompt, userPrompt) {
-  const totalChars = String(systemPrompt || '').length + String(userPrompt || '').length;
+function validatePromptSize(systemPrompt, userPrompt, developerInstructions = '') {
+  const totalChars = String(systemPrompt || '').length + String(userPrompt || '').length
+    + String(developerInstructions || '').length;
   const exceedsLimit = totalChars > NATIVE_MESSAGE_PROMPT_MAX_CHARS;
   return {
     ok: !exceedsLimit,
@@ -127,6 +132,7 @@ function normalizePromptOptions(options = {}) {
   return {
     params,
     session,
+    threadId: String(options.threadId ?? params.threadId ?? '').trim(),
     projectKey: mirror.projectKey || options.projectKey || params.projectId || params.project?.id || params.project?.projectId,
     projectId: options.projectId || params.projectId || params.project?.id || params.project?.projectId,
     workspacePath: mirror.workspacePath || options.workspacePath || '',
@@ -156,8 +162,7 @@ function normalizePromptOptions(options = {}) {
 
 function formatWorkspaceSnapshotContext(unreadFiles) {
   if (!unreadFiles.length) return [
-    '- The local workspace was synced from Overleaf immediately before this turn.',
-    '- If the recent session history conflicts with the files in the workspace, trust the files.'
+    '- The local workspace was synced from Overleaf before this turn; trust the files over conflicting session history.'
   ];
   return [
     '- The readable project files were synced from Overleaf before this turn.',
@@ -196,7 +201,7 @@ function formatTurnAttachmentsContext(attachments = []) {
   ].join('\n');
 }
 
-function formatWriteExpectation({ mode = 'auto', task = '', skillInvocation = null } = {}) {
+function formatWriteExpectation({ mode = 'auto', skillInvocation = null } = {}) {
   if (isSkillInstallerInvocation(skillInvocation)) {
     return [
       '- This is a skill-install turn.',
@@ -208,29 +213,7 @@ function formatWriteExpectation({ mode = 'auto', task = '', skillInvocation = nu
   if (mode === 'ask') {
     return '- This is read-only. Inspect and explain; do not edit files.';
   }
-  if (requestImpliesFileChanges(task)) {
-    const lines = [
-      '- The request asks for file changes. You must edit the local workspace when you find concrete fixes.',
-      '- Do not stop at a suggestion list or say you will not modify files unless no safe concrete edit exists.',
-      '- If you intentionally leave files unchanged, explain the specific blocker in the final answer.'
-    ];
-    if (requestTargetsAbstract(task)) {
-      lines.push('- The request targets the abstract/summary. Locate the LaTeX abstract environment or summary paragraph and edit that local project file directly.');
-    }
-    return lines.join('\n');
-  }
-  return [
-    '- This mode can write. If the request asks for corrections, revisions, fixes, polishing, updates, or implementation, edit the local workspace directly.',
-    '- If the request is purely an inspection question, report findings without inventing unnecessary edits.'
-  ].join('\n');
-}
-
-function requestImpliesFileChanges(task = '') {
-  return /修正|修复|修改|改[一-龥]*|完善|补全|补充|润色|重写|改写|整理|调整|应用|写入|fix|correct|repair|revise|edit|update|rewrite|polish|improve|apply/i.test(String(task || ''));
-}
-
-function requestTargetsAbstract(task = '') {
-  return /摘要|abstract|summary/i.test(String(task || ''));
+  return '- Decide from the request whether it asks for changes. If it asks you to fix, revise, polish, rewrite, apply or otherwise change the project, edit the workspace files directly instead of only suggesting; if it asks a question, answer it without editing. If you intentionally leave files unchanged for a change request, explain the blocker.';
 }
 
 function normalizeFocusFiles(value) {
@@ -271,8 +254,8 @@ function normalizeProjectPath(value) {
 
 function formatProjectLocationCitationRules() {
   return [
-    '- In any user-visible output, cite project locations using only Overleaf project-relative paths from the project file inventory below.',
-    '- Use path:LINE[:COLUMN] (for example, path/to/file.tex:12:3).',
+    '- In any user-visible output, cite project locations using only Overleaf project-relative paths of files in this workspace.',
+    '- Use path:LINE[:COLUMN] for a position and path:START-END for a span (for example, path/to/file.tex:12:3 or main.tex:12-20).',
     '- Do not wrap project location citations in backticks or inline code; write main.tex:28 as normal text so the browser can turn it into a jump button.',
     '- Do not cite local absolute paths, temporary workspace paths, file:// URLs, or markdown links to local files.',
     '- If a line number is uncertain, cite only the project-relative file path.'
@@ -287,14 +270,6 @@ function formatMathOutputRules() {
     '- Keep prose outside math delimiters. Inside mathematics, wrap necessary words with \\text{...} and use \\mid for conditional bars.',
     '- For long display equations, use \\begin{aligned}...\\end{aligned} and place explicit row breaks near relation operators.'
   ].join('\n');
-}
-
-function formatFocusedProjectFileInventory(files) {
-  const focusFiles = normalizeFocusFiles(files);
-  if (!focusFiles.length) {
-    return '- none selected.';
-  }
-  return focusFiles.map(filePath => `- ${filePath}`).join('\n');
 }
 
 function formatFocusFiles(files) {
@@ -394,13 +369,6 @@ function formatProjectLocalSkillsContext(context = {}) {
     ].join('\n'));
   }
   return sections.length ? sections.join('\n\n') : '- none loaded.';
-}
-
-function formatCodexSkillLoadingContext(context = {}) {
-  return [
-    `- Codex local skills: ${context.loadCodexLocalSkills === false ? 'disabled' : 'enabled'}`,
-    `- Codex Overleaf skills: ${context.loadCodexOverleafSkills === false ? 'disabled' : 'enabled'}`
-  ].join('\n');
 }
 
 function formatSkillInvocationContext(context = {}) {
@@ -514,4 +482,4 @@ function formatSessionHistory(history) {
   }).join('\n');
 }
 
-module.exports = { buildCodexTurnPrompt, validatePromptSize };
+module.exports = { buildCodexDeveloperInstructions, buildCodexTurnPrompt, validatePromptSize };

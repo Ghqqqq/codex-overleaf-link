@@ -11,7 +11,8 @@
     const {
       SessionPanel,
       SessionState,
-      SessionMenuView
+      SessionMenuView,
+      PanelIcons
     } = deps;
     const {
       createSession,
@@ -50,6 +51,7 @@
       getActiveSession,
       getPanel,
       getSessionDisplayTitle,
+      icons: PanelIcons,
       getState,
       isDisplayableSession,
       isSessionRunning,

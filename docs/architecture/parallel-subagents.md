@@ -209,7 +209,7 @@ The model deduplicates by native journal sequence number and child-event sequenc
 This character threshold is a sequence-trimming policy and must not be described as a strict UTF-8 byte cap.
 Normalization and storage trimming in [sessionState](../../extension/src/shared/sessionState.js) retain `run.subagents`; owning account/project/session boundaries are covered in [Run State and Recovery](run-state-and-recovery.md).
 
-`open/close` in [subagentActivityView](../../extension/src/content/subagentActivityView.js) displays read-only child conversations, retaining main-view nodes and temporarily making them inert.
+`open/close` in [subagentActivityView](../../extension/src/content/subagentActivityView.js) displays read-only child conversations, retaining main-view nodes and temporarily making them inert. The header has a Back button with a chevron and a lock-marked Read only label (PanelIcons through the `glyph` dependency from RunActivitySummary); sibling buttons form a segmented control whose `data-state` drives a status dot, the child meta line carries the same dot, and the parent line hides its active-subagent count when it is zero.
 Returning restores input, focus, and scrolling. This navigation does not resume, interrupt, Accept, Undo, or write back.
 `effectiveStatus/elapsedMs` uses child terminal state and parent-run state to display unknown/cancelled and freeze the clock, without inferring child success from parent completion.
 [renderViewer](../../extension/src/content/subagentActivityView.js) catches child-conversation content-rendering exceptions, displays a local error notice, and allows later updates to render again. This recovery entry does not request native history again.

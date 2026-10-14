@@ -11,6 +11,7 @@
       getPanel,
       getSessionDisplayTitle,
       getState,
+      icons = null,
       isDisplayableSession,
       isSessionRunning,
       startNewSession,
@@ -20,19 +21,20 @@
 
     function applySessionLabel() {
       const trigger = getPanel().querySelector('[data-session-menu-trigger]');
-      if (trigger) {
-        trigger.title = tr('sessionMenuOpen');
-        trigger.setAttribute('aria-label', tr('sessionMenuOpen'));
-      }
       const textNode = getPanel().querySelector('[data-session-label-text]');
       const deleteButton = getPanel().querySelector('[data-session-delete]');
       const renameButton = getPanel().querySelector('[data-session-rename]');
       const renameInput = getPanel().querySelector('[data-session-rename-input]');
       const active = getActiveSession(getState());
+      const label = active && isDisplayableSession(active)
+        ? getSessionDisplayTitle(active)
+        : tr('newSessionFallback');
       if (textNode) {
-        textNode.textContent = active && isDisplayableSession(active)
-          ? getSessionDisplayTitle(active)
-          : tr('newSessionFallback');
+        textNode.textContent = label;
+      }
+      if (trigger) {
+        trigger.title = `${label} · ${tr('sessionMenuOpen')}`;
+        trigger.setAttribute('aria-label', `${tr('sessionMenuOpen')}: ${label}`);
       }
       if (deleteButton) {
         const running = active ? isSessionRunning(active) : false;
@@ -111,11 +113,15 @@
         .slice()
         .sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
       for (const session of sessions) {
-        const row = document.createElement('button');
-        row.type = 'button';
+        const row = document.createElement('div');
         row.className = 'codex-session-menu-item';
+        row.setAttribute('role', 'none');
         row.dataset.active = session.id === state?.activeSessionId ? 'true' : 'false';
         row.dataset.running = isSessionRunning(session) ? 'true' : 'false';
+        const switchButton = document.createElement('button');
+        switchButton.type = 'button';
+        switchButton.className = 'codex-session-menu-switch';
+        switchButton.setAttribute('role', 'menuitem');
         const title = document.createElement('span');
         title.className = 'codex-session-menu-item-title';
         title.textContent = getSessionDisplayTitle(session);
@@ -127,26 +133,56 @@
         if (absoluteTs) {
           time.title = new Date(absoluteTs).toLocaleString();
         }
-        row.append(title, time);
-        row.addEventListener('click', event => {
+        switchButton.append(title, time);
+        switchButton.addEventListener('click', event => {
           event.stopPropagation();
           closeSessionMenu();
           if (session.id !== getState()?.activeSessionId) {
             switchSession(session.id);
           }
         });
+        const deleteButton = menuAction('codex-session-menu-item-delete', 'close', '',
+          row.dataset.running === 'true' ? tr('deleteRunningSession') : tr('deleteSession'),
+          () => deleteSessionWithConfirm(session.id));
+        deleteButton.setAttribute('role', 'menuitem');
+        deleteButton.disabled = row.dataset.running === 'true';
+        row.append(switchButton, deleteButton);
         menu.append(row);
       }
-      const createButton = document.createElement('button');
-      createButton.type = 'button';
-      createButton.className = 'codex-session-menu-new';
-      createButton.textContent = `+ ${tr('newSession')}`;
-      createButton.addEventListener('click', event => {
+      const footer = document.createElement('div');
+      footer.className = 'codex-session-menu-footer';
+      const active = getActiveSession(state);
+      const running = active ? isSessionRunning(active) : false;
+      const soleEmpty = Boolean(active) && !isDisplayableSession(active) && (state?.sessions || []).length <= 1;
+      const createButton = menuAction('codex-session-menu-new', 'plus', tr('sessionMenuNewShort'), tr('newSession'), () => startNewSession());
+      const renameButton = menuAction('codex-session-menu-rename', 'pencil', tr('sessionMenuRenameShort'), tr('renameSession'), () => beginActiveSessionRename());
+      renameButton.disabled = !active;
+      const deleteButton = menuAction('codex-session-menu-delete', 'close', tr('sessionMenuDeleteShort'),
+        running ? tr('deleteRunningSession') : tr('deleteSession'), () => {
+          if (getState()?.activeSessionId) deleteSessionWithConfirm(getState().activeSessionId);
+        });
+      deleteButton.disabled = !active || running || soleEmpty;
+      footer.append(createButton, renameButton, deleteButton);
+      menu.append(footer);
+    }
+
+    function menuAction(className, iconName, label, description, onSelect) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = className;
+      button.title = description;
+      button.setAttribute('aria-label', description);
+      const glyph = icons?.svg?.(iconName);
+      if (glyph) button.insertAdjacentHTML('beforeend', glyph);
+      const text = document.createElement('span');
+      text.textContent = label;
+      button.append(text);
+      button.addEventListener('click', event => {
         event.stopPropagation();
         closeSessionMenu();
-        startNewSession();
+        onSelect();
       });
-      menu.append(createButton);
+      return button;
     }
 
     function beginActiveSessionRename() {

@@ -99,7 +99,7 @@
       index = next.end;
     }
 
-    return nodes;
+    return groupLineReferenceNodes(nodes);
   }
 
   function buildInlineCodeNodes(value) {
@@ -152,7 +152,7 @@
       cursor = start + rawText.length;
     }
     appendSanitizedTextNode(nodes, source.slice(cursor));
-    return nodes;
+    return groupLineReferenceNodes(nodes);
   }
 
   function buildMarkdownLinkNodes(text, href) {
@@ -185,6 +185,24 @@
     if (text) {
       nodes.push(document.createTextNode(text));
     }
+  }
+
+  function groupLineReferenceNodes(nodes) {
+    const grouped = [];
+    for (const node of nodes) {
+      const previous = grouped[grouped.length - 1];
+      if (node.classList?.contains('codex-line-reference') && previous?.nodeType === 3 &&
+          previous.textContent.endsWith('(')) {
+        previous.textContent = previous.textContent.slice(0, -1);
+        const group = document.createElement('span');
+        group.className = 'codex-line-reference-group';
+        group.append(document.createTextNode('('), node);
+        grouped.push(group);
+      } else {
+        grouped.push(node);
+      }
+    }
+    return grouped;
   }
 
   function resolveMarkdownLineReference(text, href) {
@@ -230,10 +248,14 @@
       return null;
     }
     const line = Number(ref?.line);
+    const endLine = ref?.endLine === undefined ? null : Number(ref.endLine);
     const column = ref?.column === null || ref?.column === undefined || ref?.column === ''
       ? null
       : Number(ref.column);
     if (!Number.isSafeInteger(line) || line < 1 || (column !== null && (!Number.isSafeInteger(column) || column < 1))) {
+      return null;
+    }
+    if (endLine !== null && (!Number.isSafeInteger(endLine) || endLine < line)) {
       return null;
     }
     let resolved;
@@ -251,6 +273,7 @@
     return {
       path: resolved.path,
       line,
+      ...(endLine > line ? { endLine } : {}),
       column
     };
   }
@@ -262,10 +285,15 @@
     button.textContent = formatLineReferenceText(reference);
     button.dataset.path = reference.path;
     button.dataset.line = String(reference.line);
+    if (reference.endLine) {
+      button.dataset.endLine = String(reference.endLine);
+    }
     if (reference.column) {
       button.dataset.column = String(reference.column);
     }
-    const ariaLabel = reference.column
+    const ariaLabel = reference.endLine
+      ? `Open ${reference.path} lines ${reference.line} to ${reference.endLine}`
+      : reference.column
       ? `Open ${reference.path} line ${reference.line} column ${reference.column}`
       : `Open ${reference.path} line ${reference.line}`;
     button.setAttribute('aria-label', ariaLabel);
@@ -278,7 +306,10 @@
         line: reference.line,
         selectLine: !reference.column
       };
-      if (reference.column) {
+      if (reference.endLine) {
+        params.endLine = reference.endLine;
+        params.selectLine = true;
+      } else if (reference.column) {
         params.column = reference.column;
         params.selectLine = false;
       }
@@ -310,7 +341,7 @@
   }
 
   function formatLineReferenceText(reference) {
-    return `${reference.path}:${reference.line}${reference.column ? `:${reference.column}` : ''}`;
+    return `${reference.path}:${reference.line}${reference.endLine ? `–${reference.endLine}` : reference.column ? `:${reference.column}` : ''}`;
   }
 
   function normalizeReferencePathForRuntime(value) {
@@ -499,6 +530,12 @@
               renderText: text => buildMarkdownInlineNodes(text) }),
           recordDiagnostic: recordRenderingDiagnostic
         });
+        // The DOM renderer emits text and links from separate Markdown tokens.
+        const parents = new Set(Array.from(target.querySelectorAll('.codex-line-reference'), button => button.parentNode)
+          .filter(parent => !parent.classList.contains('codex-line-reference-group')));
+        for (const parent of parents) {
+          parent.replaceChildren(...groupLineReferenceNodes(Array.from(parent.childNodes)));
+        }
         return;
       } catch (error) {
         recordRenderingDiagnostic({

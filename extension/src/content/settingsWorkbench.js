@@ -56,7 +56,8 @@
     title.id = 'codex-settings-workbench-title';
     heading.append(title, make('p', '', 'settingsWorkbenchSubtitle'));
     closeButton.classList.add('codex-wb-close');
-    closeButton.textContent = '\u00d7';
+    if (options.icon) closeButton.innerHTML = options.icon('close'); // Static, repository-owned icon path.
+    else closeButton.textContent = '\u00d7';
     header.append(heading, closeButton);
     originalHead?.remove();
 
@@ -81,6 +82,7 @@
     layout.append(sidebar, main);
     dialog.append(header, layout);
     const pages = new Map(), navButtons = new Map(), groups = [];
+    const summaryTabIndices = new WeakMap();
     let active = 'general', filter = 'all', returnFocus = null, destroyed = false;
     let providerRequested = false, providerCloseGuard = null, closing = null;
 
@@ -111,6 +113,14 @@
       node.hidden = true;
       node.dataset.workbenchScope = projectOnly ? 'project' : 'global';
       const summary = node.querySelector('summary');
+      if (summary) {
+        summaryTabIndices.set(summary, summary.getAttribute('tabindex'));
+        listen(summary, 'click', event => {
+          if (node.dataset.soleSection !== 'true') return;
+          event.preventDefault();
+          node.open = true;
+        });
+      }
       const badge = make('span', 'codex-wb-scope-label',
         projectOnly ? 'settingsScopeProjectTitle' : 'settingsScopeGlobalTitle');
       (summary || node).append(badge);
@@ -220,6 +230,29 @@
     function available(item) {
       return (!item.projectOnly || hasProject()) && (filter !== 'project' || item.projectOnly);
     }
+    function refreshSoleSections() {
+      for (const page of pages.values()) {
+        const pageGroups = Array.from(page.querySelectorAll('.codex-set-group'));
+        const visibleGroups = pageGroups.filter(node => !node.hidden);
+        const pageTitle = page.querySelector('.codex-wb-page-title')?.textContent.trim();
+        for (const node of pageGroups) {
+          const summary = node.querySelector('.codex-set-group-head');
+          const groupTitle = summary?.querySelector('.codex-set-group-title');
+          const sole = visibleGroups.length === 1 && visibleGroups[0] === node
+            && groupTitle && groupTitle.textContent.trim() === pageTitle;
+          if (sole) {
+            node.dataset.soleSection = 'true';
+            node.open = true;
+            summary.tabIndex = -1;
+          } else {
+            delete node.dataset.soleSection;
+            const tabIndex = summaryTabIndices.get(summary);
+            if (tabIndex == null) summary?.removeAttribute('tabindex');
+            else summary.setAttribute('tabindex', tabIndex);
+          }
+        }
+      }
+    }
     function refresh() {
       if (destroyed) return;
       if (!hasProject()) filter = 'all';
@@ -262,6 +295,7 @@
         }
         item.node.hidden = !visible;
       }
+      refreshSoleSections();
       updateThemes();
     }
     function requestProviders() {

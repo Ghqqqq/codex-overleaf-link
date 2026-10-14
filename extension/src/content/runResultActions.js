@@ -21,7 +21,11 @@
       const reports = root.querySelectorAll('.run-completion-report');
       const report = reports[reports.length - 1];
       if (!actions || !report) return;
-      report.append(actions);
+      // Share one row with the facts summary when it exists; the expandable
+      // details list stays below both.
+      const factsToggle = report.querySelector(':scope > .run-final-answer__facts > .run-final-answer__facts-sum');
+      if (factsToggle) factsToggle.after(actions);
+      else report.append(actions);
       actions.hidden = false;
       configureCopyButton(root);
       configureForkButton(root, run);

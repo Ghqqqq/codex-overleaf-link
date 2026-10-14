@@ -93,7 +93,7 @@ The ordinary project flow in `runCodexSession` is:
 
 1. Synchronize or obtain the mirror; prepare selection boundaries, project skills, attachments, and writing-style context.
 2. Generate sandbox/approval parameters from the mode and skill type; create the subagent broker according to the official-skill switch.
-3. Execute the parent task; stop the broker on parent failure, or drain remaining workers after a normal return.
+3. Build parent `developerInstructions` with `codexPromptAssembly.buildCodexDeveloperInstructions({params})`, and dynamic turn text with `buildCodexTurnPrompt`; append writing-style context and the captured selection in that order. `validatePromptSize` counts the rules and complete turn text, including the fallback separator. Execute the parent task; stop the broker on parent failure, or drain remaining workers after a normal return.
 4. Collect mirror changes, then apply selection restrictions, focus restrictions, and subagent blocked paths in that order.
 5. Mark the mirror dirty when changes or unsupported items exist. Ask returns empty `syncChanges/unsupportedChanges` and retains an event with the ignored count.
 6. Auto prepares binary assets and text diffs/patches, then limits the response budget through `reduceTaskResult`.
@@ -116,7 +116,9 @@ These milestones have different owners. Changes to “completed” wording or th
 
 Each `runCodexAppServerSession` prepares a Provider launch, creates an app-server process, and closes that run's Provider bridge in finally.
 With a supplied `threadId`, it calls `thread/resume` and returns `thread_resume_failed` on failure; this path does not silently create a new thread and report a successful resume.
-Without one, it calls `thread/start`, then `turn/start` after obtaining the thread. A specific error for unsupported reasoning summaries retries only that request with summary removed.
+Without one, it calls `thread/start`, then `turn/start` after obtaining the thread. Parent project and skill-installer runs pass stable `developerInstructions` through `buildThreadStartParams/buildThreadResumeParams`; resuming refreshes the rules and UI-language fallback. Broker workers keep their own `buildWorkerPrompt`, while writing-style builds and `/compact` keep their separate input paths without these parent instructions.
+
+`requestThreadWithInstructionsFallback` retries a rejected `thread/start` or `thread/resume` once without `developerInstructions` when `isUnsupportedDeveloperInstructionsError` recognizes a field rejection or a bare JSON-RPC invalid-params response. After that retry succeeds, it prepends the identical rules to the turn text; it does not discard them or create a new thread after a failed resume. Other errors propagate. `startTurnWithSummaryFallback` independently retries `turn/start` for a specific unsupported-reasoning-summary error with summary removed, preserving any prepended rules.
 This compatibility retry, background disconnect replay, and Content business recovery have separate entry points and conditions; Section 6 defines the three scopes.
 
 After obtaining the thread and turn, `publishActiveTurnControl` publishes a frozen control only once and emits `codex.turn.bound`; its `steer` calls `turn/steer`.
@@ -135,7 +137,7 @@ Compatibility exception: in a successful turn with no completed items and no exp
 
 Context overflow in an accepted `error` or failed `turn/completed` notification uses `isContextLimitError` in [providerContextError.js](../../native-host/src/providerContextError.js). It recognizes the structured Codex/Provider error identity and narrowly matched legacy diagnostics. `runCodexAppServerProcess/getTurnCompletionError` preserves this as `codex_context_limit`; [taskRunnerRuntime.handleCodexRun](../../native-host/src/taskRunnerRuntime.js) passes that code through to Content instead of collapsing it into `codex_run_failed`. Interrupted turns and invalid terminal statuses retain their existing priority. Content uses the stable code for the existing localized failure report and recovery action; this classification does not establish writeback success or authorize replay.
 
-Thread forks use `forkCodexThread` in the independent [codexThreadFork.js](../../native-host/src/codexThreadFork.js), executing `initialize → thread/fork`.
+Thread forks use `forkCodexThread` in the independent [codexThreadFork.js](../../native-host/src/codexThreadFork.js), executing `initialize → thread/fork`. The fork request carries only the source thread/turn identities, not a captured locale or skill invocation, so forks inherit the source thread instructions. The next parent run refreshes them through `thread/resume`; the fork helper does not assemble a turn prompt.
 This path has its own 30-second timer and pending table, and registers Host-disconnect cleanup through `runOwnedNativeHelper`. Success, failure, and cancellation all wait for bounded `stopCodexAppServer` handling before settling. External `task.run` commands use the same helper lifecycle. Both create their own process groups on POSIX, and stdin write errors also enter the stop path. Helpers do not join the ordinary run-cancellation index, project locks, or persistent stop barriers; ordinary `codex.cancel` does not cancel unrelated helpers.
 
 Provider connection tests register their helper lifecycle through `runProviderConnectionTest` in [codexProviderTest.js](../../native-host/src/codexProviderTest.js) before preparation begins. Cancellation is checked at entry, after `prepareProviderLaunch` returns, and before actual spawn. Prepared bridge/catalog resources close in finally, and the temporary test directory is removed after child-process stop handling finishes. `providerRuntime.testProvider` immediately adopts an already-aborted externalSignal so Auto negotiation cannot miss an earlier abort. Cancellation accepted during preparation prevents later dispatch of the connection-test child process. The Provider entry point still manages independent test cancellation and budgets; see [Providers and Protocols](providers-and-protocols.md).
@@ -218,7 +220,7 @@ Provider HTTP idle/total budgets belong to another layer; see [Providers and Pro
 
 | Layer | Actual entry and trigger | Scope of re-execution |
 | --- | --- | --- |
-| app-server RPC | `startTurnWithSummaryFallback` receives a specific unsupported-reasoning-summary error | Remove summary and issue `turn/start` once more in the same process and thread |
+| app-server RPC | `requestThreadWithInstructionsFallback` recognizes unsupported developer instructions; `startTurnWithSummaryFallback` recognizes unsupported reasoning summaries | Retry the rejected start/resume once without the field and prepend its rules to the turn; independently retry `turn/start` once without summary. Neither retry replays an accepted turn |
 | Background transport | `getNativeRetryClass/canRetryNativeRequest` in [background.js](../../extension/src/background.js) | Reconnect and resend safe requests once according to the table below; silent replay of `codex.run` is prohibited |
 | Content business recovery | `runTask/buildCodexRunParams/sendTrackedCodexRun` in [contentRuntime.js](../../extension/src/content/contentRuntime.js) | Rebuild parameters after a known error, then dispatch a new Native request |
 

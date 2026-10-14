@@ -524,6 +524,7 @@
     SessionPanel: Modules.SessionPanel,
     SessionState: Modules.SessionState,
     SessionMenuView: Modules.SessionMenuView,
+    PanelIcons: Modules.PanelIcons,
     tr,
     showPluginConfirm,
     showPluginToast,
@@ -910,6 +911,7 @@
   const MAX_ATTACHMENT_PREVIEW_DATA_URL_CHARS = 768 * 1024;
   const composerAttachmentController = Modules.ComposerAttachments.createComposerAttachmentController({
     getPanel: () => panel,
+    icons: Modules.PanelIcons,
     tr,
     tx,
     appendPlainLog,
@@ -940,6 +942,7 @@
   });
   const contextTrayController = ContextTray.createContextTrayController({
     root: window,
+    icons: Modules.PanelIcons,
     document,
     getPanel: () => panel,
     getState: () => state,
@@ -1062,6 +1065,7 @@
     showPluginToast,
     getPanel: () => panel,
     ensurePanelOpen,
+    getIconUrl: () => chrome.runtime.getURL('assets/icons/codex-overleaf-dialog-icon.png'),
     getPanelRendererInstance: () => panelRendererInstance,
     setBadge: (...args) => PanelRenderer.setBadge(...args),
     setDiagnosticsHealth,
@@ -1280,7 +1284,6 @@
         callbacks: {
           onLauncherToggle: () => ensurePanelOpen(),
           onClosePanel: () => closePanel(),
-          onRefresh: () => refreshProbe({ userInitiated: true }),
           onNewSession: () => startNewSession(),
           onChangeHistory: () => openChangeHistory(),
           onSettingsClick: () => toggleCustomInstructionsSettings(),
@@ -1302,7 +1305,9 @@
       diagnosticsPanelInstance = DiagnosticsPanel.create({
         container: panelRendererInstance.diagnosticsSlot,
         i18n: { tr },
+        icons: Modules.PanelIcons,
         callbacks: {
+          onRefresh: () => refreshProbe({ userInitiated: true }),
           onBeforeOpen: () => {
             closeModelConfigPopover();
             closeContextTray();
@@ -1603,7 +1608,7 @@
     panelRendererInstance?.setLocale?.({ launcher: tx('Show or hide Codex panel', '显示或隐藏 Codex 边栏'), close: tx('Close Codex panel', '关闭 Codex 边栏') });
 
     setElementTitleAndAria('[data-panel-resize-handle]', tr('resizePanel'), tr('resizePanel'));
-    setElementTitleAndAria('[data-refresh]', tr('refreshProbe'), tr('refreshProbe'));
+    setRefreshProbeLoading(panel?.querySelector('[data-refresh]')?.dataset.loading === 'true');
     // State-dependent tooltip: re-derive from the dot's current health so a
     // locale/session refresh doesn't clobber it back to the generic label.
     setDiagnosticsHealth(panel.querySelector('[data-diagnostics-health-dot]')?.dataset.health || 'unknown');
@@ -2781,6 +2786,7 @@
       reasoningEffort: executionSnapshot.reasoningEffort,
       speedTier: executionSnapshot.speedTier,
       session: currentRunView?.sessionContext,
+      locale: getLocale(),
       clientRunId: currentRunView?.recordId || '',
       clientSessionId: runSessionId,
       accountScopeId: currentRunView?.runAccountScopeId || '',
@@ -3370,6 +3376,7 @@
     const params = runController.buildCodexRunParams({
       currentProjectId: getCurrentProjectId(),
       state: submittedState,
+      locale: getLocale(),
       task,
       project,
       useExistingMirror,
@@ -5173,6 +5180,8 @@
     button.dataset.loading = loading ? 'true' : 'false';
     button.disabled = Boolean(loading);
     button.setAttribute('aria-busy', loading ? 'true' : 'false');
+    setElementTitleAndAria('[data-refresh]', tr(loading ? 'refreshProbeLoading' : 'refreshProbe'),
+      tr(loading ? 'refreshProbeLoading' : 'refreshProbeTitle'));
   }
 
   function syncProbeStatus(mode = state?.mode) {
@@ -8196,8 +8205,14 @@
       return;
     }
 
+    const groupKey = String(options.groupKey || '');
+    const grouped = groupKey && Array.from(region.children).find(item => item.dataset.groupKey === groupKey);
+    if (grouped) {
+      updateToastGroup(grouped);
+      return;
+    }
     const last = region.lastElementChild;
-    if (last?.classList?.contains('codex-toast') && last.dataset.baseText === value) {
+    if (!groupKey && !last?.dataset.groupKey && last?.classList?.contains('codex-toast') && last.dataset.baseText === value) {
       const repeatCount = Number(last.dataset.repeatCount || '1') + 1;
       last.dataset.repeatCount = String(repeatCount);
       const textNode = last.querySelector('[data-toast-text]');
@@ -8215,15 +8230,34 @@
 
     const body = document.createElement('div');
     body.className = 'codex-toast-body';
-    body.dataset.toastText = 'true';
-    body.textContent = value;
+    if (options.title) {
+      const title = document.createElement('div');
+      title.className = 'codex-toast-title';
+      title.textContent = options.title;
+      body.append(title);
+    }
+    const textNode = document.createElement('div');
+    textNode.dataset.toastText = 'true';
+    textNode.textContent = value;
+    body.append(textNode);
+    if (groupKey) {
+      item.dataset.groupKey = groupKey;
+      const details = document.createElement('details');
+      details.className = 'codex-toast-group';
+      const summary = document.createElement('summary');
+      const list = document.createElement('ul');
+      list.dataset.toastGroupItems = 'true';
+      details.append(summary, list);
+      body.append(details);
+    }
     item.append(body);
+    if (groupKey) updateToastGroup(item);
 
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'codex-toast-close';
     close.setAttribute('aria-label', tr('dismissNotification'));
-    close.textContent = '×';
+    close.innerHTML = Modules.PanelIcons.svg('close', 'codex-close-glyph');
     close.addEventListener('click', () => item.remove());
     item.append(close);
 
@@ -8236,6 +8270,20 @@
       setTimeout(() => {
         item.remove();
       }, 5200);
+    }
+
+    function updateToastGroup(toast) {
+      const list = toast.querySelector('[data-toast-group-items]');
+      const value = String(options.groupItem || '').trim();
+      if (value && !Array.from(list.children).some(item => item.textContent === value)) {
+        const item = document.createElement('li');
+        const code = document.createElement('code');
+        code.textContent = value;
+        item.append(code);
+        list.append(item);
+      }
+      toast.querySelector('.codex-toast-group summary').textContent =
+        options.groupSummary?.(list.children.length) || String(list.children.length);
     }
   }
 

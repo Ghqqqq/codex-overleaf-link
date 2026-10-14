@@ -23,6 +23,7 @@
   function buildCodexRunParams({
     currentProjectId,
     state = {},
+    locale = state.locale,
     task,
     project,
     useExistingMirror,
@@ -62,7 +63,7 @@
       model: state.model,
       reasoningEffort: state.reasoningEffort,
       speedTier: state.speedTier,
-      locale: state.locale === 'zh' ? 'zh' : 'en',
+      locale: locale === 'zh' ? 'zh' : 'en',
       session: state.session,
       threadId: codexThreadId || undefined,
       customInstructions: normalizedCustomInstructions || undefined,
