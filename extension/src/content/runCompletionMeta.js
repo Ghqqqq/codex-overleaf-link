@@ -12,6 +12,16 @@
         && !['en', 'zh'].some(language => AgentTranscript.projectProductConclusion(structured.conclusionSource, language) === raw)) return raw;
       return AgentTranscript.projectProductConclusion(structured.conclusionSource, locale, options.localizeCompileReason, raw) ?? raw;
     }
+    // Reload recovery predates structured conclusions but retains an explicit
+    // product source. Translate only its intact flat report, never lookalikes.
+    if (options.flat && !structured && event?.kind === 'report' && event.status === 'failed'
+      && !event.streamRole && !event.guidanceId && !event.subagent
+      && event.failure?.code === 'native_request_failed' && event.failure.source === 'panel_reload'
+      && raw === event.detail && ['en', 'zh'].some(language =>
+        event.title === I18n.t(language, 'restoredRunStoppedTitle')
+        && raw === I18n.t(language, 'restoredRunStoppedDetail'))) {
+      return I18n.t(locale, 'restoredRunStoppedDetail');
+    }
     // Legacy cancellation has a unique adjacent producer-owned lifecycle event.
     // Text alone, status alone, and a user's/model's matching answer confer no identity.
     const events = Array.isArray(run?.events) ? run.events : [];

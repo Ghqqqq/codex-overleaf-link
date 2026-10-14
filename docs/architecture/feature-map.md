@@ -37,7 +37,7 @@ Domain guide: [UI and loading](ui-and-loading.md).
 
 ### Change Chinese/English localization, the theme, or the Popup
 
-- Refresh interruption: `FailureReasons.getFailureMessageCode` selects localized copy only for `native_request_failed` with `source: panel_reload`; historical recovery codes and Edit & resend stay unchanged. Preserve uncertain-write priority and actual Native failure messages.
+- Refresh interruption: `FailureReasons.getFailureMessageCode` selects localized Notice copy only for `native_request_failed` with `source: panel_reload`. [RunCompletionMeta.projectCompletionConclusion](../../extension/src/content/runCompletionMeta.js) separately projects the flat system appendix after checking its refresh identity, failed report shape and exact product text. Historical records, recovery codes and Edit & resend stay unchanged. Preserve uncertain-write priority and actual Native failure messages.
 
 - Entry points: [i18n](../../extension/src/shared/i18n.js), [ThemeController](../../extension/src/content/themeController.js), shared [popup.js](../../extension/src/popup.js).
 - State owner: `locale/theme` in [globalPreferences](../../extension/src/shared/globalPreferences.js); the panel and popup apply preferences separately.
