@@ -743,9 +743,16 @@
       const activeFileMatches = getActiveFilePath() === filePath;
       const text = readActiveEditorText();
       lastText = text;
+      const currentEditorIdentity = getActiveEditorIdentity();
+      // A file-tree click can reconfigure or blur the old editor before the
+      // target document loads. A new view/state alone does not prove a switch.
+      const documentChanged = currentEditorIdentity?.type === 'codemirror-view'
+        && previousEditorIdentity?.type === 'codemirror-view'
+        ? currentEditorIdentity.doc !== previousEditorIdentity.doc
+        : Boolean(currentEditorIdentity) && activeEditorIdentityChanged(previousEditorIdentity);
       if (activeFileMatches
         && window.CodexOverleafProjectFiles.isUsableProjectFileContent(text)
-        && activeEditorIdentityChanged(previousEditorIdentity)) {
+        && documentChanged) {
         return {
           ok: true,
           text
