@@ -616,6 +616,7 @@
         selectionContext: value,
         ...(options.edit ? { mode: 'auto' } : {})
       });
+      syncProbeStatus();
       if (options.edit && panel) {
         const modeInput = panel.querySelector('[data-mode]');
         if (modeInput) modeInput.value = 'auto';
@@ -949,6 +950,8 @@
     getState: () => state,
     setState: nextState => {
       state = nextState;
+      // Paint focus changes before ContextTray waits for durable persistence.
+      syncProbeStatus();
     },
     saveState,
     saveStateSoon,
@@ -3156,6 +3159,8 @@
           RunExecutionSnapshot.fromQueuePayload(item.payload),
           { catalog: providerSettingsCoordinator.getCatalog() }
         );
+        // Promotion uses its captured snapshot; this line still describes the current draft.
+        syncProbeStatus();
       },
       run: item => runTask({ queuedInput: item }),
       getGuideScope: () => ({ projectId: getCurrentProjectId(), accountScopeId: cachedAccountScopeId, generation: spaRouteGeneration }),
@@ -5294,10 +5299,14 @@
 
   // Keep the read scope visible; a known Track limitation adds its own warning segment.
   function getProbeScope(probe) {
-    if (getProbeRunReadiness(probe).editorOk) return { icon: 'file', key: 'probeScopeCurrentFile' };
+    const selection = selectionContextView.capture();
     const focusFiles = getActiveFocusFiles();
+    // Match submission priority: an edit selection, then explicit focus files,
+    // then reference context, ahead of the editor's implicit current-file hint.
+    if (selection?.mode === 'edit') return { icon: 'file', key: 'probeScopeSelection' };
     if (focusFiles.some(file => /\.tex$/i.test(file))) return { icon: 'file', key: 'probeScopeFiles' };
-    if (focusFiles.length) return { icon: 'attach', key: 'probeScopeContext' };
+    if (focusFiles.length || selection) return { icon: 'attach', key: 'probeScopeContext' };
+    if (getProbeRunReadiness(probe).editorOk) return { icon: 'file', key: 'probeScopeCurrentFile' };
     return { icon: 'folder', key: 'probeScopeProject' };
   }
 
@@ -6552,6 +6561,7 @@
     state = updateActiveSession(state, { task: submission.task, selectionContext: submission.selectionContext });
     renderComposerSkillInvocation();
     selectionContextView.render();
+    syncProbeStatus();
     autosizeTaskTextarea();
     syncComposerSendAvailability();
     saveStateSoon();
