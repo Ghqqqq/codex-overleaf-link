@@ -6,7 +6,7 @@
   'use strict';
 
   const PAGE_WORLD_SCRIPTS = Object.freeze([
-    ['src/shared/reviewing.js', 'codex-overleaf-reviewing-script'],
+    ['src/shared/reviewing.js', 'codex-overleaf-reviewing-script', true],
     ['src/shared/projectFiles.js', 'codex-overleaf-project-files-script'],
     ['src/shared/compatibility.js', 'codex-overleaf-compatibility-page-script'],
     ['src/shared/pageRpcContract.js', 'codex-overleaf-page-rpc-contract-script', true],
@@ -15,7 +15,7 @@
     ['src/shared/sensitiveScan.js', 'codex-overleaf-sensitive-scan-script'],
     ['src/shared/auditRecords.js', 'codex-overleaf-audit-records-script'],
     ['src/page/saveState.js', 'codex-overleaf-save-state-script', true],
-    ['src/page/overleafCapabilities.js', 'codex-overleaf-capabilities-script'],
+    ['src/page/overleafCapabilities.js', 'codex-overleaf-capabilities-script', true],
     ['src/page/compileBridge.js', 'codex-overleaf-compile-bridge-script'],
     ['src/page/overleafEditor.js', 'codex-overleaf-editor-script'],
     ['src/page/overleafProjectSnapshot.js', 'codex-overleaf-project-snapshot-script'],

@@ -367,12 +367,12 @@
     const trackReviewingChanges = options.requireReviewing === true && hasOperations;
     let reviewingPolicy = null;
     if (options.requireReviewing === true && hasOperations) {
-      const reviewing = await ensureReviewing({ waitMs: 1800 });
+      const reviewing = await ensureReviewing({ waitMs: 1800, runProjectId: options.runProjectId });
       if (!reviewing.ok) {
         return buildReviewingRequiredBlockedResult(operations, reviewing);
       }
     } else if (options.requireEditing === true && hasOperations) {
-      const editing = await ensureEditing({ waitMs: 1800 });
+      const editing = await ensureEditing({ waitMs: 1800, runProjectId: options.runProjectId });
       if (!editing.ok) {
         return buildEditingRequiredBlockedResult(operations, editing);
       }
@@ -1895,6 +1895,7 @@
           ok: false,
           code: reviewing?.code || 'reviewing_not_enabled',
           reason: reviewing?.reason || 'Overleaf Reviewing/Track Changes was not confirmed before writing. Codex did not change this file.',
+          evidence: reviewing?.evidence, failure: reviewing?.failure,
           reviewing: reviewing?.reviewing || null
         }
       })),

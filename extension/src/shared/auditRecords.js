@@ -32,6 +32,8 @@
       createdAt: redactSecretLikeText(stringField(input.createdAt)) || now,
       completedAt: '',
       mode: redactSecretLikeText(stringField(input.mode)),
+      requireReviewing: typeof input.requireReviewing === 'boolean' ? input.requireReviewing : undefined,
+      trackingDecision: ['continue', 'disable'].includes(input.trackingDecision) ? input.trackingDecision : '',
       providerId: redactSecretLikeText(stringField(input.providerId)) || 'builtin',
       providerName: redactSecretLikeText(stringField(input.providerName)),
       providerRevision: finiteNumber(input.providerRevision) || 0,

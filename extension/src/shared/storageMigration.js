@@ -19,6 +19,7 @@
     'experimentalOtByProject',
     'customInstructionsByProject',
     'governanceRulesByProject',
+    'reviewingAvailabilityByProject',
     'selectedLocalSkillIdsByProject'
   ];
   var projectPreferenceLockTails = {};
@@ -130,7 +131,12 @@
         ? incoming[mapName]
         : {};
       if (Object.prototype.hasOwnProperty.call(incomingMap, projectId)) {
-        storedMap[scopedKey] = copyPreferenceValue(incomingMap[projectId]);
+        const previous = storedMap[scopedKey], observation = incomingMap[projectId];
+        if (mapName !== 'reviewingAvailabilityByProject'
+          || !(Number(previous?.observedAt) > Number(observation?.observedAt)
+            || (previous?.observedAt === observation?.observedAt && previous?.status === 'available'))) {
+          storedMap[scopedKey] = copyPreferenceValue(observation);
+        }
       }
       delete storedMap[projectId];
       next[mapName] = storedMap;

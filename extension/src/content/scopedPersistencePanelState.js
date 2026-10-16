@@ -178,6 +178,8 @@
       latestPrefs && latestPrefs.experimentalOtByProject || {},
       { [projectId]: input.normalizeExperimentalOtByProject(state.experimentalOtByProject)[projectId] === true }
     );
+    prefs.reviewingAvailabilityByProject = Object.assign({}, latestPrefs?.reviewingAvailabilityByProject || {},
+      state.reviewingAvailabilityByProject || {});
     prefs.governanceRulesByProject = Object.assign(
       {},
       latestPrefs && latestPrefs.governanceRulesByProject || {},

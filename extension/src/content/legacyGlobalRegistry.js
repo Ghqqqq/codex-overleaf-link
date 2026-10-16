@@ -62,6 +62,7 @@
     'ProviderSettingsCoordinator',
     'RecentProjects',
     'ReviewHunks',
+    'Reviewing',
     'RunActivitySummary',
     'RunPresence',
     'RunActivityModel',

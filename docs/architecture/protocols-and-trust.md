@@ -37,6 +37,8 @@ The client's `createCapability` uses a random UUID, falling back to random bytes
 After the token check passes, `dispatch` looks up the catalog entry and handler, then invokes [writeGuard.runWriteGuard](../../extension/src/page/writeGuard.js) according to the `projectIdentity` policy.
 Optional project-identity exceptions and page-project read fallbacks are described in [Auto editing and Undo](auto-edit-undo.md). The guard on one write operation cannot be generalized to all methods.
 
+**Reviewing capability failure.** `ensureReviewing` retains its optional-identity catalog policy; Content preflight, before-write checks and Page writebackRouter pass the captured `runProjectId`. `pageBridge.toggleReviewingMode` checks that identity and the write cancellation sequence around clicks, polls and upgrade-modal dismissal. `reviewing_unavailable` is a canonical blocked, nonretryable reviewing failure with `changedDocument:false` and `{upgradeModal:true,dismissed}` evidence; intermediate blocked builders preserve it. `probe.capabilities.reviewing.confirmed` excludes manual override and an open upgrade modal, allowing Content to clear remembered negative capability with positive evidence. This adds no new RPC or permission. `pageRpcContract.REVISION` and forced reload of `reviewing.js/overleafCapabilities.js` in PageBridgeClient keep same-version reinjection on the new implementation; existing WAR and Managed shared/Page resource allowlists already admit both paths.
+
 ### Trust assumptions for the same-document MAIN world
 
 **Current behavior:** The client includes the token in every `window.postMessage` request; MAIN-world scripts in the same document can listen to this message channel.

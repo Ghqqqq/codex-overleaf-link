@@ -40,7 +40,8 @@ This graph shows the main chain. Mode, permission, and failure branches are deta
 
 ```mermaid
 flowchart TD
-    A[contentRuntime.runTask] --> B[getRunProjectSnapshot / warm mirror decision]
+    A[contentRuntime.runTask] --> W[preflightWriteSafety: confirm effective Track policy]
+    W --> B[getRunProjectSnapshot / warm mirror decision]
     B --> C[Native runCodexSession]
     C --> D[mirrorWorkspace: sync / working copy / collect changes]
     D --> T[codexSessionRunner: display diff / execution patches]
@@ -117,11 +118,15 @@ Empty-content semantics for creation, save checking, and Undo still require vali
 ## 4. Auto Writeback: Obtain Per-Item Results Before Recording Recovery Evidence
 
 **Current behavior.** `applySyncChangesToOverleaf` in [writebackOrchestrator](../../extension/src/content/writebackOrchestrator.js) is Content's main orchestration entry point.
-The run passes the submitted `mode`, `requireReviewing`, and other settings; the Ask guard ignores local changes.
+The run passes the submitted `mode`, effective `requireReviewing`, and other settings; the Ask guard ignores local changes.
 
 1. `buildSyncApplyOperations` in [writebackController](../../extension/src/content/writebackController.js) converts changes into edit/create/delete and other operations, retaining existing patches.
 2. [writebackPlan](../../extension/src/content/writebackPlan.js) checks paths and governance rules; deletion and binary operations use the existing product confirmation flow.
 3. `ensureReviewingBeforeWrite` and the Page write path confirm Reviewing or Editing; Auto remains subject to these prerequisites.
+   Before model dispatch, `preflightWriteSafety → Reviewing.resolveWritePolicy` handles a known Track limitation with the existing plugin dialog: continue without tracking for this run, turn off Track in the active project session, or cancel. Only an explicit affirmative choice changes the effective run snapshot to `requireReviewing:false`; Editing is then verified. Cancel/dismiss/timeout uses the task-not-started report, with no model dispatch or writes. Queued promotions use this same preflight. A limitation discovered later during writeback remains blocked, without an automatic downgrade.
+   `textFileCreator.ensureWriteMode` checks an already-open upgrade modal before attempting editor/file preparation behind it. Page `ensureReviewing/toggleReviewingMode` delegates clicking/polling to [Reviewing.toggleMode](../../extension/src/shared/reviewing.js). `findUpgradeModal` centralizes nonlocalized modal/body/close selectors, checks before clicks, during each poll and before failure, stops activation immediately, and closes only the matching modal through its header close control or Escape targeted at that modal. `reviewing_unavailable` carries `{upgradeModal:true,dismissed}` and a nonretryable reviewing-stage failure with `changedDocument:false`; Content and Page blocked builders retain its code, evidence and failure. Unknown states retain `reviewing_state_unknown/reviewing_enable_failed` semantics. The captured project ID and write-cancellation sequence are rechecked during the click/dismiss sequence.
+   Explicit untracked decisions update the current view and persisted run execution snapshot, submitted execution variable, retry/pending-write policy, audit and `recordUndoFromApply` checkpoint selection before model dispatch. The original Track request and choice remain in the run event; ordinary byte-recovery Undo applies to the resulting untracked writes. See [execution snapshots and memory](run-state-and-recovery.md#31-execution-snapshots).
+   **Known gap / verification scope:** retained `documentIntegrity` contracts exercise the production mode controller, confirmation/policy controller, scoped preferences, Page write router and ordinary Undo with simulated external DOM/editor/storage. Live Overleaf modal visibility, close control and animation behavior still require browser acceptance; selectors are deliberately centralized for recalibration.
 4. `stageWritebackRecovery` saves recoverable creation requests; `applyOperations` in [assetTransferBroker](../../extension/src/content/assetTransferBroker.js) schedules text batches and binary transfers in their original order.
 5. Text and file-tree batches execute item by item through `applyOperationsCore` in [writebackRouter](../../extension/src/page/writebackRouter.js), producing `applied`, `skipped`, and tracked-change capture evidence. Binaries use a separate uploader; the broker merges the results at the end.
 6. Immediately after return, call `appendApplyResult` and `recordUndoFromApply`; only then wait for save checking, mirror work, and compilation.

@@ -232,6 +232,11 @@
     },
 
     // 9.4 Reviewing
+    reviewing_unavailable: {
+      stage: 'reviewing', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: "Track Changes is unavailable for this project. It depends on the project owner's Overleaf plan.",
+      fallbackNextAction: 'Turn off Track in the composer to write without tracked changes. Codex still records each change so you can undo it.'
+    },
     reviewing_state_unknown: {
       stage: 'reviewing', severity: 'blocked', defaultRetryable: true,
       fallbackUserMessage: 'Codex could not determine whether Reviewing/Track Changes is enabled.',
@@ -621,6 +626,7 @@
       nextAction: catalog.fallbackNextAction,
       evidence: {}
     };
+    if (canonicalCode === 'reviewing_unavailable') failure.changedDocument = false;
     if (legacyReason) {
       failure.technicalMessage = legacyReason;
     }

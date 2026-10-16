@@ -73,6 +73,7 @@
   const textFileCreator = requirePageModule('CodexOverleafTextFileCreator').create({
     window, document, treeOperations, snapshotRouter,
     collectElements, ensureEditing, ensureReviewing, readActiveEditorText, readWriteCancellationSequence,
+    findUpgradeModal: () => window.CodexOverleafReviewing.findUpgradeModal(document),
     uploadHelpers: requirePageModule('CodexOverleafBinaryAssetUploader')
   });
   binaryAssetUploader = requirePageModule('CodexOverleafBinaryAssetUploader').create({
@@ -399,6 +400,11 @@
       fallbackUserMessage: 'Target file is active but the editor was not ready before timeout.',
       fallbackNextAction: 'Wait for Overleaf to finish loading, then retry.'
     },
+    reviewing_unavailable: {
+      stage: 'reviewing', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: "Track Changes is unavailable for this project. It depends on the project owner's Overleaf plan.",
+      fallbackNextAction: 'Turn off Track in the composer to write without tracked changes. Codex still records each change so you can undo it.'
+    },
     reviewing_state_unknown: {
       stage: 'reviewing', severity: 'blocked', defaultRetryable: true,
       fallbackUserMessage: 'Codex could not determine whether Reviewing/Track Changes is enabled.',
@@ -488,6 +494,8 @@
       findFileTreeManager,
       findHistoryObject,
       findReviewingActivationControl,
+      findUpgradeModal: () => window.CodexOverleafReviewing.findUpgradeModal(document),
+      reviewingConfirmed: isReviewingConfirmedForWrite(getReviewingState()),
       getCodeMirrorEditorView,
       getDeepActiveElement,
       isInsideCodexPanel,
@@ -497,7 +505,7 @@
 
   async function ensureReviewing(params = {}) {
     const initial = getReviewingState(params);
-    if (isReviewingConfirmedForWrite(initial)) {
+    if (isReviewingConfirmedForWrite(initial) && !window.CodexOverleafReviewing.findUpgradeModal(document)) {
       return {
         ok: true,
         activated: false,
@@ -506,6 +514,7 @@
     }
 
     const switched = await toggleReviewingMode(true, params);
+    if (switched.code === 'reviewing_unavailable') return { ...switched, reason: switched.failure.userMessage };
     if (switched.ok) {
       return {
         ok: true,
@@ -553,6 +562,7 @@
     }
 
     const switched = await toggleReviewingMode(false, params);
+    if (switched.code === 'reviewing_unavailable') return { ...switched, reason: switched.failure.userMessage };
     if (switched.ok) {
       return {
         ok: true,
@@ -878,6 +888,7 @@
     }
 
     const switched = await toggleReviewingMode(enabled, params);
+    if (switched.code === 'reviewing_unavailable') return { ...switched, reason: switched.failure.userMessage };
     if (switched.ok) {
       return {
         ok: true,
@@ -924,67 +935,23 @@
   }
 
   async function toggleReviewingMode(enabled, params = {}) {
-    const attemptedNodes = uniqueNodes([
-      findReviewingActivationControl(),
-      findReviewingModeMenuControl()
-    ].filter(Boolean));
-
-    for (const control of attemptedNodes) {
-      clickNode(control);
-      let after = await waitForReviewingEnabled(enabled, {
-        ...params,
-        waitMs: Math.min(resolveWaitMs(params), 180)
-      });
-      if (isReviewingTargetStateConfirmed(enabled, after)) {
-        return {
-          ok: true,
-          attempted: true,
-          reviewing: after.reviewing
-        };
+    const sequence = readWriteCancellationSequence();
+    const assertCurrent = () => {
+      if (sequence !== readWriteCancellationSequence()) {
+        throw Object.assign(new Error('Writeback was cancelled.'), { code: 'codex_cancelled' });
       }
-
-      const modeOption = findReviewingModeOption(enabled, { requireMenuOption: true });
-      if (modeOption) {
-        clickNode(modeOption);
-        after = await waitForReviewingEnabled(enabled, params);
-        if (isReviewingTargetStateConfirmed(enabled, after)) {
-          return {
-            ok: true,
-            attempted: true,
-            reviewing: after.reviewing
-          };
-        }
+      if (params.runProjectId && writeGuard.getEditorProjectIdPageSide(params.runProjectId) !== params.runProjectId) {
+        throw Object.assign(new Error('The active project changed.'), { code: 'aborted_project_changed' });
       }
-    }
-
-    const visibleModeOption = findReviewingModeOption(enabled, { requireMenuOption: true });
-    if (visibleModeOption) {
-      clickNode(visibleModeOption);
-      const after = await waitForReviewingEnabled(enabled, params);
-      return {
-        ok: isReviewingTargetStateConfirmed(enabled, after),
-        attempted: true,
-        reviewing: after.reviewing
-      };
-    }
-
-    const after = getReviewingState(params);
-    return {
-      ok: false,
-      attempted: attemptedNodes.length > 0,
-      reviewing: after.reviewing
     };
-  }
-
-  async function waitForReviewingEnabled(enabled, params = {}) {
-    const waitMs = resolveWaitMs(params);
-    const deadline = Date.now() + Math.max(0, waitMs);
-    let current = getReviewingState(params);
-    while (!isReviewingTargetStateConfirmed(enabled, current) && Date.now() < deadline) {
-      await delay(120);
-      current = getReviewingState(params);
-    }
-    return current;
+    return window.CodexOverleafReviewing.toggleMode(enabled, params, {
+      document, assertCurrent, delay,
+      getState: () => getReviewingState(params), isConfirmed: isReviewingTargetStateConfirmed,
+      click: clickNode,
+      findControls: () => [findReviewingActivationControl(), findReviewingModeMenuControl()],
+      findOption: value => findReviewingModeOption(value, { requireMenuOption: true }),
+      buildFailure: buildPageBridgeFailure
+    });
   }
 
   function resolveWaitMs(params = {}) {

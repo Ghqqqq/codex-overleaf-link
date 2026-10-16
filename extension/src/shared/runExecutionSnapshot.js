@@ -132,6 +132,18 @@
     };
   }
 
+  // Commit the explicit preflight decision to both live and durable run consumers.
+  // The originally captured (possibly queued) snapshot stays immutable.
+  function applyUntrackedDecision(view, record, choice) {
+    if (!['continue', 'disable'].includes(choice) || !view?.recordId || record?.id !== view.recordId) {
+      throw Codec.snapshotError('invalid_reviewing_decision', 'An explicit decision for the current run is required.');
+    }
+    const snapshot = create({ ...snapshotOf(view), requireReviewing: false });
+    view.executionSnapshot = cloneSnapshot(snapshot);
+    Object.assign(record, toRunCompatibilityTuple(snapshot));
+    return snapshot;
+  }
+
   function projectForDisplay(value = {}) {
     const snapshot = snapshotOf(value);
     return {
@@ -174,6 +186,7 @@
     SCHEMA_VERSION: Codec.SCHEMA_VERSION,
     TUPLE_FIELDS: Codec.TUPLE_FIELDS,
     applyToState,
+    applyUntrackedDecision,
     capture,
     captureRawQueueTuple,
     cloneSnapshot,

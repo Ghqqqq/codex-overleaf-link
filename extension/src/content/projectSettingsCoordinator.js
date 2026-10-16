@@ -245,6 +245,23 @@
       });
     }
 
+    function getReviewingAvailability() {
+      return getState()?.reviewingAvailabilityByProject?.[getCurrentProjectId()] || null;
+    }
+
+    function observeReviewingAvailability(status, evidence) {
+      const projectId = getCurrentProjectId();
+      if (!projectId || !['available', 'unavailable'].includes(status)) return;
+      const previous = getReviewingAvailability();
+      // A remembered failure must not renew its own expiry.
+      if (previous?.status === status && previous.evidence === evidence && status === 'available') return;
+      setState({ ...getState(), reviewingAvailabilityByProject: {
+        ...getState()?.reviewingAvailabilityByProject,
+        [projectId]: { status, evidence, observedAt: Date.now() }
+      } });
+      saveStateSoon(0);
+    }
+
     function getThemePreference() {
       return CodexOverleafTheme.normalizeThemePreference(getState()?.theme);
     }
@@ -381,6 +398,8 @@
       getGovernanceRulesForCurrentProject,
       getSkillLoadingSettings,
       getThemePreference,
+      getReviewingAvailability,
+      observeReviewingAvailability,
       isCodexOverleafSkillEnabled,
       normalizeCustomInstructionsByProject,
       normalizeGovernanceRules,

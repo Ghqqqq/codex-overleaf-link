@@ -16,6 +16,7 @@
     const checkpointWrite = hasCheckpointCapability(deps);
     const compileCapture = Boolean(deps.compileState?.capturedRequestTemplate);
     const reviewingControl = Boolean(deps.findReviewingActivationControl?.());
+    const upgradeModal = Boolean(deps.findUpgradeModal?.());
 
     if (!editorRead) {
       warnings.push('没有识别到当前 Overleaf 编辑器，Codex 不能读取当前文件。');
@@ -47,7 +48,9 @@
         trigger: compileCapture
       },
       reviewing: {
-        control: reviewingControl
+        control: reviewingControl,
+        upgradeModal,
+        confirmed: !upgradeModal && deps.reviewingConfirmed === true
       },
       warnings
     };

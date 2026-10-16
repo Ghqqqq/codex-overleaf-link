@@ -610,6 +610,9 @@
     async function ensureWriteMode(reviewing, params = {}) {
       const ensureMode = reviewing ? deps.ensureReviewing : deps.ensureEditing;
       if (typeof ensureMode !== 'function') return { ok: false, reason: 'Editor mode controls are unavailable.' };
+      // An open paywall can make the underlying editor inert. Detect it before
+      // preparation attempts any file navigation behind that modal.
+      if (reviewing && deps.findUpgradeModal?.()) return ensureMode(params);
       const prepared = await prepareEditor(params);
       return prepared.ok ? ensureMode(params) : prepared;
     }

@@ -33,6 +33,7 @@
   const RUN_PROJECT_SYNC_MAX_AGE_MS = 30000;
   const RUN_SNAPSHOT_ZIP_TIMEOUT_MS = 30000;
   const STREAM_RENDER_FLUSH_MS = 80;
+  const REVIEWING_CONFIRM_TIMEOUT_MS = 120000;
   const STREAM_SAVE_DELAY_MS = 1000;
   const MAX_RUN_EVENTS = 300;
   const MAX_SAFE_UNDO_REPLACEALL_CHARS = 2000;
@@ -1660,7 +1661,7 @@
     }
     const reviewToggle = panel.querySelector('.codex-review-toggle');
     if (reviewToggle) {
-      reviewToggle.title = tr('requireReviewingTitle');
+      syncReviewingTooltip();
     }
     const recompileToggle = panel.querySelector('.codex-recompile-toggle');
     if (recompileToggle) {
@@ -1933,7 +1934,7 @@
         '提交所属会话已改变，请重新提交任务。'));
     }
     submittedPanelState.writingStyle = queuedInput || compact ? null : writingStyleSettings.capture();
-    const executionSnapshot = queuedInput
+    let executionSnapshot = queuedInput
       ? RunExecutionSnapshot.resolveForExecution(
         RunExecutionSnapshot.fromQueuePayload(queuedInput.payload),
         { catalog: providerSettingsCoordinator.getCatalog() }
@@ -1941,7 +1942,7 @@
       : captureCurrentExecutionSnapshot(submittedPanelState);
     // Freeze submitted run identity before the panel can change during the run.
     const submittedMode = executionSnapshot.mode;
-    const submittedRequireReviewing = executionSnapshot.requireReviewing === true;
+    let submittedRequireReviewing = executionSnapshot.requireReviewing === true;
     const replaceRunId = queuedInput || compact ? '' : runController.resolveRetryReplacement({
       candidate: submittedRetryReplacement,
       activeSessionId: submittedSessionId,
@@ -2100,7 +2101,30 @@
       await awaitRunStep(pauseOtWarmMirror('run-start'));
       const writeSafety = await awaitRunStep(preflightWriteSafety({
         mode: submittedMode,
-        requireReviewing: submittedRequireReviewing
+        requireReviewing: submittedRequireReviewing,
+        onUntracked: async choice => {
+          submittedRequireReviewing = false;
+          // Keep the effective policy identical in dispatch, recovery and Undo consumers.
+          const view = currentRunView;
+          const record = findRunRecord(view.recordId, view.sessionId);
+          executionSnapshot = RunExecutionSnapshot.applyUntrackedDecision(view, record, choice);
+          if (choice === 'disable') {
+            updateSessionById(view.sessionId, { requireReviewing: false });
+            if (state.activeSessionId === view.sessionId) {
+              state.requireReviewing = false;
+              panel.querySelector('[data-require-reviewing]').checked = false;
+            }
+          }
+          appendRunEvent({ title: tr('reviewingUnavailableRunUntracked'), status: 'completed',
+            technicalDetail: { code: 'reviewing_unavailable', submittedRequireReviewing: true,
+              effectiveRequireReviewing: false, choice } });
+          saveStateSoon(0);
+          syncProbeStatus();
+          runAuditDraft = await finalizeAuditDraftPartial(runAuditDraft, {
+            requireReviewing: false, trackingDecision: choice
+          });
+          await flushQueuedSaveState({ requireDurable: true });
+        }
       }));
       if (!writeSafety.ok) {
         await finalizeAuditRecord(runAuditDraft, {
@@ -2658,7 +2682,13 @@
       }
     } catch (error) {
       if (runCancellationRequested || isRunCancellationError(error)) {
-        appendRunCancelledReport();
+        if (currentRunView?.reviewingUnavailablePreflight) {
+          appendCompletionReport({ conclusionKey: 'launch_not_started',
+            conclusion: tx('This task did not start: Codex did not run and no files were written.', '这轮任务没有开始：Codex 没有运行，也没有写入文件。'),
+            status: 'blocked', operations: [], applyResults: [],
+            failure: buildContentFailure('reviewing_unavailable', {}, { changedDocument: false }),
+            nextStep: tr('failureReason_reviewing_unavailable_next') });
+        } else appendRunCancelledReport();
         await finishRunView(tx('Cancelled', '已取消'), 'cancelled');
         void finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
         return;
@@ -2899,8 +2929,6 @@
     if (mode === 'ask') {
       return { ok: true, skipped: true };
     }
-    const method = requireReviewing ? 'ensureReviewing' : 'ensureEditing';
-
     appendRunEvent({
       title: requireReviewing
         ? tx('Checking Overleaf Reviewing/Track Changes before starting.', '正在确认 Overleaf 留痕状态。')
@@ -2908,30 +2936,67 @@
       status: 'running'
     });
 
-    let result = null;
-    try {
-      // Thread runProjectId through so the page-bridge dispatcher applies the
-      // writeGuard. Without it, a mid-flight SPA navigation could leave the
-      // pre-flight ensureReviewing/Editing toggle landing in the wrong
-      // project — Track Changes flipped on/off in a project the user did
-      // not intend to write to.
-      result = await callPageBridge(method, {
-        waitMs: 1800,
-        runProjectId: currentRunView?.runProjectId || ''
-      });
-    } catch (error) {
-      result = {
-        ok: false,
-        reason: error?.message || (requireReviewing
-          ? tx('Overleaf did not return track changes status', 'Overleaf 没有返回留痕状态')
-          : tx('Overleaf did not return Editing mode status', 'Overleaf 没有返回 Editing 模式状态')),
-        reviewing: null
-      };
+    const owner = currentRunView;
+    const signal = runCancellationController?.signal;
+    const isCurrent = () => owner === currentRunView && !signal?.aborted && !runCancellationRequested
+      && owner?.runProjectId === getCurrentProjectId() && owner?.runAccountScopeId === cachedAccountScopeId;
+    const assertCurrent = () => { if (!isCurrent()) throw createRunCancellationError(); };
+    assertCurrent();
+    if (requireReviewing) {
+      // Another tab may have observed this project's capability since hydration.
+      const prefs = await Modules.StorageMigration.loadPrefs(owner.runAccountScopeId, owner.runProjectId);
+      assertCurrent();
+      const incoming = prefs?.reviewingAvailabilityByProject?.[owner.runProjectId];
+      const current = projectSettingsCoordinator.getReviewingAvailability();
+      if (incoming && (!current || incoming.observedAt > current.observedAt
+        || (incoming.observedAt === current.observedAt && incoming.status === 'available'))) {
+        state = { ...state, reviewingAvailabilityByProject: {
+          ...state.reviewingAvailabilityByProject, [owner.runProjectId]: incoming
+        } };
+        syncProbeStatus();
+      }
     }
+    let result = await Modules.Reviewing.resolveWritePolicy({ requireReviewing,
+      knownUnavailable: isReviewingKnownUnavailable() }, {
+      assertCurrent,
+      ensureMode: async required => {
+        try {
+          return await callPageBridge(required ? 'ensureReviewing' : 'ensureEditing', {
+            waitMs: 1800, runProjectId: owner.runProjectId
+          });
+        } catch (error) {
+          assertCurrent();
+          return { ok: false, code: error?.code, reason: error?.message, reviewing: null };
+        }
+      },
+      observe: async (status, evidence) => {
+        projectSettingsCoordinator.observeReviewingAvailability(status, evidence);
+        syncProbeStatus();
+        // Publish a detected paywall before waiting for the user's decision.
+        if (status === 'unavailable') await flushQueuedSaveState({ requireDurable: true });
+        assertCurrent();
+      },
+      choose: () => {
+        owner.reviewingUnavailablePreflight = true;
+        return showPluginConfirm({
+          title: tr('reviewingUnavailableTitle'),
+          message: tr('reviewingUnavailableChoiceMessage'),
+          choices: [
+            { value: 'continue', label: tr('reviewingUnavailableContinue') },
+            { value: 'disable', label: tr('reviewingUnavailableDisable'), secondary: true },
+            { value: 'cancel', label: tr('confirmDefaultCancel') }
+          ],
+          signal, isCurrent, timeoutMs: REVIEWING_CONFIRM_TIMEOUT_MS
+        });
+      },
+      applyUntracked: choice => { assertCurrent(); return options.onUntracked(choice); }
+    });
+    if (result.ok) owner.reviewingUnavailablePreflight = false;
+    const effectiveRequireReviewing = result.requireReviewing ?? requireReviewing;
 
     if (result?.ok) {
       appendRunEvent({
-        title: requireReviewing
+        title: effectiveRequireReviewing
           ? (result.activated
             ? tx('Overleaf Reviewing/Track Changes is now on. Starting the task.', '已开启 Overleaf 留痕，开始处理任务。')
             : tx('Overleaf Reviewing/Track Changes is already on. Starting the task.', 'Overleaf 留痕已经开启，开始处理任务。'))
@@ -2943,10 +3008,18 @@
       return result;
     }
 
-    const reason = localizeVisibleReason(result?.reason || (requireReviewing
+    const unavailable = result?.code === 'reviewing_unavailable';
+    if (unavailable && !result.failure) result.failure = buildContentFailure('reviewing_unavailable', {}, {
+      changedDocument: false, evidence: result.evidence
+    });
+    const reason = unavailable ? tr('failureReason_reviewing_unavailable_user') : localizeVisibleReason(result?.reason || (effectiveRequireReviewing
       ? tx('Overleaf did not return track changes status', 'Overleaf 没有返回留痕状态')
       : tx('Overleaf did not return Editing mode status', 'Overleaf 没有返回 Editing 模式状态')));
-    const nextStep = requireReviewing
+    // Affirmative choices retain trackingDecision even if the Editing check fails.
+    const declinedReviewingChoice = owner.reviewingUnavailablePreflight === true && !result.trackingDecision;
+    const nextStep = unavailable ? tr(declinedReviewingChoice
+      ? 'failureReason_reviewing_unavailable_cancelled_next'
+      : 'failureReason_reviewing_unavailable_next') : effectiveRequireReviewing
       ? tx(
         'You may not have permission, or this Overleaf page did not expose the Reviewing switch. Switch to Reviewing manually and retry, or turn off Track before writing.',
         '你可能没有权限，或 Overleaf 当前页面没有暴露切换入口。可以手动切到 Reviewing 后重试，或关闭“留痕”再运行。'
@@ -2956,7 +3029,7 @@
         '你可能没有权限，或 Overleaf 当前页面没有暴露切换入口。请在 Overleaf 手动切到 Editing 后重试。'
       );
     appendRunEvent({
-      title: requireReviewing
+      title: effectiveRequireReviewing
         ? tx('Task not started: could not enable Overleaf Reviewing/Track Changes.', '任务未开始：无法开启 Overleaf 留痕。')
         : tx('Task not started: could not switch to Overleaf Editing.', '任务未开始：无法切换到 Overleaf Editing。'),
       status: 'failed',
@@ -2965,7 +3038,7 @@
         [tr('detailNext')]: nextStep
       },
       technicalDetail: {
-        reason,
+        reason, code: result?.code, evidence: result?.evidence, failure: result?.failure,
         reviewing: result?.reviewing || null
       }
     });
@@ -2974,15 +3047,16 @@
       status: 'blocked',
       operations: [],
       applyResults: [],
-      nextStep
+      nextStep,
+      reason: result?.code, failure: result?.failure
     });
-    const finishTitle = requireReviewing
+    const finishTitle = effectiveRequireReviewing
       ? tx('Not started: could not enable Track Changes', '未开始：无法开启留痕')
       : tx('Not started: could not switch to Editing', '未开始：无法切换到 Editing');
     await finishRunView(finishTitle, 'failed');
     return {
-      ok: false,
-      reason,
+      ...result, ok: false,
+      reason: result?.code || reason,
       reviewing: result?.reviewing || null
     };
   }
@@ -3524,6 +3598,7 @@
       sessionId: input.sessionId || '',
       turnId: currentRunView?.recordId || '',
       mode: input.mode || executionSnapshot.mode,
+      requireReviewing: executionSnapshot.requireReviewing,
       ...providerSettingsCoordinator.getProviderSnapshot(executionSnapshot.providerId),
       providerRevision: executionSnapshot.providerRevision,
       model: executionSnapshot.model,
@@ -5017,10 +5092,19 @@
     // Thread runProjectId so the page-side dispatcher gates the toggle. Same
     // intent as the pre-flight check above: do not flip Track Changes /
     // Editing in a different project than the run is bound to.
+    const owner = currentRunView;
     const result = await callPageBridge(method, {
       waitMs: 1800,
       runProjectId: currentRunView?.runProjectId || ''
     });
+    throwIfRunCancellationRequested();
+    if (owner && (owner !== currentRunView || owner.runProjectId !== getCurrentProjectId()
+      || owner.runAccountScopeId !== cachedAccountScopeId)) throw createRunCancellationError();
+    if (requireReviewing && (result?.ok || result?.code === 'reviewing_unavailable')) {
+      projectSettingsCoordinator.observeReviewingAvailability(result.ok ? 'available' : 'unavailable',
+        result.ok ? 'reviewing_confirmed' : 'upgrade_modal');
+      syncProbeStatus();
+    }
     if (result?.ok) {
       appendRunEvent({
         title: requireReviewing
@@ -5052,6 +5136,7 @@
       code: result?.code || (requireReviewing ? 'reviewing_not_enabled' : 'editing_not_confirmed'),
       reason: result?.reason || (requireReviewing ? 'Reviewing/Track Changes was not enabled' : 'Editing mode was not confirmed'),
       reviewing: result?.reviewing || null,
+      evidence: result?.evidence, failure: result?.failure,
       requireReviewing
     };
   }
@@ -5066,8 +5151,9 @@
           operation,
           result: {
             ok: false,
-            code: blockedByEditing ? 'editing_not_confirmed' : 'reviewing_not_enabled',
-            reason: blockedByEditing
+            code: reviewing?.code || (blockedByEditing ? 'editing_not_confirmed' : 'reviewing_not_enabled'),
+            evidence: reviewing?.evidence, failure: reviewing?.failure,
+            reason: reviewing?.code === 'reviewing_unavailable' ? tr('failureReason_reviewing_unavailable_user') : blockedByEditing
               ? tx(
                 'Track is off, but Overleaf Editing mode was not verified before writing. Codex did not write this file.',
                 '已关闭“留痕”，但写入前没有确认 Overleaf 正在用 Editing 模式。Codex 没有写入这个文件。'
@@ -5121,6 +5207,7 @@
 
   async function refreshProbe(options = {}) {
     const projectId = getCurrentProjectId();
+    const accountScopeId = cachedAccountScopeId;
     const userInitiated = options.userInitiated === true;
     if (userInitiated) {
       setRefreshProbeLoading(true);
@@ -5136,6 +5223,10 @@
         manualOverride: state?.requireReviewing === false
       });
       if (projectId !== getCurrentProjectId()) return null;
+      if (accountScopeId !== cachedAccountScopeId) return null;
+      if (probe.capabilities?.reviewing?.confirmed === true) {
+        projectSettingsCoordinator.observeReviewingAvailability('available', 'reviewing_confirmed');
+      }
       probeStatusSnapshot = { projectId, probe, userInitiated };
       const status = panel?.querySelector('[data-probe-status]');
       if (status) {
@@ -5194,12 +5285,25 @@
     if (!failed) updateExistingProbeNotice(probe, mode);
   }
 
+  // Keep the read scope visible; a known Track limitation adds its own warning segment.
   function getProbeScope(probe) {
     if (getProbeRunReadiness(probe).editorOk) return { icon: 'file', key: 'probeScopeCurrentFile' };
     const focusFiles = getActiveFocusFiles();
     if (focusFiles.some(file => /\.tex$/i.test(file))) return { icon: 'file', key: 'probeScopeFiles' };
     if (focusFiles.length) return { icon: 'attach', key: 'probeScopeContext' };
     return { icon: 'folder', key: 'probeScopeProject' };
+  }
+
+  function isReviewingKnownUnavailable() {
+    return Modules.Reviewing.knownUnavailable(projectSettingsCoordinator.getReviewingAvailability());
+  }
+
+  function syncReviewingTooltip() {
+    const toggle = panel?.querySelector('[data-require-reviewing]');
+    const title = tr(isReviewingKnownUnavailable() ? 'reviewingUnavailableTooltip' : 'requireReviewingTitle');
+    if (toggle) toggle.title = title;
+    const label = toggle?.closest('.codex-review-toggle');
+    if (label) label.title = title;
   }
 
   function renderProbeStatusLine(status, probe, options = {}) {
@@ -5217,6 +5321,13 @@
       separator.textContent = '·';
       parts.push(separator, 'OT ' + formatOtStatusLabel(getCurrentOtStatus()));
     }
+    if (state.requireReviewing && isReviewingKnownUnavailable()) {
+      const warning = document.createElement('span');
+      warning.dataset.tone = 'warn';
+      warning.textContent = ' · ' + tr('reviewingUnavailableStatus');
+      parts.push(warning);
+    }
+    syncReviewingTooltip();
     status.replaceChildren(...parts);
     delete status.dataset.tone;
   }
@@ -5768,6 +5879,7 @@
         codexLocalSkillEnabled: prefs.codexLocalSkillEnabled || {},
         experimentalOtByProject: prefs.experimentalOtByProject || {},
         customInstructionsByProject: prefs.customInstructionsByProject || {},
+        reviewingAvailabilityByProject: prefs.reviewingAvailabilityByProject || {},
         governanceRulesByProject: normalizeGovernanceRulesByProject(prefs.governanceRulesByProject),
         panelWidth: prefs.panelWidth || PANEL_DEFAULT_WIDTH,
         sessions: sessions.map(session => ({
@@ -5824,6 +5936,7 @@
           codexLocalSkillEnabled: fallback.codexLocalSkillEnabled || {},
           experimentalOtByProject: fallback.experimentalOtByProject || {},
           customInstructionsByProject: fallback.customInstructionsByProject || {},
+          reviewingAvailabilityByProject: fallback.reviewingAvailabilityByProject || {},
           governanceRulesByProject: normalizeGovernanceRulesByProject(fallback.governanceRulesByProject),
           panelWidth: fallback.panelWidth || PANEL_DEFAULT_WIDTH,
           sessions: [],
@@ -5887,6 +6000,7 @@
       compactState.codexLocalSkillEnabled = getCodexLocalSkillEnabled();
       compactState.experimentalOtByProject = state.experimentalOtByProject;
       compactState.customInstructionsByProject = state.customInstructionsByProject;
+      compactState.reviewingAvailabilityByProject = state.reviewingAvailabilityByProject;
       compactState.governanceRulesByProject = state.governanceRulesByProject;
       const stateSnapshot = typeof structuredClone === 'function'
         ? structuredClone(state)
@@ -6462,6 +6576,7 @@
     autosizeTaskTextarea();
     syncComposerSendAvailability();
     panel.querySelector('[data-require-reviewing]').checked = state.requireReviewing;
+    syncReviewingTooltip();
     const recompileCheckbox = panel?.querySelector('[data-auto-recompile]');
     if (recompileCheckbox) {
       recompileCheckbox.checked = state.autoRecompile !== false;

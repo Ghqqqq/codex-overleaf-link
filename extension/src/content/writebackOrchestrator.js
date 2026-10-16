@@ -327,7 +327,7 @@
       const blocked = buildReviewingBlockedApplyResult(operations, reviewing);
       appendApplyResult(blocked);
       appendCompletionReport({ conclusionKey: 'reviewing_unavailable',
-        conclusion: tx(
+        conclusion: reviewing.code === 'reviewing_unavailable' ? tr('failureReason_reviewing_unavailable_user') : tx(
           'No files were written: Track is enabled, but Codex could not verify Overleaf Reviewing/Track Changes.',
           '这轮没有写入：已开启“留痕”要求，但 Codex 没能确认 Overleaf 正在用 Reviewing/Track Changes。'
         ),
@@ -335,7 +335,7 @@
         operations,
         applyResults: [blocked],
         mode: runMode,
-        nextStep: tx(
+        nextStep: reviewing.code === 'reviewing_unavailable' ? tr('failureReason_reviewing_unavailable_next') : tx(
           'Switch Overleaf to Reviewing/Track Changes manually and rerun, or turn off Track before writing.',
           '请在 Overleaf 手动切到 Reviewing/Track Changes 后重新运行，或关闭“留痕”再写入。'
         )

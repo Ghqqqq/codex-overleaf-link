@@ -327,7 +327,7 @@
       }
       const panel = options.getPanel?.();
       if (!panel) {
-        return Promise.resolve(false);
+        return Promise.resolve(config.choices?.length ? 'cancel' : false);
       }
       dismiss(false);
       const tr = options.tr || (key => key);
@@ -336,6 +336,8 @@
       const confirmLabel = config.confirmLabel || tr('confirmDefaultConfirm');
       const cancelLabel = config.cancelLabel || tr('confirmDefaultCancel');
       const destructive = config.destructive === true;
+      const choices = Array.isArray(config.choices) && config.choices.length ? config.choices : null;
+      const cancelled = choices ? 'cancel' : false;
       const doc = panel.ownerDocument || document;
 
       return new Promise(resolve => {
@@ -376,54 +378,69 @@
         body.textContent = String(message);
         const actions = doc.createElement('div');
         actions.className = 'codex-plugin-confirm-actions';
-        const cancel = doc.createElement('button');
-        cancel.type = 'button';
-        cancel.className = 'codex-plugin-confirm-cancel';
-        cancel.textContent = cancelLabel;
-        const confirm = doc.createElement('button');
-        confirm.type = 'button';
-        confirm.className = 'codex-plugin-confirm-confirm';
-        if (destructive) confirm.dataset.destructive = 'true';
-        confirm.textContent = confirmLabel;
-        actions.append(cancel, confirm);
+        const buttons = (choices || [
+          { value: false, label: cancelLabel }, { value: true, label: confirmLabel }
+        ]).map(choice => {
+          const button = doc.createElement('button');
+          button.type = 'button';
+          const cancel = choice.value === false || choice.value === 'cancel';
+          // Only one primary action: other affirmative choices can ask for the secondary style.
+          button.className = cancel || choice.secondary === true ? 'codex-plugin-confirm-cancel' : 'codex-plugin-confirm-confirm';
+          if (destructive && !cancel) button.dataset.destructive = 'true';
+          button.textContent = choice.label;
+          button.addEventListener('click', () => cleanup(choice.value));
+          actions.append(button);
+          return button;
+        });
         card.append(head, body, actions);
         overlay.append(card);
         panel.append(overlay);
         overlay.showModal?.();
 
+        let timeout, ownerCheck, removalObserver;
+        const onAbort = () => cleanup(cancelled);
         const cleanup = value => {
           if (settled) return;
           settled = true;
           activeResolve = null;
           doc.removeEventListener('keydown', onKeydown, true);
+          config.signal?.removeEventListener('abort', onAbort);
+          clearTimeout(timeout);
+          clearInterval(ownerCheck);
+          removalObserver?.disconnect();
           overlay.close?.();
           overlay.remove();
           returnFocus?.focus?.();
-          resolve(value);
+          resolve(choices && !choices.some(choice => choice.value === value) ? cancelled : value);
         };
         activeResolve = cleanup;
         const onKeydown = event => {
           if (event.key === 'Escape') {
-            event.preventDefault();
-            cleanup(false);
+            event.preventDefault(); cleanup(cancelled);
           } else if (event.key === 'Enter') {
             event.preventDefault();
-            if (!destructive && event.target !== cancel) cleanup(true);
-            else if (event.target === cancel) cleanup(false);
-            else if (event.target === confirm) cleanup(true);
+            if (buttons.includes(event.target)) event.target.click();
+            else if (!choices && !destructive) cleanup(true);
           } else if (event.key === 'Tab') {
             event.preventDefault();
-            (event.target === cancel ? confirm : cancel).focus();
+            const index = buttons.indexOf(event.target);
+            buttons[(index + (event.shiftKey ? buttons.length - 1 : 1)) % buttons.length].focus();
           }
         };
-        overlay.addEventListener('click', event => {
-          if (event.target === overlay) cleanup(false);
-        });
-        overlay.addEventListener('cancel', event => { event.preventDefault(); cleanup(false); });
-        cancel.addEventListener('click', () => cleanup(false));
-        confirm.addEventListener('click', () => cleanup(true));
+        overlay.addEventListener('click', event => { if (event.target === overlay) cleanup(cancelled); });
+        overlay.addEventListener('cancel', event => { event.preventDefault(); cleanup(cancelled); });
+        overlay.addEventListener('close', () => cleanup(cancelled));
         doc.addEventListener('keydown', onKeydown, true);
-        (destructive ? cancel : confirm).focus();
+        config.signal?.addEventListener('abort', onAbort, { once: true });
+        if (config.timeoutMs > 0) timeout = setTimeout(onAbort, config.timeoutMs);
+        if (config.isCurrent) ownerCheck = setInterval(() => { if (!config.isCurrent()) onAbort(); }, 100);
+        const Observer = doc.defaultView?.MutationObserver;
+        if (choices && Observer) {
+          removalObserver = new Observer(() => { if (!overlay.isConnected) onAbort(); });
+          removalObserver.observe(panel, { childList: true });
+        }
+        (choices ? buttons[0] : buttons[destructive ? 0 : 1]).focus();
+        if (config.signal?.aborted || config.isCurrent?.() === false) onAbort();
       });
     }
 

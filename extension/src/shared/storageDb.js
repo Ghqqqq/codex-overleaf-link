@@ -438,6 +438,8 @@
       turnId: typeof input.turnId === 'string' ? input.turnId : '',
       createdAt: typeof input.createdAt === 'string' ? input.createdAt : now,
       completedAt: typeof input.completedAt === 'string' ? input.completedAt : '',
+      requireReviewing: typeof input.requireReviewing === 'boolean' ? input.requireReviewing : undefined,
+      trackingDecision: ['continue', 'disable'].includes(input.trackingDecision) ? input.trackingDecision : '',
       mode: typeof input.mode === 'string' ? input.mode : '', ...StorageRunActions.compactProviderSnapshot(input),
       model: typeof input.model === 'string' ? input.model : '',
       reasoningEffort: typeof input.reasoningEffort === 'string' ? input.reasoningEffort : '',
