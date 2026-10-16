@@ -5425,6 +5425,13 @@
 #codex-overleaf-panel .codex-context-usage-popover [hidden] { display: none; }
 #codex-overleaf-panel .codex-context-usage-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 #codex-overleaf-panel .codex-context-usage-head-text { min-width: 0; }
+/* Empty state: a dashed ring echoing the toolbar indicator replaces the figure and bar. */
+#codex-overleaf-panel .codex-context-usage-empty-ring { display: none; flex: 0 0 26px; width: 26px; height: 26px; }
+#codex-overleaf-panel .codex-context-usage-empty-ring circle { fill: none; stroke: var(--tl-border-strong); stroke-width: 2; stroke-dasharray: 4 3.5; }
+#codex-overleaf-panel .codex-context-usage-empty-ring .codex-context-usage-empty-dot { fill: var(--tl-fg-4); stroke: none; }
+#codex-overleaf-panel .codex-context-usage[data-empty="true"] .codex-context-usage-empty-ring { display: block; }
+#codex-overleaf-panel .codex-context-usage[data-empty="true"] .codex-context-usage-head { justify-content: flex-start; align-items: center; gap: 10px; }
+#codex-overleaf-panel .codex-context-usage[data-empty="true"] :is(.codex-context-usage-figure, .codex-context-usage-bar) { display: none; }
 #codex-overleaf-panel .codex-context-usage-title { color: var(--tl-fg-1); font-size: var(--tl-text-sm, 12px); font-weight: 600; }
 #codex-overleaf-panel .codex-context-usage-amount { margin-top: 2px; color: var(--tl-fg-3); font-size: var(--tl-text-xs, 11px); font-variant-numeric: tabular-nums; }
 #codex-overleaf-panel .codex-context-usage-figure { flex: 0 0 auto; text-align: right; }

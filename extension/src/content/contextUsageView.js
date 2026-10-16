@@ -198,18 +198,25 @@
       const compactingText = state.compactingKind === 'auto' ? tr('contextUsageCompactingAuto') : tr('contextUsageCompacting');
       const compacting = state.compacting;
       const pending = !compacting && state.pending;
+      const availability = deps.getCompactAvailability?.() || { ok: true };
+      // No sample and nothing in progress: show the empty state. Before the first
+      // message there is no thread, so the line says when usage will appear.
+      const empty = used === null && !compacting && !pending;
+      const noThread = availability.ok === false && availability.reason === 'compactNoThread';
+      const emptyText = noThread ? tr('contextUsageBeforeFirstMessage') : tr('contextUsageUnavailable');
       host.dataset.compacting = compacting ? 'true' : 'false';
+      host.dataset.empty = empty ? 'true' : 'false';
       host.dataset.unknown = percent === null ? 'true' : 'false';
       host.dataset.pending = pending ? 'true' : 'false';
       host.dataset.level = level;
       host.style.setProperty('--context-usage-percent', String(Math.max(0, Math.min(100, percent || 0))));
       button.title = compacting ? compactingText : pending ? tr(state.compacted ? 'contextUsagePending' : 'contextUsagePendingDetail')
-        : used === null ? tr('contextUsageUnavailable') : summary;
+        : used === null ? emptyText : summary;
       button.setAttribute('aria-label', button.title);
       text('title', tr('contextUsageTitle'));
       // Without a usable sample, the line under the title carries the state.
       text('amount', used !== null ? amount : compacting ? compactingText
-        : pending ? tr('contextUsagePendingDetail') : tr('contextUsageUnavailable'));
+        : pending ? tr('contextUsagePendingDetail') : emptyText);
       host.querySelector('[data-context-usage-spinner]').hidden = !compacting;
       const chip = text('chip', tr('contextUsageCompactedChip'));
       if (chip) chip.hidden = !pending || !state.compacted;
@@ -232,11 +239,14 @@
       const reported = text('reported', used === null ? '' : formatLatestReply(state.usage?.observedAt));
       if (reported) reported.hidden = !reported.textContent;
       if (compactButton) {
-        const availability = deps.getCompactAvailability?.() || { ok: true };
+        // Without a conversation there is nothing to compact; a busy state keeps the disabled button.
+        compactButton.hidden = noThread;
         compactButton.disabled = availability.ok === false;
         compactButton.title = availability.ok === false ? tr(availability.reason || 'compactBusy') : tr('contextUsageCompactHint');
         text('compact-label', tr('contextUsageCompactAction'));
       }
+      const foot = host.querySelector('[data-context-usage-foot]');
+      if (foot) foot.hidden = (!compactButton || compactButton.hidden) && (!reported || reported.hidden);
       popover.setAttribute('aria-label', tr('contextUsageTitle'));
       position();
     }

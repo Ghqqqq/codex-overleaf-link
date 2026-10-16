@@ -73,6 +73,7 @@
               </button>
               <div class="codex-context-usage-popover" data-context-usage-popover role="region" tabindex="0" hidden>
                 <div class="codex-context-usage-head">
+                  <svg class="codex-context-usage-empty-ring" data-context-usage-empty-ring viewBox="0 0 26 26" aria-hidden="true" focusable="false"><circle cx="13" cy="13" r="10.5"></circle><circle class="codex-context-usage-empty-dot" cx="13" cy="13" r="2"></circle></svg>
                   <div class="codex-context-usage-head-text">
                     <div class="codex-context-usage-title" data-context-usage-title></div>
                     <div class="codex-context-usage-amount" data-context-usage-amount></div>
@@ -91,7 +92,7 @@
                   <div class="codex-context-usage-row" data-sub data-context-usage-cache><i class="codex-context-usage-swatch" data-seg="cached"></i><span data-context-usage-cached-label></span><b data-context-usage-cached></b><em data-context-usage-cache-rate></em></div>
                   <div class="codex-context-usage-row"><i class="codex-context-usage-swatch" data-seg="output"></i><span data-context-usage-output-label></span><b data-context-usage-output></b><em data-context-usage-output-share></em></div>
                 </div>
-                <div class="codex-context-usage-foot">
+                <div class="codex-context-usage-foot" data-context-usage-foot>
                   <span data-context-usage-reported hidden></span>
                   <button type="button" class="codex-context-usage-compact" data-context-usage-compact>${icon('compact')}<span data-context-usage-compact-label></span></button>
                 </div>
