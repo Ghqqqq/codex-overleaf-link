@@ -546,6 +546,8 @@
 #codex-overleaf-panel .codex-settings-workbench .codex-set-group:last-child { margin-bottom: 0; }
 #codex-overleaf-panel .codex-settings-workbench .codex-set-group-head { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--wb-fg); cursor: default; list-style: none; }
 #codex-overleaf-panel .codex-settings-workbench .codex-set-group-head::-webkit-details-marker { display: none; }
+/* Headings are not controls: cancel the panel-wide summary hover band. */
+#codex-overleaf-panel .codex-settings-workbench .codex-set-group-head:hover { background: transparent; }
 #codex-overleaf-panel .codex-settings-workbench .codex-set-group-head::after { content: none; display: none; }
 #codex-overleaf-panel .codex-settings-workbench .codex-set-group-title { flex: 1; min-width: 0; gap: 7px; flex-wrap: wrap; font-size: var(--tl-text-md, 13px); font-weight: 600; color: var(--wb-fg); }
 #codex-overleaf-panel .codex-settings-workbench .codex-set-group-icon { display: none; }
@@ -748,33 +750,46 @@
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-template-mark svg { width: 22px; height: 22px; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-template strong { font-size: var(--tl-text-sm, 12px); line-height: 1.5; font-weight: 500; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-template small { font-size: var(--tl-text-xs, 11px); line-height: 1.5; color: var(--wb-muted); }
-#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-builtin { padding: 20px; border: 0; border-radius: 10px; background: var(--wb-input); }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-builtin { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: 16px; max-width: none; padding: 16px 0; border: 0; border-top: 1px solid var(--wb-hairline); border-radius: 0; background: transparent; }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-builtin > * { margin: 0; }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-builtin-mark { grid-row: 1 / 3; }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-builtin :is(h3, p) { grid-column: 2; }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-builtin h3 { font-size: var(--tl-text-base, 14px); }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-builtin .codex-provider-active-badge { grid-column: 3; grid-row: 1 / 3; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-builtin-mark { width: 34px; height: 34px; }
-#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-dialog-foot { position: sticky; bottom: -24px; z-index: 1; display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin: 0; padding: 14px 0; border: 0; background: var(--wb-surface); box-shadow: none; }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-dialog-foot { position: sticky; bottom: -32px; z-index: 1; display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin: 0; padding: 14px 0; border: 0; background: var(--wb-surface); box-shadow: none; }
+/* Only Save/Cancel actions need to stay in view; a lone status line flows after the content instead of covering it. */
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-dialog-foot:not(:has(.codex-provider-footer-actions:not(:empty))) { position: static; min-height: 0; padding: 6px 0 0; background: transparent; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-footer-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-footer-actions:empty,
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-operation-status:empty { display: none; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-operation-status { min-width: 0; font-size: var(--tl-text-sm, 12px); line-height: 1.6; }
-#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] :is(.codex-provider-primary-button, .codex-provider-secondary-button, .codex-provider-danger-button, .codex-provider-inline-button) { min-height: 33px; height: auto; width: auto; max-width: 100%; padding: 7px 10px; border-radius: 7px; font-size: var(--tl-text-sm, 12px); line-height: 1.5; white-space: normal; box-shadow: none; }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-operation-status[data-tone="failed"]:not(:empty) { padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, var(--tl-fail) 9%, transparent); }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-dialog-head .codex-provider-inline-button { border: 1px solid var(--wb-line); background: var(--wb-surface); color: var(--wb-fg); font-weight: 500; box-shadow: 0 1px 0 color-mix(in srgb, var(--wb-fg) 5%, transparent); }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] :is(.codex-provider-primary-button, .codex-provider-secondary-button, .codex-provider-danger-button, .codex-provider-inline-button) { min-height: 28px; height: auto; width: auto; max-width: 100%; padding: 3px 11px; border-radius: 7px; font-size: var(--tl-text-sm, 12px); line-height: 1.5; white-space: normal; box-shadow: none; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-primary-button { color: var(--wb-thumb); background: var(--wb-switch); border-color: var(--wb-switch); }
-#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-secondary-button { color: var(--wb-fg); background: var(--wb-input); border-color: var(--wb-line); }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-secondary-button { color: var(--wb-fg); background: var(--wb-surface); border-color: var(--wb-line); }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-inline-button { color: var(--wb-muted); background: transparent; border-color: transparent; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-inline-button:hover { color: var(--wb-fg); border-color: var(--wb-line); background: var(--wb-input); }
-#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-back-button { border-color: var(--wb-line); background: var(--wb-input); color: var(--wb-fg); }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-back-button { border-color: var(--wb-line); background: var(--wb-surface); color: var(--wb-fg); }
+/* Embedded, these buttons sit under the panel-wide reset (#codex-overleaf-panel button), which outranks the
+   provider base rules: restate the border, and keep danger actions red. */
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] :is(.codex-provider-primary-button, .codex-provider-secondary-button, .codex-provider-danger-button, .codex-provider-inline-button) { border-width: 1px; border-style: solid; }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-secondary-button:hover { background: var(--wb-hover); }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-danger-button { border-color: color-mix(in srgb, var(--tl-fail) 38%, var(--wb-line)); background: var(--wb-surface); color: var(--tl-fail); }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-danger-button:hover { background: color-mix(in srgb, var(--tl-fail) 8%, var(--wb-surface)); }
+/* In a confirmation the destructive answer is the primary action. */
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-confirmation footer button { min-height: 32px; padding: 5px 14px; font-weight: 500; }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-confirmation .codex-provider-danger-button { border-color: var(--tl-fail); background: var(--tl-fail); color: var(--wb-surface); }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-confirmation .codex-provider-danger-button:hover { background: color-mix(in srgb, var(--tl-fail) 88%, var(--wb-fg)); }
 
 /* Approved skills-list preview: dedicated page, compact icon rows, real switches. */
-#codex-overleaf-panel[data-view="skills"] .codex-settings-workbench {
-  width: min(820px, calc(100vw - 40px));
-  height: min(550px, calc(100vh - 40px));
-  height: min(550px, calc(100dvh - 40px));
-}
 #codex-overleaf-panel .codex-settings-workbench .codex-skills-panel {
   box-sizing: border-box;
   width: 100%;
-  max-width: 500px;
+  max-width: 600px;
   margin: 0;
-  padding: 0 8px;
-  font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+  padding: 0;
 }
 #codex-overleaf-panel .codex-settings-workbench .codex-skills-panel .codex-custom-instructions-head {
   position: relative;
@@ -786,10 +801,10 @@
 #codex-overleaf-panel .codex-settings-workbench .codex-skills-panel .codex-custom-instructions-title {
   margin: 0;
   color: var(--wb-fg);
-  font-size: 18px;
-  font-weight: 500;
-  line-height: 1.45;
-  letter-spacing: -.28px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -.3px;
 }
 #codex-overleaf-panel .codex-settings-workbench .codex-skills-panel [data-skills-back] {
   position: absolute;
@@ -962,7 +977,6 @@
 #codex-overleaf-panel .codex-settings-workbench .codex-local-skill-row[data-disabled="true"] .codex-local-skill-icon { opacity: .55; }
 #codex-overleaf-panel .codex-settings-workbench .codex-skills-panel .codex-project-settings-empty { padding: 10px 12px; margin: 0; color: var(--wb-muted); font-size: var(--tl-text-sm, 12px); line-height: 1.6; }
 @media (max-width: 640px) {
-  #codex-overleaf-panel[data-view="skills"] .codex-settings-workbench { width: calc(100vw - 20px); height: calc(100vh - 24px); height: calc(100dvh - 24px); }
   #codex-overleaf-panel .codex-settings-workbench .codex-skills-panel .codex-custom-instructions-title { font-size: 17px; }
   #codex-overleaf-panel .codex-settings-workbench .codex-skills-panel [data-skills-back] { inset-inline-start: -21px; width: 23px; min-width: 23px; }
 }
@@ -4808,17 +4822,21 @@
   color: var(--tl-fg-3);
   font-size: var(--tl-text-xs, 11px);
 }
+/* Overleaf's Bootstrap styles every kbd (dark fill, white text, inset shadow); own each property. */
 #codex-overleaf-panel .codex-slash-menu-foot kbd {
   display: inline-block;
-  min-width: 9px;
+  min-width: 18px;
   margin-right: 4px;
-  padding: 0 4px;
+  padding: 0 5px;
   border: 1px solid var(--tl-border-strong);
   border-bottom-width: 2px;
   border-radius: 4px;
+  background: var(--tl-surface-1);
+  box-shadow: none;
   color: var(--tl-fg-2);
-  font: var(--tl-text-xs, 11px)/14px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 500 var(--tl-text-xs, 11px)/14px ui-monospace, SFMono-Regular, Menlo, monospace;
   text-align: center;
+  vertical-align: baseline;
 }
 #codex-overleaf-panel .codex-slash-menu-foot kbd + kbd { margin-left: -2px; }
 
@@ -6619,6 +6637,10 @@
 #codex-overleaf-panel .codex-settings-workbench .codex-storage-data-row .codex-set-btn { min-height: 28px; padding: 3px 11px; background: var(--wb-surface); }
 #codex-overleaf-panel .codex-settings-workbench .codex-storage-clear-help { margin: 0 0 4px; }
 #codex-overleaf-panel .codex-settings-workbench .codex-storage-estimate { margin: 0; padding-bottom: 13px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-history-toolbar { margin: 0 0 6px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-history-search { min-height: 30px; border-color: var(--wb-line); background: var(--wb-surface); }
+#codex-overleaf-panel .codex-settings-workbench .codex-history-search input { min-height: 28px; border: 0; background: transparent; }
+#codex-overleaf-panel .codex-settings-workbench .codex-history-toolbar .codex-history-status-filter { min-height: 30px; border-color: var(--wb-line); background: var(--wb-surface); color: var(--wb-fg); }
 #codex-overleaf-panel .codex-settings-workbench .codex-skills-entry { margin: 0; padding: 13px 0; border: 0; border-radius: 0; background: transparent; color: var(--wb-fg); font-size: var(--tl-text-md, 13px); }
 #codex-overleaf-panel .codex-settings-workbench .codex-skills-entry:hover { background: transparent; }
 #codex-overleaf-panel .codex-settings-workbench .codex-skills-entry-label { font-weight: 500; }
