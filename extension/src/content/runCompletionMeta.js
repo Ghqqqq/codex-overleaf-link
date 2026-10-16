@@ -4,6 +4,36 @@
 })(typeof window !== 'undefined' ? window : globalThis, function (FailureReasons, I18n, AgentTranscript) {
   'use strict';
 
+  // Read only persisted product evidence; never infer a launch outcome from
+  // arbitrary answer text or change the run's archived status.
+  function projectNotStartedRun(run, locale = 'en') {
+    const event = (Array.isArray(run?.events) ? run.events : []).filter(item => item?.kind === 'report').at(-1);
+    const source = event?.detailStructured?.conclusionSource;
+    if (source?.origin !== 'product' || source.key !== 'launch_not_started'
+      || !['en', 'zh'].some(language => AgentTranscript.projectProductConclusion(source, language)
+        === event.detailStructured.conclusion)) return null;
+    const meta = Array.isArray(event.detailStructured.meta) ? event.detailStructured.meta : [];
+    const savedNext = meta.find(row => row?.key === 'nextStep')?.value || '';
+    const declinedChoice = event.failure?.evidence?.declinedChoice;
+    const cancelled = declinedChoice === true || run.status === 'cancelled'
+      // Legacy reports predate the structured marker; only those need the copy fallback.
+      || (declinedChoice === undefined && ['en', 'zh'].some(language =>
+        savedNext === I18n.t(language, 'failureReason_reviewing_unavailable_cancelled_next')));
+    const unavailable = event.failure?.code === 'reviewing_unavailable' || cancelled;
+    const tx = (en, zh) => locale === 'zh' ? zh : en;
+    const next = localizeMetaRow({ key: 'nextStep', value: savedNext }, {
+      tx, getLocale: () => locale, tr: key => I18n.t(locale, key)
+    });
+    return {
+      cancelled,
+      status: I18n.t(locale, cancelled ? 'runNotStartedCancelled' : 'runNotStarted'),
+      title: I18n.t(locale, unavailable ? 'runNotStartedTrackTitle' : 'runNotStartedModeTitle'),
+      body: I18n.t(locale, unavailable ? 'runNotStartedTrackBody' : 'runNotStartedModeBody'),
+      nextStep: cancelled ? I18n.t(locale, 'runNotStartedCancelledNext')
+        : next.value || I18n.t(locale, 'runNotStartedNext')
+    };
+  }
+
   function projectCompletionConclusion(event, run, locale = 'en', options = {}) {
     const structured = event?.detailStructured;
     const raw = options.flat ? options.text : String(structured?.conclusion || '');
@@ -379,5 +409,5 @@
     return { facts, open: attention, warnKeys };
   }
 
-  return { splitFlatCompletionReport, projectCompletionConclusion, projectCompletionBody, projectCompletionMeta, summarizeCompletionMeta };
+  return { splitFlatCompletionReport, projectNotStartedRun, projectCompletionConclusion, projectCompletionBody, projectCompletionMeta, summarizeCompletionMeta };
 });

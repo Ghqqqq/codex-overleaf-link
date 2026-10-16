@@ -7342,6 +7342,8 @@
 #codex-overleaf-panel .run-status[data-presence="done"],
 #codex-overleaf-panel .run-status[data-presence="stopped"] { flex-wrap: wrap; row-gap: 2px; color: var(--tl-fg-2) !important; }
 #codex-overleaf-panel .run-status[data-presence="failed"] { color: var(--tl-fail) !important; }
+#codex-overleaf-panel .transcript-turn .run-status[data-presence="not-started"] { color: var(--tl-review) !important; }
+#codex-overleaf-panel .transcript-turn .run-status[data-presence="not-started-cancelled"] { color: var(--tl-fg-2) !important; }
 #codex-overleaf-panel .run-presence-label { display: grid; flex: 0 1 auto; min-width: 0; overflow: hidden; font-weight: 560; }
 #codex-overleaf-panel .run-presence-label > span { grid-area: 1 / 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: opacity var(--tl-m-base) var(--tl-m-ease), transform var(--tl-m-base) var(--tl-m-ease); }
 #codex-overleaf-panel .run-presence-label > .is-in { animation: tl-rise var(--tl-m-slow) var(--tl-m-ease); }

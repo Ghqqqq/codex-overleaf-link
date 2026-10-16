@@ -39,6 +39,7 @@
   const MARK_STYLE = '--mark-leaf-origin:70.6% 41.6%;--mark-cloud-origin:44.3% 55%';
   const ICONS = {
     alert: '<circle cx="8" cy="8" r="6"/><path d="M8 4.5v4 M8 11h.01"/>',
+    minus: '<circle cx="8" cy="8" r="6"/><path d="M5 8h6"/>',
     check: '<path d="m3.5 8 3 3 6-6"/>',
     file: '<path d="M9 2H4v12h8V5L9 2Z M9 2v4h3 M6 9h4 M6 11h3"/>',
     refresh: '<path d="M4.2 5.3A5 5 0 1 1 3.6 10"/><path d="M4.2 2.2v3.1H1.1"/>'
@@ -253,8 +254,8 @@
       el.dataset.presence = facts.kind || 'plain';
       if (facts.kind === 'done' || facts.kind === 'stopped') {
         el.innerHTML = settledHtml({ ...facts, firstCompile }, tx, formatElapsed);
-      } else if (facts.kind === 'failed') {
-        el.innerHTML = icon('alert') + '<span>' + escapeHtml(facts.text) + '</span>';
+      } else if (['failed', 'not-started', 'not-started-cancelled'].includes(facts.kind)) {
+        el.innerHTML = icon(facts.kind === 'not-started-cancelled' ? 'minus' : 'alert') + '<span>' + escapeHtml(facts.text) + '</span>';
       } else {
         el.textContent = facts.text || '';
       }

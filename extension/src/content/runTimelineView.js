@@ -89,6 +89,7 @@
     openStorageSettings, forceCancelStuckTaskForCurrentProject
   });
   const presence = RunPresence?.create({ tx, getLocale, formatElapsed });
+  const getNotStartedRun = run => RunResultActions.projectNotStartedRun?.(run, getLocale());
   const displayRun = run => RunFailureNotice?.projectResolvedUndo?.(run) || run;
   const displayLocalizedRun = run => {
     const displayed = displayRun(run);
@@ -98,7 +99,7 @@
     projectReviewResultEvent: sanitizeRunEventForRender,
     formatReviewResultFailure,
     formatEventTime, formatElapsed, renderMarkdownBlockText, renderRunEvent, formatEventDetail,
-    presence, classifyStatus: classifyRunPresence, getProjectId: () => getCurrentProjectId?.() || '',
+    presence, getNotStartedRun, classifyStatus: classifyRunPresence, getProjectId: () => getCurrentProjectId?.() || '',
     summarizeCommand: RunPresence?.commandSummary,
     isGuidance: event => Boolean(RunGuidanceView.getGuidanceText(event)), sanitizeAssistantVisibleText });
 
@@ -465,7 +466,7 @@
       if (event.kind === 'report') {
         report.hidden = false;
         report.replaceChildren(renderCompletionReport(event, run));
-      } else if (activitySummary || event.kind === 'technical') {
+      } else if (getNotStartedRun(run) || activitySummary || event.kind === 'technical') {
         continue;
       } else if (RunGuidanceView.getGuidanceText(event)) {
         continue;
@@ -486,6 +487,8 @@
   }
 
   function getRunStatusText(run = {}) {
+    const notStarted = getNotStartedRun(run);
+    if (notStarted) return notStarted.status;
     if (run.retryingWriteback) return tx('Checking file sync', '正在检查文件同步');
     if (['Stopped tracking after a page refresh', '页面刷新后已停止跟踪'].includes(run.statusText)) return tr('restoredRunStoppedStatus');
     const knownStatus = /^(?:Done|Failed|Cancelled|Running|已处理|处理失败|已取消|处理中)(?:\s+[\d.]+(?:ms|s|m|h|秒|分钟)(?:\s+[\d.]+(?:ms|s|m|h|秒|分钟))*)?$/.test(run.statusText || '');
@@ -738,6 +741,27 @@
     const report = document.createElement('section');
     report.className = 'run-completion-report';
     report.dataset.status = event.status || 'completed';
+    const notStarted = getNotStartedRun(run);
+    if (notStarted) {
+      report.dataset.status = 'not-started';
+      const main = document.createElement('div');
+      main.className = 'run-final-answer';
+      const title = document.createElement('div');
+      title.className = 'run-final-heading';
+      title.textContent = notStarted.title;
+      const body = document.createElement('p');
+      body.textContent = notStarted.body;
+      main.append(title, body);
+      const next = document.createElement('dl');
+      next.className = 'run-final-answer__meta';
+      next.append(Object.assign(document.createElement('dt'), {
+        className: 'run-final-answer__meta-label', textContent: tr('detailNext')
+      }), Object.assign(document.createElement('dd'), {
+        className: 'run-final-answer__meta-value', textContent: notStarted.nextStep
+      }));
+      report.append(main, next);
+      return report;
+    }
     // Compile errors captured post-write get a one-click fix loop: the
     // structured error list rides on the report event (compileErrors).
     const appendCompileFix = target => {

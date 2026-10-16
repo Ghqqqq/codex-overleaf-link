@@ -2686,8 +2686,10 @@
           appendCompletionReport({ conclusionKey: 'launch_not_started',
             conclusion: tx('This task did not start: Codex did not run and no files were written.', '这轮任务没有开始：Codex 没有运行，也没有写入文件。'),
             status: 'blocked', operations: [], applyResults: [],
-            failure: buildContentFailure('reviewing_unavailable', {}, { changedDocument: false }),
-            nextStep: tr('failureReason_reviewing_unavailable_next') });
+            failure: buildContentFailure('reviewing_unavailable', {}, {
+              changedDocument: false, evidence: { declinedChoice: true }
+            }),
+            nextStep: tr('failureReason_reviewing_unavailable_cancelled_next') });
         } else appendRunCancelledReport();
         await finishRunView(tx('Cancelled', '已取消'), 'cancelled');
         void finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
@@ -3017,6 +3019,11 @@
       : tx('Overleaf did not return Editing mode status', 'Overleaf 没有返回 Editing 模式状态')));
     // Affirmative choices retain trackingDecision even if the Editing check fails.
     const declinedReviewingChoice = owner.reviewingUnavailablePreflight === true && !result.trackingDecision;
+    const reportFailure = unavailable && declinedReviewingChoice
+      ? buildContentFailure('reviewing_unavailable', {}, {
+        ...result.failure, changedDocument: false,
+        evidence: { ...result.failure?.evidence, declinedChoice: true }
+      }) : result?.failure;
     const nextStep = unavailable ? tr(declinedReviewingChoice
       ? 'failureReason_reviewing_unavailable_cancelled_next'
       : 'failureReason_reviewing_unavailable_next') : effectiveRequireReviewing
@@ -3048,7 +3055,7 @@
       operations: [],
       applyResults: [],
       nextStep,
-      reason: result?.code, failure: result?.failure
+      reason: result?.code, failure: reportFailure
     });
     const finishTitle = effectiveRequireReviewing
       ? tx('Not started: could not enable Track Changes', '未开始：无法开启留痕')

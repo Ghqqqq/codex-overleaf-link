@@ -4,7 +4,7 @@
   function create(deps = {}) {
     if (!deps.RunActivityModel) return null;
     const { RunActivityModel: Model, RunGuidanceView, getPendingGuidance = () => [], PanelIcons, tx, findRunRecord, getPanel, cssEscape, isGuidance,
-      formatElapsed, renderMarkdownBlockText, renderRunEvent, presence, classifyStatus, getProjectId, summarizeCommand, projectReviewResultEvent, formatReviewResultFailure,
+      formatElapsed, renderMarkdownBlockText, renderRunEvent, presence, getNotStartedRun, classifyStatus, getProjectId, summarizeCommand, projectReviewResultEvent, formatReviewResultFailure,
       sanitizeAssistantVisibleText: sanitize = value => String(value || '') } = deps;
     const cards = new WeakMap();
     const choices = new Map();
@@ -611,9 +611,10 @@
         events.dataset.expanded = String(process.open);
         card.attention.hidden = process.open || !card.noticeCount;
         if (card.projection) {
-          renderSetup(card, card.projection.setup, card.run.status === 'running');
+          const active = card.run.status === 'running' && !card.notStarted;
+          renderSetup(card, card.projection.setup, active);
           if (!process.open) card.setup.hidden = true;
-          renderPeek(card, card.projection, card.run, card.run.status === 'running');
+          renderPeek(card, card.projection, card.run, active);
         }
       });
       render(card, run);
@@ -621,6 +622,15 @@
     function render(card, run, incoming) {
       card.run = run;
       const result = Model.project(run, incoming, { isGuidance });
+      const notStarted = getNotStartedRun?.(run);
+      card.notStarted = Boolean(notStarted);
+      if (notStarted) {
+        // The single launch card replaces preflight workflow/Notice projections.
+        // Stored events remain available to history, audit and recovery.
+        result.blocks = [];
+        result.notices = [];
+        result.setup = null;
+      }
       const guidanceEvents = (run.events || []).concat(incoming && !(run.events || []).includes(incoming) ? [incoming] : []);
       RunGuidanceView?.reconcileGuidance(card.guidance,
         guidanceEvents.concat(getPendingGuidance(run)),
@@ -628,9 +638,10 @@
       result.blocks = result.blocks.filter(block => block.kind !== 'guidance');
       card.projection = result;
       subagentView?.update(card);
-      const active = run.status === 'running';
+      const active = run.status === 'running' && !notStarted;
       const abnormal = ['failed', 'interrupted', 'needs_review_after_navigation', 'abandoned_after_navigation'].includes(run.status);
-      if (choices.has(card.id + ':run')) card.process.open = choices.get(card.id + ':run');
+      if (notStarted) card.process.open = false;
+      else if (choices.has(card.id + ':run')) card.process.open = choices.get(card.id + ':run');
       // A live run starts collapsed onto its peek window; problems open it.
       else card.process.open = abnormal;
       card.events.dataset.expanded = String(card.process.open);
@@ -678,6 +689,11 @@
     function paintPresence(card, run, result, active) {
       const status = card.root.querySelector('[data-run-status]');
       if (!presence || !status) return;
+      const notStarted = getNotStartedRun?.(run);
+      if (notStarted) {
+        presence.paintSettled(status, { kind: notStarted.cancelled ? 'not-started-cancelled' : 'not-started', text: notStarted.status });
+        return;
+      }
       // History cards arrive with plain status text; keep it for failure and fallback labels.
       if (!status.dataset.presence && !status.dataset.presenceText) status.dataset.presenceText = status.textContent;
       const started = Date.parse(run.startedAt || '');
