@@ -451,7 +451,6 @@
     PanelIcons: Modules.PanelIcons,
     // recentProjects is composed below; the empty state only reads it after startup.
     getProjectName: () => { try { return recentProjects.readCurrentProjectNameFromDom(); } catch { return ''; } },
-    getCurrentProjectId: () => getCurrentProjectId(),
     RunActivityModel: Modules.RunActivityModel,
     SubagentActivityView: Modules.SubagentActivityView,
     RunGuidanceView: Modules.RunGuidanceView,
