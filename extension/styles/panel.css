@@ -4657,21 +4657,28 @@
   }
 }
 
+/* Quiet scope line above the composer: icon + what Codex will read. Only a
+   condition that needs the user (a failed refresh) changes its tone. */
 #codex-overleaf-panel .codex-probe-line {
   flex: 0 0 auto;
-  min-height: 18px;
-  border-top: 1px solid var(--tl-border);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  min-height: 16px;
+  padding: 8px 18px 0;
   color: var(--tl-fg-3);
-  padding: 4px 12px 0;
   font-size: var(--tl-text-xs, 11px);
-  /* Narrative status text (v1.7.7) — wrap instead of hiding the tail. */
+  line-height: 16px;
   white-space: normal;
   overflow-wrap: anywhere;
 }
-
-#codex-overleaf-panel .codex-probe-line[data-ok="true"] {
-  color: var(--tl-ok);
-}
+#codex-overleaf-panel .codex-probe-scope { display: inline-flex; align-items: center; gap: 5px; }
+#codex-overleaf-panel .codex-probe-scope .codex-glyph { flex: 0 0 12px; width: 12px; height: 12px; }
+#codex-overleaf-panel .codex-probe-sep { opacity: .7; }
+#codex-overleaf-panel .codex-probe-line [data-tone="warn"],
+#codex-overleaf-panel .codex-probe-line[data-tone="warn"] { color: var(--tl-review); }
+#codex-overleaf-panel .codex-probe-line[data-tone="warn"]::before { content: ""; flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 #codex-overleaf-panel .codex-composer {
   position: relative;

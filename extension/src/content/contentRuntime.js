@@ -5126,8 +5126,7 @@
       setRefreshProbeLoading(true);
       const status = panel?.querySelector('[data-probe-status]');
       if (status) {
-        status.textContent = tr('refreshProbeLoading');
-        status.dataset.ok = 'false';
+        renderProbeStatusMessage(status, tr('refreshProbeLoading'));
         status.dataset.refreshing = 'true';
       }
     }
@@ -5140,10 +5139,7 @@
       probeStatusSnapshot = { projectId, probe, userInitiated };
       const status = panel?.querySelector('[data-probe-status]');
       if (status) {
-        status.textContent = userInitiated
-          ? tr('refreshProbeDone', { status: formatProbeStatusBar(probe) })
-          : formatProbeStatusBar(probe);
-        status.dataset.ok = isProbeReadyForCurrentMode(probe) ? 'true' : 'false';
+        renderProbeStatusLine(status, probe, { refreshed: userInitiated });
         status.dataset.refreshing = 'false';
       }
       if (!options.quiet && !userInitiated) {
@@ -5160,8 +5156,7 @@
       probeStatusSnapshot = { projectId, failed: true };
       const status = panel?.querySelector('[data-probe-status]');
       if (status) {
-        status.textContent = tr('refreshProbeFailed');
-        status.dataset.ok = 'false';
+        renderProbeStatusMessage(status, tr('refreshProbeFailed'), 'warn');
         status.dataset.refreshing = 'false';
       }
       console.warn('[codex-overleaf] refresh probe failed', error);
@@ -5189,15 +5184,47 @@
     const status = panel?.querySelector('[data-probe-status]');
     if (!status) return;
     if (status.dataset.refreshing === 'true') {
-      status.textContent = tr('refreshProbeLoading');
+      renderProbeStatusMessage(status, tr('refreshProbeLoading'));
       return;
     }
     if (probeStatusSnapshot?.projectId !== getCurrentProjectId()) return;
     const { failed, probe, userInitiated } = probeStatusSnapshot;
-    const text = failed ? tr('refreshProbeFailed') : formatProbeStatusBar(probe, mode);
-    status.textContent = userInitiated && !failed ? tr('refreshProbeDone', { status: text }) : text;
-    status.dataset.ok = !failed && isProbeReadyForCurrentMode(probe, mode) ? 'true' : 'false';
+    if (failed) renderProbeStatusMessage(status, tr('refreshProbeFailed'), 'warn');
+    else renderProbeStatusLine(status, probe, { refreshed: userInitiated });
     if (!failed) updateExistingProbeNotice(probe, mode);
+  }
+
+  function getProbeScope(probe) {
+    if (getProbeRunReadiness(probe).editorOk) return { icon: 'file', key: 'probeScopeCurrentFile' };
+    const focusFiles = getActiveFocusFiles();
+    if (focusFiles.some(file => /\.tex$/i.test(file))) return { icon: 'file', key: 'probeScopeFiles' };
+    if (focusFiles.length) return { icon: 'attach', key: 'probeScopeContext' };
+    return { icon: 'folder', key: 'probeScopeProject' };
+  }
+
+  function renderProbeStatusLine(status, probe, options = {}) {
+    const scope = getProbeScope(probe);
+    const parts = [];
+    if (options.refreshed) parts.push(tr('refreshProbeDone', { status: '' }).trim());
+    const label = document.createElement('span');
+    label.className = 'codex-probe-scope';
+    label.innerHTML = Modules.PanelIcons?.svg?.(scope.icon) || ''; // Static, repository-owned icon path.
+    label.append(tr(scope.key));
+    parts.push(label);
+    if (isExperimentalOtEnabled()) {
+      const separator = document.createElement('span');
+      separator.className = 'codex-probe-sep';
+      separator.textContent = '·';
+      parts.push(separator, 'OT ' + formatOtStatusLabel(getCurrentOtStatus()));
+    }
+    status.replaceChildren(...parts);
+    delete status.dataset.tone;
+  }
+
+  function renderProbeStatusMessage(status, text, tone = '') {
+    status.replaceChildren(text);
+    if (tone) status.dataset.tone = tone;
+    else delete status.dataset.tone;
   }
 
   function formatProbeStatusBar(probe, mode = state?.mode) {
@@ -5233,17 +5260,7 @@
     if (!status || status.dataset.refreshing === 'true') {
       return;
     }
-    const text = String(status.textContent || '');
-    if (!text) {
-      return;
-    }
-    const base = text.split(' · OT ')[0];
-    status.textContent = appendOtStatusToProbeStatus(base);
-  }
-
-  function isProbeReadyForCurrentMode(probe, mode = state?.mode) {
-    const readiness = getProbeRunReadiness(probe);
-    return mode === 'ask' || readiness.reviewingOk;
+    syncProbeStatus();
   }
 
   function getProbeRunReadiness(probe) {
@@ -5348,8 +5365,8 @@
         ready: true,
         message: manualOverride
           ? tx(
-            `Ready: you confirmed Overleaf Track Changes is on. Codex ${readiness.contextLabel}.`,
-            `可以运行：你已确认 Overleaf 已开启留痕，Codex ${readiness.contextLabel}。`
+            `Ready: Codex writes without tracked changes and ${readiness.contextLabel}.`,
+            `可以运行：Codex 写入时不使用留痕，并且${readiness.contextLabel}。`
           )
           : tx(
             `Ready: Codex verified Overleaf Reviewing/Track Changes is on and ${readiness.contextLabel}.`,
@@ -5358,21 +5375,13 @@
       };
     }
 
-    if (readiness.contextReady) {
-      return {
-        ready: false,
-        message: tx(
-          `Not safe to write yet: Codex ${readiness.contextLabel}, but Overleaf Reviewing/Track Changes was not verified. Turn on Reviewing first, or disable Track below.`,
-          `还不能安全写入：Codex ${readiness.contextLabel}，但没有确认 Overleaf 已开启 Reviewing/Track Changes。请先打开 Reviewing，或关闭下方的安全检查。`
-        )
-      };
-    }
-
+    // ensureReviewingBeforeWrite switches Overleaf to Reviewing before the first
+    // write and blocks the write only if that cannot be confirmed.
     return {
-      ready: false,
+      ready: true,
       message: tx(
-        'Not safe to write yet: turn on Overleaf Reviewing/Track Changes first. Codex will read the whole project at run time; you can also use @file to focus on specific files.',
-        '还不能安全写入：请先在 Overleaf 打开 Reviewing/Track Changes；Codex 会在运行时读取整个项目，也可以用 @file 指定重点文件。'
+        `Ready: Codex ${readiness.contextLabel} and will switch Overleaf to Reviewing/Track Changes before writing.`,
+        `可以运行：Codex ${readiness.contextLabel}，写入前会把 Overleaf 切到 Reviewing/Track Changes。`
       )
     };
   }
