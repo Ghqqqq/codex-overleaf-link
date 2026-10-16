@@ -90,6 +90,7 @@
   });
   const presence = RunPresence?.create({ tx, getLocale, formatElapsed });
   const getNotStartedRun = run => RunResultActions.projectNotStartedRun?.(run, getLocale());
+  const getFinishedRun = run => RunResultActions.projectFinishedRun?.(run, getLocale(), { projectRunSettlement });
   const displayRun = run => RunFailureNotice?.projectResolvedUndo?.(run) || run;
   const displayLocalizedRun = run => {
     const displayed = displayRun(run);
@@ -99,7 +100,7 @@
     projectReviewResultEvent: sanitizeRunEventForRender,
     formatReviewResultFailure,
     formatEventTime, formatElapsed, renderMarkdownBlockText, renderRunEvent, formatEventDetail,
-    presence, getNotStartedRun, classifyStatus: classifyRunPresence, getProjectId: () => getCurrentProjectId?.() || '',
+    presence, getNotStartedRun, getFinishedRun, classifyStatus: classifyRunPresence, getProjectId: () => getCurrentProjectId?.() || '',
     summarizeCommand: RunPresence?.commandSummary,
     isGuidance: event => Boolean(RunGuidanceView.getGuidanceText(event)), sanitizeAssistantVisibleText });
 
@@ -288,6 +289,8 @@
     scroller.scrollTop = scroller.scrollHeight;
   }
   function collapseRunProcess(view, statusText) {
+    const record = view?.recordId ? displayLocalizedRun(findRunRecord(view.recordId, view.sessionId)) : null;
+    if (record && getFinishedRun(record)) refreshCompletionView(view.root, view.report, record);
     if (activitySummary) { activitySummary.settle(view, statusText); return; }
     const runProcess = view?.runProcess || view?.root?.querySelector('[data-run-process]');
     if (runProcess) {
@@ -303,6 +306,17 @@
         ? `${statusText} · ${tx(`${stepCount} steps`, `${stepCount} 步`)}`
         : statusText;
     }
+  }
+
+  function refreshCompletionView(root, report, run) {
+    const event = (run.events || []).filter(item => item.kind === 'report').at(-1);
+    if (!root || !report || !event) return;
+    // Result actions may already live inside the previous report's facts row.
+    const actions = root.querySelector('.run-result-actions');
+    report.replaceChildren(renderCompletionReport(event, run));
+    if (actions) report.append(actions);
+    RunResultActions.configureResultActions(root, run);
+    configureEditButton(root, run);
   }
 
   // Keep elapsed labels live without creating new activity records.
@@ -489,6 +503,8 @@
   function getRunStatusText(run = {}) {
     const notStarted = getNotStartedRun(run);
     if (notStarted) return notStarted.status;
+    const outcome = getFinishedRun(run);
+    if (outcome?.status) return outcome.status;
     if (run.retryingWriteback) return tx('Checking file sync', '正在检查文件同步');
     if (['Stopped tracking after a page refresh', '页面刷新后已停止跟踪'].includes(run.statusText)) return tr('restoredRunStoppedStatus');
     const knownStatus = /^(?:Done|Failed|Cancelled|Running|已处理|处理失败|已取消|处理中)(?:\s+[\d.]+(?:ms|s|m|h|秒|分钟)(?:\s+[\d.]+(?:ms|s|m|h|秒|分钟))*)?$/.test(run.statusText || '');
@@ -680,15 +696,17 @@
   // Renders the run-metadata rows (Why nothing changed / Write result / Undo /
   // Next) behind a one-line summary beneath the answer. Shared by the
   // structured and flat-fallback render paths so both demote identically.
-  function appendCompletionMetaBlock(report, meta, run) {
+  function appendCompletionMetaBlock(report, meta, run, { quiet = false } = {}) {
     if (!Array.isArray(meta) || !meta.length) {
       return;
     }
-    const rows = projectCompletionMeta(meta, run).filter(row => row?.label && row.value)
+    const noWrites = getFinishedRun(run)?.noWrites;
+    const rows = projectCompletionMeta(meta, run).filter(row => row?.label && row.value
+      && !(noWrites && ['writeResult', 'undo'].includes(row.key)))
       .map(row => ({ ...row, shown: failureNotice?.formatMetaValue(report, row) ?? row.value }));
     if (!rows.length) return;
     const summary = RunResultActions.summarizeCompletionMeta(rows, run, {
-      tx, failed: report.dataset.status === 'failed', unconfirmed: rows.some(row => row.shown !== row.value)
+      tx, failed: report.dataset.status === 'failed' && !noWrites, unconfirmed: rows.some(row => row.shown !== row.value)
     });
     const metaBlock = document.createElement('dl');
     metaBlock.className = 'run-final-answer__meta';
@@ -703,6 +721,12 @@
       dd.textContent = row.shown;
       if (summary.warnKeys.has(row.key)) dt.dataset.tone = dd.dataset.tone = 'warn';
       metaBlock.append(dt, dd);
+    }
+    if (quiet) {
+      const details = createOutcomeDetails(run);
+      details.append(metaBlock);
+      report.append(details);
+      return;
     }
     const facts = document.createElement('div');
     facts.className = 'run-final-answer__facts';
@@ -734,6 +758,81 @@
     });
     facts.append(toggle, metaBlock);
     report.append(facts);
+  }
+
+  function createOutcomeDetails(run) {
+    const details = document.createElement('details');
+    details.className = 'run-outcome-details';
+    details.open = metaOpenChoices.get(run?.id) ?? false;
+    details.append(Object.assign(document.createElement('summary'), { textContent: tr('runOutcomeDetails') }));
+    details.addEventListener('toggle', () => { if (run?.id) metaOpenChoices.set(run.id, details.open); });
+    return details;
+  }
+
+  function renderOutcomeCard(report, event, run, outcome) {
+    const card = document.createElement('div');
+    card.className = 'run-outcome';
+    card.dataset.outcome = outcome.kind;
+    const main = document.createElement('div');
+    main.className = 'run-final-answer';
+    const title = document.createElement('div');
+    title.className = 'run-final-heading';
+    title.textContent = sanitizeAssistantVisibleText(outcome.title);
+    main.append(title);
+    if (outcome.body) main.append(Object.assign(document.createElement('p'), {
+      textContent: sanitizeAssistantVisibleText(outcome.body)
+    }));
+    if (outcome.files.length) {
+      const files = document.createElement('ul');
+      files.className = 'run-outcome-files';
+      for (const item of outcome.files) {
+        const row = document.createElement('li');
+        const mark = document.createElement('span');
+        mark.dataset.written = String(item.written);
+        mark.textContent = item.written ? '✓' : '✗';
+        mark.setAttribute('aria-label', tr(item.written ? 'runOutcomeWritten' : 'runOutcomeSkipped'));
+        row.append(mark, document.createTextNode(' ' + sanitizeAssistantVisibleText(item.file)));
+        if (item.reason) row.append(Object.assign(document.createElement('span'), {
+          className: 'run-outcome-file-reason', textContent: sanitizeAssistantVisibleText(item.reason)
+        }));
+        files.append(row);
+      }
+      main.append(files);
+    }
+    const next = document.createElement('dl');
+    next.className = 'run-final-answer__meta run-outcome-next';
+    next.append(Object.assign(document.createElement('dt'), { textContent: tr('detailNext') }),
+      Object.assign(document.createElement('dd'), { textContent: sanitizeAssistantVisibleText(outcome.nextStep) }));
+    card.append(main, next);
+    report.append(card);
+    failureNotice?.append(report, event, run, card);
+    appendRecoveryActionForFailure(report, event, run);
+
+    const details = createOutcomeDetails(run);
+    const rows = projectCompletionMeta(event.detailStructured.meta || [], run)
+      .filter(row => row?.value && row.key !== 'nextStep'
+        && !(outcome.noWrites && ['writeResult', 'undo'].includes(row.key)));
+    if (outcome.failure?.code) rows.unshift({ label: tr('runOutcomeCode'), value: outcome.failure.code });
+    if (outcome.failure?.stage) rows.push({ label: tr('runOutcomeStage'), value: outcome.failure.stage });
+    if (outcome.noWrites) rows.push({ label: tr('runOutcomeWrites'), value: tr('runOutcomeNoneAttempted') });
+    const meta = document.createElement('dl');
+    meta.className = 'run-final-answer__meta';
+    for (const row of rows) {
+      const label = Object.assign(document.createElement('dt'), { textContent: row.label });
+      if (row.key) label.dataset.metaKey = row.key;
+      meta.append(label, Object.assign(document.createElement('dd'), {
+        textContent: sanitizeAssistantVisibleText(failureNotice?.formatMetaValue(report, row) ?? row.value)
+      }));
+    }
+    details.append(meta);
+    // Preserve the original report body as optional context without repeating
+    // its skipped-item prose in the default outcome view.
+    if (event.detailStructured.body) {
+      const body = document.createElement('div');
+      renderMarkdownBlockText(body, RunResultActions.projectCompletionBody(event.detailStructured.body, tx));
+      details.append(body);
+    }
+    card.append(details);
   }
 
   function renderCompletionReport(input, run) {
@@ -808,6 +907,13 @@
     // visually demoted block beneath, with a separator and muted color so
     // they read as run metadata rather than part of the answer.
     const structured = event.detailStructured;
+    const outcome = getFinishedRun(run);
+    if (outcome && !['cancelled', 'compile-errors'].includes(outcome.kind)) {
+      renderOutcomeCard(report, event, run, outcome);
+      appendCompileFix(report);
+      appendRejectedRedo(report);
+      return report;
+    }
     const hasStructured = structured
       && (structured.conclusion || structured.body || (Array.isArray(structured.meta) && structured.meta.length));
     if (hasStructured) {
@@ -815,7 +921,8 @@
       main.className = 'run-final-answer';
       const mainSections = [];
       if (structured.conclusion) {
-        mainSections.push(RunResultActions.projectCompletionConclusion?.(event, run, tx('en', 'zh'), { localizeCompileReason }) ?? String(structured.conclusion));
+        mainSections.push(outcome?.kind === 'compile-errors' ? outcome.conclusion
+          : RunResultActions.projectCompletionConclusion?.(event, run, tx('en', 'zh'), { localizeCompileReason }) ?? String(structured.conclusion));
       }
       if (structured.body) {
         mainSections.push(RunResultActions.projectCompletionBody?.(structured.body, tx) ?? structured.body);
@@ -827,8 +934,18 @@
       }
 
       failureNotice?.append(report, event, run);
-      appendCompletionMetaBlock(report, structured.meta, run);
-      appendCompileFix(report);
+      if (outcome?.kind === 'compile-errors') {
+        const compile = document.createElement('div');
+        compile.className = 'run-outcome run-outcome-compile';
+        compile.append(Object.assign(document.createElement('strong'), { textContent: outcome.title }),
+          Object.assign(document.createElement('p'), { textContent: outcome.compileErrors.map(localizeCompileReason).join('; ') }));
+        appendCompileFix(compile);
+        report.append(compile);
+        appendCompletionMetaBlock(report, structured.meta, run, { quiet: true });
+      } else {
+        appendCompletionMetaBlock(report, structured.meta, run);
+        appendCompileFix(report);
+      }
       appendRejectedRedo(report);
       appendRecoveryActionForFailure(report, event, run);
       return report;
@@ -883,7 +1000,8 @@
       && Boolean(String(run?.task || '').trim())
       && typeof canEditRun === 'function' && canEditRun(run)
       && typeof refillComposerForRetry === 'function';
-    button.hidden = !available;
+    const cardHasEdit = Boolean(root.querySelector('.run-outcome [data-recovery-action="edit-resend"]'));
+    button.hidden = !available || cardHasEdit;
     if (!available) return;
     button.disabled = typeof options.running === 'boolean'
       ? options.running : Boolean(getCurrentRunView?.());
@@ -1130,7 +1248,7 @@
     const log = getPanel()?.querySelector('[data-log]');
     const existing = log?.querySelector(`[data-run-id="${cssEscape(runId)}"]`);
     const run = findRunRecord(runId);
-    if (!log || !existing || !run || displayRun(run) === run) {
+    if (!log || !existing || !run || (displayRun(run) === run && !getFinishedRun(run))) {
       return false;
     }
     const reading = scrollLayout?.snapshot(), open = existing.querySelector('[data-run-process]')?.open;
@@ -1160,7 +1278,7 @@
         RunResultActions.configureResultActions(existing, run);
         const reportEvent = (run.events || []).filter(event => event.kind === 'report').at(-1);
         const report = current.report || existing.querySelector('[data-run-report]');
-        if (reportEvent && report) report.replaceChildren(renderCompletionReport(reportEvent, displayLocalizedRun(run)));
+        if (reportEvent && report) refreshCompletionView(existing, report, displayLocalizedRun(run));
         activitySummary?.update(current);
         if (!activitySummary) RunGuidanceView.reconcileGuidance?.(existing.querySelector('[data-run-guidance]'),
           (run.events || []).concat(getPendingGuidance(run)), tx, { active: run.status === 'running' });

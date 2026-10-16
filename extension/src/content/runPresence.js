@@ -112,6 +112,7 @@
       parts.push('<span>' + escapeHtml(tx(facts.steps + ' steps', facts.steps + ' 步')) + '</span>');
     }
     if (facts.compiled) parts.push('<span>' + escapeHtml(tx('compiled', '已编译')) + '</span>');
+    if (facts.compileChip) parts.push('<span class="run-summary-compile-chip">' + escapeHtml(facts.compileChip) + '</span>');
     if (facts.firstCompile) {
       parts.push('<span class="run-summary-qed">' + escapeHtml(tx('Q.E.D. — first clean compile', 'Q.E.D. · 首次编译通过')) + '</span>');
     }
@@ -256,6 +257,9 @@
         el.innerHTML = settledHtml({ ...facts, firstCompile }, tx, formatElapsed);
       } else if (['failed', 'not-started', 'not-started-cancelled'].includes(facts.kind)) {
         el.innerHTML = icon(facts.kind === 'not-started-cancelled' ? 'minus' : 'alert') + '<span>' + escapeHtml(facts.text) + '</span>';
+      } else if (['didnt-finish', 'partly-written', 'not-written', 'check-overleaf'].includes(facts.kind)) {
+        el.innerHTML = icon(facts.kind === 'check-overleaf' ? 'alert' : 'minus') + '<span>' + escapeHtml(facts.text) + '</span>'
+          + (Number.isFinite(facts.elapsedMs) ? '<span class="run-summary-sep">·</span><span>' + escapeHtml(formatElapsed(facts.elapsedMs)) + '</span>' : '');
       } else {
         el.textContent = facts.text || '';
       }

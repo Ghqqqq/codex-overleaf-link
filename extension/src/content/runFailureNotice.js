@@ -26,7 +26,7 @@
     document: documentRef = globalThis.document } = {}) {
     const notices = new WeakMap();
 
-    function append(report, event = {}, run = {}) {
+    function append(report, event = {}, run = {}, outcomeTarget = null) {
       const projection = typeof projectRunSettlement === 'function' && run
         ? projectRunSettlement(run) : null;
       const failure = projection?.primaryFailure || event.failure;
@@ -37,6 +37,13 @@
         || (facts.evidence?.applied === 'unknown' && facts.evidence?.settled === 'needs-review');
       const partial = facts.evidence?.applied === 'partial' || run?.partialWriteback === true;
       if (!failure && !unconfirmed && !partial && report.dataset.status !== 'failed') return;
+
+      // A quiet outcome replaces the notice's presentation, not its recovery
+      // selection or precedence. Keep the same context for prepareRecovery.
+      if (outcomeTarget) {
+        notices.set(report, { notice: outcomeTarget, unconfirmed, failure, file: safeProjectPath(failure?.file) });
+        return;
+      }
 
       const notice = documentRef.createElement('aside');
       notice.className = 'run-feedback';

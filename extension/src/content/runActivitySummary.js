@@ -4,7 +4,7 @@
   function create(deps = {}) {
     if (!deps.RunActivityModel) return null;
     const { RunActivityModel: Model, RunGuidanceView, getPendingGuidance = () => [], PanelIcons, tx, findRunRecord, getPanel, cssEscape, isGuidance,
-      formatElapsed, renderMarkdownBlockText, renderRunEvent, presence, getNotStartedRun, classifyStatus, getProjectId, summarizeCommand, projectReviewResultEvent, formatReviewResultFailure,
+      formatElapsed, renderMarkdownBlockText, renderRunEvent, presence, getNotStartedRun, getFinishedRun, classifyStatus, getProjectId, summarizeCommand, projectReviewResultEvent, formatReviewResultFailure,
       sanitizeAssistantVisibleText: sanitize = value => String(value || '') } = deps;
     const cards = new WeakMap();
     const choices = new Map();
@@ -623,6 +623,9 @@
       card.run = run;
       const result = Model.project(run, incoming, { isGuidance });
       const notStarted = getNotStartedRun?.(run);
+      const outcome = getFinishedRun?.(run);
+      card.root.dataset.outcomeTone = outcome?.tone || '';
+      card.root.dataset.outcome = outcome?.kind || '';
       card.notStarted = Boolean(notStarted);
       if (notStarted) {
         // The single launch card replaces preflight workflow/Notice projections.
@@ -631,6 +634,9 @@
         result.notices = [];
         result.setup = null;
       }
+      // The outcome card owns the visible cause. Keep workflow evidence in the
+      // existing process disclosure, without another attention banner.
+      if (outcome) result.notices = [];
       const guidanceEvents = (run.events || []).concat(incoming && !(run.events || []).includes(incoming) ? [incoming] : []);
       RunGuidanceView?.reconcileGuidance(card.guidance,
         guidanceEvents.concat(getPendingGuidance(run)),
@@ -643,7 +649,7 @@
       if (notStarted) card.process.open = false;
       else if (choices.has(card.id + ':run')) card.process.open = choices.get(card.id + ':run');
       // A live run starts collapsed onto its peek window; problems open it.
-      else card.process.open = abnormal;
+      else card.process.open = abnormal && !outcome;
       card.events.dataset.expanded = String(card.process.open);
       card.summary.setAttribute('aria-expanded', String(card.process.open));
       reconcile(card.events, result.blocks, card.rows, block => buildBlock(block, card),
@@ -707,6 +713,12 @@
         elapsedMs: Number.isFinite(started) && Number.isFinite(finished) ? Math.max(0, finished - started) : null,
         files: result.fileCount, filesClipped: result.clipped === true, added: 0, removed: 0, steps: 0, compiled: false,
         projectId: getProjectId?.() || '', animate: card.animateNext === true };
+      const outcome = getFinishedRun?.(run);
+      if (outcome?.status) {
+        facts.kind = outcome.kind;
+        facts.text = outcome.status;
+      }
+      if (outcome?.kind === 'compile-errors') facts.compileChip = outcome.compileChip;
       card.animateNext = false;
       for (const block of result.blocks) {
         if (['message', 'guidance', 'thought'].includes(block.kind)) continue;
@@ -717,6 +729,7 @@
         }
         if (block.kind === 'compile' && block.meta?.state === 'completed') facts.compiled = true;
       }
+      if (facts.compileChip) facts.compiled = false;
       presence.paintSettled(status, facts);
     }
     function update(view, incoming) {

@@ -71,6 +71,100 @@
     return options.flat ? (locale === 'zh' ? `结论：${projected}` : `Conclusion: ${projected}`) : projected;
   }
 
+  // Like projectNotStartedRun, this is a view of intact product reports, never
+  // a new terminal state. Counts remain in storage (retry replacement reads them).
+  function projectFinishedRun(run, locale = 'en', { projectRunSettlement } = {}) {
+    if (!run || run.status === 'running' || run.retryingWriteback || projectNotStartedRun(run, locale)) return null;
+    const event = (Array.isArray(run.events) ? run.events : []).filter(item => item?.kind === 'report').at(-1);
+    const structured = event?.detailStructured, source = structured?.conclusionSource;
+    if (typeof structured?.conclusion !== 'string' || source?.origin !== 'product' || !['en', 'zh'].some(language =>
+      AgentTranscript.projectProductConclusion(source, language, undefined, structured.conclusion) === structured.conclusion)) return null;
+    const t = (key, values) => I18n.t(locale, key, values);
+    const tx = (en, zh) => locale === 'zh' ? zh : en;
+    const meta = Array.isArray(structured.meta) ? structured.meta : [];
+    const value = key => meta.find(row => row?.key === key)?.value || '';
+    const counts = /^(?:wrote (\d+) items?, skipped (\d+) items?|已写入 (\d+) 项，跳过 (\d+) 项)$/.exec(value('writeResult'));
+    const wrote = counts ? Number(counts[1] ?? counts[3]) : null;
+    const skipped = counts ? Number(counts[2] ?? counts[4]) : null;
+    const projection = projectRunSettlement?.(run) || {};
+    const facts = run.settlement || run.settlementFacts || {};
+    const failure = projection.primaryFailure || event.failure;
+    const files = Array.isArray(facts.fileSettlements) ? facts.fileSettlements.filter(item => item && typeof item.path === 'string') : [];
+    const unconfirmed = projection.requiresWriteReview === true
+      || FailureReasons.isUnconfirmedWriteFailure(failure)
+      || facts.documentEffect === 'possibly-changed' || facts.evidence?.readBack === 'mismatch';
+    const payload = run.recoveryPayload || run;
+    const noWrites = wrote === 0 && skipped === 0 && !unconfirmed
+      && !files.length && !run.saveCheck
+      && !['appliedOperations', 'undoOperations', 'undoTrackedChanges'].some(key => payload[key]?.length)
+      && [undefined, 'none'].includes(facts.evidence?.applied)
+      && [undefined, 'not-attempted'].includes(facts.evidence?.readBack)
+      && projection.changedDocument !== true && !['changed', 'possibly-changed'].includes(facts.documentEffect);
+    const display = FailureReasons.formatFailureReasonForDisplay(failure, locale, key => {
+      const translated = t(key);
+      return translated !== key ? translated : undefined;
+    });
+    const file = typeof failure?.file === 'string' ? failure.file : '';
+    const shortKey = `runOutcomeCause_${failure?.source === 'panel_reload' ? 'panel_reload_interrupted' : failure?.code}`;
+    const shortTitle = I18n.MESSAGES[locale]?.[shortKey] ? t(shortKey, { file }) : '';
+    const savedNext = localizeMetaRow({ key: 'nextStep', value: value('nextStep') }, {
+      tx, getLocale: () => locale, tr: t
+    }).value;
+    const base = { failure, file, wrote, skipped, noWrites, unconfirmed,
+      nextStep: display?.nextAction || savedNext || t('runOutcomeNext'), files: [] };
+    if (unconfirmed) return { ...base, kind: 'check-overleaf', tone: 'error',
+      status: t('runOutcomeCheck'), title: ['undo', 'accept'].includes(failure?.stage)
+        ? shortTitle || t('runOutcomeCheck') : t(file ? 'runOutcomeUnconfirmedFile' : 'runOutcomeUnconfirmed', { file }),
+      body: ['undo', 'accept'].includes(failure?.stage) ? display?.userMessage || t('runOutcomeUnconfirmedBody') : t('runOutcomeUnconfirmedBody'),
+      nextStep: file && !['undo', 'accept'].includes(failure?.stage) ? t('runOutcomeCheckNext', { file }) : base.nextStep };
+    if (wrote > 0 && skipped > 0) {
+      const failures = Array.isArray(facts.failures) ? facts.failures : [];
+      const entries = files.flatMap(item => {
+        const result = [];
+        if (['complete', 'partial'].includes(item.applied)) result.push({ file: item.path, written: true });
+        if (['failed', 'partial'].includes(item.applied)) {
+          const cause = failures.find(candidate => candidate?.file === item.path)
+            || { code: item.failureCodes?.[0], file: item.path };
+          const reason = cause.code === 'stale_source_changed' ? t('runOutcomeStaleReason')
+            : FailureReasons.formatFailureReasonForDisplay(cause, locale, t)?.userMessage || t('runOutcomeSkipped');
+          result.push({ file: item.path, written: false, reason });
+        }
+        return result;
+      });
+      return { ...base, kind: 'partly-written', tone: 'warning', status: t('runOutcomePartial'),
+        title: t('runOutcomePartialTitle', { wrote, total: wrote + skipped }), body: '',
+        files: entries.sort((a, b) => Number(b.written) - Number(a.written)),
+        nextStep: t('runOutcomePartialNext') };
+    }
+    if (wrote === 0 && skipped > 0 && facts.documentEffect === 'unchanged' && failure) {
+      return { ...base, kind: 'not-written', tone: 'warning', status: t('runOutcomeNotWritten'),
+        title: shortTitle || t('runOutcomeNotWritten'),
+        body: shortTitle ? t('runOutcomeNotWrittenBody') : display?.userMessage || t('runOutcomeNotWrittenBody'),
+        nextStep: failure.code === 'stale_source_changed' ? t('runOutcomeStaleNext') : base.nextStep };
+    }
+    if (noWrites && ['cancelled', 'rejected'].includes(run.status)) return { ...base, kind: 'cancelled', tone: 'neutral' };
+    if (noWrites && (event.status === 'failed' || run.status === 'failed') && failure) {
+      return { ...base, kind: 'didnt-finish', tone: 'warning', status: t('runOutcomeIncomplete'),
+        title: shortTitle || t('runOutcomeIncomplete'), body: shortTitle ? t('runOutcomeNoWrites') : display?.userMessage || t('runOutcomeNoWrites'),
+        nextStep: failure.code === 'codex_context_limit' ? t('runOutcomeContextNext')
+          : failure.code === 'native_request_failed' && failure.source !== 'panel_reload' ? t('runOutcomeNativeNext') : base.nextStep };
+    }
+    if (source.key === 'writeback' && source.outcome === 'synced' && source.hasCompile && source.errorCount > 0
+      && !['failed', 'cancelled', 'rejected'].includes(run.status)) {
+      // Verify the whole original suffix above before projecting just the prefix
+      // and sync result. Never strip a model sentence by matching its wording.
+      const prefix = structured.conclusion.slice(0, source.prefixLength);
+      const raw = prefix || AgentTranscript.projectProductConclusion({ origin: 'product', key: 'synced' }, locale);
+      const conclusion = prefix ? (source.prefixKey
+        ? AgentTranscript.projectProductConclusion({ origin: 'product', key: source.prefixKey }, locale) : prefix) : raw;
+      return { ...base, kind: 'compile-errors', tone: 'warning', conclusion,
+        compileCount: source.errorCount, compileErrors: (Array.isArray(source.errors) ? source.errors : []).slice(0, 3),
+        compileChip: t('runOutcomeCompileChip', { count: source.errorCount }),
+        title: t('runOutcomeCompileTitle', { count: source.errorCount }) };
+    }
+    return null;
+  }
+
   const FLAT_REPORT_STATUS_SECTIONS = [
     { key: 'saveState', prefixes: ['Save:', '保存：'], en: 'Save', zh: '保存' },
     { key: 'unchangedReason', prefixes: ['Why nothing changed:', '未修改原因：'], en: 'Why nothing changed', zh: '未修改原因' },
@@ -409,5 +503,5 @@
     return { facts, open: attention, warnKeys };
   }
 
-  return { splitFlatCompletionReport, projectNotStartedRun, projectCompletionConclusion, projectCompletionBody, projectCompletionMeta, summarizeCompletionMeta };
+  return { splitFlatCompletionReport, projectNotStartedRun, projectFinishedRun, projectCompletionConclusion, projectCompletionBody, projectCompletionMeta, summarizeCompletionMeta };
 });

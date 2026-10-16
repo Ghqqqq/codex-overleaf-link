@@ -56,6 +56,7 @@
     const retry = buildRecoveryButton(actionKey,
       tx('Edit & resend', '编辑后重发'),
       tx('Put this run\u2019s task back into the composer so you can adjust and resend it.', '把本轮任务填回输入框，修改后可直接重发。'));
+    retry.dataset.recoveryAction = 'edit-resend';
     retry.addEventListener('click', clickEvent => {
       clickEvent.stopPropagation();
       refillComposerForRetry(run || null);
