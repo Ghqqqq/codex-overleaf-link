@@ -251,13 +251,15 @@
 
     function observeReviewingAvailability(status, evidence) {
       const projectId = getCurrentProjectId();
-      if (!projectId || !['available', 'unavailable'].includes(status)) return;
+      if (!projectId || !['available', 'unavailable', 'unknown'].includes(status)) return;
       const previous = getReviewingAvailability();
       // A remembered failure must not renew its own expiry.
       if (previous?.status === status && previous.evidence === evidence && status === 'available') return;
+      // Preserve ordering even when a retry and its previous observation share a millisecond.
+      const observedAt = Math.max(Date.now(), Number.isFinite(previous?.observedAt) ? previous.observedAt + 1 : 0);
       setState({ ...getState(), reviewingAvailabilityByProject: {
         ...getState()?.reviewingAvailabilityByProject,
-        [projectId]: { status, evidence, observedAt: Date.now() }
+        [projectId]: { status, evidence, observedAt }
       } });
       saveStateSoon(0);
     }

@@ -6386,6 +6386,15 @@
     }
     renderSpeedOptions(getRenderedModelEntries());
     readPanelInputs();
+    // Only a user re-enabling Track requests another capability check. The
+    // preceding input event and programmatic session renders must not reset it.
+    if (event?.type === 'change' && event.isTrusted === true
+      && event.target?.matches?.('[data-require-reviewing]') && event.target.checked
+      && isReviewingKnownUnavailable()) {
+      projectSettingsCoordinator.observeReviewingAvailability('unknown', 'user_retry');
+      syncReviewingTooltip();
+      syncProbeStatus();
+    }
     renderModelConfigChoices();
     updateModelDisplay();
     renderContextUsage();

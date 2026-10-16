@@ -331,7 +331,9 @@ test('run-bound choice abort or changed ownership cannot authorize an untracked 
   assert.equal(lowers, 0);
 });
 
-test('Track capability memory uses account/project preferences, expires, and positive evidence replaces stale unavailability', async t => {
+test('Track capability memory scopes and expires failures; retry and positive evidence survive stale saves', async t => {
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
   const store = {};
   const originalChrome = globalThis.chrome;
   t.after(() => { if (originalChrome === undefined) delete globalThis.chrome; else globalThis.chrome = originalChrome; });
@@ -358,14 +360,53 @@ test('Track capability memory uses account/project preferences, expires, and pos
   });
   assert.equal(remembered.code, 'reviewing_unavailable');
   assert.equal(activations, 0);
-  await Reviewing.resolveWritePolicy({ requireReviewing: true, knownUnavailable: false }, {
-    assertCurrent() {}, ensureMode: async () => ({ ok: true }),
+
+  // A retry is an observation, not a deletion. Even within the same millisecond
+  // it must outrank the failure still held by another tab.
+  coordinator.observeReviewingAvailability('unknown', 'user_retry');
+  const retry = structuredClone(coordinator.getReviewingAvailability());
+  assert.equal(retry.status, 'unknown');
+  assert.equal(retry.evidence, 'user_retry');
+  assert.ok(retry.observedAt > unavailable.p1.observedAt);
+  assert.equal(Reviewing.knownUnavailable(retry), false);
+  await Promise.all([
+    Migration.savePrefs(state, 'account-a', projectId),
+    Migration.savePrefs({ reviewingAvailabilityByProject: unavailable }, 'account-a', projectId)
+  ]);
+  assert.deepEqual((await Migration.loadPrefs('account-a', projectId)).reviewingAvailabilityByProject.p1, retry);
+
+  now += 100;
+  const available = await Reviewing.resolveWritePolicy({ requireReviewing: true,
+    knownUnavailable: Reviewing.knownUnavailable(coordinator.getReviewingAvailability()) }, {
+    assertCurrent() {}, ensureMode: async () => { activations++; return { ok: true }; },
     observe: coordinator.observeReviewingAvailability,
     choose() { throw new Error('positive evidence must not prompt'); }
   });
+  assert.equal(activations, 1);
+  assert.equal(available.requireReviewing, true);
   await Migration.savePrefs(state, 'account-a', projectId);
   assert.equal((await Migration.loadPrefs('account-a', projectId)).reviewingAvailabilityByProject.p1.status, 'available');
   unavailable.p1.observedAt -= 1000;
   await Migration.savePrefs({ reviewingAvailabilityByProject: unavailable }, 'account-a', projectId);
   assert.equal((await Migration.loadPrefs('account-a', projectId)).reviewingAvailabilityByProject.p1.status, 'available');
+
+  now += 100;
+  coordinator.observeReviewingAvailability('unavailable', 'upgrade_modal');
+  coordinator.observeReviewingAvailability('unknown', 'user_retry');
+  now += 100;
+  let choices = 0;
+  const stillUnavailable = await Reviewing.resolveWritePolicy({ requireReviewing: true,
+    knownUnavailable: Reviewing.knownUnavailable(coordinator.getReviewingAvailability()) }, {
+    assertCurrent() {}, ensureMode: async () => { activations++; return { ok: false, code: 'reviewing_unavailable' }; },
+    observe: coordinator.observeReviewingAvailability,
+    choose: () => { choices++; return 'cancel'; },
+    applyUntracked() { throw new Error('Cancel must preserve the requested Track policy'); }
+  });
+  assert.equal(stillUnavailable.code, 'reviewing_unavailable');
+  assert.equal(activations, 2);
+  assert.equal(choices, 1);
+  assert.equal(Reviewing.knownUnavailable(coordinator.getReviewingAvailability()), true);
+  await Migration.savePrefs(state, 'account-a', projectId);
+  await Migration.savePrefs({ reviewingAvailabilityByProject: { p1: retry } }, 'account-a', projectId);
+  assert.equal((await Migration.loadPrefs('account-a', projectId)).reviewingAvailabilityByProject.p1.status, 'unavailable');
 });
