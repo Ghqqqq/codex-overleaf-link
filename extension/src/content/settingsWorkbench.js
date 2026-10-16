@@ -4,21 +4,32 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const CATEGORIES = [
-    ['general', 'settingsWorkbenchGeneral', 'appearance'],
-    ['providers', 'settingsWorkbenchModels', 'bolt'],
-    ['context', 'settingsWorkbenchContext', 'database'],
-    ['instructions', 'settingsWorkbenchInstructions', 'pen'],
-    ['protection', 'settingsWorkbenchProtection', 'shield'],
-    ['history', 'settingsWorkbenchHistory', 'history'],
-    ['updates', 'softwareUpdatesTitle', 'software']
+  // The sidebar is split by scope; a page's section decides whether its groups
+  // need an open project. Pages: [id, label key, icon].
+  const SECTIONS = [
+    ['project', 'settingsScopeProjectTitle', [
+      ['writing', 'settingsWorkbenchWriting', 'pen'],
+      ['protection', 'settingsWorkbenchProtection', 'shield'],
+      ['cache', 'otSettingsTitle', 'flask'],
+      ['history', 'settingsWorkbenchChanges', 'history']
+    ]],
+    ['global', 'settingsScopeGlobalTitle', [
+      ['appearance', 'appearanceTitle', 'appearance'],
+      ['providers', 'settingsWorkbenchModels', 'bolt'],
+      ['context', 'settingsWorkbenchContextSkills', 'database'],
+      ['storage', 'storageTitle', 'archive'],
+      ['updates', 'softwareUpdatesTitle', 'software']
+    ]]
   ];
   const GROUP_PAGES = {
-    appearance: 'general', 'writing-style': 'general', providers: 'providers', 'context-loading': 'context',
-    experimental: 'context', personalization: 'instructions', protection: 'protection',
-    privacy: 'protection', history: 'history', storage: 'history', updates: 'updates'
+    'writing-style': 'writing', personalization: 'writing', protection: 'protection', privacy: 'protection',
+    experimental: 'cache', history: 'history', appearance: 'appearance', providers: 'providers',
+    'context-loading': 'context', skills: 'context', storage: 'storage', updates: 'updates'
   };
-  const PROJECT_GROUPS = new Set(['writing-style', 'personalization', 'protection', 'privacy', 'experimental', 'history']);
+  // Groups without a mapping keep their original scope.
+  const FALLBACK_PAGES = { project: 'writing', global: 'context' };
+  // The skills list opens in place of the page that holds the Skills group.
+  const SKILLS_PAGE = 'context';
 
   function mount(instance, options = {}) {
     const container = instance.container, doc = container.ownerDocument;
@@ -50,103 +61,94 @@
     const status = settings.querySelector('[data-project-settings-status]');
     const dialog = make('dialog', 'codex-settings-workbench');
     dialog.setAttribute('aria-labelledby', 'codex-settings-workbench-title');
-    const header = make('header', 'codex-wb-header');
-    const heading = make('div', 'codex-wb-heading');
-    const title = make('h2', '', 'settingsWorkbenchTitle');
+    const title = make('h2', 'codex-wb-title', 'settingsWorkbenchTitle');
     title.id = 'codex-settings-workbench-title';
-    heading.append(title, make('p', '', 'settingsWorkbenchSubtitle'));
     closeButton.classList.add('codex-wb-close');
     if (options.icon) closeButton.innerHTML = options.icon('close'); // Static, repository-owned icon path.
     else closeButton.textContent = '\u00d7';
-    header.append(heading, closeButton);
     originalHead?.remove();
 
     const layout = make('div', 'codex-wb-layout');
     const sidebar = make('aside', 'codex-wb-sidebar');
-    const filters = make('div', 'codex-wb-filters');
-    filters.setAttribute('role', 'group');
-    const allFilter = button('', 'settingsWorkbenchAll');
-    const projectFilter = button('', 'settingsScopeProjectTitle');
-    filters.append(allFilter, projectFilter);
     const nav = make('nav', 'codex-wb-nav');
     nav.setAttribute('role', 'tablist');
     nav.setAttribute('aria-orientation', 'vertical');
-    const brand = make('div', 'codex-wb-brand');
-    brand.textContent = 'Codex Overleaf Link';
-    sidebar.append(filters, nav, brand);
+    sidebar.append(title, nav);
     const main = make('div', 'codex-wb-main');
     const body = make('div', 'codex-wb-body');
     const footer = make('footer', 'codex-wb-footer');
     if (status) { status.setAttribute('aria-live', 'polite'); footer.append(status); }
     main.append(body, footer);
     layout.append(sidebar, main);
-    dialog.append(header, layout);
-    const pages = new Map(), navButtons = new Map(), groups = [];
-    const summaryTabIndices = new WeakMap();
-    let active = 'general', filter = 'all', returnFocus = null, destroyed = false;
+    // The close button floats over the content's top-right corner.
+    dialog.append(layout, closeButton);
+    const pages = new Map(), navButtons = new Map(), pageScopes = new Map(), sectionLabels = new Map(), groups = [];
+    let active = 'writing', returnFocus = null, destroyed = false;
     let providerRequested = false, providerCloseGuard = null, closing = null;
 
-    for (const [id, key, icon] of CATEGORIES) {
-      const page = make('section', 'codex-wb-page');
-      page.id = 'codex-settings-page-' + id;
-      page.dataset.workbenchPage = id;
-      page.setAttribute('role', 'tabpanel');
-      page.setAttribute('aria-labelledby', 'codex-settings-nav-' + id);
-      page.hidden = true;
-      page.append(make('h3', 'codex-wb-page-title', key));
-      pages.set(id, page);
-      const tab = button('codex-wb-nav-button');
-      tab.id = 'codex-settings-nav-' + id;
-      tab.setAttribute('role', 'tab');
-      tab.setAttribute('aria-controls', page.id);
-      if (options.icon) {
-        const glyph = make('span', 'codex-wb-nav-icon');
-        glyph.innerHTML = options.icon(icon); // Static, repository-owned icon paths only.
-        tab.append(glyph);
+    for (const [scope, sectionKey, items] of SECTIONS) {
+      // Visual section heading; each tab references it as its description.
+      const label = make('div', 'codex-wb-nav-section', sectionKey);
+      label.id = 'codex-settings-nav-section-' + scope;
+      label.setAttribute('aria-hidden', 'true');
+      nav.append(label);
+      sectionLabels.set(scope, label);
+      for (const [id, key, icon] of items) {
+        const page = make('section', 'codex-wb-page');
+        page.id = 'codex-settings-page-' + id;
+        page.dataset.workbenchPage = id;
+        page.setAttribute('role', 'tabpanel');
+        page.setAttribute('aria-labelledby', 'codex-settings-nav-' + id);
+        page.hidden = true;
+        page.append(make('h3', 'codex-wb-page-title', key), make('p', 'codex-wb-page-scope'));
+        pages.set(id, page);
+        pageScopes.set(id, scope);
+        const tab = button('codex-wb-nav-button');
+        tab.id = 'codex-settings-nav-' + id;
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-controls', page.id);
+        tab.setAttribute('aria-describedby', label.id);
+        if (options.icon) {
+          const glyph = make('span', 'codex-wb-nav-icon');
+          glyph.innerHTML = options.icon(icon); // Static, repository-owned icon paths only.
+          tab.append(glyph);
+        }
+        tab.append(make('span', '', key));
+        listen(tab, 'click', () => select(id));
+        nav.append(tab);
+        navButtons.set(id, tab);
       }
-      tab.append(make('span', '', key));
-      listen(tab, 'click', () => select(id));
-      nav.append(tab);
-      navButtons.set(id, tab);
     }
-    function addGroup(node, category, projectOnly) {
+    function addGroup(node, category) {
+      const projectOnly = pageScopes.get(category) === 'project';
       node.hidden = true;
       node.dataset.workbenchScope = projectOnly ? 'project' : 'global';
       const summary = node.querySelector('summary');
       if (summary) {
-        summaryTabIndices.set(summary, summary.getAttribute('tabindex'));
-        listen(summary, 'click', event => {
-          if (node.dataset.soleSection !== 'true') return;
-          event.preventDefault();
-          node.open = true;
-        });
+        // Groups are plain sections: always open while their page is shown.
+        summary.tabIndex = -1;
+        listen(summary, 'click', event => event.preventDefault());
       }
-      const badge = make('span', 'codex-wb-scope-label',
-        projectOnly ? 'settingsScopeProjectTitle' : 'settingsScopeGlobalTitle');
-      (summary || node).append(badge);
       pages.get(category).append(node);
-      groups.push({ node, category, projectOnly, expanded: true });
+      groups.push({ node, category, projectOnly });
     }
+    const fallbackPage = scope => FALLBACK_PAGES[
+      scope && !scope.classList.contains('codex-project-settings-scope--global') ? 'project' : 'global'];
     // Move existing controls rather than copying them. Their listeners, unsaved
     // values, identity, validation and persistence callbacks remain attached.
     for (const group of Array.from(settings.querySelectorAll('[data-set-group]'))) {
       const key = group.dataset.setGroup;
-      const originalScope = group.closest('.codex-project-settings-scope');
-      const projectOnly = PROJECT_GROUPS.has(key)
-        || (!GROUP_PAGES[key] && originalScope && !originalScope.classList.contains('codex-project-settings-scope--global'));
-      addGroup(group, GROUP_PAGES[key] || 'instructions', Boolean(projectOnly));
+      addGroup(group, GROUP_PAGES[key] || fallbackPage(group.closest('.codex-project-settings-scope')));
     }
-    // Preserve non-card controls, including the legacy skill-loading entry.
-    // Scope headings are replaced by labels on the actual groups.
+    // Preserve non-card controls. The sidebar sections replace the scope headings.
     for (const scope of Array.from(settings.querySelectorAll('.codex-project-settings-scope'))) {
       scope.querySelectorAll('.codex-project-settings-scope-title').forEach(node => node.remove());
-      if (scope.children.length) {
-        addGroup(scope, 'instructions', !scope.classList.contains('codex-project-settings-scope--global'));
-      } else scope.remove();
+      if (scope.children.length) addGroup(scope, fallbackPage(scope));
+      else scope.remove();
     }
     for (const node of Array.from(settings.children)) {
       if (node === status) continue;
-      addGroup(node, 'instructions', false);
+      addGroup(node, FALLBACK_PAGES.global);
     }
     const providerHost = make('div', 'codex-wb-provider-host');
     providerHost.dataset.providerSettingsHost = '';
@@ -228,52 +230,54 @@
         && /^\/project\/[^/]+/.test(win?.location?.pathname || '');
     }
     function available(item) {
-      return (!item.projectOnly || hasProject()) && (filter !== 'project' || item.projectOnly);
+      return !item.projectOnly || hasProject();
     }
+    // A page whose only visible group repeats the page title hides that group's
+    // title; the group header keeps only its Saved mark.
     function refreshSoleSections() {
       for (const page of pages.values()) {
         const pageGroups = Array.from(page.querySelectorAll('.codex-set-group'));
         const visibleGroups = pageGroups.filter(node => !node.hidden);
         const pageTitle = page.querySelector('.codex-wb-page-title')?.textContent.trim();
         for (const node of pageGroups) {
-          const summary = node.querySelector('.codex-set-group-head');
-          const groupTitle = summary?.querySelector('.codex-set-group-title');
+          const groupTitle = node.querySelector('.codex-set-group-head .codex-set-group-title');
           const sole = visibleGroups.length === 1 && visibleGroups[0] === node
             && groupTitle && groupTitle.textContent.trim() === pageTitle;
-          if (sole) {
-            node.dataset.soleSection = 'true';
-            node.open = true;
-            summary.tabIndex = -1;
-          } else {
-            delete node.dataset.soleSection;
-            const tabIndex = summaryTabIndices.get(summary);
-            if (tabIndex == null) summary?.removeAttribute('tabindex');
-            else summary.setAttribute('tabindex', tabIndex);
-          }
+          if (sole) node.dataset.soleSection = 'true';
+          else delete node.dataset.soleSection;
         }
       }
     }
+    // Each page states its scope once, under its title.
+    function renderPageScope(page, scope, projectName) {
+      const line = page.querySelector('.codex-wb-page-scope');
+      if (!line) return;
+      const text = t(scope === 'project' ? 'settingsPageScopeProject' : 'settingsPageScopeGlobal');
+      if (scope !== 'project' || !projectName) { line.textContent = text; return; }
+      const name = doc.createElement('b');
+      name.textContent = projectName;
+      line.replaceChildren(text + ' \u00b7 ', name);
+    }
     function refresh() {
       if (destroyed) return;
-      if (!hasProject()) filter = 'all';
-      if (panel.dataset.view === 'skills') { active = 'instructions'; filter = 'all'; }
+      if (panel.dataset.view === 'skills') active = SKILLS_PAGE;
       const availablePages = new Set(groups.filter(available).map(item => item.category));
-      if (!availablePages.has(active)) active = CATEGORIES.find(([id]) => availablePages.has(id))?.[0] || 'general';
+      if (!availablePages.has(active)) active = Array.from(navButtons.keys()).find(id => availablePages.has(id)) || 'appearance';
       for (const node of dialog.querySelectorAll('[data-i18n]')) {
         // Existing controls use their established translation pass; update the
         // newly owned chrome only, without replacing controls or skill rows.
-        if (node.closest('.codex-wb-header, .codex-wb-nav, .codex-wb-filters, .codex-wb-footer')
+        if (node.closest('.codex-wb-nav, .codex-wb-footer')
+          || node.classList.contains('codex-wb-title')
           || node.classList.contains('codex-wb-page-title')
-          || node.classList.contains('codex-wb-scope-label')
           || node.classList.contains('codex-wb-theme-caption')
           || node.classList.contains('codex-wb-skills-caption')) node.textContent = t(node.dataset.i18n);
       }
-      projectFilter.disabled = !hasProject();
-      projectFilter.title = hasProject() ? t('settingsWorkbenchProjectFilter') : t('settingsWorkbenchOpenProject');
-      filters.setAttribute('aria-label', t('settingsWorkbenchFilter'));
+      const projectName = hasProject() ? String(instance.getProjectName?.() || '').trim() : '';
+      for (const [id, page] of pages) renderPageScope(page, pageScopes.get(id), projectName);
+      for (const [scope, label] of sectionLabels) {
+        label.hidden = !Array.from(pageScopes).some(([id, pageScope]) => pageScope === scope && availablePages.has(id));
+      }
       nav.setAttribute('aria-label', t('settingsWorkbenchCategories'));
-      allFilter.setAttribute('aria-pressed', String(filter === 'all'));
-      projectFilter.setAttribute('aria-pressed', String(filter === 'project'));
       closeButton.title = t('settingsWorkbenchClose');
       closeButton.setAttribute('aria-label', t('settingsWorkbenchClose'));
       const skillsBack = skills?.querySelector('[data-skills-back]');
@@ -281,6 +285,7 @@
         skillsBack.title = t('settingsBack');
         skillsBack.setAttribute('aria-label', t('settingsBack'));
       }
+      if (status) status.hidden = Boolean(status.dataset.statusPage) && status.dataset.statusPage !== active;
       for (const [id, tab] of navButtons) {
         tab.hidden = !availablePages.has(id);
         tab.setAttribute('aria-selected', String(id === active));
@@ -289,10 +294,8 @@
       }
       for (const item of groups) {
         const visible = available(item) && item.category === active && panel.dataset.view !== 'skills';
-        if (item.node.tagName === 'DETAILS' && item.node.hidden !== !visible) {
-          if (!visible) item.expanded = item.node.open;
-          item.node.open = visible && item.expanded;
-        }
+        // Opening a group when its page is shown keeps the lazy toggle loaders (history, storage).
+        if (item.node.tagName === 'DETAILS' && item.node.open !== visible) item.node.open = visible;
         item.node.hidden = !visible;
       }
       refreshSoleSections();
@@ -311,9 +314,17 @@
       try { Promise.resolve(instance.callbacks.onProvidersOpen()).catch(failed); }
       catch (error) { failed(error); }
     }
+    // Shows the page that holds a group and returns the group, or null when the
+    // group is unavailable (for example a project group outside a project).
+    function revealGroup(key) {
+      const item = groups.find(entry => entry.node.dataset?.setGroup === key);
+      if (!item || !available(item)) return null;
+      active = item.category;
+      refresh();
+      return item.node;
+    }
     function revealProviders() {
       active = 'providers';
-      filter = 'all';
       providerRequested = true;
       pages.get('providers').dataset.providerEmbedded = 'true';
       panel.dataset.view = 'settings';
@@ -364,13 +375,6 @@
       if (['settings', 'skills'].includes(panel.dataset.view)) show();
       else hide();
     };
-    listen(allFilter, 'click', () => { filter = 'all'; refresh(); });
-    listen(projectFilter, 'click', () => {
-      filter = 'project';
-      if (panel.dataset.view === 'skills') instance.callbacks.onSkillsBack?.();
-      refresh();
-      body.scrollTop = 0;
-    });
     listen(nav, 'keydown', event => {
       if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
       const tabs = Array.from(navButtons.values()).filter(tab => !tab.hidden);
@@ -397,7 +401,7 @@
     observer.observe(panel, { attributes: true, attributeFilter: ['data-view', 'data-settings-scope', 'data-theme'] });
     refresh();
     return {
-      show, hide, refresh, revealProviders,
+      show, hide, refresh, revealGroup, revealProviders,
       setProviderCloseGuard(guard) { providerCloseGuard = guard; },
       destroy() {
         destroyed = true;

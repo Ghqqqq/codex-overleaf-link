@@ -311,7 +311,9 @@
   // Settings history card, expanded and loaded.
   function openChangeHistory() {
     openCustomInstructionsSettings();
-    const card = getSettingsPanelInstance()?.container?.querySelector('[data-history-card]');
+    // The workbench shows one page at a time; switch to the page holding the card.
+    const card = getSettingsPanelInstance()?.revealGroup?.('history')
+      || getSettingsPanelInstance()?.container?.querySelector('[data-history-card]');
     if (card) {
       if (!card.open) {
         card.open = true;
@@ -323,7 +325,8 @@
 
   function openStorageSettings() {
     openCustomInstructionsSettings();
-    const card = getPanel()?.querySelector('[data-storage-card]');
+    const card = getSettingsPanelInstance()?.revealGroup?.('storage')
+      || getPanel()?.querySelector('[data-storage-card]');
     if (card) {
       card.open = true;
       card.scrollIntoView({ block: 'center' });

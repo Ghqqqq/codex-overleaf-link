@@ -507,95 +507,110 @@
 #codex-overleaf-panel .codex-settings-workbench[open] { display: flex; flex-direction: column; animation: codexSettingsEnter 140ms ease-out; }
 #codex-overleaf-panel .codex-settings-workbench::backdrop { background: #15201966; }
 #codex-overleaf-panel .codex-settings-workbench [hidden] { display: none !important; }
-#codex-overleaf-panel .codex-wb-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 26px 18px; flex-shrink: 0; }
-#codex-overleaf-panel .codex-wb-heading h2 { margin: 0; color: var(--wb-fg); font-size: 21px; line-height: 1.4; font-weight: 600; letter-spacing: -.35px; }
-#codex-overleaf-panel .codex-wb-heading p { margin: 4px 0 0; color: var(--wb-muted); font-size: var(--tl-text-sm, 12px); line-height: 1.5; }
-#codex-overleaf-panel .codex-settings-workbench .codex-wb-close { flex: 0 0 32px; width: 32px; height: 32px; min-height: 32px; padding: 0; margin: 0; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--wb-muted); font-size: 23px; line-height: 1; box-shadow: none; }
-#codex-overleaf-panel .codex-settings-workbench .codex-wb-close:hover { color: var(--wb-fg); background: var(--wb-input); border-color: var(--wb-line); }
-/* Compact one-line workbench header; the sidebar already names the current page. */
-#codex-overleaf-panel .codex-wb-header { padding: 14px 22px 12px; }
-#codex-overleaf-panel .codex-wb-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; min-width: 0; }
-#codex-overleaf-panel .codex-wb-heading h2 { font-size: 18px; }
-#codex-overleaf-panel .codex-wb-heading p { margin: 0; }
+/* Quiet-list workbench: the title sits on the rail, sections are plain headings over
+   hairline-separated rows, and scope lives in the sidebar sections and page lines. */
+#codex-overleaf-panel .codex-settings-workbench {
+  --wb-hairline: color-mix(in srgb, var(--wb-line) 72%, transparent);
+  --wb-selected: color-mix(in srgb, var(--wb-fg) 7%, transparent);
+  --wb-hover: color-mix(in srgb, var(--wb-fg) 4%, transparent);
+  --wb-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+#codex-overleaf-panel .codex-settings-workbench .codex-wb-close { position: absolute; top: 14px; right: 14px; z-index: 2; display: inline-grid; place-items: center; width: 32px; height: 32px; min-height: 32px; padding: 0; margin: 0; border: 0; border-radius: 7px; background: transparent; color: var(--wb-muted); font-size: 23px; line-height: 1; box-shadow: none; }
+#codex-overleaf-panel .codex-settings-workbench .codex-wb-close:hover { color: var(--wb-fg); background: var(--wb-hover); }
 #codex-overleaf-panel .codex-settings-workbench .codex-wb-close .codex-icon { width: 16px; height: 16px; }
 #codex-overleaf-panel .codex-provider-dialog-root .codex-provider-back-button { display: inline-flex; align-items: center; gap: 4px; padding: 0 10px 0 6px; }
 #codex-overleaf-panel .codex-provider-dialog-root .codex-provider-back-button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-#codex-overleaf-panel .codex-wb-layout { display: grid; grid-template-columns: 205px minmax(0, 1fr); min-height: 0; flex: 1; }
-#codex-overleaf-panel .codex-wb-sidebar { display: flex; flex-direction: column; min-height: 0; gap: 22px; padding: 18px 13px; background: var(--wb-rail); overflow-y: auto; }
-#codex-overleaf-panel .codex-wb-filters { display: flex; gap: 3px; padding: 3px; background: var(--wb-surface); border-radius: 8px; }
-#codex-overleaf-panel .codex-settings-workbench .codex-wb-filters button { flex: 1; min-width: 0; min-height: 31px; padding: 5px 6px; border: 0; border-radius: 5px; background: transparent; color: var(--wb-muted); box-shadow: none; font-size: var(--tl-text-xs, 11px); font-weight: 500; white-space: normal; line-height: 1.5; }
-#codex-overleaf-panel .codex-settings-workbench .codex-wb-filters button[aria-pressed="true"] { color: var(--wb-fg); background: var(--wb-input); }
-#codex-overleaf-panel .codex-settings-workbench .codex-wb-filters button:disabled { opacity: .45; cursor: not-allowed; }
-#codex-overleaf-panel .codex-wb-nav { display: flex; flex-direction: column; gap: 5px; }
-#codex-overleaf-panel .codex-settings-workbench .codex-wb-nav-button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 39px; margin: 0; padding: 9px 10px; border: 0; border-radius: 8px; background: transparent; box-shadow: none; color: var(--wb-muted); text-align: left; white-space: normal; font-size: var(--tl-text-sm, 12px); font-weight: 500; line-height: 1.5; }
-#codex-overleaf-panel .codex-settings-workbench .codex-wb-nav-button:hover { background: var(--wb-input); color: var(--wb-fg); }
-#codex-overleaf-panel .codex-settings-workbench .codex-wb-nav-button[aria-selected="true"] { background: var(--wb-green-soft); color: var(--wb-green); }
-#codex-overleaf-panel .codex-wb-nav-icon { display: flex; align-items: center; width: 16px; flex-shrink: 0; }
-#codex-overleaf-panel .codex-wb-nav-icon .codex-icon { width: 16px; height: 16px; }
-#codex-overleaf-panel .codex-wb-brand { margin-top: auto; padding: 12px 10px 0; color: var(--wb-muted); font-size: var(--tl-text-xs, 11px); letter-spacing: .1px; }
+#codex-overleaf-panel .codex-wb-layout { display: grid; grid-template-columns: 216px minmax(0, 1fr); min-height: 0; flex: 1; }
+#codex-overleaf-panel .codex-wb-sidebar { display: flex; flex-direction: column; min-height: 0; gap: 14px; padding: 18px 10px 14px; border-right: 1px solid var(--wb-hairline); background: var(--wb-rail); overflow-y: auto; }
+#codex-overleaf-panel .codex-wb-title { margin: 0; padding: 2px 12px 0; color: var(--wb-fg); font-size: 15px; font-weight: 600; line-height: 1.5; letter-spacing: -.1px; }
+#codex-overleaf-panel .codex-wb-nav { display: flex; flex-direction: column; gap: 1px; }
+#codex-overleaf-panel .codex-wb-nav-section { padding: 16px 10px 6px; color: var(--wb-muted); font-size: var(--tl-text-xs, 11px); font-weight: 600; line-height: 1.4; letter-spacing: .6px; text-transform: uppercase; }
+#codex-overleaf-panel .codex-wb-nav-section:first-child { padding-top: 4px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-wb-nav-button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 30px; margin: 0; padding: 5px 10px; border: 0; border-radius: 6px; background: transparent; box-shadow: none; color: var(--wb-muted); text-align: left; white-space: normal; font-size: var(--tl-text-md, 13px); font-weight: 400; line-height: 1.45; }
+#codex-overleaf-panel .codex-settings-workbench .codex-wb-nav-button:hover { background: var(--wb-hover); color: var(--wb-fg); }
+#codex-overleaf-panel .codex-settings-workbench .codex-wb-nav-button[aria-selected="true"] { background: var(--wb-selected); color: var(--wb-fg); font-weight: 500; }
+#codex-overleaf-panel .codex-wb-nav-icon { display: flex; align-items: center; width: 15px; flex-shrink: 0; }
+#codex-overleaf-panel .codex-wb-nav-icon .codex-icon { width: 15px; height: 15px; }
 #codex-overleaf-panel .codex-wb-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-#codex-overleaf-panel .codex-wb-body { flex: 1; min-height: 0; min-width: 0; padding: 24px 30px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+#codex-overleaf-panel .codex-wb-body { flex: 1; min-height: 0; min-width: 0; padding: 54px 48px 40px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 #codex-overleaf-panel .codex-settings-workbench .codex-project-settings-panel,
 #codex-overleaf-panel .codex-settings-workbench .codex-skills-panel { display: block; min-height: 0; max-height: none; height: auto; width: 100%; padding: 0; margin: 0; border: 0; background: transparent; overflow: visible; box-shadow: none; }
-#codex-overleaf-panel .codex-wb-page-title { margin: 0 0 23px; font-size: 20px; line-height: 1.45; font-weight: 600; letter-spacing: -.25px; color: var(--wb-fg); }
+#codex-overleaf-panel .codex-wb-page { max-width: 600px; }
+#codex-overleaf-panel .codex-wb-page-title { margin: 0; font-size: 20px; line-height: 1.4; font-weight: 600; letter-spacing: -.3px; color: var(--wb-fg); }
+#codex-overleaf-panel .codex-wb-page-scope { margin: 4px 0 26px; color: var(--wb-muted); font-size: var(--tl-text-sm, 12px); line-height: 1.5; }
+#codex-overleaf-panel .codex-wb-page-scope b { color: var(--wb-fg); font-weight: 500; }
+/* Sections: always open, not focusable, no chevron, no scope chip. */
 #codex-overleaf-panel .codex-settings-workbench .codex-set-group,
-#codex-overleaf-panel .codex-settings-workbench .codex-project-settings-scope { margin: 0 0 24px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+#codex-overleaf-panel .codex-settings-workbench .codex-project-settings-scope { margin: 0 0 36px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 #codex-overleaf-panel .codex-settings-workbench .codex-set-group { overflow: visible; }
 #codex-overleaf-panel .codex-settings-workbench .codex-set-group:last-child { margin-bottom: 0; }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-group-head { display: flex; align-items: center; gap: 10px; margin: 0 -10px 8px; padding: 7px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--wb-fg); font-size: var(--tl-text-sm, 12px); line-height: 1.5; }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-group-head:hover,
-#codex-overleaf-panel .codex-settings-workbench .codex-set-group-head:focus-visible { background: var(--wb-input); }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-group-head:focus-visible { outline: 2px solid var(--wb-green); outline-offset: 2px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-group-head { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--wb-fg); cursor: default; list-style: none; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-group-head::-webkit-details-marker { display: none; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-group-head::after { content: none; display: none; }
 #codex-overleaf-panel .codex-settings-workbench .codex-set-group-title { flex: 1; min-width: 0; gap: 7px; flex-wrap: wrap; font-size: var(--tl-text-md, 13px); font-weight: 600; color: var(--wb-fg); }
 #codex-overleaf-panel .codex-settings-workbench .codex-set-group-icon { display: none; }
-#codex-overleaf-panel .codex-settings-workbench .codex-wb-scope-label { flex-shrink: 0; padding: 1px 8px; border: 1px solid var(--wb-line); border-radius: 999px; background: transparent; color: var(--wb-muted); font-size: var(--tl-text-xs, 11px); font-weight: 400; line-height: 18px; opacity: 1; margin-left: auto; }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-group-head::after { display: inline-block; width: 14px; margin-left: 6px; text-align: center; color: var(--wb-muted); }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-group[data-sole-section="true"] > .codex-set-group-head { cursor: default; margin-bottom: 4px; }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-group[data-sole-section="true"] > .codex-set-group-head:hover { background: transparent; }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-group[data-sole-section="true"] > .codex-set-group-head .codex-set-group-title,
-#codex-overleaf-panel .codex-settings-workbench .codex-set-group[data-sole-section="true"] > .codex-set-group-head::after { display: none; }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-group[data-sole-section="true"] > .codex-set-group-head .codex-wb-scope-label { margin-left: 0; }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-saved { color: var(--wb-green); font-size: var(--tl-text-xs, 11px); order: 3; margin-left: 0; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-saved { margin-left: auto; color: var(--wb-green); font-size: var(--tl-text-xs, 11px); }
+/* A sole section repeats the page title: drop the title, keep the Saved mark above the first hairline. */
+#codex-overleaf-panel .codex-settings-workbench .codex-set-group[data-sole-section="true"] > .codex-set-group-head { position: relative; height: 0; margin: 0; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-group[data-sole-section="true"] > .codex-set-group-head .codex-set-group-title { display: none; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-group[data-sole-section="true"] > .codex-set-group-head .codex-set-saved { position: absolute; right: 0; bottom: 8px; }
+/* Rows hang from one hairline and are separated by hairlines. */
 #codex-overleaf-panel .codex-settings-workbench .codex-set-card { margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
-#codex-overleaf-panel .codex-settings-workbench .codex-project-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 46px; padding: 10px 0; border: 0; color: var(--wb-fg); }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-card:not(.codex-provider-settings-entry) { gap: 0; border-top: 1px solid var(--wb-hairline); }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-card > :is(.codex-project-settings-row, .codex-set-row, .codex-storage-data-row, .codex-skills-entry) ~ :is(.codex-project-settings-row, .codex-set-row, .codex-storage-data-row, .codex-skills-entry) { border-top: 1px solid var(--wb-hairline); }
+#codex-overleaf-panel .codex-settings-workbench .codex-project-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 0; padding: 13px 0; border: 0; color: var(--wb-fg); }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-card > .codex-project-settings-row:has(+ .codex-set-row-help) { padding-bottom: 2px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-card > .codex-project-settings-row + .codex-set-row-help { margin: 0; padding: 0 72px 13px 0; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-card > .codex-project-settings-row + [data-experimental-ot-menu-status] { padding: 0 0 13px; font-size: var(--tl-text-xs, 11px); }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-card > .codex-set-row-help:first-child { margin: 12px 0 10px; }
 #codex-overleaf-panel .codex-settings-workbench .codex-project-settings-row-label,
 #codex-overleaf-panel .codex-settings-workbench .codex-set-row-label { font-size: var(--tl-text-md, 13px); font-weight: 500; line-height: 1.55; color: var(--wb-fg); }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-row { padding: 11px 0; border: 0; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-row { padding: 13px 0; border: 0; }
 #codex-overleaf-panel .codex-settings-workbench .codex-set-row-help,
-#codex-overleaf-panel .codex-settings-workbench .codex-set-row-sub { margin: 2px 0 14px; color: var(--wb-muted); font-size: var(--tl-text-sm, 12px); font-weight: 400; line-height: 1.6; opacity: 1; }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-row-sub { display: block; margin: 4px 0 0; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-row-sub { margin: 2px 0 12px; color: var(--wb-muted); font-size: var(--tl-text-sm, 12px); font-weight: 400; line-height: 1.55; opacity: 1; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-row-sub { display: block; margin: 3px 0 0; }
 #codex-overleaf-panel .codex-settings-workbench .codex-set-note { font-size: var(--tl-text-sm, 12px); line-height: 1.6; }
+/* Fields */
 #codex-overleaf-panel .codex-settings-workbench .codex-set-select,
 #codex-overleaf-panel .codex-settings-workbench .codex-project-settings-textarea,
-#codex-overleaf-panel .codex-settings-workbench .codex-custom-instructions-input { color: var(--wb-fg); background: var(--wb-input); border: 1px solid var(--wb-line); border-radius: 7px; padding: 9px 11px; font: inherit; font-size: var(--tl-text-md, 13px); line-height: 1.6; box-shadow: none; }
+#codex-overleaf-panel .codex-settings-workbench .codex-custom-instructions-input { color: var(--wb-fg); background: var(--wb-surface); border: 1px solid var(--wb-line); border-radius: 7px; padding: 5px 10px; font: inherit; font-size: var(--tl-text-md, 13px); line-height: 1.55; box-shadow: none; }
 #codex-overleaf-panel .codex-settings-workbench .codex-project-settings-textarea,
-#codex-overleaf-panel .codex-settings-workbench .codex-custom-instructions-input { display: block; width: 100%; min-height: 110px; resize: vertical; }
-#codex-overleaf-panel .codex-settings-workbench .codex-custom-instructions-input { min-height: 190px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-custom-instructions-input { display: block; width: 100%; min-height: 88px; padding: 8px 11px; border-radius: 8px; resize: vertical; }
+#codex-overleaf-panel .codex-settings-workbench .codex-custom-instructions-input { min-height: 150px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-card > .codex-custom-instructions-input { margin-bottom: 14px; }
+/* Glob rules read as code. */
+#codex-overleaf-panel .codex-settings-workbench .codex-project-settings-textarea { font-family: var(--wb-mono); font-size: var(--tl-text-sm, 12px); line-height: 1.7; }
 #codex-overleaf-panel .codex-settings-workbench textarea::placeholder { color: var(--wb-muted); opacity: .8; }
-#codex-overleaf-panel .codex-settings-workbench .codex-project-settings-row .codex-set-select { width: auto; min-width: 145px; max-width: 55%; }
+#codex-overleaf-panel .codex-settings-workbench .codex-project-settings-row .codex-set-select { width: auto; min-width: 145px; max-width: 55%; min-height: 30px; }
 #codex-overleaf-panel .codex-settings-workbench input.codex-switch { appearance: none; -webkit-appearance: none; display: block; position: relative; flex: 0 0 36px; width: 36px; height: 22px; min-height: 22px; margin: 0; padding: 0; border: 1px solid var(--wb-line); border-radius: 20px; background: var(--wb-line); box-shadow: none; }
 #codex-overleaf-panel .codex-settings-workbench input.codex-switch::before { content: none; }
 #codex-overleaf-panel .codex-settings-workbench input.codex-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--wb-surface); box-shadow: 0 1px 2px #00000025; transform: translateX(0); transition: transform 130ms ease; }
 #codex-overleaf-panel .codex-settings-workbench input.codex-switch:checked { background: var(--wb-switch); border-color: var(--wb-switch); }
 #codex-overleaf-panel .codex-settings-workbench input.codex-switch:checked::after { transform: translateX(14px); background: var(--wb-thumb); }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-btn,
-#codex-overleaf-panel .codex-settings-workbench .codex-project-settings-panel button:not(.codex-wb-theme-choice) { min-height: 34px; height: auto; line-height: 1.5; white-space: normal; }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-btn { width: fit-content; max-width: 100%; padding: 7px 12px; border: 1px solid var(--wb-line); border-radius: 7px; color: var(--wb-fg); background: var(--wb-input); font-size: var(--tl-text-sm, 12px); box-shadow: none; }
+/* One quiet button for every secondary action; danger only tints text and border. */
+#codex-overleaf-panel .codex-settings-workbench .codex-project-settings-panel button:not(.codex-wb-theme-choice) { min-height: 28px; height: auto; line-height: 1.4; white-space: normal; }
+#codex-overleaf-panel .codex-settings-workbench :is(.codex-set-btn, .codex-history-empty .codex-history-jump, .codex-history-more) { display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: auto; max-width: 100%; min-height: 28px; padding: 3px 11px; margin: 0; border: 1px solid var(--wb-line); border-radius: 7px; background: var(--wb-surface); color: var(--wb-fg); font-size: var(--tl-text-sm, 12px); font-weight: 500; line-height: 1.4; text-decoration: none; box-shadow: 0 1px 0 color-mix(in srgb, var(--wb-fg) 5%, transparent); }
+#codex-overleaf-panel .codex-settings-workbench :is(.codex-set-btn, .codex-history-empty .codex-history-jump, .codex-history-more):hover { background: var(--wb-hover); text-decoration: none; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-btn.codex-set-btn--danger { color: var(--tl-fail); border-color: color-mix(in srgb, var(--tl-fail) 38%, var(--wb-line)); }
 #codex-overleaf-panel .codex-settings-workbench .codex-provider-settings-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; }
-#codex-overleaf-panel .codex-settings-workbench .codex-provider-settings-entry .codex-set-btn,
-#codex-overleaf-panel .codex-settings-workbench [data-update-settings] button { width: auto; }
+#codex-overleaf-panel .codex-settings-workbench [data-update-settings] .codex-set-row { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+#codex-overleaf-panel .codex-settings-workbench [data-update-settings] .codex-set-row-help { margin: 0; }
+#codex-overleaf-panel .codex-settings-workbench [data-update-settings] .codex-set-note { align-self: stretch; margin: 0; padding: 0; border: 0; background: none; }
+#codex-overleaf-panel .codex-settings-workbench [data-update-settings] .codex-set-note:not(:empty) { padding: 9px 12px; border-radius: 8px; color: var(--tl-fail); background: color-mix(in srgb, var(--tl-fail) 9%, transparent); }
 #codex-overleaf-panel .codex-settings-workbench .codex-provider-settings-summary { color: var(--wb-muted); font-size: var(--tl-text-sm, 12px); }
 /* The workbench rule above outranks the base tone rules; keep warnings and failures visible. */
 #codex-overleaf-panel .codex-settings-workbench .codex-provider-settings-summary[data-tone="warning"] { color: var(--tl-review); }
 #codex-overleaf-panel .codex-settings-workbench .codex-provider-settings-summary[data-tone="failed"] { color: var(--tl-fail); }
 #codex-overleaf-panel .codex-settings-workbench .codex-provider-experimental-badge { font-size: var(--tl-text-xs, 11px); white-space: normal; }
-#codex-overleaf-panel .codex-settings-workbench .codex-set-btn--danger { color: var(--tl-danger, #c6615e); }
-#codex-overleaf-panel .codex-wb-themes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; margin: 0 0 11px; }
-#codex-overleaf-panel .codex-settings-workbench .codex-wb-theme-choice { width: 100%; padding: 8px; border: 1px solid var(--wb-line); border-radius: 8px; background: transparent; color: var(--wb-fg); text-align: left; box-shadow: none; }
-#codex-overleaf-panel .codex-settings-workbench .codex-wb-theme-choice[aria-checked="true"] { border-color: var(--wb-green); box-shadow: 0 0 0 1px var(--wb-green); }
-#codex-overleaf-panel .codex-wb-theme-preview { display: flex; height: 64px; margin: 0 0 8px; border: 1px solid #ced6d2; border-radius: 4px; background: #fafbf9; overflow: hidden; }
+/* Theme: three compact swatches. */
+#codex-overleaf-panel .codex-wb-themes { display: grid; grid-template-columns: repeat(3, 128px); gap: 10px; margin: 0 0 4px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-project-settings-row:has(+ .codex-wb-themes) { padding-bottom: 10px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-wb-themes + .codex-set-row-help { margin: 4px 0 0; padding-bottom: 13px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-wb-theme-choice { width: 100%; padding: 5px 5px 4px; border: 1px solid var(--wb-line); border-radius: 8px; background: transparent; color: var(--wb-fg); text-align: left; box-shadow: none; }
+#codex-overleaf-panel .codex-settings-workbench .codex-wb-theme-choice[aria-checked="true"] { border-color: var(--wb-fg); box-shadow: 0 0 0 1px var(--wb-fg); }
+#codex-overleaf-panel .codex-wb-theme-preview { display: flex; height: 54px; margin: 0 0 4px; border: 1px solid #ced6d2; border-radius: 5px; background: #fafbf9; overflow: hidden; }
 #codex-overleaf-panel .codex-wb-theme-preview::before { content: ""; width: 24%; background: #e5eae6; flex-shrink: 0; }
-#codex-overleaf-panel .codex-wb-theme-lines { display: block; flex: 1; padding: 12px 10px; }
+#codex-overleaf-panel .codex-wb-theme-lines { display: block; flex: 1; padding: 11px 10px; }
 #codex-overleaf-panel .codex-wb-theme-lines b { display: block; height: 4px; max-width: 76%; margin-bottom: 7px; border-radius: 2px; background: #becfc2; }
 #codex-overleaf-panel .codex-wb-theme-lines b:nth-child(2) { width: 50%; background: #87ab91; }
 #codex-overleaf-panel .codex-wb-theme-lines b:last-child { width: 62%; }
@@ -603,34 +618,39 @@
 #codex-overleaf-panel .codex-wb-theme-preview[data-preview-theme="dark"]::before { background: #18211b; }
 #codex-overleaf-panel .codex-wb-theme-preview[data-preview-theme="dark"] b { background: #526b59; }
 #codex-overleaf-panel .codex-wb-theme-preview[data-preview-theme="auto"] { background: linear-gradient(115deg, #fafbf9 50%, #262d28 50%); }
-#codex-overleaf-panel .codex-wb-theme-caption { display: block; font-size: var(--tl-text-sm, 12px); line-height: 1.6; }
-#codex-overleaf-panel .codex-wb-footer { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; flex-shrink: 0; padding: 12px 30px 16px; color: var(--wb-muted); font-size: var(--tl-text-xs, 11px); }
+#codex-overleaf-panel .codex-wb-theme-caption { display: block; padding: 0 2px; font-size: var(--tl-text-sm, 12px); line-height: 1.6; }
+/* Footer status shares the content column. */
+#codex-overleaf-panel .codex-wb-footer { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; flex-shrink: 0; padding: 0 48px 18px; color: var(--wb-muted); font-size: var(--tl-text-xs, 11px); }
+#codex-overleaf-panel .codex-wb-footer > * { max-width: 600px; }
 #codex-overleaf-panel .codex-settings-workbench .codex-project-settings-status { flex: 1; min-width: 0; margin: 0; padding: 0; font-size: var(--tl-text-sm, 12px); line-height: 1.5; }
 #codex-overleaf-panel .codex-settings-workbench .codex-project-settings-status:empty { display: none; }
+#codex-overleaf-panel .codex-settings-workbench .codex-project-settings-status[data-status="failed"] { padding: 9px 12px; border-radius: 8px; background: color-mix(in srgb, var(--tl-fail) 9%, transparent); }
 #codex-overleaf-panel .codex-wb-footer:not(:has([data-project-settings-status]:not(:empty):not([hidden]))) { display: none; }
 #codex-overleaf-panel[data-settings-workbench="true"][data-settings-workbench-open="true"] [data-settings-slot] { display: contents; }
 #codex-overleaf-panel[data-settings-workbench="true"][data-settings-workbench-open="true"] [data-main] { display: flex; }
 #codex-overleaf-panel[data-settings-workbench="true"][data-settings-workbench-open="true"] [data-composer-slot] { display: block; }
-#codex-overleaf-panel .codex-settings-workbench :is(button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--wb-green); outline-offset: 3px; }
+#codex-overleaf-panel .codex-settings-workbench :is(button, input, select, textarea):focus-visible { outline: 2px solid var(--wb-green); outline-offset: 3px; }
 @keyframes codexSettingsEnter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 640px) {
   #codex-overleaf-panel .codex-settings-workbench { width: calc(100vw - 20px); height: calc(100vh - 24px); height: calc(100dvh - 24px); border-radius: 12px; }
-  #codex-overleaf-panel .codex-wb-header { padding: 16px 18px; }
-  #codex-overleaf-panel .codex-wb-heading h2 { font-size: 19px; }
   #codex-overleaf-panel .codex-wb-layout { display: flex; flex-direction: column; }
-  #codex-overleaf-panel .codex-wb-sidebar { padding: 0 12px 12px; gap: 9px; flex-shrink: 0; max-height: 40%; }
-  #codex-overleaf-panel .codex-wb-filters { align-self: flex-start; min-width: 205px; }
-  #codex-overleaf-panel .codex-wb-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
-  #codex-overleaf-panel .codex-settings-workbench .codex-wb-nav-button { justify-content: center; padding: 7px 4px; min-height: 34px; font-size: var(--tl-text-xs, 11px); text-align: center; }
-  #codex-overleaf-panel .codex-wb-nav-icon, #codex-overleaf-panel .codex-wb-brand { display: none; }
+  #codex-overleaf-panel .codex-wb-sidebar { padding: 16px 12px 10px; gap: 8px; flex-shrink: 0; max-height: 45%; border-right: 0; border-bottom: 1px solid var(--wb-hairline); }
+  #codex-overleaf-panel .codex-wb-title { padding: 4px 4px 0; }
+  #codex-overleaf-panel .codex-wb-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px 4px; }
+  #codex-overleaf-panel .codex-wb-nav-section { grid-column: 1 / -1; padding: 8px 4px 2px; }
+  #codex-overleaf-panel .codex-wb-nav-section:first-child { padding-top: 0; }
+  #codex-overleaf-panel .codex-settings-workbench .codex-wb-nav-button { justify-content: center; padding: 6px 4px; min-height: 30px; font-size: var(--tl-text-sm, 12px); text-align: center; }
+  #codex-overleaf-panel .codex-wb-nav-icon { display: none; }
   #codex-overleaf-panel .codex-wb-main { flex: 1; }
   #codex-overleaf-panel .codex-wb-body { padding: 20px 18px; }
-  #codex-overleaf-panel .codex-wb-footer { padding: 10px 18px; }
-  #codex-overleaf-panel .codex-wb-page-title { font-size: 18px; margin-bottom: 18px; }
-  #codex-overleaf-panel .codex-wb-themes { gap: 8px; }
+  #codex-overleaf-panel .codex-wb-footer { padding: 0 18px 12px; }
+  #codex-overleaf-panel .codex-wb-page-title { font-size: 18px; }
+  #codex-overleaf-panel .codex-wb-page-scope { margin-bottom: 18px; }
+  #codex-overleaf-panel .codex-wb-themes { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
   #codex-overleaf-panel .codex-wb-theme-preview { height: 44px; }
   #codex-overleaf-panel .codex-wb-theme-caption { font-size: var(--tl-text-xs, 11px); }
   #codex-overleaf-panel .codex-settings-workbench .codex-project-settings-row { gap: 14px; }
+  #codex-overleaf-panel .codex-settings-workbench .codex-set-card > .codex-project-settings-row + .codex-set-row-help { padding-right: 0; }
   #codex-overleaf-panel .codex-settings-workbench .codex-project-settings-row .codex-set-select { min-width: 112px; }
   #codex-overleaf-panel .codex-settings-workbench .codex-provider-settings-entry { grid-template-columns: minmax(0, 1fr); }
 }
@@ -694,10 +714,11 @@
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-dialog-body { display: flex; flex-direction: column; min-height: 0; overflow: visible; background: transparent; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-list { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; width: 100%; min-width: 0; max-width: none; padding: 0 0 18px; border: 0; background: transparent; overflow: visible; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-search { grid-column: 1; grid-row: 1; width: min(230px, 100%); margin: 0; }
-#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-add { grid-column: 2; grid-row: 1; width: auto; margin: 0; padding: 7px 10px; color: var(--wb-green); font-size: var(--tl-text-sm, 12px); white-space: normal; }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-add { grid-column: 2; grid-row: 1; width: auto; min-height: 28px; margin: 0; padding: 3px 11px; border: 1px solid var(--wb-line); border-radius: 7px; background: var(--wb-surface); color: var(--wb-fg); font-size: var(--tl-text-sm, 12px); font-weight: 500; white-space: normal; box-shadow: 0 1px 0 color-mix(in srgb, var(--wb-fg) 5%, transparent); }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-add:hover { background: var(--wb-hover); }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-nav-items { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-row { display: flex; align-items: center; flex: 0 1 auto; gap: 8px; width: auto; min-width: 120px; max-width: 250px; margin: 0; padding: 9px 12px; border: 1px solid transparent; border-radius: 8px; background: var(--wb-input); box-shadow: none; color: var(--wb-fg); text-align: left; }
-#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-row[aria-current="true"] { border-color: var(--wb-green); background: var(--wb-green-soft); }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-row[aria-current="true"] { border-color: color-mix(in srgb, var(--wb-fg) 55%, var(--wb-line)); background: var(--wb-selected); }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-nav-mark { display: grid; place-items: center; flex-shrink: 0; width: 26px; height: 26px; border-radius: 6px; font-size: var(--tl-text-sm, 12px); color: var(--wb-green); background: var(--wb-surface); }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-row-main { font-size: var(--tl-text-sm, 12px); font-weight: 500; line-height: 1.5; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-row-status { font-size: var(--tl-text-xs, 11px); line-height: 1.5; color: var(--wb-muted); }
@@ -712,7 +733,7 @@
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px 18px; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-field { min-width: 0; gap: 6px; margin: 0; font-size: var(--tl-text-sm, 12px); color: var(--wb-fg); }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-field--wide { grid-column: 1 / -1; }
-#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] :is(input:not([type="checkbox"]), select, textarea) { min-width: 0; padding: 9px 11px; min-height: 35px; border: 1px solid var(--wb-line); border-radius: 7px; background: var(--wb-input); color: var(--wb-fg); font: inherit; font-size: var(--tl-text-sm, 12px); line-height: 1.6; box-shadow: none; }
+#codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] :is(input:not([type="checkbox"]), select, textarea) { min-width: 0; padding: 5px 10px; min-height: 30px; border: 1px solid var(--wb-line); border-radius: 7px; background: var(--wb-surface); color: var(--wb-fg); font: inherit; font-size: var(--tl-text-sm, 12px); line-height: 1.6; box-shadow: none; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-field :is(input:not([type="checkbox"]), select, textarea),
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] .codex-provider-search input { width: 100%; }
 #codex-overleaf-panel .codex-provider-dialog-root[data-embedded="true"] input::placeholder,
@@ -6570,15 +6591,24 @@
 #codex-overleaf-panel .codex-history-include input { appearance: auto; display: inline-block; position: static; width: 14px; height: 14px; min-width: 14px; min-height: 14px; margin: 0; padding: 0; opacity: 1; accent-color: var(--wb-accent, var(--tl-ok)); }
 #codex-overleaf-panel .codex-history-more { margin: 8px 0 0 48px; }
 #codex-overleaf-panel :is(.codex-history-more, .codex-history-include)[hidden] { display: none !important; }
-#codex-overleaf-panel .codex-settings-workbench [data-storage-card] { margin-top: 24px; padding-top: 19px; border-top: 1px solid var(--tl-border); }
+#codex-overleaf-panel .codex-settings-workbench [data-storage-card] { margin-top: 0; }
 #codex-overleaf-panel .codex-storage-data-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding-top: 8px; }
 #codex-overleaf-panel .codex-storage-data-copy { min-width: 0; }
 #codex-overleaf-panel .codex-storage-data-label { font-size: var(--tl-text-md, 13px); line-height: 1.5; font-weight: 500; color: var(--tl-fg-1); }
 #codex-overleaf-panel .codex-storage-data-row [data-storage-usage] { margin: 4px 0 0; font-size: var(--tl-text-sm, 12px); color: var(--tl-fg-3); }
-#codex-overleaf-panel .codex-storage-data-row .codex-set-btn { padding: 6px 9px; min-height: 32px; margin: 0; border-color: transparent; background: transparent; color: var(--tl-fail); font-size: var(--tl-text-sm, 12px); box-shadow: none; }
+#codex-overleaf-panel .codex-storage-data-row .codex-set-btn { padding: 6px 9px; min-height: 32px; margin: 0; border-color: color-mix(in srgb, var(--tl-fail) 45%, transparent); background: transparent; color: var(--tl-fail); font-size: var(--tl-text-sm, 12px); box-shadow: none; }
 #codex-overleaf-panel .codex-storage-data-row .codex-set-btn:hover { border-color: var(--tl-border); background: var(--tl-fail-wash); }
 #codex-overleaf-panel .codex-storage-clear-help { max-width: 66ch; margin: 12px 0 0; font-size: var(--tl-text-sm, 12px); line-height: 1.65; }
 #codex-overleaf-panel .codex-storage-estimate { margin: 8px 0 0; color: var(--tl-fg-3); font-size: var(--tl-text-xs, 11px); line-height: 1.6; }
+#codex-overleaf-panel .codex-settings-workbench .codex-storage-data-row { padding: 13px 0 4px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-storage-data-label { font-size: var(--tl-text-md, 13px); font-weight: 500; }
+#codex-overleaf-panel .codex-settings-workbench .codex-storage-data-row .codex-set-btn { min-height: 28px; padding: 3px 11px; background: var(--wb-surface); }
+#codex-overleaf-panel .codex-settings-workbench .codex-storage-clear-help { margin: 0 0 4px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-storage-estimate { margin: 0; padding-bottom: 13px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-skills-entry { margin: 0; padding: 13px 0; border: 0; border-radius: 0; background: transparent; color: var(--wb-fg); font-size: var(--tl-text-md, 13px); }
+#codex-overleaf-panel .codex-settings-workbench .codex-skills-entry:hover { background: transparent; }
+#codex-overleaf-panel .codex-settings-workbench .codex-skills-entry-label { font-weight: 500; }
+#codex-overleaf-panel .codex-settings-workbench .codex-skills-entry:hover .codex-skills-entry-chevron { color: var(--wb-fg); }
 @media (max-width: 620px) {
   #codex-overleaf-panel .codex-history-toolbar { grid-template-columns: minmax(0, 1fr) 116px; gap: 7px; }
   #codex-overleaf-panel .codex-history-row { grid-template-columns: 25px minmax(0, 1fr); column-gap: 8px; padding: 11px 0; }
@@ -7122,7 +7152,7 @@
   --ws-line: var(--tl-border-strong, #d7dcdf);
   --ws-muted: var(--tl-fg-3, #737b84);
   --ws-soft: color-mix(in srgb, var(--ws-accent) 8%, transparent);
-  padding: 18px !important;
+  padding: 18px;
   min-width: 0;
   color: var(--tl-fg-1);
   background: linear-gradient(135deg, color-mix(in srgb, var(--ws-accent) 2%, transparent), transparent 60%);
@@ -7161,6 +7191,13 @@
 #codex-overleaf-panel .ws2 input:focus-visible { outline: 2px solid var(--ws-accent); outline-offset: 3px; }
 #codex-overleaf-panel .ws2-manage { padding: 4px 0; min-height: 26px; border: 0; border-radius: 4px; margin-top: 12px; color: var(--ws-accent); background: transparent; }
 #codex-overleaf-panel .ws2-manage svg { width: 13px; height: 13px; }
+#codex-overleaf-panel .codex-settings-workbench .codex-set-card.ws2 { padding: 13px 0 14px; background: none; }
+#codex-overleaf-panel .codex-settings-workbench .ws2-title { font-size: var(--tl-text-md, 13px); font-weight: 500; }
+#codex-overleaf-panel .codex-settings-workbench .ws2-description { margin-top: 2px; color: var(--wb-muted); font-size: var(--tl-text-sm, 12px); }
+#codex-overleaf-panel .codex-settings-workbench .ws2-status { margin-top: 10px; color: var(--wb-muted); }
+#codex-overleaf-panel .codex-settings-workbench .ws2-manage { justify-self: start; min-height: 28px; margin-top: 12px; padding: 3px 11px; border: 1px solid var(--wb-line); border-radius: 7px; background: var(--wb-surface); color: var(--wb-fg); font-size: var(--tl-text-sm, 12px); text-decoration: none; box-shadow: 0 1px 0 color-mix(in srgb, var(--wb-fg) 5%, transparent); }
+#codex-overleaf-panel .codex-settings-workbench .ws2-manage:hover { background: var(--wb-hover); text-decoration: none; }
+#codex-overleaf-panel .codex-settings-workbench .ws2-manage svg { width: 12px; height: 12px; }
 #codex-overleaf-panel .ws2-manage:hover { text-decoration: underline; text-underline-offset: 3px; }
 #codex-overleaf-panel .ws2-profile { display: flex; align-items: center; gap: 10px; padding: 12px; margin-top: 14px; background: var(--ws-soft); border-radius: 9px; }
 #codex-overleaf-panel .ws2-profile-icon { color: var(--ws-accent); }

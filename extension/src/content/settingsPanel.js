@@ -9,6 +9,7 @@
 
   function codexIcon(name) {
     const icons = {
+      archive: '<rect x="2.5" y="3" width="11" height="3.2" rx=".8"/><path d="M3.5 6.2v6.3a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V6.2"/><path d="M6.5 9h3"/>',
       appearance: '<path d="M8 2.2v1.1"/><path d="M8 12.7v1.1"/><path d="M2.2 8h1.1"/><path d="M12.7 8h1.1"/><path d="m3.9 3.9.8.8"/><path d="m11.3 11.3.8.8"/><path d="m12.1 3.9-.8.8"/><path d="m4.7 11.3-.8.8"/><circle cx="8" cy="8" r="2.4"/>',
       bolt: '<path d="M8.9 1.8 3.8 8.8h3.3l-.5 5.4 5.5-7.5H8.8z"/>',
       close: '<path d="m4.6 4.6 6.8 6.8M11.4 4.6l-6.8 6.8"/>',
@@ -37,7 +38,9 @@
       container,
       callbacks: options.callbacks || {},
       i18n: options.i18n || null,
-      button: options.button || null
+      button: options.button || null,
+      // Names the open project in project-page scope lines; may return ''.
+      getProjectName: typeof options.getProjectName === 'function' ? options.getProjectName : null
     };
 
     container.innerHTML = `
@@ -336,6 +339,7 @@
         return host || null;
       },
       setProviderCloseGuard: guard => instance.workbench?.setProviderCloseGuard(guard),
+      revealGroup: key => instance.workbench?.revealGroup(key) || null,
       loadState: state => loadState(instance, state),
       readState: () => readState(instance),
       setStatus: (text, status) => setStatus(instance, text, status),
@@ -466,7 +470,9 @@
     };
   }
 
-  function setStatus(target, text, status = 'info') {
+  // options.page names the workbench page a message belongs to; the workbench
+  // shows it only while that page is active. Untagged messages show everywhere.
+  function setStatus(target, text, status = 'info', options = {}) {
     const instance = target?._instance || target;
     const element = instance?.container?.querySelector('[data-project-settings-status]');
     if (!element) {
@@ -474,6 +480,9 @@
     }
     element.textContent = text || '';
     element.dataset.status = status;
+    if (options.page) element.dataset.statusPage = options.page;
+    else delete element.dataset.statusPage;
+    instance.workbench?.refresh();
   }
 
   function clearStatus(target) {
@@ -484,6 +493,8 @@
     }
     element.textContent = '';
     delete element.dataset.status;
+    delete element.dataset.statusPage;
+    instance.workbench?.refresh();
   }
 
   function setSkillsSummary(target, text) {

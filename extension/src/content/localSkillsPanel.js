@@ -320,7 +320,7 @@
           toggle.disabled = true;
           confirmBtn.textContent = tr('localSkillRemoving');
           removeCodexOverleafSkill(id).catch(error => {
-            setProjectSettingsStatus(tx(`Failed to remove Codex Overleaf skill: ${error.message}`, `删除 Codex Overleaf 技能失败：${error.message}`), 'failed');
+            setProjectSettingsStatus(tx(`Failed to remove Codex Overleaf skill: ${error.message}`, `删除 Codex Overleaf 技能失败：${error.message}`), 'failed', { page: 'context' });
             // Restore row on failure so the user can retry.
             confirmBtn.disabled = false;
             cancelBtn.disabled = false;
@@ -381,7 +381,7 @@
       if (activeSkill?.scope === 'codex-overleaf' && activeSkill.id === id) {
         clearComposerSkillInvocation();
       }
-      setProjectSettingsStatus(tr('codexOverleafSkillRemoveDone'), 'completed');
+      setProjectSettingsStatus(tr('codexOverleafSkillRemoveDone'), 'completed', { page: 'context' });
       clearSlashCodexOverleafSkills();
       await refreshLocalSkills();
       await saveState?.();

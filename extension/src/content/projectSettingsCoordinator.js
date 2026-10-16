@@ -1,6 +1,9 @@
 (function initCodexOverleafProjectSettingsCoordinator() {
   'use strict';
 
+  // Skill messages belong to the settings workbench page that holds the Skills group.
+  const SKILLS_STATUS = Object.freeze({ page: 'context' });
+
   function create(deps = {}) {
     const {
       CodexOverleafTheme,
@@ -100,7 +103,7 @@
       refreshLocalSkills().catch(error => setProjectSettingsStatus(tx(
         `Could not list local skills: ${error.message}`,
         `无法列出本地技能：${error.message}`
-      ), 'failed'));
+      ), 'failed', SKILLS_STATUS));
     }
 
     function toggleCustomInstructionsSettings() {
@@ -128,7 +131,7 @@
       refreshLocalSkills().catch(error => setProjectSettingsStatus(tx(
         `Could not list local skills: ${error.message}`,
         `无法列出本地技能：${error.message}`
-      ), 'failed'));
+      ), 'failed', SKILLS_STATUS));
     }
 
     function closeSkillsView() {
@@ -316,11 +319,11 @@
           const pending = deps.updateGlobalPreferences({ codexLocalSkillEnabled: { [skillId]: Boolean(enabled) } });
           Promise.resolve(pending).then(() => saveStateSoon()).catch(() => {
             renderLocalSkillList();
-            setProjectSettingsStatus(tx('Could not save the local skill selection. Try again.', '无法保存本地技能选择，请重试。'), 'failed');
+            setProjectSettingsStatus(tx('Could not save the local skill selection. Try again.', '无法保存本地技能选择，请重试。'), 'failed', SKILLS_STATUS);
           });
         } catch (_error) {
           renderLocalSkillList();
-          setProjectSettingsStatus(tx('Could not save the local skill selection. Try again.', '无法保存本地技能选择，请重试。'), 'failed');
+          setProjectSettingsStatus(tx('Could not save the local skill selection. Try again.', '无法保存本地技能选择，请重试。'), 'failed', SKILLS_STATUS);
         }
       } else {
         setState({ ...getState(), codexLocalSkillEnabled: { ...getCodexLocalSkillEnabled(), [skillId]: Boolean(enabled) } });
@@ -348,8 +351,8 @@
       renderLocalSkillList();
     }
 
-    function setProjectSettingsStatus(text, status = 'info') {
-      SettingsPanel.setStatus(getSettingsPanelInstance(), text, status);
+    function setProjectSettingsStatus(text, status = 'info', options) {
+      SettingsPanel.setStatus(getSettingsPanelInstance(), text, status, options);
     }
 
     function clearProjectSettingsStatus() {

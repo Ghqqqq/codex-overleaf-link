@@ -1345,6 +1345,7 @@
         projectId: getCurrentProjectId(),
         i18n: { tr },
         button: panel.querySelector('[data-custom-instructions-settings]'),
+        getProjectName: () => { try { return recentProjects.readCurrentProjectNameFromDom(); } catch { return ''; } },
         callbacks: {
           onBack: () => closeCustomInstructionsSettings(),
           onInputChange: event => persistPanelInputs(event),
