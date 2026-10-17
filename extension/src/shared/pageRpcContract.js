@@ -5,7 +5,7 @@
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this), function () {
   'use strict';
 
-  var REVISION = '2026-10-15-reviewing-unavailable-v45';
+  var REVISION = '2026-10-17-writeback-freshness-v46';
   var METHODS = freezeCatalog({
     initializeCapability: entry('bridge.initialize', 'control', 'none', 'default', false, 'none'),
     probe: entry('bridge.probe', 'read', 'none', 'default', false, 'safe'),

@@ -74,6 +74,39 @@ test('a mismatched scope or a deleted session cannot be saved back over durable 
   } finally { network.close(); }
 });
 
+test('withheld Undo reasons survive normalization, fallback compaction and durable reload without gaining write authority', async () => {
+  const Undo = require('../extension/src/shared/undoOperations');
+  const Settlement = require('../extension/src/shared/writebackSettlement');
+  const network = createNetwork();
+  try {
+    const unavailable = { path: 'main.tex', code: 'stale_source_changed' };
+    const operation = { type: 'edit', path: 'main.tex', patches: [{ from: 0, to: 1, expected: 'a', insert: '' }],
+      appliedPatches: [{ from: 0, to: 1, expected: 'a', insert: '' }], verifiedContent: 'collaborator text',
+      undoUnavailable: unavailable };
+    const session = { ...record('withheld'), runs: [{ id: 'r', runProjectId: scope.projectId,
+      task: 'Edit', mode: 'auto', status: 'completed', undoStatus: 'partial', appliedOperations: [operation],
+      undoOperations: [], undoBaseFiles: [], undoExpectedFiles: [], events: [] }] };
+    const state = State.normalizePanelState({ activeSessionId: session.id, sessions: [session] });
+    assert.deepEqual(Undo.getUndoUnavailableFiles(state.runs[0]), [unavailable]);
+    assert.deepEqual(State.pickWritebackRecovery(state.runs[0]), {}, 'the reason grants no retry/save-check authority');
+    const fallback = State.prepareStateForStorage(state);
+    assert.deepEqual(fallback.sessions[0].runs[0].appliedOperations,
+      [{ type: 'edit', path: 'main.tex', undoUnavailable: unavailable }], 'fallback history keeps no document content');
+    assert.deepEqual(Undo.getUndoUnavailableFiles(State.normalizePanelState(JSON.parse(JSON.stringify(fallback))).runs[0]), [unavailable]);
+    const projected = Db.buildSessionRecord(state.sessions[0], { preserveRunActionPayload: true });
+    assert.deepEqual(projected.runs[0].appliedOperations[0], operation);
+    assert.deepEqual(Undo.getUndoUnavailableFiles(Db.buildSessionRecord(state.sessions[0],
+      { preserveRunActionPayload: false }).runs[0]), [unavailable]);
+    await persist(connect(network, 1), state);
+    const loaded = JSON.parse(JSON.stringify(await connect(network, 2).getRecord('sessions', session.id)));
+    const restored = State.normalizePanelState({ activeSessionId: session.id, sessions: [loaded] }).runs[0];
+    assert.deepEqual(restored.appliedOperations[0], operation);
+    assert.deepEqual(Undo.getUndoUnavailableFiles(restored), [unavailable]);
+    assert.equal(Settlement.projectRunSettlement(restored).canUndo, false);
+    assert.deepEqual(Undo.buildSnapshotRestoreUndo(Undo.prepareRunUndo(restored)).operations, []);
+  } finally { network.close(); }
+});
+
 test('compressed multi-record conflict is atomic; rereading permits a lossless retry', async () => {
   const network = createNetwork();
   try {

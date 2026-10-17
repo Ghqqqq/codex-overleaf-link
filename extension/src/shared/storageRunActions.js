@@ -1,10 +1,10 @@
 (function initStorageRunActions(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory(require('./selectionContext'), require('./writebackIntent'), require('./writingStyle'), require('./directoryCleanupProof'));
+    module.exports = factory(require('./selectionContext'), require('./writebackIntent'), require('./writingStyle'), require('./directoryCleanupProof'), require('./undoOperations'));
   } else {
-    root.CodexOverleafModuleRegistry.define('StorageRunActions', ['SelectionContext', 'WritebackIntent', 'WritingStyle', 'DirectoryCleanupProof'], factory);
+    root.CodexOverleafModuleRegistry.define('StorageRunActions', ['SelectionContext', 'WritebackIntent', 'WritingStyle', 'DirectoryCleanupProof', 'UndoOperations'], factory);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : window, function storageRunActionsFactory(SelectionContext, WritebackIntent, WritingStyle, DirectoryCleanupProof) {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function storageRunActionsFactory(SelectionContext, WritebackIntent, WritingStyle, DirectoryCleanupProof, UndoOperations) {
   'use strict';
 
   // Share a bounded budget across the retained history, rather than expiring
@@ -129,7 +129,7 @@
       && Array.isArray(run.undoExpectedFiles) && run.undoExpectedFiles.length > 0
       && Array.isArray(run.appliedOperations) && run.appliedOperations.length > 0;
     var legacyUndo = Array.isArray(run && run.undoOperations) && run.undoOperations.length > 0;
-    return trackedLifecycle || reviewingEditorUndo || legacyUndo;
+    return trackedLifecycle || reviewingEditorUndo || legacyUndo || UndoOperations.getUndoUnavailableFiles(run).length > 0;
   }
 
   function runDirectoryCleanup(run) {
@@ -186,7 +186,7 @@
   }
 
   function compactCoreActionPayload(run, keepActionPayload, options = {}) {
-    var empty = emptyActionPayload();
+    var empty = { ...emptyActionPayload(), appliedOperations: UndoOperations.compactUnavailableUndoOperations(run) };
     if (!keepActionPayload || !hasReloadableRunActionPayload(run)) {
       if (hasReloadableRunActionPayload(run)) empty.recoveryRetention = omitted('fallback');
       else if (run?.recoveryRetention?.state === 'omitted' && !run.forkSnapshot

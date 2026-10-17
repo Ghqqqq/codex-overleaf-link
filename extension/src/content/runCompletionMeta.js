@@ -391,6 +391,8 @@
           '本轮结束时记录了以下文件夹，当前状态尚未重新核验：') + paths.join(', ') });
     }
     const retentionOmitted = hasOmittedRecoveryRetention(run);
+    const undoUnavailable = !undone && run.trackedChangeStatus !== 'accepted'
+      ? projectRunSettlement?.(run).undoUnavailable || [] : [];
     const inFlight = trackedChangeInFlight?.get(run.id);
     const tracked = isTrackedChangeLifecycleRun(run);
     const pendingFileUndo = tracked && run.trackedChangeStatus === 'needs_review' && run.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1 || operation?.type === 'create');
@@ -410,7 +412,7 @@
           ? tx(pendingFileUndo ? 'Undo is incomplete; retry the remaining files.' : 'Undo is incomplete; remaining changes can still be undone.', pendingFileUndo ? '撤销未完成，可重试剩余文件。' : '撤销未完成，剩余修改仍可撤销。')
           : tx('Undo is incomplete.', '撤销未完成。');
     }
-    if (!undo && !run.saveCheck && !run.saveConfirmedAt && !retentionOmitted) return rows;
+    if (!undo && !run.saveCheck && !run.saveConfirmedAt && !retentionOmitted && !undoUnavailable.length) return rows;
     const projected = rows.map(row => row?.key === 'undo' && undo
       ? { ...row, label: tx('Undo', '撤销'), value: undo }
       : row?.key === 'saveState' && (run.saveCheck || run.saveConfirmedAt)
@@ -430,6 +432,13 @@
       projected.push({ key: 'recoveryRetention', label: tx('Recovery data', '恢复材料'),
         value: directory && (run.recoveryRetention.coreRetained === true || undone || run.trackedChangeStatus === 'accepted')
           ? directory : [recovery, directory].filter(Boolean).join(' ') });
+    }
+    if (undoUnavailable.length) {
+      const warning = options.tr('failureReason_snapshot_undo_unavailable_user')
+        + ' ' + undoUnavailable.map(item => item.path).join(', ');
+      const retained = projected.find(row => row.key === 'recoveryRetention');
+      if (retained) { retained.value += ' ' + warning; retained.undoUnavailable = true; }
+      else projected.push({ key: 'recoveryRetention', label: tx('Recovery data', '恢复材料'), undoUnavailable: true, value: warning });
     }
     return projected;
   }
@@ -472,6 +481,7 @@
     const reason = find('unchangedReason');
     const undone = run?.undoStatus === 'applied' || run?.trackedChangeStatus === 'rejected';
     const retentionOmitted = hasOmittedRecoveryRetention(run);
+    const undoUnavailable = rows.some(row => row?.undoUnavailable === true);
     const savePending = !undone && (Boolean(run?.saveCheck) || (!run?.saveConfirmedAt && /^(?:Pending|待确认)/.test(find('saveState'))));
     const pendingFileUndo = run?.trackedChangeStatus === 'needs_review'
       && run.undoOperations?.some(operation => operation?.undoCreatedFile?.v === 1 || operation?.type === 'create');
@@ -490,16 +500,17 @@
             : undoable ? tx(`${undoable} undoable`, `可撤销 ${undoable} 项`)
               // With nothing written, "Nothing to undo" repeats the write fact; the
               // expanded details still carry the full Undo row.
-              : failed || retentionOmitted || !wrote ? '' : tx('Nothing to undo', '无可撤销写入');
+              : undoUnavailable ? tx('Undo incomplete', '撤销未完成')
+                : failed || retentionOmitted || !wrote ? '' : tx('Nothing to undo', '无可撤销写入');
     if (undo) facts.push({ key: 'undo', text: undo });
     if (retentionOmitted) facts.push({ key: 'recoveryRetention', tone: 'warn',
       text: run.recoveryRetention.coreRetained === true
         ? tx('Folder observations not retained after reload', '刷新后文件夹观测记录未保留')
         : tx('Recovery data not retained after reload', '刷新后恢复材料未保留') });
     if (savePending) facts.push({ key: 'save', tone: 'warn', text: tx('Save pending', '保存待确认') });
-    const attention = failed || skipped > 0 || retentionOmitted;
+    const attention = failed || skipped > 0 || retentionOmitted || undoUnavailable;
     const warnKeys = new Set([...(failed || skipped > 0 ? ['writeResult', 'nextStep'] : []),
-      ...(retentionOmitted ? ['recoveryRetention'] : []), ...(savePending ? ['saveState'] : [])]);
+      ...(retentionOmitted || undoUnavailable ? ['recoveryRetention'] : []), ...(savePending ? ['saveState'] : [])]);
     return { facts, open: attention, warnKeys };
   }
 

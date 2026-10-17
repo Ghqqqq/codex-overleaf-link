@@ -45,72 +45,62 @@
     const baseContent = normalizeText(baseFileLookup.get(filePath));
     const current = normalizeText(currentContent);
     if (current !== baseContent) {
-      if (typeof console !== 'undefined') {
-        console.warn('[codex-overleaf] staleGuard: STALE', filePath,
-          'base.length:', baseContent.length, 'current.length:', current.length,
-          'base[0..80]:', JSON.stringify(baseContent.slice(0, 80)),
-          'current[0..80]:', JSON.stringify(current.slice(0, 80)));
+      if (Array.isArray(operation.patches) && operation.patches.length) {
+        const preparedPatches = prepareOperationPatches(operation, currentContent, baseFileLookup);
+        if (preparedPatches.ok) return { ok: true, reconciled: true, strategy: 'change-envelope', preparedPatches };
       }
-      const patchRangeFreshness = checkPatchRangeFreshness(operation, currentContent, baseFileLookup);
-      if (patchRangeFreshness) {
-        return patchRangeFreshness;
-      }
-      return {
-        ok: false,
-        code: 'stale_snapshot',
-        reasonKey: 'staleSnapshot',
-        reasonParams: { filePath },
-        reason: `${filePath} 在任务执行期间被你或协作者改过，Codex 没有覆盖它。请查看差异后重试。`
-      };
+      return staleSourceChanged(filePath);
     }
 
     return { ok: true };
   }
 
-  function checkPatchRangeFreshness(operation, currentContent, baseFileLookup) {
-    const prepared = prepareOperationPatches(operation, currentContent, baseFileLookup);
-    if (!prepared.ok) {
-      return { ...prepared, code: 'stale_patch_range', reasonKey: 'stalePatchConflict' };
-    }
-    const patches = prepared.patches;
-    if (!patches.length) {
-      return null;
-    }
-
-    const current = String(currentContent ?? '');
-    for (const rawPatch of patches) {
-      const from = Number(rawPatch?.from);
-      const to = Number(rawPatch?.to);
-      const expected = String(rawPatch?.expected ?? '');
-      if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > current.length) {
-        return {
-          ok: false,
-          code: 'stale_patch_range',
-          reasonKey: 'stalePatchLocation',
-          reason: 'Codex 要修改的位置已经无法和当前 Overleaf 内容对齐，所以没有写入。请重新运行任务。'
-        };
-      }
-      if (current.slice(from, to) !== expected) {
-        return {
-          ok: false,
-          code: 'stale_patch_range',
-          reasonKey: 'stalePatchConflict',
-          reason: 'Codex 要修改的具体位置已经被你或协作者改过，所以没有覆盖它。请查看差异后重试。'
-        };
-      }
-    }
-
+  function staleSourceChanged(filePath) {
     return {
-      ok: true,
-      reconciled: true,
-      strategy: 'patch-range'
+      ok: false,
+      code: 'stale_snapshot',
+      reasonKey: 'staleSnapshot',
+      reasonParams: { filePath },
+      reason: `${filePath} 在任务执行期间被你或协作者改过，Codex 没有覆盖它。请查看差异后重试。`
     };
   }
 
-  // Bridge the raw Native baseline to the editor's line-ending representation.
-  // Logical LF offsets are only an intermediate coordinate system: both the
-  // range check and the eventual editor dispatch use the same raw patches.
+  // Rebase only ranges wholly in a common prefix/suffix. All patches use the
+  // same envelope before any of them are applied to the editor.
   function prepareOperationPatches(operation, currentContent, baseFileLookup) {
+    const path = normalizePath(operation?.path), base = baseFileLookup?.get(path);
+    const current = String(currentContent ?? '');
+    const envelope = typeof base === 'string' ? changedEnvelope(normalizeText(base), normalizeText(current)) : null;
+    const prepared = mapOperationPatches(operation, current, baseFileLookup, envelope);
+    return !prepared.ok && envelope ? staleSourceChanged(path) : prepared;
+  }
+
+  function changedEnvelope(base, current) {
+    if (base === current) return null;
+    let prefix = 0, suffix = 0;
+    while (prefix < base.length && prefix < current.length && base[prefix] === current[prefix]) prefix++;
+    while (suffix < base.length - prefix && suffix < current.length - prefix
+      && base[base.length - suffix - 1] === current[current.length - suffix - 1]) suffix++;
+    return { prefix, end: base.length - suffix, delta: current.length - base.length };
+  }
+
+  function mapEnvelopeRange(from, to, envelope, insertion = from === to) {
+    if (!envelope) return { from, to };
+    if (insertion && (from === envelope.prefix || from === envelope.end)) return null;
+    if (to <= envelope.prefix) return { from, to };
+    if (from >= envelope.end) return { from: from + envelope.delta, to: to + envelope.delta };
+    return null;
+  }
+
+  // Historical checkpoints already refer to observed applied offsets. This
+  // compatibility converter never authorizes a new forward write or rebase.
+  function prepareStoredInversePatches(operation, currentContent, baseFileLookup) {
+    return mapOperationPatches(operation, currentContent, baseFileLookup, null);
+  }
+
+  // Logical LF offsets bridge raw Native and editor coordinates. Expand split
+  // CRLF edges before dispatch; keep unchanged editor line endings intact.
+  function mapOperationPatches(operation, currentContent, baseFileLookup, envelope) {
     const patches = Array.isArray(operation?.patches) ? operation.patches : [];
     const current = String(currentContent ?? '');
     const path = normalizePath(operation?.path);
@@ -120,8 +110,21 @@
     }
     const baseMap = lineEndingMap(base);
     const currentMap = lineEndingMap(current);
-    // With no CRLF on either side, retain the existing raw range semantics.
-    if (!baseMap.removed.length && !currentMap.removed.length) return { ok: true, patches };
+    if (!baseMap.removed.length && !currentMap.removed.length) {
+      if (!envelope) return { ok: true, patches };
+      const mapped = [];
+      let previousTo = 0;
+      for (const patch of patches) {
+        const from = Number(patch?.from), to = Number(patch?.to), expected = String(patch?.expected ?? '');
+        if (!Number.isInteger(from) || !Number.isInteger(to) || from < previousTo || to < from || to > base.length
+          || base.slice(from, to) !== expected) return patchMappingFailure('stale_patch');
+        previousTo = to;
+        const range = mapEnvelopeRange(from, to, envelope);
+        if (!range || current.slice(range.from, range.to) !== expected) return patchMappingFailure('stale_patch');
+        mapped.push({ ...range, expected, insert: String(patch.insert ?? '') });
+      }
+      return { ok: true, patches: mapped };
+    }
 
     const groups = [];
     let previousTo = 0;
@@ -132,6 +135,11 @@
       }
       if (base.slice(from, to) !== String(patch.expected ?? '')) return patchMappingFailure('stale_patch');
       previousTo = to;
+      // Check each insertion boundary even if CRLF expansion later merges it
+      // with an adjacent nonempty range.
+      if (!mapEnvelopeRange(baseMap.toLogical(from), baseMap.toLogical(to), envelope, from === to)) {
+        return patchMappingFailure('stale_patch');
+      }
       // Expand only a split CRLF or a new pair formed across an edit edge.
       // Other neighbouring newlines belong to the editor and stay untouched.
       let start = from, end = to;
@@ -147,9 +155,9 @@
 
     const mapped = [], sourceChanges = [];
     for (const group of groups) {
-      const logicalFrom = baseMap.toLogical(group.start), logicalTo = baseMap.toLogical(group.end);
-      if (logicalTo > currentMap.length) return patchMappingFailure('invalid_patch');
-      const from = currentMap.toRaw(logicalFrom), to = currentMap.toRaw(logicalTo);
+      const range = mapEnvelopeRange(baseMap.toLogical(group.start), baseMap.toLogical(group.end), envelope);
+      if (!range || range.from < 0 || range.to > currentMap.length) return patchMappingFailure('stale_patch');
+      const from = currentMap.toRaw(range.from), to = currentMap.toRaw(range.to);
       const expected = current.slice(from, to);
       if (normalizeText(expected) !== normalizeText(base.slice(group.start, group.end))) {
         return patchMappingFailure('stale_patch');
@@ -173,13 +181,13 @@
       while (oldEnd > prefix && newEnd > prefix && expected[oldEnd - 1] === insert[newEnd - 1]) { oldEnd -= 1; newEnd -= 1; }
       mapped.push({ from: from + prefix, to: from + oldEnd, expected: expected.slice(prefix, oldEnd), insert: insert.slice(prefix, newEnd) });
     }
-    // A later operation in the same batch still addresses the original
-    // representation, so advance its baseline separately from editor text.
+    // Preserve source coordinates for line-ending-only conversion. A rebased
+    // entry instead advances to its actual verified editor post-image.
     let sourceContent = base;
     for (const patch of sourceChanges.reverse()) {
       sourceContent = sourceContent.slice(0, patch.from) + patch.insert + sourceContent.slice(patch.to);
     }
-    return { ok: true, patches: mapped, sourceContent };
+    return { ok: true, patches: mapped, ...(!envelope ? { sourceContent } : {}) };
   }
 
   function patchMappingFailure(code) {
@@ -257,6 +265,7 @@
     buildBaseFileLookup,
     checkOperationFreshness,
     prepareOperationPatches,
+    prepareStoredInversePatches,
     updateExpectedFileContent,
     removeExpectedFile,
     moveExpectedFile,

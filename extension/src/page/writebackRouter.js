@@ -676,13 +676,13 @@
         return decorated;
       }
       current = ready.text;
-      freshness = { ok: true };
+      freshness = ready.freshness;
     }
 
     let nextContent = null;
     let preparedPatches;
     if (Array.isArray(operation.patches) && operation.patches.length) {
-      preparedPatches = window.CodexOverleafStaleGuard?.prepareOperationPatches(operation, current, options.baseFileLookup)
+      preparedPatches = freshness.preparedPatches || window.CodexOverleafStaleGuard?.prepareOperationPatches(operation, current, options.baseFileLookup)
         || { ok: true, patches: operation.patches };
       const patched = preparedPatches.ok ? applyTextPatches(current, preparedPatches.patches) : preparedPatches;
       if (!patched.ok) {
@@ -736,12 +736,6 @@
             operationType: 'undo', changedDocument: false,
             userMessage: 'The project identity guard is unavailable; the undo write was not applied.' }) };
       if (blocked) return blocked.skipped?.[0]?.result || blocked;
-      if (getActiveFilePath() !== operation.path || readActiveEditorText() !== current) {
-        const reason = 'The editor changed while confirming Editing mode; the undo write was not applied.';
-        return { ok: false, code: 'stale_source_changed', reason,
-          failure: buildPageFailure('stale_source_changed', { file: operation.path,
-            operationType: 'undo', changedDocument: false, userMessage: reason }) };
-      }
       if (!isEditingConfirmedForNoTraceUndo(getReviewingState({})))
         return buildNoTraceUndoBlockedResult([operation], { ok: false, code: 'editing_not_confirmed',
           reason: 'Overleaf left Editing mode before the undo write.' }).skipped[0].result;
@@ -749,6 +743,14 @@
 
     const finalReviewBlock = options.reviewGuard?.();
     if (finalReviewBlock) return finalReviewBlock;
+    // Read and dispatch synchronously against the same document. Navigation,
+    // freshness polling and Undo mode/project checks can all have awaited.
+    if (getActiveFilePath() !== operation.path || readActiveEditorText() !== current) {
+      const reason = 'The editor changed before the edit could be applied; the document was not overwritten.';
+      return { ok: false, code: 'stale_source_changed', reason,
+        failure: buildPageFailure('stale_source_changed', { file: operation.path,
+          operationType: options.noTraceUndo ? 'undo' : 'edit', changedDocument: false, userMessage: reason }) };
+    }
     const result = Array.isArray(operation.patches) && operation.patches.length
       ? replaceActiveEditorPatches(preparedPatches.patches, nextContent)
       : replaceActiveEditorText(nextContent);
@@ -827,6 +829,7 @@
           }),
           verified: true,
           verifiedContent: nextContent,
+          ...(preparedPatches ? { appliedPatches: preparedPatches.patches } : {}),
           trackedChanges: mergeTrackedChangeRefs(trackedChanges)
         };
       }
@@ -840,6 +843,7 @@
       ...result,
       verified: true,
       verifiedContent: nextContent,
+      ...(preparedPatches ? { appliedPatches: preparedPatches.patches } : {}),
       trackedChangeCapture,
       trackedChanges: mergeTrackedChangeRefs(trackedChanges)
     };
@@ -970,35 +974,17 @@
       lastText = readActiveEditorText();
       const activeFileMatches = lastActivePath === filePath;
       const identityChanged = Boolean(previousEditorIdentity) && activeEditorIdentityChanged(previousEditorIdentity);
-      const baseComparison = compareEditorTextToBase(filePath, lastText, baseFileLookup);
-      const baseMatches = baseComparison.matches;
       const settledLongEnough = Date.now() - startedAt >= minSettleMs;
       const contentChangedFromPrevious = !options.previousSignature
         || contentSignature(lastText) !== options.previousSignature;
-      // Switch confirmation must not depend on any single fragile signal
-      // (v1.6: identity comparison proved unreliable against newer Overleaf
-      // view lifecycles, which made every write to a non-active file time
-      // out as target_editor_not_ready). Acceptors, strongest first:
-      //   1. editor identity visibly changed (fast path when it works);
-      //   2. the editor shows EXACTLY the target file's expected base —
-      //      the strongest possible proof the right document is loaded;
-      //   3. same-file reopen settled with unchanged content;
-      //   4. base UNKNOWN only: the content moved off the previous document
-      //      and the settle window elapsed. When the base IS known, content
-      //      must match it (acceptor 2) — a weakly-anchored patch (e.g. an
-      //      insert into an empty file, expected:'') would otherwise anchor
-      //      trivially into a wrong-but-different document.
+      // Confirm navigation independently of source freshness. A stale target
+      // can be correctly open; identical baseline bytes alone cannot prove a
+      // switch. Content movement remains the fallback for editor lifecycles
+      // whose document identity cannot be observed reliably.
       const switchConfirmed = identityChanged
-        || baseMatches
-        || (options.initialActivePath === filePath
-          && options.previousSignature
-          && contentSignature(lastText) === options.previousSignature
-          && settledLongEnough)
-        || (!baseComparison.known && contentChangedFromPrevious && settledLongEnough);
-      const contentNoLongerLooksLikePreviousDocument = contentChangedFromPrevious
-        || baseMatches
-        || options.initialActivePath === filePath;
-      if (activeFileMatches && switchConfirmed && settledLongEnough && contentNoLongerLooksLikePreviousDocument) {
+        || options.initialActivePath === filePath
+        || (contentChangedFromPrevious && settledLongEnough);
+      if (activeFileMatches && switchConfirmed && settledLongEnough) {
         return {
           ok: true,
           text: lastText
@@ -1074,47 +1060,6 @@
     };
   }
 
-  function editorContentMatchesBase(filePath, content, baseFileLookup) {
-    return compareEditorTextToBase(filePath, content, baseFileLookup).matches;
-  }
-
-  function compareEditorTextToBase(filePath, content, baseFileLookup) {
-    const normalizedPath = normalizeSafeProjectPath(filePath);
-    const current = normalizeEditorTextForComparison(content);
-    if (!baseFileLookup || !normalizedPath || !baseFileLookup.has(normalizedPath)) {
-      return {
-        known: false,
-        hasContent: false,
-        matches: false,
-        baseLength: null,
-        currentLength: current.length
-      };
-    }
-    const base = normalizeEditorTextForComparison(baseFileLookup.get(normalizedPath));
-    const matches = current === base;
-    if (!matches && base.trim().length > 0) {
-      console.warn('[codex-overleaf] editorContentMatchesBase MISMATCH', filePath,
-        'base.length:', base.length, 'current.length:', current.length,
-        'base[0..80]:', JSON.stringify(base.slice(0, 80)),
-        'current[0..80]:', JSON.stringify(current.slice(0, 80)));
-    }
-    return {
-      known: true,
-      hasContent: base.trim().length > 0,
-      matches,
-      baseLength: base.length,
-      currentLength: current.length
-    };
-  }
-
-  function hasBaseFileContent(filePath, baseFileLookup) {
-    if (!baseFileLookup || !filePath || !baseFileLookup.has(filePath)) {
-      return false;
-    }
-    const content = baseFileLookup.get(filePath);
-    return typeof content === 'string' && content.trim().length > 0;
-  }
-
   function normalizeEditorTextForComparison(value) {
     const normalized = String(value ?? '').replace(/\r\n/g, '\n');
     return normalized.trim().length === 0 ? '' : normalized;
@@ -1136,7 +1081,8 @@
       if (freshness.ok) {
         return {
           ok: true,
-          text
+          text,
+          freshness
         };
       }
       await delay(60);

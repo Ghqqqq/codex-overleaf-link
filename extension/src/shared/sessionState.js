@@ -1368,7 +1368,7 @@
       events: compactRunEvents(run.events, limits),
       ...(run.subagents?.length ? { subagents: SubagentActivityModel.normalize(run.subagents, sanitizeAssistantVisibleText) } : {}),
       attachments: compactRunAttachmentsForStorage(run.attachments, limits),
-      appliedOperations: [],
+      appliedOperations: UndoOperations.compactUnavailableUndoOperations(run),
       undoOperations: undoPayload.undoOperations,
       undoBaseFiles: undoPayload.undoBaseFiles,
       undoTrackedChanges: undoPayload.undoTrackedChanges,

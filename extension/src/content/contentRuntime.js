@@ -7460,6 +7460,7 @@
     if (!run) {
       return 0;
     }
+    run = Modules.UndoOperations.withAvailableUndo(run);
     const trackedEditorUndoCount = hasTrackedEditorUndo(run) ? 1 : 0;
     if (trackedEditorUndoCount) {
       return trackedEditorUndoCount + Modules.UndoOperations.getFileUndoOperations(run).length;
@@ -7750,11 +7751,18 @@
       return;
     }
 
-    const combinedAppliedOperations = [
+    let combinedAppliedOperations = [
       ...(Array.isArray(record.appliedOperations) ? record.appliedOperations : []),
       ...appliedOperations
     ];
+    const checkpoint = buildUndoCheckpoint(project, combinedAppliedOperations);
+    combinedAppliedOperations = checkpoint.appliedOperations;
     record.appliedOperations = combinedAppliedOperations;
+    if (checkpoint.undoUnavailable.length) {
+      appendRunEvent({ title: tr('failureReason_snapshot_undo_unavailable_user'), status: 'warning',
+        detail: checkpoint.undoUnavailable.map(item => ({ [tr('detailFile')]: item.path,
+          [tr('detailReason')]: item.code, [tr('detailNext')]: tr('failureReason_snapshot_undo_unavailable_next') })) });
+    }
     const createdCheckpoint = buildCreatedFileUndoCheckpoint(project, combinedAppliedOperations, record);
 
     if ((currentRunView?.executionSnapshot?.requireReviewing ?? state.requireReviewing) === true) {
@@ -7817,7 +7825,6 @@
       return;
     }
 
-    const checkpoint = buildUndoCheckpoint(project, combinedAppliedOperations);
     const createdPaths = new Set(createdCheckpoint.undoOperations.map(operation => operation.path));
     checkpoint.undoOperations = [
       ...checkpoint.undoOperations.filter(operation => !createdPaths.has(operation.path)),
@@ -7827,10 +7834,7 @@
       ...checkpoint.undoBaseFiles.filter(file => !createdPaths.has(file.path)),
       ...createdCheckpoint.undoBaseFiles
     ];
-    if (!checkpoint.undoOperations.length) {
-      return;
-    }
-
+    if (!checkpoint.undoOperations.length && !checkpoint.undoUnavailable.length) return;
     record.undoOperations = checkpoint.undoOperations;
     record.undoBaseFiles = checkpoint.undoBaseFiles;
     record.undoTrackedChanges = [];
@@ -7843,6 +7847,7 @@
     record.undoStatus = '';
     record.partialWriteback = skippedEntries.length > 0;
     refreshRunCardControls(record.id);
+    if (!checkpoint.undoOperations.length) return;
     appendRunEvent({
       title: tr('undoCheckpointPlain', { count: record.undoOperations.length }),
       status: 'completed',

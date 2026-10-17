@@ -8,6 +8,41 @@
   'use strict';
 
   function buildUndoOperations(project, appliedOperations) {
+    return buildUndoPlan(project, appliedOperations).undoOperations;
+  }
+
+  function getUndoUnavailableFiles(run = {}) {
+    const payload = run.recoveryPayload || run;
+    const files = new Map();
+    for (const operation of payload.appliedOperations || []) {
+      const reason = operation?.undoUnavailable;
+      if (typeof reason?.path === 'string' && reason.path === operation?.path
+        && ['stale_source_changed', 'snapshot_undo_unavailable'].includes(reason.code)) {
+        files.set(reason.path, { path: reason.path, code: reason.code });
+      }
+    }
+    return [...files.values()];
+  }
+
+  function withAvailableUndo(run = {}) {
+    const unavailable = new Set(getUndoUnavailableFiles(run).map(item => item.path));
+    if (!unavailable.size) return run;
+    const result = { ...run };
+    for (const field of ['undoOperations', 'undoBaseFiles', 'undoExpectedFiles', 'undoTrackedChanges', 'trackedChangeCaptures']) {
+      result[field] = (run[field] || []).filter(item => !unavailable.has(item?.path) && !unavailable.has(item?.to));
+    }
+    return result;
+  }
+
+  // Fallback history keeps only bounded reasons, never document bytes or
+  // authority to reconstruct a withheld checkpoint.
+  function compactUnavailableUndoOperations(run = {}) {
+    if (run.forkSnapshot || run.undoStatus === 'applied' || ['accepted', 'rejected'].includes(run.trackedChangeStatus)) return [];
+    return getUndoUnavailableFiles(run).filter(item => item.path.length <= 1024).slice(0, 100)
+      .map(item => ({ type: 'edit', path: item.path, undoUnavailable: item }));
+  }
+
+  function buildUndoPlan(project, appliedOperations) {
     const workingFilesByPath = new Map();
     for (const file of project?.files || []) {
       if (typeof file?.path === 'string' && typeof file.content === 'string') {
@@ -17,6 +52,10 @@
 
     const sourceFilesByPath = new Map(workingFilesByPath);
     const undo = [];
+    const inverseBases = new Map();
+    const mappedPaths = new Set((appliedOperations || []).filter(operation => Array.isArray(operation?.appliedPatches))
+      .map(operation => operation.path));
+    const unavailable = new Map(getUndoUnavailableFiles({ appliedOperations }).map(item => [item.path, item.code]));
     const fullRestoreEditPaths = new Set();
 
     for (const operation of appliedOperations || []) {
@@ -30,23 +69,33 @@
         }
         const currentBeforeEdit = workingFilesByPath.get(operation.path);
         if (!fullRestoreEditPaths.has(operation.path)) {
-          const inversePatches = buildInverseTextPatches(sourceFilesByPath.get(operation.path), operation.patches,
-            operation.verifiedContent, operation.path);
+          const hasAppliedPatches = Array.isArray(operation.appliedPatches) && typeof operation.verifiedContent === 'string';
+          const inversePatches = hasAppliedPatches
+            ? buildVerifiedInversePatches(operation.appliedPatches, operation.verifiedContent)
+            : buildInverseTextPatches(sourceFilesByPath.get(operation.path), operation.patches,
+              operation.verifiedContent, operation.path);
+          let inverse;
           if (inversePatches.length) {
-            undo.push(normalizeUndoOperation({
+            inverse = normalizeUndoOperation({
               type: 'edit',
               path: operation.path,
               patches: inversePatches,
               reason: 'Undo edit'
-            }));
-          } else {
+            });
+          } else if (!hasAppliedPatches) {
             fullRestoreEditPaths.add(operation.path);
-            undo.push(normalizeUndoOperation({
+            inverse = normalizeUndoOperation({
               type: 'edit',
               path: operation.path,
               replaceAll: currentBeforeEdit,
               reason: 'Undo edit'
-            }));
+            });
+          } else {
+            unavailable.set(operation.path, 'snapshot_undo_unavailable');
+          }
+          if (inverse) {
+            undo.push(inverse);
+            if (typeof operation.verifiedContent === 'string') inverseBases.set(inverse, operation.verifiedContent);
           }
         }
       } else if (operation.type === 'create') {
@@ -97,7 +146,51 @@
       applyOperationToFiles(sourceFilesByPath, { ...operation, verifiedContent: undefined });
     }
 
-    return undo.reverse();
+    // Each inverse was measured in its own verified post-image. Compose in
+    // reverse order against the latest image, preserving changes between
+    // entries. Empty inverse insertions must never reuse an older offset.
+    const composed = [];
+    for (const inverse of undo.reverse()) {
+      let operation = inverse;
+      if (mappedPaths.has(inverse.path) && inverseBases.has(inverse)) {
+        const current = workingFilesByPath.get(inverse.path);
+        const base = StaleGuard.buildBaseFileLookup([{ path: inverse.path, content: inverseBases.get(inverse) }]);
+        const fresh = StaleGuard.checkOperationFreshness(inverse, current, base);
+        const prepared = fresh.ok && inverse.patches
+          ? fresh.preparedPatches || StaleGuard.prepareOperationPatches(inverse, current, base) : fresh;
+        if (typeof current !== 'string' || !prepared.ok) {
+          unavailable.set(inverse.path, 'stale_source_changed');
+          continue;
+        }
+        if (inverse.patches) operation = { ...inverse, patches: prepared.patches };
+      }
+      composed.push(operation);
+      applyOperationToFiles(workingFilesByPath, operation);
+    }
+    return { undoOperations: composed.filter(operation => !unavailable.has(operation.path)),
+      undoUnavailable: [...unavailable].map(([path, code]) => ({ path, code })) };
+  }
+
+  // Invert the ranges actually dispatched to C, not the original Native
+  // coordinates in B. Verify against the observed post-image before storing
+  // recovery; invalid evidence must not fall back to overwriting C with B.
+  function buildVerifiedInversePatches(patches, postImage) {
+    const beforeLength = patches.reduce((length, patch) =>
+      length + Number(patch?.to) - Number(patch?.from) - String(patch?.insert ?? '').length, postImage.length);
+    if (!Number.isSafeInteger(beforeLength) || beforeLength < 0) return [];
+    const normalized = normalizeTextPatches(patches, beforeLength);
+    if (!normalized.ok || normalized.patches.some(patch => patch.expected.length !== patch.to - patch.from)) return [];
+    const inverse = invertPatches(normalized.patches);
+    return applyTextPatches(postImage, inverse).ok ? inverse : [];
+  }
+
+  function invertPatches(patches) {
+    let offset = 0;
+    return patches.map(patch => {
+      const from = patch.from + offset;
+      offset += patch.insert.length - (patch.to - patch.from);
+      return { from, to: from + patch.insert.length, expected: patch.insert, insert: patch.expected };
+    });
   }
 
   function buildInverseTextPatches(textBeforeEdit, patches, verifiedContent, path) {
@@ -113,28 +206,20 @@
       return [];
     }
 
-    let offset = 0;
-    const inverse = normalized.patches.map(patch => {
-      const from = patch.from + offset;
-      const to = from + patch.insert.length;
-      offset += patch.insert.length - (patch.to - patch.from);
-      return {
-        from,
-        to,
-        expected: patch.insert,
-        insert: patch.expected
-      };
-    });
+    const inverse = invertPatches(normalized.patches);
     if (typeof verifiedContent !== 'string' || verifiedContent === applied.text) return inverse;
     // The stored checkpoint uses the verified editor post-image. Its inverse
     // must use those same offsets, while Native patches retain their source
     // representation for later operations in the batch.
-    const prepared = StaleGuard.prepareOperationPatches({ type: 'edit', path, patches: inverse }, verifiedContent,
+    const prepared = StaleGuard.prepareStoredInversePatches({ type: 'edit', path, patches: inverse }, verifiedContent,
       StaleGuard.buildBaseFileLookup([{ path, content: applied.text }]));
     return prepared.ok && applyTextPatches(verifiedContent, prepared.patches).ok ? prepared.patches : [];
   }
 
   function selectExpectedFilesForTrackedUndo(project, operations = [], trackedChanges = [], previousExpectedFiles = []) {
+    const checkpoint = buildUndoCheckpoint(project, operations);
+    const unavailable = new Set(checkpoint.undoUnavailable.map(item => item.path));
+    const mappedPaths = new Set(operations.filter(operation => Array.isArray(operation?.appliedPatches)).map(operation => operation.path));
     const paths = new Set();
     for (const change of trackedChanges || []) if (change?.path) paths.add(change.path);
     for (const operation of operations || []) {
@@ -143,7 +228,8 @@
     }
     const expectedByPath = new Map();
     for (const file of previousExpectedFiles || []) {
-      if (paths.has(file?.path) && typeof file?.content === 'string' && !expectedByPath.has(file.path)) {
+      if (paths.has(file?.path) && !unavailable.has(file.path) && !mappedPaths.has(file.path)
+        && typeof file?.content === 'string' && !expectedByPath.has(file.path)) {
         expectedByPath.set(file.path, { path: file.path, content: file.content });
       }
     }
@@ -152,10 +238,9 @@
     // content, including when the ZIP baseline used a different representation.
     const hasVerifiedPatches = operations.some(operation => typeof operation?.verifiedContent === 'string'
       && Array.isArray(operation.patches) && operation.patches.length);
-    const checkpoint = hasVerifiedPatches ? buildUndoCheckpoint(project, operations) : null;
-    const restored = checkpoint ? buildExpectedFilesAfterOperations({ files: checkpoint.undoBaseFiles }, checkpoint.undoOperations) : new Map();
+    const restored = hasVerifiedPatches ? buildExpectedFilesAfterOperations({ files: checkpoint.undoBaseFiles }, checkpoint.undoOperations) : new Map();
     for (const file of project?.files || []) {
-      if (paths.has(file?.path) && typeof file?.content === 'string' && !expectedByPath.has(file.path)) {
+      if (paths.has(file?.path) && !unavailable.has(file.path) && typeof file?.content === 'string' && !expectedByPath.has(file.path)) {
         expectedByPath.set(file.path, { path: file.path, content: restored.get(file.path) ?? file.content });
       }
     }
@@ -163,11 +248,15 @@
   }
 
   function buildUndoCheckpoint(project, appliedOperations) {
-    const undoOperations = buildUndoOperations(project, appliedOperations);
+    const { undoOperations, undoUnavailable } = buildUndoPlan(project, appliedOperations);
+    const unavailable = new Map(undoUnavailable.map(item => [item.path, item]));
     const expectedFiles = buildExpectedFilesAfterOperations(project, appliedOperations);
     return {
       undoOperations,
-      undoBaseFiles: filesMapToList(selectUndoBaseFiles(expectedFiles, undoOperations))
+      undoBaseFiles: filesMapToList(selectUndoBaseFiles(expectedFiles, undoOperations)),
+      undoUnavailable,
+      appliedOperations: (appliedOperations || []).map(operation => unavailable.has(operation?.path)
+        ? { ...operation, undoUnavailable: unavailable.get(operation.path) } : operation)
     };
   }
 
@@ -236,6 +325,7 @@
   // file creation, backed by both the forward delete and the captured original.
   // This also recovers older Track-on records that omitted that inverse.
   function getFileUndoOperations(run = {}) {
+    run = withAvailableUndo(run);
     const operations = (run.undoOperations || []).filter(isFileUndoOperation);
     const before = filesListToMap(run.undoExpectedFiles);
     const after = buildExpectedFilesAfterOperations({ files: run.undoExpectedFiles }, run.appliedOperations);
@@ -246,6 +336,8 @@
   }
 
   function prepareRunUndo(run = {}) {
+    const original = run;
+    run = withAvailableUndo(run);
     const files = getFileUndoOperations(run);
     const restored = new Set(files.filter(operation => operation.type === 'create').map(operation => operation.path));
     const pending = [...files], operations = [];
@@ -255,10 +347,12 @@
         if (index >= 0) operations.push(...pending.splice(index, 1));
       } else if (!restored.has(operation.path)) operations.push(operation);
     }
-    return { ...run, undoOperations: [...operations, ...pending] };
+    return { ...original, undoOperations: [...operations, ...pending],
+      ...(run !== original ? { undoBaseFiles: run.undoBaseFiles, undoExpectedFiles: run.undoExpectedFiles } : {}) };
   }
 
   function textUndoRun(run = {}) {
+    run = withAvailableUndo(run);
     const restored = new Set(getFileUndoOperations(run).flatMap(operation => operation.type === 'create' ? [operation.path]
       : operation.type === 'move' ? [operation.path, operation.to] : []));
     return { ...run,
@@ -332,6 +426,7 @@
   }
 
   function buildSnapshotRestoreUndo(run = {}) {
+    run = withAvailableUndo(run);
     const undoOperations = Array.isArray(run.undoOperations) ? run.undoOperations : [];
     const originalByPath = buildOriginalFilesForSnapshotUndo(run, undoOperations);
     if (!originalByPath.size) {
@@ -571,6 +666,9 @@
   }
 
   return {
+    getUndoUnavailableFiles,
+    withAvailableUndo,
+    compactUnavailableUndoOperations,
     isFileUndoOperation,
     getFileUndoOperations,
     prepareRunUndo,

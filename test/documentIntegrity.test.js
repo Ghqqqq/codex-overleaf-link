@@ -10,6 +10,9 @@ const Guard = require('../extension/src/page/writeGuard');
 const Capture = require('../extension/src/page/trackedChangeCapture');
 const Lifecycle = require('../extension/src/page/trackedChangesLifecycle');
 const Undo = require('../extension/src/shared/undoOperations');
+const Settlement = require('../extension/src/shared/writebackSettlement');
+const Transcript = require('../extension/src/shared/agentTranscript');
+const Completion = require('../extension/src/content/runCompletionMeta');
 const { computeTextPatches } = require('../native-host/src/textPatch');
 const PROJECT = 'document-integrity';
 
@@ -77,6 +80,155 @@ function harness(t, initial, options = {}) {
   };
 }
 
+function writeOutcome(operations, applyResult) {
+  const outcome = applyResult.skipped.length ? 'partial_sync' : 'synced';
+  const status = applyResult.skipped.length ? 'failed' : 'completed';
+  const conclusionSource = { origin: 'product', key: 'writeback', outcome, prefixLength: 0 };
+  const report = Transcript.buildHumanCompletionReport({ mode: 'auto', status,
+    includeWriteResult: true, operations, applyResults: [applyResult], conclusionSource,
+    conclusion: Transcript.projectProductConclusion({ origin: 'product', key: outcome }, 'en') });
+  return Completion.projectFinishedRun({ mode: 'auto', status,
+    settlement: Settlement.settle({ operations, applyResult }).facts,
+    events: [{ kind: 'report', status: report.status, detail: report.text, detailStructured: report.structured }]
+  }, 'en', { projectRunSettlement: Settlement.projectRunSettlement });
+}
+
+test('edits outside a Native insertion rebase without corruption and Undo preserves the concurrent text', async t => {
+  const base = '\\documentclass{article}\n\\begin{document}\nBody text.\n\\bibliography{sample}\n\\end{document}\n';
+  const intended = base.replace('\\end{document}', '% acceptance-probe\n\\end{document}');
+  const prefix = '% manual-edit\n';
+  assert.equal(prefix.length, 14);
+  for (const side of ['before', 'after']) {
+    const current = side === 'before' ? prefix + base : base + prefix;
+    const expected = side === 'before' ? prefix + intended : intended + prefix;
+    const h = harness(t, { 'main.tex': base });
+    const snapshot = h.snapshot();
+    const changes = [{ type: 'write', path: 'main.tex', previousContent: base, content: intended,
+      patches: computeTextPatches(base, intended) }];
+    const operations = Writeback.buildSyncApplyOperations(changes, snapshot);
+    h.files.set('main.tex', current); // The user edits after the model's snapshot.
+    const result = await h.apply(snapshot.files, operations);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(h.files.get('main.tex'), expected);
+    assert.equal(result.applied[0].result.verifiedContent, expected);
+    assert.equal(result.applied[0].result.appliedPatches[0].from,
+      operations[0].patches[0].from + (side === 'before' ? prefix.length : 0));
+    assert.deepEqual(h.writes, ['main.tex']);
+    assert.equal(writeOutcome(operations, result), null, 'successful writes use the ordinary completed card');
+    const checkpoint = JSON.parse(JSON.stringify(Undo.buildUndoCheckpoint(snapshot,
+      result.applied.map(({ operation, result }) => Settlement.attachVerifiedContentToOperation(operation, result)))));
+    assert.equal((await h.apply(checkpoint.undoBaseFiles, checkpoint.undoOperations, { reviewingPolicy: 'no-trace-undo' })).ok, true);
+    assert.equal(h.files.get('main.tex'), current);
+  }
+});
+
+test('overlapping ranges, insertion boundaries and a spanning envelope block the entire file edit', async t => {
+  const base = 'head\ntarget\nend\n', from = base.indexOf('target');
+  const replace = { from, to: from + 6, expected: 'target', insert: 'replacement' };
+  const current = base.replace('target', 'taXget');
+  const cases = [
+    { current, patches: [replace] },
+    { current: '% before\n' + base + '% after\n', patches: [replace] },
+    { current, patches: [{ from: 1, to: 1, expected: '', insert: 'safe' }, replace] },
+    ...[from + 2, from + 3].map(offset => ({ current,
+      patches: [{ from: offset, to: offset, expected: '', insert: 'probe' }] })),
+    { current: base.slice(0, from) + 'manual' + base.slice(from),
+      patches: [{ from, to: from, expected: '', insert: 'probe' }] }
+  ];
+  for (const spec of cases) {
+    const h = harness(t, { 'main.tex': spec.current });
+    const operations = [{ type: 'edit', path: 'main.tex', patches: spec.patches }];
+    const result = await h.apply([{ path: 'main.tex', content: base }], operations);
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped[0].result.failure.code, 'stale_source_changed');
+    assert.equal(result.skipped[0].result.failure.changedDocument, false);
+    assert.equal(h.files.get('main.tex'), spec.current);
+    assert.deepEqual(h.writes, []);
+    assert.equal(writeOutcome(operations, result).kind, 'not-written');
+  }
+});
+
+test('whole-file replacement and find/replace still require a fresh full source', async t => {
+  const base = 'target\n', current = '% manual\n' + base;
+  for (const fields of [{ replaceAll: 'replacement\n' }, { find: 'target', replace: 'replacement' }]) {
+    const h = harness(t, { 'main.tex': current });
+    const result = await h.apply([{ path: 'main.tex', content: base }], [{ type: 'edit', path: 'main.tex', ...fields }]);
+    assert.equal(result.skipped[0].result.failure.code, 'stale_source_changed');
+    assert.equal(h.files.get('main.tex'), current);
+    assert.deepEqual(h.writes, []);
+  }
+});
+
+test('combined inverses map across edits between successful entries or visibly withhold the unsafe file', async t => {
+  for (const overlap of [false, true]) {
+    const base = 'header\nrepeat\nrepeat\nend\n', first = base.slice(0, 7) + base.slice(13);
+    const concurrentAt = overlap ? 7 : 0, concurrent = 'manual\n';
+    const insertManual = text => text.slice(0, concurrentAt) + concurrent + text.slice(concurrentAt);
+    const h = harness(t, { 'main.tex': base, 'safe.tex': 'original\n' }), snapshot = h.snapshot();
+    const operations = Writeback.buildSyncApplyOperations([
+      { type: 'write', path: 'main.tex', previousContent: base, content: first,
+        patches: [{ from: 7, to: 13, expected: 'repeat', insert: '' }] },
+      { type: 'write', path: 'main.tex', previousContent: first, content: first.replace('end', 'END') },
+      { type: 'write', path: 'safe.tex', previousContent: 'original\n', content: 'updated\n' }
+    ], snapshot);
+    let writes = 0;
+    const result = await h.apply(snapshot.files, operations, { onOperationResult: ({ result }) => {
+      if (result.ok && ++writes === 1) h.files.set('main.tex', insertManual(first));
+    } });
+    assert.equal(result.applied.length, 3, JSON.stringify(result));
+    assert.equal(h.files.get('main.tex'), insertManual(first).replace('end', 'END'));
+    const checkpoint = Undo.buildUndoCheckpoint(snapshot,
+      result.applied.map(({ operation, result }) => Settlement.attachVerifiedContentToOperation(operation, result)));
+    const run = { id: 'r', mode: 'auto', status: 'completed', ...JSON.parse(JSON.stringify(checkpoint)),
+      undoExpectedFiles: Undo.selectExpectedFilesForTrackedUndo(snapshot, checkpoint.appliedOperations, [], snapshot.files) };
+    assert.equal(Settlement.projectRunSettlement(run).canUndo, true, 'safe sibling remains undoable');
+    if (overlap) {
+      assert.deepEqual(Undo.getUndoUnavailableFiles(run), [{ path: 'main.tex', code: 'stale_source_changed' }]);
+      assert.deepEqual(run.undoExpectedFiles, [{ path: 'safe.tex', content: 'original\n' }]);
+    } else {
+      assert.deepEqual(Undo.getUndoUnavailableFiles(run), []);
+      assert.equal(run.undoExpectedFiles.find(file => file.path === 'main.tex').content, insertManual(base));
+    }
+    const beforeUndo = h.files.get('main.tex'), writesBeforeUndo = h.writes.length;
+    const restore = Undo.buildSnapshotRestoreUndo(Undo.prepareRunUndo(run));
+    if (!overlap) {
+      const checkpointBefore = JSON.stringify(run);
+      const target = restore.operations.filter(operation => operation.path === 'main.tex');
+      h.files.set('main.tex', 'later change\n' + beforeUndo);
+      const stale = await h.apply(run.undoBaseFiles, target, { reviewingPolicy: 'no-trace-undo' });
+      assert.equal(stale.skipped[0].result.failure.code, 'stale_source_changed');
+      assert.equal(h.writes.length, writesBeforeUndo, 'Undo must still check the current full checkpoint');
+      assert.equal(JSON.stringify(run), checkpointBefore, 'failed admission retains recovery evidence');
+      h.files.set('main.tex', beforeUndo);
+    }
+    const undone = await h.apply(run.undoBaseFiles, restore.operations, { reviewingPolicy: 'no-trace-undo' });
+    assert.equal(undone.ok, true, JSON.stringify(undone));
+    assert.equal(h.files.get('main.tex'), overlap ? beforeUndo : insertManual(base));
+    assert.equal(h.files.get('safe.tex'), 'original\n');
+    if (overlap) {
+      assert.deepEqual(h.writes.slice(writesBeforeUndo), ['safe.tex']);
+      const progressed = Undo.advanceUndoCheckpoint(run, undone, file =>
+        undone.applied.some(entry => entry.operation.path === file.path && entry.result.verifiedContent === file.content));
+      const settled = Settlement.applySettlementTransition(progressed, Settlement.settleLegacyUndo({
+        run: progressed, status: 'applied', result: undone }));
+      assert.equal(settled.undoStatus, 'partial');
+      assert.equal(Settlement.projectRunSettlement(settled).canUndo, false);
+      const I18n = require('../extension/src/shared/i18n');
+      const meta = Completion.projectCompletionMeta([{ key: 'writeResult', value: 'wrote 3 items, skipped 0 items' }], settled,
+        { tx: en => en, tr: key => I18n.t('en', key), isTrackedChangeLifecycleRun: () => false,
+          projectRunSettlement: Settlement.projectRunSettlement });
+      assert.ok(meta.some(row => row.undoUnavailable && row.value.includes('main.tex')));
+      assert.equal(meta[0].value, 'wrote 3 items, skipped 0 items', 'recovery must not rewrite write evidence');
+      assert.equal(Completion.summarizeCompletionMeta(meta, settled, { tx: en => en }).open, true);
+      const retry = Undo.buildSnapshotRestoreUndo(Undo.prepareRunUndo(settled));
+      assert.deepEqual(retry.operations, []);
+      const count = h.writes.length;
+      await h.apply(settled.undoBaseFiles, retry.operations, { reviewingPolicy: 'no-trace-undo' });
+      assert.equal(h.writes.length, count, 'withheld Undo cannot dispatch a shifted inverse');
+    }
+  }
+});
+
 test('two-file write, server save verification and persisted Undo restore all original bytes including an empty file', async t => {
   const initial = { 'main.tex': 'Original 正文\n', 'nested/empty.tex': '' }, h = harness(t, initial);
   const before = h.snapshot();
@@ -105,19 +257,40 @@ test('an empty baseline changed by a collaborator cannot be overwritten', async 
   assert.deepEqual(h.writes, []);
 });
 
-test('a nonconflicting insertion keeps later collaborator text', async t => {
-  const h = harness(t, { 'main.tex': 'collaborator content' });
-  const result = await h.apply([{ path: 'main.tex', content: '' }], [{ type: 'edit', path: 'main.tex', patches: computeTextPatches('', 'prefix ') }]);
+test('line-ending conversion still writes and undoes the exact editor bytes', async t => {
+  const base = 'first\r\nlast\r\n', original = 'first\nlast\n', content = 'first\r\ninserted\r\nlast\r\n';
+  const h = harness(t, { 'main.tex': original }), snapshot = { files: [{ path: 'main.tex', content: base }] };
+  const operations = Writeback.buildSyncApplyOperations([{ type: 'write', path: 'main.tex', previousContent: base,
+    content, patches: computeTextPatches(base, content) }], snapshot);
+  const result = await h.apply(snapshot.files, operations);
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(h.files.get('main.tex'), 'prefix collaborator content');
+  assert.equal(h.files.get('main.tex'), content.replace(/\r\n/g, '\n'));
+  const checkpoint = Undo.buildUndoCheckpoint(snapshot, result.applied.map(({ operation, result }) => ({ ...operation, verifiedContent: result.verifiedContent })));
+  assert.equal((await h.apply(checkpoint.undoBaseFiles, checkpoint.undoOperations, { reviewingPolicy: 'no-trace-undo' })).ok, true);
+  assert.equal(h.files.get('main.tex'), original);
+});
+
+test('a stored inverse for a previously shifted insertion still removes only that insertion', async t => {
+  const base = 'body\n\\bibliography{sample}\n\\end{document}\n', prefix = '% manual-edit\n';
+  const from = base.indexOf('\\end{document}'), insert = '% acceptance-probe\n';
+  const before = prefix + base;
+  const written = before.slice(0, from) + insert + before.slice(from);
+  const checkpoint = JSON.parse(JSON.stringify(Undo.buildUndoCheckpoint({ files: [{ path: 'main.tex', content: base }] },
+    [{ type: 'edit', path: 'main.tex', patches: [{ from, to: from, expected: '', insert }], verifiedContent: written }])));
+  const h = harness(t, { 'main.tex': written });
+  const result = await h.apply(checkpoint.undoBaseFiles, checkpoint.undoOperations, { reviewingPolicy: 'no-trace-undo' });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(h.files.get('main.tex'), before);
 });
 
 test('selecting a different file without switching its editor never writes to the old document', async t => {
-  const initial = { 'main.tex': 'root body', 'nested/empty.tex': '' }, h = harness(t, initial, { stuckEditor: true });
-  const result = await h.apply(h.snapshot().files, [{ type: 'edit', path: 'nested/empty.tex', replaceAll: 'new body' }]);
-  assert.equal(result.ok, false);
-  assert.deepEqual(Object.fromEntries(h.files), initial);
-  assert.deepEqual(h.writes, []);
+  for (const target of ['', 'root body']) {
+    const initial = { 'main.tex': 'root body', 'nested/target.tex': target }, h = harness(t, initial, { stuckEditor: true });
+    const result = await h.apply(h.snapshot().files, [{ type: 'edit', path: 'nested/target.tex', replaceAll: 'new body' }]);
+    assert.equal(result.ok, false);
+    assert.deepEqual(Object.fromEntries(h.files), initial);
+    assert.deepEqual(h.writes, [], 'even matching baseline bytes cannot confirm a document switch');
+  }
 });
 
 test('a changed project identity blocks the Page mutation', async t => {
@@ -130,12 +303,16 @@ test('a changed project identity blocks the Page mutation', async t => {
 });
 
 test('an editor readback mismatch cannot become a successful write', async t => {
-  const h = harness(t, { 'main.tex': 'original' }, { corruptWrite: true });
-  const result = await h.apply(h.snapshot().files, [{ type: 'edit', path: 'main.tex', replaceAll: 'new' }]);
-  assert.equal(result.ok, false);
-  assert.equal(result.applied.length, 0);
-  assert.equal(result.skipped[0].result.failure.changedDocument, true);
-  assert.notEqual(h.files.get('main.tex'), 'new');
+  for (const rebased of [false, true]) {
+    const h = harness(t, { 'main.tex': rebased ? 'manual\noriginal' : 'original' }, { corruptWrite: true });
+    const operations = [{ type: 'edit', path: 'main.tex', ...(rebased
+      ? { patches: [{ from: 4, to: 4, expected: '', insert: 'probe' }] } : { replaceAll: 'new' }) }];
+    const result = await h.apply([{ path: 'main.tex', content: 'original' }], operations);
+    assert.equal(result.ok, false);
+    assert.equal(result.applied.length, 0);
+    assert.equal(result.skipped[0].result.failure.changedDocument, true);
+    assert.equal(writeOutcome(operations, result).kind, 'check-overleaf');
+  }
 });
 
 test('Track Accept uses persisted ownership after refresh and preserves text and unrelated changes', async t => {

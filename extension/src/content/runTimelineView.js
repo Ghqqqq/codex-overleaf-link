@@ -1049,7 +1049,7 @@
     }
 
     const projection = RunResultActions.projectUndoAvailability(run, projectRunSettlement);
-    if (!projection.canUndo && run.undoStatus !== 'applied') {
+    if (!projection.canUndo && run.undoStatus !== 'applied' && !projection.undoUnavailable?.length) {
       button.hidden = true;
       return;
     }
@@ -1057,7 +1057,7 @@
     button.hidden = false;
     const inFlight = trackedChangeInFlight?.get(run.id) === 'reject';
     const applied = run.undoStatus === 'applied' && !inFlight;
-    button.disabled = inFlight || (run.undoStatus === 'running' && !run.undoRecoveryCheckRequired) || run.undoStatus === 'applied';
+    button.disabled = !projection.canUndo || inFlight || (run.undoStatus === 'running' && !run.undoRecoveryCheckRequired) || run.undoStatus === 'applied';
     button.textContent = applied
       ? tr('undoApplied')
       : (run.partialWriteback ? tr('undoPartialRun') : tr('undoRun'));
@@ -1065,6 +1065,8 @@
       ? tr('undoAppliedTitle')
       : (run.partialWriteback ? tr('undoPartialRunTitle') : tr('undoRunTitle'));
     if (run.undoRecoveryUnavailable) button.title = tx('Undo recovery checks are unavailable. Reload this page after the connection recovers.', '撤销恢复检查暂不可用，请在连接恢复后重新加载此页面。');
+    if (projection.undoUnavailable?.length) button.title = tr('failureReason_snapshot_undo_unavailable_user')
+      + ' ' + projection.undoUnavailable.map(item => item.path).join(', ');
     button.addEventListener('click', event => {
       event.stopPropagation();
       undoRun(run.id);
@@ -1081,6 +1083,9 @@
     const status = run.trackedChangeStatus || '';
     const inFlight = trackedChangeInFlight.get(run.id);
     const projection = projectRunSettlement(run);
+    const undoTitle = projection.undoUnavailable?.length
+      ? tr('failureReason_snapshot_undo_unavailable_user') + ' ' + projection.undoUnavailable.map(item => item.path).join(', ')
+      : tr('undoRunTitle');
     // §7 settlement matrix: needs_review keeps BOTH controls visible AND
     // actionable. Branch placed before the terminal branches so a
     // needs_review run is never treated as terminal.
@@ -1088,7 +1093,7 @@
       button.hidden = false;
       button.disabled = !projection.canUndo || inFlight === 'reject' || inFlight === 'accept';
       button.textContent = tr('undoRun');
-      button.title = tr('undoRunTitle');
+      button.title = undoTitle;
       button.addEventListener('click', event => {
         event.stopPropagation();
         undoRun(run.id);
@@ -1118,7 +1123,7 @@
     button.hidden = false;
     button.disabled = !projection.canUndo || inFlight === 'reject' || inFlight === 'accept';
     button.textContent = tr('undoRun');
-    button.title = tr('undoRunTitle');
+    button.title = undoTitle;
     button.addEventListener('click', event => {
       event.stopPropagation();
       undoRun(run.id);

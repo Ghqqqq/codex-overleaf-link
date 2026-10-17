@@ -28,7 +28,18 @@
   const SETTLEMENT_FACTS_MAX_BYTES = SettlementFacts.SETTLEMENT_FACTS_MAX_BYTES;
   const RECOVERY_FIELDS = SettlementFacts.RECOVERY_FIELDS;
   const compactSettlementFacts = SettlementFacts.compactSettlementFacts;
-  const projectRunSettlement = SettlementFacts.projectRunSettlement;
+  function projectRunSettlement(run = {}) {
+    const projection = SettlementFacts.projectRunSettlement(run);
+    const undoUnavailable = UndoOperations.getUndoUnavailableFiles(run);
+    if (!undoUnavailable.length) return projection;
+    const payload = UndoOperations.withAvailableUndo(run.recoveryPayload || run);
+    // Forward receipts remain audit evidence, not fallback Undo authority for
+    // a run whose inverse checkpoint could not be safely composed.
+    const available = SettlementFacts.projectRunSettlement({ ...run,
+      recoveryPayload: { ...payload, appliedOperations: [] } });
+    return { ...projection, canUndo: available.canUndo, undoUnavailable,
+      actions: { ...projection.actions, undo: available.canUndo } };
+  }
   const deriveLegacyProjection = SettlementFacts.deriveLegacyProjection;
   const aggregateFileSettlements = EvidenceProjection.aggregateFileSettlements;
   const deriveAppliedEvidence = EvidenceProjection.deriveAppliedEvidence;
@@ -297,7 +308,8 @@
     // Both actions cover every targeted file. Partial success must retain
     // the original recovery material for unresolved siblings.
     const incomplete = collectRunResultSkipped(input.result).length > 0
-      || input.result?.ok === false;
+      || input.result?.ok === false
+      || (kind === 'reject' && UndoOperations.getUndoUnavailableFiles(input.run).length > 0);
     const needsReview = incomplete || !successful || failures.some(failure =>
       failure.terminalState === 'needs_review' || reviewCodes.has(failure.code)
     );
@@ -340,6 +352,7 @@
 
   function settleLegacyUndo(input = {}) {
     const status = input.status === 'applied'
+      && !UndoOperations.getUndoUnavailableFiles(input.run).length
       && isUndoResultEffectivelyApplied(input.run, input.result, input.run?.undoOperations) ? 'applied' : 'partial';
     const recovery = preserveRecovery();
     return {
@@ -650,7 +663,12 @@
       ? { v: 1, kind: rawMove.kind, sha256: rawMove.sha256.toLowerCase(), sourceEntityId: rawMove.sourceEntityId,
         targetEntityId: rawMove.targetEntityId, ...(['doc', 'file'].includes(rawMove.entityType) ? { entityType: rawMove.entityType } : {}), ...(createdDirectories.length ? { createdDirectories } : {}) } : null;
     if (!(operation.type === 'edit' && typeof result?.verifiedContent === 'string') && !createdDirectories.length && !moveProof) return operation;
-    return { ...operation, ...(operation.type === 'edit' && typeof result?.verifiedContent === 'string' ? { verifiedContent: result.verifiedContent } : {}),
+    return { ...operation, ...(operation.type === 'edit' && typeof result?.verifiedContent === 'string' ? {
+      verifiedContent: result.verifiedContent,
+      ...(result.ok === true && result.verified === true && Array.isArray(result.appliedPatches)
+        ? { appliedPatches: result.appliedPatches.map(patch => ({ from: patch.from, to: patch.to,
+          expected: String(patch.expected ?? ''), insert: String(patch.insert ?? '') })) } : {})
+    } : {}),
       ...(createdDirectories.length ? { createdDirectories } : {}), ...(moveProof ? { moveProof } : {}) };
   }
 
