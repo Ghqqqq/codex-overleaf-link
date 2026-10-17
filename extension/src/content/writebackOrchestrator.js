@@ -751,24 +751,28 @@
         let logResult = null;
         try {
           logResult = await callPageBridge('getCompileLog', {
+            captureId: result.compile?.captureId,
             triggerIfStale: false,
             maxAgeMs: 30000,
             waitForSaveMs: 0,
             runProjectId: options.runProjectId || getCurrentRunView()?.runProjectId || getCurrentProjectId()
           });
-        } catch (_error) {
-          logResult = null;
+        } catch (error) {
+          logResult = { ok: false, reason: error.message || 'compile_log_fetch_failed' };
         }
-        const compile = result.compile;
+        const compile = compileAdapter.buildPostWriteCompileSummary({ result, logResult });
+        compile.errors = compile.errors.map(value => CompileAdapter.localizeCompileReason(value, getLocale()));
         if (compile?.status === 'success') {
           appendRunEvent({ title: tx('Compile succeeded.', '编译成功。'), status: 'completed',
             activity: activity('completed', [...(logResult?.errors || []), ...(logResult?.warnings || [])].slice(0, 5).map(CompileAdapter.formatCompileDiagnosticForSummary).join('\n')) });
         } else if (compile?.status === 'triggered') {
-          appendRunEvent({ title: tx('Overleaf compile was triggered. The page will continue showing progress.', '已触发 Overleaf 编译；页面会继续显示编译进度。'), status: 'completed', activity: activity('triggered') });
+          appendRunEvent({ title: tx('Overleaf compile was triggered. The page will continue showing progress.', '已触发 Overleaf 编译；页面会继续显示编译进度。'), status: 'completed', activity: activity('triggered', compile.reason) });
         } else {
-          appendRunEvent({ title: tx(`Compile finished with status: ${compile?.status || 'unknown'}`, `编译完成，状态：${compile?.status || '未知'}`), status: 'completed', activity: activity(compile?.status === 'failed' ? 'failed' : 'unknown') });
+          appendRunEvent({ title: compile.status === 'unconfirmed' ? tr('runCompileUnconfirmed')
+            : tx(`Compile finished with status: ${compile.status}`, `编译完成，状态：${compile.status}`),
+            status: 'completed', activity: activity(compile.status === 'failed' ? 'failed' : 'unknown', compile.errors.join('\n') || compile.reason) });
         }
-        return compileAdapter.buildPostWriteCompileSummary({ result, logResult });
+        return compile;
       } else {
         const reason = CompileAdapter.localizeCompileReason(result?.reason, getLocale()) || tx('unknown reason', '未知原因');
         appendRunEvent({ title: tx(`Post-write compile did not succeed: ${reason}`, `写后编译未成功：${reason}`), status: 'failed', activity: activity('failed', reason) });
@@ -814,6 +818,8 @@
           `已触发写后编译；最新日志显示 ${warnings.length} 个警告。`
         )
         : tx('Post-write compile was triggered; Overleaf may still be updating the result.', '已触发写后编译；Overleaf 可能仍在更新结果。');
+    } else if (compileSummary.status === 'unconfirmed') {
+      summary = tr('runCompileUnconfirmed');
     } else if (compileSummary.status === 'failed') {
       const reason = compileAdapter.localizeCompileReason(compileSummary.reason, getLocale());
       summary = tx(

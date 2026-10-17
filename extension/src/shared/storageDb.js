@@ -781,6 +781,19 @@
         if (event.failure) {
           compact.failure = compactStructuredEventValueForStorage(event.failure, 0);
         }
+        if (Array.isArray(event.compileErrors) && event.compileErrors.length) {
+          compact.compileErrors = event.compileErrors.slice(0, 5)
+            .map(item => normalizeDisplayTextForStorage(String(item), SESSION_STORAGE_LIMITS.detailChars))
+            .filter(Boolean);
+        }
+        if (Array.isArray(event.rejectedHunks) && event.rejectedHunks.length) {
+          compact.rejectedHunks = event.rejectedHunks.slice(0, 10)
+            .map(item => ({
+              path: normalizeDisplayTextForStorage(String(item?.path || ''), SESSION_STORAGE_LIMITS.pathChars),
+              summary: normalizeDisplayTextForStorage(String(item?.summary || ''), SESSION_STORAGE_LIMITS.detailChars)
+            }))
+            .filter(item => item.path);
+        }
         return compact;
       });
   }

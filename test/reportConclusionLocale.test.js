@@ -141,3 +141,74 @@ test('compile projection removes only an intact product suffix and preserves the
   run.events[0].detailStructured.conclusion += ' user edit';
   assert.equal(projectOutcome(run), null);
 });
+
+const CompileAdapter = require('../extension/src/shared/compileAdapter');
+const CompileBridge = require('../extension/src/page/compileBridge');
+function compileHarness({ response = () => compileResponse('success'), log = '' } = {}) {
+  const window = { location: { origin: 'https://www.overleaf.com' }, CodexOverleafCompileAdapter: CompileAdapter,
+    async fetch(url, init) {
+      if (init?.method === 'POST') return new Response(JSON.stringify(await response()), { status: 200 });
+      return new Response(log, { status: 200 });
+    } };
+  // Overleaf's idle main Recompile button; clicking it posts one compile.
+  const button = { tagName: 'BUTTON', textContent: 'Recompile', disabled: false,
+    classList: { contains: name => name === 'compile-button' }, getAttribute: () => null, closest: () => null,
+    click() { void window.fetch('/project/fixture/compile', { method: 'POST' }); } };
+  const bridge = CompileBridge.create({ window, document: { querySelectorAll: () => [button] },
+    waitForSaveState: async () => ({ state: 'verified_saved' }) });
+  bridge.install(); bridge.markSourceEdited(1);
+  return { bridge };
+}
+const compileResponse = status => ({ status,
+  outputFiles: [{ path: 'output.log', url: '/build/output.log' }, { path: 'output.pdf', url: '/build/output.pdf' }] });
+
+test('a successful compile response with TeX errors projects compile errors, never a successful compile', async () => {
+  const h = compileHarness({ response: () => compileResponse('success'), log: [
+    'This is pdfTeX', './main.tex:119: Undefined control sequence.', 'l.119 \\undefinedcommandxyz', '',
+    '! Missing $ inserted.', 'l.120 example', '', 'Output written on output.pdf (1 page).'
+  ].join('\n') });
+  const result = await h.bridge.triggerCompile({ preferUiClick: true });
+  const logResult = await h.bridge.getCompileLog({ triggerIfStale: false, captureId: result.compile.captureId });
+  const summary = CompileAdapter.buildPostWriteCompileSummary({ result, logResult });
+  assert.equal(summary.status, 'failed');
+  assert.equal(summary.errors.length, 2);
+  assert.match(summary.errors[0], /main\.tex:119: Undefined control sequence/);
+  const prefix = 'Model answer';
+  const source = { origin: 'product', key: 'writeback', outcome: 'synced', prefixLength: prefix.length,
+    hasCompile: true, compileStatus: summary.status, errorCount: summary.errors.length, errors: summary.errors };
+  const run = outcomeRun({ conclusion: prefix + '\nPost-write compile check: 2 remaining error(s): ' + summary.errors.join('; '),
+    conclusionSource: source, compileErrors: summary.errors }, { status: 'completed' });
+  for (const locale of ['en', 'zh']) {
+    const outcome = projectOutcome(run, locale);
+    assert.equal(outcome.kind, 'compile-errors');
+    assert.equal(outcome.compileCount, 2);
+    assert.equal(run.events[0].detailStructured.conclusionSource.compileStatus, 'failed');
+  }
+});
+
+test('compiler failure without a log is an error; missing or untimely success evidence is unconfirmed', async () => {
+  const h = compileHarness({ response: () => ({ status: 'failure', outputFiles: [] }) });
+  const result = await h.bridge.triggerCompile({ preferUiClick: true });
+  const failed = CompileAdapter.buildPostWriteCompileSummary({ result });
+  assert.equal(failed.status, 'failed');
+  assert.ok(failed.errors.length > 0);
+  const success = { ok: true, resultCaptured: true, compile: { ok: true, status: 'success', captureId: 1 } };
+  for (const logResult of [null, { ok: false }, { ok: true, fresh: false, captureId: 1 },
+    { ok: true, fresh: true, captureId: 2, errors: [] }]) {
+    const summary = CompileAdapter.buildPostWriteCompileSummary({ result: success, logResult });
+    assert.equal(summary.status, 'unconfirmed');
+    assert.equal(summary.errors.length, 0);
+  }
+  assert.equal(CompileAdapter.buildPostWriteCompileSummary({ result: success,
+    logResult: { ok: true, fresh: true, captureId: 1, errors: [], warnings: [] } }).status, 'success');
+  assert.equal(CompileAdapter.buildPostWriteCompileSummary({ result: { ...success, compile: { ...success.compile, fromCache: true } },
+    logResult: { ok: true, fresh: true, captureId: 1, errors: [] } }).status, 'unconfirmed');
+  for (const locale of ['en', 'zh']) {
+    const source = { origin: 'product', key: 'writeback', outcome: 'synced', prefixLength: 0,
+      hasCompile: true, compileStatus: 'unconfirmed' };
+    const conclusion = productText('synced', locale) + '\n' + require('../extension/src/shared/i18n').t(locale, 'runCompileUnconfirmed');
+    const saved = saveReport({ conclusion, conclusionSource: source }, locale);
+    assert.notEqual(project(saved, locale === 'en' ? 'zh' : 'en'), conclusion);
+    assert.equal(saved.event.detailStructured.conclusionSource.compileStatus, 'unconfirmed');
+  }
+});

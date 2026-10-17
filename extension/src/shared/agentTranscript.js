@@ -1162,6 +1162,7 @@
         : status === 'triggered' ? (warnings
           ? tx(`Post-write compile was triggered; latest log shows ${warnings} warning(s).`, `已触发写后编译；最新日志显示 ${warnings} 个警告。`)
           : tx('Post-write compile was triggered; Overleaf may still be updating the result.', '已触发写后编译；Overleaf 可能仍在更新结果。'))
+        : status === 'unconfirmed' ? getI18nModule().t(language, 'runCompileUnconfirmed')
         : status === 'failed' ? tx(`Post-write compile check failed: ${reason || 'unknown reason'}`,
           `写后编译检查失败：${reason || '未知原因'}`)
         : tx(`Post-write compile finished with status: ${status || 'unknown'}.`, `写后编译完成，状态：${status || '未知'}。`);

@@ -142,3 +142,48 @@ test('oversized new data leaves durable history intact and a later valid save su
     assert.equal((await connect(network, 2).getRecord('sessions', 's')).task, 'Valid retry');
   } finally { network.close(); }
 });
+
+test('compile repair diagnostics and rejected hunks survive shared storage and hydration within display limits', async () => {
+  const Compile = require('../extension/src/shared/compileAdapter');
+  const Transcript = require('../extension/src/shared/agentTranscript');
+  const Completion = require('../extension/src/content/runCompletionMeta');
+  const network = createNetwork();
+  try {
+    const compileErrors = ['Undefined control sequence.\nl.119 \\undefinedcommandxyz', 'x'.repeat(4000),
+      ...Array.from({ length: 5 }, (_, i) => 'LaTeX error ' + i)];
+    const rejectedHunks = Array.from({ length: 12 }, (_, i) => ({
+      path: i ? `chapter-${i}.tex` : 'p'.repeat(300) + '.tex',
+      summary: i ? `Rejected edit ${i}` : 's'.repeat(4000), privatePayload: 'must not persist'
+    }));
+    const errors = compileErrors.slice(0, 3).map(Compile.formatCompileDiagnosticForSummary);
+    const prefix = 'Updated the document.';
+    const report = Transcript.buildHumanCompletionReport({ status: 'completed',
+      conclusion: prefix + '\nPost-write compile check: 7 remaining error(s): ' + errors.join('; '),
+      conclusionSource: { origin: 'product', key: 'writeback', outcome: 'synced', prefixLength: prefix.length,
+        hasCompile: true, compileStatus: 'failed', errorCount: 7, errors } });
+    const session = { ...record('compile-repair'), runs: [{ id: 'r', task: 'Compile check', mode: 'auto',
+      status: 'completed', runProjectId: scope.projectId, events: [{ kind: 'report', title: report.title, status: report.status,
+        detail: report.text, detailStructured: report.structured, compileErrors, rejectedHunks }] }] };
+    const projected = Db.buildSessionRecord(session).runs[0].events[0];
+    assert.equal(projected.compileErrors.length, 5);
+    assert.equal(projected.compileErrors[0], compileErrors[0]);
+    assert.equal(projected.compileErrors[1].length, 3000);
+    assert.equal(projected.rejectedHunks.length, 10);
+    assert.equal(projected.rejectedHunks[0].path.length, 240);
+    assert.equal(projected.rejectedHunks[0].summary.length, 3000);
+    assert.ok(projected.rejectedHunks.every(item => !('privatePayload' in item)));
+    await persist(connect(network, 1), State.normalizePanelState({ activeSessionId: session.id, sessions: [session] }));
+    const loaded = JSON.parse(JSON.stringify(await connect(network, 2).getRecord('sessions', session.id)));
+    const run = State.normalizePanelState({ activeSessionId: session.id, sessions: [loaded] }).runs[0];
+    const restored = run.events[0];
+    assert.deepEqual(restored.compileErrors, projected.compileErrors);
+    assert.deepEqual(restored.rejectedHunks, projected.rejectedHunks);
+    assert.equal(restored.detailStructured.conclusionSource.compileStatus, 'failed');
+    for (const locale of ['en', 'zh']) {
+      const outcome = Completion.projectFinishedRun(run, locale);
+      assert.equal(outcome.kind, 'compile-errors');
+      assert.equal(outcome.compileCount, 7);
+      assert.deepEqual(outcome.compileErrors, errors);
+    }
+  } finally { network.close(); }
+});

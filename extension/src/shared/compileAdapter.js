@@ -11,22 +11,37 @@
   const COMPILABLE_EXTENSIONS = new Set(['.tex', '.bib', '.sty', '.cls', '.bst', '.bbx', '.cbx']);
   function parseCompileResponse(response) {
     if (!response || typeof response !== 'object') return { ok: false, reason: 'Invalid compile response: not an object' };
-    if (!Array.isArray(response.outputFiles)) return { ok: false, reason: 'Invalid compile response: outputFiles is not an array' };
-    const logFile = response.outputFiles.find(function (file) {
+    if (!Array.isArray(response.outputFiles)) return { ok: false, status: response.status, reason: 'Invalid compile response: outputFiles is not an array' };
+    const logFile = response.outputFiles.find(file => /(^|\/)output\.log$/.test(file?.path || '')) || response.outputFiles.find(function (file) {
       if (!file) return false;
       if (file.type === 'log') return true;
       if (typeof file.path === 'string' && file.path.endsWith('.log')) return true;
       return false;
     });
-    if (!logFile) return { ok: false, reason: 'No log file found in compile output' };
-    var logUrl = logFile.url || null;
-    if (!logUrl) return { ok: false, reason: 'Log file has no URL' };
+    if (!logFile) return { ok: false, status: response.status, reason: 'No log file found in compile output' };
+    var logUrl = typeof logFile.url === 'string' ? logFile.url : null;
+    if (!logUrl) return { ok: false, status: response.status, reason: 'Log file has no URL' };
     return {
       ok: true,
       status: response.status,
+      fromCache: response.fromCache === true,
       logUrl: logUrl,
-      logPath: logFile.path || null
+      logPath: logFile.path || null,
+      build: logFile.build || null,
+      pdfDownloadDomain: normalizePdfDownloadDomain(response.pdfDownloadDomain),
+      clsiServerId: typeof response.clsiServerId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(response.clsiServerId)
+        ? response.clsiServerId : null
     };
+  }
+
+  function normalizePdfDownloadDomain(value) {
+    if (typeof value !== 'string' || !/^https:\/\/[^\s\\]+$/i.test(value)) return null;
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash ? value : null;
+    } catch (_error) {
+      return null;
+    }
   }
 
   function extractErrorBlocks(lines) {
@@ -35,7 +50,7 @@
 
     while (i < lines.length && blocks.length < 20) {
       var line = lines[i];
-      if (line.startsWith('!') || /^l\.\d+/.test(line)) {
+      if (isLogErrorLine(line) || /^l\.\d+/.test(line)) {
         var block = [];
         // Collect surrounding context: go back up to 2 lines for pre-context
         var start = Math.max(0, i - 2);
@@ -106,6 +121,12 @@
     return COMPILABLE_EXTENSIONS.has(ext);
   }
 
+  function isLogErrorLine(line) {
+    // TeX's -file-line-error output (used by Overleaf) has no leading '!'.
+    return line.startsWith('!') || /^Runaway argument/.test(line)
+      || (/^(?:\.{0,2}\/|[A-Za-z]:[\\/])?.+?:\d+:\s+\S/.test(line) && !/\bWarning\b/i.test(line));
+  }
+
   function parseLogErrors(logContent) {
     var result = { errors: [], warnings: [] };
 
@@ -115,20 +136,23 @@
 
     var lines = logContent.split('\n');
 
-    // Extract errors: lines starting with '!' plus up to 3 following context lines
+    // Retain the bounded error list; consumers limit displayed snippets separately.
     for (var i = 0; i < lines.length && result.errors.length < 50; i++) {
-      if (lines[i].startsWith('!')) {
+      if (isLogErrorLine(lines[i])) {
         var errorLines = [lines[i]];
         for (var j = 1; j <= 3 && (i + j) < lines.length; j++) {
+          if (!lines[i + j].trim() || isLogErrorLine(lines[i + j])) break;
           errorLines.push(lines[i + j]);
         }
         result.errors.push(errorLines.join('\n'));
       }
     }
 
-    // Extract warnings: lines matching /Warning/i that don't start with whitespace
+    // Count only the warning forms Overleaf's own log parser reports, so
+    // informational lines such as "Package: infwarerr … info/warning/error
+    // messages" are not shown as warnings.
     for (var k = 0; k < lines.length && result.warnings.length < 50; k++) {
-      if (/Warning/i.test(lines[k]) && !/^\s/.test(lines[k])) {
+      if (/^LaTeX(?:3| Font)? Warning: /.test(lines[k]) || /^(?:Package|Class|Module) \b.+\b Warning:/.test(lines[k])) {
         result.warnings.push(lines[k]);
       }
     }
@@ -137,18 +161,35 @@
   }
 
   function buildPostWriteCompileSummary({ result = null, logResult = null, error = null } = {}) {
-    const logAvailable = logResult?.ok === true;
+    const captured = result?.ok === true && result.resultCaptured === true
+      && Number.isSafeInteger(result.compile?.captureId) && result.compile.captureId > 0;
+    const logAvailable = captured && logResult?.ok === true && logResult.fresh === true
+      && result.compile?.captureId === logResult.captureId;
     const errors = logAvailable && Array.isArray(logResult.errors)
-      ? logResult.errors.slice(0, 5).map(formatCompileDiagnosticForSummary)
+      ? logResult.errors.map(formatCompileDiagnosticForSummary)
       : [];
     const warnings = logAvailable && Array.isArray(logResult.warnings)
       ? logResult.warnings.slice(0, 5).map(formatCompileDiagnosticForSummary)
       : [];
-    const failed = Boolean(error) || !result?.ok;
+    const compilerFailed = captured && logResult?.fresh !== false
+      && ['failed', 'failure', 'error', 'timedout', 'timeout'].includes(result.compile?.status);
+    if (compilerFailed && !errors.length) errors.push('Post-write compile failed.');
+    const failed = compilerFailed || errors.length > 0;
+    const success = captured && result.compile?.ok === true && result.compile.status === 'success'
+      && result.compile.fromCache !== true && logAvailable;
+    const status = failed ? 'failed' : success ? 'success' : result?.ok && !captured ? 'triggered' : 'unconfirmed';
+    let reason = error ? error?.message || 'Post-write compile failed.'
+      : !result?.ok ? result?.reason || 'Post-write compile did not succeed.' : result.reason || '';
+    if (status === 'unconfirmed' || status === 'triggered') {
+      // Technical evidence belongs in the existing activity output, not the outcome label.
+      reason ||= logResult?.reason || (!captured ? 'compile_capture_missing'
+        : result.compile?.reason || (result.compile.fromCache ? 'compile_response_from_cache'
+          : logResult?.captureId !== result.compile.captureId ? 'compile_log_capture_mismatch'
+            : logResult?.fresh === false ? 'compile_log_stale' : 'compile_result_unconfirmed'));
+    }
     return {
-      status: failed ? 'failed' : result.compile?.status || 'triggered',
-      reason: error ? error?.message || 'Post-write compile failed.'
-        : !result?.ok ? result?.reason || 'Post-write compile did not succeed.' : result.reason || '',
+      status,
+      reason,
       errors,
       warnings,
       logAvailable
