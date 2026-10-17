@@ -40,6 +40,9 @@
   const ICONS = {
     alert: '<circle cx="8" cy="8" r="6"/><path d="M8 4.5v4 M8 11h.01"/>',
     minus: '<circle cx="8" cy="8" r="6"/><path d="M5 8h6"/>',
+    half: '<circle cx="6" cy="6" r="5"/><path d="M6 1a5 5 0 0 0 0 10z" fill="currentColor" stroke="none"/>',
+    written: '<path d="m2.4 6.3 2.4 2.4 4.8-5.2" stroke-width="1.5"/>',
+    skipped: '<path d="m3 3 6 6M9 3 3 9" stroke-width="1.5"/>',
     check: '<path d="m3.5 8 3 3 6-6"/>',
     file: '<path d="M9 2H4v12h8V5L9 2Z M9 2v4h3 M6 9h4 M6 11h3"/>',
     refresh: '<path d="M4.2 5.3A5 5 0 1 1 3.6 10"/><path d="M4.2 2.2v3.1H1.1"/>'
@@ -50,7 +53,8 @@
   })[char]);
 
   function icon(name, className = 'codex-glyph') {
-    return '<svg class="' + className + '" viewBox="0 0 16 16" aria-hidden="true" focusable="false">'
+    const size = ['half', 'written', 'skipped'].includes(name) ? 12 : 16;
+    return '<svg class="' + className + '" viewBox="0 0 ' + size + ' ' + size + '" aria-hidden="true" focusable="false">'
       + (ICONS[name] || ICONS.check) + '</svg>';
   }
 
@@ -104,10 +108,11 @@
       const files = tx(facts.files + (facts.files === 1 ? ' file' : ' files'), facts.files + ' 个文件');
       // A clipped history only proves the files it recorded.
       parts.push('<span>' + escapeHtml(facts.filesClipped ? tx(files + ' recorded', '已记录 ' + files) : files) + '</span>');
-      if (facts.added || facts.removed) {
-        parts.push('<span><span class="run-summary-add">+' + Number(facts.added || 0) + '</span> <span class="run-summary-del">−'
-          + Number(facts.removed || 0) + '</span></span>');
-      }
+      // Show only nonzero sides; a red "−0" reads as a problem that isn't there.
+      const counts = [];
+      if (Number(facts.added) > 0) counts.push('<span class="run-summary-add">+' + Number(facts.added) + '</span>');
+      if (Number(facts.removed) > 0) counts.push('<span class="run-summary-del">−' + Number(facts.removed) + '</span>');
+      if (counts.length) parts.push('<span>' + counts.join(' ') + '</span>');
     } else if (facts.steps > 0) {
       parts.push('<span>' + escapeHtml(tx(facts.steps + ' steps', facts.steps + ' 步')) + '</span>');
     }
@@ -258,7 +263,7 @@
       } else if (['failed', 'not-started', 'not-started-cancelled'].includes(facts.kind)) {
         el.innerHTML = icon(facts.kind === 'not-started-cancelled' ? 'minus' : 'alert') + '<span>' + escapeHtml(facts.text) + '</span>';
       } else if (['didnt-finish', 'partly-written', 'not-written', 'check-overleaf'].includes(facts.kind)) {
-        el.innerHTML = icon(facts.kind === 'check-overleaf' ? 'alert' : 'minus') + '<span>' + escapeHtml(facts.text) + '</span>'
+        el.innerHTML = icon(facts.kind === 'check-overleaf' ? 'alert' : facts.kind === 'partly-written' ? 'half' : 'minus') + '<span>' + escapeHtml(facts.text) + '</span>'
           + (Number.isFinite(facts.elapsedMs) ? '<span class="run-summary-sep">·</span><span>' + escapeHtml(formatElapsed(facts.elapsedMs)) + '</span>' : '');
       } else {
         el.textContent = facts.text || '';

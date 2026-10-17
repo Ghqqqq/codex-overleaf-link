@@ -3120,6 +3120,7 @@
   --tl-border: #2a2a2a;        /* dividers / resting control borders */
   --tl-border-strong: #3a3a3a; /* elevated popover / tray borders */
   --tl-accent: #6f9fd8;
+  --tl-action: #8cc79c;
   --tl-accent-wash: rgba(111, 159, 216, 0.14); /* selected/active accent fill */
   --tl-ok-wash: rgba(137, 209, 133, 0.14);
   --tl-fail-wash: rgba(224, 121, 95, 0.16);
@@ -3164,6 +3165,7 @@
   --tl-border: #d7dbe0;
   --tl-border-strong: #c4c9d0;
   --tl-accent: #2f6fb0;
+  --tl-action: #2c7044;
   --tl-accent-wash: rgba(47, 111, 176, 0.12);
   --tl-ok-wash: rgba(46, 158, 84, 0.12);
   --tl-fail-wash: rgba(192, 57, 43, 0.10);
@@ -7587,22 +7589,54 @@
 #codex-overleaf-panel .run-status[data-presence="check-overleaf"] { color: var(--tl-fail) !important; }
 #codex-overleaf-panel .run-card[data-outcome-tone="neutral"] .run-status { color: var(--tl-fg-2) !important; }
 #codex-overleaf-panel .run-card:has(.run-outcome [data-recovery-action="edit-resend"]) [data-run-edit] { display: none; }
-#codex-overleaf-panel .run-outcome { margin-top: 10px; padding: 12px 14px; border: 1px solid var(--tl-border); border-radius: 9px; }
-#codex-overleaf-panel .run-outcome .run-final-answer { margin: 0; }
-#codex-overleaf-panel .run-outcome .run-final-heading { margin: 0 0 5px; font-weight: 600; }
-#codex-overleaf-panel .run-outcome p { margin: 4px 0; }
-#codex-overleaf-panel .run-outcome-next { margin: 12px 0 8px; padding: 0; border: 0; }
-#codex-overleaf-panel .run-outcome-next dt { color: var(--tl-fg-3); }
-#codex-overleaf-panel .run-outcome-next dd { margin: 0; }
-#codex-overleaf-panel .run-outcome-files { list-style: none; padding: 0; margin: 10px 0; }
-#codex-overleaf-panel .run-outcome-files li { margin: 5px 0; }
+#codex-overleaf-panel .run-outcome { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--tl-border); border-radius: 8px; display: grid; gap: 6px; }
+#codex-overleaf-panel .run-outcome > * { min-width: 0; }
+/* A finished run shows its report right under the collapsed process row, so
+   header-to-content matches the prompt-to-header rhythm. An expanded process
+   keeps the usual gap between its activity rows and the report. */
+#codex-overleaf-panel .run-process:not([open]) ~ .run-activity-list:empty { margin-top: 0; }
+#codex-overleaf-panel .run-process:not([open]) ~ .run-report > .run-completion-report { margin-top: 0; }
+#codex-overleaf-panel .run-completion-report > .run-outcome:first-child { margin-top: 0; }
+#codex-overleaf-panel .run-outcome .run-final-answer { margin: 0; display: grid; gap: 6px; line-height: 1.45; }
+#codex-overleaf-panel .run-outcome .run-final-heading { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.4; color: var(--tl-fg-1); }
+#codex-overleaf-panel .run-outcome .run-outcome-body { margin: 0; font-size: 13px; font-weight: 400; line-height: 1.45; color: var(--tl-fg-3); }
+#codex-overleaf-panel .run-outcome-next { margin: 0; padding: 0; border: 0; display: grid; grid-template-columns: auto 1fr; column-gap: 10px; font-size: 13px; line-height: 1.45; }
+#codex-overleaf-panel .run-outcome-next dt { margin: 0; font-weight: 600; color: var(--tl-fg-1); }
+#codex-overleaf-panel .run-outcome-next dd { margin: 0; color: var(--tl-fg-3); }
+#codex-overleaf-panel .run-outcome .run-final-answer__recovery-action {
+  justify-self: start; margin: 2px 0 0; font: inherit; font-size: 12px; font-weight: 600; line-height: 1.4;
+  padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  background: color-mix(in srgb, var(--tl-action) 13%, transparent); color: var(--tl-action);
+  border: 1px solid transparent;
+}
+#codex-overleaf-panel .run-outcome .run-final-answer__recovery-action:hover { background: color-mix(in srgb, var(--tl-action) 20%, transparent); }
+#codex-overleaf-panel .run-outcome .run-final-answer__recovery-action:focus-visible { outline: 2px solid var(--tl-action); outline-offset: 2px; }
+#codex-overleaf-panel .run-outcome .run-outcome-files { list-style: none; padding: 0; margin: 0; display: grid; gap: 3px; font-size: 13px; }
+#codex-overleaf-panel .run-outcome .run-outcome-files li { margin: 0; display: grid; grid-template-columns: 12px 1fr; column-gap: 6px; align-items: center; }
+#codex-overleaf-panel .run-outcome-file-icon,
+#codex-overleaf-panel .run-outcome-file-icon .codex-glyph { width: 12px; height: 12px; display: block; }
+#codex-overleaf-panel .run-outcome-file-icon .codex-glyph { stroke-width: 1.5; }
 #codex-overleaf-panel .run-outcome-files [data-written="true"] { color: var(--tl-ok); }
-#codex-overleaf-panel .run-outcome-files [data-written="false"],
-#codex-overleaf-panel .run-outcome-compile > strong { color: var(--tl-review); }
-#codex-overleaf-panel .run-outcome-file-reason { display: block; margin-left: 18px; color: var(--tl-fg-3); }
-#codex-overleaf-panel .run-outcome-details { margin-top: 12px; color: var(--tl-fg-3); font-size: var(--tl-text-xs, 11px); }
-#codex-overleaf-panel .run-outcome-details > summary { cursor: pointer; }
-#codex-overleaf-panel .run-summary-compile-chip { color: var(--tl-review); background: color-mix(in srgb, var(--tl-review) 10%, transparent); border-radius: 4px; padding: 2px 5px; font-size: var(--tl-text-xs, 11px); }
+#codex-overleaf-panel .run-outcome-files [data-written="false"] { color: var(--tl-review); }
+#codex-overleaf-panel .run-outcome-file-name { color: var(--tl-fg-1); }
+#codex-overleaf-panel .run-outcome-file-reason { grid-column: 2; font-size: 12px; line-height: 1.4; color: var(--tl-fg-3); }
+#codex-overleaf-panel .run-status[data-presence="partly-written"] > .codex-glyph { width: 12px; height: 12px; }
+#codex-overleaf-panel .run-outcome-compile > .run-final-heading { color: var(--tl-review); }
+#codex-overleaf-panel .run-outcome-details { margin: 0; color: var(--tl-fg-3); font-size: 12px; line-height: 1.45; }
+/* Outside a card (after the compile box in a successful report) the grid gap does not apply. */
+#codex-overleaf-panel .run-outcome-compile + .run-outcome-details { margin-top: 8px; }
+#codex-overleaf-panel .run-outcome-details > summary { list-style: none; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; border-radius: 4px; }
+#codex-overleaf-panel .run-outcome-details > summary::-webkit-details-marker { display: none; }
+#codex-overleaf-panel .run-outcome-details > summary::after { content: "›"; transition: transform .15s; }
+#codex-overleaf-panel .run-outcome-details[open] > summary::after { transform: rotate(90deg); }
+#codex-overleaf-panel .run-outcome-details > summary:focus-visible { outline: 2px solid var(--tl-action); outline-offset: 2px; }
+#codex-overleaf-panel .run-outcome-details-content { display: grid; gap: 3px; margin-top: 6px; padding: 2px 0 2px 10px; border-left: 2px solid var(--tl-border); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+#codex-overleaf-panel .run-outcome-details .run-final-answer__meta { margin: 0; row-gap: 3px; font: inherit; }
+#codex-overleaf-panel .run-outcome-details .run-final-answer__meta :is(dt, dd) { margin: 0; color: inherit; font: inherit; letter-spacing: normal; }
+#codex-overleaf-panel .run-summary-compile-chip { font-size: 11px; font-weight: 500; border-radius: 999px; padding: 1px 7px; background: var(--tl-review-wash); color: var(--tl-review); }
+@media (prefers-reduced-motion: reduce) {
+  #codex-overleaf-panel .run-outcome-details > summary::after { transition: none; }
+}
 #codex-overleaf-panel .run-card[data-outcome-tone="warning"] .run-workflow-tool[data-state="failed"] > summary :is(.run-workflow-tool-state, .run-workflow-icon),
 #codex-overleaf-panel .run-card[data-outcome-tone="warning"] .run-process summary::before { color: var(--tl-review); }
 #codex-overleaf-panel .run-card[data-outcome-tone="neutral"] .run-workflow-tool[data-state="failed"] > summary :is(.run-workflow-tool-state, .run-workflow-icon),

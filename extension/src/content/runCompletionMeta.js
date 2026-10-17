@@ -159,8 +159,8 @@
         ? AgentTranscript.projectProductConclusion({ origin: 'product', key: source.prefixKey }, locale) : prefix) : raw;
       return { ...base, kind: 'compile-errors', tone: 'warning', conclusion,
         compileCount: source.errorCount, compileErrors: (Array.isArray(source.errors) ? source.errors : []).slice(0, 3),
-        compileChip: t('runOutcomeCompileChip', { count: source.errorCount }),
-        title: t('runOutcomeCompileTitle', { count: source.errorCount }) };
+        compileChip: t('runOutcomeCompileChip', { count: source.errorCount, plural: source.errorCount === 1 ? '' : 's' }),
+        title: t('runOutcomeCompileTitle', { count: source.errorCount, plural: source.errorCount === 1 ? '' : 's' }) };
     }
     return null;
   }

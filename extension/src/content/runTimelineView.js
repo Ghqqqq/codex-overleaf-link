@@ -724,7 +724,7 @@
     }
     if (quiet) {
       const details = createOutcomeDetails(run);
-      details.append(metaBlock);
+      details.querySelector('.run-outcome-details-content').append(metaBlock);
       report.append(details);
       return;
     }
@@ -765,6 +765,7 @@
     details.className = 'run-outcome-details';
     details.open = metaOpenChoices.get(run?.id) ?? false;
     details.append(Object.assign(document.createElement('summary'), { textContent: tr('runOutcomeDetails') }));
+    details.append(Object.assign(document.createElement('div'), { className: 'run-outcome-details-content' }));
     details.addEventListener('toggle', () => { if (run?.id) metaOpenChoices.set(run.id, details.open); });
     return details;
   }
@@ -780,7 +781,7 @@
     title.textContent = sanitizeAssistantVisibleText(outcome.title);
     main.append(title);
     if (outcome.body) main.append(Object.assign(document.createElement('p'), {
-      textContent: sanitizeAssistantVisibleText(outcome.body)
+      className: 'run-outcome-body', textContent: sanitizeAssistantVisibleText(outcome.body)
     }));
     if (outcome.files.length) {
       const files = document.createElement('ul');
@@ -788,10 +789,13 @@
       for (const item of outcome.files) {
         const row = document.createElement('li');
         const mark = document.createElement('span');
+        mark.className = 'run-outcome-file-icon';
         mark.dataset.written = String(item.written);
-        mark.textContent = item.written ? '✓' : '✗';
+        mark.innerHTML = RunPresence.icon(item.written ? 'written' : 'skipped');
         mark.setAttribute('aria-label', tr(item.written ? 'runOutcomeWritten' : 'runOutcomeSkipped'));
-        row.append(mark, document.createTextNode(' ' + sanitizeAssistantVisibleText(item.file)));
+        row.append(mark, Object.assign(document.createElement('span'), {
+          className: 'run-outcome-file-name', textContent: sanitizeAssistantVisibleText(item.file)
+        }));
         if (item.reason) row.append(Object.assign(document.createElement('span'), {
           className: 'run-outcome-file-reason', textContent: sanitizeAssistantVisibleText(item.reason)
         }));
@@ -800,7 +804,7 @@
       main.append(files);
     }
     const next = document.createElement('dl');
-    next.className = 'run-final-answer__meta run-outcome-next';
+    next.className = 'run-outcome-next';
     next.append(Object.assign(document.createElement('dt'), { textContent: tr('detailNext') }),
       Object.assign(document.createElement('dd'), { textContent: sanitizeAssistantVisibleText(outcome.nextStep) }));
     card.append(main, next);
@@ -824,15 +828,29 @@
         textContent: sanitizeAssistantVisibleText(failureNotice?.formatMetaValue(report, row) ?? row.value)
       }));
     }
-    details.append(meta);
+    const detailContent = details.querySelector('.run-outcome-details-content');
+    detailContent.append(meta);
     // Preserve the original report body as optional context without repeating
     // its skipped-item prose in the default outcome view.
     if (event.detailStructured.body) {
       const body = document.createElement('div');
       renderMarkdownBlockText(body, RunResultActions.projectCompletionBody(event.detailStructured.body, tx));
-      details.append(body);
+      detailContent.append(body);
     }
     card.append(details);
+  }
+
+  function formatCompileErrorNames(errors, totalCount) {
+    const names = [...new Set(errors.map(error => String(error)
+      .trim().replace(/^!\s*/, '').replace(/^(?:[A-Za-z]:)?[^:\r\n]+:\d+:\s*/, '').replace(/^!\s*/, '')
+      .split(/[ \t]+l\.\d+\b|[\r\n]/, 1)[0]
+      .trim().replace(/\.$/, '').replace(/\s+/g, ' ').trim()).filter(Boolean))];
+    const shown = names.slice(0, 3);
+    // History may retain fewer diagnostics than the original count. Preserve
+    // that omitted count without inventing names or changing the repair draft.
+    const more = Math.max(0, names.length - shown.length) + Math.max(0, totalCount - errors.length);
+    if (more) shown.push(tx(`+${more} more`, `另 ${more} 个`));
+    return shown.join(tx('; ', '；'));
   }
 
   function renderCompletionReport(input, run) {
@@ -843,22 +861,26 @@
     const notStarted = getNotStartedRun(run);
     if (notStarted) {
       report.dataset.status = 'not-started';
+      const card = document.createElement('div');
+      card.className = 'run-outcome';
       const main = document.createElement('div');
       main.className = 'run-final-answer';
       const title = document.createElement('div');
       title.className = 'run-final-heading';
       title.textContent = notStarted.title;
       const body = document.createElement('p');
+      body.className = 'run-outcome-body';
       body.textContent = notStarted.body;
       main.append(title, body);
       const next = document.createElement('dl');
-      next.className = 'run-final-answer__meta';
+      next.className = 'run-outcome-next';
       next.append(Object.assign(document.createElement('dt'), {
-        className: 'run-final-answer__meta-label', textContent: tr('detailNext')
+        textContent: tr('detailNext')
       }), Object.assign(document.createElement('dd'), {
-        className: 'run-final-answer__meta-value', textContent: notStarted.nextStep
+        textContent: notStarted.nextStep
       }));
-      report.append(main, next);
+      card.append(main, next);
+      report.append(card);
       return report;
     }
     // Compile errors captured post-write get a one-click fix loop: the
@@ -869,7 +891,7 @@
         return;
       }
       const fix = buildRecoveryButton('compile_errors',
-        tx(`Fix ${compileErrors.length} compile error(s)`, `修复 ${compileErrors.length} 个编译错误`),
+        tx(`Fix ${compileErrors.length} compile error${compileErrors.length === 1 ? '' : 's'}`, `修复 ${compileErrors.length} 个编译错误`),
         tx('Prefills a task with @compile-log and the captured errors.', '自动组一条带 @compile-log 和错误列表的任务。'));
       fix.addEventListener('click', clickEvent => {
         clickEvent.stopPropagation();
@@ -937,8 +959,10 @@
       if (outcome?.kind === 'compile-errors') {
         const compile = document.createElement('div');
         compile.className = 'run-outcome run-outcome-compile';
-        compile.append(Object.assign(document.createElement('strong'), { textContent: outcome.title }),
-          Object.assign(document.createElement('p'), { textContent: outcome.compileErrors.map(localizeCompileReason).join('; ') }));
+        const capturedErrors = Array.isArray(event.compileErrors) ? event.compileErrors.filter(Boolean) : [];
+        compile.append(Object.assign(document.createElement('strong'), { className: 'run-final-heading', textContent: outcome.title }),
+          Object.assign(document.createElement('p'), { className: 'run-outcome-body',
+            textContent: formatCompileErrorNames(capturedErrors.length ? capturedErrors : outcome.compileErrors, outcome.compileCount) }));
         appendCompileFix(compile);
         report.append(compile);
         appendCompletionMetaBlock(report, structured.meta, run, { quiet: true });
@@ -1113,7 +1137,7 @@
       button.hidden = false;
       button.disabled = true;
       button.textContent = tr('undoRun');
-      button.title = tr('undoRunTitle');
+      button.title = tr('undoAcceptedTitle');
       return;
     }
     if (status !== 'pending' && !inFlight) {
@@ -1192,7 +1216,7 @@
       button.hidden = false;
       button.disabled = true;
       button.textContent = tr('runAcceptTracked');
-      button.title = tr('runAcceptTrackedTitle');
+      button.title = tr('undoAppliedTitle');
       return;
     }
     if (status !== 'pending' && !inFlight) {
