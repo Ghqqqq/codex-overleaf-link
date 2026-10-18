@@ -49,37 +49,17 @@ function isValidNaturalPatchSet(oldText, newText, patches) {
 
 
 
+// Builds the natural patches for one line-anchored change group.
+//
+// Annotated `% [original]` / `% [revised]` blocks are always replaced as one
+// unit. Every other group goes through sentence alignment
+// (`computeSentenceAlignedPatches`): unchanged sentences are skipped and each
+// changed sentence is patched on its own.
 function computeNaturalGroupPatches(group) {
-  const tokenPatches = computeTokenAnchoredPatches(
-    group.oldText,
-    group.newText,
-    group.oldStart
-  );
-  const metrics = computeGroupMetrics(group, tokenPatches);
-  const classification = classifyChangedGroup(group, tokenPatches, metrics);
-
-  if (classification.type === 'annotated_block') {
+  if (hasAnyAnnotatedMarker(group.oldText) || hasAnyAnnotatedMarker(group.newText)) {
     return singleGroupPatch(group);
   }
-  if (classification.type === 'paragraph_rewrite') {
-    const paragraphPatches = computeParagraphPatches(group);
-    return paragraphPatches !== null
-      ? paragraphPatches
-      : singleGroupPatch(group);
-  }
-  if (classification.type === 'sentence_rewrite') {
-    const sentencePatches = computeSentencePatches(group, tokenPatches);
-    return sentencePatches !== null
-      ? sentencePatches
-      : coalesceTokenPatches(group, tokenPatches);
-  }
-  if (classification.type === 'small_edit') {
-    return coalesceTokenPatches(group, tokenPatches);
-  }
-
-  return tokenPatches.length > 0
-    ? coalesceTokenPatches(group, tokenPatches)
-    : singleGroupPatch(group);
+  return computeSentenceAlignedPatches(group);
 }
 
 function computeSingleTextPatch(oldValue, newValue, offset = 0) {
@@ -105,6 +85,58 @@ function computeSingleTextPatch(oldValue, newValue, offset = 0) {
     to: offset + oldEnd,
     expected: oldValue.slice(prefixLength, oldEnd),
     insert: newValue.slice(prefixLength, newEnd)
+  };
+}
+
+// Characters that form a word for boundary alignment: the word class of
+// `splitTextTokens` plus `\`, so a LaTeX command name stays attached to its
+// backslash. CJK characters are deliberately excluded: they have no word
+// boundaries, and widening across them would swallow whole clauses.
+function isWordBoundaryChar(char) {
+  return char === '\\' || isWordTokenChar(char);
+}
+
+// Like `computeSingleTextPatch`, but neither patch boundary may fall inside a
+// word. The common-prefix / common-suffix trim can land mid-word in either the
+// old or the new text (`" performs"` → `"s perform"`); such a cut is widened
+// outward to the enclosing word boundaries, with the widened characters copied
+// into both `expected` and `insert`, so the written bytes are unchanged and
+// the tracked change reads as whole words.
+function computeWordAlignedTextPatch(oldValue, newValue, offset = 0) {
+  const patch = computeSingleTextPatch(oldValue, newValue, offset);
+  let from = patch.from - offset;
+  let to = patch.to - offset;
+  // Offset in `newValue` where the shared suffix begins; it moves with `to`.
+  let newTo = from + patch.insert.length;
+
+  // The prefix is shared, so `newValue[index] === oldValue[index]` for every
+  // index below the original cut; checking both sides only matters at the cut.
+  while (
+    from > 0
+    && isWordBoundaryChar(oldValue[from - 1])
+    && (isWordBoundaryChar(oldValue[from]) || isWordBoundaryChar(newValue[from]))
+  ) {
+    from -= 1;
+  }
+  while (
+    to < oldValue.length
+    && isWordBoundaryChar(oldValue[to])
+    && (isWordBoundaryChar(oldValue[to - 1]) || isWordBoundaryChar(newValue[newTo - 1]))
+  ) {
+    to += 1;
+    newTo += 1;
+  }
+
+  if (from === patch.from - offset && to === patch.to - offset) {
+    return patch;
+  }
+  const prefix = oldValue.slice(from, patch.from - offset);
+  const suffix = oldValue.slice(patch.to - offset, to);
+  return {
+    from: offset + from,
+    to: offset + to,
+    expected: oldValue.slice(from, to),
+    insert: prefix + patch.insert + suffix
   };
 }
 
@@ -690,6 +722,18 @@ function discoverNaturalTokenAnchors(
   return selectNaturalMonotonicAnchors(candidates, ANCHOR_SPAN);
 }
 
+// Scripts without word boundaries: each character is its own token so an
+// edit inside a Chinese or Japanese sentence stays local instead of covering
+// the whole run between two spaces.
+const CJK_TOKEN_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+
+// Letters, digits, and `_` of any script except the CJK scripts above.
+function isWordTokenChar(char) {
+  return char !== undefined
+    && /[\p{L}\p{N}_]/u.test(char)
+    && !CJK_TOKEN_CHAR.test(char);
+}
+
 function splitTextTokens(text) {
   const tokens = [];
   let index = 0;
@@ -710,9 +754,11 @@ function splitTextTokens(text) {
       } else if (index < text.length) {
         index += 1;
       }
-    } else if (/[A-Za-z0-9_]/.test(char)) {
+    } else if (CJK_TOKEN_CHAR.test(char)) {
       index += 1;
-      while (index < text.length && /[A-Za-z0-9_]/.test(text[index])) {
+    } else if (isWordTokenChar(char)) {
+      index += 1;
+      while (index < text.length && isWordTokenChar(text[index])) {
         index += 1;
       }
     } else {
@@ -721,7 +767,8 @@ function splitTextTokens(text) {
         index < text.length
         && !/\s/.test(text[index])
         && text[index] !== '\\'
-        && !/[A-Za-z0-9_]/.test(text[index])
+        && !isWordTokenChar(text[index])
+        && !CJK_TOKEN_CHAR.test(text[index])
       ) {
         index += 1;
       }
@@ -739,122 +786,12 @@ function splitTextParts(text) {
   return String(text || '').match(/[^\n]*\n|[^\n]+/g) || [];
 }
 
-function computePartEdits(oldParts, newParts) {
-  const n = oldParts.length;
-  const m = newParts.length;
-  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
-
-  for (let i = n - 1; i >= 0; i -= 1) {
-    for (let j = m - 1; j >= 0; j -= 1) {
-      dp[i][j] = oldParts[i] === newParts[j]
-        ? dp[i + 1][j + 1] + 1
-        : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-
-  const edits = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (oldParts[i] === newParts[j]) {
-      edits.push({ type: 'equal', oldIndex: i, newIndex: j });
-      i += 1;
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      edits.push({ type: 'remove', oldIndex: i });
-      i += 1;
-      continue;
-    } else {
-      edits.push({ type: 'add', newIndex: j });
-    }
-    j += 1;
-  }
-  while (i < n) {
-    edits.push({ type: 'remove', oldIndex: i });
-    i += 1;
-  }
-  while (j < m) {
-    edits.push({ type: 'add', newIndex: j });
-    j += 1;
-  }
-  return edits;
-}
-
-function countNonEmptyLines(text) {
-  const value = String(text ?? '');
-  let count = 0;
-  for (const line of value.split('\n')) {
-    if (line.trim() !== '') {
-      count += 1;
-    }
-  }
-  return count;
-}
-
-function countSentenceTerminators(text) {
-  const value = String(text ?? '');
-  let count = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index];
-    if (char === '。' || char === '？' || char === '！') {
-      count += 1;
-      continue;
-    }
-    if (char === '.' || char === '?' || char === '!') {
-      if (
-        char === '.'
-        && /[0-9]/.test(value[index - 1] || '')
-        && /[0-9]/.test(value[index + 1] || '')
-      ) {
-        // Decimal point inside a number such as `1.23` is not a boundary.
-        continue;
-      }
-      count += 1;
-    }
-  }
-  return count;
-}
-
-function hasOriginalMarkerLine(text) {
-  return String(text ?? '')
-    .split('\n')
-    .some(line => /^\s*%\s*\[original\]\s*$/.test(line));
-}
-
-function hasLaterRevisedMarkerLine(text) {
-  const lines = String(text ?? '').split('\n');
-  const originalIndex = lines.findIndex(line => /^\s*%\s*\[original\]\s*$/.test(line));
-  if (originalIndex === -1) {
-    return false;
-  }
-  return lines.some((line, index) => (
-    index > originalIndex && /^\s*%\s*\[revised\]\s*$/.test(line)
-  ));
-}
-
 function hasAnyAnnotatedMarker(text) {
   return String(text ?? '')
     .split('\n')
     .some(line => (
       /^\s*%\s*\[original\]\s*$/.test(line) || /^\s*%\s*\[revised\]\s*$/.test(line)
     ));
-}
-
-function splitParagraphs(text) {
-  const value = String(text ?? '');
-  const separator = /\n\s*\n/g;
-  const segments = [];
-  let lastIndex = 0;
-  let match = separator.exec(value);
-
-  while (match) {
-    segments.push({ text: value.slice(lastIndex, match.index), start: lastIndex });
-    segments.push({ text: match[0], start: match.index });
-    lastIndex = match.index + match[0].length;
-    match = separator.exec(value);
-  }
-  segments.push({ text: value.slice(lastIndex), start: lastIndex });
-
-  return segments;
 }
 
 // Lowercase abbreviations whose trailing `.` is conservatively NOT a sentence
@@ -983,267 +920,355 @@ function splitSentences(text) {
 }
 
 
-
-function computeGroupMetrics(group, tokenPatches) {
-  const oldNonEmptyLineCount = countNonEmptyLines(group.oldText);
-  const newNonEmptyLineCount = countNonEmptyLines(group.newText);
-  return {
-    oldNonEmptyLineCount,
-    newNonEmptyLineCount,
-    maxNonEmptyLineCount: Math.max(oldNonEmptyLineCount, newNonEmptyLineCount),
-    changedSpanChars: Math.max(group.oldText.length, group.newText.length),
-    tokenPatchCount: Array.isArray(tokenPatches) ? tokenPatches.length : null,
-    totalTokenChangedChars: Array.isArray(tokenPatches)
-      ? tokenPatches.reduce(
-        (sum, patch) => sum + Math.max(patch.expected.length, patch.insert.length),
-        0
-      )
-      : null,
-    oldSentenceTerminatorCount: countSentenceTerminators(group.oldText),
-    newSentenceTerminatorCount: countSentenceTerminators(group.newText)
-  };
-}
-
-function resolveTokenPatchSentenceSpan(group, tokenPatches) {
-  const empty = {
-    fitsOneSpan: false,
-    spanChars: 0,
-    spanTokenCount: 0,
-    spanStart: 0,
-    spanEnd: 0
-  };
-  if (tokenPatches === null || tokenPatches.length === 0) {
-    return empty;
-  }
-
-  const sentenceSpans = splitSentences(group.oldText);
-  let containingSpan = null;
-
-  for (const span of sentenceSpans) {
-    const containsEveryPatch = tokenPatches.every(patch => {
-      const relativeFrom = patch.from - group.oldStart;
-      const relativeTo = patch.to - group.oldStart;
-      return relativeFrom >= span.start && relativeTo <= span.end;
-    });
-    if (!containsEveryPatch) {
-      continue;
-    }
-    if (containingSpan !== null) {
-      // More than one span contains every patch (possible for a zero-length
-      // patch sitting on a span boundary). Not a confident single sentence.
-      return empty;
-    }
-    containingSpan = span;
-  }
-
-  if (containingSpan === null) {
-    return empty;
-  }
-  return {
-    fitsOneSpan: true,
-    spanChars: containingSpan.text.length,
-    spanTokenCount: splitTextTokens(containingSpan.text).length,
-    spanStart: containingSpan.start,
-    spanEnd: containingSpan.end
-  };
-}
-
-// Classifies a changed group into a natural review granularity. Pure function.
-//
-// `group` is `{oldStart, oldText, newText}`; `tokenPatches` is the array from
-// `computeTokenAnchoredPatches(group.oldText, group.newText, group.oldStart)`
-// or `null`; `metrics` is the object from `computeGroupMetrics(group,
-// tokenPatches)`.
-//
-// Returns `{type}` where `type` is one of `annotated_block`,
-// `paragraph_rewrite`, `sentence_rewrite`, `small_edit`, `fallback`. The
-// predicates are evaluated in first-match order: annotated_block →
-// paragraph_rewrite → sentence_rewrite → small_edit → fallback. When
-// `tokenPatches === null`, every token-dependent predicate is false, so the
-// only reachable results are `annotated_block`, `paragraph_rewrite` (via the
-// line-count or sentence-terminator branch), and `fallback`.
-
-
-
-function classifyChangedGroup(group, tokenPatches, metrics) {
-  if (hasAnyAnnotatedMarker(group.oldText) || hasAnyAnnotatedMarker(group.newText)) {
-    return { type: 'annotated_block' };
-  }
-
-  const hasTokenPatches = Array.isArray(tokenPatches) && tokenPatches.length > 0;
-  const maxTokenPatchChars = hasTokenPatches
-    ? tokenPatches.reduce(
-      (maximum, patch) => Math.max(
-        maximum,
-        patch.expected.length,
-        patch.insert.length
-      ),
-      0
-    )
-    : null;
-  const editDensity = hasTokenPatches
-    ? metrics.totalTokenChangedChars / Math.max(1, metrics.changedSpanChars)
-    : null;
-  const sentenceSpan = hasTokenPatches
-    ? resolveTokenPatchSentenceSpan(group, tokenPatches)
-    : null;
-  const sentenceEditDensity = sentenceSpan?.fitsOneSpan
-    ? metrics.totalTokenChangedChars / Math.max(1, sentenceSpan.spanChars)
-    : null;
-
-  const isDenseTokenRewrite = hasTokenPatches
-    && metrics.tokenPatchCount >= 6
-    && metrics.changedSpanChars >= 160
-    && editDensity >= 0.20
-    && metrics.tokenPatchCount / Math.max(1, metrics.maxNonEmptyLineCount) >= 2;
-  if (isDenseTokenRewrite) {
-    return { type: 'paragraph_rewrite' };
-  }
-
-  // A dense rewrite wholly contained in one confident sentence stays a
-  // sentence patch even when the surrounding line contains unchanged prose.
-  if (
-    hasTokenPatches
-    && metrics.tokenPatchCount >= 3
-    && sentenceSpan.fitsOneSpan
-    && sentenceSpan.spanChars >= 80
-    && sentenceEditDensity >= 0.20
-  ) {
-    return { type: 'sentence_rewrite' };
-  }
-
-  // A collection of bounded, low-density edits stays local regardless of the
-  // file size, line count, or number of repeated replacements.
-  if (
-    hasTokenPatches
-    && maxTokenPatchChars <= 96
-    && editDensity < 0.20
-  ) {
-    return { type: 'small_edit' };
-  }
-
-  if (metrics.maxNonEmptyLineCount >= 3) {
-    return { type: 'paragraph_rewrite' };
-  }
-  if (
-    metrics.oldSentenceTerminatorCount >= 2
-    && metrics.newSentenceTerminatorCount >= 2
-    && !sentenceSpan?.fitsOneSpan
-  ) {
-    return { type: 'paragraph_rewrite' };
-  }
-
-  if (
-    hasTokenPatches
-    && metrics.tokenPatchCount >= 3
-    && sentenceSpan.fitsOneSpan
-    && sentenceSpan.spanChars >= 80
-  ) {
-    return { type: 'sentence_rewrite' };
-  }
-
-  if (
-    hasTokenPatches
-    && (
-      metrics.tokenPatchCount <= 2
-      || metrics.totalTokenChangedChars < 80
-    )
-  ) {
-    return { type: 'small_edit' };
-  }
-
-  return { type: 'fallback' };
-}
-
 function singleGroupPatch(group) {
-  return [computeSingleTextPatch(group.oldText, group.newText, group.oldStart)];
+  return [computeWordAlignedTextPatch(group.oldText, group.newText, group.oldStart)];
 }
 
-// Builds paragraph-level patches for a changed group (spec §4).
+// Sentence alignment: the layer between line windows and token patches.
 //
-// Segments `group.oldText` and `group.newText` with `splitParagraphs`, which
-// yields alternating [content, separator, content, ...] segments. When both
-// sides share the SAME separator structure (same segment count and identical
-// separator segments) the content paragraphs are paired positionally and one
-// patch is emitted per changed pair, with `from`/`to` as absolute offsets
-// (`group.oldStart` + the old paragraph segment's start). A single-paragraph
-// group is the degenerate case of this rule: one pair, one patch.
+// A changed group is split into sentence spans on both sides
+// (`splitSentences`, which partitions the text exactly). An LCS over the span
+// texts keeps every unchanged sentence as an anchor. Inside each run between
+// anchors, old and new sentences are paired by similarity
+// (`pairSentencesBySimilarity`); every pair is patched by
+// `computeSentencePairPatches`, sentences left without a partner on one side
+// are inserted or deleted whole, and leftovers on both sides (a sentence that
+// was split, merged, or rewritten beyond recognition) are patched as one run.
 //
-// Returns `null` when pairing is ambiguous (separator counts differ or a
-// separator segment changed), so the caller can fall back to a group patch.
-function computeParagraphPatches(group) {
-  const oldSegments = splitParagraphs(group.oldText);
-  const newSegments = splitParagraphs(group.newText);
+// Finally `mergeSemanticNeighbourPatches` joins adjacent results that are
+// separated only by short whitespace / punctuation, so two rewritten
+// neighbouring sentences surface as one tracked change.
+//
+// A group with one side empty (lines inserted or deleted) is a single patch.
+// A group whose sentence count product exceeds the LCS budget is patched as
+// one sentence pair instead.
+const MAX_SENTENCE_ALIGN_PRODUCT = 4_000_000;
 
-  if (oldSegments.length !== newSegments.length) {
-    return null;
+// Largest old×new sentence count of a run for which pairwise similarities are
+// computed. Larger runs are patched as a single pair.
+const MAX_SENTENCE_PAIRING_PRODUCT = 400;
+
+// Fraction of a sentence that must have changed before the sentence is
+// replaced as a whole instead of being patched word by word. Measured with
+// trimmed edit sizes (`computeTrimmedChangeSize`), so `model` → `models`
+// counts as one character, not six.
+const SENTENCE_REWRITE_RATIO = 0.5;
+
+// A sentence is also replaced as a whole when its edits are scattered: at
+// least `SENTENCE_REWRITE_MIN_SITES` separate patches remain after
+// coalescing and together they change at least
+// `SENTENCE_REWRITE_SCATTERED_RATIO` of the sentence. Many word swaps spread
+// over one sentence read as a retyped sentence, not as separate corrections;
+// a handful of typo fixes (tiny mass) or a few word swaps stay word-level.
+// Calibrated on a 37-word sentence: 6 swaps (21%) stay word-level, 9 swaps
+// (30%) replace the sentence.
+const SENTENCE_REWRITE_MIN_SITES = 3;
+const SENTENCE_REWRITE_SCATTERED_RATIO = 0.25;
+
+// Minimum similarity for two sentences to be treated as the same sentence
+// edited: a sentence that changed by less than the rewrite threshold is still
+// recognisably the same sentence.
+const SENTENCE_PAIR_MIN_SIMILARITY = 1 - SENTENCE_REWRITE_RATIO;
+
+function computeSentenceAlignedPatches(group) {
+  if (group.oldText.length === 0 || group.newText.length === 0) {
+    return singleGroupPatch(group);
   }
-  // splitParagraphs always yields an odd count: content at even indices,
-  // blank-line separators at odd indices. Every separator must be unchanged
-  // for positional pairing of the content paragraphs to be sound.
-  for (let index = 1; index < oldSegments.length; index += 2) {
-    if (oldSegments[index].text !== newSegments[index].text) {
-      return null;
+
+  const oldSpans = splitSentences(group.oldText);
+  const newSpans = splitSentences(group.newText);
+  if (oldSpans.length * newSpans.length > MAX_SENTENCE_ALIGN_PRODUCT) {
+    return computeSentencePairPatches(group);
+  }
+
+  const matches = computeNaturalLcsMatches(
+    oldSpans.map(span => span.text),
+    newSpans.map(span => span.text)
+  );
+  const patches = [];
+  let oldCursor = 0;
+  let newCursor = 0;
+
+  const appendRun = (oldTo, newTo) => {
+    if (oldCursor === oldTo && newCursor === newTo) {
+      return;
     }
+    patches.push(...computeSentenceRunPatches(
+      group,
+      oldSpans,
+      newSpans,
+      oldCursor,
+      oldTo,
+      newCursor,
+      newTo
+    ));
+  };
+
+  for (const match of matches) {
+    appendRun(match.oldIndex, match.newIndex);
+    oldCursor = match.oldIndex + 1;
+    newCursor = match.newIndex + 1;
   }
+  appendRun(oldSpans.length, newSpans.length);
+
+  return mergeSemanticNeighbourPatches(group, patches);
+}
+
+function resolveSpanBoundary(spans, index, textLength) {
+  return index < spans.length ? spans[index].start : textLength;
+}
+
+// The sub-group covering old spans `[oldFrom, oldTo)` and new spans
+// `[newFrom, newTo)`, with an absolute `oldStart`.
+function resolveSentenceRun(group, oldSpans, newSpans, oldFrom, oldTo, newFrom, newTo) {
+  const oldStart = resolveSpanBoundary(oldSpans, oldFrom, group.oldText.length);
+  const oldEnd = resolveSpanBoundary(oldSpans, oldTo, group.oldText.length);
+  const newStart = resolveSpanBoundary(newSpans, newFrom, group.newText.length);
+  const newEnd = resolveSpanBoundary(newSpans, newTo, group.newText.length);
+  return {
+    oldStart: group.oldStart + oldStart,
+    oldText: group.oldText.slice(oldStart, oldEnd),
+    newText: group.newText.slice(newStart, newEnd)
+  };
+}
+
+// Patches a run of sentences that has no exact anchor inside it.
+function computeSentenceRunPatches(
+  group,
+  oldSpans,
+  newSpans,
+  oldFrom,
+  oldTo,
+  newFrom,
+  newTo
+) {
+  const run = resolveSentenceRun(group, oldSpans, newSpans, oldFrom, oldTo, newFrom, newTo);
+  if (run.oldText === run.newText) {
+    return [];
+  }
+  if (oldFrom === oldTo || newFrom === newTo) {
+    // Whole sentences inserted or deleted.
+    return singleGroupPatch(run);
+  }
+  if ((oldTo - oldFrom) * (newTo - newFrom) > MAX_SENTENCE_PAIRING_PRODUCT) {
+    return computeSentencePairPatches(run);
+  }
+
+  // Segments partition the run in order: paired sentences and the leftovers
+  // between them (one-sided = inserted/deleted sentences, two-sided =
+  // sentences with no recognisable partner).
+  const pairs = pairSentencesBySimilarity(oldSpans, newSpans, oldFrom, oldTo, newFrom, newTo);
+  const segments = [];
+  let oldCursor = oldFrom;
+  let newCursor = newFrom;
+  const pushLeftover = (oldEnd, newEnd) => {
+    if (oldCursor !== oldEnd || newCursor !== newEnd) {
+      segments.push({ oldFrom: oldCursor, oldTo: oldEnd, newFrom: newCursor, newTo: newEnd, paired: false });
+    }
+  };
+  for (const pair of pairs) {
+    pushLeftover(pair.oldIndex, pair.newIndex);
+    segments.push({
+      oldFrom: pair.oldIndex,
+      oldTo: pair.oldIndex + 1,
+      newFrom: pair.newIndex,
+      newTo: pair.newIndex + 1,
+      paired: true
+    });
+    oldCursor = pair.oldIndex + 1;
+    newCursor = pair.newIndex + 1;
+  }
+  pushLeftover(oldTo, newTo);
+  absorbSplitSentences(group, oldSpans, newSpans, segments);
 
   const patches = [];
-  for (let index = 0; index < oldSegments.length; index += 2) {
-    const oldParagraph = oldSegments[index];
-    const newParagraph = newSegments[index];
-    if (oldParagraph.text === newParagraph.text) {
+  for (const segment of segments) {
+    const segmentRun = resolveSentenceRun(
+      group,
+      oldSpans,
+      newSpans,
+      segment.oldFrom,
+      segment.oldTo,
+      segment.newFrom,
+      segment.newTo
+    );
+    if (segmentRun.oldText === segmentRun.newText) {
       continue;
     }
-    patches.push(computeSingleTextPatch(
-      oldParagraph.text,
-      newParagraph.text,
-      group.oldStart + oldParagraph.start
-    ));
+    if (segment.oldFrom === segment.oldTo || segment.newFrom === segment.newTo) {
+      patches.push(...singleGroupPatch(segmentRun));
+    } else {
+      patches.push(...computeSentencePairPatches(segmentRun));
+    }
   }
   return patches;
 }
 
-// Builds a single sentence-level patch for a `sentence_rewrite` group (spec
-// §5). Every token patch lies inside one confident sentence span `[a,b)` of
-// `group.oldText`. Because all token changes are inside that span, the regions
-// `group.oldText.slice(0,a)` and `group.oldText.slice(b)` are unchanged, so
-// `group.newText` is `prefix + <new sentence> + suffix` with the same prefix
-// and suffix; `<new sentence>` is derived by stripping them.
-//
-// Returns `[patch]` whose `from`/`to` cover only that old sentence span
-// (absolute offsets), or `null` when the single span cannot be identified or
-// the unchanged prefix/suffix do not actually match (defensive).
-function computeSentencePatches(group, tokenPatches) {
-  const span = resolveTokenPatchSentenceSpan(group, tokenPatches);
-  if (!span.fitsOneSpan) {
-    return null;
+// A sentence that was split in two, or two sentences merged into one, shows
+// up as a pair next to a one-sided leftover. Such a leftover is absorbed into
+// a neighbouring pair when the combined pair still clears
+// `SENTENCE_PAIR_MIN_SIMILARITY`, i.e. still reads as the same sentence with
+// a local edit; when both neighbours qualify, the one that explains the
+// leftover with fewer changed characters wins. Genuine insertions and
+// deletions fail the similarity test and stay separate. Mutates `segments`.
+function absorbSplitSentences(group, oldSpans, newSpans, segments) {
+  const isOneSided = segment => segment.oldFrom === segment.oldTo || segment.newFrom === segment.newTo;
+  // Change mass of the pair that would result from merging `first` and
+  // `second`, or `null` when that pair would no longer read as one sentence.
+  const combinedCost = (first, second) => {
+    const run = resolveSentenceRun(
+      group,
+      oldSpans,
+      newSpans,
+      first.oldFrom,
+      second.oldTo,
+      first.newFrom,
+      second.newTo
+    );
+    const changeMass = computeSentenceChangeMass(run.oldText, run.newText);
+    const similarity = 1 - Math.min(
+      1,
+      changeMass / Math.max(run.oldText.length, run.newText.length, 1)
+    );
+    return similarity >= SENTENCE_PAIR_MIN_SIMILARITY ? changeMass : null;
+  };
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
+    if (!isOneSided(segment)) {
+      continue;
+    }
+    const previous = segments[index - 1];
+    const next = segments[index + 1];
+    const previousCost = previous?.paired ? combinedCost(previous, segment) : null;
+    const nextCost = next?.paired ? combinedCost(segment, next) : null;
+    if (previousCost === null && nextCost === null) {
+      continue;
+    }
+    if (nextCost !== null && (previousCost === null || nextCost <= previousCost)) {
+      next.oldFrom = segment.oldFrom;
+      next.newFrom = segment.newFrom;
+    } else {
+      previous.oldTo = segment.oldTo;
+      previous.newTo = segment.newTo;
+    }
+    segments.splice(index, 1);
+    index -= 1;
   }
+}
 
-  const { spanStart, spanEnd } = span;
-  const oldPrefix = group.oldText.slice(0, spanStart);
-  const oldSuffix = group.oldText.slice(spanEnd);
-  const oldSentence = group.oldText.slice(spanStart, spanEnd);
-
-  // The regions outside the sentence span must be byte-identical between old
-  // and new text; otherwise a change leaked outside the span and a single
-  // sentence patch would be wrong.
-  if (
-    !group.newText.startsWith(oldPrefix)
-    || !group.newText.endsWith(oldSuffix)
-    || group.newText.length < oldPrefix.length + oldSuffix.length
-  ) {
-    return null;
+// Summed trimmed size of the token patches between two texts: how many
+// characters actually have to change to turn one into the other.
+function computeSentenceChangeMass(oldText, newText) {
+  if (oldText === newText) {
+    return 0;
   }
-
-  const newSentence = group.newText.slice(
-    oldPrefix.length,
-    group.newText.length - oldSuffix.length
+  return computeTokenAnchoredPatches(oldText, newText, 0).reduce(
+    (sum, patch) => sum + computeTrimmedChangeSize(patch),
+    0
   );
-  return [computeSingleTextPatch(
-    oldSentence,
-    newSentence,
-    group.oldStart + spanStart
-  )];
+}
+
+// `1 - changeMass / length`. Identical sentences score 1.
+function computeSentenceSimilarity(oldText, newText) {
+  const changeMass = computeSentenceChangeMass(oldText, newText);
+  return 1 - Math.min(1, changeMass / Math.max(oldText.length, newText.length, 1));
+}
+
+// Monotonic pairing of old spans `[oldFrom, oldTo)` with new spans
+// `[newFrom, newTo)` that maximises the summed similarity of the pairs, only
+// allowing pairs at or above `SENTENCE_PAIR_MIN_SIMILARITY`. Returns
+// `[{oldIndex, newIndex}]` in ascending order.
+function pairSentencesBySimilarity(oldSpans, newSpans, oldFrom, oldTo, newFrom, newTo) {
+  const oldCount = oldTo - oldFrom;
+  const newCount = newTo - newFrom;
+  const threshold = SENTENCE_PAIR_MIN_SIMILARITY;
+  const similarity = new Float64Array(oldCount * newCount);
+  for (let i = 0; i < oldCount; i += 1) {
+    for (let j = 0; j < newCount; j += 1) {
+      similarity[i * newCount + j] = computeSentenceSimilarity(
+        oldSpans[oldFrom + i].text,
+        newSpans[newFrom + j].text
+      );
+    }
+  }
+
+  const width = newCount + 1;
+  const score = new Float64Array((oldCount + 1) * width);
+  for (let i = 1; i <= oldCount; i += 1) {
+    for (let j = 1; j <= newCount; j += 1) {
+      let best = Math.max(score[(i - 1) * width + j], score[i * width + j - 1]);
+      const pairScore = similarity[(i - 1) * newCount + (j - 1)];
+      if (pairScore >= threshold) {
+        best = Math.max(best, score[(i - 1) * width + (j - 1)] + pairScore);
+      }
+      score[i * width + j] = best;
+    }
+  }
+
+  const pairs = [];
+  let i = oldCount;
+  let j = newCount;
+  while (i > 0 && j > 0) {
+    const cell = score[i * width + j];
+    const pairScore = similarity[(i - 1) * newCount + (j - 1)];
+    if (
+      pairScore >= threshold
+      && cell === score[(i - 1) * width + (j - 1)] + pairScore
+    ) {
+      pairs.push({ oldIndex: oldFrom + i - 1, newIndex: newFrom + j - 1 });
+      i -= 1;
+      j -= 1;
+    } else if (cell === score[(i - 1) * width + j]) {
+      i -= 1;
+    } else {
+      j -= 1;
+    }
+  }
+  return pairs.reverse();
+}
+
+// Patches one old/new sentence pair. Token patches are computed inside the
+// pair and coalesced; the pair becomes a single word-aligned replacement (a
+// human would have retyped the sentence) when the trimmed change mass reaches
+// `SENTENCE_REWRITE_RATIO` of the sentence, or when the edits are scattered
+// over `SENTENCE_REWRITE_MIN_SITES` or more sites that together reach
+// `SENTENCE_REWRITE_SCATTERED_RATIO`. Otherwise the coalesced token patches
+// are returned.
+function computeSentencePairPatches(pair) {
+  const tokenPatches = computeTokenAnchoredPatches(
+    pair.oldText,
+    pair.newText,
+    pair.oldStart
+  );
+  if (tokenPatches.length === 0) {
+    return singleGroupPatch(pair);
+  }
+
+  const changeMass = tokenPatches.reduce(
+    (sum, patch) => sum + computeTrimmedChangeSize(patch),
+    0
+  );
+  const changeRatio = changeMass / Math.max(pair.oldText.length, pair.newText.length, 1);
+  if (changeRatio >= SENTENCE_REWRITE_RATIO) {
+    return singleGroupPatch(pair);
+  }
+
+  const coalesced = coalesceTokenPatches(pair, tokenPatches);
+  if (
+    coalesced.length >= SENTENCE_REWRITE_MIN_SITES
+    && changeRatio >= SENTENCE_REWRITE_SCATTERED_RATIO
+  ) {
+    return singleGroupPatch(pair);
+  }
+  return coalesced;
+}
+
+// Size of the part of a patch that actually differs, after trimming the
+// common prefix and suffix of `expected` / `insert`.
+function computeTrimmedChangeSize(patch) {
+  const trimmed = computeSingleTextPatch(patch.expected, patch.insert);
+  return Math.max(trimmed.expected.length, trimmed.insert.length);
 }
 
 // Short function words whose presence inside a coalescing gap does not block a
@@ -1267,7 +1292,7 @@ function isCoalesceFillerGap(gap) {
     if (/^\s+$/.test(text)) {
       continue;
     }
-    if (!/[A-Za-z0-9]/.test(text)) {
+    if (!/[\p{L}\p{N}]/u.test(text)) {
       // Pure punctuation / symbols.
       continue;
     }
@@ -1287,6 +1312,11 @@ function isCoalesceFillerGap(gap) {
 // `expected` the original slice and `insert` the merged inserts interleaved
 // with the unchanged gap text. When nothing qualifies the token patches are
 // returned unchanged. Absolute offsets are preserved throughout.
+//
+// The run-based pass is followed by `mergeSemanticNeighbourPatches`, which
+// joins any two remaining neighbours whose unchanged gap is pure whitespace /
+// punctuation and no longer than either edit, so one continuous rewrite
+// surfaces as a single tracked change.
 
 function coalesceTokenPatches(group, tokenPatches) {
   if (!Array.isArray(tokenPatches) || tokenPatches.length <= 1) {
@@ -1328,7 +1358,78 @@ function coalesceTokenPatches(group, tokenPatches) {
     }
   }
   flushRun();
-  return result;
+  return mergeSemanticNeighbourPatches(group, result);
+}
+
+// Semantic neighbour merge, using the diff-match-patch `diff_cleanupSemantic`
+// criterion: an unchanged stretch that is shorter than the edits on both sides
+// of it is noise, not an anchor. Two neighbouring patches (sorted by `from`)
+// are merged when the original text between them is at most 40 chars made
+// only of whitespace and punctuation (no letters, digits, or line breaks) and
+// is no longer than the smaller of the two edits, where an edit's size is
+// `max(expected.length, insert.length)`. The gap is kept verbatim in both
+// `expected` and `insert`, so the bytes written do not change. Merging chains:
+// the merged patch is compared with the next neighbour. Gaps that contain a
+// line break never merge, preserving the line-window split.
+function mergeSemanticNeighbourPatches(group, patches) {
+  if (!Array.isArray(patches) || patches.length <= 1) {
+    return patches;
+  }
+
+  const merged = [patches[0]];
+  for (let index = 1; index < patches.length; index += 1) {
+    const previous = merged[merged.length - 1];
+    const current = patches[index];
+    if (current.from < previous.to) {
+      merged.push(current);
+      continue;
+    }
+    const gap = group.oldText.slice(
+      previous.to - group.oldStart,
+      current.from - group.oldStart
+    );
+    if (isSemanticNoiseGap(gap, previous, current)) {
+      merged[merged.length - 1] = mergeTokenPatchRun(group, [previous, current]);
+    } else {
+      merged.push(current);
+    }
+  }
+  return merged;
+}
+
+// Largest trimmed edit that still counts as a "small" edit for the sentence
+// boundary rule below: a word or two, not a rewritten clause.
+const SMALL_EDIT_CHARS = 24;
+
+function isSemanticNoiseGap(gap, previous, current) {
+  if (gap.length > 40 || /[\r\n]/.test(gap)) {
+    return false;
+  }
+  if (!/^[\s\p{P}\p{S}]*$/u.test(gap)) {
+    return false;
+  }
+  const previousSize = Math.max(previous.expected.length, previous.insert.length);
+  const currentSize = Math.max(current.expected.length, current.insert.length);
+  if (gap.length > Math.min(previousSize, currentSize)) {
+    return false;
+  }
+  // The last word of one sentence and the first word of the next are two
+  // edits, not one; only rewrites large enough to be whole clauses merge
+  // across a sentence boundary.
+  if (
+    isSentenceBoundaryGap(gap)
+    && Math.min(computeTrimmedChangeSize(previous), computeTrimmedChangeSize(current)) <= SMALL_EDIT_CHARS
+  ) {
+    return false;
+  }
+  return true;
+}
+
+// True when the unchanged text between two patches ends a sentence: a CJK
+// terminator anywhere, or an ASCII terminator followed by whitespace (so the
+// `.` inside `91.2` does not count).
+function isSentenceBoundaryGap(gap) {
+  return /[。？！]/.test(gap) || /[.?!]\s/.test(gap);
 }
 
 function computeNaturalPatchRunDensity(group, run) {
@@ -1370,19 +1471,14 @@ function mergeTokenPatchRun(group, run) {
 module.exports = {
   computeTextPatches,
   computeSingleTextPatch,
+  computeWordAlignedTextPatch,
+  computeSentenceAlignedPatches,
+  computeSentencePairPatches,
+  computeTrimmedChangeSize,
   computeLineAnchoredChangeGroups,
   computeTokenAnchoredPatches,
-  computeGroupMetrics,
-  classifyChangedGroup,
-  splitParagraphs,
   splitSentences,
-  hasOriginalMarkerLine,
-  hasLaterRevisedMarkerLine,
   hasAnyAnnotatedMarker,
-  countNonEmptyLines,
-  countSentenceTerminators,
   singleGroupPatch,
-  computeParagraphPatches,
-  computeSentencePatches,
   coalesceTokenPatches
 };
