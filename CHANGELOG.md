@@ -1,20 +1,38 @@
 # Changelog
 
-## v2.5.5 - 2026-10-12
+## v2.6.0 - 2026-10-18
 
 ### Added
 
+- See every finished run as one quiet outcome card: Didn't finish, Partly written, Not written, Check Overleaf, compiled with errors, or cancelled. Each card gives one cause, one consequence and one Next step, with details folded away. A page refresh during a run, a read-only path rule and the pre-send sensitive-content check now explain themselves the same way.
+- Switch, rename, delete and start conversations from the session title in the panel header.
+- Click a `file:line` or line-range reference in an answer to jump to that place in Overleaf, including references to another file.
+- Choose what happens when Track Changes is unavailable before a run starts: continue without tracking, turn Track off, or cancel. Turning Track off and on again checks availability again.
+- Recompile automatically after a successful Undo when auto recompile is on.
+- Check for updates now tells you when you already have the latest stable version.
 - Restore the previous version from the update banner or the Software updates card after a completed update, or while an installation or its recovery is unsettled. Restoration waits until Overleaf is saved and idle, verifies the restored files before reloading, and pauses automatic reminders for the version you left for 24 hours; Check for updates still offers it.
 - See how full the conversation's context window is from a small pie beside the model. It turns amber at 70% and red at 90%; its details show the latest reported input, cached input and output, when they were reported, and a Compact action.
 - Compact the conversation context with `/compact` or the Compact action in the context details. Compaction keeps the same conversation and never reads or changes documents. It appears in the conversation as a divider, and an automatic compaction during a task leaves a divider above that task's answer; usage shows as waiting until Codex reports it again.
 
 ### Changed
 
+- Rewrites now change only the sentences that differ, and tracked changes cover whole words; an edit inside Chinese or Japanese text stays local. Annotated rewrite blocks are still replaced as one unit.
+- Organize settings into project and global pages that name their scope.
+- Give finished-run cards one consistent design: a muted consequence line, a bold Next label, quiet action buttons, Details with a chevron, and Copy and Fork beside the Details toggle. Compile errors show cleaned names with correct singular and plural wording.
+- Show the read scope (current file, selected text or focused files) in the composer status line, updated as soon as it changes.
+- Show an empty state for the context window until Codex reports usage.
 - Draw composer controls with one set of line icons, and group the `/` menu into commands and skills with icons, highlighted matches, local skill descriptions and keyboard hints.
 - Show dropdown lists in settings and model provider forms in the panel's own style instead of the operating system menu, where Chrome supports it.
 
 ### Fixed
 
+- Text you type in Overleaf while a run is writing is no longer overwritten or misplaced: writes are rebased around your edits, a file that changed where Codex wanted to write stops safely instead, and Undo keeps the text you added during the run.
+- Report a post-write compile as compiled only from that compile's own log, recognizing Overleaf's own in-flight compile; missing, stale or cached evidence is reported as unconfirmed.
+- Keep a conversation in sync across tabs: an idle tab shows a run another tab finished, a draft that arrived from another tab no longer stops a tab from following updates, and a draft saved in one tab merges with a run finished in another.
+- Tell a missing file tree, an unavailable project archive and an unconfirmed upload apart when creating a file fails.
+- Treat a quiet editor as saved before the post-write compile.
+- Wait for the target document before jumping to a reference in another file.
+- Show the session title in the interface language and use singular and plural step counts.
 - Recover interrupted task preparation even when no Native request was sent, so stale Starting records no longer keep a conversation busy or block deletion; preserve live preparation on other pages and settle startup rendering failures.
 - Keep composer typing independent of unchanged run history, coalesce draft autosaves, and flush pending drafts at session/submission boundaries while preserving live activity and recovery records.
 - Refuse an update before download when the installed startup files differ from the published release it migrates from, for example after a release candidate or local build, and show the existing reinstall guidance instead.
