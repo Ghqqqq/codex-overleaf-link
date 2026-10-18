@@ -108,9 +108,14 @@
     }
     function verificationFailure(error, changedDocument, phase) {
       const interrupted = ['codex_cancelled', 'aborted_project_changed'].includes(error?.code);
-      const code = interrupted ? error.code : changedDocument ? 'file_upload_unconfirmed' : 'source_zip_unavailable';
+      // Only a failed server read means the project could not be checked; any
+      // other error before the upload came from the Overleaf file-tree controls.
+      const treeControls = !interrupted && !changedDocument && error?.code !== 'source_zip_unavailable';
+      const code = interrupted ? error.code : changedDocument ? 'file_upload_unconfirmed'
+        : treeControls ? 'file_tree_controls_unavailable' : 'source_zip_unavailable';
       const reason = interrupted ? error.message : changedDocument
         ? 'The file was submitted, but its saved content could not be confirmed.'
+        : treeControls ? 'Codex could not safely perform this file operation with the available Overleaf controls.'
         : 'The project could not be checked before uploading this file.';
       return { ok: false, code, reason, changedDocument, diagnostics: {
         verificationPhase: phase, ...(error?.diagnostics || {}), reason: error?.technicalMessage || error?.message || ''

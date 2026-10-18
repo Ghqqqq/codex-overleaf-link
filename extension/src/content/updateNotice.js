@@ -387,6 +387,11 @@
         `Update v${latestVersion} is paused after a failed installation. ${time ? `Check again after ${time}.` : 'Check again after its cooldown ends.'}`,
         `v${latestVersion} 安装失败后已暂停更新。${time ? `请在 ${time} 后再次检查。` : '请在冷却期结束后再次检查。'}`
       );
+    } else if (stateName === 'idle' && !state.code && state.lastCheckedAt > 0
+      && (!latestVersion || !isNewerStableVersion(latestVersion, currentVersion))) {
+      // A finished check with nothing newer still answers the user's question.
+      const time = new Date(state.lastCheckedAt).toLocaleTimeString(getLocale() || undefined, { hour: 'numeric', minute: '2-digit' });
+      statusText = tx(`You have the latest stable version. Checked at ${time}.`, `已是最新稳定版本。检查时间 ${time}。`);
     } else if (['reload_required', 'reload_tabs_required'].includes(stateName)) {
       summaryText = tx(`Installed v${latestVersion}; running extension v${currentVersion}.`, `已安装 v${latestVersion}；扩展当前运行 v${currentVersion}。`);
       statusText = getCopy(state).detail;
@@ -648,6 +653,16 @@
     }
     const reason = state.manualReason || {};
     return tx(reason.en || reason.zh || '', reason.zh || reason.en || '');
+  }
+
+  // Compares the numeric x.y.z core only; a local build ahead of the release is not behind.
+  function isNewerStableVersion(candidate, current) {
+    const parts = value => String(value || '').replace(/^v/i, '').split('-')[0].split('.').map(part => Number(part) || 0);
+    const [left, right] = [parts(candidate), parts(current)];
+    for (let index = 0; index < 3; index++) {
+      if ((left[index] || 0) !== (right[index] || 0)) return (left[index] || 0) > (right[index] || 0);
+    }
+    return false;
   }
 
   function tx(english, chinese) {

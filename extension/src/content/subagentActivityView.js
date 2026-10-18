@@ -15,11 +15,19 @@
         completed: tx('Completed', '已完成'), failed: tx('Failed', '失败'),
         cancelled: tx('Stopped', '已停止'), unknown: tx('Status unconfirmed', '状态未确认') })[status] || '';
     }
+    // A row preview is one plain line: a final message keeps its words, not its
+    // Markdown ("- `main.tex` is …" reads "main.tex is …").
+    function plainMessage(value) {
+      return value.replace(/^\s*(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/gm, '')
+        .replace(/!?\[([^\]]*)\]\([^)\s]*\)/g, '$1').replace(/`([^`\n]+)`/g, '$1')
+        .replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, '$2').replace(/\s+/g, ' ').trim();
+    }
     function latest(agent) {
       const blocks = Activity.project({ status: agent.status, events: agent.events || [] }).blocks;
       const last = blocks.at(-1);
       const item = last?.kind === 'exploreGroup' ? last.items.at(-1) : last;
-      return plain(item?.meta?.target || item?.meta?.command || item?.event?.title || agent.task).slice(0, 180);
+      const text = plain(item?.meta?.target || item?.meta?.command || item?.event?.title || agent.task);
+      return (item?.kind === 'message' ? plainMessage(text) : text).slice(0, 180);
     }
     function elapsed(agent, run) {
       const duration = Agents.elapsedMs(agent, run, Date.now());

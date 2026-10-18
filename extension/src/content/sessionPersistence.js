@@ -76,10 +76,14 @@
     const mergedRecords = sessionRecords.map(record => StorageDb.mergeSessionReviewState?.(
       record, existingById.get(record.id), options.reviewRunIds
     ) || record);
+    // Skip older records unless shared storage has a local edit against its
+    // page baseline to merge. Legacy storage keeps the timestamp guard.
     const writable = mergedRecords.filter(record => {
       const existing = existingById.get(record.id);
       if (!existing) return true;
-      return (Date.parse(record.updatedAt || '') || 0) >= (Date.parse(existing.updatedAt || '') || 0);
+      return (Date.parse(record.updatedAt || '') || 0) >= (Date.parse(existing.updatedAt || '') || 0)
+        || (StorageDb.sharedSessionsEnabled?.() === true
+          && StorageDb.hasUnpersistedSharedSession?.(record) === true);
     });
     const cleanedExisting = existingSessions.filter((record, index) =>
       record !== rawExistingSessions[index] && !writable.some(item => item.id === record.id)

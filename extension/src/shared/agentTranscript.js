@@ -54,6 +54,10 @@
       "This run was cancelled. It did not continue syncing or writing to Overleaf.",
       "这轮已中断，没有继续同步或写入 Overleaf。"
     ],
+    "reload_interrupted": [
+      "The plugin reloaded while this run was still marked in progress. It has been marked interrupted to avoid showing a stale status — run the task again to continue.",
+      "插件重新加载时发现这轮任务还标记为处理中。为了避免继续显示过期状态，已把它标记为中断；可以重新运行任务。"
+    ],
     "ask_inspected": [
       "This run only inspected and explained; no files were written.",
       "这轮只做了检查和说明，没有写入文件。"
@@ -102,6 +106,10 @@
       "Local Codex changes were sent to Overleaf, but some items were skipped.",
       "本地 Codex 改动已尝试同步回 Overleaf，但有部分项目被跳过。"
     ],
+    "blocked_sync": [
+      "No changes were written to Overleaf; every change was blocked before writing.",
+      "没有向 Overleaf 写入任何改动；所有改动都在写入前被拦下。"
+    ],
     "unconfirmed_sync": [
       "Codex tried to write local changes to Overleaf, but the write result did not confirm any applied or skipped entries.",
       "Codex 已尝试把本地改动写入 Overleaf，但写入结果没有确认任何已写入或已跳过条目。"
@@ -109,6 +117,10 @@
     "partial_sync_note": [
       "Sync note: local Codex changes were sent to Overleaf, but some items were skipped.",
       "同步提示：本地 Codex 改动已尝试写回 Overleaf，但有部分项目被跳过。"
+    ],
+    "blocked_sync_note": [
+      "Sync note: no changes were written to Overleaf; every change was blocked before writing.",
+      "同步提示：没有向 Overleaf 写入任何改动；所有改动都在写入前被拦下。"
     ],
     "unconfirmed_sync_note": [
       "Writeback note: Codex could not confirm any Overleaf write result entries, so local mirror refresh and auto compile were skipped.",
@@ -1126,7 +1138,7 @@
   function normalizeConclusionSource(source) {
     if (source?.origin !== 'product' || typeof source.key !== 'string') return null;
     if (productConclusionText(source.key) !== null) return { origin: 'product', key: source.key };
-    if (source.key !== 'writeback' || !['synced', 'partial_sync', 'unconfirmed_sync'].includes(source.outcome)) return null;
+    if (source.key !== 'writeback' || !['synced', 'partial_sync', 'blocked_sync', 'unconfirmed_sync'].includes(source.outcome)) return null;
     return { origin: 'product', key: 'writeback', outcome: source.outcome,
       prefixLength: Number.isSafeInteger(source.prefixLength) && source.prefixLength >= 0 ? source.prefixLength : -1,
       prefixKey: source.prefixKey === 'retry_sync' ? 'retry_sync' : '',
@@ -1231,6 +1243,16 @@
     return report.text;
   }
 
+  function completionConclusionText(report) {
+    const source = report.conclusionSource;
+    // The new blocked composite preserves its exact model prefix. Keep the
+    // historical formatter for every other report shape.
+    if (source?.key === 'writeback' && source.outcome === 'blocked_sync'
+      && typeof report.conclusion === 'string' && ['en', 'zh'].some(locale =>
+        projectProductConclusion(source, locale, undefined, report.conclusion) === report.conclusion)) return report.conclusion;
+    return cleanVisibleMarkdownText(report.conclusion || '');
+  }
+
   /**
    * Splits the human report into a conclusion (the human-language outcome),
    * a body of list-style content sections (checked / findings / planned /
@@ -1241,7 +1263,7 @@
    * shape for transcripts, storage fallback, and existing assertions.
    */
   function buildStructuredHumanReport(report = {}, locale = 'en') {
-    const conclusion = cleanVisibleMarkdownText(report.conclusion || '');
+    const conclusion = completionConclusionText(report);
 
     const bodySections = [];
     addListSection(bodySections, textFor(locale, '检查范围', 'Checked'), report.checked, locale);
@@ -1291,7 +1313,7 @@
 
   function formatHumanReport(report = {}, locale = 'en') {
     const sections = [];
-    const conclusion = cleanVisibleMarkdownText(report.conclusion || '');
+    const conclusion = completionConclusionText(report);
     if (conclusion) {
       sections.push(textFor(locale, `结论：${conclusion}`, `Conclusion: ${conclusion}`));
     }

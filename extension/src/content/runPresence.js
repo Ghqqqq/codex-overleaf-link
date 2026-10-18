@@ -114,7 +114,7 @@
       if (Number(facts.removed) > 0) counts.push('<span class="run-summary-del">−' + Number(facts.removed) + '</span>');
       if (counts.length) parts.push('<span>' + counts.join(' ') + '</span>');
     } else if (facts.steps > 0) {
-      parts.push('<span>' + escapeHtml(tx(facts.steps + ' steps', facts.steps + ' 步')) + '</span>');
+      parts.push('<span>' + escapeHtml(tx(facts.steps + (facts.steps === 1 ? ' step' : ' steps'), facts.steps + ' 步')) + '</span>');
     }
     if (facts.compiled) parts.push('<span>' + escapeHtml(tx('compiled', '已编译')) + '</span>');
     if (facts.compileChip) parts.push('<span class="run-summary-compile-chip">' + escapeHtml(facts.compileChip) + '</span>');

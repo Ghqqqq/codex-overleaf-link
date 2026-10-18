@@ -184,7 +184,7 @@
       ? tx(`↓ Latest · ${unreadSinceDetach}`, `↓ 最新 · ${unreadSinceDetach}`)
       : tx('↓ Latest', '↓ 最新');
     button.setAttribute('aria-label', unreadSinceDetach > 0
-      ? tx(`Jump to latest, ${unreadSinceDetach} new steps`, `跳到最新，${unreadSinceDetach} 个新步骤`)
+      ? tx(`Jump to latest, ${unreadSinceDetach} new step${unreadSinceDetach === 1 ? '' : 's'}`, `跳到最新，${unreadSinceDetach} 个新步骤`)
       : tx('Jump to latest', '跳到最新'));
   }
 
@@ -303,7 +303,7 @@
       const record = view?.recordId ? findRunRecord(view.recordId, view.sessionId) : null;
       const stepCount = (record?.events || []).filter(event => (event.kind || 'activity') === 'activity').length;
       statusEl.textContent = stepCount > 0
-        ? `${statusText} · ${tx(`${stepCount} steps`, `${stepCount} 步`)}`
+        ? `${statusText} · ${tx(`${stepCount} step${stepCount === 1 ? '' : 's'}`, `${stepCount} 步`)}`
         : statusText;
     }
   }
@@ -448,7 +448,6 @@
         <div class="run-result-actions" hidden>
           <button type="button" class="run-copy-action" data-run-copy hidden></button>
           <button type="button" class="run-fork-action" data-run-fork hidden></button>
-          <span class="run-completed-time" data-run-completed-time hidden></span>
         </div>
         <div class="run-report" data-run-report aria-live="polite" hidden></div>
       </div>
@@ -693,6 +692,23 @@
   // The user's own open/closed choice per run survives card re-renders.
   const metaOpenChoices = new Map();
 
+  // The completion time lives with the other run facts, not in the action row.
+  // `classed` matches lists whose rows carry the meta label/value classes.
+  function appendFinishedRow(list, run, { classed = false } = {}) {
+    const finishedAt = new Date(String(run?.finishedAt || ''));
+    if (!Number.isFinite(finishedAt.getTime())) return;
+    const dt = Object.assign(document.createElement('dt'), { textContent: tx('Finished', '完成于') });
+    dt.dataset.metaKey = 'finishedAt';
+    const dd = Object.assign(document.createElement('dd'), {
+      textContent: new Intl.DateTimeFormat(getLocale(), { hour: 'numeric', minute: '2-digit' }).format(finishedAt),
+      title: finishedAt.toLocaleString(getLocale()) });
+    if (classed) {
+      dt.className = 'run-final-answer__meta-label';
+      dd.className = 'run-final-answer__meta-value';
+    }
+    list.append(dt, dd);
+  }
+
   // Renders the run-metadata rows (Why nothing changed / Write result / Undo /
   // Next) behind a one-line summary beneath the answer. Shared by the
   // structured and flat-fallback render paths so both demote identically.
@@ -710,6 +726,7 @@
     });
     const metaBlock = document.createElement('dl');
     metaBlock.className = 'run-final-answer__meta';
+    appendFinishedRow(metaBlock, run, { classed: true });
     metaBlock.id = `codex-run-meta-${String(run?.id || 'report').replace(/[^a-zA-Z0-9_-]/g, '-')}`;
     for (const row of rows) {
       const dt = document.createElement('dt');
@@ -742,12 +759,18 @@
       toggle.append(item);
     });
     const more = Object.assign(document.createElement('span'), { className: 'run-final-answer__facts-more' });
-    toggle.append(Object.assign(document.createElement('span'), { className: 'run-final-answer__facts-sep', textContent: '·' }), more);
+    // The chevron stays with the last fact, so a narrow row never leaves it alone on a line.
+    const tail = Object.assign(document.createElement('span'), { className: 'run-final-answer__facts-tail' });
+    if (toggle.lastElementChild) tail.append(toggle.lastElementChild);
+    tail.append(more);
+    toggle.append(tail);
     const setOpen = open => {
       facts.dataset.open = String(open);
       metaBlock.hidden = !open;
       toggle.setAttribute('aria-expanded', String(open));
-      more.innerHTML = `${open ? tx('Hide', '收起') : tx('Details', '详情')}<svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m6 4 4 4-4 4"/></svg>`;
+      // The facts are the toggle; the chevron and the tooltip carry its state.
+      toggle.title = open ? tx('Hide details', '收起详情') : tx('Show details', '展开详情');
+      more.innerHTML = `<svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m6 4 4 4-4 4"/></svg>`;
     };
     setOpen(metaOpenChoices.get(run?.id) ?? summary.open);
     toggle.addEventListener('click', event => {
@@ -821,6 +844,7 @@
     if (outcome.noWrites) rows.push({ label: tr('runOutcomeWrites'), value: tr('runOutcomeNoneAttempted') });
     const meta = document.createElement('dl');
     meta.className = 'run-final-answer__meta';
+    appendFinishedRow(meta, run);
     for (const row of rows) {
       const label = Object.assign(document.createElement('dt'), { textContent: row.label });
       if (row.key) label.dataset.metaKey = row.key;

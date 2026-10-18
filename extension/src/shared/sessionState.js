@@ -724,6 +724,12 @@
         status: 'failed',
         kind: 'report',
         detail: i18n.t(locale, 'restoredRunStoppedDetail'),
+        detailStructured: {
+          conclusion: i18n.t(locale, 'restoredRunStoppedDetail'),
+          conclusionSource: { origin: 'product', key: 'reload_interrupted' },
+          // Ask forbids writeback; an interrupted Auto run has no zero-write proof.
+          meta: run.mode === 'ask' ? [{ key: 'writeResult', value: 'wrote 0 items, skipped 0 items' }] : []
+        },
         failure: { code: 'native_request_failed', source: 'panel_reload' },
         timestamp: new Date().toISOString()
       });

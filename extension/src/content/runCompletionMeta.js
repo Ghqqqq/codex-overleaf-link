@@ -90,23 +90,33 @@
     const facts = run.settlement || run.settlementFacts || {};
     const failure = projection.primaryFailure || event.failure;
     const files = Array.isArray(facts.fileSettlements) ? facts.fileSettlements.filter(item => item && typeof item.path === 'string') : [];
+    const reloadInterrupted = source.key === 'reload_interrupted';
+    const payload = run.recoveryPayload || run;
+    const hasWriteEvidence = wrote > 0 || files.length > 0 || Boolean(run.saveCheck)
+      || ['appliedOperations', 'undoOperations', 'undoTrackedChanges'].some(key => payload[key]?.length)
+      || (reloadInterrupted && run.recoveryRetention?.state === 'omitted')
+      || ![undefined, 'none'].includes(facts.evidence?.applied)
+      || ![undefined, 'not-attempted'].includes(facts.evidence?.readBack)
+      || projection.changedDocument === true || ['changed', 'possibly-changed'].includes(facts.documentEffect);
     const unconfirmed = projection.requiresWriteReview === true
       || FailureReasons.isUnconfirmedWriteFailure(failure)
-      || facts.documentEffect === 'possibly-changed' || facts.evidence?.readBack === 'mismatch';
-    const payload = run.recoveryPayload || run;
-    const noWrites = wrote === 0 && skipped === 0 && !unconfirmed
-      && !files.length && !run.saveCheck
-      && !['appliedOperations', 'undoOperations', 'undoTrackedChanges'].some(key => payload[key]?.length)
-      && [undefined, 'none'].includes(facts.evidence?.applied)
-      && [undefined, 'not-attempted'].includes(facts.evidence?.readBack)
-      && projection.changedDocument !== true && !['changed', 'possibly-changed'].includes(facts.documentEffect);
+      || facts.documentEffect === 'possibly-changed' || facts.evidence?.readBack === 'mismatch'
+      || (reloadInterrupted && hasWriteEvidence);
+    const noWrites = wrote === 0 && skipped === 0 && !unconfirmed && !hasWriteEvidence;
     const display = FailureReasons.formatFailureReasonForDisplay(failure, locale, key => {
       const translated = t(key);
       return translated !== key ? translated : undefined;
     });
     const file = typeof failure?.file === 'string' ? failure.file : '';
     const shortKey = `runOutcomeCause_${failure?.source === 'panel_reload' ? 'panel_reload_interrupted' : failure?.code}`;
-    const shortTitle = I18n.MESSAGES[locale]?.[shortKey] ? t(shortKey, { file }) : '';
+    const detectorIds = Array.isArray(failure?.evidence?.detectorIds) ? [...new Set(failure.evidence.detectorIds)] : [];
+    const detectorId = detectorIds.length === 1 ? detectorIds[0] : '';
+    const findingKey = typeof detectorId === 'string' && /^[a-z]+(?:-[a-z]+)+$/.test(detectorId)
+      ? `sensitiveFinding_${detectorId.replace(/-/g, '_')}` : '';
+    const label = t(I18n.MESSAGES.en[findingKey] ? findingKey : 'sensitiveFinding_mixed');
+    // Chinese copy separates a Latin term from the preceding Han text with a space.
+    const finding = locale === 'zh' && /^[A-Za-z]/.test(label) ? ` ${label}` : label;
+    const shortTitle = I18n.MESSAGES[locale]?.[shortKey] ? t(shortKey, { file, finding }) : '';
     const savedNext = localizeMetaRow({ key: 'nextStep', value: value('nextStep') }, {
       tx, getLocale: () => locale, tr: t
     }).value;
@@ -117,6 +127,9 @@
         ? shortTitle || t('runOutcomeCheck') : t(file ? 'runOutcomeUnconfirmedFile' : 'runOutcomeUnconfirmed', { file }),
       body: ['undo', 'accept'].includes(failure?.stage) ? display?.userMessage || t('runOutcomeUnconfirmedBody') : t('runOutcomeUnconfirmedBody'),
       nextStep: file && !['undo', 'accept'].includes(failure?.stage) ? t('runOutcomeCheckNext', { file }) : base.nextStep };
+    if (reloadInterrupted) return { ...base, kind: 'didnt-finish', tone: 'warning',
+      status: t('runOutcomeIncomplete'), title: t('runOutcomeCause_panel_reload_interrupted'),
+      body: t(run.mode === 'ask' ? 'runOutcomeNoWrites' : 'runOutcomeReloadUnknownBody') };
     if (wrote > 0 && skipped > 0) {
       const failures = Array.isArray(facts.failures) ? facts.failures : [];
       const entries = files.flatMap(item => {
@@ -180,7 +193,8 @@
       ['This run was Ask mode.', '这轮是只问不改。'],
       ['You cancelled this change.', '你取消了这轮修改。'],
       ['No file changes need to sync back to Overleaf.', '没有产生需要同步回 Overleaf 的文件改动。'],
-      ['No approved file changes remain to sync back to Overleaf.', '没有剩余已确认的文件改动需要同步回 Overleaf。']
+      ['No approved file changes remain to sync back to Overleaf.', '没有剩余已确认的文件改动需要同步回 Overleaf。'],
+      ['Sensitive content was found before sending.', '发送前发现了敏感内容。']
     ],
     undo: [['this run has no reversible writes', '本轮没有可撤销的写入']],
     saveState: [['Saved', '已确认保存'],

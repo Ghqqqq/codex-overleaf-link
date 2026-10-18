@@ -199,10 +199,11 @@
     } catch (_error) { /* swallow */ }
     try {
       var docTitle = (document.title || '').trim();
-      // Overleaf typically formats as "<Project Name> - Overleaf" or
-      // "<Project Name> - Online LaTeX Editor"; strip the " - " suffix.
+      // Overleaf formats the title as "<Project Name> - Overleaf" or
+      // "<Project Name> - Online LaTeX Editor Overleaf" (localized); drop the
+      // last " - " segment when it names Overleaf.
       if (docTitle) {
-        var stripped = docTitle.replace(/\s*[-–]\s*Overleaf.*$/i, '').trim();
+        var stripped = docTitle.replace(/\s+[-–|]\s+[^-–|]*Overleaf[^-–|]*$/i, '').trim();
         if (stripped && stripped.toLowerCase() !== 'overleaf') {
           return stripped;
         }

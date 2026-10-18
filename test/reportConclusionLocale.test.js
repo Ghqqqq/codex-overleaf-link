@@ -63,19 +63,185 @@ const Completion = require('../extension/src/content/runCompletionMeta');
 const Controller = require('../extension/src/content/runController');
 const Settlement = require('../extension/src/shared/writebackSettlement');
 const Failures = require('../extension/src/shared/failureReasons');
+const I18n = require('../extension/src/shared/i18n');
 const projectOutcome = (run, locale = 'en') => Completion.projectFinishedRun(run, locale, {
   projectRunSettlement: Settlement.projectRunSettlement
 });
 function outcomeRun(input, fields = {}) {
+  return roundtripRun(reportRun(input, fields));
+}
+function reportRun(input, fields = {}) {
   const report = Transcript.buildHumanCompletionReport({ includeWriteResult: true, undoCount: 0, ...input });
-  const run = { id: 'outcome', mode: 'auto', status: report.status, ...fields, events: [{
+  return { id: 'outcome', mode: 'auto', status: report.status, ...fields, events: [{
     kind: 'report', title: report.title, status: report.status, detail: report.text,
     detailStructured: report.structured, failure: input.failure
   }] };
+}
+function roundtripRun(run, fallback = true) {
   const state = Session.normalizePanelState({ activeSessionId: 's', sessions: [{ id: 's', projectId: 'p', runs: [run] }] });
-  const row = Storage.buildSessionRecord(Session.prepareStateForStorage(state).sessions[0], { preserveRunActionPayload: true });
+  const row = Storage.buildSessionRecord((fallback ? Session.prepareStateForStorage(state) : state).sessions[0], { preserveRunActionPayload: true });
   return Session.normalizePanelState({ activeSessionId: 's', sessions: [JSON.parse(JSON.stringify(row))] }).sessions[0].runs[0];
 }
+
+test('new refresh reports distinguish Ask zero writes from Auto uncertainty through storage', () => {
+  for (const locale of ['en', 'zh']) {
+    for (const [mode, fields, kind] of [['ask', {}, 'didnt-finish'], ['auto', {}, 'didnt-finish'],
+      ['auto', { undoOperations: [{ type: 'edit', path: 'main.tex', replaceAll: 'before' }] }, 'check-overleaf']]) {
+      const state = Session.normalizePanelState({ locale, activeSessionId: 's', sessions: [{ id: 's', projectId: 'p',
+        runs: [{ id: 'refresh', mode, status: 'running', events: [], ...fields }] }] }, { restoreRunningRuns: true });
+      const live = state.sessions[0].runs[0];
+      assert.equal(live.events.at(-1).detail, I18n.t(locale, 'restoredRunStoppedDetail'));
+      for (const run of [live, roundtripRun(live), roundtripRun(live, false)]) {
+        const before = JSON.stringify(run), event = run.events.at(-1);
+        assert.equal(run.status, 'interrupted');
+        assert.equal(event.detailStructured.conclusion, productText('reload_interrupted', locale));
+        assert.equal(event.detailStructured.meta.some(row => row.key === 'writeResult'), mode === 'ask');
+        assert.equal(Controller.isRetryReplacementEligible(run, Settlement.projectRunSettlement(run)), mode === 'ask');
+        assert.equal(Controller.isRetryReplacementEligible(run, {}), mode === 'ask');
+        for (const to of ['en', 'zh']) {
+          const outcome = projectOutcome(run, to);
+          assert.equal(outcome.kind, kind);
+          assert.equal(outcome.noWrites, mode === 'ask');
+          assert.equal(Completion.projectNotStartedRun(run, to), null);
+          if (kind === 'didnt-finish') {
+            assert.equal(outcome.title, I18n.t(to, 'runOutcomeCause_panel_reload_interrupted'));
+            assert.equal(outcome.body, I18n.t(to, mode === 'ask' ? 'runOutcomeNoWrites' : 'runOutcomeReloadUnknownBody'));
+            assert.equal(outcome.nextStep, I18n.t(to, 'failureReason_panel_reload_interrupted_next'));
+          } else assert.equal(outcome.unconfirmed, true);
+        }
+        assert.equal(JSON.stringify(run), before);
+      }
+    }
+  }
+});
+
+test('legacy flat refresh reports keep their renderer and localized product appendix', () => {
+  for (const locale of ['en', 'zh']) {
+    const run = Session.normalizeRuns([{ id: 'legacy-refresh', mode: 'auto', status: 'interrupted', events: [{
+      kind: 'report', status: 'failed', title: I18n.t(locale, 'restoredRunStoppedTitle'),
+      detail: I18n.t(locale, 'restoredRunStoppedDetail'), failure: { code: 'native_request_failed', source: 'panel_reload' }
+    }] }])[0];
+    const before = JSON.stringify(run), event = run.events[0];
+    for (const to of ['en', 'zh']) {
+      assert.equal(Completion.projectNotStartedRun(run, to), null);
+      assert.equal(projectOutcome(run, to), null);
+      assert.equal(projectCompletionConclusion(event, run, to, { flat: true, text: event.detail }),
+        I18n.t(to, 'restoredRunStoppedDetail'));
+    }
+    assert.equal(JSON.stringify(run), before);
+  }
+});
+
+async function governanceReport(locale, assistantMessage, rules) {
+  const tx = (en, zh) => locale === 'zh' ? zh : en;
+  const tr = (key, values) => I18n.t(locale, key, values);
+  const plan = require('../extension/src/content/writebackPlan').create({ tx, tr,
+    normalizeSafeProjectPath: require('../extension/src/shared/projectFiles').normalizeSafeProjectPath,
+    GovernanceRules: require('../extension/src/shared/governanceRules'), getGovernanceRulesForCurrentProject: () => rules,
+    getAppliedEntries: result => result.applied || [], getSkippedEntries: result => result.skipped || [] });
+  // Load the complete browser module; production planning, governance and settlement own the result.
+  const window = {};
+  require('node:vm').runInNewContext(require('node:fs').readFileSync(
+    require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window, Function });
+  let input;
+  const orchestrator = window.CodexOverleafWritebackOrchestrator.create({ ...plan, tx, tr, getLocale: () => locale,
+    getState: () => ({ mode: 'auto' }), cleanFinalAnswer: value => String(value || '').trim(),
+    getAssistantAnswerForCurrentRun: () => '', appendRunEvent() {}, appendApplyResult() {},
+    appendCompletionReport: value => { input = value; },
+    buildSyncApplyOperations: require('../extension/src/content/writebackController').buildSyncApplyOperations,
+    getSkippedEntries: result => result.skipped || [], formatWritebackSkippedNextStep: () => '',
+    writebackSettlement: Settlement });
+  const result = await orchestrator.applySyncChangesToOverleaf([{ path: 'main.tex', content: 'after' }],
+    { files: [{ path: 'main.tex', content: 'before' }] }, { mode: 'auto', assistantMessage });
+  return { input: { ...input, locale }, fields: { settlement: result.settlement.facts } };
+}
+
+test('governance blocks preserve the model prefix and project the actual path-rule cause', async () => {
+  const prefix = 'Added % b6-readonly …\nModel 原文🙂  stays exact.';
+  for (const locale of ['en', 'zh']) {
+    for (const [rules, code, message] of [[{ readonlyPatterns: ['main.tex'] }, 'governance_readonly', prefix],
+      [{ writablePatterns: ['allowed.tex'] }, 'governance_writable_allowlist', '']]) {
+      const { input, fields } = await governanceReport(locale, message, rules);
+      const raw = message ? message + '\n\n' + productText('blocked_sync_note', locale) : productText('blocked_sync', locale);
+      assert.equal(input.conclusion, raw);
+      assert.equal(input.conclusionSource.prefixLength, message.length);
+      assert.equal(input.failure.retryable, false);
+      const live = reportRun(input, fields);
+      // The old model-only report was retry-replaceable via unchanged settlement, not its 0/N row.
+      const legacy = outcomeRun({ ...input, conclusion: message || 'Legacy model answer', conclusionSource: undefined }, fields);
+      assert.equal(projectOutcome(legacy), null);
+      assert.equal(Controller.isRetryReplacementEligible(legacy, Settlement.projectRunSettlement(legacy)), true);
+      for (const run of [live, roundtripRun(live)]) {
+        const before = JSON.stringify(run);
+        assert.equal(Controller.isRetryReplacementEligible(run, Settlement.projectRunSettlement(run)), true);
+        assert.equal(Controller.isRetryReplacementEligible(run, {}), false);
+        for (const to of ['en', 'zh']) {
+          const outcome = projectOutcome(run, to);
+          assert.equal(outcome.kind, 'not-written');
+          assert.equal(outcome.title, I18n.t(to, `runOutcomeCause_${code}`, { file: 'main.tex' }));
+          assert.equal(outcome.nextStep, I18n.t(to, `failureReason_${code}_next`));
+          assert.equal(projectCompletionConclusion(run.events[0], run, to), message
+            ? message + '\n\n' + productText('blocked_sync_note', to) : productText('blocked_sync', to));
+          assert.equal(run.events[0].detailStructured.conclusion, raw);
+        }
+        assert.equal(JSON.stringify(run), before);
+      }
+    }
+  }
+});
+
+test('sensitive blocks retain only bounded detector evidence and localize the finding after storage', async () => {
+  const SensitiveScan = require('../extension/src/shared/sensitiveScan');
+  const single = SensitiveScan.scanSensitiveInputs({ task: 'AKIA' + 'A'.repeat(16) });
+  const mixed = SensitiveScan.scanSensitiveInputs({ task: 'AKIA' + 'A'.repeat(16) + '\nBearer ' + 'b'.repeat(20) });
+  const cases = [[single, 'aws_access_key'], [mixed, 'mixed'], [[...single, ...single], 'aws_access_key'],
+    [[...single, { detectorId: 'unknown-detector', preview: 'private-preview', match: 'private-match' }], 'mixed'],
+    [[...single, ...['private-key', 'api-token', 'jwt-token', 'secret-assignment', 'google-api-key']
+      .map(detectorId => ({ detectorId, preview: 'private-preview' }))], 'mixed']];
+  for (const locale of ['en', 'zh']) {
+    for (const [findings, label] of cases) {
+      let input;
+      const preflight = require('../extension/src/content/sensitivePreflight').create({
+        SensitiveScan: { scanSensitiveInputs: () => findings }, normalizeGovernanceRules: rules => rules,
+        isTextSnapshotFile: () => true, appendRunEvent() {}, appendCompletionReport: value => { input = value; },
+        tx: (en, zh) => locale === 'zh' ? zh : en, tr: key => I18n.t(locale, key)
+      });
+      assert.equal((await preflight.run({ task: 'fixture', project: { files: [] }, rules: {} })).blocked, true);
+      assert.equal(input.conclusionKey, 'sensitive_blocked');
+      assert.equal(input.conclusion, productText('sensitive_blocked', locale));
+      const { failure } = input;
+      assert.deepEqual(Object.keys(failure.evidence).sort(), ['detectorIds', 'findingCount']);
+      assert.equal(failure.evidence.findingCount, findings.length);
+      assert.ok(failure.evidence.detectorIds.length <= 5);
+      assert.equal(new Set(failure.evidence.detectorIds).size, failure.evidence.detectorIds.length);
+      assert.equal(failure.retryable, false);
+      assert.equal(failure.changedDocument, false);
+      assert.equal(Failures.normalizeFailureReason({ code: failure.code }).severity, 'blocked');
+      assert.equal(Failures.normalizeFailureReason({ code: failure.code }).retryable, false);
+      const live = reportRun({ ...input, locale });
+      const legacy = outcomeRun({ ...input, locale, failure: undefined });
+      assert.equal(projectOutcome(legacy), null);
+      assert.equal(Controller.isRetryReplacementEligible(legacy, Settlement.projectRunSettlement(legacy)), true);
+      for (const run of [live, roundtripRun(live)]) {
+        const before = JSON.stringify(run);
+        assert.deepEqual(run.events[0].failure.evidence, failure.evidence);
+        assert.doesNotMatch(JSON.stringify(run.events[0]), /private-preview|private-match|AKIA|unknown-detector/);
+        assert.equal(Controller.isRetryReplacementEligible(run, Settlement.projectRunSettlement(run)), true);
+        for (const to of ['en', 'zh']) {
+          const outcome = projectOutcome(run, to);
+          assert.equal(outcome.kind, 'didnt-finish');
+          const finding = I18n.t(to, `sensitiveFinding_${label}`);
+          assert.equal(outcome.title, I18n.t(to, 'runOutcomeCause_sensitive_content_blocked', {
+            finding: to === 'zh' && /^[A-Za-z]/.test(finding) ? ` ${finding}` : finding
+          }));
+          assert.equal(outcome.body, I18n.t(to, 'runOutcomeNoWrites'));
+          assert.equal(outcome.nextStep, I18n.t(to, 'failureReason_sensitive_content_blocked_next'));
+        }
+        assert.equal(JSON.stringify(run), before);
+      }
+    }
+  }
+});
 
 test('quiet zero-write failures retain the durable report used by retry replacement', () => {
   for (const locale of ['en', 'zh']) {

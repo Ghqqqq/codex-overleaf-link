@@ -49,9 +49,10 @@
       if (!scope.projectId || !scope.accountScopeId) { pending = false; return; }
       if (saving || isBusy()) { schedule(1000); return; }
       const local = getState();
-      // A draft or a not-yet-persisted edit always takes priority over passive
-      // history refresh. It remains on screen until the user saves/sends it.
-      if (local.task || (local.sessions || []).some(session => StorageDb.hasUnpersistedSharedSession(session))) {
+      // A locally edited draft or a not-yet-persisted edit takes priority over
+      // passive history refresh. Callers may distinguish imported shared drafts.
+      if ((options.hasLocalDraft ? options.hasLocalDraft(local) : Boolean(local.task))
+        || (local.sessions || []).some(session => StorageDb.hasUnpersistedSharedSession(session))) {
         schedule(1500); return;
       }
       const capturedVersion = version, capturedSignature = signature(local);

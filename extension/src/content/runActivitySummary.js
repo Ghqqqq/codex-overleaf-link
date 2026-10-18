@@ -229,6 +229,16 @@
       el.addEventListener('toggle', row.showFull);
       return row;
     }
+    // One-line thought previews are plain text: drop the Markdown emphasis that
+    // reasoning summaries use for their headings ("**Reading the file**").
+    function plainThought(value) {
+      return String(value || '').replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, '$2').replace(/\s+/g, ' ').trim();
+    }
+    // A finished thought that opens with a bold heading is summarised by that heading.
+    function thoughtLead(value) {
+      const heading = /^\s*(\*\*|__)(?=\S)(.+?\S)\1\s*(?:\n|$)/.exec(String(value || ''));
+      return heading ? heading[2].trim() : firstSentence(plainThought(value));
+    }
     function updateThought(row, block, run) {
       const value = String(sanitize(block.event.title) || '').trim();
       const live = run.status === 'running' && block.event.status === 'running';
@@ -243,8 +253,7 @@
       const started = Date.parse(block.startedAt || ''), ended = Date.parse(block.event.timestamp || '');
       const seconds = Number.isFinite(started) && Number.isFinite(ended) && ended > started ? formatElapsed(ended - started) : '';
       text(row.label, seconds ? tx('Thought ' + seconds, '思考 ' + seconds) : tx('Thought', '思考'));
-      const flat = value.replace(/\s+/g, ' ');
-      text(row.lead, (flat.match(/^.{12,160}?[.!?。！？](?=\s|$)/) || [flat.slice(0, 160)])[0]);
+      text(row.lead, thoughtLead(value));
       row.value = value;
       row.showFull();
     }
@@ -378,10 +387,10 @@
           const live = run.status === 'running' && block.event.status === 'running';
           const started = Date.parse(block.startedAt || ''), ended = Date.parse(block.event.timestamp || '');
           const seconds = Number.isFinite(started) && Number.isFinite(ended) && ended > started ? ' ' + formatElapsed(ended - started) : '';
-          const flat = value.replace(/\s+/g, ' ');
+          const flat = plainThought(value);
           entries.push({ key: block.key, kind: 'thought', state: live ? 'running' : 'completed',
             label: live ? tx('Thinking', '思考中') : tx('Thought', '思考') + seconds,
-            lead: live ? (flat.length > 90 ? '…' + flat.slice(-90) : flat) : firstSentence(value) });
+            lead: live ? (flat.length > 90 ? '…' + flat.slice(-90) : flat) : thoughtLead(value) });
         } else if (block.kind !== 'message' && block.kind !== 'guidance') {
           for (const item of block.kind === 'exploreGroup' ? block.items : [block]) {
             if (item.kind === 'notice') continue;

@@ -405,7 +405,10 @@
     },
     getPanel: () => panel,
     getState: () => state,
-    setState: next => { state = next; },
+    setState: next => {
+      if (next.activeSessionId !== state?.activeSessionId) composerDraftEditedHere = false;
+      state = next;
+    },
     getCurrentRunView: () => currentRunView,
     getSettingsPanelInstance: () => settingsPanelInstance,
     prepareRetryReplacement: (run, task) => prepareRetryReplacement(run, task)
@@ -426,7 +429,10 @@
   const sessionForkController = Modules.SessionForkController.create({
     SessionState: Modules.SessionState,
     getState: () => state,
-    setState: next => { state = next; },
+    setState: next => {
+      if (next.activeSessionId !== state?.activeSessionId) composerDraftEditedHere = false;
+      state = next;
+    },
     getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId(), generation: spaRouteGeneration }),
     sendBackgroundNative, saveState,
     getEnabledCodexLocalSkillIds: () => getEnabledCodexLocalSkillIds(),
@@ -442,7 +448,6 @@
   });
   const runResultActions = Modules.RunResultActions.create({
     tr,
-    getLocale,
     forkRunFromNode: sessionForkController.forkRunFromNode
   });
   const runTimelineView = Modules.RunTimelineView.create({
@@ -551,7 +556,10 @@
     applyStateToPanel, syncSessionProvider: () => providerSettingsCoordinator.syncSessionProvider(),
     getPanel: () => panel,
     getState: () => state,
-    setState: next => { state = next; },
+    setState: next => {
+      if (next.activeSessionId !== state?.activeSessionId) composerDraftEditedHere = false;
+      state = next;
+    },
     getSessionPanelInstance: () => sessionPanelInstance,
     formatSessionTime
   });
@@ -1046,6 +1054,8 @@
   let storageNoticeKeys = new Set();
   let composerSkillInvocation = null;
   let composerDraftRevision = 0;
+  // Page-local provenance only; the draft itself stays shared per conversation.
+  let composerDraftEditedHere = false;
   let slashCodexOverleafSkills = [];
   let slashCodexOverleafSkillsLoaded = false;
   let slashCodexOverleafSkillsLoading = false;
@@ -1182,6 +1192,7 @@
     await refreshAccountScopeId();
     storageKey = getProjectStorageKey(LEGACY_STORAGE_KEY, window.location.href);
     state = normalizeLoadedPanelState(await loadStoredState());
+    composerDraftEditedHere = false;
     await getRunReviewController().recoverInterruptedUndoStatuses();
     initializeRunQueueScheduler();
     recoverInterruptedRunJournals()
@@ -1686,6 +1697,8 @@
     updateExperimentalOtMenuStatus();
     renderModelConfigChoices();
     updateModelDisplay();
+    // The header switcher's title and accessible name carry localized text too.
+    applySessionLabel();
     renderSessionList();
     renderContextUsage();
     if (panel.querySelector('[data-slash-menu]')?.hidden === false) updateSlashMenuForTaskInput();
@@ -1995,6 +2008,7 @@
           && panel?.querySelector('[data-task]')?.value === submittedDraft) {
           panel.querySelector('[data-task]').value = '';
           updateSessionById(submittedSessionId, { task: '' });
+          composerDraftEditedHere = false;
           composerDraftRevision += 1;
           autosizeTaskTextarea();
           closeSlashMenu();
@@ -3148,6 +3162,7 @@
       }),
       clearTask: () => {
         panel.querySelector('[data-task]').value = '';
+        composerDraftEditedHere = false;
         selectionContextView.clear();
         updateSessionById(state.activeSessionId, { task: '' });
         autosizeTaskTextarea();
@@ -4506,7 +4521,12 @@
     getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId(), generation: spaRouteGeneration }),
     getState: () => state, setState: next => { state = next; },
     isBusy: () => Boolean(pendingDraftSave || readLiveRunViewForSaveStateGuard() || document.querySelector('dialog[open]')),
-    normalize: normalizePanelState, render: applyStateToPanel,
+    hasLocalDraft: current => Boolean(current.task) && composerDraftEditedHere,
+    normalize: normalizePanelState,
+    render: () => {
+      applyStateToPanel();
+      composerDraftEditedHere = false;
+    },
     notice: error => appendStorageNoticeOnce('shared-history-refresh', tx(
       `Could not refresh shared history: ${error.message}`,
       `共享会话历史刷新失败：${error.message}`
@@ -4606,6 +4626,7 @@
       storageKey = getProjectStorageKey(LEGACY_STORAGE_KEY, window.location.href);
       const reloaded = await loadStoredState();
       state = normalizeLoadedPanelState(reloaded);
+      composerDraftEditedHere = false;
       await getRunReviewController().recoverInterruptedUndoStatuses();
       applyStateToPanel();
     } catch (_error) {
@@ -4668,6 +4689,7 @@
   function leaveActiveProject(newId) {
     const prevId = activeProjectId;
     activeProjectId = newId; // null for non-project URLs (spec §5.7.1)
+    if (prevId !== newId) composerDraftEditedHere = false;
     getComposerDraftPersistence().syncScope();
     if (!prevId || prevId === newId) {
       return;
@@ -6230,6 +6252,7 @@
     if (!input || !state.activeSessionId) return;
     const next = updateActiveSessionDraft(state, input.value);
     if (next === state) return;
+    if (next.task !== state.task) composerDraftEditedHere = true;
     state = next;
     const now = Date.now(), scope = getComposerDraftScope();
     pendingDraftSave = {
@@ -6540,6 +6563,7 @@
     if (taskInput) {
       taskInput.value = '';
     }
+    composerDraftEditedHere = false;
     autosizeTaskTextarea();
     if (!keepAttachments) {
       composerAttachmentController.clear();

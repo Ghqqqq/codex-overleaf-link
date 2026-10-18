@@ -1158,10 +1158,13 @@ function settleReinstalledUpdate(context, version, expected) {
   }
   const reinstalledPair = readManagedRuntimeEvidence(context, version);
   const timestamp = new Date().toISOString();
+  // The installer already activated `version`; a pending switch back to the
+  // source would block business requests and could repoint the launcher.
   writeJournal(context, {
     ...journal, state: 'superseded', supersededFromState: journal.state,
     supersededByVersion: version, supersededAt: timestamp,
-    updatedAt: timestamp, reasonCode: 'update_reinstalled', reinstalledPair
+    updatedAt: timestamp, reasonCode: 'update_reinstalled', reinstalledPair,
+    sourceActivationPending: false
   });
   const authorization = readAuthorization(context);
   if (authorization?.state === 'bound' && authorization.id === journal.authorizationId

@@ -10,7 +10,6 @@
   function create(deps = {}) {
     const {
       tr,
-      getLocale,
       forkRunFromNode,
       document: documentRef = globalThis.document,
       navigator: navigatorRef = globalThis.navigator
@@ -25,11 +24,23 @@
       // details list stays below both.
       const factsToggle = report.querySelector(':scope > .run-final-answer__facts > .run-final-answer__facts-sum');
       if (factsToggle) factsToggle.after(actions);
-      else report.append(actions);
+      else {
+        // Without a facts summary, the report's own Details toggle shares the row.
+        const details = report.querySelector(':scope > .run-outcome-details, :scope > .run-outcome-footer > .run-outcome-details');
+        if (details) {
+          let footer = details.parentElement.matches('.run-outcome-footer') ? details.parentElement : null;
+          if (!footer) {
+            footer = documentRef.createElement('div');
+            footer.className = 'run-outcome-footer';
+            details.before(footer);
+            footer.append(details);
+          }
+          footer.append(actions);
+        } else report.append(actions);
+      }
       actions.hidden = false;
       configureCopyButton(root);
       configureForkButton(root, run);
-      configureCompletedTime(actions, run);
     }
 
     function configureForkButton(root, run) {
@@ -44,7 +55,7 @@
       button.disabled = !available;
       button.title = tr(available ? 'forkRunTitle' : 'forkRunUnavailable');
       button.setAttribute('aria-label', button.title);
-      button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h3.5c3.5 0 4.2-4 7.5-4h2m-2.5-2.5L16 6l-2.5 2.5M6.5 10c3.5 0 4.2 4 7.5 4h2m-2.5-2.5L16 14l-2.5 2.5"/></svg>';
+      button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path transform="translate(.5 0)" d="M3 10h3.5c3.5 0 4.2-4 7.5-4h2m-2.5-2.5L16 6l-2.5 2.5M6.5 10c3.5 0 4.2 4 7.5 4h2m-2.5-2.5L16 14l-2.5 2.5"/></svg>';
       if (!available) return;
       button.addEventListener('click', async event => {
         event.stopPropagation();
@@ -59,19 +70,6 @@
       });
     }
 
-    function configureCompletedTime(actions, run) {
-      const target = actions.querySelector('[data-run-completed-time]');
-      const finishedAt = String(run.finishedAt || '').trim();
-      const date = finishedAt ? new Date(finishedAt) : null;
-      if (!target || !date || !Number.isFinite(date.getTime())) return;
-      target.hidden = false;
-      target.textContent = new Intl.DateTimeFormat(getLocale(), {
-        hour: '2-digit',
-        minute: '2-digit'
-      }).format(date);
-      target.title = date.toLocaleString(getLocale());
-    }
-
     function configureCopyButton(root) {
       const existing = root.querySelector('[data-run-copy]');
       const button = existing.cloneNode(true);
@@ -82,7 +80,7 @@
       button.disabled = !copyText;
       button.title = tr('copyConclusionTitle');
       button.setAttribute('aria-label', button.title);
-      button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="2"/><path d="M13.5 6.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6.5a2 2 0 0 0 2 2h1.5"/></svg>';
+      button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><g transform="translate(.75 .75)"><rect x="6.5" y="6.5" width="9" height="9" rx="2"/><path d="M13.5 6.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6.5a2 2 0 0 0 2 2h1.5"/></g></svg>';
       if (!copyText) return;
       button.addEventListener('click', async event => {
         event.stopPropagation();

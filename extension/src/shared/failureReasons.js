@@ -106,6 +106,11 @@
     },
 
     // 9.2 Preflight
+    sensitive_content_blocked: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'Sensitive content was found before sending, so Codex did not receive this request.',
+      fallbackNextAction: 'Remove the sensitive content, narrow @context, or enable explicit sensitive confirmation in Project Settings.'
+    },
     governance_blocked: {
       stage: 'preflight', severity: 'blocked', defaultRetryable: false,
       fallbackUserMessage: 'Project file rules blocked this write. Codex did not write the affected path.',

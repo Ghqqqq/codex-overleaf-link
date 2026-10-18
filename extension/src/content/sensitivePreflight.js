@@ -7,6 +7,10 @@
 })(typeof window !== 'undefined' ? window : globalThis, function sensitivePreflightFactory() {
   'use strict';
 
+  // Report evidence admits detector identities only, never matched text or previews.
+  const REPORT_DETECTOR_IDS = new Set(['private-key', 'bearer-token', 'api-token', 'aws-access-key',
+    'google-api-key', 'huggingface-token', 'gitlab-token', 'stripe-live-secret', 'jwt-token', 'secret-assignment']);
+
   function create({
     SensitiveScan, normalizeGovernanceRules, isTextSnapshotFile, sendBackgroundNative,
     getCurrentProjectId, appendRunEvent, appendCompletionReport, showPluginConfirm, tr, tx
@@ -62,12 +66,21 @@
       }
       // Blocking an extra message must not finish the task already in progress.
       if (guidance) return { blocked: true, findings };
+      const detectorIds = [...new Set(findings.map(finding => finding?.detectorId))];
       appendCompletionReport({ conclusionKey: 'sensitive_blocked',
         conclusion: tx(
           'This run was blocked before Codex received project context because sensitive content was detected.',
           '检测到敏感内容，本轮已在向 Codex 发送项目上下文前阻止。'
         ),
         status: 'blocked',
+        unchangedReason: tx('Sensitive content was found before sending.', '发送前发现了敏感内容。'),
+        failure: { code: 'sensitive_content_blocked', stage: 'preflight', severity: 'blocked',
+          retryable: false, changedDocument: false,
+          evidence: {
+            // An unknown type makes the cause generic, even alongside one known type.
+            detectorIds: detectorIds.every(id => REPORT_DETECTOR_IDS.has(id)) ? detectorIds.slice(0, 5) : [],
+            findingCount: findings.length
+          } },
         operations: [],
         applyResults: [],
         nextStep: tx(

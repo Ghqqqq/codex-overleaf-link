@@ -51,7 +51,12 @@
                 if (!attachments.length) return;
                 throw failure('composer_draft_cleared');
               }
-              if (value.revision !== revision) throw failure('composer_draft_conflict');
+              if (value.revision !== revision) {
+                // Writing what another tab already stored changes nothing (for example
+                // both tabs clearing an empty draft on send); only a real edit conflicts.
+                if (JSON.stringify(attachments) === JSON.stringify(result.attachments)) return;
+                throw failure('composer_draft_conflict');
+              }
               if (attachments.length && value.unbased && clearedAt && value.changedAt <= clearedAt) {
                 throw failure('composer_draft_cleared');
               }

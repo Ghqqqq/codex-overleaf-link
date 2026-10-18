@@ -174,9 +174,25 @@
       } finally { trackedChangeInFlight.delete(runId); refreshRunCardControls(runId); }
     }
     const withUndoLock = (runId, work) => withSharedReviewOwnership(runId, () => withLocalUndoLock(runId, work));
-    const undoRun = runId => withUndoLock(runId, () => executeUndo(runId));
+    // Undo restores the source; with Auto compile on, refresh the PDF the way a write does.
+    async function recompileAfterUndo(runId, work) {
+      const before = findRunRecord(runId);
+      const prior = `${before?.undoStatus || ''}|${before?.trackedChangeStatus || ''}`;
+      const result = await work();
+      const run = findRunRecord(runId);
+      const undone = ['applied', 'partial'].includes(run?.undoStatus) || run?.trackedChangeStatus === 'rejected';
+      if (undone && `${run.undoStatus || ''}|${run.trackedChangeStatus || ''}` !== prior
+        && getState()?.autoRecompile !== false && run.runProjectId && run.runProjectId === getCurrentProjectId?.()) {
+        Promise.resolve(callPageBridge('triggerCompile', { preferUiClick: true, waitForSaveMs: 5000,
+          runProjectId: run.runProjectId })).catch(() => {});
+      }
+      return result;
+    }
+    // Inside the lock: a stale page that adopts another page's finished Undo never reaches its work.
+    const undoRun = runId => withUndoLock(runId, () => recompileAfterUndo(runId, () => executeUndo(runId)));
     const acceptRun = runId => withSharedReviewOwnership(runId, () => executeAcceptRun(runId));
-    const undoRunTrackedChanges = (runId, run) => withUndoLock(runId, () => executeTrackedUndo(runId, run));
+    const undoRunTrackedChanges = (runId, run) => withUndoLock(runId,
+      () => recompileAfterUndo(runId, () => executeTrackedUndo(runId, run)));
 
 function undoOwner(run) {
     const sessionId = getState().activeSessionId;

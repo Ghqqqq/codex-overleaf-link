@@ -160,7 +160,9 @@
       Object.defineProperty(record, BASE, { value: base, enumerable: true });
       return record;
     }
-    async function list(projectId = '', adopt = true) {
+    // List reads keep a per-record merge base without changing the visible view's
+    // baseline. Hydration explicitly adopts; passive refresh adopts after apply.
+    async function list(projectId = '', adopt = false) {
       const value = capture(projectId);
       await migrate(value);
       const result = []; let after = '';
@@ -236,7 +238,7 @@
       });
       route('claimSessionsForAccount', async (projectId, accountScopeId, deleted = []) => {
         capture(projectId, accountScopeId);
-        return (await list(projectId)).filter(record => !deleted.includes(record.id));
+        return (await list(projectId, true)).filter(record => !deleted.includes(record.id));
       });
       route('putRecord', async (store, record) =>
         store === 'sessions' ? (await put([record]))[0] : api.putRecord(store, record));

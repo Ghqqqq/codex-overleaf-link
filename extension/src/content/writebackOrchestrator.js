@@ -228,8 +228,15 @@
         title: tx('Codex did not produce file changes that need to sync back to Overleaf.', 'Codex 没有产生需要同步回 Overleaf 的文件改动。'),
         status: 'completed'
       });
-      appendCompletionReport({ conclusionKey: options.assistantMessageKey || (!assistantMessage ? 'no_sync_changes' : undefined),
-        conclusion: assistantMessage || tx('Codex finished locally. There are no changes to sync back to Overleaf.', 'Codex 已完成本地处理，没有需要同步回 Overleaf 的改动。'),
+      const blockedConclusion = assistantMessage
+        ? `${assistantMessage}\n\n${tx('Sync note: no changes were written to Overleaf; every change was blocked before writing.', '同步提示：没有向 Overleaf 写入任何改动；所有改动都在写入前被拦下。')}`
+        : tx('No changes were written to Overleaf; every change was blocked before writing.', '没有向 Overleaf 写入任何改动；所有改动都在写入前被拦下。');
+      appendCompletionReport({ conclusionKey: additionalSkippedEntries.length ? undefined
+        : options.assistantMessageKey || (!assistantMessage ? 'no_sync_changes' : undefined),
+        conclusion: additionalSkippedEntries.length ? blockedConclusion
+          : assistantMessage || tx('Codex finished locally. There are no changes to sync back to Overleaf.', 'Codex 已完成本地处理，没有需要同步回 Overleaf 的改动。'),
+        conclusionSource: additionalSkippedEntries.length ? { origin: 'product', key: 'writeback',
+          outcome: 'blocked_sync', prefixLength: assistantMessage.length } : undefined,
         status: additionalSkippedEntries.length ? 'failed' : runMode === 'ask' ? tr('modeAsk') : 'completed',
         failure: blockedFailure,
         operations: [],

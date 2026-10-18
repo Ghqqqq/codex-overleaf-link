@@ -125,7 +125,9 @@
     async function triggerCompile(params = {}) {
       const sourceAtTrigger = state.lastKnownSourceEditTimestamp;
       const saveResult = await waitForCompileSaveState(params);
-      if (params.requireVerifiedSave !== false && saveResult.state !== 'verified_saved') {
+      // Current Overleaf shows no save indicator while idle; a quiet editor is
+      // the same weaker evidence the update-idle check accepts.
+      if (params.requireVerifiedSave !== false && !['verified_saved', 'verified_quiet'].includes(saveResult.state)) {
         return {
           ok: false,
           reason: saveResult.reason || 'Overleaf save state was not verified.',
@@ -201,7 +203,9 @@
       }
       try {
         return normalizeSaveStateResult(
-          await deps.waitForSaveState({ deadlineMs: resolveWaitForSaveMs(params.waitForSaveMs) })
+          await deps.waitForSaveState({ deadlineMs: resolveWaitForSaveMs(params.waitForSaveMs),
+            // Only a caller that requires save evidence may settle for a quiet editor.
+            allowQuietEditorFallback: params.requireVerifiedSave !== false, quietFallbackMs: 1000 })
         );
       } catch (error) {
         return {
