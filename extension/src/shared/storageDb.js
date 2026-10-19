@@ -305,6 +305,17 @@
       accountScopeUnavailable: accountScopeUnavailable,
       safeTaskSummary: safeTaskSummary
     };
+    // Optional provenance for the automatic clear of one captured submission.
+    // It is envelope metadata, not run/review authority; no schema migration is needed.
+    if (record.task === '' && typeof input.draftConsumption?.task === 'string'
+      && input.draftConsumption.task && typeof input.draftConsumption.runId === 'string'
+      && input.draftConsumption.runId && record.runs.some(run => run.id === input.draftConsumption.runId
+        && !run.forkSnapshot && run.runProjectId === record.projectId)) {
+      record.draftConsumption = {
+        runId: input.draftConsumption.runId,
+        task: normalizeDisplayTextForStorage(input.draftConsumption.task, SESSION_STORAGE_LIMITS.taskChars)
+      };
+    }
     if (options.preserveRunActionPayload === true) {
       // Count the real display record before allocating recovery space. Adding
       // older checkpoints must not make an otherwise valid history unwritable.
@@ -1362,6 +1373,8 @@
     projectRetentionWarnings: StorageRunActions.projectRetentionWarnings,
     projectRetentionUpdates: StorageRunActions.projectRetentionUpdates,
     mergeSessionReviewState: StorageRunActions.mergeSessionReviewState,
+    copyRunReviewState: StorageRunActions.copyRunReviewState,
+    reviewStateSnapshot: StorageRunActions.reviewStateSnapshot,
     buildTurnRecord: buildTurnRecord,
     buildEventRecord: buildEventRecord,
     buildArtifactRecord: buildArtifactRecord,

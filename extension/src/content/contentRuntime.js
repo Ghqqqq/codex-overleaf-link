@@ -2008,6 +2008,7 @@
           && panel?.querySelector('[data-task]')?.value === submittedDraft) {
           panel.querySelector('[data-task]').value = '';
           updateSessionById(submittedSessionId, { task: '' });
+          recordSubmittedDraftConsumption(submittedSessionId, submittedDraft);
           composerDraftEditedHere = false;
           composerDraftRevision += 1;
           autosizeTaskTextarea();
@@ -2391,11 +2392,15 @@
           updateSessionById(runSessionId, { codexThreadId: '' });
           renderContextUsage();
           const StorageDb = Modules.StorageDb;
-          if (StorageDb) {
-            const record = await StorageDb.getRecord('sessions', runSessionId);
+          // A live session goes through the ordinary writer. An envelope
+          // conflict there must not abort the run that is choosing a new thread.
+          if (findSessionById(runSessionId)) {
+            saveStateSoon();
+          } else if (StorageDb) {
+            const record = await StorageDb.getRecord('sessions', runSessionId, { adopt: false });
             if (record) {
               record.codexThreadId = '';
-              await StorageDb.putRecord('sessions', record);
+              await StorageDb.putRecord('sessions', record, { adopt: false });
             }
           }
           appendRunEvent({ title: tx('Creating a new Codex conversation thread.', '正在新建 Codex 会话线程。'), status: 'running' });
@@ -2673,11 +2678,11 @@
           // The live session is saved below with its latest draft. Writing an
           // older DB snapshot here can give stale text a newer timestamp.
           if (StorageDb && !findSessionById(runSessionId)) {
-            const record = await StorageDb.getRecord('sessions', runSessionId);
+            const record = await StorageDb.getRecord('sessions', runSessionId, { adopt: false });
             if (record) {
               record.codexThreadId = returnedThreadId;
               record.updatedAt = new Date().toISOString();
-              await StorageDb.putRecord('sessions', record);
+              await StorageDb.putRecord('sessions', record, { adopt: false });
             }
           }
         }
@@ -2929,11 +2934,14 @@
     if (returnedThreadId && returnedThreadId !== codexThreadId) {
       updateSessionById(runSessionId, { codexThreadId: returnedThreadId });
       const StorageDb = Modules.StorageDb;
-      if (StorageDb) {
-        const record = await StorageDb.getRecord('sessions', runSessionId);
+      // The installer already finished; a later envelope conflict only delays this save.
+      if (findSessionById(runSessionId)) {
+        saveStateSoon();
+      } else if (StorageDb) {
+        const record = await StorageDb.getRecord('sessions', runSessionId, { adopt: false });
         if (record) {
           record.codexThreadId = returnedThreadId;
-          await StorageDb.putRecord('sessions', record);
+          await StorageDb.putRecord('sessions', record, { adopt: false });
         }
       }
     }
@@ -4520,7 +4528,9 @@
     Bridge: Modules.SharedSessionBridge, StorageDb: Modules.StorageDb,
     getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId(), generation: spaRouteGeneration }),
     getState: () => state, setState: next => { state = next; },
-    isBusy: () => Boolean(pendingDraftSave || readLiveRunViewForSaveStateGuard() || document.querySelector('dialog[open]')),
+    // An in-flight Accept/Undo keeps its view until it settles; refresh applies afterwards.
+    isBusy: () => Boolean(pendingDraftSave || readLiveRunViewForSaveStateGuard() || trackedChangeInFlight.size
+      || runReviewController?.hasActiveReview?.() || document.querySelector('dialog[open]')),
     hasLocalDraft: current => Boolean(current.task) && composerDraftEditedHere,
     normalize: normalizePanelState,
     render: () => {
@@ -6042,6 +6052,12 @@
       const stateSnapshot = typeof structuredClone === 'function'
         ? structuredClone(state)
         : JSON.parse(JSON.stringify(state));
+      // Keep consumption provenance on the live run owner across ordinary
+      // session normalization; it is not a composer edit or a queued input.
+      const consumedSession = liveRunView?.draftConsumption && liveRunView.runProjectId === projectId
+        && liveRunView.runAccountScopeId === cachedAccountScopeId
+        ? stateSnapshot.sessions?.find(session => session.id === liveRunView.sessionId) : null;
+      if (consumedSession?.task === '') consumedSession.draftConsumption = { ...liveRunView.draftConsumption };
       const compactStateSnapshot = typeof structuredClone === 'function'
         ? structuredClone(compactState)
         : JSON.parse(JSON.stringify(compactState));
@@ -6252,7 +6268,10 @@
     if (!input || !state.activeSessionId) return;
     const next = updateActiveSessionDraft(state, input.value);
     if (next === state) return;
-    if (next.task !== state.task) composerDraftEditedHere = true;
+    if (next.task !== state.task) {
+      composerDraftEditedHere = true;
+      if (currentRunView?.sessionId === state.activeSessionId) delete currentRunView.draftConsumption;
+    }
     state = next;
     const now = Date.now(), scope = getComposerDraftScope();
     pendingDraftSave = {
@@ -6550,6 +6569,7 @@
       if (findSessionById(submission.sessionId)?.task !== submission.task) return false;
       if (state.activeSessionId !== submission.sessionId) {
         updateSessionById(submission.sessionId, { task: '' });
+        recordSubmittedDraftConsumption(submission.sessionId, submission.task);
         saveStateSoon();
         return false;
       }
@@ -6572,8 +6592,18 @@
     renderComposerSkillInvocation();
     selectionContextView.clear();
     state = updateActiveSession(state, { task: '' });
+    if (submission) recordSubmittedDraftConsumption(submission.sessionId, submission.task);
+    else if (currentRunView?.sessionId === state.activeSessionId) delete currentRunView.draftConsumption;
     saveStateSoon();
     return true;
+  }
+
+  function recordSubmittedDraftConsumption(sessionId, task) {
+    if (task && currentRunView?.sessionId === sessionId
+      && currentRunView.runProjectId === getCurrentProjectId()
+      && currentRunView.runAccountScopeId === cachedAccountScopeId) {
+      currentRunView.draftConsumption = { runId: currentRunView.recordId, task };
+    }
   }
 
   function restoreRejectedLocalSkillSubmission(submission, checkpoint) {

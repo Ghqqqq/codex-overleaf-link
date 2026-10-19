@@ -308,11 +308,48 @@
     return out;
   }
 
-  // Review terminal states are monotonic even when a later session snapshot is stale.
-  function mergeSessionReviewState(incoming, existing, reviewRunIds) {
+  const REVIEW_FIELDS = ['trackedChangeStatus', 'undoStatus', 'undoOwnerProtocol', 'undoTrackedChanges', 'undoExpectedFiles',
+    'undoOperations', 'undoBaseFiles', 'appliedOperations', 'trackedChangeCaptures', 'recoveryRetention',
+    'interruptedDraft', 'retryWriteback', 'saveCheck'];
+  const REVIEW_FACT_FIELDS = ['documentEffect', 'fileSettlements', 'failures', 'recoveryAvailability', 'recoveryDisposition'];
+  const terminalReview = run => ['accepted', 'rejected'].includes(run?.trackedChangeStatus) || run?.undoStatus === 'applied';
+  const factsOf = run => run?.settlement || run?.settlementFacts || {};
+
+  function copyRunReviewState(target, source) {
+    const merged = { ...target };
+    const copyFields = (into, from, fields) => {
+      for (const field of fields) {
+        if (Object.hasOwn(from, field)) into[field] = JSON.parse(JSON.stringify(from[field]));
+        else delete into[field];
+      }
+    };
+    copyFields(merged, source, REVIEW_FIELDS);
+    const sourceFacts = factsOf(source), targetFacts = factsOf(target);
+    const facts = { ...targetFacts };
+    copyFields(facts, sourceFacts, REVIEW_FACT_FIELDS);
+    const sourceEvidence = sourceFacts.evidence || {};
+    const evidence = { ...(targetFacts.evidence || {}) };
+    copyFields(evidence, sourceEvidence, [...new Set([...Object.keys(evidence), ...Object.keys(sourceEvidence)])]
+      .filter(key => !['mirrored', 'compiled'].includes(key)));
+    if (Object.keys(evidence).length) facts.evidence = evidence; else delete facts.evidence;
+    delete merged.settlementFacts;
+    if (Object.keys(facts).length) merged.settlement = facts; else delete merged.settlement;
+    return merged;
+  }
+
+  function reviewStateSnapshot(run) {
+    const facts = factsOf(run);
+    return JSON.stringify([REVIEW_FIELDS.map(key => run?.[key]), REVIEW_FACT_FIELDS.map(key => facts[key]),
+      Object.entries(facts.evidence || {}).filter(([key]) => !['mirrored', 'compiled'].includes(key))
+        .sort(([a], [b]) => a.localeCompare(b))]);
+  }
+
+  // Shared submissions retain the caller's envelope and private baseline. The
+  // legacy site-local path explicitly keeps its historical timestamp merge.
+  function mergeSessionReviewState(incoming, existing, reviewRunIds, options = {}) {
     if (!existing || incoming.id !== existing.id || incoming.projectId !== existing.projectId
       || !incoming.accountScopeId || incoming.accountScopeId !== existing.accountScopeId) return incoming;
-    var terminal = run => ['accepted', 'rejected'].includes(run?.trackedChangeStatus) || run?.undoStatus === 'applied';
+    var terminal = terminalReview;
     var incomingRuns = new Map((incoming.runs || []).map(run => [run.id, run]));
     var existingRuns = new Map((existing.runs || []).map(run => [run.id, run]));
     var requestedIds = new Set(reviewRunIds || []);
@@ -321,6 +358,21 @@
       return ['accepted', 'rejected', 'needs_review'].includes(run?.trackedChangeStatus)
         || ['applied', 'partial'].includes(run?.undoStatus);
     });
+    if (options.shared !== false) {
+      const runs = (incoming.runs || []).map(run => {
+        const previous = existingRuns.get(run.id);
+        const source = terminal(previous) ? previous : null;
+        if (!source || (source.runProjectId && source.runProjectId !== incoming.projectId)) return run;
+        // The same decision can still gain save/recovery evidence. Let the
+        // three-way merge retain those edits and reject genuine collisions.
+        if (run.trackedChangeStatus === source.trackedChangeStatus && run.undoStatus === source.undoStatus) return run;
+        // An absent local settlement has no edits to its metadata or auxiliary
+        // evidence. Retain the stored container as well as the terminal fields.
+        const target = !run.settlement && !run.settlementFacts ? { ...run, settlement: factsOf(source) } : run;
+        return copyRunReviewState(target, source);
+      });
+      return { ...incoming, runs };
+    }
     var newer = (Date.parse(incoming.updatedAt) || 0) >= (Date.parse(existing.updatedAt) || 0);
     if (!newer && !explicitReview) return incoming;
     var base = newer ? incoming : existing;
@@ -404,6 +456,8 @@
     compactSessionBatchActions: compactSessionBatchActions,
     compactStructuredEventValue: compactStructuredEventValue,
     mergeSessionReviewState: mergeSessionReviewState,
+    copyRunReviewState: copyRunReviewState,
+    reviewStateSnapshot: reviewStateSnapshot,
     compactRunsForStorage: compactRunsForStorage,
     compactRunActionPayload: compactRunActionPayload,
     compactProviderSnapshot: compactProviderSnapshot,

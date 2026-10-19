@@ -73,16 +73,30 @@ test('display-only shared reads preserve the visible baseline so an idle page ad
     assert.equal(db.hasUnpersistedSharedSession(state.sessions[0]), false);
     assert.equal(db.hasUnpersistedSharedSession({ ...state.sessions[0], task: 'Unsaved edit' }), true,
       'hydration adopts the visible baseline');
-    const applied = deferred(), errors = [];
+    const adoptingReader = connect(network, 3);
+    const [older] = await adoptingReader.claimSessionsForAccount(scope.projectId, scope.accountScopeId);
+    let applied = deferred();
+    const errors = [], checkedDrafts = [];
     sync = ViewSync.install({ Bridge: peer.bridge, StorageDb: db,
       getScope: () => ({ ...scope, generation: 1 }), getState: () => state, setState: next => { state = next; },
       normalize: State.normalizePanelState, render: () => applied.resolve(), isBusy: () => false,
+      hasLocalDraft: current => { checkedDrafts.push(current.task); return false; },
       notice: error => errors.push(error) });
-    const run = { id: 'remote-run', task: 'A finished task', status: 'completed', runProjectId: scope.projectId,
+    const draft = 'Shared draft';
+    await writer.putRecords('sessions', [{ ...await writer.getRecord('sessions', 's'),
+      task: draft, updatedAt: '2026-10-13T00:00:00Z' }]);
+    await applied.promise;
+    assert.equal(state.task, draft);
+    assert.equal(state.sessions[0].task, draft);
+    assert.equal(db.hasUnpersistedSharedSession(state.sessions[0]), false,
+      'the imported draft is a clean shared baseline');
+    applied = deferred();
+    const run = { id: 'remote-run', task: draft, status: 'completed', runProjectId: scope.projectId,
       events: [{ kind: 'assistant', title: 'Answer', detail: 'A durable answer', status: 'completed' }] };
     await writer.putRecords('sessions', [{ ...await writer.getRecord('sessions', 's'),
-      updatedAt: '2026-10-14T00:00:00Z', runs: [run] }]);
+      task: '', updatedAt: '2026-10-14T00:00:00Z', runs: [run] }]);
     const reads = [
+      () => db.getRecord('sessions', 's', { adopt: false }),
       () => db.getAllByIndex('sessions', 'projectId', scope.projectId),
       () => db.getAllSessions(),
       () => db.listRecentProjectsAcrossAccount({ accountScopeId: scope.accountScopeId })
@@ -92,9 +106,15 @@ test('display-only shared reads preserve the visible baseline so an idle page ad
       assert.equal(db.hasUnpersistedSharedSession(state.sessions[0]), false,
         'a storage read must not make the unchanged visible session look edited');
     }
+    assert.equal((await adoptingReader.getRecord('sessions', 's')).runs[0].id, run.id);
+    assert.equal(adoptingReader.hasUnpersistedSharedSession(older), true,
+      'ordinary single-record reads still adopt the stored baseline');
     await applied.promise;
     assert.deepEqual(errors, []);
+    assert.ok(checkedDrafts.includes(draft), 'the imported nonempty draft is checked on the later refresh');
     assert.equal(state.task, '');
+    assert.equal(state.sessions[0].task, '');
+    assert.equal(state.runs[0].task, draft);
     assert.deepEqual(state.runs.map(item => item.id), [run.id]);
     assert.equal(state.runs[0].events[0].detail, run.events[0].detail);
     assert.equal(state.sessions[0].updatedAt, '2026-10-14T00:00:00Z');
@@ -103,88 +123,42 @@ test('display-only shared reads preserve the visible baseline so an idle page ad
   } finally { sync?.dispose(); network.close(); }
 });
 
-test('an imported shared draft keeps following the peer that consumes it in a run', { timeout: 5000 }, async () => {
+test('a draft edited in this page defers passive shared history updates after saving', { timeout: 5000 }, async () => {
   const network = createNetwork();
   let sync;
   try {
-    const writer = connect(network, 1), peer = network.client(2), db = peer.bridge.decorate(Db);
-    await writer.putRecords('sessions', [record('s')]);
+    const peer = network.client(1), db = peer.bridge.decorate(Db), writer = connect(network, 2);
+    const draft = 'typed-in-a';
+    await db.putRecords('sessions', [record('s', draft)]);
     let state = State.normalizePanelState({ activeSessionId: 's',
       sessions: await db.claimSessionsForAccount(scope.projectId, scope.accountScopeId) });
-    let applied = deferred();
-    const errors = [], checkedDrafts = [];
-    sync = ViewSync.install({ Bridge: peer.bridge, StorageDb: db,
-      getScope: () => ({ ...scope, generation: 1 }), getState: () => state, setState: next => { state = next; },
-      normalize: State.normalizePanelState, render: () => applied.resolve(), isBusy: () => false,
-      hasLocalDraft: current => { checkedDrafts.push(current.task); return false; },
-      notice: error => errors.push(error) });
-    const draft = 'draft-in-b';
-    await writer.putRecords('sessions', [{ ...await writer.getRecord('sessions', 's'),
-      task: draft, updatedAt: '2026-10-13T00:00:00Z' }]);
-    await applied.promise;
-    assert.equal(state.task, draft);
-    assert.equal(state.sessions[0].task, draft);
     assert.equal(db.hasUnpersistedSharedSession(state.sessions[0]), false,
-      'the imported draft is a clean shared baseline');
-
-    applied = deferred();
-    const run = { id: 'remote-run', task: draft, status: 'completed', runProjectId: scope.projectId,
-      events: [{ kind: 'assistant', title: 'Answer', detail: 'B finished the task', status: 'completed' }] };
+      'the draft is already saved, so only the composer guard can defer refresh');
+    const original = state, attempted = deferred(), errors = [];
+    let reads = 0, renders = 0, checkedState;
+    sync = ViewSync.install({ Bridge: peer.bridge,
+      StorageDb: { ...db, readSharedProjectSnapshot: (...args) => {
+        reads++; return db.readSharedProjectSnapshot(...args);
+      } },
+      getScope: () => ({ ...scope, generation: 1 }), getState: () => state, setState: next => { state = next; },
+      normalize: State.normalizePanelState, render: () => { renders++; },
+      isBusy: () => { attempted.resolve(); return false; },
+      hasLocalDraft: current => { checkedState = current; return true; },
+      notice: error => errors.push(error) });
+    const run = { id: 'remote-run', task: 'B finished a task', status: 'completed', runProjectId: scope.projectId };
     await writer.putRecords('sessions', [{ ...await writer.getRecord('sessions', 's'),
       task: '', updatedAt: '2026-10-14T00:00:00Z', runs: [run] }]);
-    await applied.promise;
+    await attempted.promise;
     assert.deepEqual(errors, []);
-    assert.ok(checkedDrafts.includes(draft), 'the imported nonempty draft is checked on the later refresh');
-    assert.equal(state.task, '');
-    assert.equal(state.sessions[0].task, '');
-    assert.deepEqual(state.runs.map(item => item.id), [run.id]);
-    assert.equal(state.runs[0].task, draft);
-    assert.equal(state.runs[0].events[0].detail, run.events[0].detail);
-    assert.equal(db.hasUnpersistedSharedSession(state.sessions[0]), false);
+    assert.equal(checkedState, original, 'the draft callback receives the visible state');
+    assert.equal(reads, 0, 'refresh defers before reading a replacement snapshot');
+    assert.equal(renders, 0);
+    assert.equal(state, original);
+    assert.equal(state.task, draft);
+    assert.equal(state.sessions[0].task, draft);
+    assert.deepEqual(state.runs, []);
   } finally { sync?.dispose(); network.close(); }
 });
-
-for (const localDraftOption of [true, false]) {
-  test(localDraftOption
-    ? 'a draft edited in this page defers passive shared history updates after saving'
-    : 'without hasLocalDraft a nonempty composer still defers passive shared history updates',
-  { timeout: 5000 }, async () => {
-    const network = createNetwork();
-    let sync;
-    try {
-      const peer = network.client(1), db = peer.bridge.decorate(Db), writer = connect(network, 2);
-      const draft = 'typed-in-a';
-      await db.putRecords('sessions', [record('s', draft)]);
-      let state = State.normalizePanelState({ activeSessionId: 's',
-        sessions: await db.claimSessionsForAccount(scope.projectId, scope.accountScopeId) });
-      assert.equal(db.hasUnpersistedSharedSession(state.sessions[0]), false,
-        'the draft is already saved, so only the composer guard can defer refresh');
-      const original = state, attempted = deferred(), errors = [];
-      let reads = 0, renders = 0, checkedState;
-      sync = ViewSync.install({ Bridge: peer.bridge,
-        StorageDb: { ...db, readSharedProjectSnapshot: (...args) => {
-          reads++; return db.readSharedProjectSnapshot(...args);
-        } },
-        getScope: () => ({ ...scope, generation: 1 }), getState: () => state, setState: next => { state = next; },
-        normalize: State.normalizePanelState, render: () => { renders++; },
-        isBusy: () => { attempted.resolve(); return false; },
-        ...(localDraftOption ? { hasLocalDraft: current => { checkedState = current; return true; } } : {}),
-        notice: error => errors.push(error) });
-      const run = { id: 'remote-run', task: 'B finished a task', status: 'completed', runProjectId: scope.projectId };
-      await writer.putRecords('sessions', [{ ...await writer.getRecord('sessions', 's'),
-        task: '', updatedAt: '2026-10-14T00:00:00Z', runs: [run] }]);
-      await attempted.promise;
-      assert.deepEqual(errors, []);
-      if (localDraftOption) assert.equal(checkedState, original, 'the draft callback receives the visible state');
-      assert.equal(reads, 0, 'refresh defers before reading a replacement snapshot');
-      assert.equal(renders, 0);
-      assert.equal(state, original);
-      assert.equal(state.task, draft);
-      assert.equal(state.sessions[0].task, draft);
-      assert.deepEqual(state.runs, []);
-    } finally { sync?.dispose(); network.close(); }
-  });
-}
 
 test('an older shared draft is durably merged with a newer remote run', async () => {
   const network = createNetwork();
@@ -209,32 +183,152 @@ test('an older shared draft is durably merged with a newer remote run', async ()
   } finally { network.close(); }
 });
 
+// Publication and guarded consumption share a baseline; later progress must
+// preserve peer edits and the provenance of subsequent submissions.
+test('submitted draft consumption preserves a peer edit (consumption saves first)', async () => {
+  const network = createNetwork();
+  try {
+    const a = connect(network, 1), b = connect(network, 2);
+    let stateA = State.normalizePanelState({ activeSessionId: 's', sessions: [{ ...record('s', 'Edit manuscript'),
+      runs: [{ id: 'r', task: 'Edit manuscript', status: 'running', runProjectId: scope.projectId }] }] });
+    await persist(a, stateA);
+    let stateB = State.normalizePanelState({ activeSessionId: 's',
+      sessions: await b.claimSessionsForAccount(scope.projectId, scope.accountScopeId) });
+    stateB = State.renameSession(State.updateActiveSessionDraft(stateB, 'Peer next draft'), 's', 'Peer title');
+    stateA = State.updateActiveSession(stateA, { task: '' });
+    stateA.sessions[0].draftConsumption = { runId: 'r', task: 'Edit manuscript' };
+    await persist(a, stateA);
+    const consumedState = stateA;
+    await persist(a, State.updateActiveSession(stateA, { projectReferenceFiles: [] }));
+    await persist(b, stateB);
+    assert.equal((await connect(network, 4).getRecord('sessions', 's')).draftConsumption, undefined,
+      'editing the task retires its consumption marker');
+    // An unrelated normalization drops page-local metadata; later progress
+    // still uses this page's own submitted envelope as its merge ancestor.
+    stateA = State.updateActiveSession(stateA, { projectReferenceFiles: [] });
+    stateA.runs[0].nativeEventSeq = 2;
+    await persist(a, stateA);
+    stateA.runs[0].nativeEventSeq = 3;
+    await persist(a, stateA);
+    const fresh = State.normalizePanelState({ activeSessionId: 's',
+      sessions: await connect(network, 3).claimSessionsForAccount(scope.projectId, scope.accountScopeId) });
+    assert.equal(fresh.task, 'Peer next draft');
+    assert.equal(fresh.sessions[0].title, 'Peer title');
+    assert.equal(fresh.sessions[0].titleSource, 'manual');
+    assert.equal(fresh.runs[0].nativeEventSeq, 3);
+    stateB = State.updateActiveSessionDraft(stateB, 'Peer later draft');
+    await persist(b, stateB);
+    assert.equal((await connect(network, 4).getRecord('sessions', 's')).task, 'Peer later draft');
+    // A stale running page must not replace a later submission's provenance
+    // when both pages still display an empty composer.
+    let next = stateB;
+    next = State.updateActiveSession(next, { runs: [...next.runs,
+      { id: 'next-run', task: 'Peer later draft', status: 'running', runProjectId: scope.projectId }] });
+    await persist(b, next);
+    const c = connect(network, 4);
+    const third = State.normalizePanelState({ activeSessionId: 's',
+      sessions: await c.claimSessionsForAccount(scope.projectId, scope.accountScopeId) });
+    next = State.updateActiveSession(next, { task: '' });
+    next.sessions[0].draftConsumption = { runId: 'next-run', task: 'Peer later draft' };
+    await persist(b, next);
+    await persist(a, consumedState);
+    assert.equal((await connect(network, 5).getRecord('sessions', 's')).draftConsumption.runId, 'next-run');
+    await persist(c, State.updateActiveSessionDraft(third, 'Third draft'));
+    assert.equal((await connect(network, 6).getRecord('sessions', 's')).task, 'Third draft');
+  } finally { network.close(); }
+});
+
+test('live thread reset and detached thread patches never adopt an unseen peer envelope', async () => {
+  for (const detached of [false, true]) {
+    const network = createNetwork();
+    try {
+      const a = connect(network, 1), b = connect(network, 2);
+      let stateA = State.normalizePanelState({ activeSessionId: 's', sessions: [{ ...record('s'),
+        codexThreadId: 'old-thread', title: 'Edit manuscript', titleSource: 'auto',
+        runs: [{ id: 'r', task: 'Edit manuscript', status: 'running', runProjectId: scope.projectId }] }] });
+      await persist(a, stateA);
+      let stateB = State.normalizePanelState({ activeSessionId: 's', sessions: await b.claimSessionsForAccount(scope.projectId, scope.accountScopeId) });
+      stateB = State.renameSession(State.updateActiveSessionDraft(stateB, 'Peer draft'), 's', 'Peer title');
+      await persist(b, stateB);
+      if (detached) {
+        const fetched = await a.getRecord('sessions', 's', { adopt: false });
+        fetched.codexThreadId = '';
+        await a.putRecord('sessions', fetched, { adopt: false });
+      } else {
+        // The live thread_resume_failed -> new branch submits this view through
+        // saveState, rather than reading and patching a remote full record.
+        stateA = State.updateActiveSession(stateA, { codexThreadId: '' });
+        await persist(a, stateA);
+      }
+      assert.equal(a.hasUnpersistedSharedSession(stateA.sessions[0]), false);
+      stateA = State.updateActiveSession(stateA, { projectReferenceFiles: [] });
+      stateA.runs[0].nativeEventSeq = 2;
+      await persist(a, stateA);
+      let fresh = await connect(network, 3).getRecord('sessions', 's');
+      assert.equal(fresh.task, 'Peer draft');
+      assert.equal(fresh.title, 'Peer title');
+      assert.equal(fresh.codexThreadId, '');
+      stateB = State.renameSession(State.updateActiveSessionDraft(stateB, 'Peer second draft'), 's', 'Peer second title');
+      await persist(b, stateB);
+      fresh = await connect(network, 4).getRecord('sessions', 's');
+      assert.equal(fresh.task, 'Peer second draft');
+      assert.equal(fresh.title, 'Peer second title');
+    } finally { network.close(); }
+  }
+});
+
+test('derived titles and summaries yield to a peer rename and draft, including legacy normalization', async () => {
+  for (const legacy of [false, true]) {
+    const network = createNetwork();
+    try {
+      const a = connect(network, 1), b = connect(network, 2);
+      const initial = Db.buildSessionRecord({ ...record('s'), title: legacy ? '' : 'Original title', titleSource: 'auto',
+        runs: [{ id: 'r', task: 'Original title', status: 'running', runProjectId: scope.projectId }] });
+      if (legacy) delete initial.titleSource;
+      network.db.seed('sessions', { ...scope, id: 's', record: initial, revision: 1 });
+      const aView = State.normalizePanelState({ activeSessionId: 's', sessions: await a.claimSessionsForAccount(scope.projectId, scope.accountScopeId) });
+      let bView = State.normalizePanelState({ activeSessionId: 's', sessions: await b.claimSessionsForAccount(scope.projectId, scope.accountScopeId) });
+      bView = State.renameSession(State.updateActiveSessionDraft(bView, 'Peer task'), 's', 'Manual peer title');
+      await persist(b, bView);
+      const autoView = State.updateActiveSession(aView, { title: 'Automatic next run title',
+        updatedAt: '2026-10-13T00:00:00Z' });
+      await persist(a, autoView);
+      const fresh = await connect(network, 3).getRecord('sessions', 's');
+      assert.equal(fresh.task, 'Peer task');
+      assert.equal(fresh.title, 'Manual peer title');
+      assert.equal(fresh.titleSource, 'manual');
+      assert.equal(fresh.safeTaskSummary, State.computeSafeTaskSummary('Peer task'));
+      const current = State.normalizePanelState({ activeSessionId: 's',
+        sessions: await a.claimSessionsForAccount(scope.projectId, scope.accountScopeId) });
+      await persist(a, State.renameSession(current, 's', 'First manual rename'));
+      await assert.rejects(persist(b, State.renameSession(bView, 's', 'Conflicting manual rename')),
+        { code: 'shared_session_conflict' });
+      assert.equal((await connect(network, 4).getRecord('sessions', 's')).title, 'First manual rename');
+    } finally { network.close(); }
+  }
+});
+
 test('an older shared draft still fails closed when the remote draft also changed', async () => {
   const network = createNetwork();
   try {
     const writer = connect(network, 1), peer = connect(network, 2);
-    await writer.putRecords('sessions', [writer.buildSessionRecord(record('s'))]);
+    await writer.putRecords('sessions', [writer.buildSessionRecord(record('s', 'Original draft'))]);
     const [older] = await peer.claimSessionsForAccount(scope.projectId, scope.accountScopeId);
-    const draft = peer.buildSessionRecord({ ...older, task: 'Local draft', updatedAt: '2026-10-13T00:00:00Z' });
+    const draft = peer.buildSessionRecord({ ...older, task: 'Local draft', title: 'Local title', titleSource: 'manual',
+      updatedAt: '2026-10-13T00:00:00Z' });
     await writer.putRecords('sessions', [{ ...await writer.getRecord('sessions', 's'),
-      task: 'Remote draft', updatedAt: '2026-10-14T00:00:00Z' }]);
+      task: 'Remote draft', title: 'Remote title', titleSource: 'manual', updatedAt: '2026-10-14T00:00:00Z' }]);
+    // An unmarked manual clear is an edit, even when a submitted clear would merge.
+    const cleared = peer.buildSessionRecord({ ...older, task: '' });
+    await assert.rejects(Sessions.writeSessions({ StorageDb: peer, Migration: migration, ...scope,
+      sessionRecords: [cleared] }), { code: 'shared_session_conflict' });
     await assert.rejects(Sessions.writeSessions({ StorageDb: peer, Migration: migration, ...scope,
       sessionRecords: [draft] }), { code: 'shared_session_conflict' });
     assert.equal((await writer.getRecord('sessions', 's')).task, 'Remote draft');
     assert.equal(draft.task, 'Local draft');
+    assert.equal((await writer.getRecord('sessions', 's')).title, 'Remote title');
+    assert.equal(draft.title, 'Local title');
   } finally { network.close(); }
-});
-
-test('legacy session persistence still skips an older local record', async () => {
-  const stored = { ...record('s', 'Newer stored draft'), updatedAt: '2026-10-14T00:00:00Z' };
-  const writes = [];
-  const db = { sharedSessionsEnabled: () => false, getAllByIndex: async () => [stored],
-    putRecords: async (_store, records) => { writes.push(...records); return records; } };
-  const written = await Sessions.writeSessions({ StorageDb: db, Migration: migration, ...scope,
-    sessionRecords: [record('s', 'Older local draft')] });
-  assert.deepEqual(written, []);
-  assert.deepEqual(writes, []);
-  assert.equal(stored.task, 'Newer stored draft');
 });
 
 test('a mismatched scope or a deleted session cannot be saved back over durable history', async () => {

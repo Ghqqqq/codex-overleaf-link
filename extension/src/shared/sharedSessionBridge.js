@@ -187,29 +187,94 @@
       return Boolean(base && (session.updatedAt !== base.updatedAt || session.task !== base.task));
     }
     function wasStored(id) { return baselines.has(cacheKey(capture(), id)); }
+    function acknowledgeReviewBaseline(base, record, receipt, runIds) {
+      if (!base || !receipt) return base;
+      // Only this caller's acknowledged review fields have been submitted.
+      // The envelope base still describes its own view, never the latest read.
+      return { ...base, runs: (base.runs || []).map(run => {
+        const proposed = record.runs?.find(item => item.id === run.id);
+        const saved = receipt.runs?.find(item => item.id === run.id);
+        return runIds.includes(run.id) && proposed && saved
+          && legacy.reviewStateSnapshot(proposed) === legacy.reviewStateSnapshot(saved)
+          ? legacy.copyRunReviewState(run, proposed) : run;
+      }) };
+    }
     async function put(records, options = {}) {
       if (!records.length) return [];
       const value = capture(records[0].projectId, records[0].accountScopeId);
       if (records.some(record => record.projectId !== value.projectId || record.accountScopeId !== value.accountScopeId))
         throw failure('shared_store_scope_mismatch', 'A session batch must belong to one account and project.');
       return withWrite(value, async () => {
-        const entries = records.map(record => ({
-          record: clean(record),
-          base: record[BASE] || baselines.get(cacheKey(value, record.id)) || null
-        }));
+        const entries = records.map(record => {
+          let base = record[BASE] || baselines.get(cacheKey(value, record.id)) || null;
+          const receipt = options.reviewReceipts?.find(saved => saved.id === record.id
+            && saved.projectId === record.projectId && saved.accountScopeId === record.accountScopeId);
+          base = acknowledgeReviewBaseline(base, record, receipt, options.reviewRunIds || []);
+          return { record: clean(record), base };
+        });
         const transfer = await Transfer.encode(entries);
         const written = await request(transfer.method, value, { ...transfer.payload, reviewRunIds: options.reviewRunIds || [] });
         // Keep the caller's submitted view as its merge baseline. A merged
         // remote change has not necessarily been applied to the visible UI.
-        for (const entry of entries) baselines.set(cacheKey(value, entry.record.id), clean(entry.record));
+        if (options.adopt !== false)
+          for (const entry of entries) baselines.set(cacheKey(value, entry.record.id), clean(entry.record));
         return written;
       });
     }
-    async function get(id) {
+    async function get(id, options = {}) {
       const value = capture();
       await migrate(value);
       const record = await request('get', value, { id });
-      return tag(record, value, !heldLocks.has(lockKey('state', value)));
+      return tag(record, value, options.adopt !== false && !heldLocks.has(lockKey('state', value)));
+    }
+    async function putSessionReviewState(record, runIds) {
+      const value = capture(record.projectId, record.accountScopeId);
+      const ids = new Set(runIds);
+      const assertOwners = () => {
+        assertScope(value);
+        for (const runId of ids) {
+          const owner = heldLocks.get(lockKey('review', { ...value, runId }));
+          if (!owner || owner.lost) throw failure('storage_lock_lost', 'The shared review owner disconnected.');
+        }
+      };
+      assertOwners();
+      return withWrite(value, async () => {
+        assertOwners();
+        const latest = await request('get', value, { id: record.id });
+        if (!latest) throw failure('shared_session_deleted', 'The session no longer exists.');
+        if (latest.projectId !== value.projectId || latest.accountScopeId !== value.accountScopeId)
+          throw failure('shared_store_scope_mismatch', 'The session does not belong to the captured account and project.');
+        const proposed = new Map((record.runs || []).map(run => [run.id, run]));
+        const identity = run => JSON.stringify(['id', 'runProjectId', 'runAccountScopeId', 'startedAt', 'nativeEventSeq',
+          'codexThreadId', 'codexTurnId', 'executionSnapshot', 'forkSnapshot'].map(key => run[key] ?? null));
+        for (const id of ids) {
+          const current = latest.runs?.find(run => run.id === id), incoming = proposed.get(id);
+          if (!current || !incoming || incoming.runProjectId !== value.projectId
+            || (incoming.runAccountScopeId && incoming.runAccountScopeId !== value.accountScopeId)
+            || identity(current) !== identity(incoming))
+            throw failure('review_context_changed', 'The shared review run is no longer available in its original scope.');
+        }
+        const next = { ...clean(latest), runs: latest.runs.map(run => {
+          if (!ids.has(run.id) || run.undoStatus === 'applied' || ['accepted', 'rejected'].includes(run.trackedChangeStatus)) return run;
+          return legacy.copyRunReviewState(run, proposed.get(run.id));
+        }) };
+        const transfer = await Transfer.encode([{ record: next, base: clean(latest) }]);
+        assertOwners();
+        await request(transfer.method, value, { ...transfer.payload, reviewRunIds: [...ids] });
+        const saved = await request('get', value, { id: record.id });
+        assertOwners();
+        if (!saved || saved.projectId !== value.projectId || saved.accountScopeId !== value.accountScopeId
+          || [...ids].some(id => {
+            const run = saved.runs?.find(run => run.id === id);
+            return !run || identity(run) !== identity(proposed.get(id))
+              || legacy.reviewStateSnapshot(run) !== legacy.reviewStateSnapshot(proposed.get(id));
+          })) throw failure('review_state_not_persisted', 'The review outcome was not durably saved. Check Overleaf before retrying.');
+        // A later envelope retry must also recognize the review already saved,
+        // without adopting any peer envelope fields from this readback.
+        const key = cacheKey(value, record.id), base = baselines.get(key);
+        if (base) baselines.set(key, acknowledgeReviewBaseline(base, record, saved, [...ids]));
+        return saved;
+      });
     }
     async function erase(method, projectId = '', id, accountScopeId) {
       const value = capture(projectId, accountScopeId);
@@ -230,7 +295,7 @@
         return record;
       });
       route('getAllSessions', () => list());
-      route('getRecord', (store, id) => store === 'sessions' ? get(id) : api.getRecord(store, id));
+      route('getRecord', (store, id, options) => store === 'sessions' ? get(id, options) : api.getRecord(store, id));
       route('getAllByIndex', async (store, index, value) => {
         if (store !== 'sessions') return api.getAllByIndex(store, index, value);
         const records = await list(index === 'projectId' ? value : '');
@@ -240,8 +305,8 @@
         capture(projectId, accountScopeId);
         return (await list(projectId, true)).filter(record => !deleted.includes(record.id));
       });
-      route('putRecord', async (store, record) =>
-        store === 'sessions' ? (await put([record]))[0] : api.putRecord(store, record));
+      route('putRecord', async (store, record, options) =>
+        store === 'sessions' ? (await put([record], options))[0] : api.putRecord(store, record));
       route('putRecords', (store, records, options) =>
         store === 'sessions' ? put(records, options) : api.putRecords(store, records));
       route('deleteRecord', (store, id, expectedScope) =>
@@ -282,7 +347,8 @@
         readSharedProjectSnapshot: projectId => list(projectId, false),
         adoptSharedSessionBaseline: adopt,
         hasUnpersistedSharedSession: hasLocalChanges,
-        wasSharedSessionStored: wasStored
+        wasSharedSessionStored: wasStored,
+        putSessionReviewState
       });
       return wrapped;
     }

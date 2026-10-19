@@ -16,6 +16,7 @@
   const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
   const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const failure = (code, message) => Object.assign(new Error(message), { code });
+  const conflict = () => failure('shared_session_conflict', 'The same session was edited in another tab. Refresh its history before retrying; the local draft was kept.');
   function part(value) {
     if (typeof value !== 'string' || !value.trim() || value.length > 256 || /[\0\r\n]/.test(value))
       throw failure('shared_store_scope_invalid', 'The shared session identity is invalid.');
@@ -71,7 +72,59 @@
       }
       return result;
     }
-    throw failure('shared_session_conflict', 'The same session was edited in another tab. Refresh its history before retrying; the local draft was kept.');
+    throw conflict();
+  }
+
+  function titleValue(record) {
+    return { title: record.title || '', titleSource: record.titleSource === 'manual' ? 'manual' : 'auto' };
+  }
+  function manualTitleChange(base, next) {
+    return next.titleSource === 'manual' ? next.title !== base.title : base.titleSource === 'manual';
+  }
+  function mergeTitle(base, current, incoming) {
+    const before = titleValue(base), stored = titleValue(current), proposed = titleValue(incoming);
+    if (equal(proposed, before)) return stored;
+    if (equal(stored, before) || equal(stored, proposed)) return proposed;
+    // Auto derivations (including legacy normalization) carry no rename intent.
+    if (!manualTitleChange(before, proposed)) return stored;
+    if (!manualTitleChange(before, stored)) return proposed;
+    // The pair is one intent; merging its scalar members separately could
+    // combine a peer rename with this page's reset to auto.
+    throw conflict();
+  }
+  function draftConsumption(record) {
+    const marker = record.draftConsumption;
+    return record.task === '' && typeof marker?.task === 'string' && marker.task
+      && typeof marker.runId === 'string' && marker.runId
+      && (record.runs || []).some(run => run.id === marker.runId && !run.forkSnapshot
+        && run.runProjectId === record.projectId) ? marker : null;
+  }
+  function mergeSession(base, current, incoming) {
+    const currentConsumption = draftConsumption(current), incomingConsumption = draftConsumption(incoming);
+    const consumed = marker => marker && marker.task === base.task && !equal(marker, base.draftConsumption);
+    let task;
+    if (equal(incoming.task, base.task)) task = current.task;
+    else if (equal(current.task, base.task) || equal(current.task, incoming.task)) task = incoming.task;
+    else if (consumed(incomingConsumption)) task = current.task;
+    else if (consumed(currentConsumption)) task = incoming.task;
+    else task = mergeValue(base.task, current.task, incoming.task, 'task');
+
+    const result = { ...mergeTitle(base, current, incoming) };
+    if (task !== undefined) result.task = clone(task);
+    // Summaries are derived metadata, never a second draft edit. Prefer the
+    // stored summary when both sides have the winning task (including legacy forms).
+    const taskOwner = equal(task, current.task) ? current : incoming;
+    if (taskOwner.safeTaskSummary !== undefined) result.safeTaskSummary = clone(taskOwner.safeTaskSummary);
+    if (task === '' && (incomingConsumption || currentConsumption))
+      result.draftConsumption = clone(consumed(incomingConsumption)
+        ? incomingConsumption : currentConsumption || incomingConsumption);
+    const derived = new Set(['title', 'titleSource', 'task', 'safeTaskSummary', 'draftConsumption', 'sharedRevision']);
+    for (const key of new Set([...Object.keys(base), ...Object.keys(current), ...Object.keys(incoming)])) {
+      if (derived.has(key)) continue;
+      const value = mergeValue(base[key], current[key], incoming[key], key);
+      if (value !== undefined) Object.defineProperty(result, key, { value, enumerable: true, configurable: true, writable: true });
+    }
+    return result;
   }
 
   function createService(options = {}) {
@@ -232,7 +285,7 @@
                   if (!base) throw failure('shared_session_conflict', 'Reload the session before updating existing history.');
                   // Keep the established first-durable-review-decision policy.
                   const reviewed = options.mergeSessionReviewState?.(candidate, existing.record, message.reviewRunIds || []) || candidate;
-                  next = mergeValue(base, existing.record, reviewed);
+                  next = mergeSession(base, existing.record, reviewed);
                 } else if (base && !importing) {
                   throw failure('shared_session_deleted', 'The session no longer exists.');
                 }

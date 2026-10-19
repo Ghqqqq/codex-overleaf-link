@@ -74,24 +74,40 @@
       .filter(record => !deleted.has(record.id))
       .map(record => [record.id, record]));
     const mergedRecords = sessionRecords.map(record => StorageDb.mergeSessionReviewState?.(
-      record, existingById.get(record.id), options.reviewRunIds
+      record, existingById.get(record.id), options.reviewRunIds, { shared: StorageDb.sharedSessionsEnabled?.() === true }
     ) || record);
-    // Skip older records unless shared storage has a local edit against its
-    // page baseline to merge. Legacy storage keeps the timestamp guard.
+    const reviewRunIds = new Set(options.reviewRunIds || []);
+    // Shared storage merges local edits and explicitly requested Undo markers
+    // against the page baseline. Legacy and ordinary stale saves keep the age guard.
     const writable = mergedRecords.filter(record => {
       const existing = existingById.get(record.id);
       if (!existing) return true;
       return (Date.parse(record.updatedAt || '') || 0) >= (Date.parse(existing.updatedAt || '') || 0)
         || (StorageDb.sharedSessionsEnabled?.() === true
-          && StorageDb.hasUnpersistedSharedSession?.(record) === true);
+          && (StorageDb.hasUnpersistedSharedSession?.(record) === true
+            || (record.runs || []).some(run => reviewRunIds.has(run.id) && run.undoOwnerProtocol === 1)));
     });
     const cleanedExisting = existingSessions.filter((record, index) =>
       record !== rawExistingSessions[index] && !writable.some(item => item.id === record.id)
     );
     if (cleanedExisting.length || writable.length) {
-      const written = await StorageDb.putRecords('sessions', [...cleanedExisting, ...writable], {
-        reviewRunIds: options.reviewRunIds
-      });
+      const reviewReceipts = [];
+      if (StorageDb.sharedSessionsEnabled?.() === true && reviewRunIds.size) {
+        for (const record of writable) {
+          const ids = (record.runs || []).filter(run => reviewRunIds.has(run.id)).map(run => run.id);
+          if (ids.length) reviewReceipts.push(await StorageDb.putSessionReviewState(record, ids));
+        }
+      }
+      let written;
+      try {
+        written = await StorageDb.putRecords('sessions', [...cleanedExisting, ...writable], {
+          reviewRunIds: options.reviewRunIds, reviewReceipts
+        });
+      } catch (error) {
+        if (error.code === 'shared_session_conflict' && reviewReceipts.length)
+          Object.defineProperty(error, 'reviewReceipts', { value: reviewReceipts, configurable: true });
+        throw error;
+      }
       // Check the actual durable result, including a decision already saved
       // from another origin, instead of acknowledging only the proposed view.
       return written.filter(record => writable.some(candidate => candidate.id === record.id));

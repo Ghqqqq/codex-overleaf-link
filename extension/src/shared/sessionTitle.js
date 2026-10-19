@@ -25,6 +25,19 @@
   }
 
   function fromPrompt(value, { sanitize = text => text, maxChars = 24 } = {}) {
+    let title = projectPrompt(value, { sanitize, maxChars });
+    // Display titles pass through normalization again on unrelated callbacks.
+    // Finish removing nested formatting/prefixes now, before acknowledging a title.
+    // The bound guards against an input that never settles.
+    for (let pass = 0; pass < 8; pass += 1) {
+      const next = projectPrompt(title, { sanitize, maxChars });
+      if (next === title) return title;
+      title = next;
+    }
+    return title;
+  }
+
+  function projectPrompt(value, { sanitize, maxChars }) {
     if (typeof value !== 'string' || !value.trim()) return '';
     const source = String(sanitize(value.slice(0, INPUT_LIMIT)) || '');
     let fence = null;
@@ -75,7 +88,7 @@
       .replace(/\[(?:REDACTED_SECRET|local path(?::\d+)?)\]/gi, ' ')
       .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
       .replace(/\s+/g, ' ').trim()
-      .replace(/^(?:\u8bf7(?:\u4f60)?\u5e2e\u6211|\u8bf7\u4f60|\u5e2e\u6211|\u9ebb\u70e6\u4f60(?:\u5e2e\u6211)?|\u9ebb\u70e6\u5e2e\u6211|please\s+)\s*/i, '');
+      .replace(/^(?:(?:\u8bf7(?:\u4f60)?\u5e2e\u6211|\u8bf7\u4f60|\u5e2e\u6211|\u9ebb\u70e6\u4f60(?:\u5e2e\u6211)?|\u9ebb\u70e6\u5e2e\u6211|please\s+)\s*)+/i, '');
   }
 
   function isScaffolding(value) {

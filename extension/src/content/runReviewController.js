@@ -58,9 +58,12 @@
       if (Modules.StorageDb?.sharedSessionsEnabled?.() !== true) return;
       findRunRecord(runId).undoOwnerProtocol = 1;
       try { await flushQueuedSaveState({ requireDurable: true, reviewRunIds: [runId] }); }
-      catch (cause) { throw Object.assign(new Error('The Undo owner marker could not be durably saved.'), { code: 'review_state_not_persisted', cause }); }
+      catch (cause) {
+        if (cause.code === 'shared_session_conflict' && cause.durableReviewRunIds?.includes(runId)) notify?.(cause.message);
+        else throw Object.assign(new Error('The Undo owner marker could not be durably saved.'), { code: 'review_state_not_persisted', cause });
+      }
       reviewOwners.get(runId)?.();
-      const saved = await Modules.StorageDb.getRecord('sessions', getState().activeSessionId);
+      const saved = await Modules.StorageDb.getRecord('sessions', getState().activeSessionId, { adopt: false });
       if (saved?.runs?.find(run => run.id === runId)?.undoOwnerProtocol !== 1)
         throw Object.assign(new Error('The Undo owner marker was not durably retained.'), { code: 'review_state_not_persisted' });
       reviewOwners.get(runId)?.();
@@ -77,7 +80,8 @@
         reviewOwners.set(runId, assertOwner);
         try {
           assertCurrent();
-          const session = await db.getRecord('sessions', sessionId);
+          // Only the run is refreshed here; keep the visible session's merge baseline.
+          const session = await db.getRecord('sessions', sessionId, { adopt: false });
           run = assertCurrent();
           const latest = session?.runs?.find(record => record.id === runId);
           if (!latest || session.projectId !== getRunProjectIdForWriteback(run) || session.accountScopeId !== getAccountScopeId())
@@ -163,7 +167,8 @@
       try { return await work(); }
       catch (error) {
         let current; try { current = assertOwner(); } catch (_stale) {}
-        if (current && error.code !== 'review_context_changed') {
+        const durableReviewConflict = error.code === 'shared_session_conflict' && error.durableReviewRunIds?.includes(runId);
+        if (current && error.code !== 'review_context_changed' && !durableReviewConflict) {
           if (current.undoStatus === 'running') setRunUndoStatus(runId, 'partial');
           appendRunRecordEvent(runId, { title: tr('undoNoTraceTitle'), status: 'failed',
             detail: { [tr('detailReason')]: error.message } });
@@ -619,7 +624,10 @@ async function applyLegacyUndoSettlement(runId, undoStatus, result) {
       legacyUndo: true, persist: flushQueuedSaveState, assertCurrent, SessionState: Modules.SessionState });
     refreshRunCardControls(runId);
   }
-    return { recoverInterruptedUndoStatuses, undoRun, undoRunTrackedChanges, acceptRun, applyLegacyUndoSettlement };
+    // From the shared review lock until settlement, a replaced view would
+    // invalidate the action's ownership checks after Page effects.
+    const hasActiveReview = () => reviewOwners.size > 0;
+    return { recoverInterruptedUndoStatuses, undoRun, undoRunTrackedChanges, acceptRun, applyLegacyUndoSettlement, hasActiveReview };
   }
   return { create };
 });

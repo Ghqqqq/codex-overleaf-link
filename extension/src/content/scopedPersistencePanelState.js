@@ -93,6 +93,9 @@
         throw reviewPersistenceError();
     } catch (error) {
       try { assertCurrent?.(); } catch (_stale) { throw error; }
+      // The envelope still failed closed, but an exact run-scoped readback
+      // already acknowledges this outcome. Keep the error/notice, not a false retry.
+      if (error.code === 'shared_session_conflict' && error.durableReviewRunIds?.includes(runId)) throw error;
       // The remote action may have succeeded. Keep its recovery data and expose uncertainty.
       for (const record of targets()) {
         if (!sameView() || !stillStaged(record)) continue;
@@ -222,18 +225,33 @@
       }), { preserveRunActionPayload: true });
     });
     sessionRecords = StorageDb.compactSessionBatchActions?.(sessionRecords, { activeSessionId: state.activeSessionId }) || sessionRecords;
-    var written = await input.SessionPersistence.writeSessions({
-      Migration: Migration,
-      StorageDb: StorageDb,
-      projectId: projectId,
-      accountScopeId: accountScopeId,
-      deletedSessionIds: deletedSessionIds,
-      sessionRecords: sessionRecords,
-      reviewRunIds: input.reviewRunIds,
-      queueClaims: persistenceMeta.queueClaims || {},
-      queueTombstones: queueTombstones,
-      writerId: input.persistenceContext?.writerId || ''
-    });
+    var written;
+    try {
+      written = await input.SessionPersistence.writeSessions({
+        Migration: Migration,
+        StorageDb: StorageDb,
+        projectId: projectId,
+        accountScopeId: accountScopeId,
+        deletedSessionIds: deletedSessionIds,
+        sessionRecords: sessionRecords,
+        reviewRunIds: input.reviewRunIds,
+        queueClaims: persistenceMeta.queueClaims || {},
+        queueTombstones: queueTombstones,
+        writerId: input.persistenceContext?.writerId || ''
+      });
+    } catch (error) {
+      if (error.code === 'shared_session_conflict' && error.reviewReceipts && StorageDb.reviewStateSnapshot) {
+        error.durableReviewRunIds = (input.reviewRunIds || []).filter(id => sessionRecords.some(expected => {
+          const proposed = expected.runs?.find(run => run.id === id);
+          const saved = error.reviewReceipts.find(record => record.id === expected.id
+            && record.accountScopeId === expected.accountScopeId && record.projectId === expected.projectId)
+            ?.runs?.find(run => run.id === id);
+          return proposed && saved && StorageDb.reviewStateSnapshot(proposed) === StorageDb.reviewStateSnapshot(saved);
+        }));
+        delete error.reviewReceipts;
+      }
+      throw error;
+    }
     if (!reviewRuns.every(reviewRun => (written || []).some(session => (session.runs || []).some(run =>
       run.id === reviewRun.id
       && (!reviewRun.trackedChangeStatus && ['applied', 'partial'].includes(reviewRun.undoStatus)
