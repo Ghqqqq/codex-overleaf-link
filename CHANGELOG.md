@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.6.0 - 2026-10-18
+## v2.6.0 - 2026-10-19
 
 ### Added
 
@@ -23,6 +23,7 @@
 - Show an empty state for the context window until Codex reports usage.
 - Draw composer controls with one set of line icons, and group the `/` menu into commands and skills with icons, highlighted matches, local skill descriptions and keyboard hints.
 - Show dropdown lists in settings and model provider forms in the panel's own style instead of the operating system menu, where Chrome supports it.
+- Center the session menu's delete button in its row, inset like the title, with a rounded highlight on hover.
 
 ### Fixed
 
@@ -44,6 +45,9 @@
 - Keep streamed thinking steady in the three-row activity preview instead of repeating an earlier snapshot.
 - Keep pre-compaction usage hidden across later turns, show Compacted only with confirmed completion, and preserve every composer draft when compaction starts from the context details.
 - Preserve images returned by tools as structured Chat content instead of sending their Base64 as text, while keeping parallel tool results together. Forward context-limit failures in the Responses format Codex recognizes for subsequent compaction, and explain these failures in the selected interface language.
+- Switch Overleaf between Reviewing and Editing through its own toolbar switch, including when its mode menu is already open or appears late, so turning Track off before the next write no longer stops that write before it starts.
+- Finish Undo and Accept when another tab edits the same conversation: the Undo ownership record and the final outcome are saved even if the draft or title changed elsewhere, a completed Undo no longer stays on Undoing… or offers Undo again, and the other tab's newer draft and title are kept. The other tab's changes appear once the Undo or Accept finishes.
+- Keep a second tab's draft and title edits while another tab starts or runs a task: sending the task, automatic titles and title clean-up no longer count as competing edits, and recovering a failed Codex thread no longer overwrites the other tab's draft or title. Two different edits of the same draft or title still stop with a conflict notice.
 
 ## v2.5.1 - 2026-10-10
 
