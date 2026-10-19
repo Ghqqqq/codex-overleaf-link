@@ -948,7 +948,7 @@
       document, assertCurrent, delay,
       getState: () => getReviewingState(params), isConfirmed: isReviewingTargetStateConfirmed,
       click: clickNode,
-      findControls: () => [findReviewingActivationControl(), findReviewingModeMenuControl()],
+      findControls: () => findReviewingModeControls(enabled),
       findOption: value => findReviewingModeOption(value, { requireMenuOption: true }),
       buildFailure: buildPageBridgeFailure
     });
@@ -1083,7 +1083,72 @@
     return String(value || '').replace(/\s+/g, ' ').trim();
   }
 
+  function isReviewingModeNodeAvailable(node) {
+    if (!node || node.ownerDocument !== document || !node.isConnected || node.disabled
+      || node.getAttribute?.('aria-disabled') === 'true' || !node.getClientRects?.().length) return false;
+    for (let ancestor = node; ancestor; ancestor = ancestor.parentElement || ancestor.getRootNode?.().host) {
+      if (isInsideCodexPanel(ancestor) || ancestor.closest?.(
+        '.review-panel, .review-panel-container, .review-panel-header-slot, .review-sidebar, #review-panel, [data-testid="review-panel"]'
+      ) || ancestor.hidden || ancestor.getAttribute?.('aria-hidden') === 'true' || ancestor.hasAttribute?.('inert')) return false;
+      const style = window.getComputedStyle?.(ancestor);
+      if (style?.display === 'none' || style?.visibility === 'hidden' || style?.visibility === 'collapse'
+        || style?.opacity === '0') return false;
+    }
+    return true;
+  }
+
+  function findReviewingToolbarControl() {
+    return Array.from(document.querySelectorAll(
+      '.toolbar-editor .review-mode-switcher > .review-mode-switcher-toggle-button'
+    )).find(isReviewingModeNodeAvailable) || null;
+  }
+
+  function findReviewingModeControls(enabled) {
+    const toolbarControl = findReviewingToolbarControl();
+    return toolbarControl ? [toolbarControl]
+      : [findReviewingActivationControl(enabled), findReviewingModeMenuControl()];
+  }
+
+  function findReviewingToolbarMenu(control) {
+    const controlledIds = (control.getAttribute('aria-controls') || '').split(/\s+/).filter(Boolean);
+    for (const id of controlledIds) {
+      const menu = document.getElementById(id);
+      if (isReviewingModeNodeAvailable(menu)) return menu;
+    }
+    if (control.getAttribute('aria-expanded') !== 'true') return null;
+    const selector = '[role="menu"], [role="listbox"], .dropdown-menu';
+    // Current Overleaf keeps the menu beside the toggle, inside this switcher.
+    const localMenu = Array.from(control.parentElement?.querySelectorAll(selector) || [])
+      .find(node => node.closest('.review-mode-switcher') === control.parentElement && isReviewingModeNodeAvailable(node));
+    if (localMenu) return localMenu;
+    // A portalled menu must still name this switch, rather than an unrelated dropdown.
+    return control.id ? Array.from(document.querySelectorAll(selector)).find(node =>
+      (node.getAttribute('aria-labelledby') || '').split(/\s+/).includes(control.id)
+      && isReviewingModeNodeAvailable(node)) || null : null;
+  }
+
+  function isReviewingToolbarModeOption(node, enabled) {
+    const mode = enabled ? 'reviewing' : 'editing';
+    const values = [node.value, node.getAttribute('value'), node.getAttribute('data-value'),
+      node.getAttribute('label'), node.getAttribute('aria-label'), ...String(node.className || '').split(/\s+/)];
+    if (values.some(value => normalizeReviewingSignalText(value).toLowerCase() === mode)) return true;
+    // Read a label separately from icon text and the option's explanatory subtitle.
+    return [node, ...node.querySelectorAll('*')].some(label => {
+      if (label.closest('[aria-hidden="true"]')) return false;
+      const directText = Array.from(label.childNodes).filter(child => child.nodeType === 3)
+        .map(child => child.textContent).join(' ');
+      return [label.textContent, directText].some(value => normalizeReviewingSignalText(value).toLowerCase() === mode);
+    });
+  }
+
   function findReviewingModeOption(enabled, options = {}) {
+    const toolbarControl = findReviewingToolbarControl();
+    if (toolbarControl) {
+      const menu = findReviewingToolbarMenu(toolbarControl);
+      return Array.from(menu?.querySelectorAll(
+        '[role="menuitem"], [role="menuitemradio"], [role="option"], .dropdown-item, button, a, option'
+      ) || []).find(node => isReviewingModeNodeAvailable(node) && isReviewingToolbarModeOption(node, enabled)) || null;
+    }
     const candidates = collectReviewingModeOptionNodes()
       .filter(node => isReviewingModeOptionCandidate(node, enabled, options))
       .sort((left, right) => scoreReviewingModeOption(right, enabled) - scoreReviewingModeOption(left, enabled));
@@ -1119,7 +1184,7 @@
   }
 
   function isReviewingModeMenuControlCandidate(node) {
-    if (!node || node.disabled || node.getAttribute?.('aria-disabled') === 'true') {
+    if (!isReviewingModeNodeAvailable(node) || isMenuLikeModeOption(node)) {
       return false;
     }
     const text = readNodeSignalText(node);
@@ -1172,7 +1237,7 @@
   }
 
   function isReviewingModeOptionCandidate(node, enabled, options = {}) {
-    if (!node || node.disabled || node.getAttribute?.('aria-disabled') === 'true') {
+    if (!isReviewingModeNodeAvailable(node)) {
       return false;
     }
     if (options.requireMenuOption && !isMenuLikeModeOption(node)) {
@@ -1218,10 +1283,10 @@
       && !/\bsyntax highlighting\b/i.test(text);
   }
 
-  function findReviewingActivationControl() {
+  function findReviewingActivationControl(enabled = true) {
     const nodes = collectReviewingControlNodes();
     const candidates = nodes
-      .filter(node => isReviewingActivationCandidate(node))
+      .filter(node => isReviewingActivationCandidate(node, enabled))
       .sort((left, right) => scoreReviewingControl(right) - scoreReviewingControl(left));
     return candidates[0] || null;
   }
@@ -1245,10 +1310,12 @@
     ]).slice(0, 1500);
   }
 
-  function isReviewingActivationCandidate(node) {
-    if (!node || node.disabled || node.getAttribute?.('aria-disabled') === 'true') {
+  function isReviewingActivationCandidate(node, enabled) {
+    if (!isReviewingModeNodeAvailable(node) || isMenuLikeModeOption(node)) {
       return false;
     }
+    // A standalone Reviewing command enables tracking; it cannot open Editing.
+    if (!enabled && !node.getAttribute?.('aria-haspopup') && !node.hasAttribute?.('aria-expanded')) return false;
     const text = readNodeSignalText(node);
     return /\breviewing\b|\btrack(?:ed)? changes?\b|\bsuggest(?:ing|ions?)\b/i.test(text)
       && !/\breview panel\b/i.test(text);

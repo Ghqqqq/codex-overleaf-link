@@ -143,28 +143,37 @@
       return result;
     };
     const waitMs = Number.isFinite(Number(params.waitMs)) ? Math.max(0, Number(params.waitMs)) : 1600;
+    const menuWaitMs = Math.min(waitMs, 1200);
+    const selectVisibleOption = async () => {
+      const option = findOption(enabled);
+      if (!option) return null;
+      assertCurrent(); click(option); attempted = true;
+      return poll(waitMs);
+    };
     let result = await inspect();
     if (result.ok || result.code) return result;
+    // An open menu must be consumed before a toggle can close it.
+    let selected = await selectVisibleOption();
+    if (selected) return selected;
     for (const control of [...new Set(findControls().filter(Boolean))]) {
       result = await inspect();
       if (result.ok || result.code) return result;
-      assertCurrent(); click(control); attempted = true;
-      result = await poll(Math.min(waitMs, 180));
-      if (result.ok || result.code) return result;
-      const option = findOption(enabled);
-      if (option) {
-        assertCurrent(); click(option);
-        result = await poll(waitMs);
-        if (result.ok || result.code) return result;
+      selected = await selectVisibleOption();
+      if (selected) return selected;
+      if (control.getAttribute?.('aria-expanded') !== 'true') {
+        assertCurrent(); click(control); attempted = true;
       }
-    }
-    result = await inspect();
-    if (result.ok || result.code) return result;
-    const option = findOption(enabled);
-    if (option) {
-      assertCurrent(); click(option); attempted = true;
-      result = await poll(waitMs);
-      if (result.ok || result.code) return result;
+      // Menu mounting and target-mode confirmation have separate bounded waits.
+      for (let elapsed = 0; ; ) {
+        result = await inspect();
+        if (result.ok || result.code) return result;
+        selected = await selectVisibleOption();
+        if (selected) return selected;
+        if (elapsed >= menuWaitMs) break;
+        const step = Math.min(100, menuWaitMs - elapsed);
+        await delay(step);
+        elapsed += step;
+      }
     }
     return inspect();
   }
