@@ -3397,11 +3397,13 @@
 
 #codex-overleaf-panel .codex-session-menu-item:hover { background: var(--tl-hover); }
 #codex-overleaf-panel .codex-session-menu-switch { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; margin: 0; padding: 5px 8px; border: 0; background: transparent; text-align: left; }
-#codex-overleaf-panel .codex-session-menu-item-delete { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); display: inline-grid; place-items: center; width: 24px; height: 24px; margin: 0; padding: 0; border: 0; background: var(--tl-surface-2); color: var(--tl-fg-3); opacity: 0; pointer-events: none; }
+#codex-overleaf-panel .codex-session-menu-item-delete { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: inline-grid; place-items: center; width: 22px; height: 22px; margin: 0; padding: 0; border: 0; border-radius: var(--tl-r-sm, 4px); background: transparent; color: var(--tl-fg-3); opacity: 0; pointer-events: none; }
 #codex-overleaf-panel .codex-session-menu-item-delete .codex-glyph { width: 14px; height: 14px; }
+/* Icon-only action: its empty label would form a second grid row and lift the glyph. */
+#codex-overleaf-panel .codex-session-menu-item-delete > span { display: none; }
 #codex-overleaf-panel .codex-session-menu-item:is(:hover, :focus-within) .codex-session-menu-item-delete { opacity: 1; pointer-events: auto; }
 #codex-overleaf-panel .codex-session-menu-item:is(:hover, :focus-within) .codex-session-menu-item-time { visibility: hidden; }
-#codex-overleaf-panel .codex-session-menu-item-delete:hover:not(:disabled) { color: var(--tl-fail); }
+#codex-overleaf-panel .codex-session-menu-item-delete:hover:not(:disabled) { background: color-mix(in srgb, var(--tl-fail) 14%, transparent); color: var(--tl-fail); }
 #codex-overleaf-panel .codex-session-menu-item-delete:disabled { opacity: 0; cursor: not-allowed; }
 #codex-overleaf-panel .codex-session-menu-item:is(:hover, :focus-within) .codex-session-menu-item-delete:disabled { opacity: 0.4; }
 #codex-overleaf-panel :is(.codex-session-menu-switch, .codex-session-menu-item-delete):focus-visible { outline: 2px solid var(--tl-accent); outline-offset: -2px; }
@@ -3435,6 +3437,9 @@
 
 #codex-overleaf-panel .codex-session-menu-item-time {
   flex: 0 0 auto;
+  /* Reserve the delete control's width so a long title never runs under it. */
+  min-width: 22px;
+  text-align: right;
   color: var(--tl-fg-3);
   font-size: var(--tl-text-xs, 11px);
   white-space: nowrap;
