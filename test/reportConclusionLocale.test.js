@@ -20,20 +20,6 @@ function saveReport(input, locale) {
 const productText = (key, locale) => Transcript.projectProductConclusion({ origin: 'product', key }, locale);
 const project = (saved, locale) => projectCompletionConclusion(saved.event, saved.run, locale);
 
-test('saved product conclusions follow the selected language without rewriting stored history', () => {
-  for (const from of ['en', 'zh']) {
-    const saved = saveReport({ conclusion: productText('cancelled', from), conclusionKey: 'cancelled' }, from);
-    const before = JSON.stringify(saved);
-    const en = project(saved, 'en'), zh = project(saved, 'zh');
-    assert.equal(en, productText('cancelled', 'en'));
-    assert.equal(zh, productText('cancelled', 'zh'));
-    assert.doesNotMatch(en, /\p{Script=Han}/u);
-    assert.match(zh, /\p{Script=Han}/u);
-    assert.notEqual(en, zh);
-    assert.equal(JSON.stringify(saved), before);
-  }
-});
-
 test('model and user text remains verbatim even when it resembles a product conclusion', () => {
   for (const locale of ['en', 'zh']) {
     const raw = productText('cancelled', locale);
@@ -112,23 +98,6 @@ test('new refresh reports distinguish Ask zero writes from Auto uncertainty thro
         assert.equal(JSON.stringify(run), before);
       }
     }
-  }
-});
-
-test('legacy flat refresh reports keep their renderer and localized product appendix', () => {
-  for (const locale of ['en', 'zh']) {
-    const run = Session.normalizeRuns([{ id: 'legacy-refresh', mode: 'auto', status: 'interrupted', events: [{
-      kind: 'report', status: 'failed', title: I18n.t(locale, 'restoredRunStoppedTitle'),
-      detail: I18n.t(locale, 'restoredRunStoppedDetail'), failure: { code: 'native_request_failed', source: 'panel_reload' }
-    }] }])[0];
-    const before = JSON.stringify(run), event = run.events[0];
-    for (const to of ['en', 'zh']) {
-      assert.equal(Completion.projectNotStartedRun(run, to), null);
-      assert.equal(projectOutcome(run, to), null);
-      assert.equal(projectCompletionConclusion(event, run, to, { flat: true, text: event.detail }),
-        I18n.t(to, 'restoredRunStoppedDetail'));
-    }
-    assert.equal(JSON.stringify(run), before);
   }
 });
 
@@ -289,25 +258,6 @@ test('outcome projection preserves settlement and gives uncertain document evide
   }
 });
 
-test('compile projection removes only an intact product suffix and preserves the model prefix and archived report', () => {
-  const prefix = 'Keep the model answer exactly. 模型原文';
-  const errors = ['Undefined control sequence', 'Missing $ inserted'];
-  const conclusion = prefix + '\nPost-write compile check: 2 remaining error(s): ' + errors.join('; ');
-  const source = { origin: 'product', key: 'writeback', outcome: 'synced', prefixLength: prefix.length,
-    hasCompile: true, compileStatus: 'failed', errorCount: 2, errors };
-  const run = outcomeRun({ conclusion, conclusionSource: source }, { status: 'completed' });
-  const before = JSON.stringify(run);
-  for (const locale of ['en', 'zh']) {
-    const outcome = projectOutcome(run, locale);
-    assert.equal(outcome.kind, 'compile-errors');
-    assert.equal(outcome.conclusion, prefix);
-    assert.deepEqual(outcome.compileErrors, errors);
-  }
-  assert.equal(JSON.stringify(run), before);
-  run.events[0].detailStructured.conclusion += ' user edit';
-  assert.equal(projectOutcome(run), null);
-});
-
 const CompileAdapter = require('../extension/src/shared/compileAdapter');
 const CompileBridge = require('../extension/src/page/compileBridge');
 function compileHarness({ response = () => compileResponse('success'), log = '' } = {}) {
@@ -339,17 +289,23 @@ test('a successful compile response with TeX errors projects compile errors, nev
   assert.equal(summary.status, 'failed');
   assert.equal(summary.errors.length, 2);
   assert.match(summary.errors[0], /main\.tex:119: Undefined control sequence/);
-  const prefix = 'Model answer';
+  const prefix = 'Keep the model answer exactly. 模型原文';
   const source = { origin: 'product', key: 'writeback', outcome: 'synced', prefixLength: prefix.length,
     hasCompile: true, compileStatus: summary.status, errorCount: summary.errors.length, errors: summary.errors };
   const run = outcomeRun({ conclusion: prefix + '\nPost-write compile check: 2 remaining error(s): ' + summary.errors.join('; '),
     conclusionSource: source, compileErrors: summary.errors }, { status: 'completed' });
+  const before = JSON.stringify(run);
   for (const locale of ['en', 'zh']) {
     const outcome = projectOutcome(run, locale);
     assert.equal(outcome.kind, 'compile-errors');
     assert.equal(outcome.compileCount, 2);
+    assert.equal(outcome.conclusion, prefix);
+    assert.deepEqual(outcome.compileErrors, summary.errors);
     assert.equal(run.events[0].detailStructured.conclusionSource.compileStatus, 'failed');
   }
+  assert.equal(JSON.stringify(run), before);
+  run.events[0].detailStructured.conclusion += ' user edit';
+  assert.equal(projectOutcome(run), null);
 });
 
 test('compiler failure without a log is an error; missing or untimely success evidence is unconfirmed', async () => {

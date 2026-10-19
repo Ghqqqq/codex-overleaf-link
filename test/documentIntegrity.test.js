@@ -232,6 +232,12 @@ test('combined inverses map across edits between successful entries or visibly w
 test('two-file write, server save verification and persisted Undo restore all original bytes including an empty file', async t => {
   const initial = { 'main.tex': 'Original 正文\n', 'nested/empty.tex': '' }, h = harness(t, initial);
   const before = h.snapshot();
+  h.files.set('nested/empty.tex', 'collaborator content');
+  const stale = await h.apply(before.files, [{ type: 'edit', path: 'nested/empty.tex', replaceAll: 'model content' }]);
+  assert.equal(stale.ok, false);
+  assert.equal(h.files.get('nested/empty.tex'), 'collaborator content');
+  assert.deepEqual(h.writes, []);
+  h.files.set('nested/empty.tex', '');
   const operations = Writeback.buildSyncApplyOperations(Object.entries(initial).map(([path, content]) => ({
     type: 'write', path, content: content + '% unique edit\n'
   })), before);
@@ -247,14 +253,6 @@ test('two-file write, server save verification and persisted Undo restore all or
   const undone = await h.apply(checkpoint.undoBaseFiles, restored.operations, { reviewingPolicy: 'no-trace-undo' });
   assert.equal(undone.ok, true, JSON.stringify(undone));
   assert.deepEqual(Object.fromEntries(h.files), initial);
-});
-
-test('an empty baseline changed by a collaborator cannot be overwritten', async t => {
-  const h = harness(t, { 'main.tex': 'collaborator content' });
-  const result = await h.apply([{ path: 'main.tex', content: '' }], [{ type: 'edit', path: 'main.tex', replaceAll: 'model content' }]);
-  assert.equal(result.ok, false);
-  assert.equal(h.files.get('main.tex'), 'collaborator content');
-  assert.deepEqual(h.writes, []);
 });
 
 test('line-ending conversion still writes and undoes the exact editor bytes', async t => {
