@@ -258,7 +258,7 @@ To run standalone panel, Native, project-read and diagnostics probes against a r
 npm run smoke:extension -- --url 'https://www.overleaf.com/project/<id>' --probe panel,native,project,diagnostics --json .local/smoke.json
 ```
 
-For local Managed installation acceptance, follow the [development SOP](docs/architecture/change-workflow.md#4-implement-and-validate-obtain-evidence-proportional-to-risk), including extension Reload, loaded build identity, Ask with zero writes, reversible two-file write/Undo, editor cleanup and refreshed history.
+For local Managed installation acceptance, follow the [development SOP](docs/architecture/change-workflow.md#4-implement-and-validate-obtain-evidence-proportional-to-risk), including extension Reload, loaded build identity, Ask with zero writes, reversible two-file write/Undo, editor cleanup and refreshed history. Apply the SOP's Luna selection, model/run-ID recording, and unavailable-model blocker rules to real-model runs.
 
 Pull requests are welcome. For larger changes, please open an issue first, and keep both READMEs in step.
 

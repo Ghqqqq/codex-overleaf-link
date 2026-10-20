@@ -57,7 +57,8 @@ sequenceDiagram
     S->>P: getReferenceProjectSnapshot(projectId, readId)
     P-->>S: Complete saved TeX snapshot
     S->>N: codex.run + writingStyleBuild + attachments
-    N->>N: prepareSources → staging corpus
+    N->>N: prepareSources() → in-memory documents
+    N->>N: build() → numbered corpus files and source-index.json in staging
     N->>A: Dedicated builder + read-only corpus
     A-->>N: Writing traits and evidence as JSON
     N->>N: Validate profile/evidence
