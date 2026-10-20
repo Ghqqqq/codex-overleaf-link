@@ -170,8 +170,8 @@ The broker classifies timeout, abort or `codex_cancelled`, and ordinary failure.
 Receipt-error propagation timing, process-exit evidence after ordinary success, and the native observer retain their own boundaries. Correct terminal classification cannot replace these checks.
 
 **Current behavior.** `processAdoptions` handles requests only while the broker is open, uncancelled, without active workers, and holding a valid token.
-A request must contain the current `token`, `reviewed: true`, the original `jobId`, the owned `path`, and the current final bytes' `sha256`.
-`endWave` publishes a token after that wave's worker runner Promises settle and `running` becomes empty. Starting a new wave clears the token; adoption results are written to `adoption-results`.
+A request must contain the current `token`, `reviewed: true`, and a nonempty `files` array; each item supplies the original `jobId`, the owned `path`, and the current final bytes' `sha256`.
+`endWave` publishes a token after that wave's worker runner Promises settle and `running` becomes empty, only while the broker is open, uncancelled, and still accepting jobs (`!closed && !cancelled && accepting`). Starting a new wave clears the token; adoption results are written to `adoption-results`.
 Normal `succeed` in the production app-server runner resolves only after `stopCodexAppServer` confirms stopping. Unconfirmed stopping rejects the result and records a stop barrier. The broker's bounded wait, custom execution substitutes, and independent execution entries still cannot alone prove OS process exit; see the success and stop paths in [Native Execution](native-execution.md) for process evidence and platform limits.
 `adoptionHash` also checks that the real path lies within the workspace, is a regular file, and meets the size limit.
 Any subsequent byte change causes `blockedPaths` to block that file again, requiring a new review and digest submission.

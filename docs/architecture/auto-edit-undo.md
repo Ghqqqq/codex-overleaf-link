@@ -51,7 +51,7 @@ flowchart TD
     G --> H[Text and file-tree RPC + writeGuard]
     H --> I[writebackReceiptJournal.apply]
     I --> J[writebackRouter: navigation / edit / create / readback]
-    G --> Q[Binary begin / append / commit RPC + writeGuard]
+    G --> Q[Binary begin / append / commit RPC: writeGuard on begin and commit]
     Q --> R[binaryAssetUploader: upload / separate receipts / evidence]
     J --> S[broker merges per-item results]
     R --> S
@@ -132,7 +132,7 @@ The run passes the submitted `mode`, effective `requireReviewing`, and other set
    **Known gap / verification scope:** retained `documentIntegrity` contracts exercise the production mode controller, confirmation/policy controller, scoped preferences, Page write router and ordinary Undo with simulated external DOM/editor/storage. Live Overleaf mode-menu relations, option labels, modal visibility, close controls and animation behavior still require browser acceptance; controlled ordering checks do not establish real-editor acceptance.
 4. `stageWritebackRecovery` saves recoverable creation requests; `applyOperations` in [assetTransferBroker](../../extension/src/content/assetTransferBroker.js) schedules text batches and binary transfers in their original order.
 5. Text and file-tree batches execute item by item through `applyOperationsCore` in [writebackRouter](../../extension/src/page/writebackRouter.js), producing `applied`, `skipped`, and tracked-change capture evidence. Binaries use a separate uploader; the broker merges the results at the end.
-6. Immediately after return, call `appendApplyResult` and `recordUndoFromApply`; only then wait for save checking, mirror work, and compilation.
+6. Immediately after return, call `appendApplyResult` and await `recordUndoFromApply`. Then await save checking for written paths, start mirror confirmation or invalidation as `pendingMirrorRefresh`, and await `autoRecompileAfterWriteback` when applicable. The mirror task does not block the completion report.
 
 This order matters: after the broker has returned per-item results, Undo checkpoints for known written items can be recorded before waiting for save confirmation.
 After cancellation, the broker continues read-only receipt queries for dispatched operations and retains confirmable earlier-batch results; Section 7 explains the boundaries of unconfirmed results and recovery material.
@@ -210,7 +210,7 @@ Network and actual platform timing still require separate acceptance. Directory 
 
 Creation, deletion, and asset upload use their existing flows, with no additional whole-batch file-plan confirmation. When an older Native version or an in-flight message still carries `syncChanges.type=move`, Content explicitly rejects and reports it; it must not become an empty-content creation or be ignored while reporting success.
 
-**Existing structural operations and historical recovery compatibility.** Page's existing structured rename/move operations without `moveProof` continue through the compatibility entry point in `fileTreeManager`, retaining original-project, content-baseline, and post-operation checks. They safely reject when usable controls are missing. A historical metadata move already performed with proof of the original entity and hash can still use the original Undo path to call [FileMover](../../extension/src/page/fileMover.js) with `no-trace-undo` for reverse recovery. It checks the original project, source/destination entities, content, paths, and deadline. Uncertain side effects still stop remaining items without blind replay. This compatibility does not reopen forward Auto metadata moves or make old records without evidence undoable.
+**Existing structural operations and historical recovery compatibility.** Page's existing structured rename/move operations without `moveProof` continue through the compatibility entry point in `fileTreeManager`, retaining original-project, content-baseline, and post-operation checks. They safely reject when usable controls are missing. A historical metadata move already performed with proof of the original entity and hash can still use the original Undo path with `reviewingPolicy: 'no-trace-undo'`; `writebackRouter.applyFileTreeOperation` calls [FileMover.moveFile](../../extension/src/page/fileMover.js) with `noTraceUndo: true` for reverse recovery. It checks the original project, source/destination entities, content, paths, and deadline. Uncertain side effects still stop remaining items without blind replay. This compatibility does not reopen forward Auto metadata moves or make old records without evidence undoable.
 
 ## 5. Two Receipt Categories and the Roles of Saving, Compilation, and Mirrors
 
@@ -275,14 +275,14 @@ Compile triggering, server persistence, and mirror updates must therefore be rep
 ## 6. Undo Entry Points, Branches, and Protection for Later Edits
 
 **Current behavior.** Buttons in [runTimelineView](../../extension/src/content/runTimelineView.js) call `contentRuntime.undoRun`.
-This entry point first uses `UndoOperations.prepareRunUndo` to fill in evidence-backed restoration of old files, waits for `pendingMirrorRefresh`, then routes according to saved refs, pre-images/post-images, and file-recovery operations.
+`contentRuntime.undoRun` forwards to `RunReviewController.undoRun`. Under the controller’s review locks, `executeUndo` uses `UndoOperations.prepareRunUndo` to fill in evidence-backed restoration operations, waits for any pending mirror refresh, then selects `executeTrackedUndo` or the no-trace inverse-operation path according to the saved recovery material.
 The current panel Track toggle cannot replace the original run's `executionSnapshot.requireReviewing`.
 When an Undo or tracked Undo performed by this page moves the run to `undoStatus` applied/partial or `trackedChangeStatus` rejected, `RunReviewController` asks Page `triggerCompile` (`preferUiClick`, the explicit-log save wait) if the panel's current Auto compile switch is on and the run's project is open, so the PDF follows the restored source. A page that only adopts another page's finished Undo from shared storage does not compile. The result is not reported on the card and does not change Undo settlement.
 
 ```text
-undoRun(runId)
+contentRuntime.undoRun(runId) → RunReviewController.undoRun → executeUndo
   ├─ Tracked refs / usable pre-images and post-images / specified creation-recovery state exist
-  │    └─ undoRunTrackedChanges
+  │    └─ executeTrackedUndo
   │         ├─ rejectTrackedChanges RPC: restore existing text
   │         ├─ applyOperations RPC: delete proven new files / recreate deleted old files with original text
   │         └─ Verify and advance the ledger; finally register mirror invalidation from known Page results

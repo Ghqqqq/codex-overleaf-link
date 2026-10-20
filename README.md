@@ -252,11 +252,13 @@ The content script is bundled from [content-entry.mjs](extension/entries/content
 | Patches | `native-host/src/textPatch.js` |
 | Updates and packaging | `extension/bootstrap/`, `native-host/src/updateManager.js`, `scripts/` |
 
-To smoke-test against a real project:
+To run standalone panel, Native, project-read and diagnostics probes against a real project:
 
 ```bash
 npm run smoke:extension -- --url 'https://www.overleaf.com/project/<id>' --probe panel,native,project,diagnostics --json .local/smoke.json
 ```
+
+For local Managed installation acceptance, follow the [development SOP](docs/architecture/change-workflow.md#4-implement-and-validate-obtain-evidence-proportional-to-risk), including extension Reload, loaded build identity, Ask with zero writes, reversible two-file write/Undo, editor cleanup and refreshed history.
 
 Pull requests are welcome. For larger changes, please open an issue first, and keep both READMEs in step.
 

@@ -112,7 +112,7 @@ History-list limits and diagnostic entry counts constrain output scope; the unde
 
 ## 6. Change Routes and Verification Boundaries
 
-The permanent suite checks a representative conversation/recovery roundtrip in [sessionDurability](../../test/sessionDurability.test.js), including ordinary example text that resembles credentials. It does not establish detector coverage, full-prompt scanning, governance admission or diagnostics export behavior. Those checks are selected when their owning path changes.
+The permanent suite checks a representative conversation/recovery roundtrip in [sessionDurability](../../test/sessionDurability.test.js), including ordinary example text that resembles credentials. [reportConclusionLocale](../../test/reportConclusionLocale.test.js) also exercises read-only and writable-allowlist rejection through `WritebackOrchestrator`, `WritebackPlan`, and `GovernanceRules`, and runs `SensitiveScan` on synthetic AWS-access-key and Bearer inputs. Its `SensitivePreflight` checks inject prepared findings through a stubbed scanner and verify blocking, bounded evidence, storage, and localized conclusions. These contracts do not establish comprehensive detector or governance coverage, full-prompt scanning, Native mirror scanning, or diagnostics export behavior; select additional checks when their owning paths change.
 
 | Change | Required coordination | Smallest useful check when affected |
 | --- | --- | --- |
