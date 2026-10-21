@@ -66,7 +66,7 @@ The prompt-size check includes developer instructions and the completed turn tex
 
 ### Mirror Scanning and Unscanned Content
 
-Native scans ordinary directories and files. `isSensitiveScanTextPath` defines the text extensions, with additional support for `.latexmkrc`. Files larger than 512 KiB are recorded in `skippedFiles`; results retain at most 100 findings.
+Native enumerates ordinary directories and files. `isSensitiveScanTextPath` defines the text extensions, with additional support for `.latexmkrc`. Among allowlisted text files reached by the scan loop, files larger than `MAX_SCANNED_FILE_BYTES` (512 KiB) are recorded in `skippedFiles`. After each scanned file, the loop stops when raw findings reach `MAX_FINDINGS` (100), before `collapseRedundantFindings`; later files are neither scanned nor added to `skippedFiles`. Returned findings are collapsed and limited to `MAX_FINDINGS`.
 The browser's `scanNativeMirrorSensitiveFindings` inside `SensitivePreflight` currently consumes only `result.findings`; it does not turn `skippedFiles` into blocking conditions or completeness warnings. Zero findings therefore do not prove that the entire mirror was scanned. Oversized text files and files outside the allowlist, for example, still require separate assessment.
 A failed Native scan request produces a `mirror-sensitive-scan-unavailable` finding, handled under the finding policy; explicitly disabling scanning allows continuation immediately. The compatibility branch for a missing scanning module without mirror reuse also returns an unblocked result, so this path cannot be described as uniformly fail-closed.
 
