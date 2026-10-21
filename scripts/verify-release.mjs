@@ -234,22 +234,27 @@ function getPathComponentTokens(component) {
 }
 
 function readGitTrackedFiles(rootDir) {
+  // Fail closed: an empty list would pass every tracked-path rule.
   const insideWorkTree = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
     cwd: rootDir,
     encoding: 'utf8'
   });
-  if (insideWorkTree.status !== 0) {
-    return [];
+  if (insideWorkTree.error || insideWorkTree.status !== 0 || insideWorkTree.stdout.trim() !== 'true') {
+    const detail = insideWorkTree.error?.message
+      || String(insideWorkTree.stderr || insideWorkTree.stdout || '').trim()
+      || `exit status ${insideWorkTree.status}`;
+    throw new Error(`Unable to verify Git-tracked paths: Git and a Git worktree are required (${detail}).`);
   }
 
-  const result = spawnSync('git', ['ls-files'], {
+  // -z keeps non-ASCII paths unquoted, so they still match the path rules.
+  const result = spawnSync('git', ['ls-files', '-z'], {
     cwd: rootDir,
     encoding: 'utf8'
   });
-  if (result.status !== 0) {
-    throw new Error(`Unable to list git-tracked files: ${result.stderr || result.stdout}`.trim());
+  if (result.error || result.status !== 0) {
+    throw new Error(`Unable to list git-tracked files: ${result.error?.message || result.stderr || result.stdout}`.trim());
   }
-  return result.stdout.split(/\r?\n/).filter(Boolean);
+  return result.stdout.split('\0').filter(Boolean);
 }
 
 function escapeRegExp(value) {
