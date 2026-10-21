@@ -13,7 +13,7 @@
   <p>English | <a href="README.zh-CN.md">简体中文</a></p>
 </div>
 
-Codex Overleaf Link adds a Codex panel next to the Overleaf editor. Ask about your project, or let Codex edit it: changes go back through the editor, as tracked changes if you want, and every run can be undone. Codex runs on your machine through the Codex CLI.
+Codex Overleaf Link adds a Codex panel next to the Overleaf editor. Ask about your project, or let Codex edit it: changes go back through the editor, as tracked changes if you want, and a run can be undone until you accept its changes. Codex runs on your machine through the Codex CLI.
 
 ![The panel next to the editor and PDF in the Overleaf example project](assets/readme/2.6.0/overview@2x.png)
 

@@ -13,7 +13,7 @@
   <p><a href="README.md">English</a> | 简体中文</p>
 </div>
 
-Codex Overleaf Link 在 Overleaf 编辑器旁边加了一个 Codex 面板。你可以就项目提问，也可以让 Codex 直接动手修改：改动通过编辑器写回，可以选择以留痕形式写入，每一轮都能撤销。Codex 通过 Codex CLI 在你的电脑上运行。
+Codex Overleaf Link 在 Overleaf 编辑器旁边加了一个 Codex 面板。你可以就项目提问，也可以让 Codex 直接动手修改：改动通过编辑器写回，可以选择以留痕形式写入，接受改动之前每一轮都能撤销。Codex 通过 Codex CLI 在你的电脑上运行。
 
 ![Overleaf 示例项目中，面板和编辑器、PDF 并排](assets/readme/2.6.0/overview@2x.png)
 
