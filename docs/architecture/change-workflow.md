@@ -81,7 +81,7 @@ Prefer updating existing domain pages; split out a new topic only when it provid
 
 1. The [guide entry point](README.md) and related feature-index entries/cross-links.
 2. The corresponding per-page declaration in [.gitignore](../../.gitignore) and the exact [PUBLIC_ARCHITECTURE_GUIDE_PATHS](../../scripts/verify-release.mjs) list; remove old entries when moving or deleting pages.
-3. Check that both allowlists name the same existing guide files, then run `npm run verify:source` to check tracked-path admission. Maintain Git tracking scope separately from npm/release distribution scope; actual release artifact verification checks distribution contents.
+3. Check that both allowlists name the same existing guide files, then run `npm run verify:source` to check tracked-path admission. This command requires Git and a Git worktree; `readGitTrackedFiles` uses NUL-delimited enumeration. Maintain Git tracking scope separately from npm/release distribution scope; actual release artifact verification checks distribution contents.
 
 Use actual files, symbols, and relative links in documentation; check inbound links when source files are deleted or moved. Released extensions open `README.md#faq-and-troubleshooting` (`CODEX_CLI_TROUBLESHOOTING_URL` in [runRecoveryActions](../../extension/src/content/runRecoveryActions.js)), so a README restructure keeps that anchor. Before committing, check that links, anchors, and commands remain valid, and run the applicable checks:
 
