@@ -24,7 +24,7 @@
       return node;
     };
     const subagentView = deps.SubagentActivityView?.create({
-      tx, getPanel, plain, make, icon, formatElapsed, glyph: name => deps.PanelIcons?.svg?.(name) || '',
+      tx, getPanel, plain, plainThought, make, icon, formatElapsed, glyph: name => deps.PanelIcons?.svg?.(name) || '',
       renderBlocks: (parent, blocks, rows, card, run) => reconcile(parent, blocks, rows,
         block => buildBlock(block, card), (row, block) => updateBlock(row, block, card, run))
     });

@@ -3,7 +3,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : window, function subagentActivityViewFactory(Agents, Activity) {
   'use strict';
   function create(deps) {
-    const { tx, getPanel, plain, make, icon, formatElapsed, renderBlocks, glyph = () => '' } = deps;
+    const { tx, getPanel, plain, plainThought, make, icon, formatElapsed, renderBlocks, glyph = () => '' } = deps;
     const withGlyph = (node, name, label) => {
       node.insertAdjacentHTML('beforeend', glyph(name));
       const text = make('span', ''); text.textContent = label; node.append(text);
@@ -172,7 +172,7 @@
       viewer.assignment.hidden = !viewer.prompt.textContent;
       const parent = Activity.project(card.run), last = parent.blocks.at(-1);
       const lastItem = last?.kind === 'exploreGroup' ? last.items.at(-1) : last;
-      const parentWork = plain(lastItem?.meta?.target || lastItem?.meta?.command || lastItem?.event?.title).slice(0, 150);
+      const parentWork = plainThought(plain(lastItem?.meta?.target || lastItem?.meta?.command || lastItem?.event?.title)).slice(0, 150);
       viewer.parentLabel.textContent = tx('Main agent · ', '主 agent · ') + (card.run.status === 'running'
         ? parentWork || tx('Working', '处理中') : tx('Run ended', '本轮已结束'));
       const running = (card.run.subagents || []).filter(item => ['pending', 'running'].includes(Agents.effectiveStatus(item, card.run))).length;

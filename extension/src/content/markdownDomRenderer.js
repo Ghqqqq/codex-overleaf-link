@@ -468,10 +468,10 @@
       textNode.textContent = `${match[1]}${text.slice(match[0].length)}`;
       textNode.parentNode.insertBefore(label, textNode);
     }
-    decorateChangeReceipts(container, document, tx);
+    decorateChangeReceipts(container, document, tx, options.formatOperationType);
   }
 
-  function decorateChangeReceipts(container, document, tx) {
+  function decorateChangeReceipts(container, document, tx, formatOperationType = type => type) {
     const label = container.querySelector?.('.run-system-label[data-system-label="changes"]');
     const list = label?.closest?.('p')?.nextElementSibling;
     if (!list || !['UL', 'OL'].includes(list.tagName)) return;
@@ -508,7 +508,9 @@
       file.textContent = receipt.file;
       const operation = document.createElement('span');
       operation.className = 'run-change-receipt__operation';
-      operation.textContent = receipt.operation;
+      const type = ({ 编辑: 'edit', 新建: 'create', 重命名: 'rename', 移动: 'move', 删除: 'delete' })[receipt.operation]
+        || receipt.operation.toLowerCase();
+      operation.textContent = formatOperationType(type);
       receipt.item.classList.add('run-change-receipt');
       receipt.item.setAttribute('aria-label', receipt.original);
       receipt.item.title = receipt.original;
