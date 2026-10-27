@@ -166,6 +166,9 @@
     "timeout": {
       "message": "timed out"
     },
+    "native_request_timeout": {
+      "code": "native_request_timeout"
+    },
     "output_limit": {
       "message": "output limit exceeded"
     },
@@ -182,7 +185,7 @@
       "message": "unsupported_parameter reasoning.summary"
     },
     "storage_quota": {
-      "message": "quota"
+      "message": "storage quota"
     },
     "checkpoint": {
       "message": "checkpoint"
@@ -219,6 +222,9 @@
     },
     "provider_rate_limited": {
       "message": "provider_rate_limited"
+    },
+    "provider_quota_exceeded": {
+      "message": "provider_quota_exceeded"
     },
     "provider_connection_timeout": {
       "message": "provider_connection_timeout"
@@ -866,6 +872,14 @@
         code: 'provider_protocol_incompatible'
       },
       {
+        pattern: /provider_quota_exceeded|insufficient_quota|exceeded your current quota|(?:billing|usage|spend(?:ing)?|credit)[_ -]?(?:hard[_ -]?)?limit[_ -]?(?:reached|exceeded)|(?:billing|plan).{0,40}(?:quota|limit|exhausted)|(?:quota|credits?).{0,40}(?:billing|plan|exhausted|insufficient)/i,
+        conclusionZh: '模型服务的配额或账单限额已达到。',
+        conclusionEn: 'The model provider quota or billing limit was reached.',
+        nextZh: '请检查模型服务账户和套餐，或切换模型或模型服务后重试。',
+        nextEn: 'Check the provider account and plan, or switch model or provider before retrying.',
+        code: 'provider_quota_exceeded'
+      },
+      {
         pattern: /provider_rate_limited|rate limit was reached/i,
         conclusionZh: '这轮没有完成：第三方模型服务触发了限流。',
         conclusionEn: 'This run did not finish: the third-party provider rate limit was reached.',
@@ -951,6 +965,13 @@
     // failure data alongside the human-readable text. The string text is kept
     // verbatim because it has mode-aware nuance (e.g. "No files were written"
     // vs "This run did not start") the catalog's fallback strings don't capture.
+    if (context.code === 'native_request_timeout' || /native_request_timeout/i.test(text)) {
+      return {
+        conclusion: textFor(locale, '本机服务没有响应。', 'The local service did not respond.'),
+        nextStep: textFor(locale, '请重试，或打开「诊断」检查本机连接。', 'Retry, or open Diagnostics to check the local connection.'),
+        failureCode: 'native_request_timeout'
+      };
+    }
     if (context.code === 'codex_local_skill_unavailable' || /(?:The )?selected local Codex skill is unavailable/i.test(text)) {
       return {
         conclusion: textFor(locale, '所选 Codex 本地技能不可用或已关闭，本轮没有启动。', 'The selected local Codex skill is unavailable or disabled. This run did not start.'),
@@ -1044,7 +1065,7 @@
         failureCode: 'native_protocol_incompatible'
       };
     }
-    if (/quota|kQuotaBytes|QUOTA_BYTES/i.test(text)) {
+    if (/kQuotaBytes|QUOTA_BYTES|QuotaExceededError|storage quota/i.test(text)) {
       return {
         conclusion: textFor(locale, 'Codex 结果已经生成，但本地会话记录超出 Chrome 存储配额。', 'Codex produced a result, but local session history exceeded Chrome storage quota.'),
         nextStep: textFor(locale, '请删除一些旧 session，或刷新扩展后重试；这不是论文分析本身失败。', 'Delete older sessions or reload the extension and retry. The paper analysis itself did not fail.'),
