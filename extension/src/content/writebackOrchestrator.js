@@ -430,20 +430,24 @@
       // Cancellation cannot erase the returned writes or the recovery needed to
       // check their save state. Carry the same evidence into the cancelled report.
       error.writebackOutcome = { operations, applied, saveVerification,
-        settlement: buildSettlement({ operations, applyResult: applied, saveVerification }) };
+        settlement: buildSettlement({ operations, applyResult: applied, saveVerification, mirror: { state: 'unknown' } }) };
+      // Fence the Page cache now; an unanswered Native invalidation must retain
+      // the mirror barrier without holding the cancelled run open.
+      const pending = invalidateWritebackMirror(saveTarget, { pageFirst: true })
+        .then(async state => {
+          error.writebackOutcome.settlement = buildSettlement({ operations, applyResult: applied, saveVerification, mirror: { state } });
+          await onMirrorRefreshSettled?.({ ...saveTarget, state });
+          return state;
+        })
+        .finally(() => {
+          if (pendingMirrorRefresh === pending) pendingMirrorRefresh = null;
+        });
+      pendingMirrorRefresh = pending;
       try {
         await settleWritebackRecovery?.(applied, project, saveVerification, saveTarget, runRequireReviewing);
       } catch (recoveryError) {
         appendRunRecordEvent?.(saveTarget.recordId, { kind: 'technical', status: 'warning',
           title: tx('Writeback recovery persistence failed', '写回恢复信息保存失败'), detail: { reason: recoveryError.message } });
-      } finally {
-        pendingMirrorRefresh = invalidateWritebackMirror(saveTarget);
-        try {
-          const state = await pendingMirrorRefresh;
-          error.writebackOutcome.settlement = buildSettlement({ operations, applyResult: applied, saveVerification, mirror: { state } });
-        } finally {
-          pendingMirrorRefresh = null;
-        }
       }
       throw error;
     }
@@ -548,7 +552,9 @@
       // the run by inspecting the `applied.skipped` entries' failure codes.
       // Existing call sites that only read `summaryLine` / `hasSkippedOperations`
       // / `audit` are unaffected.
+      operations,
       applied,
+      saveVerification,
       settlement: buildSettlement({
         operations,
         applyResult: applied,
@@ -601,7 +607,16 @@
     else appendRunEvent({ title, status: 'warning' });
   }
 
-  async function invalidateWritebackMirror(target = {}) {
+  async function invalidateWritebackMirror(target = {}, options = {}) {
+    const invalidatePage = async () => {
+      if (getCurrentProjectId() !== target.runProjectId) return true;
+      try {
+        resetContextProject();
+        const response = await callPageBridge('invalidateProjectSnapshot', { invalidateFileList: true, runProjectId: target.runProjectId });
+        return response?.ok === true;
+      } catch (_error) { return false; }
+    };
+    const pageInvalidation = options.pageFirst === true ? invalidatePage() : null;
     let invalidated = false;
     try {
       if (target.runProjectId) {
@@ -609,14 +624,7 @@
         invalidated = response?.ok === true && response.result?.invalidated === true;
       }
     } catch (_error) { /* An unavailable host cannot acknowledge invalidation. */ }
-    let pageInvalidated = getCurrentProjectId() !== target.runProjectId;
-    if (!pageInvalidated) {
-      resetContextProject();
-      try {
-        const response = await callPageBridge('invalidateProjectSnapshot', { invalidateFileList: true, runProjectId: target.runProjectId });
-        pageInvalidated = response?.ok === true;
-      } catch (_error) { /* Leave the failure visible if both caches cannot be fenced. */ }
-    }
+    const pageInvalidated = await (pageInvalidation || invalidatePage());
     if (invalidated && pageInvalidated) return 'not-attempted';
     const event = {
       title: tx('The local project cache could not be reset. Check the local connection before starting another task.',

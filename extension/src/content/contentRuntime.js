@@ -2601,7 +2601,7 @@
       });
       runSettlementPersistence.applyToCurrentRun(syncOutcome.settlement);
       if (runCancellationRequested) {
-        throw createRunCancellationError();
+        throw Object.assign(createRunCancellationError(), { writebackOutcome: syncOutcome });
       }
       await finalizeAuditRecord(runAuditDraft, {
         ...(syncOutcome.audit || {}),
