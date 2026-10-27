@@ -45,7 +45,7 @@
       }
       const canStart = shouldContinue ? options.canStart?.(sessionId) : true;
       const latestQueue = options.getQueue?.(sessionId) || originalQueue;
-      const inactive = status === 'completed' && canStart !== 'session_transition'
+      const inactive = shouldContinue && canStart !== 'session_transition'
         && (canStart === false || options.isRunning?.())
         && latestQueue.some(item => item?.status === 'queued');
       if (!shouldContinue || inactive) {

@@ -456,6 +456,13 @@ function handleCodexCancel(request, env = process.env) {
     });
   }
 
+  if (targetId != null && !force) {
+    return okResponse(request.id, {
+      cancelled: false,
+      reason: 'request_not_active'
+    });
+  }
+
   if (projectKey) {
     const entry = activeRunByProject.get(projectKey);
     if (entry?.controller) {
