@@ -2712,7 +2712,10 @@
               changedDocument: false, evidence: { declinedChoice: true }
             }),
             nextStep: tr('failureReason_reviewing_unavailable_cancelled_next') });
-        } else appendRunCancelledReport();
+        } else {
+          runSettlementPersistence.applyToCurrentRun(error.writebackOutcome?.settlement);
+          appendRunCancelledReport(error.writebackOutcome);
+        }
         await finishRunView(tx('Cancelled', '已取消'), 'cancelled');
         void finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
         return;
@@ -3734,7 +3737,7 @@
     }).run(options);
   }
 
-  function appendRunCancelledReport() {
+  function appendRunCancelledReport(writebackOutcome = {}) {
     const hasQueuedFollowUp = (getActiveSession(state)?.pendingInputs || [])
       .some(item => item?.status === 'queued');
     appendRunEvent({
@@ -3745,8 +3748,9 @@
     appendCompletionReport({ conclusionKey: 'cancelled',
       conclusion: tx('This run was cancelled. It did not continue syncing or writing to Overleaf.', '这轮已中断，没有继续同步或写入 Overleaf。'),
       status: 'cancelled',
-      operations: [],
-      applyResults: [],
+      operations: writebackOutcome.operations || [],
+      applyResults: writebackOutcome.applied ? [writebackOutcome.applied] : [],
+      saveVerification: writebackOutcome.saveVerification,
       nextStep: hasQueuedFollowUp
         ? tx('The first queued follow-up will start next.', '接下来会自动启动队首的后续任务。')
         : tx('Edit the task and run again.', '可以修改任务后重新运行。')
