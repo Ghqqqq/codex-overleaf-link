@@ -149,7 +149,7 @@ test('cancelling save confirmation retains written results, save recovery and in
   const window = {};
   require('node:vm').runInNewContext(require('node:fs').readFileSync(
     require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window, Function });
-  const entered = deferred(), release = deferred(), calls = [];
+  const entered = deferred(), release = deferred(), recoveryReady = deferred(), mirrorReply = deferred(), calls = [];
   const project = { id: 'example', files: [{ path: 'main.tex', content: 'before' }, { path: 'second.tex', content: 'second' }] };
   const view = { runProjectId: 'example', sessionId: 's', recordId: 'r' };
   const run = { id: 'r', runProjectId: 'example', mode: 'auto', status: 'running' };
@@ -181,6 +181,7 @@ test('cancelling save confirmation retains written results, save recovery and in
       verification = saveVerification;
       const check = await Controller.buildSaveCheck(result, original, { projectId: 'example', accountScopeId: 'a', sessionId: 's', runId: 'r' });
       run.saveCheck = Intent.normalizeSaveCheck(check);
+      recoveryReady.resolve();
     },
     async callPageBridge(method) {
       calls.push(method);
@@ -189,22 +190,40 @@ test('cancelling save confirmation retains written results, save recovery and in
       return { ok: true };
     },
     resetContextProject() { calls.push('reset-context'); },
-    async sendBackgroundNative({ method }) { calls.push(method); return { ok: true, result: { invalidated: true } }; }
+    async sendBackgroundNative({ method }) { calls.push(method); await mirrorReply.promise; return { ok: true, result: { invalidated: true } }; },
+    onMirrorRefreshSettled: require('../extension/src/content/runSettlementPersistence').create({
+      writebackSettlement: Settlement, findRunRecord: () => run, getCurrentProjectId: () => 'example'
+    }).settleMirrorRefresh
   });
+  let finished = false;
   const pending = api.applySyncChangesToOverleaf(project.files.map(file => ({ type: 'write', path: file.path,
-    previousContent: file.content, content: 'after' })), project, { mode: 'auto', requireReviewing: false });
+    previousContent: file.content, content: 'after' })), project, { mode: 'auto', requireReviewing: false })
+    .then(value => ({ value }), error => ({ error })).finally(() => { finished = true; });
   await Promise.race([entered.promise, pending]);
   release.resolve();
-  await assert.rejects(pending, error => error === cancellation);
+  await recoveryReady.promise;
+  await new Promise(resolve => setImmediate(resolve));
+  const mirrorPending = api.getPendingMirrorRefresh();
+  try {
+    assert.equal(finished, true, 'cancellation must finish without a Native invalidation response');
+    assert.equal((await pending).error, cancellation);
+    assert.ok(mirrorPending, 'mirror reuse must still wait for the unanswered invalidation');
+    assert.deepEqual(calls, ['apply', 'undo', 'waitForSaveState', 'reset-context', 'invalidateProjectSnapshot', 'mirror.invalidate', 'recovery']);
+    assert.equal(cancellation.writebackOutcome.settlement.facts.evidence.mirrored, 'unknown');
+    Object.assign(run, Settlement.applySettlementTransition(run, cancellation.writebackOutcome.settlement), { status: 'cancelled' });
+  } finally {
+    mirrorReply.resolve();
+    await pending;
+    await mirrorPending;
+  }
   const outcome = cancellation.writebackOutcome;
   assert.equal(outcome.applied.applied[0], applied.applied[0]);
   assert.equal(outcome.applied.skipped[0], applied.skipped[0]);
   assert.equal(verification.state, 'unknown_timeout');
   assert.equal(verification.ok, false);
   assert.equal(outcome.saveVerification, verification);
-  assert.deepEqual(calls, ['apply', 'undo', 'waitForSaveState', 'recovery', 'mirror.invalidate', 'reset-context', 'invalidateProjectSnapshot']);
   assert.equal(api.getPendingMirrorRefresh(), null);
-  Object.assign(run, Settlement.applySettlementTransition(run, outcome.settlement), { status: 'cancelled' });
+  assert.equal(run.settlement.evidence.mirrored, 'not-attempted', 'the late acknowledgment settles the original cancelled run');
   const restored = Session.normalizePanelState({ activeSessionId: 's', sessions: [{ id: 's', projectId: 'example', runs: [run] }] }).sessions[0].runs[0];
   assert.equal(restored.appliedOperations.length, restored.undoOperations.length);
   assert.equal(restored.appliedOperations.length, 1);
@@ -214,4 +233,79 @@ test('cancelling save confirmation retains written results, save recovery and in
   assert.equal(restored.settlement.documentEffect, 'changed');
   assert.notEqual(restored.settlement.evidence.saved, 'verified');
   assert.notEqual(restored.settlement.evidence.mirrored, 'complete');
+});
+
+test('a successful save reply after Stop retains the written and saved report evidence', async () => {
+  const Controller = require('../extension/src/content/writebackController');
+  const Settlement = require('../extension/src/shared/writebackSettlement');
+  const Transcript = require('../extension/src/shared/agentTranscript');
+  const Contract = require('../extension/src/shared/pageRpcContract');
+  const compatibility = require('../extension/src/shared/compatibility');
+  const entered = deferred(), saveReply = deferred(), listeners = new Set(), calls = [];
+  let cancelled = false, sequence = 0, verification;
+  const win = { location: { origin: 'https://fixture.invalid' }, setTimeout, clearTimeout,
+    addEventListener: (_name, listener) => listeners.add(listener), removeEventListener: (_name, listener) => listeners.delete(listener),
+    postMessage(request) {
+      calls.push(request.method);
+      assert.equal(request.method, 'waitForSaveState');
+      entered.resolve();
+      saveReply.promise.then(result => {
+        for (const listener of [...listeners]) listener({ source: win, origin: win.location.origin,
+          data: { source: 'codex-overleaf/page', id: request.id, pageBridgeVersion: compatibility.BUILD_TARGET_VERSION,
+            pageBridgeRevision: Contract.REVISION, result } });
+      });
+    } };
+  const page = require('../extension/src/content/pageBridgeClient').create({ window: win, compatibility, contract: Contract,
+    crypto: { randomUUID: () => String(++sequence) }, isCancellationRequested: () => cancelled });
+  const tx = en => en;
+  const plan = require('../extension/src/content/writebackPlan').create({ tx, tr: key => key,
+    normalizeSafeProjectPath: require('../extension/src/shared/projectFiles').normalizeSafeProjectPath,
+    GovernanceRules: require('../extension/src/shared/governanceRules'), getGovernanceRulesForCurrentProject: () => ({}),
+    getAppliedEntries: value => value.applied || [], getSkippedEntries: value => value.skipped || [] });
+  const window = {};
+  require('node:vm').runInNewContext(require('node:fs').readFileSync(
+    require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window, Function });
+  const api = window.CodexOverleafWritebackOrchestrator.create({ ...plan, tx, tr: key => key, getLocale: () => 'en',
+    getState: () => ({ mode: 'auto', autoRecompile: false }),
+    getCurrentRunView: () => ({ runProjectId: 'example', sessionId: 's', recordId: 'r' }), getCurrentProjectId: () => 'example',
+    cleanFinalAnswer: value => value || '', getAssistantAnswerForCurrentRun: () => '',
+    writebackController: Controller, writebackSettlement: Settlement, compileAdapter: require('../extension/src/shared/compileAdapter'),
+    buildSyncApplyOperations: Controller.buildSyncApplyOperations, getAppliedOperationPaths: Controller.getAppliedOperationPaths,
+    getAppliedSyncChanges: Controller.getAppliedSyncChanges, getSkippedEntries: value => value.skipped || [],
+    hasApplyResultEntries: value => value.applied.length > 0, hasSkippedApplyOperations: () => false,
+    ensureReviewingBeforeWrite: async () => ({ ok: true }), appendRunEvent() {}, appendRunRecordEvent() {},
+    appendOperationsPreview() {}, appendApplyResult() {}, renderReadOnlyDiffReview() {}, appendCompletionReport() {},
+    appendChangeSummary: () => '', recordUndoFromApply: async () => {},
+    assetTransferBroker: { async applyOperations({ operations }) {
+      return { ok: true, applied: operations.map(operation => ({ operation, result: { ok: true, verified: true, verifiedContent: 'after' } })), skipped: [] };
+    } },
+    settleWritebackRecovery: async (_applied, _project, value) => { verification = value; },
+    callPageBridge: (method, params) => page.send(method, params, Contract.resolveDispatchPolicy(method)),
+    async sendBackgroundNative({ method, params }) {
+      calls.push(method);
+      assert.equal(method, 'mirror.confirmWriteback');
+      return { ok: true, result: { ok: true, confirmed: params.expectedFiles.map(file => ({ path: file.path, hash: file.sha256 })) } };
+    }
+  });
+  const pending = api.applySyncChangesToOverleaf([{ type: 'write', path: 'main.tex', previousContent: 'before', content: 'after' }],
+    { id: 'example', files: [{ path: 'main.tex', content: 'before' }] }, { mode: 'auto', requireReviewing: false, autoRecompile: false });
+  await Promise.race([entered.promise, pending]);
+  cancelled = true;
+  saveReply.resolve({ ok: true, state: 'verified_saved' });
+  const outcome = await pending;
+  await api.getPendingMirrorRefresh();
+  assert.equal(outcome.applied.applied.length, 1);
+  assert.equal(outcome.applied.skipped.length, 0);
+  assert.equal(outcome.operations.length, 1);
+  assert.equal(outcome.saveVerification, verification);
+  assert.equal(verification.state, 'verified_saved');
+  assert.equal(outcome.settlement.facts.evidence.saved, 'verified');
+  assert.equal(calls.includes('mirror.invalidate'), false);
+  const report = Transcript.buildHumanCompletionReport({ ...outcome, conclusionKey: 'cancelled', status: 'cancelled',
+    applyResults: [outcome.applied], includeWriteResult: true, undoCount: 1 });
+  const meta = key => report.structured.meta.find(row => row.key === key)?.value;
+  assert.deepEqual(meta('writeResult').match(/\d+/g).map(Number), [1, 0]);
+  assert.equal(report.structured.meta.some(row => row.key === 'unchangedReason'), false);
+  const knownSaved = Transcript.buildHumanCompletionReport({ saveVerification: { state: 'verified_saved' } });
+  assert.equal(meta('saveState'), knownSaved.structured.meta.find(row => row.key === 'saveState').value);
 });
