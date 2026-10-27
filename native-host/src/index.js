@@ -11,6 +11,8 @@ const { buildNativeRuntimeEnv, summarizeNativeEnvironment } = require('./nativeE
 let buffered = Buffer.alloc(0);
 let stdoutUnavailable = false;
 let nativeDisconnectHandled = false;
+let fatalShutdownStarted = false;
+const FATAL_SHUTDOWN_TIMEOUT_MS = 3000;
 const runtimeEnv = buildNativeRuntimeEnv(process.env);
 Object.assign(process.env, runtimeEnv);
 logDebug('environment.ready', summarizeNativeEnvironment(runtimeEnv));
@@ -93,20 +95,45 @@ process.on('uncaughtException', error => {
     handleNativeDisconnect('uncaught_native_disconnect', error);
     return;
   }
-  logDebug('process.uncaught_exception', {
-    message: error.message,
-    stack: error.stack
-  });
-  process.exit(1);
+  handleFatalError('process.uncaught_exception', error);
 });
 
 process.on('unhandledRejection', reason => {
-  logDebug('process.unhandled_rejection', {
-    message: reason?.message || String(reason),
-    stack: reason?.stack
-  });
-  process.exit(1);
+  handleFatalError('process.unhandled_rejection', reason);
 });
+
+function handleFatalError(event, error) {
+  if (fatalShutdownStarted) {
+    process.exit(1);
+    return;
+  }
+  fatalShutdownStarted = true;
+  nativeDisconnectHandled = true;
+  stdoutUnavailable = true;
+  process.exitCode = 1;
+  logDebug(event, { message: error?.message || String(error), stack: error?.stack });
+  const exitTimer = setTimeout(() => {
+    const failures = quarantineActiveOperations();
+    logDebug('process.fatal_shutdown_deadline', { persistenceFailures: failures });
+    process.exit(1);
+  }, FATAL_SHUTDOWN_TIMEOUT_MS);
+  try {
+    // Persist protection before aborting; stop confirmation owns its removal.
+    quarantineActiveOperations();
+    Promise.resolve(abortAllActiveOperations('Native Host stopped after a fatal error.')).then(() => {
+      clearTimeout(exitTimer);
+      process.exit(1);
+    }, failure => {
+      logDebug('process.fatal_shutdown_failed', { message: failure?.message });
+      clearTimeout(exitTimer);
+      process.exit(1);
+    });
+  } catch (failure) {
+    logDebug('process.fatal_shutdown_failed', { message: failure?.message });
+    clearTimeout(exitTimer);
+    process.exit(1);
+  }
+}
 
 function writeResponse(response) {
   if (stdoutUnavailable || process.stdout.destroyed || process.stdout.writableEnded) {
@@ -152,6 +179,7 @@ function handleNativeDisconnect(source, error) {
   // old owned process is still inside its interrupt/termination budget.
   quarantineActiveOperations();
   const exitTimer = setTimeout(() => {
+    if (fatalShutdownStarted) return;
     const failures = quarantineActiveOperations();
     logDebug('native_transport.shutdown_deadline', { persistenceFailures: failures });
     process.exit(failures.length ? 1 : 0);
@@ -160,7 +188,10 @@ function handleNativeDisconnect(source, error) {
   Promise.all([
     abortAllActiveOperations('Native messaging transport disconnected.'),
     new Promise(resolve => setTimeout(resolve, 1500))
-  ]).then(() => { clearTimeout(exitTimer); process.exit(0); });
+  ]).then(() => {
+    clearTimeout(exitTimer);
+    if (!fatalShutdownStarted) process.exit(0);
+  });
 }
 
 function summarizeRequest(message) {
