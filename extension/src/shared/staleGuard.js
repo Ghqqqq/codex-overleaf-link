@@ -7,6 +7,50 @@
 })(typeof globalThis !== 'undefined' ? globalThis : window, function staleGuardFactory() {
   'use strict';
 
+  const DOCUMENT_PROVENANCE_OTHER_MIN = 0.9;
+  const DOCUMENT_PROVENANCE_CLAIMED_MAX = 0.5;
+  const DOCUMENT_PROVENANCE_EDGE_LIMIT = 64 * 1024;
+
+  function assessDocumentProvenance(input = {}) {
+    try {
+      const { path, text, references } = input || {};
+      if (typeof text !== 'string' || !references) return { ok: true };
+      const entries = references instanceof Map ? references : Object.entries(references);
+      const claimed = references instanceof Map ? references.get(path)
+        : Object.prototype.hasOwnProperty.call(references, path) ? references[path] : undefined;
+      if (text === claimed) return { ok: true };
+      let matchedPath, bestScore = -1;
+      for (const [otherPath, reference] of entries) {
+        if (otherPath === path || typeof reference !== 'string') continue;
+        if (text === reference) return { ok: false, code: 'document_identity_mismatch', matchedPath: otherPath };
+        const score = documentSimilarity(text, reference);
+        if (score > bestScore) { bestScore = score; matchedPath = otherPath; }
+      }
+      if (bestScore >= DOCUMENT_PROVENANCE_OTHER_MIN
+        && (typeof claimed !== 'string' || documentSimilarity(text, claimed) < DOCUMENT_PROVENANCE_CLAIMED_MAX)) {
+        return { ok: false, code: 'document_identity_mismatch', matchedPath };
+      }
+    } catch (_error) {
+      // Unavailable references supply no contradictory evidence.
+    }
+    return { ok: true };
+  }
+
+  // Shared prefix + non-overlapping suffix / longer length. For large files,
+  // sample at most 64 Ki UTF-16 units at each edge and cap the denominator at
+  // twice that limit. Exact equality above still compares the complete text.
+  // No token arrays or quadratic diff: total work is O(total reference text),
+  // with bounded per-reference similarity work and constant auxiliary memory.
+  function documentSimilarity(left, right) {
+    const length = Math.min(left.length, right.length);
+    let prefix = 0, suffix = 0;
+    while (prefix < Math.min(length, DOCUMENT_PROVENANCE_EDGE_LIMIT) && left[prefix] === right[prefix]) prefix++;
+    while (suffix < Math.min(length - prefix, DOCUMENT_PROVENANCE_EDGE_LIMIT)
+      && left[left.length - suffix - 1] === right[right.length - suffix - 1]) suffix++;
+    const denominator = Math.min(Math.max(left.length, right.length), 2 * DOCUMENT_PROVENANCE_EDGE_LIMIT);
+    return denominator ? (prefix + suffix) / denominator : 1;
+  }
+
   function buildBaseFileLookup(files) {
     if (!Array.isArray(files) || files.length === 0) {
       return null;
@@ -262,6 +306,7 @@
   }
 
   return {
+    assessDocumentProvenance,
     buildBaseFileLookup,
     checkOperationFreshness,
     prepareOperationPatches,

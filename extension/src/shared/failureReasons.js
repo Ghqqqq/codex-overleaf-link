@@ -136,6 +136,11 @@
       fallbackUserMessage: 'The file changed while Codex was working.',
       fallbackNextAction: 'Review the current file, then rerun the task.'
     },
+    document_identity_mismatch: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: true,
+      fallbackUserMessage: 'Overleaf was still switching files, so this file was not used. Try again.',
+      fallbackNextAction: 'Wait for Overleaf to finish loading, then retry.'
+    },
     patch_anchor_not_found: {
       stage: 'preflight', severity: 'blocked', defaultRetryable: true,
       fallbackUserMessage: 'The edit anchor no longer matches current Overleaf content.',

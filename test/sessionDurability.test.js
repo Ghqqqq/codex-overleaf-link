@@ -22,6 +22,78 @@ function persist(db, state, extra = {}) {
     normalizeCustomInstructionsByProject: value => value || {}, ...extra });
 }
 
+test('renaming a dashboard conversation preserves every saved run and its Undo material', async () => {
+  // Exercise the rendered rename action with the real shared storage service.
+  // This small DOM substitute supplies only the dashboard's browser I/O.
+  class Element {
+    constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.attributes = {}; this.listeners = {}; }
+    appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
+    insertBefore(child, before) { child.parentElement = this; this.children.splice(this.children.indexOf(before), 0, child); }
+    remove() { this.parentElement.children = this.parentElement.children.filter(child => child !== this); }
+    setAttribute(name, value) { this.attributes[name] = value; }
+    getAttribute(name) { return this.attributes[name]; }
+    addEventListener(type, listener) { this.listeners[type] = listener; }
+    querySelector(selector) {
+      const matches = node => selector.startsWith('[')
+        ? Object.hasOwn(node.attributes, selector.slice(1, -1)) : node.tag === selector;
+      for (const child of this.children) {
+        const found = matches(child) ? child : child.querySelector(selector);
+        if (found) return found;
+      }
+      return null;
+    }
+    set innerHTML(_value) { this.children = []; }
+    focus() {}
+    select() {}
+  }
+  const network = createNetwork();
+  try {
+    const writer = connect(network, 1), dashboard = connect(network, 2);
+    const projectId = '0123456789abcdef01234567';
+    const runs = Array.from({ length: 20 }, (_, i) => ({
+      id: 'run-' + i, task: 'Edit manuscript', mode: 'auto', status: 'completed', runProjectId: projectId,
+      appliedOperations: [{ type: 'edit', path: 'main.tex', replaceAll: 'after-' + i }],
+      undoOperations: [{ type: 'edit', path: 'main.tex', replaceAll: i ? 'before-' + i : '' }],
+      undoBaseFiles: [{ path: 'main.tex', content: i ? 'before-' + i : '' }],
+      undoExpectedFiles: [{ path: 'main.tex', content: 'after-' + i }],
+      events: [{ kind: 'report', title: 'Answer', detail: 'Saved answer ' + i, status: 'completed' }]
+    }));
+    await writer.putRecord('sessions', Db.buildSessionRecord({ ...record('dashboard'), projectId, runs },
+      { preserveRunActionPayload: true }));
+    const before = await writer.getRecord('sessions', 'dashboard');
+    assert.equal(before.runs.filter(run => run.undoOperations.length).length, 20);
+    const panel = new Element('section'), saved = deferred();
+    const context = { window: { location: { pathname: '/project' },
+      codexOverleafDeriveAccountScopeId: () => scope.accountScopeId },
+      document: { createElement: tag => new Element(tag), querySelectorAll: () => [] },
+      chrome: { storage: { local: { get: async (_key, callback) => { callback?.({}); return {}; } } } },
+      setInterval: () => 1 };
+    require('node:vm').runInNewContext(require('node:fs').readFileSync(
+      require.resolve('../extension/src/content/recentProjects'), 'utf8'), context);
+    const view = context.window.CodexOverleafRecentProjects.create({
+      tr: key => key, tx: en => en, getPanel: () => panel, getCachedAccountScopeId: () => scope.accountScopeId,
+      PROJECT_EDITOR_RESERVED_IDS: new Set(), STATUS_BADGE_CLASS: { completed: 'completed', pending: 'pending' },
+      ProjectSessionCleanup: { create: () => ({}) }, SessionState: State,
+      SessionPersistence: { ...Sessions, loadTombstones: async () => ({}) },
+      StorageKeys: { getProjectStorageKey: () => 'legacy-panel' },
+      StorageDb: { ...dashboard, putRecord: async (...args) => {
+        try { await dashboard.putRecord(...args); saved.resolve(); }
+        catch (error) { saved.resolve(error); throw error; }
+      } }
+    });
+    await view.renderRecentProjectsVariant();
+    panel.querySelector('[data-session-rename-dash]').listeners.click();
+    const input = panel.querySelector('input');
+    input.value = 'Renamed in dashboard';
+    input.listeners.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(await saved.promise, undefined);
+    const after = await connect(network, 3).getRecord('sessions', 'dashboard');
+    assert.equal(after.title, 'Renamed in dashboard');
+    assert.equal(after.titleSource, 'manual');
+    assert.deepEqual(after.runs, before.runs);
+  } finally { network.close(); }
+});
+
 test('saved conversation text and recovery survive a new page without crossing account scope', async () => {
   const network = createNetwork();
   try {

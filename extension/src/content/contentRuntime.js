@@ -857,7 +857,7 @@
         return;
       }
       // Never clobber an in-progress inline rename (fleet P2) — retry later.
-      if (panel.querySelector('.recent-projects-sessions input')) {
+      if (panel.querySelector('.recent-projects-session-rename-input')) {
         refreshDashboardSoon();
         return;
       }
@@ -2332,8 +2332,8 @@
           submittedMode
         })));
 
-      // Handle mirror_stale error by retrying with full sync
-      if (!response.ok && response.error?.code === 'mirror_stale' && useExistingMirror) {
+      // A stale mirror or contradictory editor overlay requires a fresh read.
+      if (!response.ok && ['mirror_stale', 'document_identity_mismatch'].includes(response.error?.code) && useExistingMirror) {
         appendRunEvent({ title: tr('warmMirrorStaleRetryTitle'), status: 'running' });
         const staleRetry = await awaitRunStep(prepareMirrorStaleRetry({
           project: await awaitRunStep(getRunProjectSnapshot()),
@@ -3240,7 +3240,7 @@
     if (state?.activeSessionId !== sessionId || !isProjectEditorRoute(window.location)) return false;
     if (sessionManager.isTransitioning()) {
       deferredSessionStart = { sessionId, scope: getComposerDraftScope() };
-      return false;
+      return 'session_transition';
     }
     return true;
   }
@@ -3809,7 +3809,8 @@
       if (!isCodexOverleafSkillEnabled(id)) {
         continue;
       }
-      const title = String(skill?.title || skill?.name || id).trim().slice(0, 80) || id;
+      const title = id === 'reviewer-response' ? tx('Reviewer response', '审稿回复')
+        : String(skill?.title || skill?.name || id).trim().slice(0, 80) || id;
       commands.push({
         id: `skill:${id}`,
         kind: 'codex-overleaf-skill',
@@ -6638,7 +6639,9 @@
     writingStyleSettings.sync();
     applyPanelTheme(getThemePreference());
     if ((state.providerId || 'builtin') === 'builtin' && !modelSelectHasOption(state.model)) {
-      renderModelOptions(getModelCatalog().FALLBACK_MODELS, state.model);
+      renderModelOptions(getModelCatalog().FALLBACK_MODELS, state.model, {
+        provisionalSelected: getModelDiscovery().provisional === true
+      });
     }
     panel.querySelector('[data-model]').value = state.model;
     const renderedModels = getRenderedModelEntries();

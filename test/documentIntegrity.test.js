@@ -20,6 +20,7 @@ const PROJECT = 'document-integrity';
 // Production code owns patching, identity/freshness checks, readback and Undo.
 function harness(t, initial, options = {}) {
   let active = Object.keys(initial)[0], selected = active, clock = 1000, reviewing = false;
+  if (options.reportedPath) selected = options.reportedPath;
   const files = new Map(Object.entries(initial)), views = new Map(), writes = [];
   t.mock.method(Date, 'now', () => clock);
   for (const path of files.keys()) {
@@ -289,6 +290,48 @@ test('selecting a different file without switching its editor never writes to th
     assert.deepEqual(Object.fromEntries(h.files), initial);
     assert.deepEqual(h.writes, [], 'even matching baseline bytes cannot confirm a document switch');
   }
+});
+
+test('D1: a contradictory overlay batch never reaches the mirror or its baseline', async t => {
+  const path = require('node:path');
+  const Mirror = require('../native-host/src/mirrorWorkspace');
+  const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'document-provenance-'));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  const files = [{ path: 'main.tex', content: 'document body\n' }, { path: 'sample.bib', content: '@book{reference}\n' }];
+  const mirror = await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir,
+    project: { files, capabilities: { fullProjectSnapshot: true } } });
+  const baseline = fs.readFileSync(mirror.baselinePath);
+  await assert.rejects(Mirror.applyFileOverlays({ projectId: PROJECT, rootDir, overlays: [
+    { path: 'sample.bib', content: '@book{legitimate unsaved edit}\n' },
+    { path: 'main.tex', content: files[1].content }
+  ] }), { code: 'document_identity_mismatch' });
+  for (const file of files) assert.equal(fs.readFileSync(path.join(mirror.workspacePath, file.path), 'utf8'), file.content);
+  assert.deepEqual(fs.readFileSync(mirror.baselinePath), baseline);
+});
+
+test('D1: a persistent same-path report with another document mounted never dispatches', async t => {
+  const initial = { 'sample.bib': '@book{reference}\n', 'main.tex': 'document body\n' };
+  const h = harness(t, initial, { stuckEditor: true, reportedPath: 'main.tex' });
+  // An insertion outside the differing envelope can pass freshness alone.
+  const result = await h.apply(h.snapshot().files, [{ type: 'edit', path: 'main.tex',
+    patches: [{ from: initial['main.tex'].length, to: initial['main.tex'].length, expected: '', insert: '% addition\n' }] }]);
+  assert.equal(result.ok, false);
+  assert.equal(result.skipped[0].result.failure.code, 'document_identity_mismatch');
+  assert.equal(result.skipped[0].result.failure.changedDocument, false);
+  assert.deepEqual(h.writes, []);
+  assert.deepEqual(Object.fromEntries(h.files), initial);
+});
+
+test('D1: a legitimate same-file write rebases over unsaved editor changes', async t => {
+  const base = 'header\nbody\nend\n', unsaved = '% unsaved\n' + base;
+  const h = harness(t, { 'main.tex': unsaved, 'sample.bib': '@book{reference}\n' });
+  const intended = base.replace('end', 'END');
+  const result = await h.apply([{ path: 'main.tex', content: base }, { path: 'sample.bib', content: '@book{reference}\n' }],
+    [{ type: 'edit', path: 'main.tex', patches: computeTextPatches(base, intended) }]);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(h.writes, ['main.tex']);
+  assert.equal(h.files.get('main.tex'), '% unsaved\n' + intended);
+  assert.equal(result.applied[0].result.verifiedContent, '% unsaved\n' + intended);
 });
 
 test('a changed project identity blocks the Page mutation', async t => {

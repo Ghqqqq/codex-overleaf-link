@@ -13,7 +13,7 @@ const MAX_SKILL_CONTENT_CHARS = MAX_SKILL_CONTENT_BYTES;
 const MAX_SKILL_PREVIEW_CHARS = 240;
 const PROJECT_SKILL_SCOPE = 'project';
 const CODEX_OVERLEAF_SKILL_SCOPE = 'codex-overleaf';
-const OFFICIAL_CODEX_OVERLEAF_SKILL_IDS = ['annotated-rewrite', 'parallel-subagents'];
+const OFFICIAL_CODEX_OVERLEAF_SKILL_IDS = ['annotated-rewrite', 'parallel-subagents', 'reviewer-response'];
 
 function listProjectSkills({ projectId, rootDir } = {}) {
   const skillsDir = getProjectSkillsDir(projectId, { rootDir });

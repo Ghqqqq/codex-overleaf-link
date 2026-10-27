@@ -1,13 +1,14 @@
 (function initCodexOverleafTreeOperations(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('../shared/staleGuard'));
   } else {
-    root.CodexOverleafTreeOperations = factory();
+    root.CodexOverleafTreeOperations = factory(root.CodexOverleafStaleGuard);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function treeOperationsFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function treeOperationsFactory(StaleGuard) {
   'use strict';
 
   const TEXT_PATH_EXTENSION_PATTERN = '(?:tex|bib|sty|cls|bst|bbx|cbx|lbx|cfg|def|clo|ist|txt|md|latex)';
+  const ACTIVE_EDITOR_STABILITY_MS = 300;
 
   function create({
     window: windowDep,
@@ -1382,27 +1383,43 @@
   async function waitForActiveEditorText(filePath, timeoutMs, options = {}) {
     const deadline = Date.now() + timeoutMs;
     let lastText = '';
+    let stableView = null, stablePath = '', stableSince = 0, mismatch = null;
     while (Date.now() < deadline) {
-      const activeFileMatches = !filePath || getActiveFilePath() === filePath;
-      const text = readActiveEditorText();
+      const activePath = options.passive ? getEditorStoreFilePath({ passive: true }) : getActiveFilePath();
+      const activeFileMatches = Boolean(activePath) && (!filePath || activePath === filePath);
+      let text, identity, observed;
+      try {
+        identity = getActiveEditorIdentity();
+        text = readActiveEditorText();
+        if (identity?.type === 'codemirror-view') observed = identity.doc?.toString?.();
+        else if (identity?.type === 'textarea') observed = identity.node?.value;
+        else if (identity?.type === 'contenteditable') observed = identity.node?.innerText ?? identity.node?.textContent;
+      } catch (_error) { text = undefined; }
+      const view = identity?.view || identity?.node;
       lastText = text;
-      const knownEmptyEditor = options.allowEmpty === true && typeof text === 'string' && /^(?:\r?\n)*$/.test(text)
-        && Boolean(getActiveEditorIdentity());
+      const knownEmptyEditor = options.allowEmpty === true && typeof text === 'string' && !text.trim()
+        && typeof observed === 'string' && observed === text;
       const textReady = options.requireEmpty === true ? knownEmptyEditor
         : knownEmptyEditor || window.CodexOverleafProjectFiles.isUsableProjectFileContent(text);
       const signatureChanged = !options.notSignature || contentSignature(text) !== options.notSignature;
-      if (activeFileMatches && textReady && signatureChanged) {
-        return {
-          ok: true,
-          text
-        };
+      if (activeFileMatches && view && textReady && signatureChanged) {
+        if (view !== stableView || activePath !== stablePath) {
+          stableView = view; stablePath = activePath; stableSince = Date.now();
+        } else if (Date.now() - stableSince >= ACTIVE_EDITOR_STABILITY_MS) {
+          const provenance = StaleGuard?.assessDocumentProvenance?.({ path: activePath, text, references: options.references }) || { ok: true };
+          if (provenance.ok) return { ok: true, text };
+          mismatch = provenance;
+        }
+      } else {
+        stableView = null;
       }
       await delay(150);
     }
     return {
       ok: false,
       text: lastText,
-      reason: `Editor content was not ready for ${filePath || 'active file'}; last length ${String(lastText || '').length}`
+      ...(mismatch || {}),
+      reason: mismatch?.code || `Editor content was not ready for ${filePath || 'active file'}; last length ${String(lastText || '').length}`
     };
   }
 

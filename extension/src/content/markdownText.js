@@ -70,6 +70,15 @@
       macros: getMathMacros(), renderText: buildMarkdownInlineNodesWithoutMath });
   }
 
+  function buildParsedTextNodes(value) {
+    const source = String(value || '');
+    if (!MathText?.buildMathNodes) {
+      return buildLineReferenceInlineNodes(source);
+    }
+    return MathText.buildMathNodes(source, { document, katex: window.katex,
+      macros: getMathMacros(), renderText: buildLineReferenceInlineNodes });
+  }
+
   function buildMarkdownInlineNodesWithoutMath(value) {
     const source = String(value || '');
     const nodes = [];
@@ -514,15 +523,8 @@
           document,
           markdownIt: runtimeRoot.markdownit,
           mathText: runtimeRoot.CodexOverleafMathText,
-          renderTextNodes: text => buildMarkdownInlineNodes(text),
-          renderLinkNodes: (label, href) => {
-            const safeLabel = String(label || '');
-            const target = String(href || '').trim();
-            if (!/^https?:\/\//i.test(target) && !resolveMarkdownLineReference(safeLabel, target)) return buildMarkdownInlineNodes(safeLabel);
-            return buildMarkdownInlineNodes(
-              `[${safeLabel.replace(/]/g, '\\]')}](${target.replace(/\)/g, '\\)')})`
-            );
-          },
+          renderTextNodes: buildParsedTextNodes,
+          renderLinkNodes: buildMarkdownLinkNodes,
           renderCodeNodes: text => buildInlineCodeNodes(text),
           sanitizeText: sanitizeAssistantVisibleText,
           createMathNode: segment => runtimeRoot.CodexOverleafMathText.createMathNode(segment,

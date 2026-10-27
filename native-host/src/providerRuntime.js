@@ -237,6 +237,7 @@ function resolveProviderModels(params = {}, env = process.env, resolveBuiltInMod
     providerId: profile.id,
     providerRevision: profile.revision,
     providerName: profile.name,
+    defaultModelId: profile.defaultModelId,
     models: profile.models.map(model => {
       const reasoning = getReasoningControl(profile, model);
       return {

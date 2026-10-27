@@ -17,9 +17,6 @@
     const normalizeSafeProjectPath = typeof deps.normalizePath === 'function'
       ? deps.normalizePath
       : fallbackNormalizeSafeProjectPath;
-    const readActiveEditorText = typeof deps.readActiveEditorText === 'function'
-      ? deps.readActiveEditorText
-      : () => '';
     let invalidatedAt = 0;
     let preferredZipEndpoint = '';
     const writebackReads = new Set();
@@ -242,9 +239,18 @@
 
     const zipSnapshot = await fetchProjectZipSnapshot(params);
     if (zipSnapshot.ok && zipSnapshot.files.length) {
+      const skipped = [...(zipSnapshot.skipped || [])];
+      const overlays = [...(lightweightSnapshot?.files || [])];
+      for (let index = 0; index < overlays.length; index++) {
+        if (overlays[index].source !== 'active-editor') continue;
+        const captured = await readActiveEditorOverlay(overlays[index].path, zipSnapshot.files);
+        skipped.push(...captured.skipped);
+        overlays.splice(index, 1, ...captured.files);
+        if (!captured.files.length) index--;
+      }
       const mergedFiles = mergeSnapshotFiles(
         zipSnapshot.files,
-        filterZipSnapshotOverlayFiles(zipSnapshot.files, lightweightSnapshot?.files || [], zipSnapshot.skipped)
+        filterZipSnapshotOverlayFiles(zipSnapshot.files, overlays, skipped)
       );
       const files = filterRequestedSnapshotFiles(mergedFiles, params, activePath);
       const requestedPathsComplete = params.restrictToRequestedPathsOnly === true
@@ -261,7 +267,7 @@
           contentComplete: !(zipSnapshot.skipped || []).length,
           requestedPathsComplete,
           method: 'overleaf-zip',
-          skipped: zipSnapshot.skipped || [],
+          skipped,
           diagnostics: {
             zipEndpoint: zipSnapshot.endpoint,
             zipTiming: zipSnapshot.diagnostics,
@@ -332,7 +338,7 @@
     for (const filePath of projectPaths) {
       if (ambiguousPaths.has(filePath)) continue;
       if (filePath === snapshotActivePath) {
-        const ready = await waitForActiveEditorText(filePath, 5000);
+        const ready = await waitForActiveEditorText(filePath, 5000, { allowEmpty: true });
         if (!ready.ok) {
           skipped.push({
             path: filePath,
@@ -386,7 +392,8 @@
 
       await waitForActiveFile(filePath, 5000);
       const ready = await waitForActiveEditorText(filePath, 7000, {
-        notSignature: previousSignature
+        notSignature: previousSignature,
+        allowEmpty: true
       });
       if (!ready.ok) {
         skipped.push({
@@ -407,14 +414,6 @@
       await openFileByPath(activePath);
       await waitForActiveFile(activePath, 5000);
       await waitForActiveEditorText(activePath, 5000);
-    }
-
-    if (snapshotActivePath && !ambiguousPaths.has(snapshotActivePath) && !files.length && (!lightweightOnly || params.allowZipFallback === false)) {
-      files.push({
-        path: snapshotActivePath,
-        content: readActiveEditorText(),
-        source: 'active-editor'
-      });
     }
 
     const requestedPathsComplete = isCompleteProjectSnapshot(files, projectPaths);
@@ -444,11 +443,11 @@
 
   async function buildZipOnlyProjectSnapshot(params = {}) {
     const activePath = getPassiveActiveFilePath();
-    // Capture read evidence together with the path/text before awaiting ZIP.
-    // A later editor identity cannot prove that an earlier empty read succeeded.
-    const activeOverlay = params.serverOnly === true ? [] : readActiveEditorOverlay(activePath);
-
     const zipSnapshot = await fetchProjectZipSnapshot(params);
+    const captured = params.serverOnly === true ? { files: [], skipped: [] }
+      : await readActiveEditorOverlay(activePath, zipSnapshot.ok ? zipSnapshot.files : null, { passive: true });
+    const activeOverlay = captured.files;
+    const skipped = [...(zipSnapshot.skipped || []), ...captured.skipped];
     if (zipSnapshot.ok && zipSnapshot.files.length) {
       const files = filterRequestedSnapshotFiles(
         mergeSnapshotFiles(zipSnapshot.files, filterZipSnapshotOverlayFiles(zipSnapshot.files, activeOverlay, zipSnapshot.skipped)),
@@ -469,7 +468,7 @@
           contentComplete: !(zipSnapshot.skipped || []).length,
           requestedPathsComplete,
           method: 'overleaf-zip',
-          skipped: zipSnapshot.skipped || [],
+          skipped,
           diagnostics: {
             zipEndpoint: zipSnapshot.endpoint,
             zipTiming: zipSnapshot.diagnostics,
@@ -494,7 +493,7 @@
           ? 'active-editor-zip-only-fallback'
           : 'zip-only-fallback-empty',
         contentComplete: false,
-        skipped: [...(zipSnapshot.skipped || []), {
+        skipped: [...skipped, {
           path: 'project.zip',
           reason: zipSnapshot.reason || 'ZIP file identities were incomplete'
         }],
@@ -531,32 +530,15 @@
     return (files || []).filter(file => requestedSet.has(file?.path));
   }
 
-  function readActiveEditorOverlay(activePath) {
-    if (!activePath) return [];
-    try {
-      const content = readActiveEditorText();
-      if (typeof content !== 'string') return [];
-      if (!content.trim()) {
-        // The legacy reader also returns '' when no surface exists. A readable
-        // identity must independently confirm blank text before it can erase ZIP.
-        const identity = deps.getActiveEditorIdentity?.();
-        let observed;
-        if (identity?.type === 'codemirror-view' && typeof identity.doc?.toString === 'function') {
-          observed = identity.doc.toString();
-        } else if (identity?.type === 'textarea') {
-          observed = identity.node?.value;
-        } else if (identity?.type === 'contenteditable') {
-          const node = identity.node;
-          if (typeof node?.innerText === 'string' || typeof node?.textContent === 'string') {
-            observed = node.innerText || node.textContent || '';
-          }
-        }
-        if (typeof observed !== 'string' || observed !== content) return [];
-      } else if (!window.CodexOverleafProjectFiles.isUsableProjectFileContent(content)) return [];
-      return [{ path: activePath, content, source: 'active-editor', kind: 'text' }];
-    } catch (_error) {
-      return [];
-    }
+  async function readActiveEditorOverlay(activePath, referenceFiles, options = {}) {
+    if (!activePath) return { files: [], skipped: [] };
+    const references = referenceFiles ? new Map(referenceFiles
+      .filter(file => file.kind !== 'binary' && typeof file.content === 'string')
+      .map(file => [file.path, file.content])) : null;
+    const ready = await waitForActiveEditorText(activePath, 5000, { ...options, allowEmpty: true, references });
+    return ready.ok
+      ? { files: [{ path: activePath, content: ready.text, source: 'active-editor', kind: 'text' }], skipped: [] }
+      : { files: [], skipped: [{ path: activePath, reason: ready.code || ready.reason }] };
   }
 
   function mergeSnapshotFiles(primaryFiles = [], overrideFiles = []) {

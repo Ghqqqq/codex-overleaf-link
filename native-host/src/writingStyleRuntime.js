@@ -374,7 +374,7 @@ async function build({ params, env, signal, execute, providerLaunch, onControlRe
       reasoningEffort: params.reasoningEffort || '', speedTier: params.speedTier || 'standard',
       sandboxMode: 'read-only', approvalPolicy: 'never',
       loadCodexLocalSkills: false, loadCodexOverleafSkills: false,
-      disableCodexOverleafSkillIds: ['annotated-rewrite', 'parallel-subagents'],
+      disableCodexOverleafSkillIds: ['annotated-rewrite', 'parallel-subagents', 'reviewer-response'],
       skillInvocation: null, projectLocalSkills: null, providerLaunch, env, signal,
       onControlReady, emit: () => {}
     };

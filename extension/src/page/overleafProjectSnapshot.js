@@ -16,17 +16,38 @@
     const snapshotCache = createKeyedCache();
     const fileListCache = createKeyedCache();
 
+    function editorCaptureKey() {
+      const identity = deps.getActiveEditorIdentity?.();
+      return { path: deps.getActiveFilePath?.(), view: identity?.view || identity?.node, doc: identity?.doc };
+    }
+
+    function sameEditorCapture(left, right) {
+      return Boolean(left?.path && left.view) && left.path === right.path && left.view === right.view && left.doc === right.doc;
+    }
+
+    function hasEditorOverlay(snapshot) {
+      // Navigation reads carry the open method as their source. Only ZIP and
+      // document fetches are independent of the mounted editor.
+      return snapshot?.files?.some(file => typeof file.content === 'string'
+        && !/^overleaf-(?:zip|doc-fetch)/.test(file.source || ''));
+    }
+
     async function getProjectSnapshot(params = {}) {
       const cacheKey = getSnapshotCacheKey(params);
       const maxAgeMs = normalizeSnapshotMaxAge(params.maxAgeMs);
       const now = Date.now();
       const cacheEntry = snapshotCache.entries.get(cacheKey);
+      const captureKey = editorCaptureKey();
 
-      if (!params.force && cacheEntry?.pending) {
-        return cacheEntry.pending;
+      if (!params.force && cacheEntry?.pending
+        && (params.serverOnly === true || sameEditorCapture(cacheEntry.pendingCaptureKey, captureKey))) {
+        const snapshot = await cacheEntry.pending;
+        if (!hasEditorOverlay(snapshot) || sameEditorCapture(cacheEntry.pendingCaptureKey, editorCaptureKey())) return snapshot;
+        return getProjectSnapshot({ ...params, force: true });
       }
 
-      if (!params.force && cacheEntry?.value && now - cacheEntry.capturedAt <= maxAgeMs) {
+      if (!params.force && cacheEntry?.value && now - cacheEntry.capturedAt <= maxAgeMs
+        && (!hasEditorOverlay(cacheEntry.value) || sameEditorCapture(cacheEntry.captureKey, captureKey))) {
         return withSnapshotCacheMetadata(cacheEntry.value, 'memory', cacheEntry.capturedAt);
       }
 
@@ -37,6 +58,7 @@
           if (currentEntry?.pending === pending) {
             snapshotCache.entries.set(cacheKey, {
               value: snapshot,
+              captureKey,
               capturedAt,
               pending: null
             });
@@ -52,6 +74,8 @@
 
       snapshotCache.entries.set(cacheKey, {
         value: cacheEntry?.value || null,
+        captureKey: cacheEntry?.captureKey,
+        pendingCaptureKey: captureKey,
         capturedAt: cacheEntry?.capturedAt || 0,
         pending
       });

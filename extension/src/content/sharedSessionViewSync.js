@@ -9,7 +9,11 @@
 
   function applySnapshot(options, sessions) {
     const previous = options.getState(), scope = options.getScope();
-    const next = options.normalize({ ...previous, sessions }, { restoreRunningRuns: false });
+    const input = sessions.length ? { ...previous, sessions } : {
+      ...previous, session: null, sessions: [], runs: [], activeSessionId: '',
+      task: '', focusFiles: [], selectionContext: null, composerAttachments: []
+    };
+    const next = options.normalize(input, { restoreRunningRuns: false });
     const unchangedSnapshot = JSON.stringify(next);
     options.setState(next);
     try {

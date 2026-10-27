@@ -838,7 +838,7 @@
         await StorageDb.putRecord('sessions', StorageDb.buildSessionRecord(Object.assign({}, record, {
           title: next.title,
           titleSource: next.titleSource
-        })));
+        }), { preserveRunActionPayload: true }));
       }
     } catch (_error) { /* swallow */ }
     await refreshDashboardView();

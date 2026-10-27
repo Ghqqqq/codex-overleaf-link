@@ -403,6 +403,16 @@
   vertical-align: top;
 }
 
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .run-markdown-table :is(th, td) {
+  overflow-wrap: break-word;
+  min-width: 4em;
+}
+
+#codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .run-markdown-table .codex-line-reference {
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
 #codex-overleaf-panel :is(.run-stream-text, .run-final-answer) .run-markdown-table th {
   background: var(--tl-surface-2);
   color: var(--tl-fg-1);
@@ -1813,7 +1823,6 @@
 #codex-overleaf-panel .codex-diagnostics-checks {
   display: grid;
   gap: 0;
-  margin-top: 4px;
 }
 
 #codex-overleaf-panel .codex-diagnostics-check {
@@ -1827,7 +1836,7 @@
 
 #codex-overleaf-panel .codex-diagnostics-check > summary {
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) 10px;
+  grid-template-columns: 8px minmax(0, 1fr) 10px;
   gap: 8px;
   align-items: center;
   padding: 10px 0;
@@ -1852,37 +1861,39 @@
   transform: rotate(45deg);
 }
 
+#codex-overleaf-panel .codex-diagnostics-check-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tl-fg-4);
+}
+
+#codex-overleaf-panel .codex-diagnostics-check[data-status="ok"] .codex-diagnostics-check-dot { background: var(--tl-ok); }
+#codex-overleaf-panel .codex-diagnostics-check[data-status="warn"] .codex-diagnostics-check-dot { background: var(--tl-review); }
+#codex-overleaf-panel .codex-diagnostics-check[data-status="fail"] .codex-diagnostics-check-dot { background: var(--tl-fail); }
+
 #codex-overleaf-panel .codex-diagnostics-check-text {
-  margin: 0 0 10px 24px;
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px 16px;
 }
-
-#codex-overleaf-panel .codex-diagnostics-check-glyph::before {
-  content: "·";
-  color: var(--tl-fg-4);
-  font-weight: 700;
-}
-
-#codex-overleaf-panel .codex-diagnostics-check[data-status="ok"] .codex-diagnostics-check-glyph::before { content: "✓"; color: var(--tl-ok); }
-#codex-overleaf-panel .codex-diagnostics-check[data-status="warn"] .codex-diagnostics-check-glyph::before { content: "!"; color: var(--tl-review); }
-#codex-overleaf-panel .codex-diagnostics-check[data-status="fail"] .codex-diagnostics-check-glyph::before { content: "✕"; color: var(--tl-fail); }
 
 #codex-overleaf-panel .codex-diagnostics-check-title {
   color: var(--tl-fg-1);
   font-size: var(--tl-text-sm, 12px);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 #codex-overleaf-panel .codex-diagnostics-check-summary {
-  color: var(--tl-fg-3);
-  font-size: var(--tl-text-xs, 11px);
-  line-height: 1.4;
+  color: var(--tl-fg-2);
+  font-size: var(--tl-text-sm, 12px);
+  line-height: 1.5;
 }
 
 #codex-overleaf-panel .codex-diagnostics-check-next {
-  color: var(--tl-accent);
-  font-size: var(--tl-text-xs, 11px);
-  line-height: 1.4;
-  margin-top: 2px;
+  color: var(--tl-fg-2);
+  font-size: var(--tl-text-sm, 12px);
+  line-height: 1.5;
 }
 
 #codex-overleaf-panel .codex-toast-region {
@@ -1975,7 +1986,7 @@
   border: 1px solid var(--tl-border-strong);
   border-radius: 6px;
   background: var(--tl-surface-2);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.38);
+  box-shadow: var(--tl-shadow-pop);
   padding: 6px;
 }
 
@@ -2042,7 +2053,7 @@
   border: 1px solid var(--tl-border-strong);
   border-radius: 8px;
   background: var(--tl-surface-1);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.48);
+  box-shadow: var(--tl-shadow-pop);
 }
 
 #codex-overleaf-panel .codex-diagnostics-menu::backdrop,
@@ -2057,14 +2068,6 @@
 
 #codex-overleaf-panel .codex-diagnostics-result[data-status="completed"] {
   border-color: var(--tl-border-strong);
-}
-
-#codex-overleaf-panel .codex-diagnostics-result[data-status="warning"] {
-  border-color: var(--tl-review);
-}
-
-#codex-overleaf-panel .codex-diagnostics-result[data-status="failed"] {
-  border-color: var(--tl-fail);
 }
 
 /* Only embedded settings replace the session view. The modal workbench keeps
@@ -2663,13 +2666,44 @@
 }
 
 #codex-overleaf-panel .codex-diagnostics-result-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   color: var(--tl-fg-1);
   font-size: var(--tl-text-base, 14px);
   font-weight: 650;
   line-height: 1.35;
 }
 
+#codex-overleaf-panel .codex-diagnostics-status-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  margin-top: calc((1.35em - 8px) / 2);
+  border-radius: 50%;
+  background: var(--tl-fg-4);
+}
+
+#codex-overleaf-panel .codex-diagnostics-result[data-status="completed"] .codex-diagnostics-status-dot { background: var(--tl-ok); }
+#codex-overleaf-panel .codex-diagnostics-result[data-status="warning"] .codex-diagnostics-status-dot { background: var(--tl-review); }
+#codex-overleaf-panel .codex-diagnostics-result[data-status="failed"] .codex-diagnostics-status-dot { background: var(--tl-fail); }
+#codex-overleaf-panel .codex-diagnostics-result[data-status="running"] .codex-diagnostics-status-dot { animation: codex-diagnostics-pulse 1.2s ease-in-out infinite; }
+
+@keyframes codex-diagnostics-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #codex-overleaf-panel .codex-diagnostics-result[data-status="running"] .codex-diagnostics-status-dot {
+    animation: none;
+  }
+}
+
 #codex-overleaf-panel .codex-diagnostics-result-subtitle {
+  text-wrap: pretty;
+  margin-left: 16px;
   margin-top: 2px;
   color: var(--tl-fg-3);
   font-size: var(--tl-text-xs, 11px);
@@ -2707,69 +2741,127 @@
 }
 
 #codex-overleaf-panel .codex-diagnostics-result-body {
-  padding: 10px 12px 12px;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
   color: var(--tl-fg-2);
   font-size: var(--tl-text-sm, 12px);
-  line-height: 1.45;
+  line-height: 1.5;
+  text-wrap: pretty;
 }
 
-#codex-overleaf-panel .codex-diagnostics-result-body p {
-  margin: 0 0 8px;
+#codex-overleaf-panel .codex-diagnostics-result-body > * {
+  margin: 0;
 }
 
-#codex-overleaf-panel .codex-diagnostics-result-body ul {
-  margin: 8px 0;
-  padding-left: 18px;
+#codex-overleaf-panel .codex-diagnostics-result[data-status="running"] .codex-diagnostics-summary { color: var(--tl-fg-3); }
+
+#codex-overleaf-panel .codex-diagnostics-facts {
+  display: grid;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  column-gap: 16px;
+  row-gap: 6px;
 }
 
-#codex-overleaf-panel .codex-diagnostics-result-body li {
-  margin: 4px 0;
+#codex-overleaf-panel .codex-diagnostics-facts dt {
+  color: var(--tl-fg-3);
+  overflow-wrap: normal;
+}
+
+#codex-overleaf-panel .codex-diagnostics-facts dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--tl-fg-1);
+}
+
+#codex-overleaf-panel .codex-diagnostics-facts dd[data-tone="warn"] { color: var(--tl-review); }
+#codex-overleaf-panel .codex-diagnostics-facts dd[data-tone="fail"] { color: var(--tl-fail); }
+
+#codex-overleaf-panel .codex-diagnostics-notes {
+  display: grid;
+  gap: 4px;
+  padding: 0;
+  list-style: none;
+}
+
+#codex-overleaf-panel .codex-diagnostics-notes li {
+  position: relative;
+  padding-left: 12px;
+}
+
+#codex-overleaf-panel .codex-diagnostics-notes li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: calc(0.75em - 2px);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--tl-fg-4);
 }
 
 #codex-overleaf-panel .codex-diagnostics-next-step {
-  color: var(--tl-accent);
+  color: var(--tl-fg-2);
+}
+
+#codex-overleaf-panel .codex-diagnostics-next-label {
+  color: var(--tl-fg-1);
+  font-weight: 600;
 }
 
 #codex-overleaf-panel .codex-install-command {
-  margin-top: 10px;
-  padding: 9px;
-  border: 1px solid var(--tl-border-strong);
-  border-radius: 7px;
-  background: var(--tl-surface-0);
+  display: grid;
+  gap: 6px;
 }
 
-#codex-overleaf-panel .codex-diagnostics-result[data-status="failed"] .codex-install-command {
-  border-color: var(--tl-review);
+#codex-overleaf-panel .codex-install-command-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 #codex-overleaf-panel .codex-install-command-label {
-  margin-bottom: 6px;
   color: var(--tl-fg-3);
   font-size: var(--tl-text-xs, 11px);
+}
+
+#codex-overleaf-panel .codex-install-command button {
+  flex: 0 0 auto;
+  width: auto;
+  height: 22px;
+  margin: 0;
+  padding: 0 8px;
+  border: 1px solid var(--tl-border-strong);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--tl-fg-1);
+  font-size: var(--tl-text-xs, 11px);
+  line-height: 20px;
+  cursor: pointer;
+}
+
+#codex-overleaf-panel .codex-install-command button:hover {
+  background: var(--tl-hover);
+}
+
+#codex-overleaf-panel .codex-install-command button:focus-visible {
+  outline: 2px solid var(--tl-accent);
+  outline-offset: 2px;
 }
 
 #codex-overleaf-panel .codex-install-command code {
   display: block;
   overflow: auto;
   max-height: 90px;
-  padding: 7px;
+  padding: 8px 10px;
   border-radius: 6px;
   background: var(--tl-surface-2);
-  color: var(--tl-accent);
+  color: var(--tl-fg-1);
   white-space: pre-wrap;
-  word-break: break-word;
-  font: var(--tl-text-xs, 11px)/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-
-#codex-overleaf-panel .codex-install-command button {
-  width: 100%;
-  margin-top: 8px;
-  border: 1px solid var(--tl-ok);
-  border-radius: 6px;
-  background: var(--tl-ok-wash);
-  color: var(--tl-ok);
-  padding: 6px 8px;
-  font-size: var(--tl-text-sm, 12px);
+  word-break: normal;
+  overflow-wrap: anywhere;
+  font: var(--tl-text-xs, 11px)/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 #codex-overleaf-panel .codex-diagnostics-technical {
@@ -2782,9 +2874,39 @@
 }
 
 #codex-overleaf-panel .codex-diagnostics-technical summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
+  list-style: none;
   color: var(--tl-fg-3);
   font-size: var(--tl-text-xs, 11px);
+}
+
+#codex-overleaf-panel .codex-diagnostics-technical summary::-webkit-details-marker {
+  display: none;
+}
+
+#codex-overleaf-panel .codex-diagnostics-technical summary::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
+}
+
+#codex-overleaf-panel .codex-diagnostics-technical[open] summary::after {
+  transform: rotate(45deg);
+}
+
+#codex-overleaf-panel .codex-diagnostics-technical summary:hover {
+  color: var(--tl-fg-1);
+}
+
+#codex-overleaf-panel .codex-diagnostics-check .codex-diagnostics-technical {
+  border-top: 0;
+  padding: 0;
 }
 
 #codex-overleaf-panel .codex-diagnostics-technical pre {
@@ -3112,6 +3234,7 @@
    dark/light/auto). The whole panel reads these tokens so a theme is just a
    value swap — no selector depends on the literals. */
 #codex-overleaf-panel {
+  --tl-shadow-pop: 0 14px 34px rgba(0, 0, 0, 0.48);
   --tl-fg-1: #e4e4e4;   /* primary prose / answer / strong labels */
   --tl-fg-2: #b7b7b7;   /* body text / activity titles / controls */
   --tl-fg-3: #8a8a8a;   /* meta / summaries / captions */
@@ -3157,6 +3280,7 @@
    light via prefers-color-scheme). Dark needs no override (it is the baseline
    above). State colors are darkened for AA contrast on light surfaces. */
 #codex-overleaf-panel[data-theme="light"] {
+  --tl-shadow-pop: 0 12px 32px rgba(31, 35, 40, 0.14), 0 2px 6px rgba(31, 35, 40, 0.08);
   --tl-fg-1: #1f2328;
   --tl-fg-2: #3d4651;
   --tl-fg-3: #6a7280;

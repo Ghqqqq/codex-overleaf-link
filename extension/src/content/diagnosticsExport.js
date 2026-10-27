@@ -164,7 +164,7 @@
       },
       platform: nativeDiagnostics.platform,
       nativeEnvironment: nativeDiagnostics.nativeEnvironment,
-      mirror,
+      mirror: mirror ?? { status: 'unavailable' },
       auditLogs,
       run: activeRecord?.runProjectId === projectId && matchesAccount(activeRecord, currentRunView?.runAccountScopeId)
         ? activeRecord : recentRuns[0] || {},

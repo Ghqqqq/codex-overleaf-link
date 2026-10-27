@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { getHomeDir } = require('./nativeHostPlatform');
 const { assertProjectPathsForPlatform } = require('./projectPathPlatform');
+const { assessDocumentProvenance } = require('../../extension/src/shared/staleGuard');
 
 const BASELINE_FILE = 'baseline.json';
 const MAX_BINARY_FILE_BYTES = 10 * 1024 * 1024;
@@ -813,6 +814,14 @@ async function applyFileOverlays({ projectId, overlays, rootDir }) {
   const baseline = readBaseline(mirror.baselinePath);
   const filesByPath = new Map((baseline.files || []).map(f => [f.path, f]));
   const unreadPaths = new Set((baseline.unreadFiles || []).map(file => file.path));
+  const references = baselineTextReferences(baseline);
+  // Validate the entire request against the unchanged baseline before any file
+  // or baseline write. An earlier overlay cannot hide a later misattribution.
+  for (const overlay of overlays || []) {
+    if (!overlay?.path || typeof overlay.content !== 'string') continue;
+    const normalizedPath = normalizeRelativePath(overlay.path);
+    if (!unreadPaths.has(normalizedPath)) assertDocumentProvenance(normalizedPath, overlay.content, references);
+  }
 
   for (const overlay of overlays || []) {
     if (!overlay?.path || typeof overlay.content !== 'string') {
@@ -838,6 +847,21 @@ async function applyFileOverlays({ projectId, overlays, rootDir }) {
     ...baseline,
     files: Array.from(filesByPath.values())
   });
+}
+
+function baselineTextReferences(baseline) {
+  return new Map((baseline.files || []).filter(file => file.kind === 'text' && typeof file.content === 'string')
+    .map(file => [file.path, file.content]));
+}
+
+function assertDocumentProvenance(path, text, references) {
+  const result = assessDocumentProvenance({ path, text, references });
+  if (result.ok) return;
+  const error = new Error('Overleaf was still switching files, so this file was not used. Try again.');
+  error.code = result.code;
+  error.path = path;
+  error.matchedPath = result.matchedPath;
+  throw error;
 }
 
 // v1.8.0: after a VERIFIED writeback, the workspace already holds the exact
@@ -932,6 +956,13 @@ async function patchMirrorFiles({ projectId, files, rootDir, source = 'ot' }) {
   let lastOtPatchAt = baseline.lastOtPatchAt || '';
   let lastOtErrorCode = '';
   let patchBatchAt = '';
+  const references = baselineTextReferences(baseline);
+  for (const patch of Array.isArray(files) ? files : []) {
+    const normalized = normalizePatchPath(patch, mirror.workspacePath);
+    if (normalized.ok && baselineByPath.get(normalized.path)?.kind === 'text' && typeof patch?.nextContent === 'string') {
+      assertDocumentProvenance(normalized.path, patch.nextContent, references);
+    }
+  }
 
   for (const patch of Array.isArray(files) ? files : []) {
     const normalized = normalizePatchPath(patch, mirror.workspacePath);

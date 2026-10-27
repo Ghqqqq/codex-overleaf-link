@@ -182,11 +182,18 @@
     const details = root.querySelector('[data-diagnostics-result-details]');
     const scroll = root.querySelector('.codex-diagnostics-result-scroll');
     const open = details?.open, scrollTop = scroll?.scrollTop;
-    const checks = Array.from(root.querySelectorAll('.codex-diagnostics-check'), node => node.open);
+    const checks = Array.from(root.querySelectorAll('.codex-diagnostics-check'), node => ({
+      open: node.open,
+      technicalOpen: node.querySelector('.codex-diagnostics-technical')?.open
+    }));
     showResult(instance, result);
     if (details) details.open = open;
     root.querySelectorAll('.codex-diagnostics-check').forEach((node, index) => {
-      if (index < checks.length) node.open = checks[index];
+      if (index < checks.length) {
+        node.open = checks[index].open;
+        const technical = node.querySelector('.codex-diagnostics-technical');
+        if (technical) technical.open = checks[index].technicalOpen;
+      }
     });
     if (scroll) scroll.scrollTop = scrollTop;
   }
@@ -203,45 +210,48 @@
     root.hidden = false;
     root.dataset.status = result.status || 'info';
     root.setAttribute('aria-label', result.title || t(instance, 'diagnosticsResult'));
-    root.querySelector('[data-diagnostics-result-title]').textContent = result.title || t(instance, 'diagnosticsResult');
+    const titleNode = root.querySelector('[data-diagnostics-result-title]');
+    const dot = document.createElement('span');
+    dot.className = 'codex-diagnostics-status-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    const titleText = document.createElement('span');
+    titleText.className = 'codex-diagnostics-result-title-text';
+    titleText.textContent = result.title || t(instance, 'diagnosticsResult');
+    titleNode.replaceChildren(dot, titleText);
     root.querySelector('[data-diagnostics-result-subtitle]').textContent = result.subtitle || '';
 
     const body = root.querySelector('[data-diagnostics-result-body]');
     body.textContent = '';
-    if (result.summary) {
-      appendParagraph(body, result.summary);
+    const facts = Array.isArray(result.facts) ? result.facts.filter(fact => fact?.label) : [];
+    const notes = [
+      ...(Array.isArray(result.notes) ? result.notes : []),
+      ...(Array.isArray(result.bullets) ? result.bullets : [])
+    ].filter(Boolean);
+    const hasChecks = Array.isArray(result.checks) && result.checks.length > 0;
+    if (result.summary && !(result.status === 'completed' && facts.length)) {
+      appendParagraph(body, result.summary, 'codex-diagnostics-summary');
     }
     // Aggregated health report: one status row per check (Run all checks).
-    if (Array.isArray(result.checks) && result.checks.length) {
-      renderCheckRows(body, result.checks);
-    } else if (!result.summary) {
+    if (hasChecks) {
+      renderCheckRows(instance, body, result.checks);
+    } else if (!result.summary && !facts.length && !notes.length) {
       appendParagraph(body, t(instance, 'diagnosticsNoResult'));
     }
-    if (Array.isArray(result.bullets) && result.bullets.length) {
-      const list = document.createElement('ul');
-      for (const item of result.bullets) {
-        const li = document.createElement('li');
-        li.textContent = item;
-        list.append(li);
-      }
-      body.append(list);
+    if (facts.length) {
+      renderFacts(body, facts);
+    }
+    if (notes.length) {
+      renderNotes(body, notes);
     }
     if (result.nextStep) {
-      const next = document.createElement('p');
-      next.className = 'codex-diagnostics-next-step';
-      next.textContent = `${t(instance, 'nextStepPrefix')}${result.nextStep}`;
-      body.append(next);
+      appendNextStep(instance, body, result.nextStep, 'p', 'codex-diagnostics-next-step');
     }
     if (result.installCommand) {
       renderInstallCommand(instance, body, result.installCommand);
     }
 
     const details = root.querySelector('[data-diagnostics-result-details]');
-    const technical = root.querySelector('[data-diagnostics-result-technical]');
-    const technicalText = String(result.technical || '').trim();
-    details.open = false;
-    details.hidden = !technicalText;
-    technical.textContent = technicalText;
+    renderTechnicalDetails(details, result.technical);
     closeMenu(instance);
     openFloating(instance, root, 400);
     if (wasHidden) root.querySelector('[data-diagnostics-result-close]')?.focus({ preventScroll: true });
@@ -324,14 +334,14 @@
     const wrap = document.createElement('div');
     wrap.className = 'codex-install-command';
 
-    const label = document.createElement('div');
+    const head = document.createElement('div');
+    head.className = 'codex-install-command-head';
+    const label = document.createElement('span');
     label.className = 'codex-install-command-label';
     label.textContent = t(instance, 'runInTerminal');
-    wrap.append(label);
 
     const code = document.createElement('code');
     code.textContent = command;
-    wrap.append(code);
 
     const copyButton = document.createElement('button');
     copyButton.type = 'button';
@@ -343,18 +353,86 @@
         copyButton.textContent = t(instance, 'copyInstallCommand');
       }, 1400);
     });
-    wrap.append(copyButton);
+    head.append(label, copyButton);
+    wrap.append(head, code);
 
     container.append(wrap);
   }
 
-  function appendParagraph(container, text) {
+  function appendParagraph(container, text, className) {
     const paragraph = document.createElement('p');
+    if (className) {
+      paragraph.className = className;
+    }
     paragraph.textContent = text;
     container.append(paragraph);
   }
 
-  // Map a result status to a coarse health bucket used for the row glyph + the
+  function appendNextStep(instance, container, text, tagName, className) {
+    const next = document.createElement(tagName);
+    next.className = className;
+    const label = document.createElement('span');
+    label.className = 'codex-diagnostics-next-label';
+    label.textContent = t(instance, 'nextStepPrefix');
+    next.append(label, document.createTextNode(text));
+    container.append(next);
+  }
+
+  // Facts pair a label and value, with optional tone and path presentation.
+  function renderFacts(container, facts) {
+    const list = document.createElement('dl');
+    list.className = 'codex-diagnostics-facts';
+    for (const fact of facts) {
+      const term = document.createElement('dt');
+      term.textContent = fact.label;
+      const value = document.createElement('dd');
+      const text = String(fact.value ?? '');
+      if (fact.kind === 'path') {
+        value.textContent = shortenPath(text);
+        value.title = text;
+      } else {
+        value.textContent = text;
+      }
+      if (fact.tone) {
+        value.dataset.tone = fact.tone;
+      }
+      list.append(term, value);
+    }
+    container.append(list);
+  }
+
+  // Shorten only the display; the full path stays in title and technical details.
+  function shortenPath(path) {
+    if (path.length <= 36) {
+      return path;
+    }
+    const parts = path.split('/');
+    if (parts.length < 5) {
+      return path;
+    }
+    const short = `${parts.slice(0, 3).join('/')}/…/${parts[parts.length - 1]}`;
+    return short.length < path.length ? short : path;
+  }
+
+  function renderNotes(container, notes) {
+    const list = document.createElement('ul');
+    list.className = 'codex-diagnostics-notes';
+    for (const note of notes) {
+      const item = document.createElement('li');
+      item.textContent = note;
+      list.append(item);
+    }
+    container.append(list);
+  }
+
+  function renderTechnicalDetails(details, value) {
+    const text = String(value || '').trim();
+    details.open = false;
+    details.hidden = !text;
+    details.querySelector('pre').textContent = text;
+  }
+
+  // Map a result status to a coarse health bucket used for the row dot + the
   // overall dot. 'completed' reads as a pass; anything not-ok is attention.
   function healthBucket(status) {
     if (status === 'completed' || status === 'ok') return 'ok';
@@ -363,10 +441,10 @@
     return 'info';
   }
 
-  // Render the aggregated report as one scannable row per check: a status glyph
+  // Render the aggregated report as one scannable row per check: a status dot
   // (via CSS [data-status]), a plain-language title + summary, and an optional
-  // actionable next step.
-  function renderCheckRows(container, checks) {
+  // actionable next step, install command and technical evidence.
+  function renderCheckRows(instance, container, checks) {
     const list = document.createElement('div');
     list.className = 'codex-diagnostics-checks';
     for (const check of checks) {
@@ -377,16 +455,16 @@
       row.open = row.dataset.status === 'warn' || row.dataset.status === 'fail';
       const heading = document.createElement('summary');
 
-      const glyph = document.createElement('span');
-      glyph.className = 'codex-diagnostics-check-glyph';
-      glyph.setAttribute('aria-hidden', 'true');
+      const dot = document.createElement('span');
+      dot.className = 'codex-diagnostics-check-dot';
+      dot.setAttribute('aria-hidden', 'true');
 
       const textWrap = document.createElement('div');
       textWrap.className = 'codex-diagnostics-check-text';
       const title = document.createElement('div');
       title.className = 'codex-diagnostics-check-title';
       title.textContent = check.title || '';
-      heading.append(glyph, title);
+      heading.append(dot, title);
       if (check.summary) {
         const summary = document.createElement('div');
         summary.className = 'codex-diagnostics-check-summary';
@@ -394,10 +472,19 @@
         textWrap.append(summary);
       }
       if (check.nextStep) {
-        const next = document.createElement('div');
-        next.className = 'codex-diagnostics-check-next';
-        next.textContent = `→ ${check.nextStep}`;
-        textWrap.append(next);
+        appendNextStep(instance, textWrap, check.nextStep, 'div', 'codex-diagnostics-check-next');
+      }
+      if (check.installCommand) {
+        renderInstallCommand(instance, textWrap, check.installCommand);
+      }
+      if (check.technical) {
+        const details = document.createElement('details');
+        details.className = 'codex-diagnostics-technical';
+        const summary = document.createElement('summary');
+        summary.textContent = t(instance, 'technicalDetails');
+        details.append(summary, document.createElement('pre'));
+        renderTechnicalDetails(details, check.technical);
+        textWrap.append(details);
       }
 
       row.append(heading, textWrap);

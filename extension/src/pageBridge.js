@@ -97,6 +97,8 @@
   projectSnapshotBridge = window.CodexOverleafProjectSnapshot.create({
     buildProjectFileList: snapshotRouter.buildProjectFileList,
     buildProjectSnapshot: snapshotRouter.buildProjectSnapshot,
+    getActiveFilePath,
+    getActiveEditorIdentity,
     getProjectId,
     normalizePath: normalizeSafeProjectPath,
     window

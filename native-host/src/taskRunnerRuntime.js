@@ -50,7 +50,7 @@ const activeRunEntries = new Map();
 // Overleaf tab was reloaded — the requestId lived in content-side JS state
 // and is gone, but the native-host-side controller is still running).
 const activeRunByProject = new Map();
-const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result', 'codex_context_limit', 'codex_process_stop_unconfirmed', 'selected_context_unresolved', 'codex_local_skill_unavailable']);
+const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result', 'codex_context_limit', 'codex_process_stop_unconfirmed', 'selected_context_unresolved', 'codex_local_skill_unavailable', 'document_identity_mismatch']);
 
 async function handleRequest(request, env = process.env, emit = () => {}) {
   if (!request || typeof request !== 'object') {
@@ -769,7 +769,7 @@ async function handleMirrorPatchFiles(request, env) {
     });
     return okResponse(request.id, result);
   } catch (error) {
-    return errorResponse(request.id, 'mirror_patch_files_failed', error.message);
+    return errorResponse(request.id, error.code === 'document_identity_mismatch' ? error.code : 'mirror_patch_files_failed', error.message);
   } finally {
     releaseProjectLock(projectKey, lockToken);
   }

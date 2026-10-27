@@ -266,6 +266,11 @@
         fallbackUserMessage: 'The file changed while Codex was working.',
         fallbackNextAction: 'Review the current file, then rerun the task.'
       },
+      document_identity_mismatch: {
+        stage: 'preflight', severity: 'blocked', defaultRetryable: true,
+        fallbackUserMessage: 'Overleaf was still switching files, so this file was not used. Try again.',
+        fallbackNextAction: 'Wait for Overleaf to finish loading, then retry.'
+      },
       patch_anchor_not_found: {
         stage: 'preflight', severity: 'blocked', defaultRetryable: true,
         fallbackUserMessage: 'The edit anchor no longer matches current Overleaf content.',
@@ -451,6 +456,10 @@
     const trackedChangeCaptures = [];
     const safeBaseFiles = normalizeBaseFilesForSafety(options.baseFiles);
     const baseFileLookup = window.CodexOverleafStaleGuard?.buildBaseFileLookup(safeBaseFiles);
+    // Binary and unread entries are not independent empty-text references.
+    const provenanceReferences = new Map((Array.isArray(safeBaseFiles) ? safeBaseFiles : [])
+      .filter(file => file.kind !== 'binary' && typeof file.content === 'string')
+      .map(file => [file.path, file.content]));
     const baseBinaryFileLookup = buildBaseBinaryFileLookup(safeBaseFiles);
     // Recheck project identity between awaited operations and before each write.
     const runProjectId = typeof options.runProjectId === 'string' ? options.runProjectId : '';
@@ -490,7 +499,7 @@
     const deadlineFailure = () => Number.isFinite(options.deadlineAt) && now() >= options.deadlineAt
       ? { ok: false, code: 'writeback_deadline_exceeded', changedDocument: false,
         reason: 'The undo time budget expired before this operation could start.' } : null;
-    const editOptions = () => ({ baseFileLookup, runProjectId, deadlineAt: options.deadlineAt,
+    const editOptions = () => ({ baseFileLookup, provenanceReferences, runProjectId, deadlineAt: options.deadlineAt,
       reviewGuard: options.reviewGuard, reviewAwait: options.reviewAwait,
       recheckWriteProject: writeGuardSurface ? () => {
         const expired = options.reviewGuard?.() || deadlineFailure();
@@ -611,11 +620,22 @@
   const isUntouchedOpenFailure = result => result?.ok === false && result.failure?.code === 'target_file_open_failed'
     && result.failure.changedDocument === false;
 
+  function documentProvenance(filePath, text, references) {
+    return window.CodexOverleafStaleGuard?.assessDocumentProvenance?.({ path: filePath, text, references }) || { ok: true };
+  }
+
+  function documentMismatchResult(filePath, provenance) {
+    const failure = buildPageFailure('document_identity_mismatch', { file: filePath,
+      operationType: 'edit', changedDocument: false,
+      evidence: { matchedPath: provenance.matchedPath, writeStarted: false } });
+    return { ...provenance, reason: failure.userMessage, failure };
+  }
+
   async function applyEditOperation(operation, options = {}) {
     const reviewBlock = options.reviewGuard?.();
     if (reviewBlock) return reviewBlock;
     const currentPath = getActiveFilePath();
-    const editorReady = await awaitReview(options, () => ensureEditorReadyForOperation(operation, options.baseFileLookup, currentPath));
+    const editorReady = await awaitReview(options, () => ensureEditorReadyForOperation(operation, options.baseFileLookup, currentPath, options.provenanceReferences));
     if (!editorReady.ok) {
       return editorReady;
     }
@@ -745,7 +765,10 @@
     if (finalReviewBlock) return finalReviewBlock;
     // Read and dispatch synchronously against the same document. Navigation,
     // freshness polling and Undo mode/project checks can all have awaited.
-    if (getActiveFilePath() !== operation.path || readActiveEditorText() !== current) {
+    const dispatchText = readActiveEditorText();
+    const provenance = documentProvenance(operation.path, dispatchText, options.provenanceReferences);
+    if (!provenance.ok) return documentMismatchResult(operation.path, provenance);
+    if (getActiveFilePath() !== operation.path || dispatchText !== current) {
       const reason = 'The editor changed before the edit could be applied; the document was not overwritten.';
       return { ok: false, code: 'stale_source_changed', reason,
         failure: buildPageFailure('stale_source_changed', { file: operation.path,
@@ -897,7 +920,7 @@
     return hash.toString(16).padStart(8, '0');
   }
 
-  async function ensureEditorReadyForOperation(operation, baseFileLookup, initialActivePath) {
+  async function ensureEditorReadyForOperation(operation, baseFileLookup, initialActivePath, provenanceReferences) {
     if (!operation?.path) {
       return {
         ok: true,
@@ -912,6 +935,7 @@
     const currentText = readActiveEditorText();
     const previousEditorIdentity = getActiveEditorIdentity();
     const previousSignature = contentSignature(currentText);
+    const initialProvenance = documentProvenance(filePath, currentText, provenanceReferences);
 
     const opened = await openFileByPath(filePath, { force: initialActivePath === filePath });
     if (!opened.ok) {
@@ -957,6 +981,8 @@
 
     return waitForEditorContentForPath(filePath, previousEditorIdentity, baseFileLookup, 9000, {
       initialActivePath,
+      initialProvenance,
+      provenanceReferences,
       previousSignature,
       forceSettledOpen: true,
       openedMethod: opened.method || ''
@@ -969,6 +995,7 @@
     const minSettleMs = options.forceSettledOpen ? writebackOpenSettleMs : 0;
     let lastText = readActiveEditorText();
     let lastActivePath = getActiveFilePath();
+    let mismatch = null;
     while (Date.now() < deadline) {
       lastActivePath = getActiveFilePath();
       lastText = readActiveEditorText();
@@ -977,14 +1004,17 @@
       const settledLongEnough = Date.now() - startedAt >= minSettleMs;
       const contentChangedFromPrevious = !options.previousSignature
         || contentSignature(lastText) !== options.previousSignature;
+      const provenance = documentProvenance(filePath, lastText, options.provenanceReferences);
+      if (!provenance.ok) mismatch = provenance;
       // Confirm navigation independently of source freshness. A stale target
       // can be correctly open; identical baseline bytes alone cannot prove a
       // switch. Content movement remains the fallback for editor lifecycles
       // whose document identity cannot be observed reliably.
       const switchConfirmed = identityChanged
-        || options.initialActivePath === filePath
+        || (options.initialActivePath === filePath && Boolean(previousEditorIdentity)
+          && options.initialProvenance?.ok === true && provenance.ok)
         || (contentChangedFromPrevious && settledLongEnough);
-      if (activeFileMatches && switchConfirmed && settledLongEnough) {
+      if (activeFileMatches && switchConfirmed && settledLongEnough && provenance.ok) {
         return {
           ok: true,
           text: lastText
@@ -992,6 +1022,7 @@
       }
       await delay(100);
     }
+    if (mismatch) return documentMismatchResult(filePath, mismatch);
     // §9.1: if the active file ended up on a different document, this is
     // target_file_not_active; if the file did become active but the editor
     // document never settled, this is target_editor_not_ready.
