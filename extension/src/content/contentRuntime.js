@@ -7734,6 +7734,9 @@
       Object.assign(retryView, { root, events: root?.querySelector('[data-run-events]'),
         report: root?.querySelector('[data-run-report]'), status: root?.querySelector('[data-run-status]'),
         runProcess: root?.querySelector('[data-run-process]'), processLabel: root?.querySelector('[data-run-process-summary]') });
+      const pendingMirror = getPendingMirrorRefresh?.();
+      if (pendingMirror) await awaitRunStep(pendingMirror.catch(() => {}));
+      assertOwner();
       if (intent?.requestId) {
         const receipt = await callPageBridge('getWritebackReceipt', { requestId: intent.requestId, runProjectId: owner.projectId });
         if (receipt?.state === 'running') throw new Error(tx('The previous upload is still finishing. Try again shortly.', '上一轮上传仍在收尾，请稍后再试。'));

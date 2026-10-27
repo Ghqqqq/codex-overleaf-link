@@ -309,3 +309,98 @@ test('a successful save reply after Stop retains the written and saved report ev
   const knownSaved = Transcript.buildHumanCompletionReport({ saveVerification: { state: 'verified_saved' } });
   assert.equal(meta('saveState'), knownSaved.structured.meta.find(row => row.key === 'saveState').value);
 });
+
+test('retry mirror work retains an unanswered cancellation barrier and ignores its obsolete settlement', async () => {
+  const Controller = require('../extension/src/content/writebackController');
+  const Settlement = require('../extension/src/shared/writebackSettlement');
+  const tx = en => en;
+  const plan = require('../extension/src/content/writebackPlan').create({ tx, tr: key => key,
+    normalizeSafeProjectPath: require('../extension/src/shared/projectFiles').normalizeSafeProjectPath,
+    GovernanceRules: require('../extension/src/shared/governanceRules'), getGovernanceRulesForCurrentProject: () => ({}),
+    getAppliedEntries: value => value.applied || [], getSkippedEntries: value => value.skipped || [] });
+  const window = {};
+  require('node:vm').runInNewContext(require('node:fs').readFileSync(
+    require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window, Function });
+  const invalidationReply = deferred(), confirmReply = deferred(), confirmStarted = deferred(), newerSettled = deferred();
+  const view = { runProjectId: 'example', sessionId: 's', recordId: 'r' };
+  const run = { id: 'r', runProjectId: 'example' }, settlements = [];
+  const persistence = require('../extension/src/content/runSettlementPersistence').create({ writebackSettlement: Settlement,
+    findRunRecord: () => run, getCurrentProjectId: () => 'example', getCurrentRunView: () => view });
+  let attempt = 0;
+  const api = window.CodexOverleafWritebackOrchestrator.create({ ...plan, tx, tr: key => key, getLocale: () => 'en',
+    getState: () => ({ mode: 'auto', autoRecompile: false }), getCurrentRunView: () => view, getCurrentProjectId: () => 'example',
+    cleanFinalAnswer: value => value || '', getAssistantAnswerForCurrentRun: () => '',
+    writebackController: Controller, writebackSettlement: Settlement, compileAdapter: require('../extension/src/shared/compileAdapter'),
+    buildSyncApplyOperations: Controller.buildSyncApplyOperations, getAppliedOperationPaths: Controller.getAppliedOperationPaths,
+    getAppliedSyncChanges: Controller.getAppliedSyncChanges, getSkippedEntries: value => value.skipped || [],
+    hasApplyResultEntries: value => value.applied.length > 0, hasSkippedApplyOperations: () => false,
+    ensureReviewingBeforeWrite: async () => ({ ok: true }), appendRunEvent() {}, appendRunRecordEvent() {},
+    appendOperationsPreview() {}, appendApplyResult() {}, renderReadOnlyDiffReview() {}, appendCompletionReport() {},
+    appendChangeSummary: () => '', recordUndoFromApply: async () => {}, settleWritebackRecovery: async () => {}, resetContextProject() {},
+    assetTransferBroker: { async applyOperations({ operations }) {
+      attempt += 1;
+      return { ok: true, applied: operations.map(operation => ({ operation, result: { ok: true, verified: true, verifiedContent: 'after' } })), skipped: [] };
+    } },
+    async callPageBridge(method) {
+      if (method === 'waitForSaveState') {
+        if (attempt === 1) throw Object.assign(new Error('cancelled by the user'), { code: 'codex_cancelled' });
+        return { ok: true, state: 'verified_saved' };
+      }
+      assert.equal(method, 'invalidateProjectSnapshot');
+      return { ok: true };
+    },
+    async sendBackgroundNative({ method, params }) {
+      if (method === 'mirror.invalidate') {
+        await invalidationReply.promise;
+        return { ok: true, result: { invalidated: true } };
+      }
+      assert.equal(method, 'mirror.confirmWriteback');
+      confirmStarted.resolve();
+      await confirmReply.promise;
+      return { ok: true, result: { ok: true, confirmed: params.expectedFiles.map(file => ({ path: file.path, hash: file.sha256 })) } };
+    },
+    onMirrorRefreshSettled(result) {
+      persistence.settleMirrorRefresh(result);
+      settlements.push(result.state);
+      if (result.state === 'complete') newerSettled.resolve();
+    }
+  });
+  const change = path => ({ type: 'write', path, previousContent: 'before', content: 'after' });
+  const project = { id: 'example', files: ['main.tex', 'second.tex'].map(path => ({ path, content: 'before' })) };
+  let originalBarrier;
+  try {
+    await assert.rejects(api.applySyncChangesToOverleaf([change('main.tex')], project, { mode: 'auto', requireReviewing: false }), error => {
+      persistence.applyToCurrentRun(error.writebackOutcome.settlement);
+      return error.code === 'codex_cancelled';
+    });
+    originalBarrier = api.getPendingMirrorRefresh();
+    assert.ok(originalBarrier);
+    // Exercise the shared owner independently of the UI's retry admission wait.
+    const retry = await api.applySyncChangesToOverleaf([change('second.tex')], project,
+      { mode: 'auto', requireReviewing: false, autoRecompile: false, retryCreates: true });
+    persistence.applyToCurrentRun(retry.settlement);
+    await confirmStarted.promise;
+    confirmReply.resolve();
+    await newerSettled.promise;
+    await new Promise(resolve => setImmediate(resolve));
+    const combined = api.getPendingMirrorRefresh();
+    assert.ok(combined, 'finishing the retry cannot drop the older outstanding invalidation');
+    assert.notEqual(combined, originalBarrier);
+    let freshRunPassed = false;
+    const freshWait = combined.then(() => { freshRunPassed = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(freshRunPassed, false);
+    assert.equal(run.settlement.evidence.mirrored, 'complete');
+    invalidationReply.resolve();
+    await combined;
+    await freshWait;
+    assert.equal(run.settlement.evidence.mirrored, 'complete', 'the obsolete invalidation cannot settle the newer attempt');
+    assert.deepEqual(settlements, ['complete']);
+    assert.equal(api.getPendingMirrorRefresh(), null);
+  } finally {
+    invalidationReply.resolve();
+    confirmReply.resolve();
+    await originalBarrier;
+    await api.getPendingMirrorRefresh();
+  }
+});

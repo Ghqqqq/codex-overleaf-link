@@ -21,6 +21,7 @@
   let appendRunRecordEvent;
   // In-flight background mirror refresh (v1.7.5) — see the writeback path.
   let pendingMirrorRefresh = null;
+  const mirrorSettlementOwners = new Map();
   let appendChangeSummary;
   let appendCompletionReport;
   let appendOperationsPreview;
@@ -70,6 +71,30 @@
     return writebackSettlement?.settle instanceof Function
       ? writebackSettlement.settle(input)
       : null;
+  }
+
+  function trackWritebackMirror(work, target, onSettled) {
+    const key = JSON.stringify([target.runProjectId, target.sessionId, target.recordId]);
+    const owner = {};
+    mirrorSettlementOwners.set(key, owner);
+    const refresh = Promise.resolve(work).then(async state => {
+      if (mirrorSettlementOwners.get(key) !== owner) return state;
+      onSettled?.(state);
+      await onMirrorRefreshSettled?.({ ...target, state: state || 'not-attempted' });
+      return state;
+    }).finally(() => {
+      if (mirrorSettlementOwners.get(key) === owner) mirrorSettlementOwners.delete(key);
+    });
+    // Keep earlier work in the barrier even if this attempt finishes first or
+    // fails. Only the latest composed barrier may clear the shared slot.
+    const pending = Promise.allSettled([pendingMirrorRefresh, refresh]).then(([, result]) => {
+      if (result.status === 'rejected') throw result.reason;
+      return result.value;
+    }).finally(() => {
+      if (pendingMirrorRefresh === pending) pendingMirrorRefresh = null;
+    });
+    pendingMirrorRefresh = pending;
+    return pending;
   }
 
   function invalidateMirrorAfterUndo(runId, projectId, result = {}) {
@@ -433,16 +458,10 @@
         settlement: buildSettlement({ operations, applyResult: applied, saveVerification, mirror: { state: 'unknown' } }) };
       // Fence the Page cache now; an unanswered Native invalidation must retain
       // the mirror barrier without holding the cancelled run open.
-      const pending = invalidateWritebackMirror(saveTarget, { pageFirst: true })
-        .then(async state => {
+      trackWritebackMirror(invalidateWritebackMirror(saveTarget, { pageFirst: true }), saveTarget,
+        state => {
           error.writebackOutcome.settlement = buildSettlement({ operations, applyResult: applied, saveVerification, mirror: { state } });
-          await onMirrorRefreshSettled?.({ ...saveTarget, state });
-          return state;
-        })
-        .finally(() => {
-          if (pendingMirrorRefresh === pending) pendingMirrorRefresh = null;
         });
-      pendingMirrorRefresh = pending;
       try {
         await settleWritebackRecovery?.(applied, project, saveVerification, saveTarget, runRequireReviewing);
       } catch (recoveryError) {
@@ -462,24 +481,11 @@
     // pending promise is exposed so undoRun and the next runTask barrier on
     // it — a mirror.sync landing AFTER an undo would otherwise push the
     // pre-undo snapshot as the local baseline.
-    const mirrorSettlementTarget = saveTarget;
-    pendingMirrorRefresh = refreshProjectMirrorAfterWriteback(project, applied, saveVerification, { target: saveTarget, snapshot: confirmation.snapshot })
+    trackWritebackMirror(refreshProjectMirrorAfterWriteback(project, applied, saveVerification, { target: saveTarget, snapshot: confirmation.snapshot })
       .catch(async error => {
         appendRunRecordEvent(saveTarget.recordId, { kind: 'technical', title: 'Mirror refresh requires a fresh read', status: 'info', detail: { reason: error.message } });
         return invalidateWritebackMirror(saveTarget);
-      })
-      .then(state => {
-        if (typeof onMirrorRefreshSettled !== 'function') return;
-        return onMirrorRefreshSettled({
-          recordId: mirrorSettlementTarget?.recordId || '',
-          sessionId: mirrorSettlementTarget?.sessionId || '',
-          runProjectId: mirrorSettlementTarget?.runProjectId || '',
-          state: state || 'not-attempted'
-        });
-      })
-      .finally(() => {
-        pendingMirrorRefresh = null;
-      });
+      }), saveTarget);
     const compileSummary = appliedPaths.length
       ? await autoRecompileAfterWriteback(appliedPaths, saveVerification, {
         autoRecompile: options.autoRecompile,
