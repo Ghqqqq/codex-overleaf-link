@@ -15,7 +15,7 @@
     const maxPreviewDataUrlChars = Number(limits.maxPreviewDataUrlChars) || 768 * 1024;
 
     let attachments = [];
-    const pendingAttachmentKeys = new Set();
+    const pendingAttachmentKeys = new Map();
     let pendingAttachmentBytes = 0;
     let attachmentGeneration = 0;
     let attachmentRevision = 0;
@@ -88,8 +88,15 @@
             continue;
           }
           attachmentRevision += 1;
-          pendingAttachmentKeys.add(dedupeKey);
+          pendingAttachmentKeys.set(dedupeKey, {
+            name: normalizeAttachmentName(file.name),
+            mimeType: String(file.type || ''),
+            size: fileSize,
+            loading: true
+          });
           pendingAttachmentBytes += fileSize;
+          renderComposerAttachments();
+          onChange();
           try {
             const dataUrl = await readFileAsDataUrl(file, tx);
             if (generation !== attachmentGeneration) return;
@@ -118,6 +125,8 @@
             if (generation === attachmentGeneration) {
               pendingAttachmentBytes = Math.max(0, pendingAttachmentBytes - fileSize);
               pendingAttachmentKeys.delete(dedupeKey);
+              renderComposerAttachments();
+              onChange();
             }
           }
         }
@@ -155,8 +164,9 @@
       if (!strip) {
         return;
       }
-      strip.hidden = attachments.length === 0;
-      renderAttachmentPreviewList(attachments, strip, {
+      const visibleAttachments = [...attachments, ...pendingAttachmentKeys.values()];
+      strip.hidden = visibleAttachments.length === 0;
+      renderAttachmentPreviewList(visibleAttachments, strip, {
         root: getPanel() || document.body,
         tr,
         tx,
@@ -258,8 +268,8 @@
     }
 
     // v1.8.0 C4: survive a page refresh. Only small attachments persist
-    // (single base64 <= 1MB, max 3) — oversized ones are dropped on restore
-    // rather than bloating chrome.storage and every debounced saveState.
+    // (single base64 <= 1MB, max 3). Omitted names are saved separately so
+    // recovery can disclose files that need reattaching without saving bytes.
     const PERSIST_MAX_CONTENT_CHARS = 1024 * 1024;
     const PERSIST_MAX_COUNT = 3;
 
@@ -294,6 +304,15 @@
       return attachments.length;
     }
 
+    function getOmittedAttachmentNames() {
+      let persistedCount = 0;
+      return attachments.filter(attachment => {
+        if ((attachment.contentBase64 || '').length > PERSIST_MAX_CONTENT_CHARS || persistedCount >= PERSIST_MAX_COUNT) return true;
+        persistedCount += 1;
+        return false;
+      }).map(attachment => attachment.name);
+    }
+
     // Only a just-rejected local-skill submission uses this in-memory recovery.
     // It keeps the normal composer limits, without durable-draft truncation.
     function restoreSubmittedAttachments(value, expectedRevision) {
@@ -315,6 +334,8 @@
 
     return {
       serializePersistableAttachments,
+      getOmittedAttachmentNames,
+      hasPendingReads: () => pendingAttachmentKeys.size > 0,
       restorePersistedAttachments,
       restoreSubmittedAttachments,
       getRevision: () => attachmentRevision,
@@ -428,6 +449,10 @@
       const card = document.createElement('div');
       card.className = 'codex-attachment-preview-card';
       card.dataset.kind = isImage ? 'image' : 'file';
+      if (attachment.loading) {
+        card.dataset.loading = 'true';
+        card.setAttribute('aria-busy', 'true');
+      }
       card.title = label + ' · ' + formatFileSize(attachment.size);
       if (isImage) {
         const preview = document.createElement('button');
@@ -456,11 +481,13 @@
       if (!isImage) {
         const size = document.createElement('span');
         size.className = 'codex-attachment-preview-size';
-        size.textContent = formatFileSize(attachment.size);
+        size.textContent = attachment.loading
+          ? (options.tx ? options.tx('Loading…', '读取中…') : 'Loading…')
+          : formatFileSize(attachment.size);
         meta.append(size);
       }
       card.append(meta);
-      if (options.removable) {
+      if (options.removable && !attachment.loading) {
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'codex-attachment-preview-remove';

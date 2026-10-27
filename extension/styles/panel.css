@@ -5247,6 +5247,10 @@
   gap: 8px;
   padding: 10px 24px 10px 10px;
 }
+#codex-overleaf-panel .codex-attachment-preview-card[data-loading="true"] {
+  border-style: dashed;
+  background: var(--tl-surface-1);
+}
 #codex-overleaf-panel .codex-attachment-file-icon {
   display: grid;
   place-items: center;
