@@ -844,16 +844,15 @@
   });
   // v1.8.1 D3: the dashboard was a one-shot render — another tab finishing a
   // run, clearing history or creating sessions never showed up. Refresh it
-  // (debounced) when the tab regains visibility or a cross-tab run signal
-  // arrives while the dashboard view is active.
+  // (debounced) on visibility, cross-tab run signals, and shared-history changes.
   let dashboardRefreshTimer = null;
   function refreshDashboardSoon() {
-    if (panel?.dataset.view !== 'recent-projects') {
+    if (panel?.dataset.view !== 'recent-projects' || document.visibilityState !== 'visible') {
       return;
     }
     clearTimeout(dashboardRefreshTimer);
     dashboardRefreshTimer = setTimeout(() => {
-      if (panel?.dataset.view !== 'recent-projects') {
+      if (panel?.dataset.view !== 'recent-projects' || document.visibilityState !== 'visible') {
         return;
       }
       // Never clobber an in-progress inline rename (fleet P2) — retry later.
@@ -865,11 +864,7 @@
       const expanded = Array.from(panel.querySelectorAll('[data-project-row-wrap][data-expanded="true"]'))
         .map(wrap => wrap.getAttribute('data-project-row-wrap'))
         .filter(Boolean);
-      const rootEl = panel.querySelector('[data-recent-projects-root]');
-      recentProjects.renderRecentProjectsVariant({
-        restoreExpanded: expanded,
-        restoreScrollTop: rootEl ? rootEl.scrollTop : undefined
-      }).catch(() => { /* keep last render */ });
+      recentProjects.refreshDashboardView({ restoreExpanded: expanded }).catch(() => { /* keep last render */ });
     }, 400);
   }
   document.addEventListener('visibilitychange', () => {
@@ -4530,6 +4525,8 @@
     Bridge: Modules.SharedSessionBridge, StorageDb: Modules.StorageDb,
     getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId(), generation: spaRouteGeneration }),
     getState: () => state, setState: next => { state = next; },
+    isDashboard: () => panel?.dataset.view === 'recent-projects',
+    refreshDashboard: refreshDashboardSoon,
     // An in-flight Accept/Undo keeps its view until it settles; refresh applies afterwards.
     isBusy: () => Boolean(pendingDraftSave || readLiveRunViewForSaveStateGuard() || trackedChangeInFlight.size
       || runReviewController?.hasActiveReview?.() || document.querySelector('dialog[open]')),
@@ -5963,6 +5960,8 @@
       if (!accountScopeId || isScopedPersistenceIdentityFailure(error)) {
         throw error;
       }
+      const fallbackProjectId = getCurrentProjectId();
+      const fallbackGeneration = spaRouteGeneration;
       const fallbackKey = buildScopedFallbackStorageKey(storageKey, accountScopeId);
       const stored = await chrome.storage.local.get([fallbackKey]);
       const fallback = stored[fallbackKey] || {};
@@ -5970,6 +5969,10 @@
         fallback?.__codexOverleafCompactFallback === true
         && fallback.__codexOverleafFallbackAccountScopeId === accountScopeId
       ) {
+        if (accountScopeId === cachedAccountScopeId && fallbackProjectId === getCurrentProjectId()
+          && fallbackGeneration === spaRouteGeneration) {
+          Modules.StorageMigration.adoptProjectPreferenceBaseline(fallback, accountScopeId, fallbackProjectId);
+        }
         return {
           mode: fallback.mode || '', providerId: fallback.providerId || 'builtin',
           model: fallback.model || '',
@@ -6051,6 +6054,8 @@
       compactState.customInstructionsByProject = state.customInstructionsByProject;
       compactState.reviewingAvailabilityByProject = state.reviewingAvailabilityByProject;
       compactState.governanceRulesByProject = state.governanceRulesByProject;
+      const projectPreferenceBaseline = Migration.getProjectPreferenceBaseline(
+        options?.draftScope?.accountScopeId || cachedAccountScopeId, projectId);
       const stateSnapshot = typeof structuredClone === 'function'
         ? structuredClone(state)
         : JSON.parse(JSON.stringify(state));
@@ -6078,6 +6083,27 @@
         normalizeExperimentalOtByProject,
         normalizeGovernanceRulesByProject,
         normalizeCustomInstructionsByProject,
+        projectPreferenceBaseline,
+        applyProjectPreferences: (prefs, captured, fields) => {
+          if (retentionScope.accountScopeId !== cachedAccountScopeId || retentionScope.projectId !== getCurrentProjectId()
+            || retentionScope.generation !== spaRouteGeneration) return false;
+          const adopted = [];
+          for (const field of fields) {
+            if (JSON.stringify(state[field]?.[projectId]) !== JSON.stringify(captured[field]?.[projectId])) continue;
+            if (JSON.stringify(state[field]?.[projectId]) === JSON.stringify(prefs[field]?.[projectId])) continue;
+            state[field] = { ...state[field], ...prefs[field] };
+            if (!Object.hasOwn(prefs[field] || {}, projectId)) delete state[field][projectId];
+            adopted.push(field);
+          }
+          if (adopted.includes('customInstructionsByProject')) syncCustomInstructionsEditorForProject(projectId);
+          if (adopted.includes('governanceRulesByProject')) syncProjectSettingsEditorForProject();
+          if (adopted.includes('experimentalOtByProject')) syncExperimentalOtToggleForProject(projectId);
+          if (adopted.includes('reviewingAvailabilityByProject')) {
+            syncReviewingTooltip();
+            syncProbeStatus();
+          }
+          return true;
+        },
         persistenceContext
         });
         if (!options?.draftScope) {

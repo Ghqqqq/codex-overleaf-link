@@ -134,6 +134,19 @@
     }
   }
 
+  function projectPreferenceValues(input, prefs, projectId) {
+    return {
+      experimentalOtByProject: input.normalizeExperimentalOtByProject(prefs.experimentalOtByProject)[projectId] === true,
+      reviewingAvailabilityByProject: prefs.reviewingAvailabilityByProject?.[projectId],
+      governanceRulesByProject: input.normalizeGovernanceRulesByProject({
+        [projectId]: prefs.governanceRulesByProject?.[projectId] || {}
+      })[projectId],
+      customInstructionsByProject: input.normalizeCustomInstructionsByProject({
+        [projectId]: prefs.customInstructionsByProject?.[projectId] || ''
+      })[projectId]
+    };
+  }
+
   async function persistPanelState(input) {
     var state = cloneSnapshot(input.state || {});
     var compactState = cloneSnapshot(input.compactState || {});
@@ -163,6 +176,8 @@
     var reviewRuns = (input.reviewRunIds || []).map(id =>
       (state.sessions || []).flatMap(session => session.runs || []).find(run => run.id === id));
     if (reviewRuns.some(run => !run)) throw reviewPersistenceError();
+    var preferenceBaseline = input.projectPreferenceBaseline
+      || Migration.getProjectPreferenceBaseline?.(accountScopeId, projectId);
     var latestPrefs = typeof Migration.loadPrefs === 'function'
       ? await Migration.loadPrefs(accountScopeId, projectId)
       : {};
@@ -176,32 +191,18 @@
       projectId,
       compactState.activeSessionId || state.activeSessionId || ''
     );
-    prefs.experimentalOtByProject = Object.assign(
-      {},
-      latestPrefs && latestPrefs.experimentalOtByProject || {},
-      { [projectId]: input.normalizeExperimentalOtByProject(state.experimentalOtByProject)[projectId] === true }
-    );
-    prefs.reviewingAvailabilityByProject = Object.assign({}, latestPrefs?.reviewingAvailabilityByProject || {},
-      state.reviewingAvailabilityByProject || {});
-    prefs.governanceRulesByProject = Object.assign(
-      {},
-      latestPrefs && latestPrefs.governanceRulesByProject || {},
-      input.normalizeGovernanceRulesByProject(state.governanceRulesByProject)
-    );
-    var normalizedCustomProject = input.normalizeCustomInstructionsByProject({ [projectId]: '' });
-    var customProjectId = Object.keys(normalizedCustomProject)[0] || '';
-    var currentCustom = input.normalizeCustomInstructionsByProject(state.customInstructionsByProject);
-    prefs.customInstructionsByProject = Object.assign(
-      {},
-      latestPrefs && latestPrefs.customInstructionsByProject || {}
-    );
-    if (customProjectId) {
-      prefs.customInstructionsByProject[customProjectId] =
-        Object.prototype.hasOwnProperty.call(currentCustom, customProjectId)
-          ? currentCustom[customProjectId]
-          : '';
+    var currentPreferences = projectPreferenceValues(input, state, projectId);
+    var baselinePreferences = projectPreferenceValues(input, preferenceBaseline || latestPrefs || {}, projectId);
+    for (var name of Object.keys(currentPreferences)) {
+      // Omit unchanged fields so savePrefs keeps even a peer write that arrives
+      // after loadPrefs but before its locked merge.
+      prefs[name] = JSON.stringify(currentPreferences[name]) === JSON.stringify(baselinePreferences[name])
+        ? {} : { [projectId]: currentPreferences[name] };
     }
-    await Migration.savePrefs(prefs, accountScopeId, projectId);
+    var savedPrefs = await Migration.savePrefs(prefs, accountScopeId, projectId);
+    if (savedPrefs && input.applyProjectPreferences?.(savedPrefs, state, Object.keys(currentPreferences)) !== false) {
+      Migration.adoptProjectPreferenceBaseline?.(savedPrefs, accountScopeId, projectId);
+    }
     var persistenceMeta = input.persistenceContext?.nextMeta || {};
     var queueTombstones = persistenceMeta.queueTombstones || {};
     var sessionTombstones = persistenceMeta.sessionTombstones || {};
