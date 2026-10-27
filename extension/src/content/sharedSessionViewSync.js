@@ -92,6 +92,10 @@
     }
     const unsubscribe = Bridge.subscribe(change => {
       const scope = getScope();
+      if (options.isDashboard?.()) {
+        if (scope.accountScopeId && change.accountScopeId === scope.accountScopeId) options.refreshDashboard?.();
+        return;
+      }
       if (!change.projectId || change.projectId === scope.projectId) {
         retryCount = 0; pending = true; schedule();
       }

@@ -23,6 +23,16 @@
     'selectedLocalSkillIdsByProject'
   ];
   var projectPreferenceLockTails = {};
+  var projectPreferenceBaselines = new Map();
+
+  function getProjectPreferenceBaseline(accountScopeId, projectId) {
+    return copyPreferenceValue(projectPreferenceBaselines.get(buildScopedProjectPreferenceKey(accountScopeId, projectId)));
+  }
+
+  function adoptProjectPreferenceBaseline(prefs, accountScopeId, projectId) {
+    var key = buildScopedProjectPreferenceKey(accountScopeId, projectId);
+    if (key) projectPreferenceBaselines.set(key, copyPreferenceValue(prefs));
+  }
 
   function buildScopedProjectPreferenceKey(accountScopeId, projectId) {
     var account = compactScopePart(accountScopeId);
@@ -170,6 +180,7 @@
       var visible = await StorageDb.claimSessionsForAccount(projectId, account, deleted);
       function result(currentPrefs, sessions, migrated) {
         var wanted = currentPrefs.activeSessionByProject?.[projectId] || '';
+        adoptProjectPreferenceBaseline(currentPrefs, account, projectId);
         return { prefs: currentPrefs, sessions: sessions,
           activeSessionId: sessions.some(session => session.id === wanted) ? wanted : sessions.at(-1)?.id || '',
           migrated: migrated };
@@ -260,7 +271,9 @@
       return chrome.storage.local.get([PREFS_KEY]).then(function (stored) {
         var claimed = claimLegacyProjectPreferences(stored[PREFS_KEY] || {}, account, project);
         var next = mergeScopedProjectPreferences(claimed.prefs, prefs, account, project);
-        return chrome.storage.local.set({ [PREFS_KEY]: next });
+        return chrome.storage.local.set({ [PREFS_KEY]: next }).then(function () {
+          return buildProjectPreferenceView(next, account, project);
+        });
       });
     });
   }
@@ -464,6 +477,8 @@
     runMigrationIfNeeded: runMigrationIfNeeded,
     savePrefs: savePrefs,
     loadPrefs: loadPrefs,
+    getProjectPreferenceBaseline: getProjectPreferenceBaseline,
+    adoptProjectPreferenceBaseline: adoptProjectPreferenceBaseline,
     loadSessionTombstones: loadSessionTombstones,
     addSessionTombstones: addSessionTombstones,
     getDeletedSessionIds: getDeletedSessionIds,

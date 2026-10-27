@@ -22,6 +22,57 @@ function persist(db, state, extra = {}) {
     normalizeCustomInstructionsByProject: value => value || {}, ...extra });
 }
 
+test('a stale tab saves its draft without reverting shared project instructions or governance', async () => {
+  const network = createNetwork();
+  try {
+    const first = connect(network, 1), second = connect(network, 2);
+    function preferences(db) {
+      const context = { module: { exports: {} }, require: () => db, chrome: network.chromeApi, navigator: {} };
+      require('node:vm').runInNewContext(require('node:fs').readFileSync(
+        require.resolve('../extension/src/shared/storageMigration'), 'utf8'), context);
+      return context.module.exports;
+    }
+    const firstPrefs = preferences(first), secondPrefs = preferences(second);
+    const projectId = scope.projectId, account = scope.accountScopeId;
+    await first.putRecord('sessions', record('settings'));
+    await firstPrefs.savePrefs({
+      customInstructionsByProject: { [projectId]: 'Original instructions' },
+      governanceRulesByProject: { [projectId]: { readonlyPatterns: ['original.tex'], writablePatterns: [] } },
+      experimentalOtByProject: { [projectId]: false },
+      reviewingAvailabilityByProject: { [projectId]: { status: 'unknown', observedAt: 1 } }
+    }, account, projectId);
+    const load = async migration => {
+      const loaded = JSON.parse(JSON.stringify(await migration.runMigrationIfNeeded(projectId, 'legacy-settings', account)));
+      return State.normalizePanelState({ ...loaded.prefs, sessions: loaded.sessions, activeSessionId: loaded.activeSessionId });
+    };
+    const a = await load(firstPrefs), b = await load(secondPrefs);
+    a.customInstructionsByProject[projectId] = 'Use the latest project instructions';
+    a.governanceRulesByProject[projectId] = { readonlyPatterns: ['protected.tex'], writablePatterns: ['chapter.tex'] };
+    a.experimentalOtByProject[projectId] = true;
+    a.reviewingAvailabilityByProject[projectId] = { status: 'available', observedAt: 2 };
+    await persist(first, a, { Migration: firstPrefs });
+    const draft = State.updateActiveSessionDraft(b, 'An unrelated draft from the stale tab');
+    await persist(second, draft, {
+      Migration: secondPrefs,
+      applyProjectPreferences: (saved, _captured, fields) => {
+        for (const field of fields) draft[field] = saved[field];
+      }
+    });
+    const stored = await secondPrefs.loadPrefs(account, projectId);
+    for (const field of ['customInstructionsByProject', 'governanceRulesByProject',
+      'experimentalOtByProject', 'reviewingAvailabilityByProject']) {
+      assert.deepEqual(JSON.parse(JSON.stringify(stored[field])), a[field]);
+      assert.deepEqual(JSON.parse(JSON.stringify(draft[field])), a[field], 'adopt the current project preference');
+    }
+    assert.equal((await first.getRecord('sessions', 'settings')).task, draft.task);
+    draft.customInstructionsByProject[projectId] = '';
+    await persist(second, draft, { Migration: secondPrefs });
+    const edited = await firstPrefs.loadPrefs(account, projectId);
+    assert.equal(edited.customInstructionsByProject[projectId], '', 'an intentional clear remains writable');
+    assert.deepEqual(JSON.parse(JSON.stringify(edited.governanceRulesByProject)), a.governanceRulesByProject);
+  } finally { network.close(); }
+});
+
 test('renaming a dashboard conversation preserves every saved run and its Undo material', async () => {
   // Exercise the rendered rename action with the real shared storage service.
   // This small DOM substitute supplies only the dashboard's browser I/O.
