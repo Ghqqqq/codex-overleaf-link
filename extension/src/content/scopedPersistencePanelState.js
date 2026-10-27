@@ -178,6 +178,9 @@
     if (reviewRuns.some(run => !run)) throw reviewPersistenceError();
     var preferenceBaseline = input.projectPreferenceBaseline
       || Migration.getProjectPreferenceBaseline?.(accountScopeId, projectId);
+    var preferenceWrite = input.projectPreferenceWrite || Migration.captureProjectPreferenceWrite?.({
+      ...input, state: state, baseline: preferenceBaseline, accountScopeId: accountScopeId, projectId: projectId
+    });
     var latestPrefs = typeof Migration.loadPrefs === 'function'
       ? await Migration.loadPrefs(accountScopeId, projectId)
       : {};
@@ -192,16 +195,21 @@
       compactState.activeSessionId || state.activeSessionId || ''
     );
     var currentPreferences = projectPreferenceValues(input, state, projectId);
-    var baselinePreferences = projectPreferenceValues(input, preferenceBaseline || latestPrefs || {}, projectId);
-    for (var name of Object.keys(currentPreferences)) {
-      // Omit unchanged fields so savePrefs keeps even a peer write that arrives
-      // after loadPrefs but before its locked merge.
-      prefs[name] = JSON.stringify(currentPreferences[name]) === JSON.stringify(baselinePreferences[name])
-        ? {} : { [projectId]: currentPreferences[name] };
+    if (preferenceWrite) {
+      Object.assign(prefs, Migration.projectPreferencePatch(preferenceWrite, accountScopeId, projectId));
+    } else {
+      var baselinePreferences = projectPreferenceValues(input, preferenceBaseline || latestPrefs || {}, projectId);
+      for (var name of Object.keys(currentPreferences)) {
+        prefs[name] = JSON.stringify(currentPreferences[name]) === JSON.stringify(baselinePreferences[name])
+          ? {} : { [projectId]: currentPreferences[name] };
+      }
     }
     var savedPrefs = await Migration.savePrefs(prefs, accountScopeId, projectId);
-    if (savedPrefs && input.applyProjectPreferences?.(savedPrefs, state, Object.keys(currentPreferences)) !== false) {
-      Migration.adoptProjectPreferenceBaseline?.(savedPrefs, accountScopeId, projectId);
+    if (savedPrefs) {
+      var fields = preferenceWrite ? Migration.completeProjectPreferenceWrite(preferenceWrite, savedPrefs)
+        : Object.keys(currentPreferences);
+      var applied = input.applyProjectPreferences?.(savedPrefs, state, fields);
+      if (!preferenceWrite && applied !== false) Migration.adoptProjectPreferenceBaseline?.(savedPrefs, accountScopeId, projectId);
     }
     var persistenceMeta = input.persistenceContext?.nextMeta || {};
     var queueTombstones = persistenceMeta.queueTombstones || {};

@@ -73,6 +73,98 @@ test('a stale tab saves its draft without reverting shared project instructions 
   } finally { network.close(); }
 });
 
+test('overlapping preference saves preserve restored instructions and read-only rules', async () => {
+  const network = createNetwork();
+  try {
+    const db = connect(network, 1);
+    const context = { module: { exports: {} }, require: () => db, chrome: network.chromeApi, navigator: {} };
+    require('node:vm').runInNewContext(require('node:fs').readFileSync(
+      require.resolve('../extension/src/shared/storageMigration'), 'utf8'), context);
+    const Migration = context.module.exports;
+    const projectId = scope.projectId, account = scope.accountScopeId;
+    const original = {
+      customInstructionsByProject: { [projectId]: 'Keep original instructions' },
+      governanceRulesByProject: { [projectId]: { readonlyPatterns: ['protected.tex'], writablePatterns: [] } }
+    };
+    await db.putRecord('sessions', record('settings'));
+    await Migration.savePrefs(original, account, projectId);
+    const loaded = JSON.parse(JSON.stringify(await Migration.runMigrationIfNeeded(projectId, 'legacy-settings', account)));
+    const state = State.normalizePanelState({ ...loaded.prefs, sessions: loaded.sessions, activeSessionId: 'settings' });
+    const normalizers = { normalizeExperimentalOtByProject: value => value || {},
+      normalizeGovernanceRulesByProject: value => value || {}, normalizeCustomInstructionsByProject: value => value || {} };
+    function capture() {
+      const snapshot = JSON.parse(JSON.stringify(state));
+      const baseline = Migration.getProjectPreferenceBaseline(account, projectId);
+      return { state: snapshot, compactState: State.prepareStateForStorage(snapshot), projectId,
+        Migration, StorageDb: db, SessionPersistence: Sessions, persistenceContext: { scope }, ...normalizers,
+        projectPreferenceBaseline: baseline,
+        projectPreferenceWrite: Migration.captureProjectPreferenceWrite({
+          state: snapshot, baseline, accountScopeId: account, projectId, ...normalizers
+        }),
+        applyProjectPreferences: (saved, captured, fields) => {
+          for (const field of fields) {
+            if (JSON.stringify(state[field]?.[projectId]) === JSON.stringify(captured[field]?.[projectId])) {
+              state[field] = saved[field];
+            }
+          }
+        }
+      };
+    }
+    function restore() {
+      for (const field of Object.keys(original)) state[field] = JSON.parse(JSON.stringify(original[field]));
+    }
+    function remove() {
+      state.customInstructionsByProject[projectId] = '';
+      state.governanceRulesByProject[projectId] = { readonlyPatterns: [], writablePatterns: [] };
+    }
+    const save = Migration.savePrefs;
+    let started = deferred(), release = deferred();
+    Migration.savePrefs = async (...args) => {
+      started.resolve();
+      await release.promise;
+      return save(...args);
+    };
+    remove();
+    const deleting = Panel.persistPanelState(capture());
+    await started.promise;
+    restore();
+    const restored = capture();
+    release.resolve();
+    await deleting;
+    assert.equal((await Migration.loadPrefs(account, projectId)).customInstructionsByProject[projectId], '');
+    assert.equal(state.customInstructionsByProject[projectId], original.customInstructionsByProject[projectId]);
+    await Panel.persistPanelState(restored);
+    let stored = await Migration.loadPrefs(account, projectId);
+    for (const field of Object.keys(original)) {
+      assert.deepEqual(JSON.parse(JSON.stringify(stored[field])), original[field]);
+      assert.deepEqual(JSON.parse(JSON.stringify(state[field])), original[field]);
+    }
+
+    // An older unchanged save must not adopt a peer value after local input
+    // changed away and back, even though the live value equals its snapshot.
+    started = deferred();
+    release = deferred();
+    const unchanged = Panel.persistPanelState(capture());
+    await started.promise;
+    remove();
+    const intermediate = capture();
+    restore();
+    const latest = capture();
+    await save({ customInstructionsByProject: { [projectId]: 'Peer instructions' },
+      governanceRulesByProject: { [projectId]: { readonlyPatterns: ['peer.tex'], writablePatterns: [] } } }, account, projectId);
+    release.resolve();
+    await unchanged;
+    for (const field of Object.keys(original)) assert.deepEqual(JSON.parse(JSON.stringify(state[field])), original[field]);
+    await Panel.persistPanelState(intermediate);
+    await Panel.persistPanelState(latest);
+    stored = await Migration.loadPrefs(account, projectId);
+    for (const field of Object.keys(original)) {
+      assert.deepEqual(JSON.parse(JSON.stringify(stored[field])), original[field]);
+      assert.deepEqual(JSON.parse(JSON.stringify(state[field])), original[field]);
+    }
+  } finally { network.close(); }
+});
+
 test('renaming a dashboard conversation preserves every saved run and its Undo material', async () => {
   // Exercise the rendered rename action with the real shared storage service.
   // This small DOM substitute supplies only the dashboard's browser I/O.

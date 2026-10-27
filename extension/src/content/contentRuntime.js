@@ -6059,6 +6059,11 @@
       const stateSnapshot = typeof structuredClone === 'function'
         ? structuredClone(state)
         : JSON.parse(JSON.stringify(state));
+      const projectPreferenceWrite = Migration.captureProjectPreferenceWrite({
+        state: stateSnapshot, baseline: projectPreferenceBaseline,
+        accountScopeId: options?.draftScope?.accountScopeId || cachedAccountScopeId, projectId,
+        normalizeExperimentalOtByProject, normalizeGovernanceRulesByProject, normalizeCustomInstructionsByProject
+      });
       // Keep consumption provenance on the live run owner across ordinary
       // session normalization; it is not a composer edit or a queued input.
       const consumedSession = liveRunView?.draftConsumption && liveRunView.runProjectId === projectId
@@ -6084,6 +6089,7 @@
         normalizeGovernanceRulesByProject,
         normalizeCustomInstructionsByProject,
         projectPreferenceBaseline,
+        projectPreferenceWrite,
         applyProjectPreferences: (prefs, captured, fields) => {
           if (retentionScope.accountScopeId !== cachedAccountScopeId || retentionScope.projectId !== getCurrentProjectId()
             || retentionScope.generation !== spaRouteGeneration) return false;
