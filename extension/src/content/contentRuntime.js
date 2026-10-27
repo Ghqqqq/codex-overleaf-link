@@ -2800,6 +2800,11 @@
       nativeChannel.clearActiveRequest();
       stopRunElapsedTick();
       await flushQueuedSaveState().catch(() => {});
+      // The card is already settled. Retain the owner while Native stops so
+      // neither ordinary promotion nor a deferred session start races its lock.
+      if (settlement.continueQueue) {
+        settlement.continueQueue = await waitForCancelledNativeRun(settledView);
+      }
       currentRunView = null;
       runCancellationRequested = false;
       runCancellationController = null;
@@ -3286,18 +3291,21 @@
     //     codex_cancelled instead of grinding through the rest of the queue.
     // Without the page-side signal, a cancel during writeback waits up to
     // the applyOperations content-side timeout (30s) before the run settles.
-    const activeRequestId = nativeChannel.getActiveRequestId();
+    const activeRequestId = currentRunView.nativeRequestId;
     const projectKey = currentRunView?.runProjectId || getCurrentProjectId() || '';
 
     const cancelTargets = [];
-    if (activeRequestId || projectKey) {
+    if (activeRequestId != null && activeRequestId !== '') {
       cancelTargets.push(sendBackgroundNative({
         method: 'codex.cancel',
         params: {
-          requestId: activeRequestId || undefined,
+          requestId: activeRequestId,
           projectKey: projectKey || undefined
         }
       }));
+    } else {
+      // Preparation has no Native run to cancel; the local signal prevents dispatch.
+      cancelTargets.push(Promise.resolve(null));
     }
     // The page-side cancel is best-effort — it only matters if a writeback
     // is currently in flight. Swallow errors / unavailable bridge so the
@@ -3382,6 +3390,23 @@
       signal.addEventListener('abort', onAbort, { once: true });
       Promise.resolve(value).then(result => settle(resolve, result), error => settle(reject, error));
     });
+  }
+
+  async function waitForCancelledNativeRun(runView) {
+    const pending = runView?.pendingNativeRun;
+    if (!pending) return true;
+    const CANCELLED_NATIVE_SETTLEMENT_TIMEOUT_MS = 20000;
+    let timer;
+    try {
+      return await Promise.race([
+        pending.then(() => true, () => true),
+        new Promise(resolve => {
+          timer = setTimeout(() => resolve(false), CANCELLED_NATIVE_SETTLEMENT_TIMEOUT_MS);
+        })
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function isRunCancellationError(error = {}) {
@@ -3547,21 +3572,26 @@
       method: 'codex.run',
       params
     }, compatibilityGate.compatibility));
-    if (currentRunView) {
-      currentRunView.nativeRequestId = tracked.id;
-      const record = findRunRecord(currentRunView.recordId, currentRunView.sessionId);
+    if (owner) {
+      owner.nativeRequestId = tracked.id;
+      // Keep the actual response separate from awaitRunStep's local abort race.
+      owner.pendingNativeRun = tracked.promise;
+      const record = findRunRecord(owner.recordId, owner.sessionId);
       if (record) {
         record.nativeRequestId = tracked.id;
       }
       activeTurnControl.bind({
         requestId: tracked.id,
-        projectKey: currentRunView.runProjectId,
-        clientRunId: currentRunView.recordId,
-        sessionId: currentRunView.sessionId
+        projectKey: owner.runProjectId,
+        clientRunId: owner.recordId,
+        sessionId: owner.sessionId
       });
       saveStateSoon();
     }
     return tracked.promise.finally(() => {
+      if (owner?.pendingNativeRun === tracked.promise) {
+        owner.pendingNativeRun = null;
+      }
       if (currentRunView?.nativeRequestId === tracked.id) {
         currentRunView.activeTurn = null;
         renderPendingInputs();

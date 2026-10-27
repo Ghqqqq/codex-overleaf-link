@@ -173,10 +173,11 @@ Browser [nativeChannel.js](../../extension/src/content/nativeChannel.js) usually
 
 ### Cancellation Call Chain and Acknowledgment Strength
 
-Browser `contentRuntime.cancelActiveRun` concurrently sends Native `codex.cancel` and Page `cancelActiveWrite`, while aborting the local run controller.
+Browser `contentRuntime.cancelActiveRun` aborts the local run controller and sends Page `cancelActiveWrite`; it concurrently sends Native `codex.cancel` only with the owning run's Native request ID. Before Native dispatch, Stop relies on the local signal. `sendTrackedCodexRun` checks that signal and ownership after its compatibility wait, then sends and records the request ID without another asynchronous gap. [nativeChannel.sendNativeTracked](../../extension/src/content/nativeChannel.js) also records its active request ID before calling the browser transport.
 The Page signal interrupts remaining writes; the Native signal targets the agent. Cancellation does not automatically roll back page writes that already completed.
 The background uses a dedicated `sendNativeCancel` for `codex.cancel`. It returns `{sent:true,id}` immediately after `postMessage`, without waiting for the Native cancellation response.
 When Native `handleCodexCancel` finds a controller, it calls abort and returns `{cancelled:true}`; stopping may still be in progress.
+An explicitly supplied request ID that is no longer active returns `{cancelled:false, reason: 'request_not_active'}` without falling back to another run in that project, unless `force:true` explicitly authorizes project recovery. ID-less project cancellation remains a legacy/recovery capability in Native; ordinary Content Stop does not use it. [activeTurnControl](../../test/activeTurnControl.test.js) exercises stale and empty request IDs and the forced recovery exception through the Native dispatcher with controlled process dependencies.
 This can be written as \(sent \not\Rightarrow cancelled \not\Rightarrow exited\): evidence on the left of each arrow is insufficient to establish the fact on its right.
 
 Without an active controller, `force:true` removes the in-memory lock only if the project is not blocked by a stop barrier and such a lock exists; it performs no extra OS kill.
@@ -184,6 +185,7 @@ A codex.run with a valid ID always registers a project controller. For a still-e
 
 Logs from `forceCancelStuckTaskForCurrentProject` and the existing recovery button in [RunRecoveryActions](../../extension/src/content/runRecoveryActions.js) share `formatForceCancelOutcome`. `sent:true` displays only that the request was sent and release remains unconfirmed. `cancelled:true` means cancellation was accepted and stopping still requires a wait. Only `lockReleased:true` can display that the lock was released. Explicit `cancelled:false` means no matching active task exists; an empty successful response remains unconfirmed; errors still display failure. The normal background channel continues to return sent immediately, with no added flow waiting for a Native acknowledgment. This display cannot prove that a process has exited.
 The ordinary sent path still requires checking the original run's terminal result, subsequent admission, and actual process evidence; request acceptance cannot be treated as completed stopping.
+For queue continuation, Content retains the outstanding Native response promise independently of local abort. After displaying cancellation, `waitForCancelledNativeRun` waits up to `CANCELLED_NATIVE_SETTLEMENT_TIMEOUT_MS` for that promise to resolve or reject; expiry pauses queued work with the existing Resume action. This waits for the run result, not the immediate cancel-send acknowledgment. Native releases the run's token lock in `handleCodexRun`'s finally before returning the result; unconfirmed process stopping can still leave a separate stop barrier. See [queue continuation](run-state-and-recovery.md#33-cancellation-and-continuation-conditions).
 
 ### Bounded Stopping on Success, Failure, and Cancellation
 
