@@ -5,6 +5,13 @@
   'use strict';
   const EPOCH_KEY = 'composer-attachment-draft:clear-epoch';
   const normalize = value => SessionState.normalizeComposerAttachmentsForPersistence(value);
+  function normalizeOmitted(value) {
+    const names = (Array.isArray(value?.names) ? value.names : [])
+      .filter(name => typeof name === 'string')
+      .map(name => name.replace(/\0/g, '').trim().slice(0, 180))
+      .filter(Boolean).slice(0, 8);
+    return { count: names.length, names };
+  }
   const scopeKey = scope => JSON.stringify([scope?.accountScopeId || '', scope?.projectId || '']);
   function checkedScope(scope) {
     const accountScopeId = String(scope?.accountScopeId || '').trim();
@@ -42,25 +49,28 @@
                 throw failure('account_scope_unavailable');
               }
               const revision = Number(previous?.revision) || 0;
-              result = { epoch, clearedAt, revision, attachments: normalize(previous?.attachments) };
+              result = { epoch, clearedAt, revision, attachments: normalize(previous?.attachments), omittedAttachments: normalizeOmitted(previous?.omittedAttachments) };
               if (!value) return;
               const attachments = normalize(value.attachments);
+              const omittedAttachments = normalizeOmitted(value.omittedAttachments);
+              const hasDraft = attachments.length || omittedAttachments.count;
               if (value.epoch !== epoch) {
                 // A clear performed by this page also invalidates its old base.
                 // Its empty draft needs no write; an old nonempty draft cannot return.
-                if (!attachments.length) return;
+                if (!hasDraft) return;
                 throw failure('composer_draft_cleared');
               }
               if (value.revision !== revision) {
                 // Writing what another tab already stored changes nothing (for example
                 // both tabs clearing an empty draft on send); only a real edit conflicts.
-                if (JSON.stringify(attachments) === JSON.stringify(result.attachments)) return;
+                if (JSON.stringify(attachments) === JSON.stringify(result.attachments)
+                  && JSON.stringify(omittedAttachments) === JSON.stringify(result.omittedAttachments)) return;
                 throw failure('composer_draft_conflict');
               }
-              if (attachments.length && value.unbased && clearedAt && value.changedAt <= clearedAt) {
+              if (hasDraft && value.unbased && clearedAt && value.changedAt <= clearedAt) {
                 throw failure('composer_draft_cleared');
               }
-              result = { epoch, clearedAt, revision: revision + 1, attachments };
+              result = { epoch, clearedAt, revision: revision + 1, attachments, omittedAttachments };
               store.put({ id, type: 'composer-attachment-draft', ...scope, ...result });
             } catch (caught) { error = caught; tx.abort(); }
           };
@@ -120,7 +130,11 @@
       syncScope();
       if (hydrated) return;
       // Loading is allowed to finish after a local add/remove. Local edits win.
-      if (!changedVersion && !options.getAttachments().length) options.restore(normalize(attachments));
+      if (!changedVersion && !options.getAttachments().length) {
+        options.restore(normalize(attachments));
+        const omitted = normalizeOmitted(base?.omittedAttachments);
+        if (omitted.count) options.onRestoreOmittedAttachments?.(omitted);
+      }
       hydrated = true; publish();
     }
     function changed() {
@@ -138,10 +152,11 @@
         if (captured !== generation || scopeKey(options.getScope()) !== key || changedVersion === savedVersion) return;
         const version = changedVersion;
         const attachments = normalize(options.getAttachments());
+        const omittedAttachments = normalizeOmitted({ names: options.getOmittedAttachmentNames?.() });
         const unbased = dirtyUnbased, changedAt = dirtySince;
         if (!base) await load(scope);
         if (captured !== generation || scopeKey(options.getScope()) !== key) return;
-        const written = await options.write(checkedScope(scope), { ...base, attachments, unbased, changedAt });
+        const written = await options.write(checkedScope(scope), { ...base, attachments, omittedAttachments, unbased, changedAt });
         if (captured !== generation) return;
         base = written; savedVersion = version;
         if (changedVersion === version) { dirtySince = 0; dirtyUnbased = false; }

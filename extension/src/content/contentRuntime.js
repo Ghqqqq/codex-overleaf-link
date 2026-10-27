@@ -1458,7 +1458,7 @@
       primeCodexLocalSkillsCatalog().catch(() => { /* retry through settings, slash, or submission */ });
     }
 
-    PanelRenderer.setVisible(panel, true);
+    PanelRenderer.setVisible(panelRendererInstance, true);
   }
 
   // Panel prefetch and first submission share the same official catalog read.
@@ -3777,15 +3777,18 @@
       : Boolean(currentRunView);
     const transitioning = sessionManager.isTransitioning();
     const action = running && (!hasInput || transitioning) ? 'cancel' : 'send';
+    const attachmentsLoading = composerAttachmentController.hasPendingReads();
     const label = action === 'cancel'
       ? tr('cancelRun')
-      : running
-        ? tr('queueNextInput')
-        : tr('send');
+      : attachmentsLoading
+        ? tr('attachmentsLoading')
+        : running
+          ? tr('queueNextInput')
+          : tr('send');
     runButton.dataset.action = action;
     runButton.disabled = action === 'cancel'
       ? runCancellationRequested
-      : !hasInput || transitioning;
+      : !hasInput || transitioning || attachmentsLoading;
     runButton.title = label;
     runButton.setAttribute('aria-label', label);
     if (currentRunView?.writebackRetry && hasInput && action !== 'cancel') runButton.disabled = true;
@@ -3794,6 +3797,11 @@
   function handleTaskInputKeydown(event) {
     if (sessionManager.isTransitioning()) {
       if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) event.preventDefault();
+      return;
+    }
+    if (composerAttachmentController.hasPendingReads() && event.key === 'Enter'
+      && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+      event.preventDefault();
       return;
     }
     if (handleSlashMenuKeydown(event)) {
@@ -6569,9 +6577,17 @@
     if (!composerDraftPersistence) composerDraftPersistence = Modules.ComposerAttachmentDraft.createController({
       getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId() }),
       getAttachments: () => composerAttachmentController.serializePersistableAttachments(),
-      setAttachments: value => { state.composerAttachments = value; },
+      getOmittedAttachmentNames: () => composerAttachmentController.getOmittedAttachmentNames(),
+      setAttachments: value => {
+        state.composerAttachments = value;
+        syncComposerSendAvailability();
+      },
       clear: () => composerAttachmentController.clear({ notify: false }),
       restore: value => composerAttachmentController.restorePersistedAttachments(value),
+      onRestoreOmittedAttachments: ({ count, names }) => appendPlainLog(tx(
+        `${count} attachment${count === 1 ? '' : 's'} could not be saved in the draft. Reattach before sending: ${names.join(', ')}.`,
+        `${count} 个附件未能保存到草稿中，请在发送前重新添加：${names.join('、')}。`
+      )),
       read: scope => Modules.StorageDb.readComposerAttachmentDraft(scope),
       write: (scope, value) => Modules.StorageDb.writeComposerAttachmentDraft(scope, value),
       scheduleSave: () => saveStateSoon()

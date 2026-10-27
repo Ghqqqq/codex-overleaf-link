@@ -347,7 +347,20 @@
       const input = node('input'); input.type = 'search'; input.value = query; input.dataset.styleFocus = 'project-search';
       input.placeholder = tx('Search all Overleaf projects', '搜索全部 Overleaf 项目');
       input.setAttribute('aria-label', input.placeholder);
-      input.addEventListener('input', () => { query = input.value; render(); });
+      let composing = false;
+      const updateResults = () => {
+        query = input.value;
+        const results = input.closest('.ws2-picker')?.querySelector('.ws2-projects');
+        if (results) renderProjectResults(results);
+      };
+      input.addEventListener('compositionstart', () => { composing = true; });
+      input.addEventListener('compositionend', () => {
+        composing = false;
+        updateResults();
+      });
+      input.addEventListener('input', event => {
+        if (!composing && !event.isComposing) updateResults();
+      });
       search.append(input); panel.append(search);
       const filters = node('div', 'ws2-filters');
       for (const [value, label] of [['all', tx('All', '全部')], ['active', tx('Active', '常规')], ['archived', tx('Archived', '已归档')]]) {
@@ -358,6 +371,16 @@
       panel.append(filters);
       const list = node('div', 'ws2-projects');
       list.setAttribute('role', 'group'); list.setAttribute('aria-label', tx('Overleaf projects', 'Overleaf 项目'));
+      renderProjectResults(list);
+      panel.append(list);
+      const footer = node('div', 'ws2-picker-footer');
+      footer.append(node('span', '', tx(sources.length + ' of 3 references selected', '已选 ' + sources.length + ' / 3 份资料')),
+        button(tx('Done', '完成'), () => { pickerOpen = false; render(); }, 'ws2-button ws2-button-primary', 'picker-done'));
+      panel.append(footer); return panel;
+    }
+    function renderProjectResults(list) {
+      const oldScroll = list.scrollTop;
+      list.replaceChildren();
       if (projectLoading) {
         const loading = node('div', 'ws2-picker-state');
         loading.append(node('span', 'ws2-pulse'), node('span', '', tx('Loading project directory…', '正在加载项目目录…')));
@@ -395,11 +418,7 @@
         if (!matches.length) list.append(node('div', 'ws2-picker-state',
           query ? tx('No projects match this search.', '没有匹配的项目。') : tx('No projects in this group.', '此分组暂无项目。')));
       }
-      panel.append(list);
-      const footer = node('div', 'ws2-picker-footer');
-      footer.append(node('span', '', tx(sources.length + ' of 3 references selected', '已选 ' + sources.length + ' / 3 份资料')),
-        button(tx('Done', '完成'), () => { pickerOpen = false; render(); }, 'ws2-button ws2-button-primary', 'picker-done'));
-      panel.append(footer); return panel;
+      list.scrollTop = oldScroll;
     }
     function renderSources() {
       const section = node('section', 'ws2-library');
@@ -480,6 +499,38 @@
       }
       return section;
     }
+    function replaceAround(parent, fresh, retained, replacement) {
+      for (const child of Array.from(parent.childNodes)) {
+        if (child !== retained) child.remove();
+      }
+      let before = true;
+      for (const child of Array.from(fresh.childNodes)) {
+        if (child === replacement) before = false;
+        else parent.insertBefore(child, before ? retained : null);
+      }
+    }
+    function renderKeepingProjectSearch(content) {
+      const library = host.querySelector('.ws2-library');
+      const picker = library?.querySelector('.ws2-picker');
+      const search = picker?.querySelector('.ws2-search');
+      const nextLibrary = content.querySelector('.ws2-library');
+      const nextPicker = nextLibrary?.querySelector('.ws2-picker');
+      if (!search || !nextPicker) {
+        host.replaceChildren(content);
+        return false;
+      }
+      // Keep every ancestor connected: detaching and refocusing an input
+      // cannot restore its IME composition when an async catalog read settles.
+      const input = search.querySelector('input');
+      const nextSearch = nextPicker.querySelector('.ws2-search');
+      input.placeholder = nextSearch.querySelector('input').placeholder;
+      input.setAttribute('aria-label', input.placeholder);
+      picker.setAttribute('aria-label', nextPicker.getAttribute('aria-label'));
+      replaceAround(picker, nextPicker, search, nextSearch);
+      replaceAround(library, nextLibrary, picker, nextPicker);
+      replaceAround(host, content, library, nextLibrary);
+      return document.activeElement === input;
+    }
     function render() {
       if (!host?.isConnected) return;
       alignScope();
@@ -487,7 +538,8 @@
       const oldScroll = host.querySelector('.ws2-projects')?.scrollTop || 0;
       const heading = host.closest('[data-set-group]')?.querySelector('[data-writing-style-heading]');
       if (heading) heading.textContent = tx('Writing style', '写作风格');
-      host.classList.add('ws2'); host.replaceChildren();
+      host.classList.add('ws2');
+      const content = document.createDocumentFragment();
       const top = node('div', 'ws2-heading');
       const copy = node('div', 'ws2-heading-copy');
       const title = node('label', 'ws2-title', tx('Write in My Style', '沿用写作风格'));
@@ -501,7 +553,7 @@
       toggleInput.dataset.styleFocus = 'enable-style'; toggleInput.checked = desiredEnabled;
       toggleInput.disabled = !scope || !meta || toggleBusy || (working() && !meta?.ready);
       toggleInput.addEventListener('change', () => { void toggle(toggleInput.checked); });
-      top.append(copy, toggleInput); host.append(top);
+      top.append(copy, toggleInput); content.append(top);
       if (meta?.ready) {
         const summary = node('div', 'ws2-profile');
         const mark = node('span', 'ws2-profile-icon'); mark.append(icon('check'));
@@ -518,16 +570,16 @@
         const view = button(preview ? tx('Hide preview', '收起预览') : tx('Preview style', '预览风格'),
           () => { void loadPreview(); }, 'ws2-button ws2-button-quiet', 'preview-style');
         view.disabled = previewBusy;
-        summary.append(mark, info, view); host.append(summary);
+        summary.append(mark, info, view); content.append(summary);
       }
       const editing = expanded || working();
       const manage = button(editing ? tx('Hide references', '收起参考资料')
         : meta?.ready ? tx('Manage references', '管理参考资料') : tx('Choose references', '选择参考资料'),
       () => { expanded = !expanded; pickerOpen = false; render(); }, 'ws2-manage', 'manage-references');
       manage.setAttribute('aria-expanded', String(editing));
-      manage.disabled = working(); manage.append(icon('arrow')); host.append(manage);
+      manage.disabled = working(); manage.append(icon('arrow')); content.append(manage);
       if (editing) {
-        host.append(renderSources());
+        content.append(renderSources());
         if (working()) {
           const progress = node('div', 'ws2-progress'); progress.setAttribute('role', 'status');
           const phase = activeGeneration?.phase || 'learning';
@@ -545,7 +597,7 @@
           }
           progress.append(steps);
           const stop = button(tx('Cancel', '取消'), () => { void cancel(); }, 'ws2-button', 'cancel-generation');
-          stop.disabled = cancelling; progress.append(stop); host.append(progress);
+          stop.disabled = cancelling; progress.append(stop); content.append(progress);
         } else {
           const footer = node('div', 'ws2-actions');
           const help = node('div', 'ws2-action-copy');
@@ -559,8 +611,8 @@
           const generateButton = button(meta?.ready ? tx('Update style', '更新风格') : tx('Generate style', '生成风格'),
             () => { void generate(); }, 'ws2-button ws2-button-primary', 'generate-style');
           generateButton.disabled = !scope || !meta || !sources.length || deps.isRunning();
-          footer.append(generateButton); host.append(footer);
-          if (deps.isRunning()) host.append(node('p', 'ws2-caption', tx('Available after the current task finishes.', '当前任务结束后可生成。')));
+          footer.append(generateButton); content.append(footer);
+          if (deps.isRunning()) content.append(node('p', 'ws2-caption', tx('Available after the current task finishes.', '当前任务结束后可生成。')));
         }
       }
       if (message || !meta) {
@@ -570,12 +622,13 @@
         if (!meta && message) status.append(button(tx('Retry', '重试'), () => {
           message = ''; messageTone = ''; render(); void ensureLoaded(true).catch(() => {});
         }, 'ws2-button', 'retry-settings'));
-        host.append(status);
+        content.append(status);
       }
-      if (preview) host.append(renderPreview());
+      if (preview) content.append(renderPreview());
+      const searchKeptFocus = renderKeepingProjectSearch(content);
       const scroll = host.querySelector('.ws2-projects');
       if (scroll) scroll.scrollTop = oldScroll;
-      restoreFocus(focus);
+      if (!searchKeptFocus) restoreFocus(focus);
     }
     function mount(panel) {
       const next = panel?.querySelector('[data-writing-style-settings]');

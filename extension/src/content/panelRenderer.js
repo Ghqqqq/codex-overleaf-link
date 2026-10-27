@@ -228,7 +228,10 @@
     return compact;
   }
 
-  function setVisible(panelEl, visible) {
+  function setVisible(target, visible) {
+    const instance = target?._instance;
+    const panelEl = instance?.panelEl || target;
+    if (visible && instance) updateCompactMode(instance);
     panelEl?.classList?.toggle('is-open', Boolean(visible));
     document.documentElement.classList.toggle(ROOT_CLASS, Boolean(visible));
     const launcherEl = panelEl?.ownerDocument?.getElementById?.('codex-overleaf-launcher');
