@@ -501,6 +501,14 @@
         reason: 'The undo time budget expired before this operation could start.' } : null;
     const editOptions = () => ({ baseFileLookup, provenanceReferences, runProjectId, deadlineAt: options.deadlineAt,
       reviewGuard: options.reviewGuard, reviewAwait: options.reviewAwait,
+      recheckEditDispatch: () => {
+        if (readWriteCancellationSequence() !== cancelBaselineSequence) return cancelledSkipResult;
+        if (!writeGuardSurface) return { ok: false, code: 'editor_project_id_unavailable', changedDocument: false };
+        const editorProjectId = writeGuardSurface.getEditorProjectIdPageSide(runProjectId);
+        const code = !runProjectId || !editorProjectId ? 'editor_project_id_unavailable'
+          : editorProjectId !== runProjectId ? 'aborted_project_changed' : '';
+        return code ? writeGuardSurface.abortDispatchResult(code, runProjectId || null, editorProjectId).skipped[0].result : null;
+      },
       recheckWriteProject: writeGuardSurface ? () => {
         const expired = options.reviewGuard?.() || deadlineFailure();
         return expired ? { applied: [], skipped: [{ operation: {}, result: expired }] }
@@ -763,6 +771,15 @@
 
     const finalReviewBlock = options.reviewGuard?.();
     if (finalReviewBlock) return finalReviewBlock;
+    if (options.noTraceUndo !== true) {
+      const dispatchBlock = options.recheckEditDispatch?.();
+      if (dispatchBlock) return dispatchBlock;
+      const reviewing = getReviewingState({});
+      if (trackReviewingChanges && !isReviewingConfirmedForWrite(reviewing))
+        return buildReviewingRequiredBlockedResult([operation], reviewing).skipped[0].result;
+      if (!trackReviewingChanges && !isEditingConfirmedForNoTraceUndo(reviewing))
+        return buildEditingRequiredBlockedResult([operation], reviewing).skipped[0].result;
+    }
     // Read and dispatch synchronously against the same document. Navigation,
     // freshness polling and Undo mode/project checks can all have awaited.
     const dispatchText = readActiveEditorText();

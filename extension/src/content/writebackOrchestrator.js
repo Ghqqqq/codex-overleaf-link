@@ -418,9 +418,35 @@
     // zero-write run (every operation skipped) has nothing to save-verify, so
     // skip the ~5s probe and its misleading "could not verify saved" warning
     // (v1.6.2).
-    const confirmation = appliedPaths.length
-      ? await verifyPostWriteSaveState(applied, project, saveTarget)
-      : { verification: { ok: false, state: 'not_checked', reason: 'No applied writeback operations were returned.' } };
+    let confirmation;
+    try {
+      confirmation = appliedPaths.length
+        ? await verifyPostWriteSaveState(applied, project, saveTarget)
+        : { verification: { ok: false, state: 'not_checked', reason: 'No applied writeback operations were returned.' } };
+    } catch (error) {
+      if (!appliedPaths.length || (error?.code !== 'codex_cancelled' && error?.name !== 'AbortError')) throw error;
+      const saveVerification = { ok: false, state: 'unknown_timeout', signal: 'unavailable',
+        reason: 'Save confirmation was cancelled.', recoveryReason: 'codex_cancelled', attempts: [] };
+      // Cancellation cannot erase the returned writes or the recovery needed to
+      // check their save state. Carry the same evidence into the cancelled report.
+      error.writebackOutcome = { operations, applied, saveVerification,
+        settlement: buildSettlement({ operations, applyResult: applied, saveVerification }) };
+      try {
+        await settleWritebackRecovery?.(applied, project, saveVerification, saveTarget, runRequireReviewing);
+      } catch (recoveryError) {
+        appendRunRecordEvent?.(saveTarget.recordId, { kind: 'technical', status: 'warning',
+          title: tx('Writeback recovery persistence failed', '写回恢复信息保存失败'), detail: { reason: recoveryError.message } });
+      } finally {
+        pendingMirrorRefresh = invalidateWritebackMirror(saveTarget);
+        try {
+          const state = await pendingMirrorRefresh;
+          error.writebackOutcome.settlement = buildSettlement({ operations, applyResult: applied, saveVerification, mirror: { state } });
+        } finally {
+          pendingMirrorRefresh = null;
+        }
+      }
+      throw error;
+    }
     const saveVerification = confirmation.verification;
     await settleWritebackRecovery?.(applied, project, saveVerification, saveTarget, runRequireReviewing);
     if (appliedPaths.length) {
