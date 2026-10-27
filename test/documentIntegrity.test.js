@@ -297,7 +297,7 @@ test('D1: a contradictory overlay batch never reaches the mirror or its baseline
   const Mirror = require('../native-host/src/mirrorWorkspace');
   const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'document-provenance-'));
   t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
-  const files = [{ path: 'main.tex', content: 'document body\n' }, { path: 'sample.bib', content: '@book{reference}\n' }];
+  const files = [{ path: 'main.tex', content: '\\section{Methods}\nWe compare retrieval policies using held-out recommendation data and report the measured ranking accuracy.\n' }, { path: 'sample.bib', content: '@book{reference,\n  author = {Ada Reader},\n  title = {A Handbook of Bibliographic Records},\n  year = {2024}\n}\n' }];
   const mirror = await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir,
     project: { files, capabilities: { fullProjectSnapshot: true } } });
   const baseline = fs.readFileSync(mirror.baselinePath);
@@ -310,7 +310,7 @@ test('D1: a contradictory overlay batch never reaches the mirror or its baseline
 });
 
 test('D1: a persistent same-path report with another document mounted never dispatches', async t => {
-  const initial = { 'sample.bib': '@book{reference}\n', 'main.tex': 'document body\n' };
+  const initial = { 'sample.bib': '@book{reference,\n  author = {Ada Reader},\n  title = {A Handbook of Bibliographic Records},\n  year = {2024}\n}\n', 'main.tex': '\\section{Methods}\nWe compare retrieval policies using held-out recommendation data and report the measured ranking accuracy.\n' };
   const h = harness(t, initial, { stuckEditor: true, reportedPath: 'main.tex' });
   // An insertion outside the differing envelope can pass freshness alone.
   const result = await h.apply(h.snapshot().files, [{ type: 'edit', path: 'main.tex',
@@ -320,6 +320,68 @@ test('D1: a persistent same-path report with another document mounted never disp
   assert.equal(result.skipped[0].result.failure.changedDocument, false);
   assert.deepEqual(h.writes, []);
   assert.deepEqual(Object.fromEntries(h.files), initial);
+});
+
+test('a cleared editor beside an empty sibling reaches the snapshot and Native overlay as empty text', async t => {
+  const Tree = require('../extension/src/page/treeOperations');
+  const Snapshot = require('../extension/src/page/snapshotRouter');
+  const Mirror = require('../native-host/src/mirrorWorkspace');
+  const path = require('node:path');
+  const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'document-empty-overlay-'));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  const original = 'Original manuscript paragraph. '.repeat(8) + '\n';
+  // Stored ZIP response containing main.tex (original) and empty.tex (empty).
+  const zip = Buffer.from('UEsDBBQAAAAAAORYW13sZkCJ+QAAAPkAAAAIAAAAbWFpbi50ZXhPcmlnaW5hbCBtYW51c2NyaXB0IHBhcmFncmFwaC4gT3JpZ2luYWwgbWFudXNjcmlwdCBwYXJhZ3JhcGguIE9yaWdpbmFsIG1hbnVzY3JpcHQgcGFyYWdyYXBoLiBPcmlnaW5hbCBtYW51c2NyaXB0IHBhcmFncmFwaC4gT3JpZ2luYWwgbWFudXNjcmlwdCBwYXJhZ3JhcGguIE9yaWdpbmFsIG1hbnVzY3JpcHQgcGFyYWdyYXBoLiBPcmlnaW5hbCBtYW51c2NyaXB0IHBhcmFncmFwaC4gT3JpZ2luYWwgbWFudXNjcmlwdCBwYXJhZ3JhcGguIApQSwMEFAAAAAAA5FhbXQAAAAAAAAAAAAAAAAkAAABlbXB0eS50ZXhQSwECFAMUAAAAAADkWFtd7GZAifkAAAD5AAAACAAAAAAAAAAAAAAAgAEAAAAAbWFpbi50ZXhQSwECFAMUAAAAAADkWFtdAAAAAAAAAAAAAAAACQAAAAAAAAAAAAAAgAEfAQAAZW1wdHkudGV4UEsFBgAAAAACAAIAbQAAAEYBAAAAAA==', 'base64');
+  let clock = 1000;
+  t.mock.method(Date, 'now', () => clock);
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: true, status: 200,
+    headers: { get: () => 'application/zip' },
+    arrayBuffer: async () => zip.buffer.slice(zip.byteOffset, zip.byteOffset + zip.byteLength) }));
+  const win = { location: { pathname: '/project/' + PROJECT, origin: 'https://fixture.invalid',
+    href: 'https://fixture.invalid/project/' + PROJECT }, CodexOverleafProjectFiles: Files,
+    setTimeout(fn, ms) { if (ms < 1000) { clock += ms; queueMicrotask(fn); } return 1; }, clearTimeout() {} };
+  const view = {}, doc = { toString: () => '' };
+  const tree = Tree.create({ window: win, document: { querySelectorAll: () => [] },
+    getActiveFilePathFromEditorStore: () => 'main.tex', readActiveEditorText: () => '',
+    getActiveEditorIdentity: () => ({ type: 'codemirror-view', view, doc }) });
+  const snapshot = await Snapshot.create({ window: win, treeOperations: tree }).buildProjectSnapshot({ zipOnly: true });
+  const cleared = snapshot.files.find(file => file.path === 'main.tex');
+  assert.equal(cleared.content, '');
+  assert.equal(cleared.source, 'active-editor');
+  assert.deepEqual(snapshot.capabilities.skipped, []);
+  assert.equal(snapshot.files.find(file => file.path === 'empty.tex').content, '');
+
+  const mirror = await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir, project: {
+    files: [{ path: 'main.tex', content: original }, { path: 'empty.tex', content: '' }],
+    capabilities: { fullProjectSnapshot: true } } });
+  await Mirror.applyFileOverlays({ projectId: PROJECT, rootDir, overlays: [cleared] });
+  for (const filePath of ['main.tex', 'empty.tex']) {
+    assert.equal(fs.readFileSync(path.join(mirror.workspacePath, filePath), 'utf8'), '');
+    assert.equal(JSON.parse(fs.readFileSync(mirror.baselinePath)).files.find(file => file.path === filePath).content, '');
+  }
+});
+
+test('an edit equal to a sibling baseline retains its own similar provenance through Page and Native', async t => {
+  const Mirror = require('../native-host/src/mirrorWorkspace');
+  const path = require('node:path');
+  const base = '\\section{Methods}\n' + 'We present a carefully controlled experiment.\n'.repeat(12);
+  const revised = base.replace('controlled', 'repeated');
+  const files = [{ path: 'main.tex', content: base }, { path: 'backup.tex', content: revised }];
+  const h = harness(t, { 'main.tex': revised, 'backup.tex': revised });
+  const result = await h.apply(files, [{ type: 'edit', path: 'main.tex',
+    patches: [{ from: 0, to: 0, expected: '', insert: '% requested\n' }] }]);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(h.files.get('main.tex'), '% requested\n' + revised);
+  assert.equal(result.applied[0].result.verifiedContent, '% requested\n' + revised);
+  assert.deepEqual(h.writes, ['main.tex']);
+
+  const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'document-similar-overlay-'));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  const mirror = await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir,
+    project: { files, capabilities: { fullProjectSnapshot: true } } });
+  await Mirror.applyFileOverlays({ projectId: PROJECT, rootDir, overlays: [{ path: 'main.tex', content: revised }] });
+  assert.equal(fs.readFileSync(path.join(mirror.workspacePath, 'main.tex'), 'utf8'), revised);
+  assert.equal(JSON.parse(fs.readFileSync(mirror.baselinePath)).files.find(file => file.path === 'main.tex').content, revised);
 });
 
 test('D1: a legitimate same-file write rebases over unsaved editor changes', async t => {

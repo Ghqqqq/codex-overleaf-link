@@ -10,6 +10,7 @@
   const DOCUMENT_PROVENANCE_OTHER_MIN = 0.9;
   const DOCUMENT_PROVENANCE_CLAIMED_MAX = 0.5;
   const DOCUMENT_PROVENANCE_EDGE_LIMIT = 64 * 1024;
+  const DOCUMENT_PROVENANCE_MIN_EVIDENCE_CHARS = 64;
 
   function assessDocumentProvenance(input = {}) {
     try {
@@ -19,15 +20,16 @@
       const claimed = references instanceof Map ? references.get(path)
         : Object.prototype.hasOwnProperty.call(references, path) ? references[path] : undefined;
       if (text === claimed) return { ok: true };
+      if (typeof claimed !== 'string') return { ok: true };
+      if (text.trim().length < DOCUMENT_PROVENANCE_MIN_EVIDENCE_CHARS) return { ok: true };
       let matchedPath, bestScore = -1;
       for (const [otherPath, reference] of entries) {
         if (otherPath === path || typeof reference !== 'string') continue;
-        if (text === reference) return { ok: false, code: 'document_identity_mismatch', matchedPath: otherPath };
-        const score = documentSimilarity(text, reference);
+        const score = text === reference ? 1 : documentSimilarity(text, reference);
         if (score > bestScore) { bestScore = score; matchedPath = otherPath; }
       }
       if (bestScore >= DOCUMENT_PROVENANCE_OTHER_MIN
-        && (typeof claimed !== 'string' || documentSimilarity(text, claimed) < DOCUMENT_PROVENANCE_CLAIMED_MAX)) {
+        && documentSimilarity(text, claimed) < DOCUMENT_PROVENANCE_CLAIMED_MAX) {
         return { ok: false, code: 'document_identity_mismatch', matchedPath };
       }
     } catch (_error) {
