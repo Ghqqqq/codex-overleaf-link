@@ -148,7 +148,7 @@ test('cancelling save confirmation retains written results, save recovery and in
     getAppliedEntries: value => value.applied || [], getSkippedEntries: value => value.skipped || [] });
   const window = {};
   require('node:vm').runInNewContext(require('node:fs').readFileSync(
-    require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window, Function });
+    require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window, Function, setTimeout, clearTimeout });
   const entered = deferred(), release = deferred(), recoveryReady = deferred(), mirrorReply = deferred(), calls = [];
   const project = { id: 'example', files: [{ path: 'main.tex', content: 'before' }, { path: 'second.tex', content: 'second' }] };
   const view = { runProjectId: 'example', sessionId: 's', recordId: 'r' };
@@ -264,7 +264,7 @@ test('a successful save reply after Stop retains the written and saved report ev
     getAppliedEntries: value => value.applied || [], getSkippedEntries: value => value.skipped || [] });
   const window = {};
   require('node:vm').runInNewContext(require('node:fs').readFileSync(
-    require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window, Function });
+    require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window, Function, setTimeout, clearTimeout });
   const api = window.CodexOverleafWritebackOrchestrator.create({ ...plan, tx, tr: key => key, getLocale: () => 'en',
     getState: () => ({ mode: 'auto', autoRecompile: false }),
     getCurrentRunView: () => ({ runProjectId: 'example', sessionId: 's', recordId: 'r' }), getCurrentProjectId: () => 'example',
@@ -320,7 +320,7 @@ test('retry mirror work retains an unanswered cancellation barrier and ignores i
     getAppliedEntries: value => value.applied || [], getSkippedEntries: value => value.skipped || [] });
   const window = {};
   require('node:vm').runInNewContext(require('node:fs').readFileSync(
-    require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window, Function });
+    require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window, Function, setTimeout, clearTimeout });
   const invalidationReply = deferred(), confirmReply = deferred(), confirmStarted = deferred(), newerSettled = deferred();
   const view = { runProjectId: 'example', sessionId: 's', recordId: 'r' };
   const run = { id: 'r', runProjectId: 'example' }, settlements = [];
@@ -403,4 +403,92 @@ test('retry mirror work retains an unanswered cancellation barrier and ignores i
     await originalBarrier;
     await api.getPendingMirrorRefresh();
   }
+});
+
+test('cancelled save recovery releases the mirror barrier on timeout and ignores a late invalidation reply', async () => {
+  const Controller = require('../extension/src/content/writebackController');
+  const Settlement = require('../extension/src/shared/writebackSettlement');
+  const tx = en => en;
+  const plan = require('../extension/src/content/writebackPlan').create({ tx, tr: key => key,
+    normalizeSafeProjectPath: require('../extension/src/shared/projectFiles').normalizeSafeProjectPath,
+    GovernanceRules: require('../extension/src/shared/governanceRules'), getGovernanceRulesForCurrentProject: () => ({}),
+    getAppliedEntries: value => value.applied || [], getSkippedEntries: value => value.skipped || [] });
+  const timers = new Map();
+  let now = 0, timerId = 0;
+  const window = {};
+  require('node:vm').runInNewContext(require('node:fs').readFileSync(
+    require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window, Function,
+    setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, at: now + delay }); return id; },
+    clearTimeout(id) { timers.delete(id); } });
+  const advance = async ms => {
+    now += ms;
+    for (const [id, timer] of [...timers]) {
+      if (timer.at <= now) { timers.delete(id); timer.callback(); }
+    }
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  const reply = deferred(), events = [], settlements = [], cacheClears = [];
+  const view = { runProjectId: 'example', sessionId: 's', recordId: 'r' };
+  const run = { id: 'r', runProjectId: 'example', status: 'cancelled' };
+  const cancellation = Object.assign(new Error('cancelled by the user'), { code: 'codex_cancelled' });
+  const persistence = require('../extension/src/content/runSettlementPersistence').create({ writebackSettlement: Settlement,
+    findRunRecord: () => run, getCurrentProjectId: () => 'example', getCurrentRunView: () => view });
+  const api = window.CodexOverleafWritebackOrchestrator.create({ ...plan, tx, tr: key => key, getLocale: () => 'en',
+    getState: () => ({ mode: 'auto', autoRecompile: false }), getCurrentRunView: () => view, getCurrentProjectId: () => 'example',
+    cleanFinalAnswer: value => value || '', getAssistantAnswerForCurrentRun: () => '',
+    writebackController: Controller, writebackSettlement: Settlement,
+    buildSyncApplyOperations: Controller.buildSyncApplyOperations, getAppliedOperationPaths: Controller.getAppliedOperationPaths,
+    getAppliedSyncChanges: Controller.getAppliedSyncChanges, getSkippedEntries: value => value.skipped || [],
+    hasApplyResultEntries: value => value.applied.length > 0,
+    ensureReviewingBeforeWrite: async () => ({ ok: true }), appendRunEvent() {},
+    appendRunRecordEvent(recordId, event) { events.push({ recordId, ...event }); },
+    appendOperationsPreview() {}, appendApplyResult() {}, renderReadOnlyDiffReview() {},
+    assetTransferBroker: { async applyOperations({ operations }) {
+      return { ok: true, applied: operations.map(operation => ({ operation, result: { ok: true, verified: true, verifiedContent: 'after' } })), skipped: [] };
+    } },
+    async recordUndoFromApply(_project, result) {
+      run.appliedOperations = result.applied.map(entry => entry.operation);
+      run.undoOperations = [{ type: 'edit', path: 'main.tex', replaceAll: 'before' }];
+    },
+    settleWritebackRecovery: async () => {},
+    resetContextProject() { cacheClears.push('context'); },
+    async callPageBridge(method) {
+      if (method === 'waitForSaveState') throw cancellation;
+      assert.equal(method, 'invalidateProjectSnapshot');
+      cacheClears.push('page');
+      return { ok: true };
+    },
+    sendBackgroundNative: () => reply.promise,
+    onMirrorRefreshSettled(result) { settlements.push(result.state); persistence.settleMirrorRefresh(result); }
+  });
+  await assert.rejects(api.applySyncChangesToOverleaf([{ type: 'write', path: 'main.tex', previousContent: 'before', content: 'after' }],
+    { id: 'example', files: [{ path: 'main.tex', content: 'before' }] }, { mode: 'auto', requireReviewing: false }), error => {
+    assert.equal(error, cancellation);
+    persistence.applyToCurrentRun(error.writebackOutcome.settlement);
+    return true;
+  });
+  assert.deepEqual(cacheClears, ['context', 'page']);
+  const pending = api.getPendingMirrorRefresh();
+  let admitted = false;
+  const admission = pending.then(() => { admitted = true; });
+  await advance(19999);
+  assert.equal(admitted, false);
+  assert.equal(run.settlement.evidence.mirrored, 'unknown');
+  await advance(1);
+  assert.equal(admitted, true, 'dependent work must not wait forever for a lost Native reply');
+  assert.equal(await pending, 'failed');
+  await admission;
+  assert.equal(api.getPendingMirrorRefresh(), null);
+  assert.equal(run.settlement.evidence.mirrored, 'failed');
+  assert.equal(cancellation.writebackOutcome.settlement.facts.evidence.mirrored, 'failed');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].recordId, 'r');
+  assert.equal(events[0].status, 'warning');
+  assert.equal(run.undoOperations[0].replaceAll, 'before');
+  reply.resolve({ ok: true, result: { invalidated: true } });
+  await advance(20000);
+  assert.deepEqual(settlements, ['failed']);
+  assert.equal(events.length, 1);
+  assert.equal(run.settlement.evidence.mirrored, 'failed');
+  assert.equal(timers.size, 0);
 });
