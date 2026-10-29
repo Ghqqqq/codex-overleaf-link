@@ -19,7 +19,7 @@
 - Check Stop, the project and the Track Changes mode again just before each write, so a Stop while Overleaf opens the target file leaves it unchanged and a Track Changes switch during that wait stops the write instead of writing in the wrong mode.
 - Keep the written count, Undo and the save check on the card when you stop during save confirmation or a save reply arrives after Stop, and keep the next run from reading a stale mirror after a cancelled Retry sync.
 - Stop waiting for the local project cache reset after 20 seconds when you stop during save confirmation, so the next run, Undo and Retry are not held forever; until a full sync succeeds, no run in any tab reuses that project's local copy.
-- Show Send instead of a disabled Stop button when you switch conversations while a stopped run is still finishing.
+- Show Send instead of a disabled Stop button, and keep the model list loading, when you switch conversations while a stopped run is still finishing.
 - Keep a different unsent draft when you use Edit & resend or Fix compile errors, and tell you to clear the composer first.
 - Answer the first connection check of a slow but healthy local Codex installation in time by reusing the Codex CLI found at startup.
 - Treat a project that is too large for the page fallback to list completely as an incomplete read instead of silently giving Codex only its first 80 files.
