@@ -2,6 +2,40 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const ActiveTurnControl = require('../extension/src/content/activeTurnControl');
 
+test('a retained cancelled run does not cancel session catalogs or bypass request ownership guards', async () => {
+  const NativeCompatibility = require('../extension/src/content/nativeCompatibilityController');
+  let cancelled = false;
+  let releasePing;
+  const ping = new Promise(resolve => { releasePing = resolve; });
+  const sent = [];
+  const assertRunCurrent = () => {
+    if (cancelled) throw Object.assign(new Error('Run cancelled'), { code: 'codex_cancelled' });
+  };
+  const controller = NativeCompatibility.create({
+    gatedMethods: new Set(['codex.models', 'codex.providers.list', 'mirror.sync']),
+    throwIfCancellationRequested: assertRunCurrent,
+    fallbackNativeCompatibility: () => ({ status: 'ok' }),
+    nativeChannel: { async sendBackgroundNative(payload) {
+      if (payload.method === 'bridge.ping') return ping;
+      sent.push(payload.method);
+      return { ok: true, result: { method: payload.method } };
+    } }
+  });
+  const models = controller.sendBackgroundNative({ method: 'codex.models' });
+  const providers = controller.sendBackgroundNative({ method: 'codex.providers.list' });
+  const mirror = controller.sendBackgroundNative({ method: 'mirror.sync' });
+  const ownedCatalog = controller.sendBackgroundNative({ method: 'codex.models' }, { assertCurrent: assertRunCurrent });
+  const mirrorRejected = assert.rejects(mirror, { code: 'codex_cancelled' });
+  const ownedRejected = assert.rejects(ownedCatalog, { code: 'codex_cancelled', requestDispatched: false });
+  cancelled = true;
+  releasePing({ ok: true });
+  assert.equal((await models).ok, true);
+  assert.equal((await providers).ok, true);
+  await mirrorRejected;
+  await ownedRejected;
+  assert.deepEqual(sent.sort(), ['codex.models', 'codex.providers.list']);
+});
+
 test('a stale cancellation cannot abort a different Native run, while explicit recovery can', async () => {
   const fs = require('node:fs');
   const path = require('node:path');
