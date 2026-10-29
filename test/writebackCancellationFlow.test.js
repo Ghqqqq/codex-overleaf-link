@@ -428,6 +428,7 @@ test('cancelled save recovery releases the mirror barrier on timeout and ignores
     await new Promise(resolve => setImmediate(resolve));
   };
   const reply = deferred(), events = [], settlements = [], cacheClears = [];
+  let invalidationReply = reply.promise;
   const view = { runProjectId: 'example', sessionId: 's', recordId: 'r' };
   const run = { id: 'r', runProjectId: 'example', status: 'cancelled' };
   const cancellation = Object.assign(new Error('cancelled by the user'), { code: 'codex_cancelled' });
@@ -458,7 +459,7 @@ test('cancelled save recovery releases the mirror barrier on timeout and ignores
       cacheClears.push('page');
       return { ok: true };
     },
-    sendBackgroundNative: () => reply.promise,
+    sendBackgroundNative: () => invalidationReply,
     onMirrorRefreshSettled(result) { settlements.push(result.state); persistence.settleMirrorRefresh(result); }
   });
   await assert.rejects(api.applySyncChangesToOverleaf([{ type: 'write', path: 'main.tex', previousContent: 'before', content: 'after' }],
@@ -485,10 +486,45 @@ test('cancelled save recovery releases the mirror barrier on timeout and ignores
   assert.equal(events[0].recordId, 'r');
   assert.equal(events[0].status, 'warning');
   assert.equal(run.undoOperations[0].replaceAll, 'before');
+  const firstFence = api.getMirrorReuseFence('example');
+  assert.ok(firstFence, 'failed invalidation must fence reuse even when Retry did not run Codex');
+  assert.equal(api.getMirrorReuseFence('other-project'), null);
   reply.resolve({ ok: true, result: { invalidated: true } });
   await advance(20000);
   assert.deepEqual(settlements, ['failed']);
   assert.equal(events.length, 1);
   assert.equal(run.settlement.evidence.mirrored, 'failed');
   assert.equal(timers.size, 0);
+  assert.equal(api.getMirrorReuseFence('example'), firstFence, 'a late invalidation reply cannot clear the fence');
+
+  const fullProject = { id: 'example', files: [{ path: 'main.tex', content: 'after' }],
+    capabilities: { fullProjectSnapshot: true, contentComplete: true } };
+  const syncReply = deferred();
+  let syncCalls = 0;
+  const options = { fence: firstFence, assertCurrent() {}, async sendNative({ method, params }) {
+    if (method === 'mirror.status') return { ok: true, result: { exists: true, dirty: false } };
+    assert.equal(method, 'mirror.sync');
+    assert.equal(params.projectId, 'example');
+    assert.equal(params.project.files[0].content, 'after');
+    syncCalls += 1;
+    return syncReply.promise;
+  } };
+  assert.equal(await api.syncFencedMirror('example', { ...fullProject, capabilities: { fullProjectSnapshot: false } }, options), false);
+  assert.equal(syncCalls, 0, 'a partial snapshot cannot clear the fence');
+  const oldSync = api.syncFencedMirror('example', fullProject, options);
+  assert.equal(await api.syncFencedMirror('example', fullProject, options), false);
+  assert.equal(syncCalls, 1, 'the extra full sync is attempted at most once per fence');
+  invalidationReply = Promise.resolve({ ok: false, error: { code: 'mirror_invalidation_failed' } });
+  await assert.rejects(api.applySyncChangesToOverleaf([{ type: 'write', path: 'main.tex', content: 'after' }],
+    fullProject, { mode: 'auto', requireReviewing: false, retryCreates: true }), { code: 'codex_cancelled' });
+  await api.getPendingMirrorRefresh();
+  const newerFence = api.getMirrorReuseFence('example');
+  assert.ok(newerFence);
+  assert.notEqual(newerFence, firstFence, 'rejected invalidation also installs a new project fence');
+  syncReply.resolve({ ok: true });
+  assert.equal(await oldSync, false);
+  assert.equal(api.getMirrorReuseFence('example'), newerFence, 'a sync started before the failure cannot clear its fence');
+  assert.equal(await api.syncFencedMirror('example', fullProject, { ...options, fence: newerFence }), true);
+  assert.equal(syncCalls, 2);
+  assert.equal(api.getMirrorReuseFence('example'), null, 'a later successful full sync restores reuse');
 });
