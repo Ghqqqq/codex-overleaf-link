@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.6.5 - 2026-10-28
+## v2.6.5 - 2026-10-29
 
 ### Added
 
@@ -13,11 +13,17 @@
 
 ### Fixed
 
-- Check that text read from or written to Overleaf belongs to the intended file without rejecting a cleared file, a very short file, a copy of a template or an edit that matches another file.
+- Check that text read from or written to Overleaf belongs to the intended file by the document Overleaf's editor actually has open, so a write can no longer land in another short or similar file, and a cleared file, a copy of a template, a heavy rewrite or two files with identical beginnings and endings are no longer refused. When the editor does not report its document, the earlier stricter content check applies.
 - Stop now stops only the run it belongs to: a Stop from another tab or a late Stop no longer cancels a different run of the same project.
 - After Stop, the next queued message waits until Codex has exited instead of failing with "Codex task already running". A queued message in a conversation you switched away from pauses with Resume after its run finishes or is cancelled.
 - Check Stop, the project and the Track Changes mode again just before each write, so a Stop while Overleaf opens the target file leaves it unchanged and a Track Changes switch during that wait stops the write instead of writing in the wrong mode.
 - Keep the written count, Undo and the save check on the card when you stop during save confirmation or a save reply arrives after Stop, and keep the next run from reading a stale mirror after a cancelled Retry sync.
+- Stop waiting for the local project cache reset after 20 seconds when you stop during save confirmation, so the next run, Undo and Retry are not held forever; until a full sync succeeds, no run in any tab reuses that project's local copy.
+- Show Send instead of a disabled Stop button when you switch conversations while a stopped run is still finishing.
+- Keep a different unsent draft when you use Edit & resend or Fix compile errors, and tell you to clear the composer first.
+- Answer the first connection check of a slow but healthy local Codex installation in time by reusing the Codex CLI found at startup.
+- Treat a project that is too large for the page fallback to list completely as an incomplete read instead of silently giving Codex only its first 80 files.
+- Recover an update interrupted early when an older backup is still present, and let a later update start after an interrupted rollback instead of reporting that an authorization is in progress.
 - Report a model provider's quota or billing limit as a provider problem instead of full Chrome storage.
 - Give up on the connection check, model lists and other panel requests after a deadline when Native stops answering, instead of waiting forever.
 - Stop the Codex processes Native started when Native crashes, and rotate the Native log at 8 MiB instead of letting it grow without limit.
