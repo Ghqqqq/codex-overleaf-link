@@ -138,8 +138,8 @@
     },
     document_identity_mismatch: {
       stage: 'preflight', severity: 'blocked', defaultRetryable: true,
-      fallbackUserMessage: 'Overleaf was still switching files, so this file was not used. Try again.',
-      fallbackNextAction: 'Wait for Overleaf to finish loading, then retry.'
+      fallbackUserMessage: 'Codex could not confirm that the editor content belongs to the target file, so it was not used.',
+      fallbackNextAction: 'Wait for the target file to open and settle, then retry. Reload Overleaf if this continues.'
     },
     patch_anchor_not_found: {
       stage: 'preflight', severity: 'blocked', defaultRetryable: true,

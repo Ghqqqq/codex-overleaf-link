@@ -115,7 +115,7 @@
     }
 
     function readActiveEditorText() {
-      return deps.readActiveEditorText?.() || '';
+      return deps.readActiveEditorText?.();
     }
 
     function waitForActiveEditorText(filePath, timeoutMs, options = {}) {
@@ -152,12 +152,12 @@
       };
     }
 
-    function replaceActiveEditorText(text) {
-      return deps.replaceActiveEditorText?.(text) || { ok: false, reason: 'Editor adapter is unavailable' };
+    function replaceActiveEditorText(text, options) {
+      return deps.replaceActiveEditorText?.(text, options) || { ok: false, reason: 'Editor adapter is unavailable' };
     }
 
-    function replaceActiveEditorPatches(patches, nextContent) {
-      return deps.replaceActiveEditorPatches?.(patches, nextContent) || { ok: false, reason: 'Editor adapter is unavailable' };
+    function replaceActiveEditorPatches(patches, nextContent, options) {
+      return deps.replaceActiveEditorPatches?.(patches, nextContent, options) || { ok: false, reason: 'Editor adapter is unavailable' };
     }
 
     function collectElements(selector, limit) {
@@ -268,8 +268,8 @@
       },
       document_identity_mismatch: {
         stage: 'preflight', severity: 'blocked', defaultRetryable: true,
-        fallbackUserMessage: 'Overleaf was still switching files, so this file was not used. Try again.',
-        fallbackNextAction: 'Wait for Overleaf to finish loading, then retry.'
+        fallbackUserMessage: 'Codex could not confirm that the editor content belongs to the target file, so it was not used.',
+        fallbackNextAction: 'Wait for the target file to open and settle, then retry. Reload Overleaf if this continues.'
       },
       patch_anchor_not_found: {
         stage: 'preflight', severity: 'blocked', defaultRetryable: true,
@@ -628,8 +628,39 @@
   const isUntouchedOpenFailure = result => result?.ok === false && result.failure?.code === 'target_file_open_failed'
     && result.failure.changedDocument === false;
 
-  function documentProvenance(filePath, text, references) {
-    return window.CodexOverleafStaleGuard?.assessDocumentProvenance?.({ path: filePath, text, references }) || { ok: true };
+  function documentIdentityContext(filePath, projectId = treeOperations.getProjectId?.()) {
+    const target = (deps.resolveTargetDocument || treeOperations.resolveTargetDocument)?.(filePath, { projectId });
+    return { projectId, targetDocumentId: target?.status === 'known' ? target.documentId : '' };
+  }
+
+  function documentProvenance(filePath, text, references, context = documentIdentityContext(filePath)) {
+    const capture = (deps.captureEditorDocument || treeOperations.captureEditorDocument)?.({ path: filePath, projectId: context.projectId });
+    const target = (deps.resolveTargetDocument || treeOperations.resolveTargetDocument)?.(filePath, { projectId: context.projectId });
+    if ((target?.status === 'known' && context.targetDocumentId && target.documentId !== context.targetDocumentId)
+      || (context.projectId && treeOperations.getProjectId?.() !== context.projectId))
+      return { ok: false, code: 'document_identity_mismatch', identityState: 'mismatch' };
+    if (capture?.identityState === 'mismatch' || capture?.reason === 'navigation_conflict') return capture;
+    if (capture?.ok) {
+      const id = capture.documentIdentity.documentId;
+      if (context.targetDocumentId && context.targetDocumentId !== id)
+        return { ok: false, code: 'document_identity_mismatch', identityState: 'mismatch' };
+      context.targetDocumentId = id;
+      return { ok: true, identityState: 'match', capture };
+    }
+    if (typeof text !== 'string') return { ok: false, code: 'document_identity_mismatch', identityState: 'fallback' };
+    return window.CodexOverleafStaleGuard?.assessDocumentProvenance?.({ path: filePath, text, references })
+      || { ok: true, identityState: 'fallback' };
+  }
+
+  async function settleDocumentProvenance(filePath, references, context, deadlineAt = Infinity) {
+    const deadline = Math.min(deadlineAt, Date.now() + TreeOperations.ACTIVE_EDITOR_STABILITY_MS);
+    let result;
+    do {
+      result = documentProvenance(filePath, readActiveEditorText(), references, context);
+      if (result.identityState === 'match' || result.identityState === 'mismatch' || Date.now() >= deadline) return result;
+      await delay(Math.min(50, deadline - Date.now()));
+    } while (Date.now() <= deadline);
+    return result;
   }
 
   function documentMismatchResult(filePath, provenance) {
@@ -643,7 +674,8 @@
     const reviewBlock = options.reviewGuard?.();
     if (reviewBlock) return reviewBlock;
     const currentPath = getActiveFilePath();
-    const editorReady = await awaitReview(options, () => ensureEditorReadyForOperation(operation, options.baseFileLookup, currentPath, options.provenanceReferences));
+    const identityContext = documentIdentityContext(operation.path, options.runProjectId);
+    const editorReady = await awaitReview(options, () => ensureEditorReadyForOperation(operation, options.baseFileLookup, currentPath, options.provenanceReferences, identityContext, options.deadlineAt));
     if (!editorReady.ok) {
       return editorReady;
     }
@@ -667,7 +699,7 @@
       options.baseFileLookup
     ) || { ok: true };
     if (!freshness.ok) {
-      const ready = await awaitReview(options, () => waitForFreshEditorTextForOperation(operation, options.baseFileLookup, 1500));
+      const ready = await awaitReview(options, () => waitForFreshEditorTextForOperation(operation, options.baseFileLookup, 1500, identityContext, options.provenanceReferences));
       if (options.reviewGuard?.()) return options.reviewGuard();
       if (!ready.ok) {
         const decorated = attachWritebackDebug(freshness, 'stale_guard', operation, options.baseFileLookup, current, {
@@ -756,6 +788,7 @@
       };
     }
 
+    await awaitReview(options, () => settleDocumentProvenance(operation.path, options.provenanceReferences, identityContext, options.deadlineAt));
     if (options.noTraceUndo === true) {
       const blocked = typeof options.recheckWriteProject === 'function'
         ? await options.recheckWriteProject()
@@ -771,6 +804,8 @@
 
     const finalReviewBlock = options.reviewGuard?.();
     if (finalReviewBlock) return finalReviewBlock;
+    if (Number.isFinite(options.deadlineAt) && now() >= options.deadlineAt)
+      return { ok: false, code: 'writeback_deadline_exceeded', changedDocument: false };
     if (options.noTraceUndo !== true) {
       const dispatchBlock = options.recheckEditDispatch?.();
       if (dispatchBlock) return dispatchBlock;
@@ -782,8 +817,9 @@
     }
     // Read and dispatch synchronously against the same document. Navigation,
     // freshness polling and Undo mode/project checks can all have awaited.
-    const dispatchText = readActiveEditorText();
-    const provenance = documentProvenance(operation.path, dispatchText, options.provenanceReferences);
+    const observedText = readActiveEditorText();
+    const provenance = documentProvenance(operation.path, observedText, options.provenanceReferences, identityContext);
+    const dispatchText = provenance.capture?.text ?? observedText;
     if (!provenance.ok) return documentMismatchResult(operation.path, provenance);
     if (getActiveFilePath() !== operation.path || dispatchText !== current) {
       const reason = 'The editor changed before the edit could be applied; the document was not overwritten.';
@@ -792,15 +828,16 @@
           operationType: options.noTraceUndo ? 'undo' : 'edit', changedDocument: false, userMessage: reason }) };
     }
     const result = Array.isArray(operation.patches) && operation.patches.length
-      ? replaceActiveEditorPatches(preparedPatches.patches, nextContent)
-      : replaceActiveEditorText(nextContent);
+      ? replaceActiveEditorPatches(preparedPatches.patches, nextContent, { expectedCapture: provenance.capture })
+      : replaceActiveEditorText(nextContent, { expectedCapture: provenance.capture });
     if (!result.ok) {
       return result;
     }
 
     const verifyWaitMs = Math.min(deps.writeVerifyWaitMs ?? 2500, Number.isFinite(options.deadlineAt)
       ? Math.max(0, options.deadlineAt - now()) : Infinity);
-    const verified = await verifyActiveEditorText(nextContent, operation.path, verifyWaitMs, current);
+    const verified = await verifyActiveEditorText(nextContent, operation.path, verifyWaitMs, current,
+      { ...identityContext, requireIdentity: provenance.identityState === 'match', references: options.provenanceReferences });
     if (!verified.ok) {
       const decorated = attachWritebackDebug(verified, 'write_verification', operation, options.baseFileLookup, readActiveEditorText(), {
         initialActivePath: currentPath,
@@ -889,17 +926,19 @@
     };
   }
 
-  async function verifyActiveEditorText(expected, filePath, waitMs = 1000, before) {
+  async function verifyActiveEditorText(expected, filePath, waitMs = 1000, before, identityContext = documentIdentityContext(filePath)) {
     const deadline = Date.now() + waitMs;
-    let actual = readActiveEditorText();
-    while (actual !== expected && Date.now() < deadline) {
-      await delay(50);
+    const fallbackAt = Math.min(deadline, Date.now() + TreeOperations.ACTIVE_EDITOR_STABILITY_MS);
+    let actual, provenance, identityConfirmed = false;
+    while (true) {
       actual = readActiveEditorText();
-    }
-    if (actual === expected) {
-      return {
-        ok: true
-      };
+      provenance = documentProvenance(filePath, actual, identityContext.references, identityContext);
+      actual = provenance.capture?.text ?? actual;
+      identityConfirmed = provenance.ok && getActiveFilePath() === filePath
+        && (provenance.identityState === 'match' || (!identityContext.requireIdentity && Date.now() >= fallbackAt));
+      if (identityConfirmed && actual === expected) return { ok: true };
+      if (Date.now() >= deadline || (!provenance.ok && provenance.identityState !== 'fallback' && Date.now() >= fallbackAt)) break;
+      await delay(Math.min(50, deadline - Date.now()));
     }
     return {
       ok: false,
@@ -907,7 +946,8 @@
       reason: `${filePath || '当前文件'} 写入后读回内容和 Codex 预期不一致，已停止把这次操作标记为成功。请刷新 Overleaf 后重试。`,
       expectedLength: String(expected || '').length,
       actualLength: String(actual || '').length,
-      evidence: describeReadbackMismatch(expected, actual, before, filePath)
+      evidence: { ...describeReadbackMismatch(expected, actual, before, filePath),
+        activeMatchesTarget: identityConfirmed, identityState: provenance.identityState }
     };
   }
 
@@ -937,7 +977,8 @@
     return hash.toString(16).padStart(8, '0');
   }
 
-  async function ensureEditorReadyForOperation(operation, baseFileLookup, initialActivePath, provenanceReferences) {
+  async function ensureEditorReadyForOperation(operation, baseFileLookup, initialActivePath, provenanceReferences,
+    identityContext = documentIdentityContext(operation.path), deadlineAt = Infinity) {
     if (!operation?.path) {
       return {
         ok: true,
@@ -952,7 +993,7 @@
     const currentText = readActiveEditorText();
     const previousEditorIdentity = getActiveEditorIdentity();
     const previousSignature = contentSignature(currentText);
-    const initialProvenance = documentProvenance(filePath, currentText, provenanceReferences);
+    const initialProvenance = documentProvenance(filePath, currentText, provenanceReferences, identityContext);
 
     const opened = await openFileByPath(filePath, { force: initialActivePath === filePath });
     if (!opened.ok) {
@@ -997,6 +1038,8 @@
     }
 
     return waitForEditorContentForPath(filePath, previousEditorIdentity, baseFileLookup, 9000, {
+      identityContext,
+      deadlineAt,
       initialActivePath,
       initialProvenance,
       provenanceReferences,
@@ -1007,8 +1050,9 @@
   }
 
   async function waitForEditorContentForPath(filePath, previousEditorIdentity, baseFileLookup, timeoutMs, options = {}) {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = Math.min(options.deadlineAt ?? Infinity, Date.now() + timeoutMs);
     const startedAt = Date.now();
+    const identityDeadline = Math.min(deadline, startedAt + Math.min(1500, writebackOpenSettleMs || TreeOperations.ACTIVE_EDITOR_STABILITY_MS));
     const minSettleMs = options.forceSettledOpen ? writebackOpenSettleMs : 0;
     let lastText = readActiveEditorText();
     let lastActivePath = getActiveFilePath();
@@ -1021,20 +1065,25 @@
       const settledLongEnough = Date.now() - startedAt >= minSettleMs;
       const contentChangedFromPrevious = !options.previousSignature
         || contentSignature(lastText) !== options.previousSignature;
-      const provenance = documentProvenance(filePath, lastText, options.provenanceReferences);
+      const provenance = documentProvenance(filePath, lastText, options.provenanceReferences, options.identityContext);
+      lastText = provenance.capture?.text ?? lastText;
+      if (!provenance.ok && provenance.identityState !== 'fallback' && Date.now() >= identityDeadline)
+        return documentMismatchResult(filePath, provenance);
       if (!provenance.ok) mismatch = provenance;
       // Confirm navigation independently of source freshness. A stale target
       // can be correctly open; identical baseline bytes alone cannot prove a
       // switch. Content movement remains the fallback for editor lifecycles
       // whose document identity cannot be observed reliably.
-      const switchConfirmed = identityChanged
+      const switchConfirmed = provenance.identityState === 'match' || identityChanged
         || (options.initialActivePath === filePath && Boolean(previousEditorIdentity)
           && options.initialProvenance?.ok === true && provenance.ok)
         || (contentChangedFromPrevious && settledLongEnough);
-      if (activeFileMatches && switchConfirmed && settledLongEnough && provenance.ok) {
+      if (activeFileMatches && switchConfirmed && settledLongEnough && provenance.ok
+        && (provenance.identityState === 'match' || Date.now() >= identityDeadline)) {
         return {
           ok: true,
-          text: lastText
+          text: lastText,
+          capture: provenance.capture
         };
       }
       await delay(100);
@@ -1081,24 +1130,36 @@
   async function waitForEditorDocumentForPath(filePath, previousEditorIdentity, timeoutMs, options = {}) {
     const deadline = Date.now() + timeoutMs;
     const startedAt = Date.now();
+    const identityDeadline = Math.min(deadline, startedAt + Math.min(1500, writebackOpenSettleMs || TreeOperations.ACTIVE_EDITOR_STABILITY_MS));
     const minSettleMs = options.forceSettledOpen ? writebackOpenSettleMs : 0;
     let lastText = readActiveEditorText();
     let lastActivePath = getActiveFilePath();
+    const identityContext = options.identityContext || documentIdentityContext(filePath);
+    let mismatch = null;
     while (Date.now() < deadline) {
       lastActivePath = getActiveFilePath();
       lastText = readActiveEditorText();
+      const provenance = documentProvenance(filePath, lastText, options.references, identityContext);
+      lastText = provenance.capture?.text ?? lastText;
+      if (!provenance.ok && provenance.identityState !== 'fallback' && Date.now() >= identityDeadline)
+        return documentMismatchResult(filePath, provenance);
+      if (!provenance.ok) mismatch = provenance;
       const activeFileMatches = lastActivePath === filePath;
       const identityChanged = Boolean(previousEditorIdentity) && activeEditorIdentityChanged(previousEditorIdentity);
       const settledLongEnough = Date.now() - startedAt >= minSettleMs;
       const sameFileReopenSettled = options.initialActivePath === filePath && settledLongEnough;
-      if (activeFileMatches && settledLongEnough && (identityChanged || sameFileReopenSettled)) {
+      if (activeFileMatches && settledLongEnough && provenance.ok
+        && (provenance.identityState === 'match' || Date.now() - startedAt >= TreeOperations.ACTIVE_EDITOR_STABILITY_MS)
+        && (provenance.identityState === 'match' || identityChanged || sameFileReopenSettled)) {
         return {
           ok: true,
-          text: lastText
+          text: lastText,
+          capture: provenance.capture
         };
       }
       await delay(100);
     }
+    if (mismatch) return documentMismatchResult(filePath, mismatch);
     return {
       ok: false,
       code: 'editor_document_not_switched',
@@ -1113,24 +1174,27 @@
     return normalized.trim().length === 0 ? '' : normalized;
   }
 
-  async function waitForFreshEditorTextForOperation(operation, baseFileLookup, waitMs = 1500) {
+  async function waitForFreshEditorTextForOperation(operation, baseFileLookup, waitMs = 1500, identityContext, references) {
     const deadline = Date.now() + Math.max(0, Number(waitMs) || 0);
     while (Date.now() < deadline) {
       if (operation?.path && getActiveFilePath() !== operation.path) {
         await delay(60);
         continue;
       }
-      const text = readActiveEditorText();
+      const observed = readActiveEditorText();
+      const provenance = documentProvenance(operation.path, observed, references, identityContext);
+      const text = provenance.capture?.text ?? observed;
       const freshness = window.CodexOverleafStaleGuard?.checkOperationFreshness(
         operation,
         text,
         baseFileLookup
       ) || { ok: true };
-      if (freshness.ok) {
+      if (freshness.ok && provenance.ok) {
         return {
           ok: true,
           text,
-          freshness
+          freshness,
+          capture: provenance.capture
         };
       }
       await delay(60);
@@ -1479,6 +1543,7 @@
     const expected = options.baseFileLookup?.get(operation.path);
     const text = proof?.v === 1 && proof.kind === 'text' && typeof expected === 'string';
     const binary = proof?.v === 1 && proof.kind === 'binary' && /^[a-f0-9]{64}$/i.test(proof.sha256 || '');
+    const identityContext = documentIdentityContext(operation.path, projectId);
     const isCurrent = () => Boolean(projectId) && projectId === options.runProjectId
       && treeOperations.getProjectId?.() === projectId && readWriteCancellationSequence() === cancellation && !options.reviewGuard?.();
     if (!isCurrent() || (!text && !binary) || typeof deps.deleteTextFile !== 'function') {
@@ -1486,7 +1551,7 @@
         reason: 'Verified created-file deletion is unavailable for this run.' };
     }
     if (text && projectPathExists(operation.path)) {
-      const current = await readCurrentTextFileForFreshness(operation.path);
+      const current = await readCurrentTextFileForFreshness(operation.path, options.baseFileLookup);
       if (!current.ok || current.text !== expected || !isCurrent()) {
         return { ok: false, code: 'undo_operation_failed', changedDocument: false,
           reason: 'The created file changed after this run and was left untouched.' };
@@ -1495,9 +1560,10 @@
     const result = await deps.deleteTextFile(operation, {
       isCurrent, undoCreatedFile: true, deadlineAt: options.deadlineAt,
       expectedContent: text ? expected : undefined,
-      prepareTextPreimage: text ? () => readCurrentTextFileForFreshness(operation.path) : undefined,
+      prepareTextPreimage: text ? () => readCurrentTextFileForFreshness(operation.path, options.baseFileLookup) : undefined,
       expectedSha256: binary ? proof.sha256.toLowerCase() : undefined,
       canDelete: () => isCurrent() && (binary || (treeOperations.getActiveFilePath?.() === operation.path
+        && documentProvenance(operation.path, readActiveEditorText(), options.baseFileLookup, identityContext).ok
         && readActiveEditorText() === expected))
     });
     if (!result.ok) return result;
@@ -1600,7 +1666,7 @@
       };
     }
 
-    const current = await readCurrentTextFileForFreshness(operation.path);
+    const current = await readCurrentTextFileForFreshness(operation.path, baseFileLookup);
     if (!current.ok) {
       return current;
     }
@@ -1627,13 +1693,14 @@
     return { ok: true };
   }
 
-  async function readCurrentTextFileForFreshness(filePath) {
+  async function readCurrentTextFileForFreshness(filePath, references) {
     const normalizedPath = normalizeSafeProjectPath(filePath);
     if (!normalizedPath) {
       return invalidProjectPathResult('freshness path');
     }
     const currentPath = getActiveFilePath();
     const previousEditorIdentity = getActiveEditorIdentity();
+    const identityContext = documentIdentityContext(normalizedPath);
     const opened = await openFileByPath(normalizedPath, { force: true });
     if (!opened.ok) {
       return {
@@ -1643,6 +1710,8 @@
       };
     }
     const ready = await waitForEditorDocumentForPath(normalizedPath, previousEditorIdentity, 9000, {
+      identityContext,
+      references,
       initialActivePath: currentPath,
       forceSettledOpen: true
     });

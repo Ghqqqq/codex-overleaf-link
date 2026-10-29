@@ -17,12 +17,14 @@
     const fileListCache = createKeyedCache();
 
     function editorCaptureKey() {
-      const identity = deps.getActiveEditorIdentity?.();
-      return { path: deps.getActiveFilePath?.(), view: identity?.view || identity?.node, doc: identity?.doc };
+      const capture = deps.captureEditorDocument?.({ path: deps.getActiveFilePath?.(), projectId: deps.getProjectId?.() });
+      return capture?.ok ? capture : null;
     }
 
     function sameEditorCapture(left, right) {
-      return Boolean(left?.path && left.view) && left.path === right.path && left.view === right.view && left.doc === right.doc;
+      return Boolean(left?.ok && right?.ok) && left.view === right.view && left.state === right.state && left.doc === right.doc
+        && left.text === right.text && ['path', 'projectId', 'documentId', 'targetDocumentId']
+          .every(key => left.documentIdentity[key] === right.documentIdentity[key]);
     }
 
     function hasEditorOverlay(snapshot) {
@@ -32,33 +34,52 @@
         && !/^overleaf-(?:zip|doc-fetch)/.test(file.source || ''));
     }
 
+    function hasNavigationReads(snapshot) {
+      return snapshot?.files?.some(file => typeof file.content === 'string' && file.source !== 'active-editor'
+        && !/^overleaf-(?:zip|doc-fetch)/.test(file.source || ''));
+    }
+
     async function getProjectSnapshot(params = {}) {
       const cacheKey = getSnapshotCacheKey(params);
       const maxAgeMs = normalizeSnapshotMaxAge(params.maxAgeMs);
       const now = Date.now();
       const cacheEntry = snapshotCache.entries.get(cacheKey);
       const captureKey = editorCaptureKey();
+      const projectId = deps.getProjectId?.();
 
-      if (!params.force && cacheEntry?.pending
+      function currentSnapshot(snapshot) {
+        if (deps.getProjectId?.() !== projectId) return withoutEditorFiles(snapshot, true);
+        if (!hasEditorOverlay(snapshot) || params.allowEditorNavigation === true || hasNavigationReads(snapshot)) return snapshot;
+        const captures = deps.getSnapshotEditorCaptures?.(snapshot) || [];
+        if (captures.length === 1 && deps.isCaptureCurrent?.(captures[0])) return snapshot;
+        // Fallback captures can be returned once, but never reused from cache.
+        if (!snapshot.files.some(file => file.documentIdentity !== undefined)) return snapshot;
+        return withoutEditorFiles(snapshot);
+      }
+
+      if (!params.force && cacheEntry?.pending && (params.allowEditorNavigation === false || params.zipOnly || params.serverOnly)
         && (params.serverOnly === true || sameEditorCapture(cacheEntry.pendingCaptureKey, captureKey))) {
         const snapshot = await cacheEntry.pending;
-        if (!hasEditorOverlay(snapshot) || sameEditorCapture(cacheEntry.pendingCaptureKey, editorCaptureKey())) return snapshot;
-        return getProjectSnapshot({ ...params, force: true });
+        return currentSnapshot(snapshot);
       }
 
       if (!params.force && cacheEntry?.value && now - cacheEntry.capturedAt <= maxAgeMs
-        && (!hasEditorOverlay(cacheEntry.value) || sameEditorCapture(cacheEntry.captureKey, captureKey))) {
+        && (!hasEditorOverlay(cacheEntry.value) || (params.allowEditorNavigation !== true
+          && sameEditorCapture(cacheEntry.captureKey, captureKey)))) {
         return withSnapshotCacheMetadata(cacheEntry.value, 'memory', cacheEntry.capturedAt);
       }
 
       const pending = deps.buildProjectSnapshot(params)
         .then(snapshot => {
+          const captures = deps.getSnapshotEditorCaptures?.(snapshot) || [];
+          const finalCapture = captures.length === 1 ? captures[0] : null;
+          snapshot = currentSnapshot(snapshot);
           const capturedAt = Date.now();
           const currentEntry = snapshotCache.entries.get(cacheKey);
           if (currentEntry?.pending === pending) {
             snapshotCache.entries.set(cacheKey, {
               value: snapshot,
-              captureKey,
+              captureKey: params.allowEditorNavigation === true || hasNavigationReads(snapshot) ? null : finalCapture,
               capturedAt,
               pending: null
             });
@@ -80,6 +101,14 @@
         pending
       });
       return pending;
+    }
+
+    function withoutEditorFiles(snapshot, projectChanged = false) {
+      const files = projectChanged ? [] : (snapshot?.files || []).filter(file => /^overleaf-(?:zip|doc-fetch)/.test(file.source || ''));
+      const removed = (snapshot?.files || []).filter(file => !files.includes(file));
+      return { ...snapshot, files, capabilities: { ...snapshot?.capabilities, fullProjectSnapshot: false,
+        requestedPathsComplete: false, skipped: [...(snapshot?.capabilities?.skipped || []),
+          ...removed.map(file => ({ path: file.path, reason: 'document_identity_mismatch' }))] } };
     }
 
     async function getProjectFileList(params = {}) {

@@ -68,8 +68,15 @@
       return '';
     }
 
-    function replaceActiveEditorText(text) {
+    function captureMatches(view, capture) {
+      return !capture || (view === capture.view && view?.state === capture.state && view.state.doc === capture.doc
+        && view.state.doc.toString() === capture.text);
+    }
+
+    function replaceActiveEditorText(text, options = {}) {
       const editorView = deps.getCodeMirrorEditorView?.();
+      if (!captureMatches(editorView, options.expectedCapture))
+        return { ok: false, code: 'document_identity_mismatch', changedDocument: false };
       if (editorView) {
         const from = 0;
         const to = deps.getCodeMirrorDocLength(editorView);
@@ -120,13 +127,15 @@
       };
     }
 
-    function replaceActiveEditorPatches(patches, nextContent) {
+    function replaceActiveEditorPatches(patches, nextContent, options = {}) {
       const normalized = deps.normalizeTextPatches(patches, readActiveEditorText().length);
       if (!normalized.ok) {
         return normalized;
       }
 
       const editorView = deps.getCodeMirrorEditorView?.();
+      if (!captureMatches(editorView, options.expectedCapture))
+        return { ok: false, code: 'document_identity_mismatch', changedDocument: false };
       if (editorView) {
         editorView.dispatch({
           changes: normalized.patches.map(patch => ({
@@ -159,7 +168,7 @@
         };
       }
 
-      const result = replaceActiveEditorText(nextContent);
+      const result = replaceActiveEditorText(nextContent, options);
       return result.ok
         ? {
           ...result,

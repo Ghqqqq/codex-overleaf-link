@@ -5600,8 +5600,9 @@
     };
   }
 
-  async function getRunProjectSnapshot() {
+  async function getRunProjectSnapshot(expectedProjectId = getCurrentProjectId()) {
     const project = await callPageBridge('getProjectSnapshot', {
+      projectId: expectedProjectId,
       force: true,
       maxAgeMs: 0,
       preferLightweight: true,
@@ -5613,11 +5614,12 @@
       zipTimeoutMs: RUN_SNAPSHOT_ZIP_TIMEOUT_MS,
       focusFiles: getActiveFocusFiles()
     });
-    const sanitizedProject = sanitizeRunProjectSnapshot(project);
+    const sanitizedProject = sanitizeRunProjectSnapshot(project, expectedProjectId);
     if (sanitizedProject?.capabilities?.fullProjectSnapshot || sanitizedProject?.capabilities?.pathIdentityComplete === false) {
       return sanitizedProject;
     }
     const pageStateProject = await callPageBridge('getProjectSnapshot', {
+      projectId: expectedProjectId,
       force: true,
       maxAgeMs: 0,
       preferLightweight: true,
@@ -5627,17 +5629,21 @@
       includeBinaryFiles: false,
       focusFiles: getActiveFocusFiles()
     });
-    const sanitizedPageStateProject = sanitizeRunProjectSnapshot(pageStateProject);
+    const sanitizedPageStateProject = sanitizeRunProjectSnapshot(pageStateProject, expectedProjectId);
     if (sanitizedPageStateProject?.capabilities?.fullProjectSnapshot) {
       return sanitizedPageStateProject;
     }
     return sanitizedProject;
   }
 
-  function sanitizeRunProjectSnapshot(project) {
+  function sanitizeRunProjectSnapshot(project, expectedProjectId = project?.id) {
     if (!project || typeof project !== 'object') return project;
+    if (project.id !== expectedProjectId) return { ...project, files: [], capabilities: { ...project.capabilities,
+      fullProjectSnapshot: false, skipped: [{ path: '', reason: 'document_identity_mismatch' }] } };
     const normalize = Modules.ProjectFiles.normalizeSafeProjectPath;
-    const files = Array.isArray(project.files) ? project.files : [];
+    const files = Array.isArray(project.files) ? project.files.map(file => file?.documentIdentity === undefined ? file
+      : { ...file, documentIdentity: snapshotDocumentIdentity(file.documentIdentity, file.path, project.id) }) : [];
+    project = { ...project, files };
     const counts = new Map();
     for (const file of files) {
       const path = normalize(file?.path);
@@ -5741,15 +5747,31 @@
     return candidates
       .filter(file =>
         typeof file.content === 'string' &&
-        Modules.ProjectFiles.isUsableProjectFileContent(file.content) &&
+        (Modules.ProjectFiles.isUsableProjectFileContent(file.content) || file.content === '') &&
         file.path &&
         !seen.has(file.path) &&
         seen.add(file.path)
       )
       .map(file => ({
         path: file.path,
-        content: file.content
+        content: file.content,
+        kind: 'text',
+        source: file.source,
+        ...(file.documentIdentity !== undefined
+          ? { documentIdentity: snapshotDocumentIdentity(file.documentIdentity, file.path, project.id) } : {})
       }));
+  }
+
+  function snapshotDocumentIdentity(identity, path, projectId) {
+    // Preserve invalid evidence as invalid, never silently downgrade to the
+    // missing-evidence fallback. Native independently hashes the content.
+    if (!identity || identity.version !== 1 || identity.source !== 'cm-ranges-v1'
+      || identity.path !== path || identity.projectId !== projectId
+      || typeof identity.documentId !== 'string' || !/^[a-f0-9]{24}$/.test(identity.documentId)
+      || typeof identity.targetDocumentId !== 'string' || !/^[a-f0-9]{24}$/.test(identity.targetDocumentId)
+      || typeof identity.contentSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(identity.contentSha256)) return null;
+    return { version: 1, source: 'cm-ranges-v1', projectId, path,
+      documentId: identity.documentId, targetDocumentId: identity.targetDocumentId, contentSha256: identity.contentSha256 };
   }
 
   function normalizeSnapshotPath(path) {
