@@ -10,32 +10,43 @@
   const DOCUMENT_PROVENANCE_OTHER_MIN = 0.9;
   const DOCUMENT_PROVENANCE_CLAIMED_MAX = 0.5;
   const DOCUMENT_PROVENANCE_EDGE_LIMIT = 64 * 1024;
-  const DOCUMENT_PROVENANCE_MIN_EVIDENCE_CHARS = 64;
 
   function assessDocumentProvenance(input = {}) {
+    const { path, projectId, documentIdentity } = input || {};
+    if (documentIdentity !== undefined) {
+      const valid = documentIdentity && typeof documentIdentity === 'object' && !Array.isArray(documentIdentity)
+        && documentIdentity.version === 1 && documentIdentity.source === 'cm-ranges-v1'
+        && typeof projectId === 'string' && projectId.length > 0 && documentIdentity.projectId === projectId
+        && typeof path === 'string' && path.length > 0 && documentIdentity.path === path
+        && typeof documentIdentity.documentId === 'string' && typeof documentIdentity.targetDocumentId === 'string'
+        && /^[a-f0-9]{24}$/.test(documentIdentity.documentId)
+        && /^[a-f0-9]{24}$/.test(documentIdentity.targetDocumentId)
+        && documentIdentity.documentId === documentIdentity.targetDocumentId;
+      return valid ? { ok: true, identityState: 'match' }
+        : { ok: false, code: 'document_identity_mismatch', identityState: 'mismatch' };
+    }
     try {
       const { path, text, references } = input || {};
-      if (typeof text !== 'string' || !references) return { ok: true };
+      if (typeof text !== 'string' || !references) return { ok: true, identityState: 'fallback' };
       const entries = references instanceof Map ? references : Object.entries(references);
       const claimed = references instanceof Map ? references.get(path)
         : Object.prototype.hasOwnProperty.call(references, path) ? references[path] : undefined;
-      if (text === claimed) return { ok: true };
-      if (typeof claimed !== 'string') return { ok: true };
-      if (text.trim().length < DOCUMENT_PROVENANCE_MIN_EVIDENCE_CHARS) return { ok: true };
+      if (text === claimed) return { ok: true, identityState: 'fallback' };
       let matchedPath, bestScore = -1;
       for (const [otherPath, reference] of entries) {
         if (otherPath === path || typeof reference !== 'string') continue;
-        const score = text === reference ? 1 : documentSimilarity(text, reference);
+        if (text === reference) return { ok: false, code: 'document_identity_mismatch', identityState: 'fallback', matchedPath: otherPath };
+        const score = documentSimilarity(text, reference);
         if (score > bestScore) { bestScore = score; matchedPath = otherPath; }
       }
       if (bestScore >= DOCUMENT_PROVENANCE_OTHER_MIN
-        && documentSimilarity(text, claimed) < DOCUMENT_PROVENANCE_CLAIMED_MAX) {
-        return { ok: false, code: 'document_identity_mismatch', matchedPath };
+        && (typeof claimed !== 'string' || documentSimilarity(text, claimed) < DOCUMENT_PROVENANCE_CLAIMED_MAX)) {
+        return { ok: false, code: 'document_identity_mismatch', identityState: 'fallback', matchedPath };
       }
     } catch (_error) {
       // Unavailable references supply no contradictory evidence.
     }
-    return { ok: true };
+    return { ok: true, identityState: 'fallback' };
   }
 
   // Shared prefix + non-overlapping suffix / longer length. For large files,

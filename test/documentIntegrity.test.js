@@ -15,6 +15,47 @@ const Transcript = require('../extension/src/shared/agentTranscript');
 const Completion = require('../extension/src/content/runCompletionMeta');
 const { computeTextPatches } = require('../native-host/src/textPatch');
 const PROJECT = 'document-integrity';
+const Tree = require('../extension/src/page/treeOperations');
+const OtText = require('../extension/src/shared/otText');
+const idFor = path => require('node:crypto').createHash('sha256').update(path).digest('hex').slice(0, 24);
+const evidence = (path, actualPath, text, projectId = PROJECT) => ({ version: 1, source: 'cm-ranges-v1',
+  projectId, path, targetDocumentId: idFor(path), documentId: idFor(actualPath), contentSha256: OtText.hashText(text) });
+function projectTree(paths) {
+  const root = { docs: [], folders: [] };
+  for (const path of paths) {
+    const parts = path.split('/'), name = parts.pop();
+    let folder = root;
+    for (const part of parts) {
+      let child = folder.folders.find(item => item.name === part);
+      if (!child) { child = { name: part, docs: [], folders: [] }; folder.folders.push(child); }
+      folder = child;
+    }
+    folder.docs.push({ name, _id: idFor(path) });
+  }
+  return root;
+}
+
+function contentOverlayTransport(project, focusFiles = []) {
+  // Capture the real runtime callbacks at its composition boundary. The panel
+  // and service controllers are external I/O; no runtime function is extracted.
+  let callbacks;
+  const stop = new Error('fixture composition complete');
+  const window = {}, document = {}, chrome = { runtime: { id: 'fixture', getManifest: () => ({}) } };
+  const stub = { create: () => ({}) };
+  const modules = new Proxy({ ProjectFiles: Files,
+    DiagnosticsPanel: { isTextSnapshotFile: file => file.kind !== 'binary' && typeof file.content === 'string' },
+    PageBridgeClient: { create: () => ({ start() {} }) },
+    OtWarmMirror: { create(value) { callbacks = value; throw stop; } }
+  }, { get: (target, key) => target[key] || stub });
+  vm.runInNewContext(fs.readFileSync(require.resolve('../extension/src/content/contentRuntime'), 'utf8'),
+    { window, document, chrome, crypto: {} });
+  assert.throws(() => window.CodexOverleafContentRuntime.init({ modules }), error => error === stop);
+  const sanitized = callbacks.sanitizeRunProjectSnapshot(project);
+  const overlays = callbacks.buildSnapshotFileOverlays(sanitized, focusFiles);
+  const params = require('../extension/src/content/runController').buildCodexRunParams({ currentProjectId: project.id,
+    useExistingMirror: true, fileOverlays: overlays });
+  return JSON.parse(JSON.stringify(params.fileOverlays));
+}
 
 // Only the external editor, file navigation and server snapshot are substituted.
 // Production code owns patching, identity/freshness checks, readback and Undo.
@@ -25,17 +66,19 @@ function harness(t, initial, options = {}) {
   t.mock.method(Date, 'now', () => clock);
   for (const path of files.keys()) {
     const doc = { toString: () => files.get(path), get length() { return files.get(path).length; } };
-    views.set(path, { state: { doc, values: [{ ranges: { docId: path, changes: structuredClone(options.changes?.[path] || []), comments: [] }, threads: {} }] },
+    views.set(path, { state: { doc, values: [{ ranges: { docId: idFor(path), changes: structuredClone(options.changes?.[path] || []), comments: [] }, threads: {} }] },
       dispatch({ changes }) {
         let next = files.get(path);
         for (const change of (Array.isArray(changes) ? changes : [changes]).slice().sort((a, b) => b.from - a.from))
           next = next.slice(0, change.from) + change.insert + next.slice(change.to);
         files.set(path, options.corruptWrite ? next + 'unexpected' : next);
         writes.push(path);
+        options.afterDispatch?.(api);
       }
     });
   }
-  const win = { _ide: { project: { _id: PROJECT } }, document: { querySelector: selector => selector === 'meta[name="ol-csrfToken"]' ? { getAttribute: () => 'fixture-csrf' } : null },
+  const win = { _ide: { project: { _id: PROJECT, rootFolder: projectTree([...files.keys()]) } },
+    location: { pathname: '/project/' + PROJECT }, document: { querySelector: selector => selector === 'meta[name="ol-csrfToken"]' ? { getAttribute: () => 'fixture-csrf' } : null },
     AbortController, setTimeout, clearTimeout,
     CodexOverleafProjectFiles: Files, CodexOverleafStaleGuard: Stale, CodexOverleafWriteGuard: Guard,
     CodexOverleafTrackedChangeCapture: Capture, CodexOverleafTrackedChangesLifecycle: Lifecycle };
@@ -45,19 +88,22 @@ function harness(t, initial, options = {}) {
     ledger.changes = ledger.changes.filter(change => !ids.has(change.id));
     return { ok: true };
   };
+  const identity = Tree.create({ window: win, document: { querySelectorAll: () => [] },
+    normalizePath: Files.normalizeSafeProjectPath, getCodeMirrorEditorView: () => views.get(active) });
   const capture = Capture.create({ getCodeMirrorEditorView: () => views.get(active),
-    getTrackedChangeDocumentId: path => path, getActiveFilePath: () => active });
+    getTrackedChangeDocumentId: idFor, getActiveFilePath: () => active });
   const adapter = Editor.create({ getCodeMirrorEditorView: () => views.get(active),
     getCodeMirrorDocText: view => view.state.doc.toString(), getCodeMirrorDocLength: view => view.state.doc.length,
     normalizeTextPatches: patches => ({ ok: true, patches: Writeback.normalizeTextPatches(patches) }) });
   const router = Router.create({ ...adapter, window: win,
-    getCodeMirrorEditorView: () => views.get(active), getTrackedChangeDocumentId: path => path,
-    getActiveEditorIdentity: () => ({ type: 'codemirror-view', doc: views.get(active).state.doc }),
+    captureEditorDocument: identity.captureEditorDocument, resolveTargetDocument: identity.resolveTargetDocument,
+    getCodeMirrorEditorView: () => views.get(active), getTrackedChangeDocumentId: idFor,
+    getActiveEditorIdentity: () => ({ type: 'codemirror-view', view: views.get(active), state: views.get(active).state, doc: views.get(active).state.doc }),
     activeEditorIdentityChanged: previous => previous?.doc !== views.get(active).state.doc,
     normalizeSafeProjectPath: Files.normalizeSafeProjectPath,
-    writebackOpenSettleMs: 0, delay: async ms => { clock += ms; },
+    writebackOpenSettleMs: 0, delay: async ms => { clock += ms; options.onDelay?.(api); },
     compileBridge: { markSourceEdited() {} },
-    getReviewingState: () => ({ reviewing: { ok: reviewing } }),
+    getReviewingState: () => { options.onReviewState?.(api); return { reviewing: { ok: reviewing } }; },
     isReviewingConfirmedForWrite: state => state.reviewing.ok,
     isEditingConfirmedForNoTraceUndo: state => !state.reviewing.ok,
     ensureEditing: async () => { reviewing = false; return { ok: true }; },
@@ -68,17 +114,20 @@ function harness(t, initial, options = {}) {
     treeOperations: {
       getProjectId: () => win._ide.project._id, getActiveFilePath: () => selected,
       projectPathExists: path => files.has(path),
-      async openFileByPath(path) { selected = path; if (!options.stuckEditor) active = path; return { ok: true }; },
+      async openFileByPath(path) { selected = path; if (!options.stuckEditor) active = path; options.onOpen?.(api); return { ok: true }; },
       async waitForActiveEditorText(path) { return { ok: true, path, text: files.get(active) }; }
     }
   });
   const snapshot = () => ({ id: PROJECT, capabilities: { fullProjectSnapshot: true, method: 'overleaf-zip', skipped: [] },
     files: [...files].map(([path, content]) => ({ path, content, source: 'overleaf-zip' })) });
-  return { router, files, writes, win, snapshot, refs: () => capture.prepareTrackedChangeCapture(active).refs,
+  const api = { router, files, writes, win, views, identity, snapshot,
+    setActive: path => { active = selected = path; },
+    refs: () => capture.prepareTrackedChangeCapture(active).refs,
     apply(baseFiles, operations, extra = {}) {
       return router.applyOperations({ runProjectId: PROJECT, requireEditing: true, baseFiles, operations, ...extra });
     }
   };
+  return api;
 }
 
 function writeOutcome(operations, applyResult) {
@@ -297,20 +346,35 @@ test('D1: a contradictory overlay batch never reaches the mirror or its baseline
   const Mirror = require('../native-host/src/mirrorWorkspace');
   const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'document-provenance-'));
   t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
-  const files = [{ path: 'main.tex', content: '\\section{Methods}\nWe compare retrieval policies using held-out recommendation data and report the measured ranking accuracy.\n' }, { path: 'sample.bib', content: '@book{reference,\n  author = {Ada Reader},\n  title = {A Handbook of Bibliographic Records},\n  year = {2024}\n}\n' }];
+  const files = [{ path: 'main.tex', content: 'document body\n' }, { path: 'sample.bib', content: '@book{reference}\n' }];
   const mirror = await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir,
     project: { files, capabilities: { fullProjectSnapshot: true } } });
   const baseline = fs.readFileSync(mirror.baselinePath);
+  const good = { path: 'sample.bib', content: '@book{legitimate unsaved edit}\n' };
+  const bad = { path: 'main.tex', content: files[1].content };
   await assert.rejects(Mirror.applyFileOverlays({ projectId: PROJECT, rootDir, overlays: [
-    { path: 'sample.bib', content: '@book{legitimate unsaved edit}\n' },
-    { path: 'main.tex', content: files[1].content }
+    good, bad
   ] }), { code: 'document_identity_mismatch' });
+  const overlays = [{ ...good, documentIdentity: evidence(good.path, good.path, good.content) },
+    { ...bad, documentIdentity: evidence(bad.path, 'sample.bib', bad.content) }];
+  await assert.rejects(Mirror.applyFileOverlays({ projectId: PROJECT, evidenceProjectId: PROJECT, rootDir, overlays }),
+    { code: 'document_identity_mismatch' });
+  await assert.rejects(Mirror.syncOverleafToMirror({ projectId: PROJECT, evidenceProjectId: PROJECT, rootDir,
+    project: { id: PROJECT, files: overlays, capabilities: { fullProjectSnapshot: true } } }), { code: 'document_identity_mismatch' });
+  for (const invalid of [null, { version: 2 }, { projectId: 'other-project' }, { path: 'other.tex' },
+    { documentId: idFor('main.tex').toUpperCase() }, { contentSha256: '0'.repeat(64) }]) {
+    const documentIdentity = invalid === null ? null : { ...overlays[0].documentIdentity, ...invalid };
+    await assert.rejects(Mirror.applyFileOverlays({ projectId: PROJECT, evidenceProjectId: PROJECT, rootDir,
+      overlays: [{ ...overlays[0], documentIdentity }] }), { code: 'document_identity_mismatch' });
+  }
+  await assert.rejects(Mirror.applyFileOverlays({ projectId: PROJECT, rootDir, overlays: [overlays[0]] }),
+    { code: 'document_identity_mismatch' }, 'missing raw request identity cannot validate evidence');
   for (const file of files) assert.equal(fs.readFileSync(path.join(mirror.workspacePath, file.path), 'utf8'), file.content);
   assert.deepEqual(fs.readFileSync(mirror.baselinePath), baseline);
 });
 
 test('D1: a persistent same-path report with another document mounted never dispatches', async t => {
-  const initial = { 'sample.bib': '@book{reference,\n  author = {Ada Reader},\n  title = {A Handbook of Bibliographic Records},\n  year = {2024}\n}\n', 'main.tex': '\\section{Methods}\nWe compare retrieval policies using held-out recommendation data and report the measured ranking accuracy.\n' };
+  const initial = { 'sample.bib': '@book{reference}\n', 'main.tex': 'document body\n' };
   const h = harness(t, initial, { stuckEditor: true, reportedPath: 'main.tex' });
   // An insertion outside the differing envelope can pass freshness alone.
   const result = await h.apply(h.snapshot().files, [{ type: 'edit', path: 'main.tex',
@@ -340,8 +404,11 @@ test('a cleared editor beside an empty sibling reaches the snapshot and Native o
   const win = { location: { pathname: '/project/' + PROJECT, origin: 'https://fixture.invalid',
     href: 'https://fixture.invalid/project/' + PROJECT }, CodexOverleafProjectFiles: Files,
     setTimeout(fn, ms) { if (ms < 1000) { clock += ms; queueMicrotask(fn); } return 1; }, clearTimeout() {} };
-  const view = {}, doc = { toString: () => '' };
+  win._ide = { project: { _id: PROJECT, rootFolder: projectTree(['main.tex', 'empty.tex']) } };
+  const doc = { toString: () => '', length: 0 };
+  const view = { state: { doc, values: [{ ranges: { docId: idFor('main.tex'), changes: [], comments: [] }, threads: {} }] }, dispatch() {} };
   const tree = Tree.create({ window: win, document: { querySelectorAll: () => [] },
+    getCodeMirrorEditorView: () => view,
     getActiveFilePathFromEditorStore: () => 'main.tex', readActiveEditorText: () => '',
     getActiveEditorIdentity: () => ({ type: 'codemirror-view', view, doc }) });
   const snapshot = await Snapshot.create({ window: win, treeOperations: tree }).buildProjectSnapshot({ zipOnly: true });
@@ -354,7 +421,10 @@ test('a cleared editor beside an empty sibling reaches the snapshot and Native o
   const mirror = await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir, project: {
     files: [{ path: 'main.tex', content: original }, { path: 'empty.tex', content: '' }],
     capabilities: { fullProjectSnapshot: true } } });
-  await Mirror.applyFileOverlays({ projectId: PROJECT, rootDir, overlays: [cleared] });
+  const overlays = contentOverlayTransport(snapshot);
+  assert.equal(overlays.length, 1);
+  assert.deepEqual(overlays[0].documentIdentity, evidence('main.tex', 'main.tex', ''));
+  await Mirror.applyFileOverlays({ projectId: PROJECT, evidenceProjectId: PROJECT, rootDir, overlays });
   for (const filePath of ['main.tex', 'empty.tex']) {
     assert.equal(fs.readFileSync(path.join(mirror.workspacePath, filePath), 'utf8'), '');
     assert.equal(JSON.parse(fs.readFileSync(mirror.baselinePath)).files.find(file => file.path === filePath).content, '');
@@ -379,9 +449,129 @@ test('an edit equal to a sibling baseline retains its own similar provenance thr
   t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
   const mirror = await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir,
     project: { files, capabilities: { fullProjectSnapshot: true } } });
-  await Mirror.applyFileOverlays({ projectId: PROJECT, rootDir, overlays: [{ path: 'main.tex', content: revised }] });
+  const overlays = contentOverlayTransport({ id: PROJECT, activePath: 'main.tex', files: [
+    { path: 'main.tex', content: revised, source: 'active-editor', documentIdentity: evidence('main.tex', 'main.tex', revised) }
+  ] });
+  await Mirror.applyFileOverlays({ projectId: PROJECT, evidenceProjectId: PROJECT, rootDir, overlays });
   assert.equal(fs.readFileSync(path.join(mirror.workspacePath, 'main.tex'), 'utf8'), revised);
   assert.equal(JSON.parse(fs.readFileSync(mirror.baselinePath)).files.find(file => file.path === 'main.tex').content, revised);
+
+  const previous = 'Entirely unrelated previous draft.';
+  const rewritten = harness(t, { 'main.tex': previous, 'backup.tex': revised });
+  const sequential = await rewritten.apply(rewritten.snapshot().files, [
+    { type: 'edit', path: 'main.tex', replaceAll: revised },
+    { type: 'edit', path: 'main.tex', replaceAll: revised + '% next edit\n' }
+  ]);
+  assert.equal(sequential.ok, true, JSON.stringify(sequential));
+  assert.equal(rewritten.files.get('main.tex'), revised + '% next edit\n');
+  assert.equal(rewritten.files.get('backup.tex'), revised);
+  assert.deepEqual(rewritten.writes, ['main.tex', 'main.tex']);
+  await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir, project: {
+    files: [{ path: 'main.tex', content: previous }, files[1]], capabilities: { fullProjectSnapshot: true } } });
+  await Mirror.applyFileOverlays({ projectId: PROJECT, evidenceProjectId: PROJECT, rootDir, overlays });
+  assert.equal(fs.readFileSync(path.join(mirror.workspacePath, 'main.tex'), 'utf8'), revised);
+});
+
+test('mounted identity survives equal-text switches while stale cache, dispatch and readback bindings cannot succeed', async t => {
+  const Snapshot = require('../extension/src/page/snapshotRouter');
+  const Cache = require('../extension/src/page/overleafProjectSnapshot');
+  let clock = 1000, active = 'b.tex', hint = 'b.tex', mountAt = 1150;
+  const state = name => ({ doc: { length: 4, toString: () => 'same' },
+    values: [{ ranges: { docId: idFor(name), changes: [], comments: [] }, threads: {} }] });
+  const view = { state: state('a.tex'), dispatch() {} };
+  t.mock.method(Date, 'now', () => clock);
+  const win = { location: { pathname: '/project/' + PROJECT, origin: 'https://fixture.invalid' },
+    _ide: { project: { _id: PROJECT, rootFolder: projectTree(['a.tex', 'b.tex']) } },
+    overleaf: { unstable: { store: { get: key => key === 'editor.open_doc_id' ? idFor(hint) : undefined } } },
+    CodexOverleafProjectFiles: Files,
+    setTimeout(fn, ms) { clock += ms; if (mountAt && clock >= mountAt) { view.state = state('b.tex'); mountAt = 0; } queueMicrotask(fn); return 1; },
+    clearTimeout() {} };
+  const tree = Tree.create({ window: win, document: { querySelectorAll: () => [] }, normalizePath: Files.normalizeSafeProjectPath,
+    getCodeMirrorEditorView: () => view, getActiveFilePathFromEditorStore: () => active,
+    getActiveEditorIdentity: () => ({ type: 'codemirror-view', view, state: view.state, doc: view.state.doc }),
+    readActiveEditorText: () => view.state.doc.toString() });
+  assert.equal(tree.captureEditorDocument({ path: active }).identityState, 'unavailable');
+  const ready = await tree.waitForActiveEditorText(active, 1500, { allowEmpty: true, notSignature: tree.contentSignature('same') });
+  assert.equal(ready.ok, true);
+  assert.equal(ready.documentIdentity.documentId, idFor('b.tex'));
+  assert.ok(clock >= 1450, 'the mounted logical document must settle, even when bytes are identical');
+
+  const snapshotRouter = Snapshot.create({ window: win, treeOperations: tree });
+  let finish, captured, builds = 0;
+  const built = new Promise(resolve => { captured = resolve; });
+  const pending = new Promise(resolve => { finish = resolve; });
+  const cache = Cache.create({ window: win, ...tree,
+    getSnapshotEditorCaptures: snapshotRouter.getSnapshotEditorCaptures,
+    async buildProjectSnapshot(params) { builds++; const result = await snapshotRouter.buildProjectSnapshot(params); captured(); await pending; return result; }
+  });
+  const params = { preferLightweight: true, allowZipFallback: false, allowEditorNavigation: false, restrictToRequestedPathsOnly: true };
+  const first = cache.getProjectSnapshot(params), second = cache.getProjectSnapshot(params);
+  await built;
+  active = hint = 'a.tex'; view.state = state('a.tex'); finish();
+  for (const snapshot of await Promise.all([first, second])) {
+    assert.equal(snapshot.files.length, 0);
+    assert.equal(snapshot.capabilities.fullProjectSnapshot, false);
+  }
+  assert.equal(builds, 1);
+  const fresh = await cache.getProjectSnapshot({ ...params, force: true });
+  assert.equal(fresh.files[0].documentIdentity.documentId, idFor('a.tex'));
+  const reused = await cache.getProjectSnapshot(params);
+  assert.equal(reused.files[0].documentIdentity.documentId, idFor('a.tex'));
+  assert.equal(builds, 2);
+
+  let opened = false;
+  const dispatch = harness(t, { 'main.tex': 'same', 'other.tex': 'same' }, {
+    onOpen() { opened = true; }, onReviewState(h) { if (opened) h.setActive('other.tex'); }
+  });
+  const blocked = await dispatch.apply(dispatch.snapshot().files, [{ type: 'edit', path: 'main.tex', replaceAll: 'after' }]);
+  assert.equal(blocked.skipped[0].result.failure.code, 'document_identity_mismatch');
+  assert.deepEqual(dispatch.writes, []);
+  const readback = harness(t, { 'main.tex': 'before', 'other.tex': 'after' }, { afterDispatch: h => h.setActive('other.tex') });
+  const unverified = await readback.apply(readback.snapshot().files, [{ type: 'edit', path: 'main.tex', replaceAll: 'after' }]);
+  assert.deepEqual(readback.writes, ['main.tex']);
+  assert.equal(unverified.skipped[0].result.failure.code, 'write_observed_mismatch');
+  assert.equal(unverified.skipped[0].result.failure.changedDocument, true);
+});
+
+test('unavailable ranges and stale navigation hints use the bounded strict fallback without granting identity', async t => {
+  let clock = 1000;
+  t.mock.method(Date, 'now', () => clock);
+  const text = '@book{reference}\n';
+  const view = { state: { doc: { toString: () => text, length: text.length }, values: [] }, dispatch() {} };
+  const win = { location: { pathname: '/project/' + PROJECT }, CodexOverleafProjectFiles: Files,
+    _ide: { project: { _id: PROJECT, rootFolder: projectTree(['main.tex', 'sample.bib']) }, editor: {} },
+    setTimeout(fn, ms) { clock += ms; queueMicrotask(fn); return 1; }, clearTimeout() {} };
+  const tree = Tree.create({ window: win, document: { querySelectorAll: () => [] },
+    getCodeMirrorEditorView: () => view, readActiveEditorText: () => text,
+    getActiveFilePathFromEditorStore: () => 'main.tex',
+    getActiveEditorIdentity: () => ({ type: 'codemirror-view', view, doc: view.state.doc }) });
+  for (const staleRanges of [false, true]) {
+    view.state.values = staleRanges ? [{ ranges: { docId: idFor('main.tex'), changes: [], comments: [] }, threads: {} }] : [];
+    win._ide.editor.open_doc_id = staleRanges ? idFor('sample.bib') : '';
+    assert.equal(tree.captureEditorDocument({ path: 'main.tex' }).identityState, 'unavailable');
+    const rejected = await tree.waitForActiveEditorText('main.tex', 900, {
+      references: new Map([['main.tex', 'document body\n'], ['sample.bib', text]]) });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.code, 'document_identity_mismatch');
+    if (staleRanges) {
+      const equal = await tree.waitForActiveEditorText('main.tex', 1500, { references: new Map([['main.tex', text]]) });
+      assert.equal(equal.ok, false, 'persistent conflicting signals cannot be excused by equal baseline bytes');
+      assert.equal(equal.code, 'document_identity_mismatch');
+      const mismatch = harness(t, { 'main.tex': text, 'sample.bib': text });
+      mismatch.win._ide.editor = { open_doc_id: idFor('sample.bib') };
+      const write = await mismatch.apply(mismatch.snapshot().files, [{ type: 'edit', path: 'main.tex', replaceAll: 'changed' }]);
+      assert.equal(write.skipped[0].result.failure.code, 'document_identity_mismatch');
+      assert.deepEqual(mismatch.writes, []);
+      t.mock.method(Date, 'now', () => clock);
+    }
+  }
+  view.state.values = []; win._ide.editor.open_doc_id = '';
+  const before = clock;
+  const admitted = await tree.waitForActiveEditorText('main.tex', 1500, { references: new Map([['main.tex', text]]) });
+  assert.equal(admitted.ok, true);
+  assert.equal(admitted.identityState, 'fallback');
+  assert.equal(admitted.documentIdentity, undefined);
+  assert.ok(clock - before >= Tree.ACTIVE_EDITOR_STABILITY_MS);
 });
 
 test('D1: a legitimate same-file write rebases over unsaved editor changes', async t => {
@@ -706,7 +896,7 @@ test('capped page snapshots preserve omitted mirror documents and their recovery
       .map((file, index) => ({ name: file.path, _id: index.toString(16).padStart(24, '0') }));
     const win = { location: { pathname: '/project/' + PROJECT, origin: 'https://fixture.invalid',
       href: 'https://fixture.invalid/project/' + PROJECT }, setTimeout, clearTimeout,
-      CodexOverleafProjectFiles: Files, _ide: { project: { docs } } };
+      CodexOverleafProjectFiles: Files, _ide: { project: { _id: PROJECT, rootFolder: { docs } } } };
     const tree = Tree.create({ window: win, document: { querySelectorAll: () => [], querySelector: () => null },
       getActiveFilePathFromEditorStore: () => files[0].path, readActiveEditorText: () => files[0].content });
     t.mock.method(globalThis, 'fetch', async url => {

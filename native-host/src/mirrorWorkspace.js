@@ -35,11 +35,23 @@ function getDefaultMirrorRoot(options = {}) {
   return path.join(getHomeDir(options), '.codex-overleaf', 'projects');
 }
 
-async function syncOverleafToMirror({ projectId, project, rootDir }) {
+async function syncOverleafToMirror({ projectId, project, rootDir, evidenceProjectId }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const normalized = normalizeProjectFilesDetailed(project?.files || []);
   const files = normalized.files;
   const previous = readBaseline(mirror.baselinePath);
+  const references = baselineTextReferences(previous);
+  for (const file of project?.files || []) {
+    if (typeof file.content === 'string' && /^overleaf-(?:zip|doc-fetch)/.test(file.source || ''))
+      references.set(file.path, file.content);
+  }
+  for (const file of project?.files || []) {
+    if (file.kind === 'binary' || typeof file.content !== 'string') continue;
+    if (file.documentIdentity !== undefined || (file.source && !/^overleaf-(?:zip|doc-fetch)/.test(file.source))) {
+      assertDocumentProvenance(file.path, file.content, references, file.documentIdentity,
+        project?.id !== undefined && project.id !== evidenceProjectId ? undefined : evidenceProjectId);
+    }
+  }
   const fullProjectSnapshot = project?.capabilities?.fullProjectSnapshot !== false;
   const skippedFiles = resolveUnreadSnapshotFiles(project, normalized, previous, fullProjectSnapshot);
   // Runtime platform is authoritative; request fields cannot opt out of this check.
@@ -809,7 +821,7 @@ function buildOtStatusFields(baseline = {}, trusted) {
   };
 }
 
-async function applyFileOverlays({ projectId, overlays, rootDir }) {
+async function applyFileOverlays({ projectId, overlays, rootDir, evidenceProjectId }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const baseline = readBaseline(mirror.baselinePath);
   const filesByPath = new Map((baseline.files || []).map(f => [f.path, f]));
@@ -820,7 +832,8 @@ async function applyFileOverlays({ projectId, overlays, rootDir }) {
   for (const overlay of overlays || []) {
     if (!overlay?.path || typeof overlay.content !== 'string') continue;
     const normalizedPath = normalizeRelativePath(overlay.path);
-    if (!unreadPaths.has(normalizedPath)) assertDocumentProvenance(normalizedPath, overlay.content, references);
+    if (!unreadPaths.has(normalizedPath))
+      assertDocumentProvenance(normalizedPath, overlay.content, references, overlay.documentIdentity, evidenceProjectId);
   }
 
   for (const overlay of overlays || []) {
@@ -837,7 +850,7 @@ async function applyFileOverlays({ projectId, overlays, rootDir }) {
     filesByPath.set(normalizedPath, {
       path: normalizedPath,
       kind: 'text',
-      hash: overlay.hash || hashText(overlay.content),
+      hash: hashText(overlay.content),
       content: overlay.content
     });
   }
@@ -854,10 +867,13 @@ function baselineTextReferences(baseline) {
     .map(file => [file.path, file.content]));
 }
 
-function assertDocumentProvenance(path, text, references) {
-  const result = assessDocumentProvenance({ path, text, references });
+function assertDocumentProvenance(path, text, references, documentIdentity, projectId) {
+  const result = documentIdentity !== undefined
+    && (!documentIdentity || documentIdentity.contentSha256 !== hashText(text))
+    ? { ok: false, code: 'document_identity_mismatch' }
+    : assessDocumentProvenance({ path, text, references, documentIdentity, projectId });
   if (result.ok) return;
-  const error = new Error('Overleaf was still switching files, so this file was not used. Try again.');
+  const error = new Error('Codex could not confirm that the editor content belongs to the target file, so it was not used.');
   error.code = result.code;
   error.path = path;
   error.matchedPath = result.matchedPath;

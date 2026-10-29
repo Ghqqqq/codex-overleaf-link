@@ -308,7 +308,7 @@ async function handleCodexRun(request, env, emit) {
       // OT overlays prove that the current page agrees with the trusted OT
       // baseline; they must not rewrite it or supply a replacement hash.
       if (!isOtWarmMirrorReuseRequest(params) && Array.isArray(params.fileOverlays) && params.fileOverlays.length) {
-        await applyFileOverlays({ projectId: projectKey, overlays: params.fileOverlays, rootDir });
+        await applyFileOverlays({ projectId: projectKey, evidenceProjectId: params.projectId, overlays: params.fileOverlays, rootDir });
       }
     } else if (params.operation !== 'compact' && !params.writingStyleBuild && !isSnapshotlessSkillInstallerRun(params) && !hasRunnableProjectSnapshotEvidence(params)) {
       return errorResponse(
@@ -740,6 +740,7 @@ async function handleMirrorSync(request, env) {
   try {
     const result = await syncOverleafToMirror({
       projectId,
+      evidenceProjectId: params.projectId,
       project: params.project || { files: [] },
       rootDir
     });
