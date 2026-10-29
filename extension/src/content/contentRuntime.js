@@ -697,6 +697,8 @@
     showPluginConfirm, formatOperationFiles, getAppliedEntries, getSkippedEntries
   });
   const writebackOrchestrator = Modules.WritebackOrchestrator.create({
+    mirrorFenceStore: root.CodexOverleafModuleRegistry.resolve('ScopedPersistenceBrowserAdapter'),
+    getAccountScopeId: () => cachedAccountScopeId,
     tr,
     tx,
     getLocale,
@@ -2150,8 +2152,9 @@
       let focusFiles = [...executionSnapshot.focusFiles];
       const mirrorOwner = currentRunView, mirrorRouteGeneration = spaRouteGeneration;
       const warmStart = await awaitRunStep(resolveWarmRunStart({ focusFiles, mode: submittedMode }));
+      const mirrorFence = await awaitRunStep(writebackOrchestrator.refreshMirrorReuseFence(mirrorOwner.runProjectId, mirrorOwner.runAccountScopeId));
       let project = warmStart.project || null;
-      let useExistingMirror = warmStart.useExistingMirror && !writebackOrchestrator.getMirrorReuseFence(mirrorOwner.runProjectId);
+      let useExistingMirror = warmStart.useExistingMirror && !mirrorFence;
       let fileOverlays = warmStart.fileOverlays || null;
       let otWarmStart = warmStart.otWarmStart === true;
       if (!useExistingMirror) {
@@ -2159,7 +2162,6 @@
           title: tx('Syncing the Overleaf project to the local Codex workspace.', '正在同步 Overleaf 项目到本地 Codex workspace。'),
           status: 'running'
         });
-        const mirrorFence = writebackOrchestrator.getMirrorReuseFence(mirrorOwner.runProjectId);
         project = await awaitRunStep(getRunProjectSnapshot());
         if (mirrorFence) {
           const assertCurrent = () => {
@@ -5674,14 +5676,16 @@
   // --- Warm Mirror Controller ---
 
   async function getMirrorFreshness() {
-    const projectId = getCurrentProjectId();
-    if (writebackOrchestrator.getMirrorReuseFence(projectId)) return null;
+    const projectId = getCurrentProjectId(), accountScopeId = cachedAccountScopeId;
+    if (await writebackOrchestrator.refreshMirrorReuseFence(projectId, accountScopeId)) return null;
+    if (getCurrentProjectId() !== projectId || cachedAccountScopeId !== accountScopeId) return null;
     try {
       const response = await sendBackgroundNative({
         method: 'mirror.status',
         params: { projectId }
       });
-      if (response?.ok && getCurrentProjectId() === projectId && !writebackOrchestrator.getMirrorReuseFence(projectId)) {
+      const fence = await writebackOrchestrator.refreshMirrorReuseFence(projectId, accountScopeId);
+      if (response?.ok && !fence && getCurrentProjectId() === projectId && cachedAccountScopeId === accountScopeId) {
         return response.result;
       }
     } catch (error) { /* fall through */ }

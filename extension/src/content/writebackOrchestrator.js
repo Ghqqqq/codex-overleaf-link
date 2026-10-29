@@ -23,7 +23,10 @@
   let pendingMirrorRefresh = null;
   const mirrorSettlementOwners = new Map();
   const mirrorReuseFences = new Map();
+  const mirrorFenceWrites = new Map();
+  const mirrorFenceRevisions = new Map();
   const CANCELLED_MIRROR_INVALIDATION_TIMEOUT_MS = 20000;
+  const MIRROR_FENCE_STORAGE_TIMEOUT_MS = 2000;
   let appendChangeSummary;
   let appendCompletionReport;
   let appendOperationsPreview;
@@ -34,6 +37,8 @@
   let callPageBridge;
   let sendBackgroundNative;
   let getCurrentProjectId;
+  let getAccountScopeId;
+  let mirrorFenceStore;
   let resetContextProject;
   let sanitizeRunProjectSnapshot;
   let getAssistantAnswerForCurrentRun;
@@ -75,22 +80,110 @@
       : null;
   }
 
-  function getMirrorReuseFence(projectId) {
-    return mirrorReuseFences.get(projectId) || null;
+  function mirrorFenceScope(projectId, accountScopeId = getAccountScopeId?.() || '') {
+    return { projectId, accountScopeId };
+  }
+
+  function mirrorFenceKey(scope) {
+    return JSON.stringify([scope.accountScopeId, scope.projectId]);
+  }
+
+  function getMirrorReuseFence(projectId, accountScopeId) {
+    return mirrorReuseFences.get(mirrorFenceKey(mirrorFenceScope(projectId, accountScopeId))) || null;
+  }
+
+  function updateMirrorReuseFence(scope, generations, unknown = false) {
+    const key = mirrorFenceKey(scope), current = mirrorReuseFences.get(key);
+    const ids = [...new Set(generations)].sort();
+    if (current && current.unknown === unknown && current.generations.join(':') === ids.join(':')) return current;
+    const fence = ids.length || unknown ? { scope, generations: ids, unknown, syncAttempted: false } : null;
+    if (fence) mirrorReuseFences.set(key, fence);
+    else mirrorReuseFences.delete(key);
+    mirrorFenceRevisions.set(key, (mirrorFenceRevisions.get(key) || 0) + 1);
+    return fence;
+  }
+
+  async function awaitMirrorFenceStorage(work) {
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(work),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('Mirror fence storage timed out.')), MIRROR_FENCE_STORAGE_TIMEOUT_MS);
+        })
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+
+  async function refreshMirrorReuseFence(projectId, accountScopeId) {
+    const scope = mirrorFenceScope(projectId, accountScopeId), key = mirrorFenceKey(scope);
+    if (!mirrorFenceStore) return getMirrorReuseFence(projectId, scope.accountScopeId);
+    const revision = mirrorFenceRevisions.get(key) || 0;
+    try {
+      const stored = await awaitMirrorFenceStorage(() => mirrorFenceStore.getMirrorReuseFences(scope));
+      const writes = mirrorFenceWrites.get(key) || new Map();
+      const changed = revision !== (mirrorFenceRevisions.get(key) || 0);
+      const generations = new Set(stored.filter(id => !writes.get(id)?.retired));
+      for (const [id, write] of writes) {
+        if (!write.retired && (!write.persisted || changed)) generations.add(id);
+      }
+      // A read started before a local write or newer read cannot erase that evidence.
+      if (changed) for (const id of mirrorReuseFences.get(key)?.generations || []) {
+        if (!writes.get(id)?.retired) generations.add(id);
+      }
+      return updateMirrorReuseFence(scope, [...generations]);
+    } catch (_error) {
+      return updateMirrorReuseFence(scope, mirrorReuseFences.get(key)?.generations || [], true);
+    }
+  }
+
+  async function recordMirrorReuseFence(target) {
+    const scope = mirrorFenceScope(target.runProjectId, target.runAccountScopeId);
+    const key = mirrorFenceKey(scope);
+    const generation = globalThis.crypto?.randomUUID?.()
+      || Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
+    const writes = mirrorFenceWrites.get(key) || new Map();
+    mirrorFenceWrites.set(key, writes);
+    const write = { persisted: false, retired: false, clearAfterWrite: false };
+    writes.set(generation, write);
+    updateMirrorReuseFence(scope, [...(mirrorReuseFences.get(key)?.generations || []), generation]);
+    if (!mirrorFenceStore) return;
+    const pending = Promise.resolve().then(() => mirrorFenceStore.setMirrorReuseFence(scope, generation));
+    pending.then(() => {
+      write.persisted = true;
+      mirrorFenceRevisions.set(key, (mirrorFenceRevisions.get(key) || 0) + 1);
+      // A slow set may finish after a successful full sync already removed its key.
+      if (write.clearAfterWrite) {
+        awaitMirrorFenceStorage(() => mirrorFenceStore.clearMirrorReuseFences(scope, [generation]))
+          .then(() => { write.retired = true; }).catch(() => {});
+      }
+    }, () => {});
+    try { await awaitMirrorFenceStorage(() => pending); }
+    catch (_error) { /* The existing invalidation warning and memory fence remain. */ }
   }
 
   async function settleFullMirrorSync(projectId, project, fence, response, options = {}) {
-    if (!fence || getMirrorReuseFence(projectId) !== fence || response?.ok !== true
+    if (!fence || fence.unknown || getMirrorReuseFence(projectId, fence.scope.accountScopeId) !== fence || response?.ok !== true
       || project?.capabilities?.fullProjectSnapshot !== true
       || project.capabilities.contentComplete === false || project.capabilities.skipped?.length) return false;
     try {
       options.assertCurrent?.();
       const status = await (options.sendNative || sendBackgroundNative)({ method: 'mirror.status', params: { projectId } });
       options.assertCurrent?.();
-      if (getCurrentProjectId() !== projectId || getMirrorReuseFence(projectId) !== fence
+      const current = await refreshMirrorReuseFence(projectId, fence.scope.accountScopeId);
+      options.assertCurrent?.();
+      if (getCurrentProjectId() !== projectId || current !== fence
         || status?.ok !== true || status.result?.exists !== true || status.result.dirty === true) return false;
-      mirrorReuseFences.delete(projectId);
-      return true;
+      const key = mirrorFenceKey(fence.scope), writes = mirrorFenceWrites.get(key);
+      for (const id of fence.generations) if (writes?.has(id)) writes.get(id).clearAfterWrite = true;
+      const clearing = Promise.resolve().then(() => mirrorFenceStore?.clearMirrorReuseFences(fence.scope, fence.generations));
+      clearing.then(() => {
+        for (const id of fence.generations) if (writes?.has(id)) writes.get(id).retired = true;
+      }, () => {});
+      await awaitMirrorFenceStorage(() => clearing);
+      options.assertCurrent?.();
+      if (getMirrorReuseFence(projectId, fence.scope.accountScopeId) === fence) updateMirrorReuseFence(fence.scope, []);
+      return !(await refreshMirrorReuseFence(projectId, fence.scope.accountScopeId));
     } catch (_error) {
       options.assertCurrent?.();
       return false;
@@ -99,7 +192,7 @@
 
   async function syncFencedMirror(projectId, project, options = {}) {
     const fence = options.fence;
-    if (!fence || getMirrorReuseFence(projectId) !== fence || fence.syncAttempted
+    if (!fence || fence.unknown || getMirrorReuseFence(projectId, fence.scope.accountScopeId) !== fence || fence.syncAttempted
       || project?.id !== projectId || project.capabilities?.fullProjectSnapshot !== true
       || project.capabilities.contentComplete === false || project.capabilities.skipped?.length) return false;
     options.assertCurrent();
@@ -185,7 +278,8 @@
 
   async function applySyncChangesToOverleaf(syncChanges = [], project = {}, options = {}) {
     const activeRun = getCurrentRunView?.();
-    const saveTarget = { runProjectId: activeRun?.runProjectId || '', recordId: activeRun?.recordId || '', sessionId: activeRun?.sessionId || '' };
+    const saveTarget = { runProjectId: activeRun?.runProjectId || '', runAccountScopeId: activeRun?.runAccountScopeId || getAccountScopeId?.() || '',
+      recordId: activeRun?.recordId || '', sessionId: activeRun?.sessionId || '' };
     const runMode = options.mode || getState().mode;
     const runRequireReviewing = typeof options.requireReviewing === 'boolean'
       ? options.requireReviewing
@@ -691,7 +785,7 @@
     }
     const pageInvalidated = await (pageInvalidation || invalidatePage());
     if (invalidated && pageInvalidated) return 'not-attempted';
-    if (target.runProjectId) mirrorReuseFences.set(target.runProjectId, { syncAttempted: false });
+    if (target.runProjectId) await recordMirrorReuseFence(target);
     const event = {
       title: tx('The local project cache could not be reset. Check the local connection before starting another task.',
         '本地项目缓存未能重置。请检查本地连接后再开始下一轮任务。'),
@@ -732,13 +826,13 @@
 
   async function refreshProjectMirrorAfterWriteback(project = {}, applied = {}, saveVerification = {}, confirmation = {}) {
     const target = confirmation.target || {};
-    const mirrorFence = getMirrorReuseFence(target.runProjectId);
     if (saveVerification?.state !== 'verified_saved') {
       return invalidateWritebackMirror(target);
     }
     if (!Array.isArray(applied?.applied) || !applied.applied.length) {
       return 'not-attempted';
     }
+    const mirrorFence = await refreshMirrorReuseFence(target.runProjectId, target.runAccountScopeId);
 
     if (!confirmation.snapshot && await tryConfirmMirrorWriteback(applied, target.runProjectId)) {
       appendRunEvent({
@@ -1018,6 +1112,8 @@
       getCurrentRunView,
     } = deps);
     assetTransferBroker = deps.assetTransferBroker;
+    mirrorFenceStore = deps.mirrorFenceStore;
+    getAccountScopeId = deps.getAccountScopeId;
     stageWritebackRecovery = deps.stageWritebackRecovery;
     settleWritebackRecovery = deps.settleWritebackRecovery;
     onMirrorRefreshSettled = deps.onMirrorRefreshSettled;
@@ -1028,6 +1124,7 @@
       resolveCompileLogContext,
       invalidateMirrorAfterUndo,
       getMirrorReuseFence,
+      refreshMirrorReuseFence,
       syncFencedMirror,
       getPendingMirrorRefresh: () => pendingMirrorRefresh
     };
