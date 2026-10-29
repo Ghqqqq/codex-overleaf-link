@@ -690,3 +690,49 @@ test('Track capability memory scopes and expires failures; retry and positive ev
   await Migration.savePrefs({ reviewingAvailabilityByProject: { p1: retry } }, 'account-a', projectId);
   assert.equal((await Migration.loadPrefs('account-a', projectId)).reviewingAvailabilityByProject.p1.status, 'unavailable');
 });
+
+test('capped page snapshots preserve omitted mirror documents and their recovery baselines', async t => {
+  const Tree = require('../extension/src/page/treeOperations');
+  const Snapshot = require('../extension/src/page/snapshotRouter');
+  const Mirror = require('../native-host/src/mirrorWorkspace');
+  const path = require('node:path');
+  const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'snapshot-enumeration-'));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  for (const docLimit of [false, true]) {
+    const files = Array.from({ length: docLimit ? 2 : 81 }, (_, index) => ({
+      path: `chapter${index}.tex`, content: `Chapter ${index} manuscript text.\n`.repeat(8)
+    }));
+    const docs = (docLimit ? Array(120).fill(files[0]).concat(files[1]) : files)
+      .map((file, index) => ({ name: file.path, _id: index.toString(16).padStart(24, '0') }));
+    const win = { location: { pathname: '/project/' + PROJECT, origin: 'https://fixture.invalid',
+      href: 'https://fixture.invalid/project/' + PROJECT }, setTimeout, clearTimeout,
+      CodexOverleafProjectFiles: Files, _ide: { project: { docs } } };
+    const tree = Tree.create({ window: win, document: { querySelectorAll: () => [], querySelector: () => null },
+      getActiveFilePathFromEditorStore: () => files[0].path, readActiveEditorText: () => files[0].content });
+    t.mock.method(globalThis, 'fetch', async url => {
+      const record = docs.find(doc => String(url).endsWith('/doc/' + doc._id));
+      return record
+        ? { ok: true, json: async () => ({ content: files.find(file => file.path === record.name).content }) }
+        : { ok: false, status: 503, headers: { get: () => '' } };
+    });
+    const snapshot = await Snapshot.create({ window: win, treeOperations: {
+      ...tree, waitForActiveEditorText: async () => ({ ok: true, text: files[0].content })
+    } }).buildProjectSnapshot({ preferLightweight: true, allowZipFallback: false,
+      allowEditorNavigation: false, requireFullProject: true });
+    assert.equal(snapshot.files.length, docLimit ? 1 : 80);
+    assert.equal(snapshot.capabilities.fullProjectSnapshot, false);
+    const projectId = PROJECT + (docLimit ? '-doc-limit' : '-path-limit');
+    const mirror = await Mirror.syncOverleafToMirror({ projectId, rootDir,
+      project: { files, capabilities: { fullProjectSnapshot: true } } });
+    const baseline = JSON.parse(fs.readFileSync(mirror.baselinePath));
+    const synced = await Mirror.syncOverleafToMirror({ projectId, rootDir, project: snapshot });
+    assert.equal(synced.partialSnapshot, true);
+    for (const file of files) {
+      assert.equal(fs.readFileSync(path.join(mirror.workspacePath, file.path), 'utf8'), file.content);
+    }
+    const after = JSON.parse(fs.readFileSync(mirror.baselinePath));
+    assert.deepEqual(new Map(after.files.map(file => [file.path, file])),
+      new Map(baseline.files.map(file => [file.path, file])));
+    assert.equal(after.lastFullSyncAt, baseline.lastFullSyncAt);
+  }
+});

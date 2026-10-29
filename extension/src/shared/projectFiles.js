@@ -67,10 +67,11 @@
         continue;
       }
       seen.add(normalized);
-      result.push(normalized);
       if (result.length >= limit) {
+        result.truncated = true;
         break;
       }
+      result.push(normalized);
     }
     return result;
   }
