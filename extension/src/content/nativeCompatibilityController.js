@@ -37,8 +37,10 @@
       try {
         compatibilityGate = await ensureForMethod(payload?.method, context);
         if (!compatibilityGate.ok) return compatibilityGate.response;
+        // Catalog reads belong to the selected session, not a retained cancelled run.
+        const independentCatalog = payload?.method === 'codex.models' || payload?.method === 'codex.providers.list';
         // Post-Undo cache bookkeeping must survive the ended run's cancellation.
-        if (gatedMethods.has(payload?.method) && payload.method !== 'mirror.invalidate') {
+        if (gatedMethods.has(payload?.method) && payload.method !== 'mirror.invalidate' && !independentCatalog) {
           options.throwIfCancellationRequested?.();
         }
         context.assertCurrent?.();

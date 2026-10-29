@@ -3787,14 +3787,15 @@
     const running = typeof runningOverride === 'boolean'
       ? runningOverride
       : Boolean(currentRunView);
+    const runningInActiveSession = running && (!currentRunView || currentRunView.sessionId === state?.activeSessionId);
     const transitioning = sessionManager.isTransitioning();
-    const action = running && (!hasInput || transitioning) ? 'cancel' : 'send';
+    const action = runningInActiveSession && (!hasInput || transitioning) ? 'cancel' : 'send';
     const attachmentsLoading = composerAttachmentController.hasPendingReads();
     const label = action === 'cancel'
       ? tr('cancelRun')
       : attachmentsLoading
         ? tr('attachmentsLoading')
-        : running
+        : running && hasInput
           ? tr('queueNextInput')
           : tr('send');
     runButton.dataset.action = action;
