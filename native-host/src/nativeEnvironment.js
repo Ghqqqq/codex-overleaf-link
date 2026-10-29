@@ -40,6 +40,11 @@ function buildNativeRuntimeEnv(baseEnv = process.env, options = {}) {
   for (const tool of TOOL_NAMES) {
     env[getToolEnvName(tool)] = resolveExecutable(tool, env.PATH, { ...runtimeOptions, env }) || '';
   }
+  const startupContext = getCodexRuntimeRefreshContext({
+    ...env,
+    CODEX_OVERLEAF_CODEX_PATH: explicitCodexPath || env.CODEX_OVERLEAF_CODEX_PATH,
+    CODEX_OVERLEAF_CODEX_RUNTIME_JSON: ''
+  }, runtimeOptions);
   const codexRuntime = buildCodexRuntimeIdentity({
     selectedPath: explicitCodexPath || env.CODEX_OVERLEAF_CODEX_PATH,
     selectionPolicy: explicitCodexPath ? 'explicit-path' : 'newest-version',
@@ -53,8 +58,13 @@ function buildNativeRuntimeEnv(baseEnv = process.env, options = {}) {
   env.CODEX_OVERLEAF_CODEX_VERSION = codexRuntime.selected?.version || '';
   env.CODEX_OVERLEAF_CODEX_SOURCE = codexRuntime.selected?.source || '';
 
-  const { key } = getCodexRuntimeRefreshContext(env, runtimeOptions);
-  cacheCodexRuntimeIdentity(key, codexRuntime);
+  const { key, pathValue, signatures } = getCodexRuntimeRefreshContext(env, runtimeOptions);
+  // Selection can reorder candidates, but discovery must not cache changed files.
+  if (pathValue === startupContext.pathValue
+    && signatures.length === startupContext.signatures.length
+    && signatures.every(signature => startupContext.signatures.some(before => JSON.stringify(before) === JSON.stringify(signature)))) {
+    cacheCodexRuntimeIdentity(key, codexRuntime);
+  }
 
   return env;
 }
@@ -81,7 +91,7 @@ function getCodexRuntimeRefreshContext(baseEnv, options) {
     } catch (_) { return [candidate, 'missing']; }
   });
   const key = JSON.stringify([runtimeOptions.platform, pinned ? selectedPath : '', pathValue, signatures]);
-  return { runtimeOptions, previous, selectedPath, pinned, pathValue, key };
+  return { runtimeOptions, previous, selectedPath, pinned, pathValue, signatures, key };
 }
 
 function cacheCodexRuntimeIdentity(key, identity) {
