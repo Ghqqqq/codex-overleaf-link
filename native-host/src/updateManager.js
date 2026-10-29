@@ -999,12 +999,19 @@ function rollbackFiles(context, journal, options = {}) {
   const runtime = path.join(context.extensionRoot, 'runtime');
   const previousRuntime = path.join(context.extensionRoot, 'slots', 'previous', 'runtime');
   // An early interrupted apply may still have the source in the current slot.
-  // A missing previous slot is recoverable only when these actual bytes match
-  // the source pair; the source manifest and markers alone are insufficient.
-  const source = readManagedRuntimeEvidence(context, journal.sourceVersion,
-    fs.existsSync(previousRuntime) ? previousRuntime : runtime);
+  // A missing or stale previous slot is recoverable only when these actual
+  // bytes match the source pair; manifest and markers alone are insufficient.
+  let sourceRuntime = fs.existsSync(previousRuntime) ? previousRuntime : runtime;
+  let source;
+  try {
+    source = readManagedRuntimeEvidence(context, journal.sourceVersion, sourceRuntime);
+  } catch (error) {
+    if (journal.state !== 'applying' || sourceRuntime !== previousRuntime) throw error;
+    source = readManagedRuntimeEvidence(context, journal.sourceVersion, runtime);
+    sourceRuntime = runtime;
+  }
   if (journal.bootstrapMigration) BootstrapUpdate.restoreBootstrap(context, journal);
-  if (fs.existsSync(previousRuntime)) {
+  if (sourceRuntime === previousRuntime) {
     fs.rmSync(runtime, { recursive: true, force: true });
     fs.renameSync(previousRuntime, runtime);
     fs.rmSync(path.dirname(previousRuntime), { recursive: true, force: true });
@@ -1122,7 +1129,18 @@ function recoverAndReadStatus(context, params = {}) {
       cleanupStage(journal.stageRoot);
     }
   }
-  return currentStatus(context, journal);
+  const status = currentStatus(context, journal);
+  if (journal?.state === 'rolled_back' && !journal.bootstrapMigration && status.restoredPair) {
+    const authorization = readAuthorization(context);
+    if (['bound', 'consumed'].includes(authorization?.state) && authorization.id === journal.authorizationId
+      && authorization.transactionId === journal.id && authorization.sourceVersion === journal.sourceVersion
+      && authorization.targetVersion === journal.targetVersion) {
+      settleAuthorization(context, journal.authorizationId, 'revoked');
+      status.authorization = publicAuthorization(readAuthorization(context));
+    }
+    cleanupStage(journal.stageRoot);
+  }
+  return status;
 }
 
 function finishSourceActivation(context, journal) {

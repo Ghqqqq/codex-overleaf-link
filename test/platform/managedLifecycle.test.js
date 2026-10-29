@@ -88,6 +88,88 @@ test('failed update restoration remains retryable and restores a runnable source
   assert.equal((await pingInstalled(f)).result.version, sourceVersion);
 });
 
+test('interrupted terminal rollback settles only its authorization after verifying the restored files', async t => {
+  const f = managedFixture(t);
+  f.install(sourceVersion);
+  const staged = await stageLocalUpdate(f, targetVersion);
+  updater.applyStagedUpdate(f.context, { transactionId: staged.transactionId });
+  const journalPath = path.join(f.context.updatesRoot, 'transaction.json');
+  const authorizationPath = path.join(f.context.updatesRoot, 'authorization.json');
+  const faulty = loadWithFs('native-host/src/updateManager.js', { ...fs, renameSync(source, target) {
+    const result = fs.renameSync(source, target);
+    if (target === journalPath && JSON.parse(fs.readFileSync(target)).state === 'rolled_back') {
+      throw new Error('Interrupted after rollback journal');
+    }
+    return result;
+  } });
+  assert.throws(() => faulty.rollbackUpdate(f.context, { transactionId: staged.transactionId,
+    reasonCode: 'update_user_rollback' }), /Interrupted after rollback journal/);
+  const journal = JSON.parse(fs.readFileSync(journalPath));
+  const authorization = JSON.parse(fs.readFileSync(authorizationPath));
+  assert.equal(authorization.state, 'bound');
+  assert.equal(fs.existsSync(journal.stageRoot), true);
+  const compatibility = path.join(f.context.extensionRoot, 'runtime/src/shared/compatibility.js');
+  const original = fs.readFileSync(compatibility);
+  fs.appendFileSync(compatibility, '\n');
+  const changed = (await pingInstalled(f, 'update.status')).result;
+  assert.equal(changed.restoredPair, null);
+  assert.equal(changed.authorization.state, 'bound');
+  assert.equal(fs.existsSync(journal.stageRoot), true);
+  fs.writeFileSync(compatibility, original);
+  const unrelated = { ...authorization, transactionId: require('node:crypto').randomUUID() };
+  fs.writeFileSync(authorizationPath, JSON.stringify(unrelated));
+  await pingInstalled(f, 'update.status');
+  assert.deepEqual(JSON.parse(fs.readFileSync(authorizationPath)), unrelated);
+  assert.equal(fs.existsSync(journal.stageRoot), false);
+  fs.writeFileSync(authorizationPath, JSON.stringify(authorization));
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const recovered = (await pingInstalled(f, 'update.status')).result;
+    assert.equal(recovered.transaction.state, 'rolled_back');
+    assert.deepEqual(recovered.restoredPair, journal.rollbackEvidence);
+    assert.equal(recovered.authorization, null);
+  }
+  assert.equal((await pingInstalled(f)).result.version, sourceVersion);
+  const next = await stageLocalUpdate(f, targetVersion);
+  assert.notEqual(next.transactionId, staged.transactionId);
+});
+
+test('early interrupted apply ignores a stale previous slot only when the current source files verify', async t => {
+  const f = managedFixture(t);
+  f.install(sourceVersion);
+  const currentVersion = '0.0.2';
+  const previous = await stageLocalUpdate(f, currentVersion);
+  updater.applyStagedUpdate(f.context, { transactionId: previous.transactionId });
+  assert.equal((await pingInstalled(f, 'update.confirm', { transactionId: previous.transactionId,
+    extensionVersion: currentVersion, nativeVersion: currentVersion })).ok, true);
+  const staged = await stageLocalUpdate(f, targetVersion);
+  const journalPath = path.join(f.context.updatesRoot, 'transaction.json');
+  const faulty = loadWithFs('native-host/src/updateManager.js', { ...fs, renameSync(source, target) {
+    const result = fs.renameSync(source, target);
+    if (target === journalPath && JSON.parse(fs.readFileSync(target)).state === 'applying') {
+      throw new Error('Interrupted before source backup');
+    }
+    return result;
+  } });
+  assert.throws(() => faulty.applyStagedUpdate(f.context, { transactionId: staged.transactionId }),
+    /Interrupted before source backup/);
+  const asset = path.join(f.context.extensionRoot, 'runtime/src/content/generated/content.bundle.js');
+  const original = fs.readFileSync(asset);
+  fs.rmSync(asset);
+  const unavailable = await pingInstalled(f, 'update.status');
+  assert.equal(unavailable.error?.code, 'update_rollback_source_unavailable');
+  assert.equal(JSON.parse(fs.readFileSync(journalPath)).state, 'applying');
+  fs.writeFileSync(asset, original);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const recovered = (await pingInstalled(f, 'update.status')).result;
+    assert.equal(recovered.transaction.state, 'rolled_back');
+    assert.equal(recovered.restoredPair.extensionVersion, currentVersion);
+    assert.equal(recovered.restoredPair.nativeVersion, currentVersion);
+    assert.deepEqual(recovered.restoredPair, JSON.parse(fs.readFileSync(journalPath)).rollbackEvidence);
+    assert.equal(recovered.authorization, null);
+  }
+  assert.equal((await pingInstalled(f)).result.version, currentVersion);
+});
+
 test('tampered signed inputs cannot stage or replace the installed pair', async t => {
   const f = managedFixture(t);
   f.install(sourceVersion);
