@@ -246,6 +246,8 @@ function undoOwner(run) {
 async function executeUndo(runId) {
     let run = findRunRecord(runId);
     if (run) Object.assign(run, Modules.UndoOperations.prepareRunUndo(run));
+    const mirrorOwner = { projectId: getRunProjectIdForWriteback(run), runAccountScopeId: run?.runAccountScopeId || getAccountScopeId?.() || '',
+      sessionId: getState().activeSessionId };
     const assertCurrent = undoOwner(run);
     let assertInputs = checkpointGuard(run, assertCurrent);
     if (!getRunUndoCount(run) || run.undoStatus === 'applied') {
@@ -338,9 +340,11 @@ async function executeUndo(runId) {
         // Undo remains bound to its original project, including after navigation.
         runProjectId: getRunProjectIdForWriteback(run)
       });
+      // The Page may have changed the original document even if this view moved
+      // while awaiting its reply. Fence that project's mirror before rechecking.
+      writebackOrchestrator.invalidateMirrorAfterUndo(runId, mirrorOwner.projectId, result, mirrorOwner);
       run = assertInputs();
       const undoApplied = isUndoResultEffectivelyApplied(run, result);
-      writebackOrchestrator.invalidateMirrorAfterUndo(runId, getRunProjectIdForWriteback(run), result);
       appendUndoReviewingPolicyEvent(runId, result.reviewingPolicy);
       appendRunRecordEvent(runId, {
         title: tr('undoResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }),
@@ -369,6 +373,8 @@ async function executeUndo(runId) {
   }
 
 async function executeTrackedUndo(runId, run) {
+    const mirrorOwner = { projectId: getRunProjectIdForWriteback(run), runAccountScopeId: run?.runAccountScopeId || getAccountScopeId?.() || '',
+      sessionId: getState().activeSessionId };
     const assertCurrent = undoOwner(run);
     let assertInputs = checkpointGuard(run, assertCurrent);
     const fileUndoOperations = Modules.UndoOperations.getFileUndoOperations(run);
@@ -452,8 +458,8 @@ async function executeTrackedUndo(runId, run) {
             operation, result: { ok: false, code: 'undo_operation_failed', reason: error.message }
           })) };
         }
-        run = assertInputs();
         result = Modules.UndoOperations.mergeFileUndoResult(result, createdResult, fileUndoOperations);
+        run = assertInputs();
       }
       appendRunRecordEvent(runId, {
         title: fileUndoOperations.length ? tr('undoResult', { applied: result.applied?.length || 0, skipped: result.skipped?.length || 0 }) : trackedUndo
@@ -484,7 +490,7 @@ async function executeTrackedUndo(runId, run) {
       await applyLegacyUndoSettlement(runId, result.ok === true && !result.skipped?.length ? 'applied' : 'partial', result);
     } finally {
       // Known Page changes require invalidation even when a durable checkpoint fails.
-      if (result) writebackOrchestrator.invalidateMirrorAfterUndo(runId, getRunProjectIdForWriteback(run), result);
+      if (result) writebackOrchestrator.invalidateMirrorAfterUndo(runId, mirrorOwner.projectId, result, mirrorOwner);
     }
   }
 

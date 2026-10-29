@@ -208,7 +208,8 @@ test('cancelling save confirmation retains written results, save recovery and in
     assert.equal(finished, true, 'cancellation must finish without a Native invalidation response');
     assert.equal((await pending).error, cancellation);
     assert.ok(mirrorPending, 'mirror reuse must still wait for the unanswered invalidation');
-    assert.deepEqual(calls, ['apply', 'undo', 'waitForSaveState', 'reset-context', 'invalidateProjectSnapshot', 'mirror.invalidate', 'recovery']);
+    assert.deepEqual(calls.slice(0, 5), ['apply', 'undo', 'waitForSaveState', 'reset-context', 'invalidateProjectSnapshot']);
+    assert.deepEqual(calls.slice(5).sort(), ['mirror.invalidate', 'recovery']);
     assert.equal(cancellation.writebackOutcome.settlement.facts.evidence.mirrored, 'unknown');
     Object.assign(run, Settlement.applySettlementTransition(run, cancellation.writebackOutcome.settlement), { status: 'cancelled' });
   } finally {
@@ -427,12 +428,16 @@ test('cancelled save recovery releases the mirror barrier on timeout and ignores
     }
     await new Promise(resolve => setImmediate(resolve));
   };
-  const reply = deferred(), events = [], settlements = [], cacheClears = [];
+  const reply = deferred(), fenceWrite = deferred(), events = [], settlements = [], cacheClears = [];
+  let invalidationCalls = 0;
   let invalidationReply = reply.promise;
   const stored = new Map();
   const storage = { storage: { local: {
     async get() { return Object.fromEntries(stored); },
-    async set(values) { for (const [key, value] of Object.entries(values)) stored.set(key, value); },
+    async set(values) {
+      await fenceWrite.promise;
+      for (const [key, value] of Object.entries(values)) stored.set(key, value);
+    },
     async remove(keys) { for (const key of keys) stored.delete(key); }
   } } };
   const Adapter = require('../extension/src/shared/scopedPersistenceBrowserAdapter');
@@ -472,7 +477,7 @@ test('cancelled save recovery releases the mirror barrier on timeout and ignores
       cacheClears.push('page');
       return { ok: true };
     },
-    sendBackgroundNative: () => invalidationReply,
+    sendBackgroundNative: () => { invalidationCalls++; return invalidationReply; },
     onMirrorRefreshSettled(result) { settlements.push(result.state); persistence.settleMirrorRefresh(result); }
   });
   await assert.rejects(api.applySyncChangesToOverleaf([{ type: 'write', path: 'main.tex', previousContent: 'before', content: 'after' }],
@@ -483,6 +488,15 @@ test('cancelled save recovery releases the mirror barrier on timeout and ignores
   });
   assert.deepEqual(cacheClears, ['context', 'page']);
   const pending = api.getPendingMirrorRefresh();
+  assert.equal(invalidationCalls, 0, 'publish the durable fence before dispatching Native invalidation');
+  fenceWrite.resolve();
+  await advance(0);
+  assert.equal(invalidationCalls, 1);
+  const waitingFence = api.getMirrorReuseFence('example');
+  assert.ok(waitingFence, 'cancellation must fence reuse while Native is still unanswered');
+  assert.equal(waitingFence.generations.length, 1);
+  assert.ok(await newPage().refreshMirrorReuseFence('example'), 'a second tab cannot reuse the mirror during the wait');
+  assert.ok(await newPage().refreshMirrorReuseFence('example'), 'a refreshed page observes the pending invalidation fence');
   let admitted = false;
   const admission = pending.then(() => { admitted = true; });
   await advance(19999);
@@ -500,6 +514,7 @@ test('cancelled save recovery releases the mirror barrier on timeout and ignores
   assert.equal(events[0].status, 'warning');
   assert.equal(run.undoOperations[0].replaceAll, 'before');
   const firstFence = api.getMirrorReuseFence('example');
+  assert.equal(firstFence, waitingFence, 'timeout retains the pending generation without creating a duplicate');
   assert.ok(firstFence, 'failed invalidation must fence reuse even when Retry did not run Codex');
   assert.equal(api.getMirrorReuseFence('other-project'), null);
   function newPage(account = 'account-one') {
@@ -556,4 +571,121 @@ test('cancelled save recovery releases the mirror barrier on timeout and ignores
   assert.equal(await reloaded.refreshMirrorReuseFence('example'), null, 'an existing peer observes durable clearing');
   assert.equal(await secondTab.refreshMirrorReuseFence('example'), null);
   assert.equal(await newPage().refreshMirrorReuseFence('example'), null, 'clearing also survives reload');
+
+  // An answered invalidation needs no extra full sync, but may only remove
+  // the fence created for that attempt, never another tab's failure evidence.
+  invalidationReply = Promise.resolve({ ok: true, result: { invalidated: true } });
+  await assert.rejects(api.applySyncChangesToOverleaf([{ type: 'write', path: 'main.tex', content: 'after' }],
+    fullProject, { mode: 'auto', requireReviewing: false, retryCreates: true }), { code: 'codex_cancelled' });
+  await api.getPendingMirrorRefresh();
+  assert.equal(await api.refreshMirrorReuseFence('example'), null);
+  assert.equal(stored.size, 0, 'confirmed invalidation retires only its pending fence without a full sync');
+
+  const scope = { accountScopeId: 'account-one', projectId: 'example' };
+  await mirrorFenceStore.setMirrorReuseFence(scope, 'older-failure');
+  await api.refreshMirrorReuseFence('example');
+  const acknowledged = deferred();
+  invalidationReply = acknowledged.promise;
+  await assert.rejects(api.applySyncChangesToOverleaf([{ type: 'write', path: 'main.tex', content: 'after' }],
+    fullProject, { mode: 'auto', requireReviewing: false, retryCreates: true }), { code: 'codex_cancelled' });
+  const confirming = api.getPendingMirrorRefresh();
+  await advance(0);
+  await mirrorFenceStore.setMirrorReuseFence(scope, 'newer-failure');
+  acknowledged.resolve({ ok: true, result: { invalidated: true } });
+  await confirming;
+  const peerFence = await newPage().refreshMirrorReuseFence('example');
+  assert.deepEqual(Array.from(peerFence.generations), ['newer-failure', 'older-failure']);
+  assert.equal(stored.size, 2, 'an old success cannot erase another invalidation generation');
+});
+
+test('Undo invalidation failure fences a clean mirror across tabs and timeout keeps its original account', async t => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const Mirror = require('../native-host/src/mirrorWorkspace');
+  const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'undo-mirror-fence-'));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  const projectId = 'undo-project', accountScopeId = 'undo-account';
+  const project = { id: projectId, capabilities: { fullProjectSnapshot: true }, files: [
+    { path: 'active.tex', content: 'Unchanged active document' },
+    { path: 'undone.tex', content: 'After the model edit' }
+  ] };
+  await Mirror.syncOverleafToMirror({ projectId, project, rootDir });
+  const stored = new Map(), timers = new Map(), events = [], pageCalls = [], nativeCalls = [];
+  let clock = 0, timerId = 0, contextResets = 0;
+  let currentProject = projectId, currentAccount = accountScopeId;
+  let nativeReply = Promise.resolve({ ok: false, error: { code: 'project_locked', message: 'Mirror is busy.' } });
+  const chromeApi = { storage: { local: {
+    async get() { return Object.fromEntries(stored); },
+    async set(values) { for (const [key, value] of Object.entries(values)) stored.set(key, value); },
+    async remove(keys) { for (const key of keys) stored.delete(key); }
+  } } };
+  const Adapter = require('../extension/src/shared/scopedPersistenceBrowserAdapter');
+  const mirrorFenceStore = {
+    getMirrorReuseFences: scope => Adapter.getMirrorReuseFences(scope, chromeApi),
+    setMirrorReuseFence: (scope, generation) => Adapter.setMirrorReuseFence(scope, generation, chromeApi),
+    clearMirrorReuseFences: (scope, generations) => Adapter.clearMirrorReuseFences(scope, generations, chromeApi)
+  };
+  function page(deps = {}) {
+    const window = {};
+    vm.runInNewContext(fs.readFileSync(require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), {
+      window, Function,
+      setTimeout(callback, ms) { const id = ++timerId; timers.set(id, { callback, at: clock + ms }); return id; },
+      clearTimeout(id) { timers.delete(id); }
+    });
+    return window.CodexOverleafWritebackOrchestrator.create({ mirrorFenceStore, tx: en => en,
+      getCurrentProjectId: () => projectId, getAccountScopeId: () => accountScopeId, ...deps });
+  }
+  const api = page({ getCurrentProjectId: () => currentProject, getAccountScopeId: () => currentAccount,
+    resetContextProject() { contextResets++; },
+    async callPageBridge(method, params) { pageCalls.push({ method, params }); return { ok: true }; },
+    sendBackgroundNative(payload) { nativeCalls.push(payload); return nativeReply; },
+    appendRunRecordEvent(recordId, event) { events.push({ recordId, ...event }); }
+  });
+  const result = { ok: true, changedDocument: true,
+    applied: [{ operation: { path: 'undone.tex' }, result: { verifiedContent: 'Before the model edit' } }] };
+  const owner = { runAccountScopeId: accountScopeId, sessionId: 'undo-session' };
+  assert.equal(await api.invalidateMirrorAfterUndo('undo-run', projectId, result, owner), 'failed');
+  assert.equal(api.getPendingMirrorRefresh(), null);
+  assert.equal(contextResets, 1);
+  assert.equal(pageCalls[0].method, 'invalidateProjectSnapshot');
+  assert.equal(pageCalls[0].params.runProjectId, projectId);
+  assert.equal(events[0].recordId, 'undo-run');
+  assert.equal(events[0].status, 'warning');
+  const status = Mirror.getMirrorStatus(projectId, { rootDir });
+  assert.equal(status.dirty, false, 'the rejected invalidation leaves a plausible but stale Native baseline');
+  const peer = page();
+  assert.ok(await peer.refreshMirrorReuseFence(projectId));
+  const warmWindow = {};
+  vm.runInNewContext(fs.readFileSync(require.resolve('../extension/src/content/otWarmMirror'), 'utf8'), { window: warmWindow });
+  const warm = warmWindow.CodexOverleafOtWarmMirror.create({
+    getCurrentProjectId: () => projectId, getState: () => ({ mode: 'ask', experimentalOtByProject: {} }),
+    getMirrorFreshness: async () => await peer.refreshMirrorReuseFence(projectId) ? null : status,
+    mirrorHealth: require('../extension/src/content/mirrorHealth'),
+    otWarmMirrorController: require('../extension/src/content/otWarmMirrorController'),
+    normalizeSnapshotPath: value => value, buildSnapshotFileOverlays: snapshot => snapshot.files,
+    async callPageBridge() { return { id: projectId, files: [project.files[0]] }; }
+  });
+  assert.equal((await warm.resolveWarmRunStart({ mode: 'ask' })).useExistingMirror, false);
+
+  const reply = deferred();
+  nativeReply = reply.promise;
+  const pending = api.invalidateMirrorAfterUndo('later-undo', projectId, result, owner);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(nativeCalls.at(-1).params.projectId, projectId);
+  const waiting = await page().refreshMirrorReuseFence(projectId);
+  assert.equal(waiting.generations.length, 2);
+  currentProject = 'other-project'; currentAccount = 'other-account';
+  clock += 20000;
+  for (const [id, timer] of [...timers]) if (timer.at <= clock) {
+    timers.delete(id); timer.callback();
+  }
+  assert.equal(await pending, 'failed');
+  assert.equal(api.getPendingMirrorRefresh(), null);
+  assert.equal(await api.refreshMirrorReuseFence(currentProject, currentAccount), null);
+  assert.equal((await page().refreshMirrorReuseFence(projectId)).generations.length, 2);
+  assert.equal(events.at(-1).recordId, 'later-undo');
+  reply.resolve({ ok: true, result: { invalidated: true } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stored.size, 2, 'a late Undo acknowledgment cannot retire the timed-out fence');
+  assert.equal(events.length, 2);
+  assert.equal(result.applied[0].result.verifiedContent, 'Before the model edit');
 });

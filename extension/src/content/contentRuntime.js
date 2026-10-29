@@ -3749,8 +3749,8 @@
     }).run(options);
   }
 
-  function appendRunCancelledReport(writebackOutcome = {}) {
-    const hasQueuedFollowUp = (getActiveSession(state)?.pendingInputs || [])
+  function appendRunCancelledReport(writebackOutcome = {}, continueQueue = true) {
+    const hasQueuedFollowUp = continueQueue && (getActiveSession(state)?.pendingInputs || [])
       .some(item => item?.status === 'queued');
     appendRunEvent({
       title: tx('Current Codex task was cancelled.', '已中断当前 Codex 任务。'),
@@ -7743,13 +7743,16 @@
     const originalStatus = record.status;
     const retryAutoRecompile = typeof record.executionSnapshot?.autoRecompile === 'boolean'
       ? record.executionSnapshot.autoRecompile : undefined;
+    const generation = spaRouteGeneration;
+    const isOwnerScope = () => generation === spaRouteGeneration
+      && owner.projectId === getCurrentProjectId() && owner.accountScopeId === cachedAccountScopeId;
     // State is renormalized during the awaits below (probes, session sync), which
     // replaces run objects; always write through the current copy.
-    const live = () => findRunRecord(runId, session.id) || record;
+    const live = () => (isOwnerScope() && findRunRecord(runId, session.id)) || record;
     let finished = false;
+    let retryOutcome = null;
     runCancellationRequested = false;
     runCancellationController = new AbortController();
-    const generation = spaRouteGeneration;
     const requestId = record.nativeRequestId || `writeback:${owner.sessionId}:${runId}`;
     const ownerToken = crypto.randomUUID();
     const retryView = { recordId: runId, sessionId: session.id, runProjectId: owner.projectId,
@@ -7761,7 +7764,7 @@
       if (runCancellationRequested || currentRunView !== retryView) {
         throw Object.assign(new Error('Save checking was cancelled.'), { code: 'codex_cancelled' });
       }
-      if (generation !== spaRouteGeneration || owner.projectId !== getCurrentProjectId() || owner.accountScopeId !== cachedAccountScopeId) {
+      if (!isOwnerScope()) {
         throw Object.assign(new Error('The project or account changed.'), { code: 'aborted_project_changed' });
       }
     };
@@ -7794,6 +7797,7 @@
             ? record.executionSnapshot.requireReviewing : intent.requireReviewing,
             autoRecompile: retryAutoRecompile,
             retryCreates: true, assistantMessageKey: 'retry_sync', assistantMessage: tx('Retried the remaining file transfers for this task.', '已重试本轮未完成的文件同步。') });
+        retryOutcome = result;
         assertOwner();
         if (result.settlement?.facts) live().settlement = WritebackSettlement.mergeRetrySettlement(live().settlement, result.settlement.facts); // Keep files outside the retry.
         await finishRunView(result.hasSkippedOperations ? tx('Sync incomplete', '同步未完成') : tx('Synced', '已同步'),
@@ -7814,6 +7818,19 @@
       }
       await flushQueuedSaveState();
     } catch (error) {
+      const outcome = error.writebackOutcome || retryOutcome;
+      const current = findRunRecord(runId, session.id);
+      if (outcome && (runCancellationRequested || isRunCancellationError(error))
+        && currentRunView === retryView && isOwnerScope()
+        && current && !current.forkSnapshot && current.runProjectId === owner.projectId) {
+        // Stop cannot erase writes returned by Retry sync, including a saved
+        // reply that arrived after cancellation. Keep earlier files' facts too.
+        if (outcome.settlement?.facts) current.settlement = WritebackSettlement.mergeRetrySettlement(
+          current.settlement, outcome.settlement.facts);
+        appendRunCancelledReport(outcome, false);
+        await finishRunView(tx('Cancelled', '已取消'), 'cancelled');
+        finished = true;
+      }
       showPluginToast(error.message || String(error));
     } finally {
       // Only finishRunView settles a new terminal status; every other exit

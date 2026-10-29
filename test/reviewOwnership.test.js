@@ -59,9 +59,10 @@ function page(network, tabId, session, hooks = {}) {
     formatOperationType: value => value, formatApplyResultReason: () => '', formatBridgeResultReason: () => '',
     appendRunRecordEvent: (_id, event) => events.push(event), refreshRunCardControls() {}, appendUndoReviewingPolicyEvent() {},
     setRunUndoStatus: (_id, status) => { run().undoStatus = status; },
-    flushQueuedSaveState: persist, writebackOrchestrator: { invalidateMirrorAfterUndo() {} },
+    flushQueuedSaveState: persist, writebackOrchestrator: { invalidateMirrorAfterUndo: (...args) => hooks.invalidateMirrorAfterUndo?.(...args) },
     isUndoResultEffectivelyApplied: Settlement.isUndoResultEffectivelyApplied,
-    buildTrackedUndoPostFiles: value => value.appliedOperations.map(op => ({ path: op.path, content: op.verifiedContent })),
+    buildTrackedUndoPostFiles: hooks.buildTrackedUndoPostFiles
+      || (value => value.appliedOperations.map(op => ({ path: op.path, content: op.verifiedContent }))),
     buildContentFailure: Settlement.buildContentFailure,
     advanceRunUndoProgress: (value, result) => Undo.advanceUndoCheckpoint(value, result,
       file => Settlement.isUndoVerifiedContentMatching({ undoExpectedFiles: [file] }, result)),
@@ -76,10 +77,12 @@ function page(network, tabId, session, hooks = {}) {
       effects.push(method);
       if (method === 'acceptTrackedChanges') return { ok: true, verified: true, skipped: [],
         applied: params.trackedChanges.map(trackedChange => ({ trackedChange, result: { ok: true, verified: true } })) };
-      return { ok: true, skipped: [], applied: params.operations.map(operation => {
-        documentText = operation.replaceAll;
+      const result = { ok: true, skipped: [], applied: params.operations.map(operation => {
+        documentText = operation.replaceAll ?? operation.content;
         return { operation, result: { ok: true, verifiedContent: documentText, changedDocument: true } };
       }) };
+      hooks.afterPageEffect?.(result);
+      return result;
     }
   });
   return { controller, db, scope, run, effects, events, persist, get state() { return state; }, get documentText() { return documentText; },
@@ -87,6 +90,39 @@ function page(network, tabId, session, hooks = {}) {
 }
 const stored = network => network.db.peek('sessions', ['account-one', 's']).record.runs[0];
 const observe = promise => promise.then(() => null, error => error);
+
+test('file-only Undo retains its Page mutation for original-scope mirror invalidation after navigation', async () => {
+  const network = createNetwork(), invalidations = [];
+  try {
+    const original = seed(network, false, { autoRecompile: false, runs: [{
+      id: 'r', task: 'Undo a deleted file', mode: 'auto', status: 'completed',
+      runProjectId: 'project-one', runAccountScopeId: 'account-one',
+      undoOperations: [{ type: 'create', path: 'restored.tex', content: before }],
+      undoExpectedFiles: [{ path: 'restored.tex', content: before }],
+      appliedOperations: [{ type: 'delete', path: 'restored.tex' }]
+    }] });
+    const h = page(network, 1, original, {
+      buildTrackedUndoPostFiles: () => [],
+      afterPageEffect() {
+        h.scope.projectId = 'project-two'; h.scope.accountScopeId = 'account-two'; h.scope.generation++;
+      },
+      invalidateMirrorAfterUndo: (runId, projectId, result, owner) => invalidations.push({ runId, projectId, result, owner })
+    });
+    const error = await observe(h.controller.undoRunTrackedChanges('r', h.run()));
+    assert.equal(error?.code, 'review_context_changed');
+    assert.deepEqual(h.effects, ['applyOperations']);
+    assert.equal(h.documentText, before);
+    assert.equal(invalidations.length, 1);
+    const invalidation = invalidations[0];
+    assert.equal(invalidation.runId, 'r');
+    assert.equal(invalidation.projectId, 'project-one');
+    assert.equal(invalidation.owner.runAccountScopeId, 'account-one');
+    assert.equal(invalidation.owner.sessionId, 's');
+    assert.equal(invalidation.result.applied.length, 1);
+    assert.equal(invalidation.result.applied[0].operation.path, 'restored.tex');
+    assert.equal(invalidation.result.applied[0].result.changedDocument, true);
+  } finally { network.close(); }
+});
 
 test('Undo survives draft/context updates during owner save, Page work and terminal save; reload cannot repeat it', async () => {
   const network = createNetwork(), entered = deferred(), gate = deferred();
@@ -414,4 +450,146 @@ test('Accept follows the same run through a draft update and preserves its decis
       assert.equal(run.settlement.evidence.saved, 'verified');
     }
   } finally { gate.resolve(); network.close(); }
+});
+
+// Drive the actual Retry callback registered with the timeline. Only external
+// I/O and unrelated UI controllers are substituted; no runtime source is extracted.
+async function retryRuntime(write) {
+  let inert;
+  inert = new Proxy(function () { return inert; }, { get(_target, key) {
+    if (key === 'then') return undefined;
+    if (key === Symbol.toPrimitive) return () => '';
+    if (key === Symbol.iterator) return function* () {};
+    return inert;
+  } });
+  const withInert = value => new Proxy(value, { get: (target, key) => target[key] || inert });
+  const callbacks = {}, snapshots = [], mounted = new Error('composer callbacks captured');
+  const projectId = '0123456789abcdef01234567';
+  let email = 'qa@example.org';
+  const button = { disabled: false, setAttribute() {} };
+  const panel = { dataset: {}, querySelector: selector =>
+    ['[data-new-session]', '[data-diagnostics-snapshot]'].includes(selector) ? button : null, querySelectorAll: () => [] };
+  const document = { addEventListener() {}, querySelector: selector => selector.includes('meta[name="ol-user-email"]')
+    ? { getAttribute: () => email } : null };
+  const window = { location: { pathname: '/project/' + projectId, href: 'https://www.overleaf.com/project/' + projectId },
+    document, CodexOverleafModuleRegistry: { resolve: () => inert }, addEventListener() {}, setTimeout: () => 1 };
+  const Transcript = require('../extension/src/shared/agentTranscript');
+  const modules = withInert({
+    SessionState: State, WritebackIntent: require('../extension/src/shared/writebackIntent'), WritebackSettlement: Settlement,
+    WritebackController: require('../extension/src/content/writebackController'), AgentTranscript: Transcript, UndoOperations: Undo,
+    I18n: require('../extension/src/shared/i18n'), RunActivityModel: require('../extension/src/shared/runActivityModel'), StorageDb: Db,
+    PageBridgeClient: { create: () => ({ start() {}, call: async () => ({ ok: true }) }) },
+    SessionManager: { create(options) { callbacks.sessions = options; return withInert({
+      findSessionById: id => options.getState()?.sessions.find(session => session.id === id), isTransitioning: () => false }); } },
+    RunTimelineView: { create(options) { callbacks.timeline = options; return inert; } },
+    NativeCompatibilityController: { create(options) { callbacks.native = options; return inert; } },
+    // Keep unrelated asynchronous startup parked while the registered UI entry is exercised.
+    GlobalPreferencesController: { create: () => ({ initialize: () => new Promise(() => {}) }) },
+    PanelRenderer: withInert({ create: () => ({ panelEl: panel }) }),
+    ComposerPanel: { create(options) { callbacks.composer = options; throw mounted; } },
+    MarkdownText: { create: () => withInert({ sanitizeAssistantVisibleText: value => value, sanitizeAssistantVisibleValue: value => value }) },
+    WritebackOrchestrator: { create(options) { callbacks.writeback = options; return {
+      getPendingMirrorRefresh: () => null, applySyncChangesToOverleaf: (...args) => write(harness, ...args) }; } },
+    ActiveTurnControl: { create: () => ({ bindBrowserRun: async () => true, release() {} }) },
+    ScopedPersistenceCoordinator: {
+      createController: () => ({ async commit(id, _options, persist) {
+        await persist({ scope: { projectId: id, accountScopeId: window.codexOverleafDeriveAccountScopeId() } }); return { ok: true };
+      } }),
+      async persistPanelState(options) { snapshots.push(JSON.parse(JSON.stringify(options.state))); return options.state.sessions; }
+    },
+    RunSettlementPersistence: require('../extension/src/content/runSettlementPersistence')
+  });
+  require('node:vm').runInNewContext(require('node:fs').readFileSync(require.resolve('../extension/src/content/contentRuntime'), 'utf8'), {
+    window, document, chrome: { runtime: { id: 'fixture', getManifest: () => ({}), onMessage: { addListener() {} } } },
+    crypto: require('node:crypto').webcrypto, navigator: {}, Blob, URL, TextEncoder, AbortController,
+    setTimeout: () => 1, clearTimeout() {}
+  });
+  window.CodexOverleafContentRuntime.init({ modules });
+  const accountScopeId = await window.__codexOverleafLifecycle.refreshAccountScopeId();
+  const project = { id: projectId, files: ['first.tex', 'main.tex'].map(path => ({ path, content: before })) };
+  const operations = project.files.map(file => ({ type: 'edit', path: file.path, replaceAll: after, verifiedContent: after }));
+  const applied = { ok: false, applied: [{ operation: operations[0], result: { ok: true, verified: true, verifiedContent: after } }],
+    skipped: [{ operation: operations[1], result: { ok: false, code: 'write_operation_failed', changedDocument: false,
+      failure: { code: 'write_operation_failed', stage: 'navigation', changedDocument: false, file: 'main.tex' } } }] };
+  const report = Transcript.buildHumanCompletionReport({ mode: 'auto', status: 'failed', includeWriteResult: true,
+    operations, applyResults: [applied], conclusionSource: { origin: 'product', key: 'writeback', outcome: 'partial_sync', prefixLength: 0 },
+    conclusion: Transcript.projectProductConclusion({ origin: 'product', key: 'partial_sync' }, 'en') });
+  const run = { id: 'r', runProjectId: projectId, mode: 'auto', status: 'failed',
+    executionSnapshot: { requireReviewing: false }, ...Undo.buildUndoCheckpoint(project, [operations[0]]),
+    settlement: Settlement.settle({ operations, applyResult: applied }).facts,
+    events: [{ kind: 'report', title: report.title, status: report.status, timestamp: new Date().toISOString(),
+      detail: report.text, detailStructured: report.structured }],
+    retryWriteback: { v: 1, id: 'retry', projectId, accountScopeId, sessionId: 's', runId: 'r', createdAt: new Date().toISOString(),
+      operations: [operations[1]], baseFiles: project.files } };
+  callbacks.sessions.setState(State.normalizePanelState({ activeSessionId: 's', sessions: [{ id: 's', projectId, accountScopeId, runs: [run] }] }));
+  assert.throws(() => callbacks.native.ensurePanelOpen(), error => error === mounted);
+  const harness = { project, operation: operations[1], callbacks, snapshots,
+    run: () => callbacks.timeline.findRunRecord('r', 's'), retry: () => callbacks.timeline.retryWriteback('r'),
+    stop: () => callbacks.composer.callbacks.onCancel(),
+    async changeScope(kind) {
+      if (kind === 'project') window.location.pathname = '/project/fedcba987654321001234567';
+      else { email = 'another@example.org'; await window.__codexOverleafLifecycle.refreshAccountScopeId(); }
+      const state = JSON.parse(JSON.stringify(callbacks.sessions.getState()));
+      state.sessions[0].projectId = callbacks.timeline.getCurrentProjectId();
+      state.sessions[0].accountScopeId = window.codexOverleafDeriveAccountScopeId();
+      const next = state.sessions[0].runs[0];
+      next.runProjectId = state.sessions[0].projectId;
+      next.status = 'running'; next.events = []; delete next.retryingWriteback;
+      callbacks.sessions.setState(state);
+      return next;
+    }
+  };
+  return harness;
+}
+
+test('Retry sync Stop preserves returned writes and save evidence on its owning run', async t => {
+  for (const saved of [false, true]) await t.test(saved ? 'late saved reply' : 'cancelled save confirmation', async () => {
+    const h = await retryRuntime(async runtime => {
+      const applied = { ok: true, applied: [{ operation: runtime.operation,
+        result: { ok: true, verified: true, verifiedContent: after } }], skipped: [] };
+      const saveVerification = { ok: saved, state: saved ? 'verified_saved' : 'unknown_timeout', recoveryReason: saved ? '' : 'codex_cancelled' };
+      const view = runtime.callbacks.writeback.getCurrentRunView();
+      await runtime.callbacks.writeback.recordUndoFromApply(runtime.project, applied);
+      await runtime.callbacks.writeback.settleWritebackRecovery(applied, runtime.project, saveVerification, view, false);
+      const outcome = { operations: [runtime.operation], applied, saveVerification,
+        settlement: Settlement.settle({ operations: [runtime.operation], applyResult: applied, saveVerification }) };
+      await runtime.stop();
+      if (saved) return outcome;
+      throw Object.assign(new Error('Save checking was cancelled.'), { code: 'codex_cancelled', writebackOutcome: outcome });
+    });
+    await h.retry();
+    const run = h.run(), report = run.events.filter(event => event.kind === 'report').at(-1);
+    assert.equal(run.settlement.documentEffect, 'changed');
+    assert.deepEqual(run.settlement.fileSettlements.map(file => [file.path, file.applied]),
+      [['first.tex', 'complete'], ['main.tex', 'complete']], 'settling Retry must preserve files from the original attempt');
+    assert.equal(run.status, 'cancelled');
+    assert.deepEqual(Array.from(run.undoOperations, operation => operation.path).sort(), ['first.tex', 'main.tex']);
+    assert.equal(run.saveCheck?.files?.[0]?.path, saved ? undefined : 'main.tex');
+    assert.equal(run.settlement.evidence.saved === 'verified', saved);
+    assert.equal(report.detailStructured.conclusionSource.key, 'cancelled');
+    assert.ok(report.detailStructured.meta.some(row => row.key === 'writeResult' && /\b1\b/.test(row.value)));
+    assert.ok(report.detailStructured.meta.some(row => row.key === 'saveState'));
+    const restored = State.normalizePanelState(h.snapshots.at(-1)).sessions[0].runs[0];
+    assert.equal(restored.status, 'cancelled');
+    assert.equal(restored.settlement.fileSettlements.length, 2);
+    assert.equal(restored.undoOperations.length, 2);
+  });
+});
+
+test('a cancelled Retry result and cleanup cannot change a replacement account or project record', async t => {
+  for (const kind of ['account', 'project']) await t.test(kind, async () => {
+    let replacement;
+    const h = await retryRuntime(async runtime => {
+      await runtime.stop();
+      replacement = await runtime.changeScope(kind);
+      throw Object.assign(new Error('Save checking was cancelled.'), { code: 'codex_cancelled',
+        writebackOutcome: { operations: [runtime.operation], applied: { ok: true, applied: [], skipped: [] },
+          settlement: { facts: { documentEffect: 'changed', fileSettlements: [] } } } });
+    });
+    await h.retry();
+    assert.equal(h.run(), replacement);
+    assert.equal(replacement.status, 'running', 'the old attempt must not restore its status on a new scope');
+    assert.equal(replacement.events.length, 0);
+    assert.equal(replacement.settlement.fileSettlements.find(file => file.path === 'main.tex').applied, 'failed');
+  });
 });
