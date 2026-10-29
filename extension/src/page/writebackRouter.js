@@ -937,7 +937,7 @@
       identityConfirmed = provenance.ok && getActiveFilePath() === filePath
         && (provenance.identityState === 'match' || (!identityContext.requireIdentity && Date.now() >= fallbackAt));
       if (identityConfirmed && actual === expected) return { ok: true };
-      if (Date.now() >= deadline || (!provenance.ok && provenance.identityState !== 'fallback' && Date.now() >= fallbackAt)) break;
+      if (Date.now() >= deadline) break;
       await delay(Math.min(50, deadline - Date.now()));
     }
     return {
@@ -1067,9 +1067,7 @@
         || contentSignature(lastText) !== options.previousSignature;
       const provenance = documentProvenance(filePath, lastText, options.provenanceReferences, options.identityContext);
       lastText = provenance.capture?.text ?? lastText;
-      if (!provenance.ok && provenance.identityState !== 'fallback' && Date.now() >= identityDeadline)
-        return documentMismatchResult(filePath, provenance);
-      if (!provenance.ok) mismatch = provenance;
+      mismatch = provenance.ok ? null : provenance;
       // Confirm navigation independently of source freshness. A stale target
       // can be correctly open; identical baseline bytes alone cannot prove a
       // switch. Content movement remains the fallback for editor lifecycles
@@ -1086,7 +1084,7 @@
           capture: provenance.capture
         };
       }
-      await delay(100);
+      await delay(Math.max(0, Math.min(100, deadline - Date.now())));
     }
     if (mismatch) return documentMismatchResult(filePath, mismatch);
     // §9.1: if the active file ended up on a different document, this is
@@ -1130,7 +1128,6 @@
   async function waitForEditorDocumentForPath(filePath, previousEditorIdentity, timeoutMs, options = {}) {
     const deadline = Date.now() + timeoutMs;
     const startedAt = Date.now();
-    const identityDeadline = Math.min(deadline, startedAt + Math.min(1500, writebackOpenSettleMs || TreeOperations.ACTIVE_EDITOR_STABILITY_MS));
     const minSettleMs = options.forceSettledOpen ? writebackOpenSettleMs : 0;
     let lastText = readActiveEditorText();
     let lastActivePath = getActiveFilePath();
@@ -1141,9 +1138,7 @@
       lastText = readActiveEditorText();
       const provenance = documentProvenance(filePath, lastText, options.references, identityContext);
       lastText = provenance.capture?.text ?? lastText;
-      if (!provenance.ok && provenance.identityState !== 'fallback' && Date.now() >= identityDeadline)
-        return documentMismatchResult(filePath, provenance);
-      if (!provenance.ok) mismatch = provenance;
+      mismatch = provenance.ok ? null : provenance;
       const activeFileMatches = lastActivePath === filePath;
       const identityChanged = Boolean(previousEditorIdentity) && activeEditorIdentityChanged(previousEditorIdentity);
       const settledLongEnough = Date.now() - startedAt >= minSettleMs;
@@ -1157,7 +1152,7 @@
           capture: provenance.capture
         };
       }
-      await delay(100);
+      await delay(Math.max(0, Math.min(100, deadline - Date.now())));
     }
     if (mismatch) return documentMismatchResult(filePath, mismatch);
     return {

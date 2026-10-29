@@ -146,9 +146,10 @@
       for (const root of roots.slice(0, 1)) walk(root, '', 0);
     }
     const root = document.querySelector?.('[data-testid="file-tree-list-root"]');
-    const nodes = Array.from(root?.querySelectorAll?.('[data-file-type="doc"][data-file-id]') || []);
+    const nodes = root?.querySelectorAll?.('[data-file-type="doc"][data-file-id]') || [];
     if (nodes.length >= 120) truncated = true;
-    for (const node of nodes.slice(0, 120)) {
+    for (let index = 0; index < Math.min(nodes.length, 120); index += 1) {
+      const node = nodes[index];
       const row = node.closest?.('[role="treeitem"]');
       if (!row || row.querySelector?.('[data-file-type="doc"][data-file-id]') !== node) continue;
       const filePath = readNativeTreePath(node), id = normalizeDocumentId(node.getAttribute?.('data-file-id'));
@@ -206,10 +207,11 @@
       const text = doc.toString();
       if (typeof text !== 'string' || !Number.isSafeInteger(doc.length) || doc.length !== text.length)
         return fail('unavailable', 'unread_document');
-      const nextTarget = resolveTargetDocument(path, { projectId });
+      // The target resolution and text read are synchronous. Emission and
+      // dispatch resolve again; retain the cheap local capture checks here.
       const currentViews = [...new Set(getCodeMirrorEditorViews())];
       if (currentViews.length !== 1 || currentViews[0] !== view || view.state !== state || state.doc !== doc
-        || nextTarget.status !== 'known' || nextTarget.documentId !== target.documentId
+        || getProjectId() !== projectId
         || readNavigationDocumentIds().some(id => id !== documentId)) return fail('unavailable', 'capture_changed');
       return { ok: true, identityState: 'match', text, documentIdentity, view, state, doc };
     } catch (_error) {
@@ -225,7 +227,8 @@
   }
 
   function serializeEditorCapture(capture) {
-    if (!isCaptureCurrent(capture)) return { ok: false, code: 'document_identity_mismatch', identityState: 'unavailable' };
+    if (!capture?.ok || typeof capture.text !== 'string')
+      return { ok: false, code: 'document_identity_mismatch', identityState: 'unavailable' };
     const contentSha256 = OtText.hashText(capture.text);
     if (!isCaptureCurrent(capture)) return { ok: false, code: 'document_identity_mismatch', identityState: 'unavailable' };
     return { ok: true, documentIdentity: { ...capture.documentIdentity, contentSha256 } };
@@ -1531,8 +1534,8 @@
       const activePath = options.passive ? getEditorStoreFilePath({ passive: true }) : getActiveFilePath();
       const activeFileMatches = Boolean(activePath) && (!filePath || activePath === filePath);
       const capture = captureEditorDocument({ path: filePath || activePath, projectId });
-      if ((capture.identityState === 'mismatch' || capture.reason === 'navigation_conflict') && Date.now() >= identityDeadline)
-        return { ...capture, identityState: 'mismatch', reason: 'document_identity_mismatch' };
+      mismatch = capture.identityState === 'mismatch' || capture.reason === 'navigation_conflict'
+        ? { ...capture, identityState: 'mismatch' } : null;
       let text, identity, observed;
       try {
         identity = getActiveEditorIdentity();
@@ -1550,7 +1553,6 @@
       const signatureChanged = capture.ok || !options.notSignature || contentSignature(text) !== options.notSignature;
       const identityReady = capture.ok || (capture.identityState === 'unavailable' && capture.reason !== 'navigation_conflict'
         && Date.now() >= identityDeadline);
-      if (capture.identityState === 'mismatch') mismatch = capture;
       if (activeFileMatches && view && textReady && signatureChanged && identityReady) {
         const documentId = capture.documentIdentity?.documentId || '';
         if (view !== stableView || activePath !== stablePath || documentId !== stableDocumentId) {
@@ -1571,7 +1573,7 @@
       } else {
         stableView = null;
       }
-      await delay(150);
+      await delay(Math.max(0, Math.min(150, deadline - Date.now())));
     }
     return {
       ok: false,
