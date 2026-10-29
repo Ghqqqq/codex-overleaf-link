@@ -189,6 +189,10 @@
       showPluginToast(tx('Nothing to refill: the original task text is unavailable.', '无法回填：原任务文本不可用。'));
       return;
     }
+    if (input.value.trim() && input.value.trim() !== task.trim()) {
+      showPluginToast(tx('Kept your draft. Clear the composer, then try again to refill this task.', '已保留你的草稿。清空输入框后再试一次，即可回填这条任务。'));
+      return;
+    }
     prepareRetryReplacement?.(run || null, task);
     input.value = task;
     getState().task = task;

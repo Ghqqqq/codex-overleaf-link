@@ -141,7 +141,7 @@ See [Providers and protocols](providers-and-protocols.md) for model execution an
 
 ## Runs, Queues, and Shared Sessions
 
-The UI paths for editing/resubmitting and drafts during a run are also described in [UI and loading](ui-and-loading.md). Main entry points are `RunTimelineView.configureEditButton`, `PanelMaintenance.refillComposerForRetry`, and runtime `prepareRetryReplacement/persistPanelInputs`. Check the fields and lifetimes of submitted snapshots, current drafts, and queued items separately.
+The UI paths for editing/resubmitting and drafts during a run are also described in [UI and loading](ui-and-loading.md). Main entry points are `RunTimelineView.configureEditButton`, `PanelMaintenance.refillComposerForRetry`, and runtime `prepareRetryReplacement/persistPanelInputs`. Retry and compile-repair refill preserve a different nonempty composer draft with a localized notice before preparation, state changes, or save scheduling; empty drafts and text matching after trimming retain the existing refill path. Check the fields and lifetimes of submitted snapshots, current drafts, and queued items separately.
 
 ### Change submission, cancellation, queues, or guidance during a run
 
