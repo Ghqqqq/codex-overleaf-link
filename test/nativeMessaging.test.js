@@ -44,6 +44,7 @@ function clock() {
   const timers = new Map();
   return {
     timers,
+    now: () => now,
     setTimeout(fn, ms) {
       const id = ++nextId;
       timers.set(id, { fn, at: now + ms });
@@ -62,7 +63,50 @@ function clock() {
   };
 }
 
-test('Native UI deadlines settle once and ping expiry preserves active execution and mirror writes', async () => {
+function nativeEnvironmentFixture(timing) {
+  const candidates = Array.from({ length: 4 }, (_, index) => path.join('/fixture', `candidate-${index}`, 'codex'));
+  const files = new Map(candidates.map(candidate => [candidate, { version: '1.2.3', signature: 1 }]));
+  let versionReads = 0;
+  function getFile(candidate) {
+    if (!files.has(candidate)) throw Object.assign(new Error('Fixture path absent'), { code: 'ENOENT' });
+    return files.get(candidate);
+  }
+  const dependencies = {
+    'node:fs': {
+      constants: { X_OK: 1, F_OK: 0 },
+      statSync(candidate) {
+        const file = getFile(candidate);
+        return { isFile: () => true, size: 100, mtimeMs: file.signature, ctimeMs: file.signature };
+      },
+      accessSync: getFile,
+      realpathSync(candidate) { getFile(candidate); return candidate; }
+    },
+    'node:os': { homedir: () => '/fixture/home' },
+    'node:child_process': { spawnSync(candidate, args) {
+      assert.deepEqual(Array.from(args), ['--version']);
+      versionReads++;
+      timing.advance(2700);
+      return { status: 0, stdout: `codex ${getFile(candidate).version}\n`, stderr: '' };
+    } },
+    './debugLog': { logDebug() {} }
+  };
+  function load(name) {
+    const filename = path.join(__dirname, '../native-host/src', `${name}.js`);
+    const nativeRequire = require('node:module').createRequire(filename);
+    const context = { module: { exports: {} }, Date: { now: timing.now },
+      process: { platform: 'darwin', execPath: '/fixture/node', env: {} },
+      require: dependency => dependencies[dependency] || nativeRequire(dependency) };
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context, { filename });
+    return context.module.exports;
+  }
+  dependencies['./codexRuntimeIdentity'] = load('codexRuntimeIdentity');
+  const environment = dependencies['./nativeEnvironment'] = load('nativeEnvironment');
+  return { environment, handleRequest: load('taskRunnerRuntime').handleRequest, files,
+    base: { PATH: candidates.map(candidate => path.dirname(candidate)).join(':'), CODEX_OVERLEAF_DISABLE_SHELL_ENV: '1' },
+    reads: () => versionReads };
+}
+
+test('Native UI deadlines allow healthy cold starts, settle once and preserve active execution and mirror writes', async () => {
   const timing = clock(), ports = [];
   const context = {
     URL, console, crypto: require('node:crypto'), setTimeout: timing.setTimeout, clearTimeout: timing.clearTimeout,
@@ -96,6 +140,21 @@ test('Native UI deadlines settle once and ping expiry preserves active execution
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../extension/src/background.js'), 'utf8'), context);
   const bridge = context.CodexOverleafNativeBridge;
   const send = (id, method) => bridge.requestInternal({ id, method, params: {} });
+  const startupPing = send('startup-ping', 'bridge.ping');
+  const native = nativeEnvironmentFixture(timing);
+  const built = native.environment.buildNativeRuntimeEnv(native.base, { platform: 'darwin', defaultPathSegments: [] });
+  ports[0].receive(await native.handleRequest({ id: 'startup-ping', method: 'bridge.ping' }, built));
+  assert.equal((await startupPing).ok, true, 'healthy startup must answer its first ping before the background deadline');
+  assert.equal(native.reads(), 4, 'the first ping reuses startup discovery');
+  assert.equal(ports[0].disconnected, false);
+  const selected = native.files.get(built.CODEX_OVERLEAF_CODEX_PATH);
+  selected.signature++;
+  selected.version = '2.0.0';
+  const changed = native.environment.refreshCodexRuntimeEnv(built);
+  assert.equal(changed.CODEX_OVERLEAF_CODEX_VERSION, '2.0.0', 'candidate replacement invalidates startup discovery');
+  selected.version = '3.0.0';
+  assert.equal(native.environment.refreshCodexRuntimeEnv(changed).CODEX_OVERLEAF_CODEX_VERSION, '2.0.0');
+  assert.equal(native.environment.refreshCodexRuntimeEnv(changed, { force: true }).CODEX_OVERLEAF_CODEX_VERSION, '3.0.0');
   const reads = ['mirror.status', 'codex.models', 'codex.providers.upsert'].map(method => send(method, method));
   const unboundedMethods = ['codex.run', 'codex.steer', 'codex.providers.test', 'codex.thread.fork',
     'task.run', 'task.confirm', 'codex.cancel', 'mirror.sync', 'mirror.patchFiles',
