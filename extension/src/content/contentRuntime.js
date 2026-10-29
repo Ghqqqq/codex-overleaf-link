@@ -2806,6 +2806,7 @@
       currentRunView = null;
       runCancellationRequested = false;
       runCancellationController = null;
+      syncComposerSendAvailability();
       activeTurnControl.release(settlement.requestId);
       if (isExperimentalOtEnabled()) {
         try { await resumeOtWarmMirror('run-settled'); }

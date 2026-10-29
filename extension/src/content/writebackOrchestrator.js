@@ -22,6 +22,7 @@
   // In-flight background mirror refresh (v1.7.5) — see the writeback path.
   let pendingMirrorRefresh = null;
   const mirrorSettlementOwners = new Map();
+  const CANCELLED_MIRROR_INVALIDATION_TIMEOUT_MS = 20000;
   let appendChangeSummary;
   let appendCompletionReport;
   let appendOperationsPreview;
@@ -456,9 +457,11 @@
       // check their save state. Carry the same evidence into the cancelled report.
       error.writebackOutcome = { operations, applied, saveVerification,
         settlement: buildSettlement({ operations, applyResult: applied, saveVerification, mirror: { state: 'unknown' } }) };
-      // Fence the Page cache now; an unanswered Native invalidation must retain
-      // the mirror barrier without holding the cancelled run open.
-      trackWritebackMirror(invalidateWritebackMirror(saveTarget, { pageFirst: true }), saveTarget,
+      // Fence the Page cache now; bound the Native wait so an unanswered
+      // invalidation cannot strand the next run or recovery behind the barrier.
+      trackWritebackMirror(invalidateWritebackMirror(saveTarget, {
+        pageFirst: true, nativeTimeoutMs: CANCELLED_MIRROR_INVALIDATION_TIMEOUT_MS
+      }), saveTarget,
         state => {
           error.writebackOutcome.settlement = buildSettlement({ operations, applyResult: applied, saveVerification, mirror: { state } });
         });
@@ -624,12 +627,26 @@
     };
     const pageInvalidation = options.pageFirst === true ? invalidatePage() : null;
     let invalidated = false;
+    let timer;
     try {
       if (target.runProjectId) {
-        const response = await sendBackgroundNative({ method: 'mirror.invalidate', params: { projectId: target.runProjectId } });
+        const pending = sendBackgroundNative({ method: 'mirror.invalidate', params: { projectId: target.runProjectId } });
+        // A rejection after the bound has nobody left to observe it.
+        pending.catch(() => {});
+        const response = options.nativeTimeoutMs
+          ? await Promise.race([
+            pending,
+            new Promise(resolve => {
+              timer = setTimeout(() => resolve(null), options.nativeTimeoutMs);
+            })
+          ])
+          : await pending;
         invalidated = response?.ok === true && response.result?.invalidated === true;
       }
     } catch (_error) { /* An unavailable host cannot acknowledge invalidation. */ }
+    finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
     const pageInvalidated = await (pageInvalidation || invalidatePage());
     if (invalidated && pageInvalidated) return 'not-attempted';
     const event = {
