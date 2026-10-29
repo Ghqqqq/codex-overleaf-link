@@ -40,15 +40,12 @@ async function syncOverleafToMirror({ projectId, project, rootDir, evidenceProje
   const normalized = normalizeProjectFilesDetailed(project?.files || []);
   const files = normalized.files;
   const previous = readBaseline(mirror.baselinePath);
-  const references = baselineTextReferences(previous);
-  for (const file of project?.files || []) {
-    if (typeof file.content === 'string' && /^overleaf-(?:zip|doc-fetch)/.test(file.source || ''))
-      references.set(file.path, file.content);
-  }
+  // Page already admits evidence-free snapshot text against its own saved
+  // references, which may no longer be present after editor/writeback merging.
   for (const file of project?.files || []) {
     if (file.kind === 'binary' || typeof file.content !== 'string') continue;
-    if (file.documentIdentity !== undefined || (file.source && !/^overleaf-(?:zip|doc-fetch)/.test(file.source))) {
-      assertDocumentProvenance(file.path, file.content, references, file.documentIdentity,
+    if (file.documentIdentity !== undefined) {
+      assertDocumentProvenance(file.path, file.content, undefined, file.documentIdentity,
         project?.id !== undefined && project.id !== evidenceProjectId ? undefined : evidenceProjectId);
     }
   }

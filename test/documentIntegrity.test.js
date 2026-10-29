@@ -101,7 +101,7 @@ function harness(t, initial, options = {}) {
     getActiveEditorIdentity: () => ({ type: 'codemirror-view', view: views.get(active), state: views.get(active).state, doc: views.get(active).state.doc }),
     activeEditorIdentityChanged: previous => previous?.doc !== views.get(active).state.doc,
     normalizeSafeProjectPath: Files.normalizeSafeProjectPath,
-    writebackOpenSettleMs: 0, delay: async ms => { clock += ms; options.onDelay?.(api); },
+    writebackOpenSettleMs: options.settleMs ?? 0, delay: async ms => { clock += ms; options.onDelay?.(api); },
     compileBridge: { markSourceEdited() {} },
     getReviewingState: () => { options.onReviewState?.(api); return { reviewing: { ok: reviewing } }; },
     isReviewingConfirmedForWrite: state => state.reviewing.ok,
@@ -366,6 +366,9 @@ test('D1: a contradictory overlay batch never reaches the mirror or its baseline
     const documentIdentity = invalid === null ? null : { ...overlays[0].documentIdentity, ...invalid };
     await assert.rejects(Mirror.applyFileOverlays({ projectId: PROJECT, evidenceProjectId: PROJECT, rootDir,
       overlays: [{ ...overlays[0], documentIdentity }] }), { code: 'document_identity_mismatch' });
+    await assert.rejects(Mirror.syncOverleafToMirror({ projectId: PROJECT, evidenceProjectId: PROJECT, rootDir,
+      project: { id: PROJECT, files: [{ ...overlays[0], documentIdentity }], capabilities: { fullProjectSnapshot: true } } }),
+    { code: 'document_identity_mismatch' });
   }
   await assert.rejects(Mirror.applyFileOverlays({ projectId: PROJECT, rootDir, overlays: [overlays[0]] }),
     { code: 'document_identity_mismatch' }, 'missing raw request identity cannot validate evidence');
@@ -470,12 +473,32 @@ test('an edit equal to a sibling baseline retains its own similar provenance thr
     files: [{ path: 'main.tex', content: previous }, files[1]], capabilities: { fullProjectSnapshot: true } } });
   await Mirror.applyFileOverlays({ projectId: PROJECT, evidenceProjectId: PROJECT, rootDir, overlays });
   assert.equal(fs.readFileSync(path.join(mirror.workspacePath, 'main.tex'), 'utf8'), revised);
+
+  // Full snapshots retain Page's evidence-free admission. The saved target
+  // reference may have been replaced by its editor overlay before transport.
+  const fallbackProject = { id: PROJECT, files: [
+    { path: 'main.tex', content: revised, source: 'active-editor' },
+    { path: 'backup.tex', content: revised, source: 'overleaf-zip' }
+  ], capabilities: { fullProjectSnapshot: true } };
+  const first = await Mirror.syncOverleafToMirror({ projectId: PROJECT + '-first-sync', evidenceProjectId: PROJECT,
+    rootDir, project: fallbackProject });
+  for (const file of fallbackProject.files)
+    assert.equal(fs.readFileSync(path.join(first.workspacePath, file.path), 'utf8'), revised);
+  const fresh = { ...fallbackProject, files: [...fallbackProject.files,
+    { path: 'copy.tex', content: revised, source: 'active-editor', documentIdentity: evidence('copy.tex', 'copy.tex', revised) }] };
+  const merged = require('../extension/src/content/writebackController').mergeVerifiedAppliedFiles(fresh, fallbackProject,
+    { applied: [{ operation: { type: 'create', path: 'copy.tex', content: revised },
+      result: { ok: true, verified: true, verifiedContent: revised } }] });
+  const refreshed = await Mirror.syncOverleafToMirror({ projectId: PROJECT + '-first-sync', evidenceProjectId: PROJECT,
+    rootDir, project: merged });
+  assert.equal(fs.readFileSync(path.join(refreshed.workspacePath, 'copy.tex'), 'utf8'), revised);
+  assert.equal(JSON.parse(fs.readFileSync(refreshed.baselinePath)).files.find(file => file.path === 'copy.tex').content, revised);
 });
 
 test('mounted identity survives equal-text switches while stale cache, dispatch and readback bindings cannot succeed', async t => {
   const Snapshot = require('../extension/src/page/snapshotRouter');
   const Cache = require('../extension/src/page/overleafProjectSnapshot');
-  let clock = 1000, active = 'b.tex', hint = 'b.tex', mountAt = 1150;
+  let clock = 1000, active = 'b.tex', hint = 'b.tex', mountAt = 1450;
   const state = name => ({ doc: { length: 4, toString: () => 'same' },
     values: [{ ranges: { docId: idFor(name), changes: [], comments: [] }, threads: {} }] });
   const view = { state: state('a.tex'), dispatch() {} };
@@ -494,7 +517,7 @@ test('mounted identity survives equal-text switches while stale cache, dispatch 
   const ready = await tree.waitForActiveEditorText(active, 1500, { allowEmpty: true, notSignature: tree.contentSignature('same') });
   assert.equal(ready.ok, true);
   assert.equal(ready.documentIdentity.documentId, idFor('b.tex'));
-  assert.ok(clock >= 1450, 'the mounted logical document must settle, even when bytes are identical');
+  assert.ok(clock >= 1750, 'the mounted logical document must settle, even when bytes are identical');
 
   const snapshotRouter = Snapshot.create({ window: win, treeOperations: tree });
   let finish, captured, builds = 0;
@@ -531,6 +554,23 @@ test('mounted identity survives equal-text switches while stale cache, dispatch 
   assert.deepEqual(readback.writes, ['main.tex']);
   assert.equal(unverified.skipped[0].result.failure.code, 'write_observed_mismatch');
   assert.equal(unverified.skipped[0].result.failure.changedDocument, true);
+
+  let openedAt;
+  const slow = harness(t, { 'a.tex': 'same', 'b.tex': 'same' }, { stuckEditor: true, settleMs: 1200,
+    onOpen() { openedAt = Date.now(); }, onDelay(h) { if (Date.now() - openedAt >= 1300) h.setActive('b.tex'); } });
+  const switched = await slow.apply(slow.snapshot().files, [{ type: 'edit', path: 'b.tex', replaceAll: 'after' }]);
+  assert.equal(switched.ok, true);
+  assert.deepEqual(slow.writes, ['b.tex']);
+  assert.equal(slow.files.get('a.tex'), 'same');
+
+  let writtenAt;
+  const returning = harness(t, { 'main.tex': 'before', 'other.tex': 'after' }, {
+    afterDispatch(h) { writtenAt = Date.now(); h.setActive('other.tex'); },
+    onDelay(h) { if (writtenAt !== undefined && Date.now() - writtenAt >= 450) h.setActive('main.tex'); }
+  });
+  const recovered = await returning.apply(returning.snapshot().files, [{ type: 'edit', path: 'main.tex', replaceAll: 'after' }]);
+  assert.equal(recovered.ok, true);
+  assert.deepEqual(returning.writes, ['main.tex']);
 });
 
 test('unavailable ranges and stale navigation hints use the bounded strict fallback without granting identity', async t => {
@@ -549,19 +589,23 @@ test('unavailable ranges and stale navigation hints use the bounded strict fallb
     view.state.values = staleRanges ? [{ ranges: { docId: idFor('main.tex'), changes: [], comments: [] }, threads: {} }] : [];
     win._ide.editor.open_doc_id = staleRanges ? idFor('sample.bib') : '';
     assert.equal(tree.captureEditorDocument({ path: 'main.tex' }).identityState, 'unavailable');
+    const startedAt = clock;
     const rejected = await tree.waitForActiveEditorText('main.tex', 900, {
       references: new Map([['main.tex', 'document body\n'], ['sample.bib', text]]) });
     assert.equal(rejected.ok, false);
     assert.equal(rejected.code, 'document_identity_mismatch');
+    assert.equal(clock - startedAt, 900, 'a conflict must retain the caller navigation deadline');
     if (staleRanges) {
       const equal = await tree.waitForActiveEditorText('main.tex', 1500, { references: new Map([['main.tex', text]]) });
       assert.equal(equal.ok, false, 'persistent conflicting signals cannot be excused by equal baseline bytes');
       assert.equal(equal.code, 'document_identity_mismatch');
       const mismatch = harness(t, { 'main.tex': text, 'sample.bib': text });
       mismatch.win._ide.editor = { open_doc_id: idFor('sample.bib') };
+      const writeStartedAt = Date.now();
       const write = await mismatch.apply(mismatch.snapshot().files, [{ type: 'edit', path: 'main.tex', replaceAll: 'changed' }]);
       assert.equal(write.skipped[0].result.failure.code, 'document_identity_mismatch');
       assert.deepEqual(mismatch.writes, []);
+      assert.equal(Date.now() - writeStartedAt, 9000);
       t.mock.method(Date, 'now', () => clock);
     }
   }
