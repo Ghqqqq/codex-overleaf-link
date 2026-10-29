@@ -53,12 +53,15 @@ function buildNativeRuntimeEnv(baseEnv = process.env, options = {}) {
   env.CODEX_OVERLEAF_CODEX_VERSION = codexRuntime.selected?.version || '';
   env.CODEX_OVERLEAF_CODEX_SOURCE = codexRuntime.selected?.source || '';
 
+  const { key } = getCodexRuntimeRefreshContext(env, runtimeOptions);
+  cacheCodexRuntimeIdentity(key, codexRuntime);
+
   return env;
 }
 
 const codexRuntimeRefreshCache = new Map();
 
-function refreshCodexRuntimeEnv(baseEnv = process.env, options = {}) {
+function getCodexRuntimeRefreshContext(baseEnv, options) {
   const runtimeOptions = { ...options, platform: getNativeRuntimePlatform({ ...options, env: baseEnv }) };
   const previous = getCodexRuntimeIdentityFromEnv(baseEnv);
   const selectedPath = previous.selected?.path || String(baseEnv.CODEX_OVERLEAF_CODEX_PATH || '');
@@ -78,6 +81,18 @@ function refreshCodexRuntimeEnv(baseEnv = process.env, options = {}) {
     } catch (_) { return [candidate, 'missing']; }
   });
   const key = JSON.stringify([runtimeOptions.platform, pinned ? selectedPath : '', pathValue, signatures]);
+  return { runtimeOptions, previous, selectedPath, pinned, pathValue, key };
+}
+
+function cacheCodexRuntimeIdentity(key, identity) {
+  codexRuntimeRefreshCache.set(key, { identity, createdAt: Date.now() });
+  while (codexRuntimeRefreshCache.size > 4) {
+    codexRuntimeRefreshCache.delete(codexRuntimeRefreshCache.keys().next().value);
+  }
+}
+
+function refreshCodexRuntimeEnv(baseEnv = process.env, options = {}) {
+  const { runtimeOptions, previous, selectedPath, pinned, pathValue, key } = getCodexRuntimeRefreshContext(baseEnv, options);
   const cached = codexRuntimeRefreshCache.get(key);
   let identity = cached?.identity;
   if (options.force || !cached || Date.now() - cached.createdAt > 30000) {
@@ -89,10 +104,7 @@ function refreshCodexRuntimeEnv(baseEnv = process.env, options = {}) {
       env: { ...baseEnv, PATH: pathValue },
       platform: runtimeOptions.platform
     });
-    codexRuntimeRefreshCache.set(key, { identity, createdAt: Date.now() });
-    while (codexRuntimeRefreshCache.size > 4) {
-      codexRuntimeRefreshCache.delete(codexRuntimeRefreshCache.keys().next().value);
-    }
+    cacheCodexRuntimeIdentity(key, identity);
     if (identity.selected?.path !== previous.selected?.path
       || identity.selected?.version !== previous.selected?.version) {
       logDebug('codex.runtime.refreshed', {
