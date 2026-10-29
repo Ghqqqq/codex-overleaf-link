@@ -762,13 +762,18 @@
   }
 
   function collectProjectTextPaths(activePath) {
+    const docRecords = collectDocRecords();
     const rawPaths = [
       activePath,
-      ...collectDocRecords().map(record => record.path),
+      ...docRecords.map(record => record.path),
       ...collectInternalProjectPaths(),
       ...collectDomProjectPaths()
     ];
-    return window.CodexOverleafProjectFiles.collectUniqueTextPaths(rawPaths, 80);
+    const paths = window.CodexOverleafProjectFiles.collectUniqueTextPaths(rawPaths, 80);
+    if (docRecords.truncated) {
+      paths.truncated = true;
+    }
+    return paths;
   }
 
   function collectDocRecords(options = {}) {
@@ -785,6 +790,8 @@
       seen.add(key);
       records.push(record);
       if (records.length >= 120) {
+        // The internal collector also stops here, so exhaustion is unproven.
+        records.truncated = true;
         break;
       }
     }

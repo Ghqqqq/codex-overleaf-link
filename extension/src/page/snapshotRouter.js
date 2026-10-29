@@ -315,15 +315,16 @@
       snapshotActivePath,
       ...(Array.isArray(params.focusFiles) ? params.focusFiles : [])
     ];
+    const enumeratedPaths = params.restrictToRequestedPathsOnly === true
+      ? []
+      : collectProjectTextPaths(snapshotActivePath);
     const projectPaths = window.CodexOverleafProjectFiles.collectUniqueTextPaths(
-      params.restrictToRequestedPathsOnly === true
-        ? requestedPaths
-        : [
-          ...requestedPaths,
-          ...collectProjectTextPaths(snapshotActivePath)
-        ],
+      [...requestedPaths, ...enumeratedPaths],
       80
     );
+    const enumerationTruncated = projectPaths.truncated === true
+      || enumeratedPaths.truncated === true
+      || internalDocRecords.truncated === true;
     const files = [];
     const skipped = [...(zipSnapshot?.skipped || [])];
     const ambiguousPaths = new Set(skipped.filter(file => file.reason === 'zip_path_duplicate').map(file => file.path));
@@ -423,7 +424,7 @@
       activePath: snapshotActivePath,
       files,
       capabilities: {
-        fullProjectSnapshot: params.restrictToRequestedPathsOnly !== true && requestedPathsComplete && zipSnapshot?.pathIdentityComplete !== false,
+        fullProjectSnapshot: params.restrictToRequestedPathsOnly !== true && !enumerationTruncated && requestedPathsComplete && zipSnapshot?.pathIdentityComplete !== false,
         pathIdentityComplete: zipSnapshot?.pathIdentityComplete,
         requestedPathsComplete,
         method: resolvePageSnapshotMethod(files, lightweightOnly),
