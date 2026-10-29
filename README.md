@@ -3,7 +3,7 @@
   <h1>Codex Overleaf Link</h1>
   <p><strong>Empower Overleaf with Codex.</strong></p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.6.0-blue" alt="version 2.6.0">
+    <img src="https://img.shields.io/badge/version-2.6.5-blue" alt="version 2.6.5">
     <img src="https://img.shields.io/badge/chrome-MV3-green" alt="chrome manifest v3">
     <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="node version">
     <a href="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml"><img src="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml/badge.svg" alt="tests"></a>
@@ -112,7 +112,7 @@ Install Codex Overleaf Link on this computer. Follow the install steps in https:
 ### Install with npm
 
 ```bash
-npm exec --yes codex-overleaf-link@2.6.0 -- install-managed
+npm exec --yes codex-overleaf-link@2.6.5 -- install-managed
 ```
 
 The installer sets up the native host and a managed copy of the extension, then prints the extension's folder.
@@ -126,13 +126,13 @@ In `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** an
 
 ```bash
 # macOS / Linux
-CODEX_OVERLEAF_REF=v2.6.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.6.0/install.sh)"
+CODEX_OVERLEAF_REF=v2.6.5 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.6.5/install.sh)"
 ```
 
 ```powershell
 # Windows
-iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.6.0/install.ps1 -OutFile install.ps1
-$env:CODEX_OVERLEAF_REF='v2.6.0'
+iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.6.5/install.ps1 -OutFile install.ps1
+$env:CODEX_OVERLEAF_REF='v2.6.5'
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
@@ -210,10 +210,10 @@ Source checkouts and release-zip installs are unmanaged; update them by hand. Ea
 
 | Task | Command |
 |---|---|
-| Install, repair or migrate | `npm exec --yes codex-overleaf-link@2.6.0 -- install-managed` |
-| Diagnose | `npm exec --yes codex-overleaf-link@2.6.0 -- doctor` |
-| Uninstall | `npm exec --yes codex-overleaf-link@2.6.0 -- uninstall-managed` |
-| Native host only, for an unmanaged extension | `npm exec --yes codex-overleaf-link@2.6.0 -- install-native` / `uninstall-native` |
+| Install, repair or migrate | `npm exec --yes codex-overleaf-link@2.6.5 -- install-managed` |
+| Diagnose | `npm exec --yes codex-overleaf-link@2.6.5 -- doctor` |
+| Uninstall | `npm exec --yes codex-overleaf-link@2.6.5 -- uninstall-managed` |
+| Native host only, for an unmanaged extension | `npm exec --yes codex-overleaf-link@2.6.5 -- install-native` / `uninstall-native` |
 
 `uninstall-managed` removes the native host registration, the bridge, the managed extension and its runtimes. Your history, settings, mirrors, keys and skills stay. To remove everything, clear the history under **Settings → All projects → Local data → Clear local history…**, uninstall, remove the extension in `chrome://extensions`, and delete `~/.codex-overleaf` and the `~/Codex Overleaf Link Extension` shortcut (on Windows, `%USERPROFILE%\.codex-overleaf` and `%LOCALAPPDATA%\CodexOverleaf`).
 
