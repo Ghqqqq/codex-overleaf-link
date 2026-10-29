@@ -22,6 +22,7 @@
   // In-flight background mirror refresh (v1.7.5) — see the writeback path.
   let pendingMirrorRefresh = null;
   const mirrorSettlementOwners = new Map();
+  const mirrorReuseFences = new Map();
   const CANCELLED_MIRROR_INVALIDATION_TIMEOUT_MS = 20000;
   let appendChangeSummary;
   let appendCompletionReport;
@@ -72,6 +73,47 @@
     return writebackSettlement?.settle instanceof Function
       ? writebackSettlement.settle(input)
       : null;
+  }
+
+  function getMirrorReuseFence(projectId) {
+    return mirrorReuseFences.get(projectId) || null;
+  }
+
+  async function settleFullMirrorSync(projectId, project, fence, response, options = {}) {
+    if (!fence || getMirrorReuseFence(projectId) !== fence || response?.ok !== true
+      || project?.capabilities?.fullProjectSnapshot !== true
+      || project.capabilities.contentComplete === false || project.capabilities.skipped?.length) return false;
+    try {
+      options.assertCurrent?.();
+      const status = await (options.sendNative || sendBackgroundNative)({ method: 'mirror.status', params: { projectId } });
+      options.assertCurrent?.();
+      if (getCurrentProjectId() !== projectId || getMirrorReuseFence(projectId) !== fence
+        || status?.ok !== true || status.result?.exists !== true || status.result.dirty === true) return false;
+      mirrorReuseFences.delete(projectId);
+      return true;
+    } catch (_error) {
+      options.assertCurrent?.();
+      return false;
+    }
+  }
+
+  async function syncFencedMirror(projectId, project, options = {}) {
+    const fence = options.fence;
+    if (!fence || getMirrorReuseFence(projectId) !== fence || fence.syncAttempted
+      || project?.id !== projectId || project.capabilities?.fullProjectSnapshot !== true
+      || project.capabilities.contentComplete === false || project.capabilities.skipped?.length) return false;
+    options.assertCurrent();
+    // Only the next full-read path adds a sync; a failed attempt keeps reuse
+    // fenced without adding another request on every subsequent run.
+    fence.syncAttempted = true;
+    try {
+      const response = await options.sendNative({ method: 'mirror.sync', params: { projectId, project } });
+      options.assertCurrent();
+      return await settleFullMirrorSync(projectId, project, fence, response, options);
+    } catch (_error) {
+      options.assertCurrent();
+      return false;
+    }
   }
 
   function trackWritebackMirror(work, target, onSettled) {
@@ -649,6 +691,7 @@
     }
     const pageInvalidated = await (pageInvalidation || invalidatePage());
     if (invalidated && pageInvalidated) return 'not-attempted';
+    if (target.runProjectId) mirrorReuseFences.set(target.runProjectId, { syncAttempted: false });
     const event = {
       title: tx('The local project cache could not be reset. Check the local connection before starting another task.',
         '本地项目缓存未能重置。请检查本地连接后再开始下一轮任务。'),
@@ -689,6 +732,7 @@
 
   async function refreshProjectMirrorAfterWriteback(project = {}, applied = {}, saveVerification = {}, confirmation = {}) {
     const target = confirmation.target || {};
+    const mirrorFence = getMirrorReuseFence(target.runProjectId);
     if (saveVerification?.state !== 'verified_saved') {
       return invalidateWritebackMirror(target);
     }
@@ -746,6 +790,7 @@
       }
     });
     if (response?.ok) {
+      await settleFullMirrorSync(target.runProjectId, syncedProject, mirrorFence, response);
       appendRunEvent({
         title: tx('Local Codex workspace refreshed. The next run will start from the latest Overleaf content.', '已刷新本地 Codex workspace，下一轮会从最新 Overleaf 内容开始。'),
         status: 'completed'
@@ -982,6 +1027,8 @@
       applySyncChangesToOverleaf,
       resolveCompileLogContext,
       invalidateMirrorAfterUndo,
+      getMirrorReuseFence,
+      syncFencedMirror,
       getPendingMirrorRefresh: () => pendingMirrorRefresh
     };
   }

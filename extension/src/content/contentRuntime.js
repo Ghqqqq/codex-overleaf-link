@@ -2148,9 +2148,10 @@
       }
 
       let focusFiles = [...executionSnapshot.focusFiles];
+      const mirrorOwner = currentRunView, mirrorRouteGeneration = spaRouteGeneration;
       const warmStart = await awaitRunStep(resolveWarmRunStart({ focusFiles, mode: submittedMode }));
       let project = warmStart.project || null;
-      let useExistingMirror = warmStart.useExistingMirror;
+      let useExistingMirror = warmStart.useExistingMirror && !writebackOrchestrator.getMirrorReuseFence(mirrorOwner.runProjectId);
       let fileOverlays = warmStart.fileOverlays || null;
       let otWarmStart = warmStart.otWarmStart === true;
       if (!useExistingMirror) {
@@ -2158,7 +2159,20 @@
           title: tx('Syncing the Overleaf project to the local Codex workspace.', '正在同步 Overleaf 项目到本地 Codex workspace。'),
           status: 'running'
         });
+        const mirrorFence = writebackOrchestrator.getMirrorReuseFence(mirrorOwner.runProjectId);
         project = await awaitRunStep(getRunProjectSnapshot());
+        if (mirrorFence) {
+          const assertCurrent = () => {
+            throwIfRunCancellationRequested();
+            if (mirrorOwner !== currentRunView || mirrorRouteGeneration !== spaRouteGeneration
+              || mirrorOwner.runProjectId !== getCurrentProjectId()
+              || mirrorOwner.runAccountScopeId !== cachedAccountScopeId) throw createRunCancellationError();
+          };
+          await awaitRunStep(writebackOrchestrator.syncFencedMirror(mirrorOwner.runProjectId, project, {
+            fence: mirrorFence, assertCurrent,
+            sendNative: payload => nativeCompatibilityController.sendBackgroundNative(payload, { assertCurrent })
+          }));
+        }
       }
       throwIfRunCancellationRequested();
       if (!useExistingMirror) {
@@ -5660,12 +5674,14 @@
   // --- Warm Mirror Controller ---
 
   async function getMirrorFreshness() {
+    const projectId = getCurrentProjectId();
+    if (writebackOrchestrator.getMirrorReuseFence(projectId)) return null;
     try {
       const response = await sendBackgroundNative({
         method: 'mirror.status',
-        params: { projectId: getCurrentProjectId() }
+        params: { projectId }
       });
-      if (response?.ok) {
+      if (response?.ok && getCurrentProjectId() === projectId && !writebackOrchestrator.getMirrorReuseFence(projectId)) {
         return response.result;
       }
     } catch (error) { /* fall through */ }
@@ -5696,7 +5712,7 @@
     }
 
     const mirrorStatus = await getMirrorFreshness();
-    const mirrorHealth = Modules.MirrorHealth.classifyMirrorHealth(mirrorStatus);
+    const mirrorHealth = Modules.MirrorHealth.classifyMirrorHealth(mirrorStatus || {});
     if (!mirrorStatus?.exists || !mirrorHealth.reusable) {
       return { useExistingMirror: false, reason: 'mirror_not_fresh', mirrorStatus };
     }
