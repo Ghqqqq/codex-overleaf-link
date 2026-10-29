@@ -63,7 +63,7 @@ function clock() {
   };
 }
 
-function nativeEnvironmentFixture(timing) {
+function nativeEnvironmentFixture(timing, onVersionRead = () => {}) {
   const candidates = Array.from({ length: 4 }, (_, index) => path.join('/fixture', `candidate-${index}`, 'codex'));
   const files = new Map(candidates.map(candidate => [candidate, { version: '1.2.3', signature: 1 }]));
   let versionReads = 0;
@@ -85,8 +85,10 @@ function nativeEnvironmentFixture(timing) {
     'node:child_process': { spawnSync(candidate, args) {
       assert.deepEqual(Array.from(args), ['--version']);
       versionReads++;
+      const version = getFile(candidate).version;
+      onVersionRead({ files, versionReads });
       timing.advance(2700);
-      return { status: 0, stdout: `codex ${getFile(candidate).version}\n`, stderr: '' };
+      return { status: 0, stdout: `codex ${version}\n`, stderr: '' };
     } },
     './debugLog': { logDebug() {} }
   };
@@ -142,6 +144,8 @@ test('Native UI deadlines allow healthy cold starts, settle once and preserve ac
   const send = (id, method) => bridge.requestInternal({ id, method, params: {} });
   const startupPing = send('startup-ping', 'bridge.ping');
   const native = nativeEnvironmentFixture(timing);
+  const [, newestCandidate] = native.files.keys();
+  native.files.get(newestCandidate).version = '1.3.0';
   const built = native.environment.buildNativeRuntimeEnv(native.base, { platform: 'darwin', defaultPathSegments: [] });
   ports[0].receive(await native.handleRequest({ id: 'startup-ping', method: 'bridge.ping' }, built));
   assert.equal((await startupPing).ok, true, 'healthy startup must answer its first ping before the background deadline');
@@ -155,6 +159,21 @@ test('Native UI deadlines allow healthy cold starts, settle once and preserve ac
   selected.version = '3.0.0';
   assert.equal(native.environment.refreshCodexRuntimeEnv(changed).CODEX_OVERLEAF_CODEX_VERSION, '2.0.0');
   assert.equal(native.environment.refreshCodexRuntimeEnv(changed, { force: true }).CODEX_OVERLEAF_CODEX_VERSION, '3.0.0');
+  const replacing = nativeEnvironmentFixture(timing, ({ files, versionReads }) => {
+    if (versionReads !== 2) return;
+    const first = files.values().next().value;
+    first.signature++;
+    first.version = '3.0.0';
+  });
+  const [firstCandidate, secondCandidate] = replacing.files.keys();
+  replacing.files.get(secondCandidate).version = '2.0.0';
+  const stale = replacing.environment.buildNativeRuntimeEnv(replacing.base, { platform: 'darwin', defaultPathSegments: [] });
+  assert.equal(stale.CODEX_OVERLEAF_CODEX_PATH, secondCandidate);
+  const replacementPing = await replacing.handleRequest({ id: 'replacement-ping', method: 'bridge.ping' }, stale);
+  assert.equal(replacementPing.ok, true);
+  assert.equal(replacementPing.result.environment.codex.path, firstCandidate);
+  assert.equal(replacementPing.result.environment.codex.version, '3.0.0', 'replacement during discovery must invalidate its cached selection');
+  assert.equal(replacing.reads(), 8);
   const reads = ['mirror.status', 'codex.models', 'codex.providers.upsert'].map(method => send(method, method));
   const unboundedMethods = ['codex.run', 'codex.steer', 'codex.providers.test', 'codex.thread.fork',
     'task.run', 'task.confirm', 'codex.cancel', 'mirror.sync', 'mirror.patchFiles',
