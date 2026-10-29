@@ -102,6 +102,7 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
 
     mirror = await syncOverleafToMirror({
       projectId,
+      evidenceProjectId: params.projectId,
       project: params.project || { files: [] },
       rootDir
     });

@@ -12,6 +12,7 @@
   'use strict';
 
   var META_PREFIX = 'codex-overleaf-scoped-persistence-v1:';
+  var MIRROR_FENCE_PREFIX = 'codex-overleaf-mirror-reuse-fence-v1:';
   var fallbackMeta = new Map();
   var cleanPart = QueuePolicy.cleanPart;
   var normalizeMeta = QueuePolicy.normalizeMeta;
@@ -74,7 +75,40 @@
     };
   }
 
+  async function getMirrorReuseFences(scope, chromeApi) {
+    chromeApi = chromeApi || (typeof chrome !== 'undefined' ? chrome : null);
+    if (!normalizeScope(scope).projectId || !chromeApi?.storage?.local) throw new Error('Mirror fence storage is unavailable.');
+    var prefix = MIRROR_FENCE_PREFIX + scopeKey(scope).slice(META_PREFIX.length) + ':';
+    var stored = await chromeApi.storage.local.get(null);
+    return Object.keys(stored || {}).filter(key => key.startsWith(prefix)).map(key => {
+      var generation = key.slice(prefix.length);
+      if (!/^[a-zA-Z0-9_-]{1,160}$/.test(generation) || stored[key]?.v !== 1 || stored[key].generation !== generation) {
+        throw new Error('Mirror fence storage contains an unreadable generation.');
+      }
+      return generation;
+    }).sort();
+  }
+
+  async function setMirrorReuseFence(scope, generation, chromeApi) {
+    chromeApi = chromeApi || (typeof chrome !== 'undefined' ? chrome : null);
+    if (!normalizeScope(scope).projectId || !chromeApi?.storage?.local
+      || !/^[a-zA-Z0-9_-]{1,160}$/.test(generation)) throw new Error('Mirror fence storage is unavailable.');
+    var key = MIRROR_FENCE_PREFIX + scopeKey(scope).slice(META_PREFIX.length) + ':' + generation;
+    await chromeApi.storage.local.set({ [key]: { v: 1, generation } });
+  }
+
+  async function clearMirrorReuseFences(scope, generations, chromeApi) {
+    chromeApi = chromeApi || (typeof chrome !== 'undefined' ? chrome : null);
+    if (!normalizeScope(scope).projectId || !chromeApi?.storage?.local || !Array.isArray(generations)
+      || generations.some(generation => !/^[a-zA-Z0-9_-]{1,160}$/.test(generation))) throw new Error('Mirror fence storage is unavailable.');
+    var prefix = MIRROR_FENCE_PREFIX + scopeKey(scope).slice(META_PREFIX.length) + ':';
+    await chromeApi.storage.local.remove(generations.map(generation => prefix + generation));
+  }
+
   return Object.freeze({
+    getMirrorReuseFences: getMirrorReuseFences,
+    setMirrorReuseFence: setMirrorReuseFence,
+    clearMirrorReuseFences: clearMirrorReuseFences,
     createBrowserAdapter: createBrowserAdapter,
     normalizeScope: normalizeScope,
     scopeKey: scopeKey

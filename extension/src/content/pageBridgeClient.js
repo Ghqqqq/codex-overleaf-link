@@ -10,21 +10,22 @@
     ['src/shared/projectFiles.js', 'codex-overleaf-project-files-script'],
     ['src/shared/compatibility.js', 'codex-overleaf-compatibility-page-script'],
     ['src/shared/pageRpcContract.js', 'codex-overleaf-page-rpc-contract-script', true],
-    ['src/shared/staleGuard.js', 'codex-overleaf-stale-guard-script'],
+    ['src/shared/staleGuard.js', 'codex-overleaf-stale-guard-script', true],
+    ['src/shared/otText.js', 'codex-overleaf-ot-text-script'],
     ['src/shared/compileAdapter.js', 'codex-overleaf-compile-adapter-script'],
     ['src/shared/sensitiveScan.js', 'codex-overleaf-sensitive-scan-script'],
     ['src/shared/auditRecords.js', 'codex-overleaf-audit-records-script'],
     ['src/page/saveState.js', 'codex-overleaf-save-state-script', true],
     ['src/page/overleafCapabilities.js', 'codex-overleaf-capabilities-script', true],
     ['src/page/compileBridge.js', 'codex-overleaf-compile-bridge-script'],
-    ['src/page/overleafEditor.js', 'codex-overleaf-editor-script'],
-    ['src/page/overleafProjectSnapshot.js', 'codex-overleaf-project-snapshot-script'],
+    ['src/page/overleafEditor.js', 'codex-overleaf-editor-script', true],
+    ['src/page/overleafProjectSnapshot.js', 'codex-overleaf-project-snapshot-script', true],
     ['src/page/pageBridgeCapability.js', 'codex-overleaf-page-bridge-capability-script'],
     ['src/page/treeOperations.js', 'codex-overleaf-tree-operations-script', true],
     ['src/page/ownedDirectoryCleanup.js', 'codex-overleaf-owned-directory-cleanup-script', true],
     ['src/page/textFileCreator.js', 'codex-overleaf-text-file-creator-script', true],
     ['src/page/binaryAssetUploader.js', 'codex-overleaf-binary-asset-uploader-script', true],
-    ['src/page/snapshotRouter.js', 'codex-overleaf-snapshot-router-script'],
+    ['src/page/snapshotRouter.js', 'codex-overleaf-snapshot-router-script', true],
     ['src/page/referenceProjects.js', 'codex-overleaf-reference-projects-script', true],
     ['src/page/fileMover.js', 'codex-overleaf-file-mover-script', true],
     ['src/page/writeGuard.js', 'codex-overleaf-write-guard-script', true],
@@ -39,7 +40,6 @@
     ['src/pageBridge.js', 'codex-overleaf-page-bridge-script', true]
   ]);
   const OPTIONAL_OT_SCRIPTS = Object.freeze([
-    ['src/shared/otText.js', 'codex-overleaf-ot-text-script'],
     ['src/page/overleafRealtimeObserver.js', 'codex-overleaf-realtime-observer-script']
   ]);
 

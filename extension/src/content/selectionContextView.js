@@ -133,6 +133,28 @@
       }
     }
 
+    async function attachInstruction(action, selected) {
+      const selection = await attach('edit', selected);
+      if (!selection) return;
+      const task = deps.getPanel()?.querySelector('[data-task]');
+      if (!task) return;
+      if (task.value.trim()) {
+        deps.toast?.(tx('Kept your draft. The selection is attached for editing.', '已保留你的草稿，选区已附上，仅编辑此处。'));
+        return;
+      }
+      const instructions = {
+        polish: tx('Polish the selected passage for clarity and flow. Keep the meaning, citations, labels and math unchanged.',
+          '润色选中段落，让表达更清晰流畅，保持原意以及引用、标签、公式不变。'),
+        shorten: tx('Shorten the selected passage by about 20%. Keep citations, labels, math and the main claim unchanged.',
+          '将选中段落精简约 20%，保留引用、标签、公式和核心论点不变。'),
+        translate: tx('Translate the selected passage into English. Keep LaTeX commands, citations, labels and math unchanged.',
+          '将选中段落翻译成英文，保留 LaTeX 命令、引用、标签和公式不变。')
+      };
+      task.value = instructions[action];
+      task.setSelectionRange(task.value.length, task.value.length);
+      task.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
     function editorFor(node) {
       const element = node?.nodeType === 1 ? node : node?.parentElement;
       const editor = element?.closest?.('.cm-editor');
@@ -164,6 +186,9 @@
       toolbar.setAttribute('aria-label', tx('Selected text actions', '选区操作'));
       toolbar.querySelector('[data-selection-action="reference"]').textContent = tx('Add to Chat', '加入对话');
       toolbar.querySelector('[data-selection-action="edit"]').textContent = tx('Edit Selection', '仅编辑此处');
+      toolbar.querySelector('[data-selection-action="polish"]').textContent = tx('Polish', '润色');
+      toolbar.querySelector('[data-selection-action="shorten"]').textContent = tx('Shorten', '精简');
+      toolbar.querySelector('[data-selection-action="translate"]').textContent = tx('Translate', '翻译');
     }
 
     function ensureToolbar() {
@@ -174,8 +199,8 @@
       toolbar.setAttribute('role', 'toolbar');
       toolbar.hidden = true;
       if (typeof toolbar.showPopover === 'function') toolbar.setAttribute('popover', 'manual');
-      for (const mode of ['reference', 'edit']) {
-        if (mode === 'edit') {
+      for (const mode of ['reference', 'edit', 'polish', 'shorten', 'translate']) {
+        if (mode === 'edit' || mode === 'polish') {
           const divider = document.createElement('span');
           divider.className = 'codex-selection-action-divider';
           divider.setAttribute('aria-hidden', 'true');
@@ -186,7 +211,9 @@
         button.dataset.selectionAction = mode;
         button.addEventListener('click', () => {
           const selected = candidate;
-          if (selected) void attach(mode, selected);
+          if (!selected) return;
+          if (mode === 'reference' || mode === 'edit') void attach(mode, selected);
+          else void attachInstruction(mode, selected);
         });
         toolbar.append(button);
       }

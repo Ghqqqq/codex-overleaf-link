@@ -1,13 +1,14 @@
 (function initCodexOverleafTreeOperations(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('../shared/staleGuard'), require('../shared/otText'));
   } else {
-    root.CodexOverleafTreeOperations = factory();
+    root.CodexOverleafTreeOperations = factory(root.CodexOverleafStaleGuard, root.CodexOverleafOtText);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function treeOperationsFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function treeOperationsFactory(StaleGuard, OtText) {
   'use strict';
 
   const TEXT_PATH_EXTENSION_PATTERN = '(?:tex|bib|sty|cls|bst|bbx|cbx|lbx|cfg|def|clo|ist|txt|md|latex)';
+  const ACTIVE_EDITOR_STABILITY_MS = 300;
 
   function create({
     window: windowDep,
@@ -15,6 +16,8 @@
     normalizePath = fallbackNormalizeSafeProjectPath,
     readActiveEditorText = () => '',
     getActiveEditorIdentity = () => null,
+    getCodeMirrorEditorView = () => getActiveEditorIdentity()?.view,
+    getCodeMirrorEditorViews = () => [getCodeMirrorEditorView()].filter(Boolean),
     activeEditorIdentityChanged = () => false,
     getActiveFilePathFromEditorStore: readActiveFilePathFromEditorStore = () => ''
   } = {}) {
@@ -93,8 +96,142 @@
   }
 
   function getProjectId() {
-    const match = window.location.pathname.match(/\/project\/([^/]+)/);
+    const match = (window.location?.pathname || '').match(/\/project\/([^/]+)/);
     return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  function normalizeDocumentId(value) {
+    return typeof value === 'string' && /^[a-f0-9]{24}$/i.test(value) ? value.toLowerCase() : '';
+  }
+
+  // Navigation's broad scanners and cached basename maps are deliberately not
+  // evidence. Only the scoped project tree and literal native doc rows qualify.
+  function resolveTargetDocument(path, { projectId = getProjectId() } = {}) {
+    const failure = (status, reason) => ({ status, projectId, path, reason });
+    if (!path || normalizeSafeProjectPath(path) !== path || !projectId || getProjectId() !== projectId)
+      return failure('ambiguous', 'project_changed');
+    const records = [];
+    let truncated = false;
+    const seen = new Set();
+    function walk(folder, prefix, depth) {
+      if (!folder || typeof folder !== 'object') return;
+      if (depth > 7 || seen.has(folder) || records.length >= 120) { truncated = true; return; }
+      seen.add(folder);
+      const docs = folder.docs || [], folders = folder.folders || [];
+      if (!Array.isArray(docs) || !Array.isArray(folders)) { truncated = true; return; }
+      if (docs.length > 250 || folders.length > 250) truncated = true;
+      for (const doc of docs.slice(0, 250)) {
+        if (records.length >= 120) { truncated = true; break; }
+        const name = doc?.name, id = normalizeDocumentId(doc?._id);
+        const filePath = typeof name === 'string' && !/[/\\]/.test(name) ? normalizeSafeProjectPath(prefix + name) : '';
+        if (!filePath || !id) { truncated = true; continue; }
+        records.push({ path: filePath, id, source: 'project-tree' });
+      }
+      for (const child of folders.slice(0, 250)) {
+        const name = child?.name;
+        if (typeof name !== 'string' || /[/\\]/.test(name) || !normalizeSafeProjectPath(prefix + name)) {
+          truncated = true;
+          continue;
+        }
+        walk(child, prefix + name + '/', depth + 1);
+      }
+    }
+    const project = window._ide?.project;
+    if (project?._id && project._id !== projectId) return failure('ambiguous', 'project_changed');
+    const editorProjectId = document.querySelector?.('[data-project-id]')?.getAttribute?.('data-project-id');
+    if (editorProjectId && editorProjectId !== projectId) return failure('ambiguous', 'project_changed');
+    if (project?._id === projectId && project.rootFolder) {
+      const roots = Array.isArray(project.rootFolder) ? project.rootFolder : [project.rootFolder];
+      if (roots.length !== 1) truncated = true;
+      for (const root of roots.slice(0, 1)) walk(root, '', 0);
+    }
+    const root = document.querySelector?.('[data-testid="file-tree-list-root"]');
+    const nodes = root?.querySelectorAll?.('[data-file-type="doc"][data-file-id]') || [];
+    if (nodes.length >= 120) truncated = true;
+    for (let index = 0; index < Math.min(nodes.length, 120); index += 1) {
+      const node = nodes[index];
+      const row = node.closest?.('[role="treeitem"]');
+      if (!row || row.querySelector?.('[data-file-type="doc"][data-file-id]') !== node) continue;
+      const filePath = readNativeTreePath(node), id = normalizeDocumentId(node.getAttribute?.('data-file-id'));
+      if (!filePath || !id) { truncated = true; continue; }
+      records.push({ path: filePath, id, source: 'native-tree' });
+    }
+    const matches = records.filter(record => record.path === path);
+    const ids = new Set(matches.map(record => record.id));
+    if (ids.size > 1 || matches.some(match => records.some(record => record.id === match.id && record.path !== path)))
+      return failure('ambiguous', 'identity_conflict');
+    if (truncated || ids.size !== 1) return failure('unavailable', 'identity_unavailable');
+    return { status: 'known', projectId, path, documentId: matches[0].id, source: matches[0].source };
+  }
+
+  function readNavigationDocumentIds() {
+    const store = window.overleaf?.unstable?.store || window.Overleaf?.unstable?.store;
+    const values = [window._ide?.editor?.open_doc_id, window._ide?.editor?.openDocId];
+    for (const key of ['editor.open_doc_id', 'editor.openDocId']) {
+      try { values.push(store?.get?.(key)); } catch (_error) { /* No positive evidence from a store hint. */ }
+    }
+    return values.filter(value => typeof value === 'string' && value.length).map(value => value.toLowerCase());
+  }
+
+  function captureEditorDocument({ path, projectId = getProjectId() } = {}) {
+    const fail = (identityState, reason) => ({ ok: false, code: 'document_identity_mismatch', identityState, reason });
+    try {
+      const target = resolveTargetDocument(path, { projectId });
+      if (target.status === 'ambiguous') return fail('mismatch', target.reason);
+      const hints = readNavigationDocumentIds();
+      if (new Set(hints).size > 1 || (target.status === 'known' && hints.some(id => id !== target.documentId)))
+        return fail('unavailable', 'navigation_conflict');
+      const views = [...new Set(getCodeMirrorEditorViews())];
+      if (views.length > 1) return fail('mismatch', 'identity_ambiguous');
+      const view = views[0], state = view?.state, doc = state?.doc;
+      if (!view || view.dom?.isConnected === false || typeof view.dispatch !== 'function' || !doc)
+        return fail('unavailable', 'identity_unavailable');
+      if (!Array.isArray(state.values)) return fail('unavailable', 'identity_unavailable');
+      if (state.values.length > 2048) return fail('mismatch', 'identity_ambiguous');
+      const entries = state.values.filter(value => value && typeof value === 'object'
+        && Object.prototype.hasOwnProperty.call(value, 'ranges') && value.ranges != null
+        && Object.prototype.hasOwnProperty.call(value, 'threads'));
+      if (!entries.length) return fail('unavailable', 'identity_unavailable');
+      if (entries.length !== 1) return fail('mismatch', 'identity_ambiguous');
+      const entry = entries[0], documentId = normalizeDocumentId(entry.ranges?.docId);
+      if (!Object.prototype.hasOwnProperty.call(entry, 'threads') || !Array.isArray(entry.ranges?.changes)
+        || !Array.isArray(entry.ranges?.comments) || !documentId) return fail('mismatch', 'identity_conflict');
+      // Overleaf installs ranges asynchronously. A stale switch timeout may
+      // attach a previous document's ranges to a newly mounted state's text.
+      if (readNavigationDocumentIds().some(id => id !== documentId)) return fail('unavailable', 'navigation_conflict');
+      if (target.status !== 'known') return fail('unavailable', target.reason);
+      const documentIdentity = { version: 1, source: 'cm-ranges-v1', projectId, path,
+        targetDocumentId: target.documentId, documentId };
+      const decision = StaleGuard.assessDocumentProvenance({ path, projectId, documentIdentity });
+      if (!decision.ok) return { ...decision, reason: 'identity_conflict' };
+      const text = doc.toString();
+      if (typeof text !== 'string' || !Number.isSafeInteger(doc.length) || doc.length !== text.length)
+        return fail('unavailable', 'unread_document');
+      // The target resolution and text read are synchronous. Emission and
+      // dispatch resolve again; retain the cheap local capture checks here.
+      const currentViews = [...new Set(getCodeMirrorEditorViews())];
+      if (currentViews.length !== 1 || currentViews[0] !== view || view.state !== state || state.doc !== doc
+        || getProjectId() !== projectId
+        || readNavigationDocumentIds().some(id => id !== documentId)) return fail('unavailable', 'capture_changed');
+      return { ok: true, identityState: 'match', text, documentIdentity, view, state, doc };
+    } catch (_error) {
+      return fail('unavailable', 'unread_document');
+    }
+  }
+
+  function isCaptureCurrent(capture) {
+    if (!capture?.ok || !capture.documentIdentity) return false;
+    const current = captureEditorDocument(capture.documentIdentity);
+    return current.ok && current.view === capture.view && current.state === capture.state && current.doc === capture.doc
+      && current.text === capture.text && current.documentIdentity.documentId === capture.documentIdentity.documentId;
+  }
+
+  function serializeEditorCapture(capture) {
+    if (!capture?.ok || typeof capture.text !== 'string')
+      return { ok: false, code: 'document_identity_mismatch', identityState: 'unavailable' };
+    const contentSha256 = OtText.hashText(capture.text);
+    if (!isCaptureCurrent(capture)) return { ok: false, code: 'document_identity_mismatch', identityState: 'unavailable' };
+    return { ok: true, documentIdentity: { ...capture.documentIdentity, contentSha256 } };
   }
 
   function readNativeTreePath(node) {
@@ -761,13 +898,18 @@
   }
 
   function collectProjectTextPaths(activePath) {
+    const docRecords = collectDocRecords();
     const rawPaths = [
       activePath,
-      ...collectDocRecords().map(record => record.path),
+      ...docRecords.map(record => record.path),
       ...collectInternalProjectPaths(),
       ...collectDomProjectPaths()
     ];
-    return window.CodexOverleafProjectFiles.collectUniqueTextPaths(rawPaths, 80);
+    const paths = window.CodexOverleafProjectFiles.collectUniqueTextPaths(rawPaths, 80);
+    if (docRecords.truncated) {
+      paths.truncated = true;
+    }
+    return paths;
   }
 
   function collectDocRecords(options = {}) {
@@ -784,6 +926,8 @@
       seen.add(key);
       records.push(record);
       if (records.length >= 120) {
+        // The internal collector also stops here, so exhaustion is unproven.
+        records.truncated = true;
         break;
       }
     }
@@ -1381,28 +1525,61 @@
 
   async function waitForActiveEditorText(filePath, timeoutMs, options = {}) {
     const deadline = Date.now() + timeoutMs;
+    const projectId = options.projectId || getProjectId();
+    const identityDeadline = Math.min(deadline, Date.now() + ACTIVE_EDITOR_STABILITY_MS);
     let lastText = '';
+    let stableView = null, stablePath = '', stableDocumentId = '', stableSince = 0, mismatch = null;
     while (Date.now() < deadline) {
-      const activeFileMatches = !filePath || getActiveFilePath() === filePath;
-      const text = readActiveEditorText();
+      if (getProjectId() !== projectId) return { ok: false, code: 'document_identity_mismatch', reason: 'project_changed' };
+      const activePath = options.passive ? getEditorStoreFilePath({ passive: true }) : getActiveFilePath();
+      const activeFileMatches = Boolean(activePath) && (!filePath || activePath === filePath);
+      const capture = captureEditorDocument({ path: filePath || activePath, projectId });
+      mismatch = capture.identityState === 'mismatch' || capture.reason === 'navigation_conflict'
+        ? { ...capture, identityState: 'mismatch' } : null;
+      let text, identity, observed;
+      try {
+        identity = getActiveEditorIdentity();
+        text = capture.ok ? capture.text : readActiveEditorText();
+        if (identity?.type === 'codemirror-view') observed = identity.doc?.toString?.();
+        else if (identity?.type === 'textarea') observed = identity.node?.value;
+        else if (identity?.type === 'contenteditable') observed = identity.node?.innerText ?? identity.node?.textContent;
+      } catch (_error) { text = undefined; }
+      const view = capture.ok ? capture.view : identity?.view || identity?.node;
       lastText = text;
-      const knownEmptyEditor = options.allowEmpty === true && typeof text === 'string' && /^(?:\r?\n)*$/.test(text)
-        && Boolean(getActiveEditorIdentity());
+      const knownEmptyEditor = options.allowEmpty === true && typeof text === 'string' && !text.trim()
+        && typeof observed === 'string' && observed === text;
       const textReady = options.requireEmpty === true ? knownEmptyEditor
         : knownEmptyEditor || window.CodexOverleafProjectFiles.isUsableProjectFileContent(text);
-      const signatureChanged = !options.notSignature || contentSignature(text) !== options.notSignature;
-      if (activeFileMatches && textReady && signatureChanged) {
-        return {
-          ok: true,
-          text
-        };
+      const signatureChanged = capture.ok || !options.notSignature || contentSignature(text) !== options.notSignature;
+      const identityReady = capture.ok || (capture.identityState === 'unavailable' && capture.reason !== 'navigation_conflict'
+        && Date.now() >= identityDeadline);
+      if (activeFileMatches && view && textReady && signatureChanged && identityReady) {
+        const documentId = capture.documentIdentity?.documentId || '';
+        if (view !== stableView || activePath !== stablePath || documentId !== stableDocumentId) {
+          stableView = view; stablePath = activePath; stableDocumentId = documentId; stableSince = Date.now();
+        } else if (Date.now() - stableSince >= ACTIVE_EDITOR_STABILITY_MS) {
+          const provenance = StaleGuard.assessDocumentProvenance({ path: activePath, text, references: options.references,
+            projectId, documentIdentity: capture.documentIdentity });
+          if (provenance.ok) {
+            if (!capture.ok) return { ok: true, text, identityState: 'fallback' };
+            const serialized = serializeEditorCapture(capture);
+            if (serialized.ok) return { ok: true, text, capture, documentIdentity: serialized.documentIdentity, identityState: 'match' };
+            mismatch = serialized;
+            stableView = null;
+          } else {
+            mismatch = provenance;
+          }
+        }
+      } else {
+        stableView = null;
       }
-      await delay(150);
+      await delay(Math.max(0, Math.min(150, deadline - Date.now())));
     }
     return {
       ok: false,
       text: lastText,
-      reason: `Editor content was not ready for ${filePath || 'active file'}; last length ${String(lastText || '').length}`
+      ...(mismatch || {}),
+      reason: mismatch?.code || `Editor content was not ready for ${filePath || 'active file'}; last length ${String(lastText || '').length}`
     };
   }
 
@@ -1588,6 +1765,10 @@
       getEditorStoreFilePath,
       getRecentFileTreeSelectionPath,
       getProjectId,
+      resolveTargetDocument,
+      captureEditorDocument,
+      isCaptureCurrent,
+      serializeEditorCapture,
       navigateToFile,
       openFileByPath,
       projectPathExists,
@@ -1612,5 +1793,5 @@
       move: ['moveEntity', 'moveFile', 'moveDoc'], delete: ['deleteEntity', 'deleteFile', 'deleteDoc', 'removeEntity']
     }[type] || [];
   }
-  return { create, fileTreeMethodNames };
+  return { create, fileTreeMethodNames, ACTIVE_EDITOR_STABILITY_MS };
 });

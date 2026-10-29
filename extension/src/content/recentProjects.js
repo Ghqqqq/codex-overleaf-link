@@ -455,10 +455,10 @@
     };
   }
 
-  async function refreshDashboardView() {
+  async function refreshDashboardView(options = {}) {
     var panelEl = getPanel();
     if (panelEl && panelEl.dataset.view === 'recent-projects') {
-      await renderRecentProjectsVariant(dashboardViewOptions());
+      await renderRecentProjectsVariant(Object.assign(dashboardViewOptions(), options));
     }
   }
 
@@ -634,7 +634,7 @@
           : {};
         map[projectId] = record.id;
         prefs.activeSessionByProject = map;
-        await Migration.savePrefs(prefs, accountScopeId, projectId);
+        await Migration.savePrefs({ activeSessionByProject: map }, accountScopeId, projectId);
       }
     } catch (_error) { /* fall through: opening the project still works */ }
     openProjectFromRow(projectId);
@@ -786,19 +786,31 @@
     input.focus();
     input.select();
     var settled = false;
-    var finish = function (commit) {
+    var finish = async function (commit) {
       if (settled) {
         return;
       }
       settled = true;
       var nextRaw = input.value;
-      input.remove();
-      titleEl.hidden = false;
       // Unchanged input is a cancel: never rewrites the title source.
       if (!commit || nextRaw.trim() === seed.trim()) {
+        input.remove();
+        titleEl.hidden = false;
         return;
       }
-      commitDashboardSessionRename(sessionsEl, projectId, record, nextRaw).catch(function () { /* swallow */ });
+      input.readOnly = true;
+      try {
+        await commitDashboardSessionRename(sessionsEl, projectId, record, nextRaw);
+      } catch (_error) {
+        settled = false;
+        input.readOnly = false;
+        showPluginToast(tr('recentProjects_renameFailed'), { status: 'failed', sticky: true });
+        input.focus();
+        return;
+      }
+      input.remove();
+      titleEl.hidden = false;
+      await refreshDashboardView().catch(function () { /* keep last render */ });
     };
     input.addEventListener('keydown', function (event) {
       if (event.key === 'Enter') {
@@ -833,15 +845,12 @@
         return SessionState.renameSession(state, record.id, rawTitle, { placeholderTitle: tr('newSessionFallback') });
       });
     } catch (_error) { /* blob may be absent; record update still proceeds */ }
-    try {
-      if (StorageDb) {
-        await StorageDb.putRecord('sessions', StorageDb.buildSessionRecord(Object.assign({}, record, {
-          title: next.title,
-          titleSource: next.titleSource
-        })));
-      }
-    } catch (_error) { /* swallow */ }
-    await refreshDashboardView();
+    if (StorageDb) {
+      await StorageDb.putRecord('sessions', StorageDb.buildSessionRecord(Object.assign({}, record, {
+        title: next.title,
+        titleSource: next.titleSource
+      }), { preserveRunActionPayload: true }));
+    }
   }
 
   function ensureRecentProjectsRoot() {
@@ -1071,6 +1080,7 @@
       openProjectFromRow,
       renderRecentProjectRow,
       renderRecentProjectsVariant,
+      refreshDashboardView,
       mountDashboardShell,
       resetProjectNameCache,
       renderPerProjectVariant

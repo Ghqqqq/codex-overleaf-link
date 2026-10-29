@@ -42,10 +42,15 @@
             reason: status === 'completed' ? 'completed' : 'continue_queue'
           })
         );
-      } else if (!shouldContinue) {
-        const paused = originalQueue.length
-          ? Queue.pauseAll(originalQueue, status || 'run_did_not_complete')
-          : originalQueue;
+      }
+      const canStart = shouldContinue ? options.canStart?.(sessionId) : true;
+      const latestQueue = options.getQueue?.(sessionId) || originalQueue;
+      const inactive = shouldContinue && canStart !== 'session_transition'
+        && (canStart === false || options.isRunning?.())
+        && latestQueue.some(item => item?.status === 'queued');
+      if (!shouldContinue || inactive) {
+        const reason = inactive ? 'session_inactive' : status || 'run_did_not_complete';
+        const paused = latestQueue.length ? Queue.pauseAll(latestQueue, reason) : latestQueue;
         options.setQueue?.(sessionId, paused);
         try {
           await options.persist?.({
@@ -55,19 +60,23 @@
           const latestQueue = options.getQueue?.(sessionId) || paused;
           options.setQueue?.(
             sessionId,
-            Queue.pauseAll(latestQueue, status || 'run_did_not_complete')
+            Queue.pauseAll(latestQueue, reason)
           );
           throw error;
         }
       }
       options.onChange?.(sessionId);
-      if (shouldContinue) {
+      if (shouldContinue && !inactive) {
         scheduleOne(sessionId);
       }
     }
 
     function scheduleOne(sessionId) {
-      if (scheduling || options.isRunning?.() || options.canStart?.(sessionId) === false) {
+      if (scheduling || options.isRunning?.()) {
+        return false;
+      }
+      const canStart = options.canStart?.(sessionId);
+      if (canStart === false || canStart === 'session_transition') {
         return false;
       }
       const initialQueue = options.getQueue?.(sessionId) || [];
@@ -195,7 +204,7 @@
       setQueue: (sessionId, pendingInputs) => options.setQueue?.(sessionId, pendingInputs),
       persist: persistenceOptions => options.save?.(persistenceOptions),
       isRunning: () => Boolean(options.getCurrentRun?.()),
-      canStart: sessionId => options.canStart?.(sessionId) !== false,
+      canStart: sessionId => options.canStart?.(sessionId),
       start: (item, sessionId) => startQueuedInput(item, sessionId),
       onChange: () => render(),
       onDequeued: (item, context) => options.removeGuidance?.(item.id, {
@@ -445,7 +454,8 @@
 
     async function startQueuedInput(item, sessionId) {
       const assertCanStart = () => {
-        if (options.canStart?.(sessionId) === false || options.getCurrentRun?.()) {
+        const canStart = options.canStart?.(sessionId);
+        if (canStart === false || canStart === 'session_transition' || options.getCurrentRun?.()) {
           const error = new Error('Queued input cannot start in the current session.');
           error.code = 'queue_session_not_active';
           throw error;

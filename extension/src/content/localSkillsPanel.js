@@ -204,7 +204,8 @@
       copy.append(text);
       const descriptions = {
         'annotated-rewrite': tx('Guided editing for document revisions.', '用于文稿修订的编辑流程。'),
-        'parallel-subagents': tx('Split independent subtasks across multiple agents.', '将相互独立的子任务分配给多个 agent。')
+        'parallel-subagents': tx('Split independent subtasks across multiple agents.', '将相互独立的子任务分配给多个 agent。'),
+        'reviewer-response': tx('Map reviewer comments to evidence, edits and reply drafts.', '把审稿意见对应到论文证据、修改和回复草稿。')
       };
       const description = (!local && descriptions[id])
         || (typeof skill.description === 'string' ? skill.description.replace(/\s+/g, ' ').trim() : '');
@@ -249,7 +250,8 @@
         if (sourceLabel) sourceLabel.textContent = sourceText();
         toggle.setAttribute('aria-label', accessibleSkillName + ': ' + tr('codexOverleafSkillEnableToggle'));
         const label = !local && id === 'annotated-rewrite' ? tx('Guided editing for document revisions.', '用于文稿修订的编辑流程。')
-          : !local && id === 'parallel-subagents' ? tx('Split independent subtasks across multiple agents.', '将相互独立的子任务分配给多个 agent。') : '';
+          : !local && id === 'parallel-subagents' ? tx('Split independent subtasks across multiple agents.', '将相互独立的子任务分配给多个 agent。')
+            : !local && id === 'reviewer-response' ? tx('Map reviewer comments to evidence, edits and reply drafts.', '把审稿意见对应到论文证据、修改和回复草稿。') : '';
         const help = copy.querySelector('.codex-local-skill-description');
         if (label && help) { help.textContent = label; help.title = label; }
       };

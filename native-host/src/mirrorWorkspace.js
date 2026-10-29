@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { getHomeDir } = require('./nativeHostPlatform');
 const { assertProjectPathsForPlatform } = require('./projectPathPlatform');
+const { assessDocumentProvenance } = require('../../extension/src/shared/staleGuard');
 
 const BASELINE_FILE = 'baseline.json';
 const MAX_BINARY_FILE_BYTES = 10 * 1024 * 1024;
@@ -34,11 +35,20 @@ function getDefaultMirrorRoot(options = {}) {
   return path.join(getHomeDir(options), '.codex-overleaf', 'projects');
 }
 
-async function syncOverleafToMirror({ projectId, project, rootDir }) {
+async function syncOverleafToMirror({ projectId, project, rootDir, evidenceProjectId }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const normalized = normalizeProjectFilesDetailed(project?.files || []);
   const files = normalized.files;
   const previous = readBaseline(mirror.baselinePath);
+  // Page already admits evidence-free snapshot text against its own saved
+  // references, which may no longer be present after editor/writeback merging.
+  for (const file of project?.files || []) {
+    if (file.kind === 'binary' || typeof file.content !== 'string') continue;
+    if (file.documentIdentity !== undefined) {
+      assertDocumentProvenance(file.path, file.content, undefined, file.documentIdentity,
+        project?.id !== undefined && project.id !== evidenceProjectId ? undefined : evidenceProjectId);
+    }
+  }
   const fullProjectSnapshot = project?.capabilities?.fullProjectSnapshot !== false;
   const skippedFiles = resolveUnreadSnapshotFiles(project, normalized, previous, fullProjectSnapshot);
   // Runtime platform is authoritative; request fields cannot opt out of this check.
@@ -808,11 +818,20 @@ function buildOtStatusFields(baseline = {}, trusted) {
   };
 }
 
-async function applyFileOverlays({ projectId, overlays, rootDir }) {
+async function applyFileOverlays({ projectId, overlays, rootDir, evidenceProjectId }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const baseline = readBaseline(mirror.baselinePath);
   const filesByPath = new Map((baseline.files || []).map(f => [f.path, f]));
   const unreadPaths = new Set((baseline.unreadFiles || []).map(file => file.path));
+  const references = baselineTextReferences(baseline);
+  // Validate the entire request against the unchanged baseline before any file
+  // or baseline write. An earlier overlay cannot hide a later misattribution.
+  for (const overlay of overlays || []) {
+    if (!overlay?.path || typeof overlay.content !== 'string') continue;
+    const normalizedPath = normalizeRelativePath(overlay.path);
+    if (!unreadPaths.has(normalizedPath))
+      assertDocumentProvenance(normalizedPath, overlay.content, references, overlay.documentIdentity, evidenceProjectId);
+  }
 
   for (const overlay of overlays || []) {
     if (!overlay?.path || typeof overlay.content !== 'string') {
@@ -828,7 +847,7 @@ async function applyFileOverlays({ projectId, overlays, rootDir }) {
     filesByPath.set(normalizedPath, {
       path: normalizedPath,
       kind: 'text',
-      hash: overlay.hash || hashText(overlay.content),
+      hash: hashText(overlay.content),
       content: overlay.content
     });
   }
@@ -838,6 +857,24 @@ async function applyFileOverlays({ projectId, overlays, rootDir }) {
     ...baseline,
     files: Array.from(filesByPath.values())
   });
+}
+
+function baselineTextReferences(baseline) {
+  return new Map((baseline.files || []).filter(file => file.kind === 'text' && typeof file.content === 'string')
+    .map(file => [file.path, file.content]));
+}
+
+function assertDocumentProvenance(path, text, references, documentIdentity, projectId) {
+  const result = documentIdentity !== undefined
+    && (!documentIdentity || documentIdentity.contentSha256 !== hashText(text))
+    ? { ok: false, code: 'document_identity_mismatch' }
+    : assessDocumentProvenance({ path, text, references, documentIdentity, projectId });
+  if (result.ok) return;
+  const error = new Error('Codex could not confirm that the editor content belongs to the target file, so it was not used.');
+  error.code = result.code;
+  error.path = path;
+  error.matchedPath = result.matchedPath;
+  throw error;
 }
 
 // v1.8.0: after a VERIFIED writeback, the workspace already holds the exact
@@ -932,6 +969,13 @@ async function patchMirrorFiles({ projectId, files, rootDir, source = 'ot' }) {
   let lastOtPatchAt = baseline.lastOtPatchAt || '';
   let lastOtErrorCode = '';
   let patchBatchAt = '';
+  const references = baselineTextReferences(baseline);
+  for (const patch of Array.isArray(files) ? files : []) {
+    const normalized = normalizePatchPath(patch, mirror.workspacePath);
+    if (normalized.ok && baselineByPath.get(normalized.path)?.kind === 'text' && typeof patch?.nextContent === 'string') {
+      assertDocumentProvenance(normalized.path, patch.nextContent, references);
+    }
+  }
 
   for (const patch of Array.isArray(files) ? files : []) {
     const normalized = normalizePatchPath(patch, mirror.workspacePath);

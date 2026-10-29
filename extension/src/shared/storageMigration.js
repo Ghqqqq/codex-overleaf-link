@@ -23,6 +23,101 @@
     'selectedLocalSkillIdsByProject'
   ];
   var projectPreferenceLockTails = {};
+  var projectPreferenceBaselines = new Map();
+  var projectPreferenceIntents = new Map();
+  var projectPreferenceBaselineVersions = new WeakMap();
+
+  function getProjectPreferenceBaseline(accountScopeId, projectId) {
+    var key = buildScopedProjectPreferenceKey(accountScopeId, projectId);
+    var baseline = copyPreferenceValue(projectPreferenceBaselines.get(key));
+    var intents = projectPreferenceIntents.get(key);
+    if (baseline && intents) projectPreferenceBaselineVersions.set(baseline, {
+      owner: intents, versions: Object.assign({}, intents.acknowledged)
+    });
+    return baseline;
+  }
+
+  function adoptProjectPreferenceBaseline(prefs, accountScopeId, projectId) {
+    var key = buildScopedProjectPreferenceKey(accountScopeId, projectId);
+    if (key) {
+      projectPreferenceBaselines.set(key, copyPreferenceValue(prefs));
+      projectPreferenceIntents.set(key, { revision: 0, fields: {}, acknowledged: {} });
+    }
+  }
+
+  function captureProjectPreferenceWrite(input) {
+    var projectId = input.projectId;
+    var key = buildScopedProjectPreferenceKey(input.accountScopeId, projectId);
+    if (!key) return null;
+    var intents = projectPreferenceIntents.get(key);
+    if (!intents) {
+      intents = { revision: 0, fields: {}, acknowledged: {} };
+      projectPreferenceIntents.set(key, intents);
+    }
+    function values(prefs) {
+      return {
+        experimentalOtByProject: input.normalizeExperimentalOtByProject(prefs.experimentalOtByProject)[projectId] === true,
+        reviewingAvailabilityByProject: prefs.reviewingAvailabilityByProject?.[projectId],
+        governanceRulesByProject: input.normalizeGovernanceRulesByProject({
+          [projectId]: prefs.governanceRulesByProject?.[projectId] || {}
+        })[projectId],
+        customInstructionsByProject: input.normalizeCustomInstructionsByProject({
+          [projectId]: prefs.customInstructionsByProject?.[projectId] || ''
+        })[projectId]
+      };
+    }
+    var baseline = input.baseline || getProjectPreferenceBaseline(input.accountScopeId, projectId);
+    var captured = projectPreferenceBaselineVersions.get(baseline);
+    var versions = captured?.owner === intents ? captured.versions : {};
+    var previous = values(baseline || {});
+    var current = values(input.state);
+    var token = { key: key, owner: intents, projectId: projectId, fields: {}, versions: {}, written: [] };
+    for (var name of Object.keys(current)) {
+      var latest = intents.fields[name];
+      // A pending or later local intent supersedes the older captured read.
+      // Peer adoption alone does not turn an unchanged queued snapshot into an edit.
+      var reference = latest && latest.revision > (versions[name] || 0) ? latest.value : previous[name];
+      if (JSON.stringify(current[name]) !== JSON.stringify(reference)) {
+        latest = { revision: ++intents.revision, value: copyPreferenceValue(current[name]), dirty: true };
+        intents.fields[name] = latest;
+      }
+      token.fields[name] = latest && JSON.stringify(current[name]) === JSON.stringify(latest.value) ? latest : null;
+      token.versions[name] = latest?.revision || 0;
+    }
+    return token;
+  }
+
+  function projectPreferencePatch(token, accountScopeId, projectId) {
+    if (token.key !== buildScopedProjectPreferenceKey(accountScopeId, projectId)) {
+      throw Object.assign(new Error('Scoped project preferences require account and project identity.'), {
+        code: 'account_scope_unavailable'
+      });
+    }
+    var current = projectPreferenceIntents.get(token.key) === token.owner;
+    var patch = {};
+    token.written = [];
+    for (var name of Object.keys(token.fields)) {
+      var intent = token.fields[name];
+      var changed = current && intent?.dirty && token.owner.fields[name] === intent;
+      patch[name] = changed ? { [token.projectId]: copyPreferenceValue(intent.value) } : {};
+      if (changed) token.written.push(name);
+    }
+    return patch;
+  }
+
+  function completeProjectPreferenceWrite(token, prefs) {
+    if (projectPreferenceIntents.get(token.key) !== token.owner) return [];
+    for (var name of token.written) {
+      var intent = token.fields[name];
+      intent.dirty = false;
+      token.owner.acknowledged[name] = Math.max(token.owner.acknowledged[name] || 0, intent.revision);
+    }
+    projectPreferenceBaselines.set(token.key, copyPreferenceValue(prefs));
+    return Object.keys(token.fields).filter(function (name) {
+      var latest = token.owner.fields[name];
+      return (latest?.revision || 0) === token.versions[name] && !latest?.dirty;
+    });
+  }
 
   function buildScopedProjectPreferenceKey(accountScopeId, projectId) {
     var account = compactScopePart(accountScopeId);
@@ -170,6 +265,7 @@
       var visible = await StorageDb.claimSessionsForAccount(projectId, account, deleted);
       function result(currentPrefs, sessions, migrated) {
         var wanted = currentPrefs.activeSessionByProject?.[projectId] || '';
+        adoptProjectPreferenceBaseline(currentPrefs, account, projectId);
         return { prefs: currentPrefs, sessions: sessions,
           activeSessionId: sessions.some(session => session.id === wanted) ? wanted : sessions.at(-1)?.id || '',
           migrated: migrated };
@@ -260,7 +356,9 @@
       return chrome.storage.local.get([PREFS_KEY]).then(function (stored) {
         var claimed = claimLegacyProjectPreferences(stored[PREFS_KEY] || {}, account, project);
         var next = mergeScopedProjectPreferences(claimed.prefs, prefs, account, project);
-        return chrome.storage.local.set({ [PREFS_KEY]: next });
+        return chrome.storage.local.set({ [PREFS_KEY]: next }).then(function () {
+          return buildProjectPreferenceView(next, account, project);
+        });
       });
     });
   }
@@ -464,6 +562,11 @@
     runMigrationIfNeeded: runMigrationIfNeeded,
     savePrefs: savePrefs,
     loadPrefs: loadPrefs,
+    getProjectPreferenceBaseline: getProjectPreferenceBaseline,
+    adoptProjectPreferenceBaseline: adoptProjectPreferenceBaseline,
+    captureProjectPreferenceWrite: captureProjectPreferenceWrite,
+    projectPreferencePatch: projectPreferencePatch,
+    completeProjectPreferenceWrite: completeProjectPreferenceWrite,
     loadSessionTombstones: loadSessionTombstones,
     addSessionTombstones: addSessionTombstones,
     getDeletedSessionIds: getDeletedSessionIds,

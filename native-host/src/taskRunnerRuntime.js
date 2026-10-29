@@ -50,7 +50,7 @@ const activeRunEntries = new Map();
 // Overleaf tab was reloaded — the requestId lived in content-side JS state
 // and is gone, but the native-host-side controller is still running).
 const activeRunByProject = new Map();
-const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result', 'codex_context_limit', 'codex_process_stop_unconfirmed', 'selected_context_unresolved', 'codex_local_skill_unavailable']);
+const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result', 'codex_context_limit', 'codex_process_stop_unconfirmed', 'selected_context_unresolved', 'codex_local_skill_unavailable', 'document_identity_mismatch']);
 
 async function handleRequest(request, env = process.env, emit = () => {}) {
   if (!request || typeof request !== 'object') {
@@ -308,7 +308,7 @@ async function handleCodexRun(request, env, emit) {
       // OT overlays prove that the current page agrees with the trusted OT
       // baseline; they must not rewrite it or supply a replacement hash.
       if (!isOtWarmMirrorReuseRequest(params) && Array.isArray(params.fileOverlays) && params.fileOverlays.length) {
-        await applyFileOverlays({ projectId: projectKey, overlays: params.fileOverlays, rootDir });
+        await applyFileOverlays({ projectId: projectKey, evidenceProjectId: params.projectId, overlays: params.fileOverlays, rootDir });
       }
     } else if (params.operation !== 'compact' && !params.writingStyleBuild && !isSnapshotlessSkillInstallerRun(params) && !hasRunnableProjectSnapshotEvidence(params)) {
       return errorResponse(
@@ -453,6 +453,13 @@ function handleCodexCancel(request, env = process.env) {
     return okResponse(request.id, {
       cancelled: true,
       requestId: targetId
+    });
+  }
+
+  if (targetId != null && !force) {
+    return okResponse(request.id, {
+      cancelled: false,
+      reason: 'request_not_active'
     });
   }
 
@@ -733,6 +740,7 @@ async function handleMirrorSync(request, env) {
   try {
     const result = await syncOverleafToMirror({
       projectId,
+      evidenceProjectId: params.projectId,
       project: params.project || { files: [] },
       rootDir
     });
@@ -769,7 +777,7 @@ async function handleMirrorPatchFiles(request, env) {
     });
     return okResponse(request.id, result);
   } catch (error) {
-    return errorResponse(request.id, 'mirror_patch_files_failed', error.message);
+    return errorResponse(request.id, error.code === 'document_identity_mismatch' ? error.code : 'mirror_patch_files_failed', error.message);
   } finally {
     releaseProjectLock(projectKey, lockToken);
   }

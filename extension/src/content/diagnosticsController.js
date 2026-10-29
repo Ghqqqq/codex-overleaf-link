@@ -103,7 +103,12 @@
       try {
         result = await spec.run({ collectOnly: true });
       } catch (error) {
-        result = projectableResult(() => ({ status: 'failed', summary: tr('diagnosticsCheckErrored'), technical: error?.message || String(error) }));
+        result = projectableResult(() => ({
+          status: 'failed',
+          summary: tr('diagnosticsCheckErrored'),
+          nextStep: tr('runOutcomeNext'),
+          technical: error?.message || String(error)
+        }));
       }
       const bucket = diagnosticsHealthBucket(result?.status);
       if (bucket === 'fail') {
@@ -118,7 +123,9 @@
           status: result?.status || 'info',
           title: tr(spec.label),
           summary: translated?.summary || translated?.subtitle || '',
-          nextStep: bucket === 'ok' ? '' : (translated?.nextStep || '')
+          nextStep: bucket === 'ok' ? '' : (translated?.nextStep || ''),
+          installCommand: translated?.installCommand,
+          technical: translated?.technical
         };
       });
     }
@@ -211,13 +218,15 @@
     const codexOk = environment.codex?.ok === true;
     const latexTools = environment.latex?.available || [];
     const latexOk = latexTools.length > 0;
-    const bullets = [
+    const facts = [
       codexOk
-        ? tx(`Codex available: ${environment.codex.path || 'found on PATH'}`, `Codex 可用：${environment.codex.path || '已在 PATH 中找到'}`)
-        : tx('Codex was not found: the extension cannot start local Codex.', 'Codex 没有找到：插件不能启动本地 Codex。'),
+        ? (environment.codex.path
+          ? { label: 'Codex', value: environment.codex.path, kind: 'path' }
+          : { label: 'Codex', value: tx('Found on PATH', '已在 PATH 中找到') })
+        : { label: 'Codex', value: tx('Not found', '未找到'), tone: 'fail' },
       latexOk
-        ? tx(`LaTeX tools available: ${latexTools.join(', ')}`, `LaTeX 工具可用：${latexTools.join(', ')}`)
-        : tx('LaTeX tools were not found: text editing works, but local compile checks are limited.', 'LaTeX 工具没有找到：可以编辑文本，但不能在本地编译验证。')
+        ? { label: 'LaTeX', value: latexTools.join(', ') }
+        : { label: 'LaTeX', value: tx('Not found', '未找到'), tone: 'warn' }
     ];
     if (codexOk && latexOk) {
       return {
@@ -225,7 +234,7 @@
         subtitle: tx('Codex and LaTeX are available.', 'Codex 和 LaTeX 都可以使用。'),
         status: 'completed',
         summary: tx('Codex is connected and local LaTeX tools are available. Codex can read, edit, and locally check this Overleaf project.', 'Codex 已连接，本机 LaTeX 工具可用。你可以让 Codex 读取、修改并本地检查 Overleaf 项目。'),
-        bullets,
+        facts,
         technical: JSON.stringify(environment, null, 2)
       };
     }
@@ -236,7 +245,7 @@
       summary: codexOk
         ? tx('Local Codex can run, but LaTeX compile tools were not found. File edits are unaffected, but compile verification is limited.', '本机 Codex 可以运行，但没有找到 LaTeX 编译工具；修改文件不受影响，编译验证会受限。')
         : tx('The extension reached the native host, but local Codex was not found, so tasks cannot start.', '插件已经连上 native host，但没有找到本机 Codex，所以不能启动任务。'),
-      bullets,
+      facts,
       nextStep: codexOk
         ? tx('For compile verification, make sure latexmk or pdflatex is available on your Terminal PATH.', '如需编译验证，请确认 latexmk 或 pdflatex 在终端 PATH 中可用。')
         : tx('Make sure codex works in Terminal, then reload the extension.', '请确认终端里可以运行 codex，然后重新加载扩展。'),
@@ -281,7 +290,7 @@
       subtitle: messages.subtitle,
       status: 'failed',
       summary: messages.summary,
-      bullets: formatNativeCompatibilityBullets(compatibility),
+      facts: formatNativeCompatibilityFacts(compatibility, statusValue),
       nextStep: messages.nextStep,
       installCommand: compatibility.installCommand,
       technical: formatNativeCompatibilityTechnicalDetails(compatibility, response)
@@ -320,14 +329,24 @@
     }
   }
 
-  function formatNativeCompatibilityBullets(compatibility = {}) {
+  function formatNativeCompatibilityFacts(compatibility = {}, statusValue = '') {
     const native = compatibility.native || {};
     return [
-      tx(`Status: ${compatibility.status || 'unknown'}`, `状态：${compatibility.status || 'unknown'}`),
-      tx(`Classification: ${getNativeCompatibilityClassification(compatibility)}`, `兼容分类：${getNativeCompatibilityClassification(compatibility)}`),
-      tx(`Extension version: ${compatibility.extensionVersion || 'unknown'}`, `扩展版本：${compatibility.extensionVersion || 'unknown'}`),
-      tx(`Native version: ${native.version || 'unknown'}`, `Native 版本：${native.version || 'unknown'}`),
-      tx(`Native protocol: ${formatNativeProtocolVersion(native)}`, `Native 协议：${formatNativeProtocolVersion(native)}`)
+      {
+        label: tx('Extension version', '扩展版本'),
+        value: compatibility.extensionVersion || 'unknown',
+        tone: statusValue === 'extension_too_old' ? 'fail' : undefined
+      },
+      {
+        label: tx('Native version', 'Native 版本'),
+        value: native.version || 'unknown',
+        tone: statusValue === 'native_too_old' ? 'fail' : undefined
+      },
+      {
+        label: tx('Native protocol', 'Native 协议'),
+        value: formatNativeProtocolVersion(native),
+        tone: statusValue === 'protocol_unsupported' ? 'fail' : undefined
+      }
     ];
   }
 
@@ -397,8 +416,13 @@
       const failure = mirrorState.failureActive && mirrorState.lastFailure ? { ...mirrorState.lastFailure } : null;
       const disabledResult = projectableResult(() => {
         const result = {
-          title: tr('diagnosticsOtTitle'), subtitle: tr('diagnosticsOtSubtitle'), status: 'completed',
-          summary: tr('diagnosticsOtSummaryDisabled'), bullets: [], nextStep: '', technical: ''
+          title: tr('diagnosticsOtTitle'),
+          subtitle: tr('diagnosticsOtSubtitle'),
+          status: 'completed',
+          summary: tr('diagnosticsOtSummaryDisabled'),
+          facts: [],
+          nextStep: '',
+          technical: ''
         };
         if (failure) {
           result.status = 'warning';
@@ -491,10 +515,14 @@
       status: enabled && !fallback && !bridgeFailed ? 'completed' : (enabled || bridgeFailed ? 'warning' : 'completed'),
       summary: tr(failureActive ? otWarmMirrorController.getFailureMessageKey(warmMirrorState.lastErrorCode)
         : enabled ? 'diagnosticsOtSummaryEnabled' : 'diagnosticsOtSummaryDisabled'),
-      bullets: [
-        `${tr('otStatus')}: ${formatOtStatusLabel(statusValue)}`,
-        `${tr('otFreshFiles')}: ${otFreshFileCount}`,
-        `${tr('otFallback')}: ${fallback ? tr('yes') : tr('no')}`
+      facts: [
+        { label: tr('otStatus'), value: formatOtStatusLabel(statusValue) },
+        { label: tr('otFreshFiles'), value: String(otFreshFileCount) },
+        {
+          label: tr('otFallback'),
+          value: fallback ? tr('yes') : tr('no'),
+          tone: enabled && fallback ? 'warn' : undefined
+        }
       ],
       nextStep: fallback ? tr('diagnosticsOtNextStep') : '',
       technical: formatOtDiagnosticsTechnicalDetails({
@@ -563,10 +591,23 @@
     const reviewingOk = probe?.reviewing?.ok === true;
     const writable = probe?.capabilities?.editor?.write !== false;
     const readable = probe?.editor?.ok === true;
-    const bullets = [
-      readable ? tx('Current file was read.', '当前文件已经读到。') : tx('Current file content has not been verified yet.', '还没有确认当前文件内容。'),
-      writable ? tx('Editor write access will be verified again during writeback.', '当前编辑器写入能力会在写入时再次验证。') : tx('The current editor is not writable yet.', '当前编辑器暂时不可写。'),
-      reviewingOk ? tx('Reviewing/Track Changes status is verified.', '留痕/Reviewing 状态已确认。') : tx('Reviewing/Track Changes status is not verified yet.', '留痕/Reviewing 状态还没有确认。')
+    const reviewingNeeded = mode !== 'ask';
+    const facts = [
+      {
+        label: tx('Current file', '当前文件'),
+        value: readable ? tx('Read', '已读取') : tx('Not verified', '未确认'),
+        tone: readable ? undefined : 'warn'
+      },
+      {
+        label: tx('Write access', '写入'),
+        value: writable ? tx('Checked again before writing', '写入前会再次验证') : tx('Not writable yet', '暂不可写'),
+        tone: writable ? undefined : 'warn'
+      },
+      {
+        label: tx('Track changes', '留痕'),
+        value: reviewingOk ? tx('Verified', '已确认') : tx('Not verified', '未确认'),
+        tone: reviewingOk || !reviewingNeeded ? undefined : 'warn'
+      }
     ];
 
     if (readable && writable) {
@@ -575,7 +616,7 @@
         subtitle: formatProbeStatusBar(probe),
         status: reviewingOk || mode === 'ask' ? 'completed' : 'warning',
         summary: tx('The current Overleaf file can be read and written. The extension still verifies before writing to avoid overwriting new user or collaborator edits.', '当前 Overleaf 文件可以读取和写入。写入前插件仍会再次验证，避免覆盖用户或协作者的新改动。'),
-        bullets,
+        facts,
         nextStep: reviewingOk || mode === 'ask' ? '' : tx('If you need tracked writes, turn on Overleaf Reviewing/Track Changes first.', '如果需要留痕写入，请先在 Overleaf 开启 Reviewing/Track Changes。'),
         technical: formatPageDiagnosticsTechnicalDetails(probe)
       };
@@ -588,7 +629,7 @@
       summary: readable
         ? tx('The extension read the current Overleaf file, but has not verified that the current editor can be written.', '插件已读到当前 Overleaf 文件，但还没有确认当前编辑器可以写入。')
         : tx('The extension has not verified that the current editor can be written. Usually this means no .tex file is open yet, or Overleaf is still loading.', '插件没有确认当前编辑器可以写入。通常是还没点开 .tex 文件，或者 Overleaf 页面仍在加载。'),
-      bullets,
+      facts,
       nextStep: tx('Open the target .tex file from the left Overleaf file tree, wait for the editor to load, then check again.', '在 Overleaf 左侧文件树点开要处理的 .tex 文件，等编辑器加载完成后重新检测。'),
       technical: formatPageDiagnosticsTechnicalDetails(probe)
     };
@@ -602,10 +643,10 @@
     const warnings = getProjectSnapshotWarnings(project);
     const warningText = [...warnings.blocking, ...warnings.nonBlocking].map(formatProjectSnapshotWarning);
     const source = project?.capabilities?.method || 'unknown';
-    const bullets = [
-      tx(`Text files: ${textCount}`, `文本文件：${textCount} 个`),
-      tx(`Asset files: ${binaryCount}`, `资源文件：${binaryCount} 个`),
-      project?.activePath ? tx(`Current file: ${project.activePath}`, `当前文件：${project.activePath}`) : tx('Current file: not detected', '当前文件：未识别')
+    const facts = [
+      { label: tx('Text files', '文本文件'), value: tx(String(textCount), `${textCount} 个`) },
+      { label: tx('Asset files', '资源文件'), value: tx(String(binaryCount), `${binaryCount} 个`) },
+      { label: tx('Current file', '当前文件'), value: project?.activePath || tx('Not detected', '未识别') }
     ];
     if (fullProject && files.length) {
       return {
@@ -616,7 +657,8 @@
           `The extension read the full Overleaf project: ${textCount} text file(s)${binaryCount ? `, ${binaryCount} asset file(s)` : ''}.`,
           `插件已读到完整 Overleaf 项目：${textCount} 个文本文件${binaryCount ? `，${binaryCount} 个资源文件` : ''}。`
         ),
-        bullets: warningText.length ? [...bullets, ...warningText] : bullets,
+        facts,
+        notes: warningText,
         technical: formatProjectSnapshotLog(project)
       };
     }
@@ -630,7 +672,8 @@
           `没有读到完整的 Overleaf 项目。当前只读到 ${textCount} 个文本文件${binaryCount ? `，${binaryCount} 个资源文件` : ''}。`
         )
         : tx('The full Overleaf project was not read, and no usable file content was available.', '没有读到完整的 Overleaf 项目，也没有拿到可用文件内容。'),
-      bullets: warningText.length ? [...bullets, ...warningText] : bullets,
+      facts,
+      notes: warningText,
       nextStep: tx('Reload Overleaf and wait for the left file tree to load, then retry. If you only want one file, use + to add @file context.', '刷新 Overleaf 页面，等左侧文件树加载完成后重试；如果只想处理一个文件，可以用 + 添加 @file 上下文。'),
       technical: formatProjectSnapshotLog(project)
     };

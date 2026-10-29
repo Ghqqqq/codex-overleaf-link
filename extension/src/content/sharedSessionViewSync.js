@@ -9,7 +9,11 @@
 
   function applySnapshot(options, sessions) {
     const previous = options.getState(), scope = options.getScope();
-    const next = options.normalize({ ...previous, sessions }, { restoreRunningRuns: false });
+    const input = sessions.length ? { ...previous, sessions } : {
+      ...previous, session: null, sessions: [], runs: [], activeSessionId: '',
+      task: '', focusFiles: [], selectionContext: null, composerAttachments: []
+    };
+    const next = options.normalize(input, { restoreRunningRuns: false });
     const unchangedSnapshot = JSON.stringify(next);
     options.setState(next);
     try {
@@ -88,6 +92,10 @@
     }
     const unsubscribe = Bridge.subscribe(change => {
       const scope = getScope();
+      if (options.isDashboard?.()) {
+        if (scope.accountScopeId && change.accountScopeId === scope.accountScopeId) options.refreshDashboard?.();
+        return;
+      }
       if (!change.projectId || change.projectId === scope.projectId) {
         retryCount = 0; pending = true; schedule();
       }

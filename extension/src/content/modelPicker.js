@@ -33,7 +33,7 @@
       retainSelectedModel
     } = Support;
 
-  let modelDiscovery = { status: 'fallback', source: 'fallback', fetchedAt: '' };
+  let modelDiscovery = { status: 'fallback', source: 'fallback', fetchedAt: '', provisional: true };
   let modelLoadGeneration = 0;
 
   function getModelDiscovery() {
@@ -83,24 +83,21 @@
     const modelSelect = getPanel()?.querySelector('[data-model]');
     const reasoningSelect = getPanel()?.querySelector('[data-reasoning]');
     const speedSelect = getPanel()?.querySelector('[data-speed]');
-    let changedInput = null;
+    const changedInput = choice.dataset.reasoningChoice ? reasoningSelect
+      : choice.dataset.modelChoice ? modelSelect : choice.dataset.speedChoice ? speedSelect : null;
+    const value = choice.dataset.reasoningChoice || choice.dataset.modelChoice || choice.dataset.speedChoice;
+    const option = Array.from(changedInput?.options || []).find(item => item.value === value);
+    if (!changedInput || changedInput.disabled || !option || option.disabled) return;
 
-    if (choice.dataset.reasoningChoice && reasoningSelect) {
-      reasoningSelect.value = choice.dataset.reasoningChoice;
-      changedInput = reasoningSelect;
-    } else if (choice.dataset.modelChoice && modelSelect) {
-      modelSelect.value = choice.dataset.modelChoice;
-      changedInput = modelSelect;
+    changedInput.value = value;
+    if (changedInput === modelSelect) {
       renderReasoningOptions(getRenderedModelEntries());
       renderSpeedOptions(getRenderedModelEntries());
-    } else if (choice.dataset.speedChoice && speedSelect) {
-      speedSelect.value = choice.dataset.speedChoice;
-      changedInput = speedSelect;
     }
 
     renderModelConfigChoices();
     updateModelDisplay();
-    await persistPanelInputs(changedInput ? { type: 'change', target: changedInput } : undefined);
+    await persistPanelInputs({ type: 'change', target: changedInput });
   }
   async function loadModelOptions(providerSelection, options = {}) {
     const generation = ++modelLoadGeneration;
@@ -136,7 +133,9 @@
       }
       const sourceModels = hasDiscoveredModels ? response.result.models : fallbackModels;
       const preserveBuiltin = (selection?.providerId || 'builtin') === 'builtin' && (getState()?.providerId || 'builtin') === 'builtin';
-      const retainedSelectedModel = retainSelectedModel(sourceModels, currentSelectedModel, { preserveUnavailable: preserveBuiltin });
+      const retainedSelectedModel = retainSelectedModel(sourceModels, currentSelectedModel, { preserveUnavailable: preserveBuiltin })
+        || (responseProviderId && responseProviderId !== 'builtin'
+          ? retainSelectedModel(sourceModels, response.result?.defaultModelId) : '');
       const normalized = modelCatalog.normalizeDiscoveredModels({ models: sourceModels, selectedModel: retainedSelectedModel });
       if (normalized.usedFallback && response.result?.providerId && response.result.providerId !== 'builtin') {
         applyUnavailableModelOptions({ code: 'provider_model_catalog_invalid', message: 'The active provider returned no usable models.' });
@@ -238,6 +237,13 @@
     }
 
     const selectedId = normalizeModelOptionId(selectedModel);
+    if (options.provisionalSelected === true) {
+      models = [...(Array.isArray(models) ? models : [])];
+      if (selectedId && !models.some(model => normalizeModelOptionId(model?.id) === selectedId)) {
+        models.push({ id: selectedId, label: selectedId, unverified: true });
+      }
+      models = Support.preserveSelectedCapabilities(models, selectedId, getState(), true);
+    }
     modelSelect.textContent = '';
     modelSelect.disabled = false;
     let renderedSelected = false;
@@ -373,7 +379,8 @@
       list.append(createModelConfigChoice({
         value: option.value,
         label: formatReasoningEffortLabel(option.value, reasoningSelect.dataset.presentation),
-        datasetName: 'reasoningChoice'
+        datasetName: 'reasoningChoice',
+        disabled: reasoningSelect.disabled || option.disabled
       }));
     }
   }
@@ -390,7 +397,8 @@
       const choice = createModelConfigChoice({
         value: option.value,
         label: option.textContent || option.value,
-        datasetName: 'modelChoice'
+        datasetName: 'modelChoice',
+        disabled: modelSelect.disabled || option.disabled
       });
       choice.title = option.textContent || option.value;
       list.append(choice);
@@ -408,16 +416,17 @@
       const choice = createModelConfigChoice({
         value: option.value,
         label: formatSpeedTierLabel(option.value),
-        datasetName: 'speedChoice'
+        datasetName: 'speedChoice',
+        disabled: speedSelect.disabled || option.disabled
       });
-      choice.disabled = speedSelect.disabled && speedSelect.options.length <= 1;
       list.append(choice);
     }
   }
 
-  function createModelConfigChoice({ value, label, datasetName }) {
+  function createModelConfigChoice({ value, label, datasetName, disabled = false }) {
     const button = document.createElement('button');
     button.type = 'button';
+    button.disabled = disabled;
     button.className = 'codex-model-config-choice';
     button.dataset[datasetName] = value;
     button.setAttribute('role', 'menuitemradio');

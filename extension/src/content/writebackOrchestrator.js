@@ -21,6 +21,12 @@
   let appendRunRecordEvent;
   // In-flight background mirror refresh (v1.7.5) — see the writeback path.
   let pendingMirrorRefresh = null;
+  const mirrorSettlementOwners = new Map();
+  const mirrorReuseFences = new Map();
+  const mirrorFenceWrites = new Map();
+  const mirrorFenceRevisions = new Map();
+  const MIRROR_INVALIDATION_TIMEOUT_MS = 20000;
+  const MIRROR_FENCE_STORAGE_TIMEOUT_MS = 2000;
   let appendChangeSummary;
   let appendCompletionReport;
   let appendOperationsPreview;
@@ -31,6 +37,8 @@
   let callPageBridge;
   let sendBackgroundNative;
   let getCurrentProjectId;
+  let getAccountScopeId;
+  let mirrorFenceStore;
   let resetContextProject;
   let sanitizeRunProjectSnapshot;
   let getAssistantAnswerForCurrentRun;
@@ -72,28 +80,174 @@
       : null;
   }
 
-  function invalidateMirrorAfterUndo(runId, projectId, result = {}) {
-    if (!projectId || (result?.changedDocument !== true && !result?.applied?.length)) return Promise.resolve('not-attempted');
-    const pending = Promise.resolve(pendingMirrorRefresh).catch(() => {}).then(async () => {
-      const response = await sendBackgroundNative({ method: 'mirror.invalidate', params: { projectId } });
-      if (!response?.ok || response.result?.invalidated !== true) {
-        throw new Error(response?.error?.message || 'Native host did not confirm mirror invalidation.');
+  function mirrorFenceScope(projectId, accountScopeId = getAccountScopeId?.() || '') {
+    return { projectId, accountScopeId };
+  }
+
+  function mirrorFenceKey(scope) {
+    return JSON.stringify([scope.accountScopeId, scope.projectId]);
+  }
+
+  function getMirrorReuseFence(projectId, accountScopeId) {
+    return mirrorReuseFences.get(mirrorFenceKey(mirrorFenceScope(projectId, accountScopeId))) || null;
+  }
+
+  function updateMirrorReuseFence(scope, generations, unknown = false) {
+    const key = mirrorFenceKey(scope), current = mirrorReuseFences.get(key);
+    const ids = [...new Set(generations)].sort();
+    if (current && current.unknown === unknown && current.generations.join(':') === ids.join(':')) return current;
+    const fence = ids.length || unknown ? { scope, generations: ids, unknown, syncAttempted: false } : null;
+    if (fence) mirrorReuseFences.set(key, fence);
+    else mirrorReuseFences.delete(key);
+    mirrorFenceRevisions.set(key, (mirrorFenceRevisions.get(key) || 0) + 1);
+    return fence;
+  }
+
+  async function awaitMirrorFenceStorage(work) {
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(work),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('Mirror fence storage timed out.')), MIRROR_FENCE_STORAGE_TIMEOUT_MS);
+        })
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+
+  async function refreshMirrorReuseFence(projectId, accountScopeId) {
+    const scope = mirrorFenceScope(projectId, accountScopeId), key = mirrorFenceKey(scope);
+    if (!mirrorFenceStore) return getMirrorReuseFence(projectId, scope.accountScopeId);
+    const revision = mirrorFenceRevisions.get(key) || 0;
+    try {
+      const stored = await awaitMirrorFenceStorage(() => mirrorFenceStore.getMirrorReuseFences(scope));
+      const writes = mirrorFenceWrites.get(key) || new Map();
+      const changed = revision !== (mirrorFenceRevisions.get(key) || 0);
+      const generations = new Set(stored.filter(id => !writes.get(id)?.retired));
+      for (const [id, write] of writes) {
+        if (!write.retired && (!write.persisted || changed)) generations.add(id);
       }
-      if (getCurrentProjectId() === projectId) {
-        resetContextProject();
-        await callPageBridge('invalidateProjectSnapshot', { invalidateFileList: true });
+      // A read started before a local write or newer read cannot erase that evidence.
+      if (changed) for (const id of mirrorReuseFences.get(key)?.generations || []) {
+        if (!writes.get(id)?.retired) generations.add(id);
       }
-      return 'invalidated';
-    }).catch(error => {
-      appendRunRecordEvent?.(runId, {
-        status: 'warning',
-        title: tx(
-          `Overleaf undo finished, but local mirror invalidation failed: ${error.message}. Refresh this project or reconnect the native host before running again.`,
-          `Overleaf 撤销已完成，但本地镜像失效处理失败：${error.message}。请刷新项目或重新连接 Native Host 后再运行。`
-        )
-      });
-      return 'failed';
+      return updateMirrorReuseFence(scope, [...generations]);
+    } catch (_error) {
+      return updateMirrorReuseFence(scope, mirrorReuseFences.get(key)?.generations || [], true);
+    }
+  }
+
+  async function recordMirrorReuseFence(target) {
+    const scope = mirrorFenceScope(target.runProjectId, target.runAccountScopeId);
+    const key = mirrorFenceKey(scope);
+    const generation = globalThis.crypto?.randomUUID?.()
+      || Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
+    const writes = mirrorFenceWrites.get(key) || new Map();
+    mirrorFenceWrites.set(key, writes);
+    const write = { persisted: false, retired: false, clearAfterWrite: false };
+    writes.set(generation, write);
+    updateMirrorReuseFence(scope, [...(mirrorReuseFences.get(key)?.generations || []), generation]);
+    const token = { scope, generation };
+    if (!mirrorFenceStore) return token;
+    const pending = Promise.resolve().then(() => mirrorFenceStore.setMirrorReuseFence(scope, generation));
+    pending.then(() => {
+      write.persisted = true;
+      mirrorFenceRevisions.set(key, (mirrorFenceRevisions.get(key) || 0) + 1);
+      // A slow set may finish after a successful full sync already removed its key.
+      if (write.clearAfterWrite) {
+        awaitMirrorFenceStorage(() => mirrorFenceStore.clearMirrorReuseFences(scope, [generation]))
+          .then(() => { write.retired = true; }).catch(() => {});
+      }
+    }, () => {});
+    try { await awaitMirrorFenceStorage(() => pending); }
+    catch (_error) { /* The existing invalidation warning and memory fence remain. */ }
+    return token;
+  }
+
+  async function clearMirrorReuseFenceGenerations(scope, generations) {
+    const writes = mirrorFenceWrites.get(mirrorFenceKey(scope));
+    for (const id of generations) if (writes?.has(id)) writes.get(id).clearAfterWrite = true;
+    const clearing = Promise.resolve().then(() => mirrorFenceStore?.clearMirrorReuseFences(scope, generations));
+    clearing.then(() => {
+      for (const id of generations) if (writes?.has(id)) writes.get(id).retired = true;
+    }, () => {});
+    await awaitMirrorFenceStorage(() => clearing);
+  }
+
+  async function settleFullMirrorSync(projectId, project, fence, response, options = {}) {
+    if (!fence || fence.unknown || getMirrorReuseFence(projectId, fence.scope.accountScopeId) !== fence || response?.ok !== true
+      || project?.capabilities?.fullProjectSnapshot !== true
+      || project.capabilities.contentComplete === false || project.capabilities.skipped?.length) return false;
+    try {
+      options.assertCurrent?.();
+      const status = await (options.sendNative || sendBackgroundNative)({ method: 'mirror.status', params: { projectId } });
+      options.assertCurrent?.();
+      const current = await refreshMirrorReuseFence(projectId, fence.scope.accountScopeId);
+      options.assertCurrent?.();
+      if (getCurrentProjectId() !== projectId || current !== fence
+        || status?.ok !== true || status.result?.exists !== true || status.result.dirty === true) return false;
+      await clearMirrorReuseFenceGenerations(fence.scope, fence.generations);
+      options.assertCurrent?.();
+      if (getMirrorReuseFence(projectId, fence.scope.accountScopeId) === fence) updateMirrorReuseFence(fence.scope, []);
+      return !(await refreshMirrorReuseFence(projectId, fence.scope.accountScopeId));
+    } catch (_error) {
+      options.assertCurrent?.();
+      return false;
+    }
+  }
+
+  async function syncFencedMirror(projectId, project, options = {}) {
+    const fence = options.fence;
+    if (!fence || fence.unknown || getMirrorReuseFence(projectId, fence.scope.accountScopeId) !== fence || fence.syncAttempted
+      || project?.id !== projectId || project.capabilities?.fullProjectSnapshot !== true
+      || project.capabilities.contentComplete === false || project.capabilities.skipped?.length) return false;
+    options.assertCurrent();
+    // Only the next full-read path adds a sync; a failed attempt keeps reuse
+    // fenced without adding another request on every subsequent run.
+    fence.syncAttempted = true;
+    try {
+      const response = await options.sendNative({ method: 'mirror.sync', params: { projectId, project } });
+      options.assertCurrent();
+      return await settleFullMirrorSync(projectId, project, fence, response, options);
+    } catch (_error) {
+      options.assertCurrent();
+      return false;
+    }
+  }
+
+  function trackWritebackMirror(work, target, onSettled) {
+    const key = JSON.stringify([target.runProjectId, target.sessionId, target.recordId]);
+    const owner = {};
+    mirrorSettlementOwners.set(key, owner);
+    const refresh = Promise.resolve(work).then(async state => {
+      if (mirrorSettlementOwners.get(key) !== owner) return state;
+      onSettled?.(state);
+      await onMirrorRefreshSettled?.({ ...target, state: state || 'not-attempted' });
+      return state;
     }).finally(() => {
+      if (mirrorSettlementOwners.get(key) === owner) mirrorSettlementOwners.delete(key);
+    });
+    // Keep earlier work in the barrier even if this attempt finishes first or
+    // fails. Only the latest composed barrier may clear the shared slot.
+    const pending = Promise.allSettled([pendingMirrorRefresh, refresh]).then(([, result]) => {
+      if (result.status === 'rejected') throw result.reason;
+      return result.value;
+    }).finally(() => {
+      if (pendingMirrorRefresh === pending) pendingMirrorRefresh = null;
+    });
+    pendingMirrorRefresh = pending;
+    return pending;
+  }
+
+  function invalidateMirrorAfterUndo(runId, projectId, result = {}, owner = {}) {
+    if (!projectId || (result?.changedDocument !== true && !result?.applied?.length)) return Promise.resolve('not-attempted');
+    const target = { recordId: runId, runProjectId: projectId,
+      runAccountScopeId: owner.runAccountScopeId || getAccountScopeId?.() || '', sessionId: owner.sessionId || '' };
+    const pending = Promise.resolve(pendingMirrorRefresh).catch(() => {})
+      .then(() => invalidateWritebackMirror(target, {
+        pageFirst: true, nativeTimeoutMs: MIRROR_INVALIDATION_TIMEOUT_MS, undo: true
+      }))
+      .then(state => state === 'not-attempted' ? 'invalidated' : state).finally(() => {
       if (pendingMirrorRefresh === pending) pendingMirrorRefresh = null;
     });
     pendingMirrorRefresh = pending;
@@ -117,7 +271,8 @@
 
   async function applySyncChangesToOverleaf(syncChanges = [], project = {}, options = {}) {
     const activeRun = getCurrentRunView?.();
-    const saveTarget = { runProjectId: activeRun?.runProjectId || '', recordId: activeRun?.recordId || '', sessionId: activeRun?.sessionId || '' };
+    const saveTarget = { runProjectId: activeRun?.runProjectId || '', runAccountScopeId: activeRun?.runAccountScopeId || getAccountScopeId?.() || '',
+      recordId: activeRun?.recordId || '', sessionId: activeRun?.sessionId || '' };
     const runMode = options.mode || getState().mode;
     const runRequireReviewing = typeof options.requireReviewing === 'boolean'
       ? options.requireReviewing
@@ -418,9 +573,35 @@
     // zero-write run (every operation skipped) has nothing to save-verify, so
     // skip the ~5s probe and its misleading "could not verify saved" warning
     // (v1.6.2).
-    const confirmation = appliedPaths.length
-      ? await verifyPostWriteSaveState(applied, project, saveTarget)
-      : { verification: { ok: false, state: 'not_checked', reason: 'No applied writeback operations were returned.' } };
+    let confirmation;
+    try {
+      confirmation = appliedPaths.length
+        ? await verifyPostWriteSaveState(applied, project, saveTarget)
+        : { verification: { ok: false, state: 'not_checked', reason: 'No applied writeback operations were returned.' } };
+    } catch (error) {
+      if (!appliedPaths.length || (error?.code !== 'codex_cancelled' && error?.name !== 'AbortError')) throw error;
+      const saveVerification = { ok: false, state: 'unknown_timeout', signal: 'unavailable',
+        reason: 'Save confirmation was cancelled.', recoveryReason: 'codex_cancelled', attempts: [] };
+      // Cancellation cannot erase the returned writes or the recovery needed to
+      // check their save state. Carry the same evidence into the cancelled report.
+      error.writebackOutcome = { operations, applied, saveVerification,
+        settlement: buildSettlement({ operations, applyResult: applied, saveVerification, mirror: { state: 'unknown' } }) };
+      // Fence the Page cache now; bound the Native wait so an unanswered
+      // invalidation cannot strand the next run or recovery behind the barrier.
+      trackWritebackMirror(invalidateWritebackMirror(saveTarget, {
+        pageFirst: true, nativeTimeoutMs: MIRROR_INVALIDATION_TIMEOUT_MS
+      }), saveTarget,
+        state => {
+          error.writebackOutcome.settlement = buildSettlement({ operations, applyResult: applied, saveVerification, mirror: { state } });
+        });
+      try {
+        await settleWritebackRecovery?.(applied, project, saveVerification, saveTarget, runRequireReviewing);
+      } catch (recoveryError) {
+        appendRunRecordEvent?.(saveTarget.recordId, { kind: 'technical', status: 'warning',
+          title: tx('Writeback recovery persistence failed', '写回恢复信息保存失败'), detail: { reason: recoveryError.message } });
+      }
+      throw error;
+    }
     const saveVerification = confirmation.verification;
     await settleWritebackRecovery?.(applied, project, saveVerification, saveTarget, runRequireReviewing);
     if (appliedPaths.length) {
@@ -432,24 +613,11 @@
     // pending promise is exposed so undoRun and the next runTask barrier on
     // it — a mirror.sync landing AFTER an undo would otherwise push the
     // pre-undo snapshot as the local baseline.
-    const mirrorSettlementTarget = saveTarget;
-    pendingMirrorRefresh = refreshProjectMirrorAfterWriteback(project, applied, saveVerification, { target: saveTarget, snapshot: confirmation.snapshot })
+    trackWritebackMirror(refreshProjectMirrorAfterWriteback(project, applied, saveVerification, { target: saveTarget, snapshot: confirmation.snapshot })
       .catch(async error => {
         appendRunRecordEvent(saveTarget.recordId, { kind: 'technical', title: 'Mirror refresh requires a fresh read', status: 'info', detail: { reason: error.message } });
         return invalidateWritebackMirror(saveTarget);
-      })
-      .then(state => {
-        if (typeof onMirrorRefreshSettled !== 'function') return;
-        return onMirrorRefreshSettled({
-          recordId: mirrorSettlementTarget?.recordId || '',
-          sessionId: mirrorSettlementTarget?.sessionId || '',
-          runProjectId: mirrorSettlementTarget?.runProjectId || '',
-          state: state || 'not-attempted'
-        });
-      })
-      .finally(() => {
-        pendingMirrorRefresh = null;
-      });
+      }), saveTarget);
     const compileSummary = appliedPaths.length
       ? await autoRecompileAfterWriteback(appliedPaths, saveVerification, {
         autoRecompile: options.autoRecompile,
@@ -522,7 +690,9 @@
       // the run by inspecting the `applied.skipped` entries' failure codes.
       // Existing call sites that only read `summaryLine` / `hasSkippedOperations`
       // / `audit` are unaffected.
+      operations,
       applied,
+      saveVerification,
       settlement: buildSettlement({
         operations,
         applyResult: applied,
@@ -575,25 +745,64 @@
     else appendRunEvent({ title, status: 'warning' });
   }
 
-  async function invalidateWritebackMirror(target = {}) {
+  async function invalidateWritebackMirror(target = {}, options = {}) {
+    const invalidatePage = async () => {
+      if (getCurrentProjectId() !== target.runProjectId
+        || (target.runAccountScopeId && getAccountScopeId?.() !== target.runAccountScopeId)) return true;
+      try {
+        resetContextProject();
+        const response = await callPageBridge('invalidateProjectSnapshot', { invalidateFileList: true, runProjectId: target.runProjectId });
+        return response?.ok === true;
+      } catch (_error) { return false; }
+    };
+    const pageInvalidation = options.pageFirst === true ? invalidatePage() : null;
+    // The local mirror barrier is not shared with other tabs. Publish this
+    // cancellation's fence before waiting for Native, including its handshake.
+    const pendingFence = options.pageFirst === true && target.runProjectId
+      ? await recordMirrorReuseFence(target) : null;
     let invalidated = false;
+    let failureReason = 'Native host did not confirm mirror invalidation.';
+    let timer;
     try {
       if (target.runProjectId) {
-        const response = await sendBackgroundNative({ method: 'mirror.invalidate', params: { projectId: target.runProjectId } });
+        const pending = sendBackgroundNative({ method: 'mirror.invalidate', params: { projectId: target.runProjectId } });
+        // A rejection after the bound has nobody left to observe it.
+        pending.catch(() => {});
+        const response = options.nativeTimeoutMs
+          ? await Promise.race([
+            pending,
+            new Promise(resolve => {
+              timer = setTimeout(() => resolve(null), options.nativeTimeoutMs);
+            })
+          ])
+          : await pending;
         invalidated = response?.ok === true && response.result?.invalidated === true;
+        if (!invalidated && response?.error?.message) failureReason = response.error.message;
       }
-    } catch (_error) { /* An unavailable host cannot acknowledge invalidation. */ }
-    let pageInvalidated = getCurrentProjectId() !== target.runProjectId;
-    if (!pageInvalidated) {
-      resetContextProject();
-      try {
-        const response = await callPageBridge('invalidateProjectSnapshot', { invalidateFileList: true, runProjectId: target.runProjectId });
-        pageInvalidated = response?.ok === true;
-      } catch (_error) { /* Leave the failure visible if both caches cannot be fenced. */ }
+    } catch (error) { failureReason = error?.message || failureReason; }
+    finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
-    if (invalidated && pageInvalidated) return 'not-attempted';
+    const pageInvalidated = await (pageInvalidation || invalidatePage());
+    if (invalidated && pageInvalidated) {
+      if (pendingFence) {
+        try {
+          await clearMirrorReuseFenceGenerations(pendingFence.scope, [pendingFence.generation]);
+          const current = getMirrorReuseFence(target.runProjectId, pendingFence.scope.accountScopeId);
+          if (current) updateMirrorReuseFence(pendingFence.scope,
+            current.generations.filter(id => id !== pendingFence.generation), current.unknown);
+          await refreshMirrorReuseFence(target.runProjectId, pendingFence.scope.accountScopeId);
+        } catch (_error) { /* Retain the fence if its durable cleanup is unconfirmed. */ }
+      }
+      return 'not-attempted';
+    }
+    if (target.runProjectId && !pendingFence) await recordMirrorReuseFence(target);
+    if (invalidated && !pageInvalidated) failureReason = 'The page did not confirm snapshot invalidation.';
     const event = {
-      title: tx('The local project cache could not be reset. Check the local connection before starting another task.',
+      title: options.undo === true ? tx(
+        `Overleaf undo finished, but local mirror invalidation failed: ${failureReason}. Refresh this project or reconnect the native host before running again.`,
+        `Overleaf 撤销已完成，但本地镜像失效处理失败：${failureReason}。请刷新项目或重新连接 Native Host 后再运行。`
+      ) : tx('The local project cache could not be reset. Check the local connection before starting another task.',
         '本地项目缓存未能重置。请检查本地连接后再开始下一轮任务。'),
       status: 'warning'
     };
@@ -638,6 +847,7 @@
     if (!Array.isArray(applied?.applied) || !applied.applied.length) {
       return 'not-attempted';
     }
+    const mirrorFence = await refreshMirrorReuseFence(target.runProjectId, target.runAccountScopeId);
 
     if (!confirmation.snapshot && await tryConfirmMirrorWriteback(applied, target.runProjectId)) {
       appendRunEvent({
@@ -689,6 +899,7 @@
       }
     });
     if (response?.ok) {
+      await settleFullMirrorSync(target.runProjectId, syncedProject, mirrorFence, response);
       appendRunEvent({
         title: tx('Local Codex workspace refreshed. The next run will start from the latest Overleaf content.', '已刷新本地 Codex workspace，下一轮会从最新 Overleaf 内容开始。'),
         status: 'completed'
@@ -916,6 +1127,8 @@
       getCurrentRunView,
     } = deps);
     assetTransferBroker = deps.assetTransferBroker;
+    mirrorFenceStore = deps.mirrorFenceStore;
+    getAccountScopeId = deps.getAccountScopeId;
     stageWritebackRecovery = deps.stageWritebackRecovery;
     settleWritebackRecovery = deps.settleWritebackRecovery;
     onMirrorRefreshSettled = deps.onMirrorRefreshSettled;
@@ -925,6 +1138,9 @@
       applySyncChangesToOverleaf,
       resolveCompileLogContext,
       invalidateMirrorAfterUndo,
+      getMirrorReuseFence,
+      refreshMirrorReuseFence,
+      syncFencedMirror,
       getPendingMirrorRefresh: () => pendingMirrorRefresh
     };
   }

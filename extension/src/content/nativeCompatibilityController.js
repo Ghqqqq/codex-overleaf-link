@@ -37,8 +37,10 @@
       try {
         compatibilityGate = await ensureForMethod(payload?.method, context);
         if (!compatibilityGate.ok) return compatibilityGate.response;
+        // Catalog reads belong to the selected session, not a retained cancelled run.
+        const independentCatalog = payload?.method === 'codex.models' || payload?.method === 'codex.providers.list';
         // Post-Undo cache bookkeeping must survive the ended run's cancellation.
-        if (gatedMethods.has(payload?.method) && payload.method !== 'mirror.invalidate') {
+        if (gatedMethods.has(payload?.method) && payload.method !== 'mirror.invalidate' && !independentCatalog) {
           options.throwIfCancellationRequested?.();
         }
         context.assertCurrent?.();
@@ -147,7 +149,9 @@
         options.setDiagnosticsHealth?.(classification === 'update-available' ? 'warn' : 'fail');
         options.setBadge?.(renderer.headerEl, {
           type: 'update',
-          tooltip: tx('Native host update available', 'Native host 可更新'),
+          tooltip: compatibility.status === 'native_unhealthy'
+            ? tx('Codex Unavailable', 'Codex 不可用')
+            : tx('Native host update available', 'Native host 可更新'),
           onClick: () => showUpdateGuidance(compatibility)
         });
         if (!compatibility?.native?.version) maybePromptFirstRunSetup();
@@ -191,7 +195,9 @@
         || compatibility.nativeVersion
         || native.version
         || tx('missing', '未安装');
-      const command = resolveInstallCommand(compatibility);
+      const codexUnavailable = compatibility.status === 'native_unhealthy';
+      const resolvedCommand = resolveInstallCommand(compatibility);
+      const command = codexUnavailable ? '' : resolvedCommand;
       const releaseUrl = compatibility.releaseUrl || '';
       const overlay = options.document.createElement('div');
       overlay.className = 'codex-plugin-confirm';
@@ -201,7 +207,9 @@
       const nativeMissing = !native.version;
       overlay.setAttribute(
         'aria-label',
-        nativeMissing
+        codexUnavailable
+          ? tx('Codex Unavailable', 'Codex 不可用')
+          : nativeMissing
           ? tx('Set up the native host', '安装 Native host')
           : tx('Native host update available', 'Native host 可更新')
       );
@@ -220,14 +228,19 @@
       brand.textContent = 'Codex Overleaf Link';
       const title = options.document.createElement('div');
       title.className = 'codex-plugin-confirm-title';
-      title.textContent = nativeMissing
+      title.textContent = codexUnavailable
+        ? tx('Codex Unavailable', 'Codex 不可用')
+        : nativeMissing
         ? tx('One step left: install the native host', '还差一步：安装 Native host')
         : tx('Native host update available', 'Native host 可更新');
       titleWrap.append(brand, title);
       head.append(icon, titleWrap);
       const body = options.document.createElement('div');
       body.className = 'codex-plugin-confirm-body';
-      body.textContent = [
+      body.textContent = codexUnavailable ? [
+        tx('The extension reached the native host, but local Codex was not found, so tasks cannot start.', '插件已经连上 native host，但没有找到本机 Codex，所以不能启动任务。'),
+        tx('Make sure codex works in Terminal, then reload the extension.', '请确认终端里可以运行 codex，然后重新加载扩展。')
+      ].join('\n\n') : [
         nativeMissing
           ? tx(
             `Extension v${extensionVersion} is ready; Codex still needs its local bridge to read and edit this project.`,
@@ -247,8 +260,8 @@
       const commandCode = options.document.createElement('code');
       commandCode.className = 'codex-native-guidance-command';
       commandCode.textContent = command;
-      body.append(commandCode);
-      if (releaseUrl) {
+      if (!codexUnavailable) body.append(commandCode);
+      if (!codexUnavailable && releaseUrl) {
         const link = options.document.createElement('a');
         link.className = 'codex-native-guidance-link';
         link.href = releaseUrl;
@@ -274,7 +287,8 @@
       close.className = 'codex-plugin-confirm-cancel';
       close.textContent = tx('Close', '关闭');
       close.addEventListener('click', () => overlay.remove());
-      actions.append(close, copy);
+      actions.append(close);
+      if (!codexUnavailable) actions.append(copy);
       card.append(head, body, actions);
       overlay.append(card);
       overlay.addEventListener('click', event => {

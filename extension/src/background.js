@@ -66,6 +66,8 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
   'use strict';
 
   const HOST_NAME = 'com.codex.overleaf';
+  const NATIVE_PING_TIMEOUT_MS = 20000;
+  const NATIVE_REQUEST_TIMEOUT_MS = 60000;
   const MANAGED_UPDATE_STATE_KEY = 'codex-overleaf-managed-update-state-v1';
   const MANAGED_UPDATE_CONSENT_KEY = 'codex-overleaf-update-consent-v1';
   const MANAGED_UPDATE_TABS_KEY = 'codex-overleaf-managed-update-tabs-v1';
@@ -398,11 +400,18 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
         method: request.method,
         retryClass: getNativeRetryClass(request.method),
         retryCount: 0,
+        deadlineTimer: null,
         nativePort: null,
         finalResponseReceived: false,
         eventForwarded: false
       };
       pending.set(id, pendingRequest);
+      const timeoutMs = getNativeRequestTimeoutMs(request.method);
+      if (timeoutMs) {
+        pendingRequest.deadlineTimer = setTimeout(() => {
+          expireNativeRequest(id, pendingRequest);
+        }, timeoutMs);
+      }
       if (request.method === 'codex.run') {
         createRunJournal(id, pendingRequest);
       }
@@ -413,6 +422,64 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
         handleNativePostFailure(id, pendingRequest, error);
       }
     });
+  }
+
+  function getNativeRequestTimeoutMs(method) {
+    if (method === 'bridge.ping') return NATIVE_PING_TIMEOUT_MS;
+    switch (method) {
+      case 'mirror.status':
+      case 'codex.models':
+      case 'codex.providers.list':
+      case 'codex.providers.upsert':
+      case 'codex.providers.activate':
+      case 'codex.providers.clear-secret':
+      case 'codex.providers.delete':
+      case 'writing-style.get':
+      case 'writing-style.set':
+      case 'skills.list':
+      case 'asset.readChunk':
+      case 'update.status':
+      case 'update.check':
+      case 'update.canApply':
+        return NATIVE_REQUEST_TIMEOUT_MS;
+      default:
+        return 0;
+    }
+  }
+
+  function expireNativeRequest(id, pendingRequest) {
+    if (pending.get(id) !== pendingRequest || pendingRequest.finalResponseReceived) return;
+    pending.delete(id);
+    clearTimeout(pendingRequest.deadlineTimer);
+    pendingRequest.finalResponseReceived = true;
+    pendingRequest.resolve({
+      id,
+      ok: false,
+      error: {
+        code: 'native_request_timeout',
+        message: 'The local service did not respond.'
+      }
+    });
+    if (pendingRequest.method !== 'bridge.ping') return;
+    const failedPort = pendingRequest.nativePort;
+    if (!failedPort) return;
+    const hasActiveWork = Array.from(pending.values()).some(request => (
+      request.nativePort === failedPort && (
+        request.retryClass === 'safe_sync_retry' ||
+        (request.retryClass === 'no_silent_retry' && !getNativeRequestTimeoutMs(request.method))
+      )
+    ));
+    // A failed diagnostic ping must not abort execution or mirror writes.
+    if (hasActiveWork) return;
+    if (port === failedPort) port = null;
+    // A hung Host is retired without replaying requests or reconnecting until
+    // the next caller asks, only when no execution or mirror write owns it.
+    for (const [pendingId, interrupted] of Array.from(pending.entries())) {
+      if (interrupted.nativePort === failedPort) {
+        rejectInterruptedNativeRequest(pendingId, interrupted, 'The local service did not respond.');
+      }
+    }
+    try { failedPort.disconnect(); } catch (_error) { /* The port is already retired. */ }
   }
 
   async function requestManagedInternal(payload) {
@@ -840,6 +907,7 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
         return;
       }
       pendingRequest.finalResponseReceived = true;
+      clearTimeout(pendingRequest.deadlineTimer);
       pending.delete(id);
       finalizeRunJournal(id, message).catch(() => {}).finally(() => {
         pendingRequest.resolve(message);
@@ -901,6 +969,7 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
 
   function rejectInterruptedNativeRequest(pendingId, pendingRequest, errorMessage) {
     pending.delete(pendingId);
+    clearTimeout(pendingRequest.deadlineTimer);
     finalizeRunJournal(pendingId, {
       ok: false,
       error: {
@@ -937,6 +1006,7 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
     if (pending.size === 1) {
       const [pendingId, pendingRequest] = pending.entries().next().value;
       pendingRequest.finalResponseReceived = true;
+      clearTimeout(pendingRequest.deadlineTimer);
       pendingRequest.resolve({
         ...message,
         id: pendingId

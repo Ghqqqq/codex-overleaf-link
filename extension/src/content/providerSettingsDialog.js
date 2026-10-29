@@ -613,18 +613,7 @@
       actions.innerHTML = instance.embedded ? '' : `<button type="button" class="codex-provider-secondary-button" data-provider-action="close">${escapeHtml(tx('Close', '关闭'))}</button>`;
       return;
     }
-    const active = provider.id && provider.id === getCurrentProjectProviderId(instance);
-    const isNew = !provider.id;
-    const destinationChanged = active && getCurrentBaseUrl(instance) !== provider.endpointDisclosureBaseUrl;
-    const actionState = getFooterActionState({
-      isNew,
-      active,
-      dirty: instance.dirty,
-      destinationChanged,
-      canSave: canSaveCurrentDraft(instance),
-      hasProject: instance.callbacks.hasCurrentProject?.() !== false,
-      canActivate: canActivateCurrentProvider(instance)
-    });
+    const actionState = getCurrentFooterActionState(instance);
     const saveDisabled = actionState.saveEnabled ? '' : ' disabled aria-disabled="true"';
     const useDisabled = actionState.useEnabled ? '' : ' disabled aria-disabled="true"';
     actions.innerHTML = `
@@ -638,6 +627,21 @@
     `;
   }
 
+  function getCurrentFooterActionState(instance) {
+    const provider = getSelectedProvider(instance);
+    const active = Boolean(provider?.id && provider.id === getCurrentProjectProviderId(instance));
+    return getFooterActionState({
+      isNew: !provider?.id,
+      active,
+      dirty: instance.dirty,
+      destinationChanged: active && getCurrentBaseUrl(instance) !== provider.endpointDisclosureBaseUrl,
+      disclosureAccepted: instance.root.querySelector('[data-provider-disclosure]')?.checked === true,
+      canSave: canSaveCurrentDraft(instance),
+      hasProject: instance.callbacks.hasCurrentProject?.() !== false,
+      canActivate: canActivateCurrentProvider(instance)
+    });
+  }
+
   function getFooterActionState(options = {}) {
     const isNew = options.isNew === true;
     const active = options.active === true;
@@ -645,9 +649,9 @@
     return {
       showSave: isNew || dirty,
       showSaveAndUse: options.hasProject !== false && (isNew || dirty) && (!active || options.destinationChanged === true),
-      showUse: options.hasProject !== false && !isNew && !active && !dirty,
+      showUse: options.hasProject !== false && !isNew && (!active || options.destinationChanged === true) && !dirty,
       saveEnabled: options.canSave === true,
-      useEnabled: options.canActivate === true
+      useEnabled: options.canActivate === true && (!options.destinationChanged || options.disclosureAccepted === true)
     };
   }
 
@@ -837,6 +841,11 @@
       refreshTestState(instance);
       return;
     }
+    if (event.target.matches('[data-provider-disclosure]')) {
+      renderFooter(instance);
+      applyBusyState(instance);
+      return;
+    }
     if (event.target.matches('[data-provider-field]')) {
       const field = event.target.dataset.providerField;
       if (event.target.dataset.providerField === 'apiKey') {
@@ -1023,8 +1032,7 @@
 
   function applyBusyState(instance) {
     const busy = Boolean(instance.busy && instance.busy !== 'failed');
-    const canSave = canSaveCurrentDraft(instance);
-    const canActivate = canActivateCurrentProvider(instance);
+    const actionState = getCurrentFooterActionState(instance);
     instance.root.dataset.busy = instance.busy || '';
     for (const element of instance.root.querySelectorAll('input, select, textarea, button')) {
       if (element.matches('[data-provider-confirm-answer]')) {
@@ -1034,9 +1042,9 @@
       } else if (element.matches('[data-provider-action="cancel-test"]')) {
         element.disabled = false;
       } else if (element.matches('[data-provider-action="save"], [data-provider-action="save-use"]')) {
-        element.disabled = busy || !canSave;
+        element.disabled = busy || !actionState.saveEnabled;
       } else if (element.matches('[data-provider-action="use"]')) {
-        element.disabled = busy || !canActivate;
+        element.disabled = busy || !actionState.useEnabled;
       } else {
         element.disabled = busy;
       }

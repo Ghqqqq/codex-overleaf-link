@@ -22,6 +22,221 @@ function persist(db, state, extra = {}) {
     normalizeCustomInstructionsByProject: value => value || {}, ...extra });
 }
 
+test('a stale tab saves its draft without reverting shared project instructions or governance', async () => {
+  const network = createNetwork();
+  try {
+    const first = connect(network, 1), second = connect(network, 2);
+    function preferences(db) {
+      const context = { module: { exports: {} }, require: () => db, chrome: network.chromeApi, navigator: {} };
+      require('node:vm').runInNewContext(require('node:fs').readFileSync(
+        require.resolve('../extension/src/shared/storageMigration'), 'utf8'), context);
+      return context.module.exports;
+    }
+    const firstPrefs = preferences(first), secondPrefs = preferences(second);
+    const projectId = scope.projectId, account = scope.accountScopeId;
+    await first.putRecord('sessions', record('settings'));
+    await firstPrefs.savePrefs({
+      customInstructionsByProject: { [projectId]: 'Original instructions' },
+      governanceRulesByProject: { [projectId]: { readonlyPatterns: ['original.tex'], writablePatterns: [] } },
+      experimentalOtByProject: { [projectId]: false },
+      reviewingAvailabilityByProject: { [projectId]: { status: 'unknown', observedAt: 1 } }
+    }, account, projectId);
+    const load = async migration => {
+      const loaded = JSON.parse(JSON.stringify(await migration.runMigrationIfNeeded(projectId, 'legacy-settings', account)));
+      return State.normalizePanelState({ ...loaded.prefs, sessions: loaded.sessions, activeSessionId: loaded.activeSessionId });
+    };
+    const a = await load(firstPrefs), b = await load(secondPrefs);
+    a.customInstructionsByProject[projectId] = 'Use the latest project instructions';
+    a.governanceRulesByProject[projectId] = { readonlyPatterns: ['protected.tex'], writablePatterns: ['chapter.tex'] };
+    a.experimentalOtByProject[projectId] = true;
+    a.reviewingAvailabilityByProject[projectId] = { status: 'available', observedAt: 2 };
+    await persist(first, a, { Migration: firstPrefs });
+    const draft = State.updateActiveSessionDraft(b, 'An unrelated draft from the stale tab');
+    await persist(second, draft, {
+      Migration: secondPrefs,
+      applyProjectPreferences: (saved, _captured, fields) => {
+        for (const field of fields) draft[field] = saved[field];
+      }
+    });
+    const stored = await secondPrefs.loadPrefs(account, projectId);
+    for (const field of ['customInstructionsByProject', 'governanceRulesByProject',
+      'experimentalOtByProject', 'reviewingAvailabilityByProject']) {
+      assert.deepEqual(JSON.parse(JSON.stringify(stored[field])), a[field]);
+      assert.deepEqual(JSON.parse(JSON.stringify(draft[field])), a[field], 'adopt the current project preference');
+    }
+    assert.equal((await first.getRecord('sessions', 'settings')).task, draft.task);
+    draft.customInstructionsByProject[projectId] = '';
+    await persist(second, draft, { Migration: secondPrefs });
+    const edited = await firstPrefs.loadPrefs(account, projectId);
+    assert.equal(edited.customInstructionsByProject[projectId], '', 'an intentional clear remains writable');
+    assert.deepEqual(JSON.parse(JSON.stringify(edited.governanceRulesByProject)), a.governanceRulesByProject);
+  } finally { network.close(); }
+});
+
+test('overlapping preference saves preserve restored instructions and read-only rules', async () => {
+  const network = createNetwork();
+  try {
+    const db = connect(network, 1);
+    const context = { module: { exports: {} }, require: () => db, chrome: network.chromeApi, navigator: {} };
+    require('node:vm').runInNewContext(require('node:fs').readFileSync(
+      require.resolve('../extension/src/shared/storageMigration'), 'utf8'), context);
+    const Migration = context.module.exports;
+    const projectId = scope.projectId, account = scope.accountScopeId;
+    const original = {
+      customInstructionsByProject: { [projectId]: 'Keep original instructions' },
+      governanceRulesByProject: { [projectId]: { readonlyPatterns: ['protected.tex'], writablePatterns: [] } }
+    };
+    await db.putRecord('sessions', record('settings'));
+    await Migration.savePrefs(original, account, projectId);
+    const loaded = JSON.parse(JSON.stringify(await Migration.runMigrationIfNeeded(projectId, 'legacy-settings', account)));
+    const state = State.normalizePanelState({ ...loaded.prefs, sessions: loaded.sessions, activeSessionId: 'settings' });
+    const normalizers = { normalizeExperimentalOtByProject: value => value || {},
+      normalizeGovernanceRulesByProject: value => value || {}, normalizeCustomInstructionsByProject: value => value || {} };
+    function capture() {
+      const snapshot = JSON.parse(JSON.stringify(state));
+      const baseline = Migration.getProjectPreferenceBaseline(account, projectId);
+      return { state: snapshot, compactState: State.prepareStateForStorage(snapshot), projectId,
+        Migration, StorageDb: db, SessionPersistence: Sessions, persistenceContext: { scope }, ...normalizers,
+        projectPreferenceBaseline: baseline,
+        projectPreferenceWrite: Migration.captureProjectPreferenceWrite({
+          state: snapshot, baseline, accountScopeId: account, projectId, ...normalizers
+        }),
+        applyProjectPreferences: (saved, captured, fields) => {
+          for (const field of fields) {
+            if (JSON.stringify(state[field]?.[projectId]) === JSON.stringify(captured[field]?.[projectId])) {
+              state[field] = saved[field];
+            }
+          }
+        }
+      };
+    }
+    function restore() {
+      for (const field of Object.keys(original)) state[field] = JSON.parse(JSON.stringify(original[field]));
+    }
+    function remove() {
+      state.customInstructionsByProject[projectId] = '';
+      state.governanceRulesByProject[projectId] = { readonlyPatterns: [], writablePatterns: [] };
+    }
+    const save = Migration.savePrefs;
+    let started = deferred(), release = deferred();
+    Migration.savePrefs = async (...args) => {
+      started.resolve();
+      await release.promise;
+      return save(...args);
+    };
+    remove();
+    const deleting = Panel.persistPanelState(capture());
+    await started.promise;
+    restore();
+    const restored = capture();
+    release.resolve();
+    await deleting;
+    assert.equal((await Migration.loadPrefs(account, projectId)).customInstructionsByProject[projectId], '');
+    assert.equal(state.customInstructionsByProject[projectId], original.customInstructionsByProject[projectId]);
+    await Panel.persistPanelState(restored);
+    let stored = await Migration.loadPrefs(account, projectId);
+    for (const field of Object.keys(original)) {
+      assert.deepEqual(JSON.parse(JSON.stringify(stored[field])), original[field]);
+      assert.deepEqual(JSON.parse(JSON.stringify(state[field])), original[field]);
+    }
+
+    // An older unchanged save must not adopt a peer value after local input
+    // changed away and back, even though the live value equals its snapshot.
+    started = deferred();
+    release = deferred();
+    const unchanged = Panel.persistPanelState(capture());
+    await started.promise;
+    remove();
+    const intermediate = capture();
+    restore();
+    const latest = capture();
+    await save({ customInstructionsByProject: { [projectId]: 'Peer instructions' },
+      governanceRulesByProject: { [projectId]: { readonlyPatterns: ['peer.tex'], writablePatterns: [] } } }, account, projectId);
+    release.resolve();
+    await unchanged;
+    for (const field of Object.keys(original)) assert.deepEqual(JSON.parse(JSON.stringify(state[field])), original[field]);
+    await Panel.persistPanelState(intermediate);
+    await Panel.persistPanelState(latest);
+    stored = await Migration.loadPrefs(account, projectId);
+    for (const field of Object.keys(original)) {
+      assert.deepEqual(JSON.parse(JSON.stringify(stored[field])), original[field]);
+      assert.deepEqual(JSON.parse(JSON.stringify(state[field])), original[field]);
+    }
+  } finally { network.close(); }
+});
+
+test('renaming a dashboard conversation preserves every saved run and its Undo material', async () => {
+  // Exercise the rendered rename action with the real shared storage service.
+  // This small DOM substitute supplies only the dashboard's browser I/O.
+  class Element {
+    constructor(tag) { this.tag = tag; this.children = []; this.dataset = {}; this.attributes = {}; this.listeners = {}; }
+    appendChild(child) { child.parentElement = this; this.children.push(child); return child; }
+    insertBefore(child, before) { child.parentElement = this; this.children.splice(this.children.indexOf(before), 0, child); }
+    remove() { this.parentElement.children = this.parentElement.children.filter(child => child !== this); }
+    setAttribute(name, value) { this.attributes[name] = value; }
+    getAttribute(name) { return this.attributes[name]; }
+    addEventListener(type, listener) { this.listeners[type] = listener; }
+    querySelector(selector) {
+      const matches = node => selector.startsWith('[')
+        ? Object.hasOwn(node.attributes, selector.slice(1, -1)) : node.tag === selector;
+      for (const child of this.children) {
+        const found = matches(child) ? child : child.querySelector(selector);
+        if (found) return found;
+      }
+      return null;
+    }
+    set innerHTML(_value) { this.children = []; }
+    focus() {}
+    select() {}
+  }
+  const network = createNetwork();
+  try {
+    const writer = connect(network, 1), dashboard = connect(network, 2);
+    const projectId = '0123456789abcdef01234567';
+    const runs = Array.from({ length: 20 }, (_, i) => ({
+      id: 'run-' + i, task: 'Edit manuscript', mode: 'auto', status: 'completed', runProjectId: projectId,
+      appliedOperations: [{ type: 'edit', path: 'main.tex', replaceAll: 'after-' + i }],
+      undoOperations: [{ type: 'edit', path: 'main.tex', replaceAll: i ? 'before-' + i : '' }],
+      undoBaseFiles: [{ path: 'main.tex', content: i ? 'before-' + i : '' }],
+      undoExpectedFiles: [{ path: 'main.tex', content: 'after-' + i }],
+      events: [{ kind: 'report', title: 'Answer', detail: 'Saved answer ' + i, status: 'completed' }]
+    }));
+    await writer.putRecord('sessions', Db.buildSessionRecord({ ...record('dashboard'), projectId, runs },
+      { preserveRunActionPayload: true }));
+    const before = await writer.getRecord('sessions', 'dashboard');
+    assert.equal(before.runs.filter(run => run.undoOperations.length).length, 20);
+    const panel = new Element('section'), saved = deferred();
+    const context = { window: { location: { pathname: '/project' },
+      codexOverleafDeriveAccountScopeId: () => scope.accountScopeId },
+      document: { createElement: tag => new Element(tag), querySelectorAll: () => [] },
+      chrome: { storage: { local: { get: async (_key, callback) => { callback?.({}); return {}; } } } },
+      setInterval: () => 1 };
+    require('node:vm').runInNewContext(require('node:fs').readFileSync(
+      require.resolve('../extension/src/content/recentProjects'), 'utf8'), context);
+    const view = context.window.CodexOverleafRecentProjects.create({
+      tr: key => key, tx: en => en, getPanel: () => panel, getCachedAccountScopeId: () => scope.accountScopeId,
+      PROJECT_EDITOR_RESERVED_IDS: new Set(), STATUS_BADGE_CLASS: { completed: 'completed', pending: 'pending' },
+      ProjectSessionCleanup: { create: () => ({}) }, SessionState: State,
+      SessionPersistence: { ...Sessions, loadTombstones: async () => ({}) },
+      StorageKeys: { getProjectStorageKey: () => 'legacy-panel' },
+      StorageDb: { ...dashboard, putRecord: async (...args) => {
+        try { await dashboard.putRecord(...args); saved.resolve(); }
+        catch (error) { saved.resolve(error); throw error; }
+      } }
+    });
+    await view.renderRecentProjectsVariant();
+    panel.querySelector('[data-session-rename-dash]').listeners.click();
+    const input = panel.querySelector('input');
+    input.value = 'Renamed in dashboard';
+    input.listeners.keydown({ key: 'Enter', preventDefault() {} });
+    assert.equal(await saved.promise, undefined);
+    const after = await connect(network, 3).getRecord('sessions', 'dashboard');
+    assert.equal(after.title, 'Renamed in dashboard');
+    assert.equal(after.titleSource, 'manual');
+    assert.deepEqual(after.runs, before.runs);
+  } finally { network.close(); }
+});
+
 test('saved conversation text and recovery survive a new page without crossing account scope', async () => {
   const network = createNetwork();
   try {

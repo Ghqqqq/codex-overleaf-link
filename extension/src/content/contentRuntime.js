@@ -697,6 +697,8 @@
     showPluginConfirm, formatOperationFiles, getAppliedEntries, getSkippedEntries
   });
   const writebackOrchestrator = Modules.WritebackOrchestrator.create({
+    mirrorFenceStore: root.CodexOverleafModuleRegistry.resolve('ScopedPersistenceBrowserAdapter'),
+    getAccountScopeId: () => cachedAccountScopeId,
     tr,
     tx,
     getLocale,
@@ -844,20 +846,19 @@
   });
   // v1.8.1 D3: the dashboard was a one-shot render — another tab finishing a
   // run, clearing history or creating sessions never showed up. Refresh it
-  // (debounced) when the tab regains visibility or a cross-tab run signal
-  // arrives while the dashboard view is active.
+  // (debounced) on visibility, cross-tab run signals, and shared-history changes.
   let dashboardRefreshTimer = null;
   function refreshDashboardSoon() {
-    if (panel?.dataset.view !== 'recent-projects') {
+    if (panel?.dataset.view !== 'recent-projects' || document.visibilityState !== 'visible') {
       return;
     }
     clearTimeout(dashboardRefreshTimer);
     dashboardRefreshTimer = setTimeout(() => {
-      if (panel?.dataset.view !== 'recent-projects') {
+      if (panel?.dataset.view !== 'recent-projects' || document.visibilityState !== 'visible') {
         return;
       }
       // Never clobber an in-progress inline rename (fleet P2) — retry later.
-      if (panel.querySelector('.recent-projects-sessions input')) {
+      if (panel.querySelector('.recent-projects-session-rename-input')) {
         refreshDashboardSoon();
         return;
       }
@@ -865,11 +866,7 @@
       const expanded = Array.from(panel.querySelectorAll('[data-project-row-wrap][data-expanded="true"]'))
         .map(wrap => wrap.getAttribute('data-project-row-wrap'))
         .filter(Boolean);
-      const rootEl = panel.querySelector('[data-recent-projects-root]');
-      recentProjects.renderRecentProjectsVariant({
-        restoreExpanded: expanded,
-        restoreScrollTop: rootEl ? rootEl.scrollTop : undefined
-      }).catch(() => { /* keep last render */ });
+      recentProjects.refreshDashboardView({ restoreExpanded: expanded }).catch(() => { /* keep last render */ });
     }, 400);
   }
   document.addEventListener('visibilitychange', () => {
@@ -1458,7 +1455,7 @@
       primeCodexLocalSkillsCatalog().catch(() => { /* retry through settings, slash, or submission */ });
     }
 
-    PanelRenderer.setVisible(panel, true);
+    PanelRenderer.setVisible(panelRendererInstance, true);
   }
 
   // Panel prefetch and first submission share the same official catalog read.
@@ -2153,9 +2150,11 @@
       }
 
       let focusFiles = [...executionSnapshot.focusFiles];
+      const mirrorOwner = currentRunView, mirrorRouteGeneration = spaRouteGeneration;
       const warmStart = await awaitRunStep(resolveWarmRunStart({ focusFiles, mode: submittedMode }));
+      const mirrorFence = await awaitRunStep(writebackOrchestrator.refreshMirrorReuseFence(mirrorOwner.runProjectId, mirrorOwner.runAccountScopeId));
       let project = warmStart.project || null;
-      let useExistingMirror = warmStart.useExistingMirror;
+      let useExistingMirror = warmStart.useExistingMirror && !mirrorFence;
       let fileOverlays = warmStart.fileOverlays || null;
       let otWarmStart = warmStart.otWarmStart === true;
       if (!useExistingMirror) {
@@ -2164,6 +2163,18 @@
           status: 'running'
         });
         project = await awaitRunStep(getRunProjectSnapshot());
+        if (mirrorFence) {
+          const assertCurrent = () => {
+            throwIfRunCancellationRequested();
+            if (mirrorOwner !== currentRunView || mirrorRouteGeneration !== spaRouteGeneration
+              || mirrorOwner.runProjectId !== getCurrentProjectId()
+              || mirrorOwner.runAccountScopeId !== cachedAccountScopeId) throw createRunCancellationError();
+          };
+          await awaitRunStep(writebackOrchestrator.syncFencedMirror(mirrorOwner.runProjectId, project, {
+            fence: mirrorFence, assertCurrent,
+            sendNative: payload => nativeCompatibilityController.sendBackgroundNative(payload, { assertCurrent })
+          }));
+        }
       }
       throwIfRunCancellationRequested();
       if (!useExistingMirror) {
@@ -2332,8 +2343,8 @@
           submittedMode
         })));
 
-      // Handle mirror_stale error by retrying with full sync
-      if (!response.ok && response.error?.code === 'mirror_stale' && useExistingMirror) {
+      // A stale mirror or contradictory editor overlay requires a fresh read.
+      if (!response.ok && ['mirror_stale', 'document_identity_mismatch'].includes(response.error?.code) && useExistingMirror) {
         appendRunEvent({ title: tr('warmMirrorStaleRetryTitle'), status: 'running' });
         const staleRetry = await awaitRunStep(prepareMirrorStaleRetry({
           project: await awaitRunStep(getRunProjectSnapshot()),
@@ -2601,7 +2612,7 @@
       });
       runSettlementPersistence.applyToCurrentRun(syncOutcome.settlement);
       if (runCancellationRequested) {
-        throw createRunCancellationError();
+        throw Object.assign(createRunCancellationError(), { writebackOutcome: syncOutcome });
       }
       await finalizeAuditRecord(runAuditDraft, {
         ...(syncOutcome.audit || {}),
@@ -2712,7 +2723,10 @@
               changedDocument: false, evidence: { declinedChoice: true }
             }),
             nextStep: tr('failureReason_reviewing_unavailable_cancelled_next') });
-        } else appendRunCancelledReport();
+        } else {
+          runSettlementPersistence.applyToCurrentRun(error.writebackOutcome?.settlement);
+          appendRunCancelledReport(error.writebackOutcome);
+        }
         await finishRunView(tx('Cancelled', '已取消'), 'cancelled');
         void finalizeAuditRecord(runAuditDraft, { resultStatus: 'cancelled' });
         return;
@@ -2800,9 +2814,15 @@
       nativeChannel.clearActiveRequest();
       stopRunElapsedTick();
       await flushQueuedSaveState().catch(() => {});
+      // The card is already settled. Retain the owner while Native stops so
+      // neither ordinary promotion nor a deferred session start races its lock.
+      if (settlement.continueQueue) {
+        settlement.continueQueue = await waitForCancelledNativeRun(settledView);
+      }
       currentRunView = null;
       runCancellationRequested = false;
       runCancellationController = null;
+      syncComposerSendAvailability();
       activeTurnControl.release(settlement.requestId);
       if (isExperimentalOtEnabled()) {
         try { await resumeOtWarmMirror('run-settled'); }
@@ -3240,7 +3260,7 @@
     if (state?.activeSessionId !== sessionId || !isProjectEditorRoute(window.location)) return false;
     if (sessionManager.isTransitioning()) {
       deferredSessionStart = { sessionId, scope: getComposerDraftScope() };
-      return false;
+      return 'session_transition';
     }
     return true;
   }
@@ -3286,18 +3306,21 @@
     //     codex_cancelled instead of grinding through the rest of the queue.
     // Without the page-side signal, a cancel during writeback waits up to
     // the applyOperations content-side timeout (30s) before the run settles.
-    const activeRequestId = nativeChannel.getActiveRequestId();
+    const activeRequestId = currentRunView.nativeRequestId;
     const projectKey = currentRunView?.runProjectId || getCurrentProjectId() || '';
 
     const cancelTargets = [];
-    if (activeRequestId || projectKey) {
+    if (activeRequestId != null && activeRequestId !== '') {
       cancelTargets.push(sendBackgroundNative({
         method: 'codex.cancel',
         params: {
-          requestId: activeRequestId || undefined,
+          requestId: activeRequestId,
           projectKey: projectKey || undefined
         }
       }));
+    } else {
+      // Preparation has no Native run to cancel; the local signal prevents dispatch.
+      cancelTargets.push(Promise.resolve(null));
     }
     // The page-side cancel is best-effort — it only matters if a writeback
     // is currently in flight. Swallow errors / unavailable bridge so the
@@ -3382,6 +3405,23 @@
       signal.addEventListener('abort', onAbort, { once: true });
       Promise.resolve(value).then(result => settle(resolve, result), error => settle(reject, error));
     });
+  }
+
+  async function waitForCancelledNativeRun(runView) {
+    const pending = runView?.pendingNativeRun;
+    if (!pending) return true;
+    const CANCELLED_NATIVE_SETTLEMENT_TIMEOUT_MS = 20000;
+    let timer;
+    try {
+      return await Promise.race([
+        pending.then(() => true, () => true),
+        new Promise(resolve => {
+          timer = setTimeout(() => resolve(false), CANCELLED_NATIVE_SETTLEMENT_TIMEOUT_MS);
+        })
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function isRunCancellationError(error = {}) {
@@ -3547,21 +3587,26 @@
       method: 'codex.run',
       params
     }, compatibilityGate.compatibility));
-    if (currentRunView) {
-      currentRunView.nativeRequestId = tracked.id;
-      const record = findRunRecord(currentRunView.recordId, currentRunView.sessionId);
+    if (owner) {
+      owner.nativeRequestId = tracked.id;
+      // Keep the actual response separate from awaitRunStep's local abort race.
+      owner.pendingNativeRun = tracked.promise;
+      const record = findRunRecord(owner.recordId, owner.sessionId);
       if (record) {
         record.nativeRequestId = tracked.id;
       }
       activeTurnControl.bind({
         requestId: tracked.id,
-        projectKey: currentRunView.runProjectId,
-        clientRunId: currentRunView.recordId,
-        sessionId: currentRunView.sessionId
+        projectKey: owner.runProjectId,
+        clientRunId: owner.recordId,
+        sessionId: owner.sessionId
       });
       saveStateSoon();
     }
     return tracked.promise.finally(() => {
+      if (owner?.pendingNativeRun === tracked.promise) {
+        owner.pendingNativeRun = null;
+      }
       if (currentRunView?.nativeRequestId === tracked.id) {
         currentRunView.activeTurn = null;
         renderPendingInputs();
@@ -3704,8 +3749,8 @@
     }).run(options);
   }
 
-  function appendRunCancelledReport() {
-    const hasQueuedFollowUp = (getActiveSession(state)?.pendingInputs || [])
+  function appendRunCancelledReport(writebackOutcome = {}, continueQueue = true) {
+    const hasQueuedFollowUp = continueQueue && (getActiveSession(state)?.pendingInputs || [])
       .some(item => item?.status === 'queued');
     appendRunEvent({
       title: tx('Current Codex task was cancelled.', '已中断当前 Codex 任务。'),
@@ -3715,8 +3760,9 @@
     appendCompletionReport({ conclusionKey: 'cancelled',
       conclusion: tx('This run was cancelled. It did not continue syncing or writing to Overleaf.', '这轮已中断，没有继续同步或写入 Overleaf。'),
       status: 'cancelled',
-      operations: [],
-      applyResults: [],
+      operations: writebackOutcome.operations || [],
+      applyResults: writebackOutcome.applied ? [writebackOutcome.applied] : [],
+      saveVerification: writebackOutcome.saveVerification,
       nextStep: hasQueuedFollowUp
         ? tx('The first queued follow-up will start next.', '接下来会自动启动队首的后续任务。')
         : tx('Edit the task and run again.', '可以修改任务后重新运行。')
@@ -3741,17 +3787,21 @@
     const running = typeof runningOverride === 'boolean'
       ? runningOverride
       : Boolean(currentRunView);
+    const runningInActiveSession = running && (!currentRunView || currentRunView.sessionId === state?.activeSessionId);
     const transitioning = sessionManager.isTransitioning();
-    const action = running && (!hasInput || transitioning) ? 'cancel' : 'send';
+    const action = runningInActiveSession && (!hasInput || transitioning) ? 'cancel' : 'send';
+    const attachmentsLoading = composerAttachmentController.hasPendingReads();
     const label = action === 'cancel'
       ? tr('cancelRun')
-      : running
-        ? tr('queueNextInput')
-        : tr('send');
+      : attachmentsLoading
+        ? tr('attachmentsLoading')
+        : running && hasInput
+          ? tr('queueNextInput')
+          : tr('send');
     runButton.dataset.action = action;
     runButton.disabled = action === 'cancel'
       ? runCancellationRequested
-      : !hasInput || transitioning;
+      : !hasInput || transitioning || attachmentsLoading;
     runButton.title = label;
     runButton.setAttribute('aria-label', label);
     if (currentRunView?.writebackRetry && hasInput && action !== 'cancel') runButton.disabled = true;
@@ -3760,6 +3810,11 @@
   function handleTaskInputKeydown(event) {
     if (sessionManager.isTransitioning()) {
       if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) event.preventDefault();
+      return;
+    }
+    if (composerAttachmentController.hasPendingReads() && event.key === 'Enter'
+      && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+      event.preventDefault();
       return;
     }
     if (handleSlashMenuKeydown(event)) {
@@ -3809,7 +3864,8 @@
       if (!isCodexOverleafSkillEnabled(id)) {
         continue;
       }
-      const title = String(skill?.title || skill?.name || id).trim().slice(0, 80) || id;
+      const title = id === 'reviewer-response' ? tx('Reviewer response', '审稿回复')
+        : String(skill?.title || skill?.name || id).trim().slice(0, 80) || id;
       commands.push({
         id: `skill:${id}`,
         kind: 'codex-overleaf-skill',
@@ -4529,6 +4585,8 @@
     Bridge: Modules.SharedSessionBridge, StorageDb: Modules.StorageDb,
     getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId(), generation: spaRouteGeneration }),
     getState: () => state, setState: next => { state = next; },
+    isDashboard: () => panel?.dataset.view === 'recent-projects',
+    refreshDashboard: refreshDashboardSoon,
     // An in-flight Accept/Undo keeps its view until it settles; refresh applies afterwards.
     isBusy: () => Boolean(pendingDraftSave || readLiveRunViewForSaveStateGuard() || trackedChangeInFlight.size
       || runReviewController?.hasActiveReview?.() || document.querySelector('dialog[open]')),
@@ -5545,8 +5603,9 @@
     };
   }
 
-  async function getRunProjectSnapshot() {
+  async function getRunProjectSnapshot(expectedProjectId = getCurrentProjectId()) {
     const project = await callPageBridge('getProjectSnapshot', {
+      projectId: expectedProjectId,
       force: true,
       maxAgeMs: 0,
       preferLightweight: true,
@@ -5558,11 +5617,12 @@
       zipTimeoutMs: RUN_SNAPSHOT_ZIP_TIMEOUT_MS,
       focusFiles: getActiveFocusFiles()
     });
-    const sanitizedProject = sanitizeRunProjectSnapshot(project);
+    const sanitizedProject = sanitizeRunProjectSnapshot(project, expectedProjectId);
     if (sanitizedProject?.capabilities?.fullProjectSnapshot || sanitizedProject?.capabilities?.pathIdentityComplete === false) {
       return sanitizedProject;
     }
     const pageStateProject = await callPageBridge('getProjectSnapshot', {
+      projectId: expectedProjectId,
       force: true,
       maxAgeMs: 0,
       preferLightweight: true,
@@ -5572,17 +5632,21 @@
       includeBinaryFiles: false,
       focusFiles: getActiveFocusFiles()
     });
-    const sanitizedPageStateProject = sanitizeRunProjectSnapshot(pageStateProject);
+    const sanitizedPageStateProject = sanitizeRunProjectSnapshot(pageStateProject, expectedProjectId);
     if (sanitizedPageStateProject?.capabilities?.fullProjectSnapshot) {
       return sanitizedPageStateProject;
     }
     return sanitizedProject;
   }
 
-  function sanitizeRunProjectSnapshot(project) {
+  function sanitizeRunProjectSnapshot(project, expectedProjectId = project?.id) {
     if (!project || typeof project !== 'object') return project;
+    if (project.id !== expectedProjectId) return { ...project, files: [], capabilities: { ...project.capabilities,
+      fullProjectSnapshot: false, skipped: [{ path: '', reason: 'document_identity_mismatch' }] } };
     const normalize = Modules.ProjectFiles.normalizeSafeProjectPath;
-    const files = Array.isArray(project.files) ? project.files : [];
+    const files = Array.isArray(project.files) ? project.files.map(file => file?.documentIdentity === undefined ? file
+      : { ...file, documentIdentity: snapshotDocumentIdentity(file.documentIdentity, file.path, project.id) }) : [];
+    project = { ...project, files };
     const counts = new Map();
     for (const file of files) {
       const path = normalize(file?.path);
@@ -5619,12 +5683,16 @@
   // --- Warm Mirror Controller ---
 
   async function getMirrorFreshness() {
+    const projectId = getCurrentProjectId(), accountScopeId = cachedAccountScopeId;
+    if (await writebackOrchestrator.refreshMirrorReuseFence(projectId, accountScopeId)) return null;
+    if (getCurrentProjectId() !== projectId || cachedAccountScopeId !== accountScopeId) return null;
     try {
       const response = await sendBackgroundNative({
         method: 'mirror.status',
-        params: { projectId: getCurrentProjectId() }
+        params: { projectId }
       });
-      if (response?.ok) {
+      const fence = await writebackOrchestrator.refreshMirrorReuseFence(projectId, accountScopeId);
+      if (response?.ok && !fence && getCurrentProjectId() === projectId && cachedAccountScopeId === accountScopeId) {
         return response.result;
       }
     } catch (error) { /* fall through */ }
@@ -5655,7 +5723,7 @@
     }
 
     const mirrorStatus = await getMirrorFreshness();
-    const mirrorHealth = Modules.MirrorHealth.classifyMirrorHealth(mirrorStatus);
+    const mirrorHealth = Modules.MirrorHealth.classifyMirrorHealth(mirrorStatus || {});
     if (!mirrorStatus?.exists || !mirrorHealth.reusable) {
       return { useExistingMirror: false, reason: 'mirror_not_fresh', mirrorStatus };
     }
@@ -5684,15 +5752,31 @@
     return candidates
       .filter(file =>
         typeof file.content === 'string' &&
-        Modules.ProjectFiles.isUsableProjectFileContent(file.content) &&
+        (Modules.ProjectFiles.isUsableProjectFileContent(file.content) || file.content === '') &&
         file.path &&
         !seen.has(file.path) &&
         seen.add(file.path)
       )
       .map(file => ({
         path: file.path,
-        content: file.content
+        content: file.content,
+        kind: 'text',
+        source: file.source,
+        ...(file.documentIdentity !== undefined
+          ? { documentIdentity: snapshotDocumentIdentity(file.documentIdentity, file.path, project.id) } : {})
       }));
+  }
+
+  function snapshotDocumentIdentity(identity, path, projectId) {
+    // Preserve invalid evidence as invalid, never silently downgrade to the
+    // missing-evidence fallback. Native independently hashes the content.
+    if (!identity || identity.version !== 1 || identity.source !== 'cm-ranges-v1'
+      || identity.path !== path || identity.projectId !== projectId
+      || typeof identity.documentId !== 'string' || !/^[a-f0-9]{24}$/.test(identity.documentId)
+      || typeof identity.targetDocumentId !== 'string' || !/^[a-f0-9]{24}$/.test(identity.targetDocumentId)
+      || typeof identity.contentSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(identity.contentSha256)) return null;
+    return { version: 1, source: 'cm-ranges-v1', projectId, path,
+      documentId: identity.documentId, targetDocumentId: identity.targetDocumentId, contentSha256: identity.contentSha256 };
   }
 
   function normalizeSnapshotPath(path) {
@@ -5962,6 +6046,8 @@
       if (!accountScopeId || isScopedPersistenceIdentityFailure(error)) {
         throw error;
       }
+      const fallbackProjectId = getCurrentProjectId();
+      const fallbackGeneration = spaRouteGeneration;
       const fallbackKey = buildScopedFallbackStorageKey(storageKey, accountScopeId);
       const stored = await chrome.storage.local.get([fallbackKey]);
       const fallback = stored[fallbackKey] || {};
@@ -5969,6 +6055,10 @@
         fallback?.__codexOverleafCompactFallback === true
         && fallback.__codexOverleafFallbackAccountScopeId === accountScopeId
       ) {
+        if (accountScopeId === cachedAccountScopeId && fallbackProjectId === getCurrentProjectId()
+          && fallbackGeneration === spaRouteGeneration) {
+          Modules.StorageMigration.adoptProjectPreferenceBaseline(fallback, accountScopeId, fallbackProjectId);
+        }
         return {
           mode: fallback.mode || '', providerId: fallback.providerId || 'builtin',
           model: fallback.model || '',
@@ -6050,9 +6140,16 @@
       compactState.customInstructionsByProject = state.customInstructionsByProject;
       compactState.reviewingAvailabilityByProject = state.reviewingAvailabilityByProject;
       compactState.governanceRulesByProject = state.governanceRulesByProject;
+      const projectPreferenceBaseline = Migration.getProjectPreferenceBaseline(
+        options?.draftScope?.accountScopeId || cachedAccountScopeId, projectId);
       const stateSnapshot = typeof structuredClone === 'function'
         ? structuredClone(state)
         : JSON.parse(JSON.stringify(state));
+      const projectPreferenceWrite = Migration.captureProjectPreferenceWrite({
+        state: stateSnapshot, baseline: projectPreferenceBaseline,
+        accountScopeId: options?.draftScope?.accountScopeId || cachedAccountScopeId, projectId,
+        normalizeExperimentalOtByProject, normalizeGovernanceRulesByProject, normalizeCustomInstructionsByProject
+      });
       // Keep consumption provenance on the live run owner across ordinary
       // session normalization; it is not a composer edit or a queued input.
       const consumedSession = liveRunView?.draftConsumption && liveRunView.runProjectId === projectId
@@ -6077,6 +6174,28 @@
         normalizeExperimentalOtByProject,
         normalizeGovernanceRulesByProject,
         normalizeCustomInstructionsByProject,
+        projectPreferenceBaseline,
+        projectPreferenceWrite,
+        applyProjectPreferences: (prefs, captured, fields) => {
+          if (retentionScope.accountScopeId !== cachedAccountScopeId || retentionScope.projectId !== getCurrentProjectId()
+            || retentionScope.generation !== spaRouteGeneration) return false;
+          const adopted = [];
+          for (const field of fields) {
+            if (JSON.stringify(state[field]?.[projectId]) !== JSON.stringify(captured[field]?.[projectId])) continue;
+            if (JSON.stringify(state[field]?.[projectId]) === JSON.stringify(prefs[field]?.[projectId])) continue;
+            state[field] = { ...state[field], ...prefs[field] };
+            if (!Object.hasOwn(prefs[field] || {}, projectId)) delete state[field][projectId];
+            adopted.push(field);
+          }
+          if (adopted.includes('customInstructionsByProject')) syncCustomInstructionsEditorForProject(projectId);
+          if (adopted.includes('governanceRulesByProject')) syncProjectSettingsEditorForProject();
+          if (adopted.includes('experimentalOtByProject')) syncExperimentalOtToggleForProject(projectId);
+          if (adopted.includes('reviewingAvailabilityByProject')) {
+            syncReviewingTooltip();
+            syncProbeStatus();
+          }
+          return true;
+        },
         persistenceContext
         });
         if (!options?.draftScope) {
@@ -6534,9 +6653,17 @@
     if (!composerDraftPersistence) composerDraftPersistence = Modules.ComposerAttachmentDraft.createController({
       getScope: () => ({ accountScopeId: cachedAccountScopeId, projectId: getCurrentProjectId() }),
       getAttachments: () => composerAttachmentController.serializePersistableAttachments(),
-      setAttachments: value => { state.composerAttachments = value; },
+      getOmittedAttachmentNames: () => composerAttachmentController.getOmittedAttachmentNames(),
+      setAttachments: value => {
+        state.composerAttachments = value;
+        syncComposerSendAvailability();
+      },
       clear: () => composerAttachmentController.clear({ notify: false }),
       restore: value => composerAttachmentController.restorePersistedAttachments(value),
+      onRestoreOmittedAttachments: ({ count, names }) => appendPlainLog(tx(
+        `${count} attachment${count === 1 ? '' : 's'} could not be saved in the draft. Reattach before sending: ${names.join(', ')}.`,
+        `${count} 个附件未能保存到草稿中，请在发送前重新添加：${names.join('、')}。`
+      )),
       read: scope => Modules.StorageDb.readComposerAttachmentDraft(scope),
       write: (scope, value) => Modules.StorageDb.writeComposerAttachmentDraft(scope, value),
       scheduleSave: () => saveStateSoon()
@@ -6638,7 +6765,9 @@
     writingStyleSettings.sync();
     applyPanelTheme(getThemePreference());
     if ((state.providerId || 'builtin') === 'builtin' && !modelSelectHasOption(state.model)) {
-      renderModelOptions(getModelCatalog().FALLBACK_MODELS, state.model);
+      renderModelOptions(getModelCatalog().FALLBACK_MODELS, state.model, {
+        provisionalSelected: getModelDiscovery().provisional === true
+      });
     }
     panel.querySelector('[data-model]').value = state.model;
     const renderedModels = getRenderedModelEntries();
@@ -7614,13 +7743,16 @@
     const originalStatus = record.status;
     const retryAutoRecompile = typeof record.executionSnapshot?.autoRecompile === 'boolean'
       ? record.executionSnapshot.autoRecompile : undefined;
+    const generation = spaRouteGeneration;
+    const isOwnerScope = () => generation === spaRouteGeneration
+      && owner.projectId === getCurrentProjectId() && owner.accountScopeId === cachedAccountScopeId;
     // State is renormalized during the awaits below (probes, session sync), which
     // replaces run objects; always write through the current copy.
-    const live = () => findRunRecord(runId, session.id) || record;
+    const live = () => (isOwnerScope() && findRunRecord(runId, session.id)) || record;
     let finished = false;
+    let retryOutcome = null;
     runCancellationRequested = false;
     runCancellationController = new AbortController();
-    const generation = spaRouteGeneration;
     const requestId = record.nativeRequestId || `writeback:${owner.sessionId}:${runId}`;
     const ownerToken = crypto.randomUUID();
     const retryView = { recordId: runId, sessionId: session.id, runProjectId: owner.projectId,
@@ -7632,7 +7764,7 @@
       if (runCancellationRequested || currentRunView !== retryView) {
         throw Object.assign(new Error('Save checking was cancelled.'), { code: 'codex_cancelled' });
       }
-      if (generation !== spaRouteGeneration || owner.projectId !== getCurrentProjectId() || owner.accountScopeId !== cachedAccountScopeId) {
+      if (!isOwnerScope()) {
         throw Object.assign(new Error('The project or account changed.'), { code: 'aborted_project_changed' });
       }
     };
@@ -7649,6 +7781,9 @@
       Object.assign(retryView, { root, events: root?.querySelector('[data-run-events]'),
         report: root?.querySelector('[data-run-report]'), status: root?.querySelector('[data-run-status]'),
         runProcess: root?.querySelector('[data-run-process]'), processLabel: root?.querySelector('[data-run-process-summary]') });
+      const pendingMirror = getPendingMirrorRefresh?.();
+      if (pendingMirror) await awaitRunStep(pendingMirror.catch(() => {}));
+      assertOwner();
       if (intent?.requestId) {
         const receipt = await callPageBridge('getWritebackReceipt', { requestId: intent.requestId, runProjectId: owner.projectId });
         if (receipt?.state === 'running') throw new Error(tx('The previous upload is still finishing. Try again shortly.', '上一轮上传仍在收尾，请稍后再试。'));
@@ -7662,6 +7797,7 @@
             ? record.executionSnapshot.requireReviewing : intent.requireReviewing,
             autoRecompile: retryAutoRecompile,
             retryCreates: true, assistantMessageKey: 'retry_sync', assistantMessage: tx('Retried the remaining file transfers for this task.', '已重试本轮未完成的文件同步。') });
+        retryOutcome = result;
         assertOwner();
         if (result.settlement?.facts) live().settlement = WritebackSettlement.mergeRetrySettlement(live().settlement, result.settlement.facts); // Keep files outside the retry.
         await finishRunView(result.hasSkippedOperations ? tx('Sync incomplete', '同步未完成') : tx('Synced', '已同步'),
@@ -7682,6 +7818,19 @@
       }
       await flushQueuedSaveState();
     } catch (error) {
+      const outcome = error.writebackOutcome || retryOutcome;
+      const current = findRunRecord(runId, session.id);
+      if (outcome && (runCancellationRequested || isRunCancellationError(error))
+        && currentRunView === retryView && isOwnerScope()
+        && current && !current.forkSnapshot && current.runProjectId === owner.projectId) {
+        // Stop cannot erase writes returned by Retry sync, including a saved
+        // reply that arrived after cancellation. Keep earlier files' facts too.
+        if (outcome.settlement?.facts) current.settlement = WritebackSettlement.mergeRetrySettlement(
+          current.settlement, outcome.settlement.facts);
+        appendRunCancelledReport(outcome, false);
+        await finishRunView(tx('Cancelled', '已取消'), 'cancelled');
+        finished = true;
+      }
       showPluginToast(error.message || String(error));
     } finally {
       // Only finishRunView settles a new terminal status; every other exit

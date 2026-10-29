@@ -1,5 +1,41 @@
 # Changelog
 
+## v2.6.5 - 2026-10-29
+
+### Added
+
+- Polish, Shorten or Translate a selection from the editor's selection toolbar: the selection is attached for editing and a matching instruction is drafted in an empty composer.
+- Respond to peer-review comments, write a response letter or plan a revision with the built-in reviewer-response skill.
+
+### Changed
+
+- Show each diagnostics result as a status dot with a short list of facts, and explain what to do when Codex is unavailable.
+
+### Fixed
+
+- Check that text read from or written to Overleaf belongs to the intended file by the document Overleaf's editor actually has open, so a write can no longer land in another short or similar file, and a cleared file, a copy of a template, a heavy rewrite or two files with identical beginnings and endings are no longer refused. When the editor does not report its document, the earlier stricter content check applies.
+- Stop now stops only the run it belongs to: a Stop from another tab or a late Stop no longer cancels a different run of the same project.
+- After Stop, the next queued message waits until Codex has exited instead of failing with "Codex task already running". A queued message in a conversation you switched away from pauses with Resume after its run finishes or is cancelled.
+- Check Stop, the project and the Track Changes mode again just before each write, so a Stop while Overleaf opens the target file leaves it unchanged and a Track Changes switch during that wait stops the write instead of writing in the wrong mode.
+- Keep the written count, Undo and the save check on the card when you stop during save confirmation or a save reply arrives after Stop, including Retry sync, and keep the next run from reading a stale mirror after a cancelled Retry sync.
+- Stop waiting for the local project cache reset after 20 seconds when you stop during save confirmation, so the next run, Undo and Retry are not held forever; until a full sync succeeds, no run in any tab reuses that project's local copy.
+- Block reuse of the local project cache across tabs while a cancelled write or Undo resets it. Bound the reset after Undo as well, and retain the protection when the reset fails or times out so the next run reads the restored files.
+- Show Send instead of a disabled Stop button, and keep the model list loading, when you switch conversations while a stopped run is still finishing.
+- Keep a different unsent draft when you use Edit & resend or Fix compile errors, and tell you to clear the composer first.
+- Answer the first connection check of a slow but healthy local Codex installation in time by reusing the Codex CLI found at startup.
+- Treat a project that is too large for the page fallback to list completely as an incomplete read instead of silently giving Codex only its first 80 files.
+- Recover an update interrupted early when an older backup is still present, and let a later update start after an interrupted rollback instead of reporting that an authorization is in progress.
+- Report a model provider's quota or billing limit as a provider problem instead of full Chrome storage.
+- Give up on the connection check, model lists and other panel requests after a deadline when Native stops answering, instead of waiting forever.
+- Stop the Codex processes Native started when Native crashes, and rotate the Native log at 8 MiB instead of letting it grow without limit.
+- Keep project notes and read-only or writable rules changed in one tab when another tab of the same project saves.
+- Tell you which attachments were not restored after a refresh, show attachments while they are still being read, and wait for them before sending.
+- Report a failed rename in the project page's conversation list, and refresh that list after runs, renames and deletions in other tabs.
+- Type Chinese with an input method in the Writing settings project search without duplicated letters.
+- Keep the compact overlay layout when you close and reopen the panel in a narrow window.
+- Copy the conclusion shown at the time you click, keeping TeX math; keep run actions after renaming a conversation; keep words intact in answer tables.
+- Offer Use for a provider destination that has not been approved yet, honour default models in the model picker, and export diagnostics without a project mirror.
+
 ## v2.6.0 - 2026-10-21
 
 ### Added

@@ -136,6 +136,11 @@
       fallbackUserMessage: 'The file changed while Codex was working.',
       fallbackNextAction: 'Review the current file, then rerun the task.'
     },
+    document_identity_mismatch: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: true,
+      fallbackUserMessage: 'Codex could not confirm that the editor content belongs to the target file, so it was not used.',
+      fallbackNextAction: 'Wait for the target file to open and settle, then retry. Reload Overleaf if this continues.'
+    },
     patch_anchor_not_found: {
       stage: 'preflight', severity: 'blocked', defaultRetryable: true,
       fallbackUserMessage: 'The edit anchor no longer matches current Overleaf content.',
@@ -358,6 +363,11 @@
       fallbackUserMessage: 'Native host request failed.',
       fallbackNextAction: 'Open diagnostics and retry.'
     },
+    native_request_timeout: {
+      stage: 'native', severity: 'error', defaultRetryable: true,
+      fallbackUserMessage: 'The local service did not respond.',
+      fallbackNextAction: 'Retry, or open Diagnostics to check the local connection.'
+    },
     native_protocol_incompatible: {
       stage: 'native', severity: 'blocked', defaultRetryable: true,
       fallbackUserMessage: 'Native host version or capabilities do not match the extension.',
@@ -427,6 +437,11 @@
       stage: 'codex', severity: 'error', defaultRetryable: true,
       fallbackUserMessage: 'The provider rate limit was reached.',
       fallbackNextAction: 'Wait for the rate-limit window to recover and retry.'
+    },
+    provider_quota_exceeded: {
+      stage: 'codex', severity: 'error', defaultRetryable: true,
+      fallbackUserMessage: 'The model provider quota or billing limit was reached.',
+      fallbackNextAction: 'Check the provider account and plan, or switch model or provider before retrying.'
     },
     provider_connection_timeout: {
       stage: 'codex', severity: 'error', defaultRetryable: true,

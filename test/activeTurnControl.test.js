@@ -2,6 +2,119 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const ActiveTurnControl = require('../extension/src/content/activeTurnControl');
 
+test('a retained cancelled run does not cancel session catalogs or bypass request ownership guards', async () => {
+  const NativeCompatibility = require('../extension/src/content/nativeCompatibilityController');
+  let cancelled = false;
+  let releasePing;
+  const ping = new Promise(resolve => { releasePing = resolve; });
+  const sent = [];
+  const assertRunCurrent = () => {
+    if (cancelled) throw Object.assign(new Error('Run cancelled'), { code: 'codex_cancelled' });
+  };
+  const controller = NativeCompatibility.create({
+    gatedMethods: new Set(['codex.models', 'codex.providers.list', 'mirror.sync']),
+    throwIfCancellationRequested: assertRunCurrent,
+    fallbackNativeCompatibility: () => ({ status: 'ok' }),
+    nativeChannel: { async sendBackgroundNative(payload) {
+      if (payload.method === 'bridge.ping') return ping;
+      sent.push(payload.method);
+      return { ok: true, result: { method: payload.method } };
+    } }
+  });
+  const models = controller.sendBackgroundNative({ method: 'codex.models' });
+  const providers = controller.sendBackgroundNative({ method: 'codex.providers.list' });
+  const mirror = controller.sendBackgroundNative({ method: 'mirror.sync' });
+  const ownedCatalog = controller.sendBackgroundNative({ method: 'codex.models' }, { assertCurrent: assertRunCurrent });
+  const mirrorRejected = assert.rejects(mirror, { code: 'codex_cancelled' });
+  const ownedRejected = assert.rejects(ownedCatalog, { code: 'codex_cancelled', requestDispatched: false });
+  cancelled = true;
+  releasePing({ ok: true });
+  assert.equal((await models).ok, true);
+  assert.equal((await providers).ok, true);
+  await mirrorRejected;
+  await ownedRejected;
+  assert.deepEqual(sent.sort(), ['codex.models', 'codex.providers.list']);
+});
+
+test('a stale cancellation cannot abort a different Native run, while explicit recovery can', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const vm = require('node:vm');
+  const filename = path.join(__dirname, '../native-host/src/taskRunnerRuntime.js');
+  const nativeRequire = require('node:module').createRequire(filename);
+  let signal, finish;
+  const stopped = new Promise(resolve => { finish = resolve; });
+  const stubs = {
+    './codexRuntimeIdentity': { buildCodexRuntimeEvent: () => null },
+    './nativeEnvironment': { refreshCodexRuntimeEnv: env => env },
+    './providerRuntime': { isProviderMethod: () => false, resolveRunProviderForRun: async () => ({}) },
+    './processStopBarrier': { isBlocked: () => false },
+    './nativeRunLifecycle': { register: () => ({ complete() {}, trackProcess() {} }) },
+    './debugLog': { logDebug() {}, truncateText: value => value },
+    './codexSessionRunner': { async runCodexSession(input) {
+      signal = input.signal;
+      await stopped;
+      signal.throwIfAborted();
+      return { syncChanges: [] };
+    } }
+  };
+  // Execute the public dispatcher and real admission/index cleanup; only
+  // process, Provider and filesystem-facing lifecycle dependencies are replaced.
+  const context = { module: { exports: {} }, AbortController, process: { env: {} },
+    require: name => stubs[name] || nativeRequire(name) };
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), context, { filename });
+  const { handleRequest } = context.module.exports;
+  const running = handleRequest({ id: 0, method: 'codex.run',
+    params: { projectId: 'project', operation: 'compact', threadId: 'thread' } }, {});
+  try {
+    await settlePromises();
+    assert.ok(signal);
+    for (const requestId of ['old-run', '']) {
+      const response = await handleRequest({ id: 'cancel', method: 'codex.cancel',
+        params: { requestId, projectKey: 'project' } }, {});
+      assert.equal(response.result.cancelled, false);
+      assert.equal(response.result.reason, 'request_not_active');
+      assert.equal(signal.aborted, false);
+    }
+    const recovery = await handleRequest({ id: 'recover', method: 'codex.cancel',
+      params: { requestId: 'old-run', projectKey: 'project', force: true } }, {});
+    assert.equal(recovery.result.cancelled, true);
+    assert.equal(recovery.result.requestId, 0);
+    assert.equal(signal.aborted, true);
+  } finally {
+    finish();
+    await running;
+  }
+  const settled = await handleRequest({ id: 'late', method: 'codex.cancel',
+    params: { requestId: 0, projectKey: 'project' } }, {});
+  assert.equal(settled.result.cancelled, false);
+});
+
+test('cancellation in an inactive session persists a paused queue without starting its next task', async () => {
+  const Queue = require('../extension/src/shared/runInputQueue');
+  const Scheduler = require('../extension/src/content/runQueueScheduler');
+  let queue = Queue.enqueue([], { text: 'Keep the follow-up', payload: {} }, { randomUUID: () => 'queued' }).queue;
+  let starts = 0;
+  const saves = [];
+  const scheduler = Scheduler.create({
+    getQueue: () => queue,
+    setQueue: (_sessionId, value) => { queue = value; },
+    canStart: () => false,
+    isRunning: () => false,
+    persist: async mutation => { saves.push({ mutation, queue: JSON.parse(JSON.stringify(queue)) }); },
+    start: () => { starts++; }
+  });
+  await scheduler.afterSettlement({ sessionId: 'original-session', status: 'cancelled', continueQueue: true });
+  await settlePromises();
+  assert.equal(starts, 0);
+  assert.equal(queue[0].status, 'paused');
+  assert.equal(queue[0].pauseReason, 'session_inactive');
+  assert.deepEqual(saves[0].mutation.queueMutation, { type: 'transition', sessionId: 'original-session' });
+  const restored = Queue.normalizeQueue(saves[0].queue);
+  assert.equal(restored[0].text, 'Keep the follow-up');
+  assert.equal(restored[0].status, 'paused');
+});
+
 
 const settlePromises = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 

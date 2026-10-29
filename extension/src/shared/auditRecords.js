@@ -261,6 +261,7 @@
   }
 
   function summarizeMirror(mirror = {}) {
+    mirror = mirror ?? { status: 'unavailable' };
     const files = Array.isArray(mirror.files) ? mirror.files : [];
     const skippedFiles = Array.isArray(mirror.skippedFiles) ? mirror.skippedFiles : [];
     return removeEmptySummaryFields({

@@ -58,6 +58,8 @@
     document,
     getActiveFilePathFromEditorStore,
     getActiveEditorIdentity,
+    getCodeMirrorEditorView,
+    getCodeMirrorEditorViews: () => codeMirrorEditorViewCandidates().map(([, view]) => view).filter(isCodeMirrorEditorView),
     normalizePath: normalizeSafeProjectPath,
     readActiveEditorText,
     window
@@ -97,6 +99,11 @@
   projectSnapshotBridge = window.CodexOverleafProjectSnapshot.create({
     buildProjectFileList: snapshotRouter.buildProjectFileList,
     buildProjectSnapshot: snapshotRouter.buildProjectSnapshot,
+    getSnapshotEditorCaptures: snapshotRouter.getSnapshotEditorCaptures,
+    captureEditorDocument: treeOperations.captureEditorDocument,
+    isCaptureCurrent: treeOperations.isCaptureCurrent,
+    getActiveFilePath,
+    getActiveEditorIdentity,
     getProjectId,
     normalizePath: normalizeSafeProjectPath,
     window
@@ -1675,21 +1682,21 @@
     return editorAdapter.readActiveEditorText();
   }
 
-  function replaceActiveEditorText(text) {
-    return editorAdapter.replaceActiveEditorText(text);
+  function replaceActiveEditorText(text, options) {
+    return editorAdapter.replaceActiveEditorText(text, options);
   }
 
-  function replaceActiveEditorPatches(patches, nextContent) {
-    return editorAdapter.replaceActiveEditorPatches(patches, nextContent);
+  function replaceActiveEditorPatches(patches, nextContent, options) {
+    return editorAdapter.replaceActiveEditorPatches(patches, nextContent, options);
   }
 
   function getCodeMirrorEditorView() {
     return findCodeMirrorEditorView()?.view || null;
   }
 
-  function findCodeMirrorEditorView() {
+  function codeMirrorEditorViewCandidates() {
     const store = getOverleafUnstableStore();
-    const candidates = [
+    return [
       ['store:editor.view', readStoreValue(store, 'editor.view')],
       ['store:editor.view.camel', readStoreValue(store, 'editor.view.camel')],
       ['store:editor', readStoreValue(store, 'editor').view],
@@ -1698,7 +1705,10 @@
       ['window._ide.editorView', window._ide?.editorView]
     ];
 
-    for (const [source, candidate] of candidates) {
+  }
+
+  function findCodeMirrorEditorView() {
+    for (const [source, candidate] of codeMirrorEditorViewCandidates()) {
       if (isCodeMirrorEditorView(candidate)) {
         return {
           view: candidate,
