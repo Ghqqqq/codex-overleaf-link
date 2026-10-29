@@ -429,12 +429,25 @@ test('cancelled save recovery releases the mirror barrier on timeout and ignores
   };
   const reply = deferred(), events = [], settlements = [], cacheClears = [];
   let invalidationReply = reply.promise;
+  const stored = new Map();
+  const storage = { storage: { local: {
+    async get() { return Object.fromEntries(stored); },
+    async set(values) { for (const [key, value] of Object.entries(values)) stored.set(key, value); },
+    async remove(keys) { for (const key of keys) stored.delete(key); }
+  } } };
+  const Adapter = require('../extension/src/shared/scopedPersistenceBrowserAdapter');
+  const mirrorFenceStore = {
+    getMirrorReuseFences: scope => Adapter.getMirrorReuseFences(scope, storage),
+    setMirrorReuseFence: (scope, generation) => Adapter.setMirrorReuseFence(scope, generation, storage),
+    clearMirrorReuseFences: (scope, generations) => Adapter.clearMirrorReuseFences(scope, generations, storage)
+  };
   const view = { runProjectId: 'example', sessionId: 's', recordId: 'r' };
   const run = { id: 'r', runProjectId: 'example', status: 'cancelled' };
   const cancellation = Object.assign(new Error('cancelled by the user'), { code: 'codex_cancelled' });
   const persistence = require('../extension/src/content/runSettlementPersistence').create({ writebackSettlement: Settlement,
     findRunRecord: () => run, getCurrentProjectId: () => 'example', getCurrentRunView: () => view });
   const api = window.CodexOverleafWritebackOrchestrator.create({ ...plan, tx, tr: key => key, getLocale: () => 'en',
+    mirrorFenceStore, getAccountScopeId: () => 'account-one',
     getState: () => ({ mode: 'auto', autoRecompile: false }), getCurrentRunView: () => view, getCurrentProjectId: () => 'example',
     cleanFinalAnswer: value => value || '', getAssistantAnswerForCurrentRun: () => '',
     writebackController: Controller, writebackSettlement: Settlement,
@@ -489,6 +502,18 @@ test('cancelled save recovery releases the mirror barrier on timeout and ignores
   const firstFence = api.getMirrorReuseFence('example');
   assert.ok(firstFence, 'failed invalidation must fence reuse even when Retry did not run Codex');
   assert.equal(api.getMirrorReuseFence('other-project'), null);
+  function newPage(account = 'account-one') {
+    const reloaded = {};
+    require('node:vm').runInNewContext(require('node:fs').readFileSync(
+      require.resolve('../extension/src/content/writebackOrchestrator'), 'utf8'), { window: reloaded, Function, setTimeout, clearTimeout });
+    return reloaded.CodexOverleafWritebackOrchestrator.create({ mirrorFenceStore,
+      getAccountScopeId: () => account, getCurrentProjectId: () => 'example' });
+  }
+  const reloaded = newPage(), secondTab = newPage();
+  assert.ok(await reloaded.refreshMirrorReuseFence('example'), 'the fence survives a fresh page runtime');
+  assert.ok(await secondTab.refreshMirrorReuseFence('example'), 'another tab of the same project observes the fence');
+  assert.equal(await newPage('account-two').refreshMirrorReuseFence('example'), null);
+  assert.equal(await reloaded.refreshMirrorReuseFence('other-project'), null);
   reply.resolve({ ok: true, result: { invalidated: true } });
   await advance(20000);
   assert.deepEqual(settlements, ['failed']);
@@ -527,4 +552,8 @@ test('cancelled save recovery releases the mirror barrier on timeout and ignores
   assert.equal(await api.syncFencedMirror('example', fullProject, { ...options, fence: newerFence }), true);
   assert.equal(syncCalls, 2);
   assert.equal(api.getMirrorReuseFence('example'), null, 'a later successful full sync restores reuse');
+  assert.equal(stored.size, 0);
+  assert.equal(await reloaded.refreshMirrorReuseFence('example'), null, 'an existing peer observes durable clearing');
+  assert.equal(await secondTab.refreshMirrorReuseFence('example'), null);
+  assert.equal(await newPage().refreshMirrorReuseFence('example'), null, 'clearing also survives reload');
 });
