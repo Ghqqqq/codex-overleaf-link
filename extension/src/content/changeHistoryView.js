@@ -119,7 +119,8 @@
             : tx('No files were written to Overleaf.', '没有向 Overleaf 写入文件。'));
         const footer = make('div', 'codex-history-bottom');
         const fileCount = row.paths.length ? tx(' · ' + row.paths.length + ' file(s)', ' · ' + row.paths.length + ' 个文件') : '';
-        footer.append(make('time', 'codex-history-when', when(row.createdAt) + fileCount));
+        const engine = row.engine === 'cursor' ? 'Cursor' : 'Codex';
+        footer.append(make('time', 'codex-history-when', when(row.createdAt) + ' · ' + engine + fileCount));
         const jump = make('button', 'codex-history-jump');
         jump.type = 'button'; jump.disabled = !row.canJump;
         jump.append(make('span', '', row.canJump ? tx('View conversation', '查看对应对话') : tx('Conversation unavailable', '对话不可用')));

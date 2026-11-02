@@ -271,6 +271,8 @@
           : n ? tx('Synced ' + n + ' files to the local workspace', '已同步 ' + n + ' 个文件到本地工作区') : tx('Synced the local workspace', '已同步本地工作区'),
         codex: live ? tx('Starting Codex', '正在启动 Codex')
           : entry.version ? tx('Started Codex CLI ' + entry.version, '已启动 Codex CLI ' + entry.version) : tx('Started Codex', '已启动 Codex'),
+        cursor: live ? tx('Starting Cursor', '正在启动 Cursor')
+          : entry.version ? tx('Started Cursor SDK ' + entry.version, '已启动 Cursor SDK ' + entry.version) : tx('Started Cursor', '已启动 Cursor'),
         waiting: live ? tx("Waiting for the model's first response", '等待模型首次响应') : tx('The model responded', '模型已开始响应')
       };
       return copy[entry.step] || '';

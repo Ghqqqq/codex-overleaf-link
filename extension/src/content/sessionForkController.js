@@ -29,18 +29,23 @@
         const current = getScope?.();
         return !scope || ['accountScopeId', 'projectId', 'generation'].every(key => current?.[key] === scope[key]);
       };
+      const cursor = run.executionSnapshot?.agentEngine === 'cursor' || session.agentEngine === 'cursor';
       const currentSource = () => {
         const current = findSource(getState(), runId);
-        return current?.session.id === session.id && current.run.codexTurnId === run.codexTurnId;
+        if (current?.session.id !== session.id) return false;
+        return cursor
+          ? current.run.cursorRunId === run.cursorRunId
+          : current.run.codexTurnId === run.codexTurnId;
       };
       const draftThreadId = run.codexTurnId && run.interruptedDraft?.turnId === run.codexTurnId
         ? run.interruptedDraft.threadId : '';
       // Provider switches replace the session thread, not the selected node's origin.
       const sourceThreadId = String(run.codexThreadId || draftThreadId || session.codexThreadId || '').trim();
-      if (run.status === 'running' || !sourceThreadId || !run.codexTurnId) {
+      if (run.status === 'running' || (!cursor && (!sourceThreadId || !run.codexTurnId))
+        || (cursor && !(run.cursorRunId || run.cursorAgentId))) {
         return failFork('session_fork_unavailable', tr('forkRunUnavailable'));
       }
-      let response;
+      let response = { ok: true, result: { threadId: '' } };
       try {
         const resolveLocalSkills = deps.captureLocalSkillIdsForFork || deps.getEnabledCodexLocalSkillIds;
         const enabledCodexLocalSkillIds = skillPreferences.loadCodexLocalSkills
@@ -49,17 +54,19 @@
         if (resolveLocalSkills && !Array.isArray(enabledCodexLocalSkillIds)) {
           throw codedError('codex_local_skill_unavailable', tr('forkRunFailed'));
         }
-        response = await sendBackgroundNative({
-          method: 'codex.thread.fork',
-          params: {
-            threadId: sourceThreadId,
-            lastTurnId: run.codexTurnId,
-            speedTier: session.speedTier,
-            loadCodexLocalSkills: skillPreferences.loadCodexLocalSkills,
-            loadCodexOverleafSkills: skillPreferences.loadCodexOverleafSkills,
-            enabledCodexLocalSkillIds
-          }
-        });
+        if (!cursor) {
+          response = await sendBackgroundNative({
+            method: 'codex.thread.fork',
+            params: {
+              threadId: sourceThreadId,
+              lastTurnId: run.codexTurnId,
+              speedTier: session.speedTier,
+              loadCodexLocalSkills: skillPreferences.loadCodexLocalSkills,
+              loadCodexOverleafSkills: skillPreferences.loadCodexOverleafSkills,
+              enabledCodexLocalSkillIds
+            }
+          });
+        }
       } catch (error) {
         if (!sameScope() || !currentSource()) return null;
         return failFork(error?.code || 'session_fork_failed', error?.message || tr('forkRunFailed'));
@@ -68,7 +75,7 @@
         if (response?.ok && response.result?.threadId) await clearFork(response.result.threadId);
         return null;
       }
-      if (!response?.ok || !response.result?.threadId) {
+      if (!cursor && (!response?.ok || !response.result?.threadId)) {
         return failFork(response?.error?.code || 'session_fork_failed', response?.error?.message || tr('forkRunFailed'));
       }
       const copiedRuns = session.runs.slice(0, runIndex + 1).map(copyRunSnapshot);
@@ -81,14 +88,18 @@
         runs: copiedRuns,
         task: '',
         mode: session.mode,
+        agentEngine: cursor ? 'cursor' : session.agentEngine,
         providerId: session.providerId,
         model: session.model,
+        cursorModel: session.cursorModel,
+        codexModel: session.codexModel,
         reasoningEffort: session.reasoningEffort,
         speedTier: session.speedTier,
         requireReviewing: session.requireReviewing,
         focusFiles: session.focusFiles,
         projectReferenceFiles: session.projectReferenceFiles,
-        codexThreadId: response.result.threadId,
+        codexThreadId: cursor ? '' : response.result.threadId,
+        cursorAgentId: '',
         pendingInputs: [],
         forkedFromSessionId: session.id,
         forkedFromRunId: run.id
@@ -138,7 +149,7 @@
 
     async function clearFork(threadId, sessionId) {
       try {
-        await sendBackgroundNative({ method: 'codex.history.clearPlugin', params: { sessionId, threadId } });
+        await sendBackgroundNative({ method: 'codex.history.clearPlugin', params: { sessionId, threadId, cursorAgentId: '' } });
       } catch (_error) { /* Best-effort cleanup must not restore a stale view. */ }
     }
 

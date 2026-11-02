@@ -22,7 +22,8 @@
   const VALID_SOURCES = new Set(['submitted', 'legacy-captured', 'legacy-inferred']);
   const TUPLE_FIELDS = Object.freeze([
     'mode', 'providerId', 'providerRevision', 'model', 'reasoningEffort',
-    'speedTier', 'autoRecompile', 'requireReviewing', 'focusFiles', 'selectionContext', 'writingStyle'
+    'speedTier', 'autoRecompile', 'requireReviewing', 'focusFiles', 'selectionContext', 'writingStyle',
+    'agentEngine'
   ]);
   const SECRET_FIELD_PATTERN = /(?:api.?key|authorization|password|secret|access.?token|refresh.?token)/i;
 
@@ -48,6 +49,7 @@
       focusFiles: normalizePaths(input.focusFiles),
       selectionContext: normalizeSelectionContext(input.selectionContext),
       writingStyle: normalizeWritingStyle(input.writingStyle),
+      agentEngine: input.agentEngine === 'cursor' ? 'cursor' : 'codex',
       capturedAt: normalizeTimestamp(input.capturedAt),
       source: VALID_SOURCES.has(options.source || input.source)
         ? (options.source || input.source)

@@ -7,7 +7,7 @@
     <img src="https://img.shields.io/badge/chrome-MV3-green" alt="chrome manifest v3">
     <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="node version">
     <a href="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml"><img src="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml/badge.svg" alt="tests"></a>
-    <img src="https://img.shields.io/badge/runtime%20dependencies-0-orange" alt="zero npm runtime dependencies">
+    <img src="https://img.shields.io/badge/runtime%20dependencies-1-orange" alt="one npm runtime dependency">
     <img src="https://img.shields.io/badge/license-MIT-blue" alt="license">
   </p>
   <p><a href="README.md">English</a> | 简体中文</p>
@@ -172,6 +172,18 @@ flowchart TD
 
 **模型服务。** 在**设置 → 所有项目 → 模型与连接 → 添加模型服务**中，填写基础 URL（除 localhost 外需要 HTTPS）、API 密钥和服务端接受的模型 ID，再选择协议：自动、Responses、Chat Completions 或 Anthropic Messages。**测试连接**会发送一次真实请求。选择只对当前项目生效，其他项目保留各自的设置。密钥由 native host 保存，任务上下文会发给你选择的服务。
 
+**Cursor API。** Cursor 是和 Codex 分开的引擎。先在 [Cursor Dashboard → API Keys](https://cursor.com/dashboard) 创建用户 API 密钥，再保存到 Overleaf 面板。密钥只留在这台电脑上，保存后不会再显示。
+
+1. 打开 [cursor.com/dashboard](https://cursor.com/dashboard)，进入 **API Keys**。
+2. 点 **Add**，给密钥起名，并立刻复制。把它当作密码保管。
+3. 在 Overleaf 项目里打开**设置 → 模型与连接 → 添加模型服务 → Cursor**。
+4. 粘贴密钥，点**保存密钥**。只有页面提示密钥已保存，新密钥才写入本机。如果提示扩展已重新加载，先刷新这个 Overleaf 页面，再保存一次。保存成功后，面板会自动刷新模型列表，并只打开前五个模型。
+5. 双击 **Cursor**，当前项目就改用 Cursor。双击 **Built-in Codex** 可以切回去。这个选择会记在当前对话里。
+6. 用开关决定哪些模型出现在输入框里。**全部关闭**会关掉所有模型。**刷新**会加载最新列表，并保留你已经改过的开关。
+7. 点**删除 Cursor** 会清除本机密钥，列表里的 Cursor 也会消失。之后要再用，需要从**添加模型服务**重新添加。
+
+Cursor 引擎需要 Node.js 22.13 或更新版本。自定义模型服务仍然只在 Codex 引擎里可用。Cursor 运行会沿用同一套设置、技能、压缩、跟进指令、写作风格和修改记录。分叉会把对话复制到新的 Cursor agent。子代理在开启并行技能时使用 Cursor 自带的 task 工具。同一条对话里的 Codex 和 Cursor 记录放在一起。用量是 Cursor 报告的本轮 token 数；只有已知窗口的模型才会显示百分比，且只是近似值。
+
 **技能。** 插件使用独立的 Codex home，会复制你的 Codex 登录信息和配置，但不包括 `~/.codex/AGENTS.md`、`personality`、`rules` 和 `memories`。**加载 Codex 本地技能**会加入 `~/.codex/skills` 和本地插件，**加载 Codex Overleaf 专属技能**会加入 `~/.codex-overleaf/skills`，两项默认都开启。
 
 **数据。** 没有云端服务，也没有遥测。任务上下文会先检查是否含有 token 和密钥，再发给 Codex 或你配置的模型服务。路径规则只决定 Codex 能写哪些文件，不会对它隐藏文件。
@@ -241,7 +253,7 @@ npm run build:content         # 打包 content script
 npm run install:managed       # 把本地构建装进托管安装
 ```
 
-content script 从 [content-entry.mjs](extension/entries/content-entry.mjs) 打包。项目没有 npm 运行时依赖：开发时使用固定版本的 esbuild，Markdown 和数学公式库直接随仓库提供。`npm run bridge` 会在 stdio 上运行 native host。
+content script 从 [content-entry.mjs](extension/entries/content-entry.mjs) 打包。Native host 通过 `@cursor/sdk` 运行可选的 Cursor 引擎。开发时使用固定版本的 esbuild，Markdown 和数学公式库直接随仓库提供。`npm run bridge` 会在 stdio 上运行 native host。
 
 | 模块 | 入口 |
 |---|---|

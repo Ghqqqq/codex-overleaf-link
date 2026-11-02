@@ -114,6 +114,10 @@
               <div class="codex-model-config-divider"></div>
               <div class="codex-model-config-section" data-speed-choice-list></div>
               <div class="codex-model-config-inputs" hidden>
+                <select data-agent-engine aria-label="Engine">
+                  <option value="codex">Codex</option>
+                  <option value="cursor">Cursor</option>
+                </select>
                 <select data-model aria-label="Model">
                   <option value="gpt-5.5">GPT-5.5</option>
                   <option value="gpt-5.4">GPT-5.4</option>

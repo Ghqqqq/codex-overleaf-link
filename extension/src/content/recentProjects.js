@@ -683,7 +683,8 @@
           method: 'codex.history.clearPlugin',
           params: {
             sessionId: records[i].id,
-            threadId: records[i].codexThreadId || ''
+            threadId: records[i].codexThreadId || '',
+            cursorAgentId: records[i].cursorAgentId || ''
           }
         });
       } catch (_error) { /* best effort: the records are already gone locally */ }
@@ -755,7 +756,8 @@
         method: 'codex.history.clearPlugin',
         params: {
           sessionId: record.id,
-          threadId: record.codexThreadId || ''
+          threadId: record.codexThreadId || '',
+          cursorAgentId: record.cursorAgentId || ''
         }
       });
       if (!response || !response.ok) {

@@ -31,6 +31,7 @@
     focusFiles,
     otWarmStart,
     codexThreadId,
+    cursorAgentId,
     customInstructions,
     skillLoadingSettings,
     enabledCodexOverleafSkillIds,
@@ -47,8 +48,10 @@
     const normalizedEnabledSkillIds = Array.isArray(enabledCodexOverleafSkillIds)
       ? enabledCodexOverleafSkillIds.filter(id => typeof id === 'string' && id.trim())
       : undefined;
+    const cursor = state.agentEngine === 'cursor';
     const params = {
       projectId: currentProjectId,
+      agentEngine: cursor ? 'cursor' : 'codex',
       mode: submittedMode || state.mode,
       task,
       project: useExistingMirror ? undefined : project,
@@ -65,7 +68,8 @@
       speedTier: state.speedTier,
       locale: locale === 'zh' ? 'zh' : 'en',
       session: state.session,
-      threadId: codexThreadId || undefined,
+      threadId: cursor ? undefined : (codexThreadId || undefined),
+      cursorAgentId: cursor ? (cursorAgentId || undefined) : undefined,
       customInstructions: normalizedCustomInstructions || undefined,
       loadCodexLocalSkills: skillLoadingSettings?.loadCodexLocalSkills !== false,
       loadCodexOverleafSkills: skillLoadingSettings?.loadCodexOverleafSkills !== false,

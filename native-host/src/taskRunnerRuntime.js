@@ -15,6 +15,9 @@ const {
   SUPPORTED_NATIVE_PROTOCOL
 } = require('../../extension/src/shared/compatibility');
 const { runCodexSession } = require('./codexSessionRunner');
+const { buildCursorRuntimeEvent, deleteCursorAgents, listCursorModels, runCursorSession } = require('./cursorSessionRunner');
+const { cursorCatalogNeedsCapabilityRefresh, enabledCursorModels, mergeCursorModels, readCursorModelCache, setAllCursorModelsEnabled, setCursorModelEnabled } = require('./cursorModelCache');
+const { getCursorCredentialStatus, redactCursorSecret, setCursorCredential } = require('./cursorCredentialStore');
 const WritingStyleRuntime = require('./writingStyleRuntime');
 const { resolveCodexModels } = require('./codexModels');
 const {
@@ -115,6 +118,17 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
 
   if (request.method === 'codex.models') {
     try {
+      if ((request.params || {}).agentEngine === 'cursor') {
+        if (cursorCatalogNeedsCapabilityRefresh(env)) {
+          try {
+            const discovered = await listCursorModels(env);
+            mergeCursorModels(discovered.models, env);
+          } catch (_error) {
+            // A stale catalog still lists the saved models. The next open retries.
+          }
+        }
+        return okResponse(request.id, enabledCursorModels(env));
+      }
       return okResponse(request.id, resolveProviderModels(
         request.params || {},
         env,
@@ -122,6 +136,38 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
       ));
     } catch (error) {
       return providerErrorResponse(request.id, error);
+    }
+  }
+
+  if (request.method === 'cursor.models') {
+    try {
+      const params = request.params || {};
+      if (params.action === 'refresh') {
+        const discovered = await listCursorModels(env);
+        const saved = mergeCursorModels(discovered.models, env);
+        return okResponse(request.id, saved);
+      }
+      if (params.action === 'disable-all') {
+        return okResponse(request.id, setAllCursorModelsEnabled(false, env));
+      }
+      if (params.action === 'set') {
+        return okResponse(request.id, setCursorModelEnabled(params, env));
+      }
+      return okResponse(request.id, readCursorModelCache(env));
+    } catch (error) {
+      return errorResponse(request.id, error.code || 'cursor_models_unavailable', redactCursorSecret(error.message, env));
+    }
+  }
+
+  if (request.method === 'cursor.credential.get') {
+    return okResponse(request.id, getCursorCredentialStatus(env));
+  }
+
+  if (request.method === 'cursor.credential.set') {
+    try {
+      return okResponse(request.id, setCursorCredential(request.params || {}, env));
+    } catch (error) {
+      return errorResponse(request.id, error.code || 'cursor_api_key_invalid', redactCursorSecret(error.message, env));
     }
   }
 
@@ -213,12 +259,21 @@ async function handleCodexRun(request, env, emit) {
   const identity = NativeRequestIdentity.validate(request.id);
   if (!identity.ok) return errorResponse(request.id, identity.error.code, identity.error.message, identity.error.details);
   let params = request.params || {};
+  if (params && typeof params === 'object') delete params.apiKey;
+  const agentEngine = params.agentEngine === 'cursor' ? 'cursor' : 'codex';
   if (params.operation === 'compact') {
-    if (typeof params.threadId !== 'string' || !params.threadId.trim() || params.threadId.length > 160
+    if (agentEngine === 'cursor') {
+      if (typeof params.cursorAgentId !== 'string' || !params.cursorAgentId.trim() || params.cursorAgentId.length > 240
+        || typeof params.projectId !== 'string' || !params.projectId.trim()) {
+        return errorResponse(request.id, 'codex_compact_thread_required', 'Compaction requires an existing project conversation.');
+      }
+      params = { ...params, cursorAgentId: params.cursorAgentId.trim(), mode: 'ask', writingStyleBuild: undefined };
+    } else if (typeof params.threadId !== 'string' || !params.threadId.trim() || params.threadId.length > 160
       || typeof params.projectId !== 'string' || !params.projectId.trim()) {
       return errorResponse(request.id, 'codex_compact_thread_required', 'Compaction requires an existing project conversation.');
+    } else {
+      params = { ...params, threadId: params.threadId.trim(), mode: 'ask', writingStyleBuild: undefined };
     }
-    params = { ...params, threadId: params.threadId.trim(), mode: 'ask', writingStyleBuild: undefined };
   }
   if (params.writingStyleBuild != null) {
     if (typeof params.writingStyleBuild !== 'object' || Array.isArray(params.writingStyleBuild)) {
@@ -233,16 +288,16 @@ async function handleCodexRun(request, env, emit) {
       writingStyleBuild: { ...params.writingStyleBuild, requestId: String(request.id) }
     };
   }
-  if (isCodexMissing(env)) {
+  if (agentEngine !== 'cursor' && isCodexMissing(env)) {
     return errorResponse(
       request.id,
       'codex_not_found',
       'Codex CLI was not found. Install Codex or make sure the `codex` command is available in your login shell.'
     );
   }
-  const codexRuntimeEvent = buildCodexRuntimeEvent(env);
-  if (codexRuntimeEvent && typeof emit === 'function') {
-    emit(codexRuntimeEvent);
+  const runtimeEvent = agentEngine === 'cursor' ? buildCursorRuntimeEvent() : buildCodexRuntimeEvent(env);
+  if (runtimeEvent && typeof emit === 'function') {
+    emit(runtimeEvent);
   }
 
   const projectKey = resolveProjectKey(params);
@@ -263,19 +318,23 @@ async function handleCodexRun(request, env, emit) {
   activeRunByProject.set(projectKey, activeEntry);
   let providerResolution;
   try {
-    try {
-      providerResolution = await resolveRunProviderForRun(params, env, {
-        signal: abortController.signal,
-        emit
-      });
-      params = {
-        ...params,
-        model: providerResolution.modelId,
-        reasoningEffort: providerResolution.reasoningEffort,
-        providerSelection: providerResolution.providerSelection
-      };
-    } catch (error) {
-      return providerErrorResponse(request.id, error);
+    if (agentEngine !== 'cursor') {
+      try {
+        providerResolution = await resolveRunProviderForRun(params, env, {
+          signal: abortController.signal,
+          emit
+        });
+        params = {
+          ...params,
+          model: providerResolution.modelId,
+          reasoningEffort: providerResolution.reasoningEffort,
+          providerSelection: providerResolution.providerSelection
+        };
+      } catch (error) {
+        return providerErrorResponse(request.id, error);
+      }
+    } else {
+      params = { ...params, agentEngine: 'cursor', providerSelection: { providerId: 'builtin', providerRevision: 0 } };
     }
 
     abortController.signal.throwIfAborted();
@@ -318,19 +377,29 @@ async function handleCodexRun(request, env, emit) {
       );
     }
 
-    const result = await runCodexSession({
+    const sessionInput = {
       params: params.useExistingMirror ? { ...params, skipMirrorSync: true } : params,
       env,
       emit,
       rootDir: env.CODEX_OVERLEAF_MIRROR_ROOT,
-      providerLaunch: providerResolution.providerLaunch,
-      onStopUnconfirmed: error => processStopBarrier.record(projectKey, env.CODEX_OVERLEAF_MIRROR_ROOT, error),
-      onProcessStarted: lifetime.trackProcess,
-      onControlReady: control => {
-        activeEntry.control = control;
-      },
       signal: abortController.signal
-    });
+    };
+    const result = agentEngine === 'cursor'
+      ? await runCursorSession({
+        ...sessionInput,
+        onControlReady: control => {
+          activeEntry.control = control;
+        }
+      })
+      : await runCodexSession({
+        ...sessionInput,
+        providerLaunch: providerResolution.providerLaunch,
+        onStopUnconfirmed: error => processStopBarrier.record(projectKey, env.CODEX_OVERLEAF_MIRROR_ROOT, error),
+        onProcessStarted: lifetime.trackProcess,
+        onControlReady: control => {
+          activeEntry.control = control;
+        }
+      });
     const syncChanges = Array.isArray(result.syncChanges) ? result.syncChanges : [];
     return okResponse(request.id, {
       ...result,
@@ -496,9 +565,31 @@ function handleCodexCancel(request, env = process.env) {
   });
 }
 
-function handleCodexHistoryClear(request, env) {
+async function handleCodexHistoryClear(request, env) {
   try {
-    return okResponse(request.id, clearPluginCodexHistory(request.params || {}, env));
+    const params = request.params || {};
+    const result = clearPluginCodexHistory(params, env);
+    const cursorIds = Array.isArray(params.cursorAgentIds)
+      ? params.cursorAgentIds
+      : (params.cursorAgentId ? [params.cursorAgentId] : []);
+    let cursor = { deleted: [], failed: [] };
+    if (cursorIds.length) {
+      try {
+        cursor = await deleteCursorAgents({
+          cursorAgentIds: cursorIds,
+          projectId: params.projectId || '',
+          env,
+          rootDir: env.CODEX_OVERLEAF_MIRROR_ROOT
+        });
+      } catch (_error) {
+        cursor = { deleted: [], failed: cursorIds.map(id => String(id || '').trim()).filter(Boolean) };
+      }
+    }
+    return okResponse(request.id, {
+      ...result,
+      cursor,
+      skipped: result.skipped === true && !cursor.deleted.length
+    });
   } catch (error) {
     return errorResponse(request.id, 'codex_history_clear_failed', error.message);
   }
@@ -707,7 +798,9 @@ function isCancellationError(error = {}) {
 }
 
 function shouldPassthroughCodexRunError(error = {}) {
-  return CODEX_RUN_PASSTHROUGH_ERROR_CODES.has(error.code) || String(error.code || '').startsWith('codex_compact_');
+  return CODEX_RUN_PASSTHROUGH_ERROR_CODES.has(error.code)
+    || String(error.code || '').startsWith('codex_compact_')
+    || String(error.code || '').startsWith('cursor_');
 }
 
 function isCodexMissing(env = process.env) {

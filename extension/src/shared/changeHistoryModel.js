@@ -86,6 +86,7 @@
           projectId, accountScopeId, sessionId: record.sessionId, turnId: record.turnId,
           createdAt: text(record.createdAt), paths, hasWrites, status, summary,
           operation: paths.length === 1 ? text(files[0]?.type) : '',
+          engine: run?.executionSnapshot?.agentEngine === 'cursor' || session?.agentEngine === 'cursor' ? 'cursor' : 'codex',
           canJump: Boolean(run && live.get(record.sessionId)?.has(record.turnId))
         };
       });

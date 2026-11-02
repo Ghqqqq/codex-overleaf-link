@@ -41,6 +41,7 @@
 
   const DEFAULT_PANEL_STATE = {
     mode: 'ask',
+    agentEngine: 'codex',
     providerId: 'builtin',
     model: 'gpt-5.4',
     reasoningEffort: 'high',
@@ -198,11 +199,20 @@
       return sessions.slice(-20);
     }
 
-    const legacySession = input.session?.id ? input.session : createSession();
+    const legacySession = input.session?.id ? input.session : createSession({
+      mode: state.mode,
+      agentEngine: state.agentEngine,
+      providerId: state.providerId,
+      model: state.model,
+      reasoningEffort: state.reasoningEffort,
+      speedTier: state.speedTier,
+      requireReviewing: state.requireReviewing
+    });
     return [normalizeSession({
       ...legacySession,
       task: state.task,
       mode: state.mode,
+      agentEngine: legacySession.agentEngine || state.agentEngine,
       providerId: state.providerId,
       model: state.model,
       reasoningEffort: state.reasoningEffort,
@@ -237,10 +247,13 @@
       runs,
       task: sanitizeAssistantVisibleText(session.task),
       mode: normalizeMode(session.mode, fallbackState.mode),
+      agentEngine: session.agentEngine === 'cursor' ? 'cursor' : 'codex',
       providerId: typeof session.providerId === 'string' && session.providerId.trim()
         ? session.providerId.trim()
         : (fallbackState.providerId || 'builtin'),
       model: typeof session.model === 'string' && session.model ? session.model : fallbackState.model,
+      cursorModel: typeof session.cursorModel === 'string' && session.cursorModel ? session.cursorModel : 'auto',
+      codexModel: typeof session.codexModel === 'string' && session.codexModel ? session.codexModel : (fallbackState.model || 'gpt-5.4'),
       reasoningEffort: VALID_REASONING.has(session.reasoningEffort)
         ? session.reasoningEffort
         : fallbackState.reasoningEffort,
@@ -252,6 +265,7 @@
       selectionContext: SelectionContext.normalize(session.selectionContext),
       projectReferenceFiles: normalizeProjectReferenceFiles(session.projectReferenceFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
+      cursorAgentId: typeof session.cursorAgentId === 'string' ? session.cursorAgentId : '',
       contextUsage: ContextUsage.normalize(session.contextUsage),
       forkedFromSessionId: typeof session.forkedFromSessionId === 'string' ? session.forkedFromSessionId : '',
       forkedFromRunId: typeof session.forkedFromRunId === 'string' ? session.forkedFromRunId : '',
@@ -316,6 +330,7 @@
     if (!active) {
       const session = createSession({
         mode: state.mode,
+        agentEngine: state.agentEngine,
         providerId: state.providerId,
         model: state.model,
         reasoningEffort: state.reasoningEffort,
@@ -333,6 +348,7 @@
       focusFiles: normalizeFocusFiles(active.focusFiles),
       projectReferenceFiles: normalizeProjectReferenceFiles(active.projectReferenceFiles),
       codexThreadId: active.codexThreadId || '',
+      cursorAgentId: active.cursorAgentId || '',
       contextUsage: ContextUsage.normalize(active.contextUsage),
       providerId: state.providerId || 'builtin'
     };
@@ -341,6 +357,7 @@
     state.focusFiles = normalizeFocusFiles(active.focusFiles);
     state.selectionContext = SelectionContext.normalize(active.selectionContext);
     state.mode = normalizeMode(active.mode);
+    state.agentEngine = active.agentEngine === 'cursor' ? 'cursor' : 'codex';
     state.requireReviewing = active.requireReviewing !== false;
 
     return state;
@@ -363,10 +380,13 @@
       runs,
       task: sanitizeAssistantVisibleText(overrides.task),
       mode: normalizeMode(overrides.mode),
+      agentEngine: overrides.agentEngine === 'cursor' ? 'cursor' : 'codex',
       providerId: typeof overrides.providerId === 'string' && overrides.providerId.trim()
         ? overrides.providerId.trim()
         : 'builtin',
       model: typeof overrides.model === 'string' && overrides.model ? overrides.model : DEFAULT_PANEL_STATE.model,
+      cursorModel: typeof overrides.cursorModel === 'string' && overrides.cursorModel ? overrides.cursorModel : 'auto',
+      codexModel: typeof overrides.codexModel === 'string' && overrides.codexModel ? overrides.codexModel : DEFAULT_PANEL_STATE.model,
       reasoningEffort: VALID_REASONING.has(overrides.reasoningEffort)
         ? overrides.reasoningEffort
         : DEFAULT_PANEL_STATE.reasoningEffort,
@@ -378,6 +398,7 @@
       selectionContext: SelectionContext.normalize(overrides.selectionContext),
       projectReferenceFiles: normalizeProjectReferenceFiles(overrides.projectReferenceFiles),
       codexThreadId: typeof overrides.codexThreadId === 'string' ? overrides.codexThreadId : '',
+      cursorAgentId: typeof overrides.cursorAgentId === 'string' ? overrides.cursorAgentId : '',
       contextUsage: ContextUsage.normalize(overrides.contextUsage),
       forkedFromSessionId: typeof overrides.forkedFromSessionId === 'string' ? overrides.forkedFromSessionId : '',
       forkedFromRunId: typeof overrides.forkedFromRunId === 'string' ? overrides.forkedFromRunId : '',
@@ -490,10 +511,14 @@
 
     const remaining = sessions.filter(session => session.id !== sessionId);
     if (!remaining.length) {
+      const removed = sessions.find(session => session.id === sessionId);
       const replacement = createSession({
         mode: state.mode,
+        agentEngine: state.agentEngine,
         providerId: state.providerId,
         model: state.model,
+        cursorModel: removed?.cursorModel,
+        codexModel: removed?.codexModel,
         reasoningEffort: state.reasoningEffort,
         speedTier: state.speedTier,
         requireReviewing: state.requireReviewing
@@ -766,6 +791,8 @@
       nativeRequestId: sanitizeAssistantVisibleText(run.nativeRequestId),
       ...(run.operation === 'compact' ? { operation: 'compact' } : {}),
       codexThreadId: sanitizeAssistantVisibleText(run.codexThreadId), codexTurnId: sanitizeAssistantVisibleText(run.codexTurnId),
+      cursorAgentId: sanitizeAssistantVisibleText(run.cursorAgentId),
+      cursorRunId: sanitizeAssistantVisibleText(run.cursorRunId),
       contextUsage: run.forkSnapshot === true ? null : ContextUsage.normalize(run.contextUsage),
       forkSnapshot: run.forkSnapshot === true,
       forkSourceRunId: sanitizeAssistantVisibleText(run.forkSourceRunId),
@@ -1222,6 +1249,7 @@
     }
     const legacySession = source.session?.id ? source.session : createSession({
       mode: source.mode,
+      agentEngine: source.agentEngine,
       model: source.model,
       reasoningEffort: source.reasoningEffort,
       speedTier: source.speedTier,
@@ -1274,10 +1302,13 @@
       runs,
       task: summarizeTextForStorage(session.task, 'task'),
       mode: normalizeMode(session.mode || fallbackState.mode),
+      agentEngine: session.agentEngine === 'cursor' ? 'cursor' : 'codex',
       providerId: typeof session.providerId === 'string' && session.providerId
         ? session.providerId
         : 'builtin',
       model: normalizeTextField(session.model || fallbackState.model || DEFAULT_PANEL_STATE.model, 80),
+      cursorModel: normalizeTextField(session.cursorModel || 'auto', 80),
+      codexModel: normalizeTextField(session.codexModel || fallbackState.model || DEFAULT_PANEL_STATE.model, 80),
       reasoningEffort: normalizeReasoning(session.reasoningEffort || fallbackState.reasoningEffort),
       speedTier: normalizeSpeedTier(session.speedTier || fallbackState.speedTier),
       requireReviewing: session.requireReviewing !== false,
@@ -1285,6 +1316,7 @@
       selectionContext: SelectionContext.normalize(session.selectionContext),
       projectReferenceFiles: normalizeProjectReferenceFiles(session.projectReferenceFiles),
       codexThreadId: typeof session.codexThreadId === 'string' ? session.codexThreadId : '',
+      cursorAgentId: typeof session.cursorAgentId === 'string' ? session.cursorAgentId : '',
       contextUsage: ContextUsage.normalize(session.contextUsage),
       forkedFromSessionId: normalizeTextField(session.forkedFromSessionId, 160),
       forkedFromRunId: normalizeTextField(session.forkedFromRunId, 160),
@@ -1389,6 +1421,8 @@
       nativeRequestId: normalizeTextField(run.nativeRequestId, 160),
       ...(run.operation === 'compact' ? { operation: 'compact' } : {}),
       codexThreadId: normalizeTextField(run.codexThreadId, 160), codexTurnId: normalizeTextField(run.codexTurnId, 160),
+      cursorAgentId: normalizeTextField(run.cursorAgentId, 240),
+      cursorRunId: normalizeTextField(run.cursorRunId, 240),
       contextUsage: run.forkSnapshot === true ? null : ContextUsage.normalize(run.contextUsage),
       forkSnapshot: run.forkSnapshot === true,
       forkSourceRunId: normalizeTextField(run.forkSourceRunId, 160),

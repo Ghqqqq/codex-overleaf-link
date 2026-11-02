@@ -18,6 +18,10 @@
     return tiers.includes('standard') ? tiers : ['standard', ...tiers];
   }
 
+  function speedChoiceVisible(speedTiers) {
+    return normalizeSpeedTiersForSelect(speedTiers).length > 1;
+  }
+
   function normalizeReasoningEffortsForSelect(efforts) {
     const allowed = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
     return Array.from(new Set((Array.isArray(efforts) ? efforts : [])
@@ -148,6 +152,7 @@
     normalizeModelOptionId,
     normalizeReasoningEffortsForSelect,
     normalizeSpeedTiersForSelect,
+    speedChoiceVisible,
     retainSelectedModel,
     preserveSelectedCapabilities,
     getRenderedModelEntries,

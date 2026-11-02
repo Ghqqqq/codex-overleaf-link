@@ -108,7 +108,7 @@
             assertCurrent();
             const response = await sendBackgroundNative({
               method: 'codex.history.clearPlugin',
-              params: { sessionId: record.id, threadId: record.codexThreadId || '' }
+              params: { sessionId: record.id, threadId: record.codexThreadId || '', cursorAgentId: record.cursorAgentId || '' }
             });
             assertCurrent();
             if (!response || !response.ok) {

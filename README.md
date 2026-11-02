@@ -7,7 +7,7 @@
     <img src="https://img.shields.io/badge/chrome-MV3-green" alt="chrome manifest v3">
     <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="node version">
     <a href="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml"><img src="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml/badge.svg" alt="tests"></a>
-    <img src="https://img.shields.io/badge/runtime%20dependencies-0-orange" alt="zero npm runtime dependencies">
+    <img src="https://img.shields.io/badge/runtime%20dependencies-1-orange" alt="one npm runtime dependency">
     <img src="https://img.shields.io/badge/license-MIT-blue" alt="license">
   </p>
   <p>English | <a href="README.zh-CN.md">简体中文</a></p>
@@ -172,6 +172,18 @@ Contributor notes on the architecture are in [docs/architecture](docs/architectu
 
 **Providers.** In **Settings → All projects → Models & connections → Add provider**, enter the base URL (HTTPS, except for localhost), the API key and the model IDs your endpoint accepts, and pick the protocol: Auto, Responses, Chat Completions or Anthropic Messages. **Test connection** sends one real request. The choice applies to the current project; other projects keep theirs. Keys are stored by the native host, and task context goes to the endpoint you chose.
 
+**Cursor API.** Cursor is a separate engine from Codex. Create a user API key at [Cursor Dashboard → API Keys](https://cursor.com/dashboard), then save it in the Overleaf panel. The key stays on this computer and is not shown again.
+
+1. Open [cursor.com/dashboard](https://cursor.com/dashboard) and choose **API Keys**.
+2. Click **Add**, name the key, and copy it once. Treat it like a password.
+3. In an Overleaf project, open **Settings → Models & connections → Add provider → Cursor**.
+4. Paste the key and click **Save key**. The new key is stored only after the panel says it was saved. If it says the extension was reloaded, refresh this Overleaf page and save again. A successful save refreshes the model list once and turns on the first five models.
+5. Double-click **Cursor** to use it for the current project. Double-click **Built-in Codex** to switch back. The choice is remembered for that chat.
+6. Use the switches to choose which models appear in the composer. **Turn all off** disables every model. **Refresh** loads the latest list and keeps switches you have already changed.
+7. **Delete Cursor** removes the saved key and the Cursor entry. Add it again from **Add provider** if you want it back.
+
+The Cursor engine needs Node.js 22.13 or newer. Custom model providers stay on the Codex engine. Cursor runs reuse the same settings, skills, compaction, steering, writing style, and change history as Built-in Codex. Fork copies the chat into a new Cursor agent. Subagents use Cursor's built-in task tool when that skill is on. Codex and Cursor turns in the same chat stay in one history. Token use is the amount Cursor reports for the turn; the percentage appears only for known model windows and is approximate.
+
 **Skills.** The plugin's Codex home copies your Codex login and config, but not `~/.codex/AGENTS.md`, `personality`, `rules` or `memories`. **Load local Codex skills** adds `~/.codex/skills` and your local plugins; **Load Codex Overleaf skills** adds `~/.codex-overleaf/skills`. Both are on by default.
 
 **Data.** There is no hosted backend and no telemetry. Task context goes to Codex or to the provider you configured, after a check for tokens and keys. Path rules decide what Codex may write; they don't hide files from it.
@@ -241,7 +253,7 @@ npm run build:content         # bundle the content script
 npm run install:managed       # put a local build into the managed install
 ```
 
-The content script is bundled from [content-entry.mjs](extension/entries/content-entry.mjs). There are no npm runtime dependencies: development uses a pinned esbuild, and the Markdown and math libraries are vendored. `npm run bridge` runs the native host on stdio.
+The content script is bundled from [content-entry.mjs](extension/entries/content-entry.mjs). The Native host depends on `@cursor/sdk` for the optional Cursor engine. Development uses a pinned esbuild, and the Markdown and math libraries are vendored. `npm run bridge` runs the native host on stdio.
 
 | Area | Entry points |
 |---|---|

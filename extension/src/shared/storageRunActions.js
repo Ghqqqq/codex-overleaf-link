@@ -262,7 +262,7 @@
     var normalize = typeof normalizeString === 'function' ? normalizeString : String;
     var compact = {};
     var fields = ['schemaVersion', 'mode', 'providerId', 'providerRevision', 'model',
-      'reasoningEffort', 'speedTier', 'autoRecompile', 'requireReviewing', 'capturedAt', 'source'];
+      'reasoningEffort', 'speedTier', 'autoRecompile', 'requireReviewing', 'capturedAt', 'source', 'agentEngine'];
     for (var key of fields) {
       if (!Object.prototype.hasOwnProperty.call(snapshot, key)) continue;
       var value = snapshot[key];

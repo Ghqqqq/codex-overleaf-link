@@ -21,12 +21,42 @@ function buildRuntimeFileManifest(options = {}) {
     ...bootstrapPayloadEntries(packageRoot),
     fileEntry(packageRoot, 'scripts/codex-json-agent.mjs'),
     fileEntry(packageRoot, 'scripts/install-native-host.mjs'),
-    fileEntry(packageRoot, 'scripts/uninstall-native-host.mjs')
+    fileEntry(packageRoot, 'scripts/uninstall-native-host.mjs'),
+    ...cursorSdkModuleEntries(packageRoot)
   ];
 
   return files
-    .filter((entry) => !allowedFiles || allowedFiles.has(entry.sourceRelativePath || entry.relativePath))
+    .filter((entry) => {
+      const relativePath = entry.sourceRelativePath || entry.relativePath;
+      if (String(relativePath).startsWith('node_modules/')) return true;
+      return !allowedFiles || allowedFiles.has(relativePath);
+    })
     .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+
+function cursorSdkModuleEntries(packageRoot) {
+  const sourceRoot = path.join(packageRoot, 'node_modules');
+  const seen = new Set();
+  const entries = [];
+  const visit = name => {
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    const relativeDir = path.posix.join('node_modules', name);
+    const pkgPath = path.join(packageRoot, relativeDir, 'package.json');
+    if (!fs.existsSync(pkgPath)) return;
+    entries.push(...directoryEntries(packageRoot, relativeDir));
+    let pkg = {};
+    try {
+      pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    } catch (_error) {
+      pkg = {};
+    }
+    for (const dependency of [...Object.keys(pkg.dependencies || {}), ...Object.keys(pkg.peerDependencies || {})]) {
+      visit(dependency);
+    }
+  };
+  visit('@cursor/sdk');
+  return entries;
 }
 
 // Source packages hold one authoritative Bootstrap tree. Materialize its copy
@@ -108,7 +138,7 @@ function installRuntimeFromPackage(options = {}) {
   try {
     copyRuntimeFiles(packageRoot, stagingRoot);
     writeRuntimeMarker(stagingRoot, packageRoot);
-    verifyInstalledRuntime(stagingRoot, options.verifyRuntime);
+    verifyInstalledRuntime(stagingRoot, options.verifyRuntime, packageRoot);
 
     let rollbackCreated = false;
     if (fs.existsSync(runtimeRoot)) {
@@ -199,7 +229,7 @@ function writeRuntimeMarker(runtimeRoot, packageRoot) {
   fs.writeFileSync(path.join(runtimeRoot, MARKER_FILE), `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
 }
 
-function verifyInstalledRuntime(stagingRoot, verifyRuntime) {
+function verifyInstalledRuntime(stagingRoot, verifyRuntime, packageRoot) {
   if (typeof verifyRuntime === 'function') {
     verifyRuntime(stagingRoot);
     return;
@@ -210,6 +240,9 @@ function verifyInstalledRuntime(stagingRoot, verifyRuntime) {
     'native-host/src/index.js',
     'scripts/codex-json-agent.mjs'
   ];
+  if (packageRoot && cursorSdkModuleEntries(packageRoot).length) {
+    requiredFiles.push('node_modules/@cursor/sdk/package.json');
+  }
   for (const relativePath of requiredFiles) {
     if (!fs.existsSync(path.join(stagingRoot, relativePath))) {
       throw new Error(`Runtime verification failed; missing ${relativePath}`);
@@ -375,6 +408,7 @@ function cleanupRollback(rollbackRoot, injectedCleanupRollback) {
 module.exports = {
   DEFAULT_RUNTIME_ROOT,
   buildRuntimeFileManifest,
+  cursorSdkModuleEntries,
   assertSafeManagedRuntimeRoot,
   installRuntimeFromPackage,
   uninstallManagedRuntime,

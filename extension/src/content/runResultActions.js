@@ -47,9 +47,10 @@
       const existing = root.querySelector('[data-run-fork]');
       const button = existing.cloneNode(true);
       existing.replaceWith(button);
+      const cursor = run.executionSnapshot?.agentEngine === 'cursor';
       const available = run.forkSnapshot !== true
         && run.status !== 'running'
-        && Boolean(run.codexTurnId)
+        && (cursor ? Boolean(run.cursorRunId || run.cursorAgentId) : Boolean(run.codexTurnId))
         && typeof forkRunFromNode === 'function';
       button.hidden = false;
       button.disabled = !available;

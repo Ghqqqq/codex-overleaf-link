@@ -133,13 +133,18 @@
       }
       if (getDraftScope?.() !== draftScope) return;
     }
+    const current = getState();
+    const activeSession = getActiveSession(current) || {};
     const session = createSession({
-      mode: getState().mode,
-      providerId: getState().providerId || 'builtin',
-      model: getState().model,
-      reasoningEffort: getState().reasoningEffort,
-      speedTier: getState().speedTier,
-      requireReviewing: getState().requireReviewing
+      mode: current.mode,
+      agentEngine: current.agentEngine,
+      providerId: current.providerId || 'builtin',
+      model: current.model,
+      cursorModel: activeSession.cursorModel,
+      codexModel: activeSession.codexModel,
+      reasoningEffort: current.reasoningEffort,
+      speedTier: current.speedTier,
+      requireReviewing: current.requireReviewing
     });
     setState(normalizePanelState({
       ...getState(),
@@ -242,7 +247,8 @@
         method: 'codex.history.clearPlugin',
         params: {
           sessionId,
-          threadId: target.codexThreadId || ''
+          threadId: target.codexThreadId || '',
+          cursorAgentId: target.cursorAgentId || ''
         }
       });
       if (!response?.ok) {

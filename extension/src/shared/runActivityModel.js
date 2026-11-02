@@ -71,17 +71,20 @@
     ['workspace', /^(?:Syncing the Overleaf project into the local Codex workspace(?:: (\d+))?|正在同步 Overleaf 项目到本地 Codex workspace：(\d+)|Synced (\d+) text files\.|已同步 (\d+) 个文本文件)/],
     ['codex', /^(?:Local Codex session is starting\.|本地 Codex session 开始运行。)$/],
     ['codex', /^Using Codex CLI ([^;\s]+?)(?:;|\.?$)/],
+    ['cursor', /^Using Cursor SDK ([^;\s]+?)(?:;|\.?$)/],
     ['hidden', /^Disabled non-Overleaf Codex skills/]
   ];
   function captureSetup(event, type, detail, sanitize) {
     const title = text(event.title).trim();
     let step = type.startsWith('overleaf.sync.') && type !== 'overleaf.sync.changes' ? 'workspace'
-      : type === 'codex.runtime.selected' ? 'codex' : type === 'codex.skill_isolation.applied' ? 'hidden' : '';
+      : type === 'codex.runtime.selected' ? 'codex'
+        : type === 'cursor.runtime.selected' ? 'cursor'
+          : type === 'codex.skill_isolation.applied' ? 'hidden' : '';
     let match = null;
     if (!step) for (const [name, pattern] of SETUP_TITLES) if ((match = pattern.exec(title))) { step = name; break; }
     if (!step) return undefined;
     const fileCount = Number(detail.fileCount) || Number(match?.slice(1).find(Boolean)) || undefined;
-    const version = text(detail.version) || (step === 'codex' && match?.[1]) || '';
+    const version = text(detail.version) || ((step === 'codex' || step === 'cursor') && match?.[1]) || '';
     return normalize({ kind: 'lifecycle', target: 'setup.' + step, state: event.status === 'running' ? 'running' : 'completed',
       written: Number.isSafeInteger(fileCount) ? fileCount : undefined, output: version }, sanitize);
   }

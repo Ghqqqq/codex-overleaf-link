@@ -42,6 +42,7 @@
       // Old queued tasks never opted into a later selection or style profile.
       // These references cannot be inferred from the current composer.
       else if (field === 'writingStyle' || field === 'selectionContext') captured[field] = null;
+      else if (field === 'agentEngine') captured[field] = 'codex';
       else {
         captured[field] = Codec.cloneValue(fallback[field]);
         inferred = true;
@@ -114,7 +115,8 @@
       requireReviewing: snapshot.requireReviewing,
       focusFiles: [...snapshot.focusFiles],
       selectionContext: snapshot.selectionContext ? { ...snapshot.selectionContext } : null,
-      writingStyle: snapshot.writingStyle ? { ...snapshot.writingStyle } : null
+      writingStyle: snapshot.writingStyle ? { ...snapshot.writingStyle } : null,
+      agentEngine: snapshot.agentEngine === 'cursor' ? 'cursor' : 'codex'
     };
   }
 
@@ -152,6 +154,7 @@
       reasoningEffort: snapshot.reasoningEffort,
       speedTier: snapshot.speedTier,
       mode: snapshot.mode,
+      agentEngine: snapshot.agentEngine === 'cursor' ? 'cursor' : 'codex',
       focusFiles: [...snapshot.focusFiles],
       selectionContext: snapshot.selectionContext ? { ...snapshot.selectionContext } : null
     };

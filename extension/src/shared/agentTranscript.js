@@ -283,8 +283,13 @@
     return locale === 'en' ? en : zh;
   }
 
+  function engineLabel(options = {}) {
+    return options.engine === 'cursor' ? 'Cursor' : 'Codex';
+  }
+
   function mapAgentEventToActivity(event = {}, options = {}) {
     const locale = normalizeLocale(options);
+    const engine = engineLabel(options);
     const type = String(event.type || '');
 
     if (type === 'codex.local_skills.missing' || type === 'codex.local_skill_invocation.ignored') {
@@ -296,7 +301,7 @@
     }
 
     if (isContextCompactionEvent(event)) {
-      return formatContextCompactionCheckpoint(event, locale);
+      return formatContextCompactionCheckpoint(event, locale, engine);
     }
 
     if (type === 'overleaf.sync.started') {
@@ -340,7 +345,7 @@
     }
 
     if (type === 'codex.session.event' || type === 'codex.session.request') {
-      return mapCodexSessionEvent(event, locale);
+      return mapCodexSessionEvent(event, locale, engine);
     }
 
     if (type === 'agent.snapshot.preparing') {
@@ -417,7 +422,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, 'Codex 已整理出本轮结果，正在生成报告。', 'Codex prepared this task result and is generating the report.'),
+        title: textFor(locale, `${engine} 已整理出本轮结果，正在生成报告。`, `${engine} prepared this task result and is generating the report.`),
         status: 'completed',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -519,12 +524,12 @@
     return { ...base, status: event.status || 'running', title: label };
   }
 
-  function mapCodexSessionEvent(event, locale) {
+  function mapCodexSessionEvent(event, locale, engine = 'Codex') {
     const method = String(event.detail?.method || event.title || '');
     const params = event.detail?.params || {};
 
     if (isContextCompactionEvent(event)) {
-      return formatContextCompactionCheckpoint(event, locale);
+      return formatContextCompactionCheckpoint(event, locale, engine);
     }
 
     if (event.type === 'codex.session.request') {
@@ -541,7 +546,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, '本地 Codex session 已创建。', 'Local Codex session created.'),
+        title: textFor(locale, `本地 ${engine} session 已创建。`, `Local ${engine} session created.`),
         status: 'completed',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -550,7 +555,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, 'Codex 开始处理这轮请求。', 'Codex started processing this request.'),
+        title: textFor(locale, `${engine} 开始处理这轮请求。`, `${engine} started processing this request.`),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -559,7 +564,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, 'Codex 完成本地处理，正在准备同步改动。', 'Codex finished local processing and is preparing to sync changes.'),
+        title: textFor(locale, `${engine} 完成本地处理，正在准备同步改动。`, `${engine} finished local processing and is preparing to sync changes.`),
         status: 'completed',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -580,14 +585,14 @@
         kind: 'activity',
         visible: true,
         title: changedFiles
-          ? textFor(locale, `Codex 更新了本地文件差异：${changedFiles} 个文件。`, `Codex updated local file diffs: ${changedFiles} file(s).`)
-          : textFor(locale, 'Codex 更新了本地文件差异。', 'Codex updated local file diffs.'),
+          ? textFor(locale, `${engine} 更新了本地文件差异：${changedFiles} 个文件。`, `${engine} updated local file diffs: ${changedFiles} file(s).`)
+          : textFor(locale, `${engine} 更新了本地文件差异。`, `${engine} updated local file diffs.`),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
     }
     if (method === 'item/started' || method === 'item/completed') {
-      return mapThreadItemEvent(params.item, method === 'item/started', event, locale);
+      return mapThreadItemEvent(params.item, method === 'item/started', event, locale, engine);
     }
     if (method === 'item/agentMessage/delta' || method === 'item/reasoning/summaryTextDelta') {
       const title = cleanStreamDeltaText(
@@ -620,8 +625,8 @@
         kind: 'activity',
         visible: true,
         title: files.length
-          ? textFor(locale, `Codex 正在修改本地文件：${formatFilesInline(files, locale)}。`, `Codex is editing local files: ${formatFilesInline(files, locale)}.`)
-          : textFor(locale, 'Codex 正在修改本地文件。', 'Codex is editing local files.'),
+          ? textFor(locale, `${engine} 正在修改本地文件：${formatFilesInline(files, locale)}。`, `${engine} is editing local files: ${formatFilesInline(files, locale)}.`)
+          : textFor(locale, `${engine} 正在修改本地文件。`, `${engine} is editing local files.`),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -630,7 +635,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, 'Codex 正在写入本地文件。', 'Codex is writing local files.'),
+        title: textFor(locale, `${engine} 正在写入本地文件。`, `${engine} is writing local files.`),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -639,7 +644,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, 'Codex 已切换到可用模型继续运行。', 'Codex switched to an available model and continued.'),
+        title: textFor(locale, `${engine} 已切换到可用模型继续运行。`, `${engine} switched to an available model and continued.`),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -663,20 +668,20 @@
     return Boolean(deps.RunActivityModel.contextCompactionState(event));
   }
 
-  function formatContextCompactionCheckpoint(event = {}, locale = 'en') {
+  function formatContextCompactionCheckpoint(event = {}, locale = 'en', engine = 'Codex') {
     const running = deps.RunActivityModel.contextCompactionState(event) === 'running';
     return {
       kind: 'checkpoint',
       visible: true,
       title: running
-        ? textFor(locale, '正在压缩上下文，Codex 会继续处理。', 'Compacting context; Codex will continue.')
-        : textFor(locale, '上下文已压缩，Codex 继续处理。', 'Context compacted; Codex continued.'),
+        ? textFor(locale, `正在压缩上下文，${engine} 会继续处理。`, `Compacting context; ${engine} will continue.`)
+        : textFor(locale, `上下文已压缩，${engine} 继续处理。`, `Context compacted; ${engine} continued.`),
       status: running ? 'running' : 'completed',
       technicalDetail: normalizeRawEvent(event)
     };
   }
 
-  function mapThreadItemEvent(item = {}, started, event, locale) {
+  function mapThreadItemEvent(item = {}, started, event, locale, engine = 'Codex') {
     const status = started ? 'running' : (item.status === 'failed' ? 'failed' : 'completed');
     if (item.type === 'agentMessage') {
       const title = cleanVisibleText(item.text || '');
@@ -709,7 +714,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: started ? textFor(locale, 'Codex 正在分析。', 'Codex is analyzing.') : textFor(locale, 'Codex 完成了一段分析。', 'Codex completed an analysis step.'),
+        title: started ? textFor(locale, `${engine} 正在分析。`, `${engine} is analyzing.`) : textFor(locale, `${engine} 完成了一段分析。`, `${engine} completed an analysis step.`),
         status,
         technicalDetail: normalizeRawEvent(event)
       };
@@ -719,7 +724,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: title || textFor(locale, 'Codex 更新了计划。', 'Codex updated its plan.'),
+        title: title || textFor(locale, `${engine} 更新了计划。`, `${engine} updated its plan.`),
         status,
         technicalDetail: normalizeRawEvent(event)
       };
@@ -746,11 +751,11 @@
         visible: true,
         title: files.length
           ? (started
-            ? textFor(locale, `Codex 正在修改本地文件：${formatFilesInline(files, locale)}。`, `Codex is editing local files: ${formatFilesInline(files, locale)}.`)
-            : textFor(locale, `Codex 已修改本地文件：${formatFilesInline(files, locale)}。`, `Codex edited local files: ${formatFilesInline(files, locale)}.`))
+            ? textFor(locale, `${engine} 正在修改本地文件：${formatFilesInline(files, locale)}。`, `${engine} is editing local files: ${formatFilesInline(files, locale)}.`)
+            : textFor(locale, `${engine} 已修改本地文件：${formatFilesInline(files, locale)}。`, `${engine} edited local files: ${formatFilesInline(files, locale)}.`))
           : (started
-            ? textFor(locale, 'Codex 正在修改本地文件。', 'Codex is editing local files.')
-            : textFor(locale, 'Codex 已完成本地文件修改。', 'Codex finished local file edits.')),
+            ? textFor(locale, `${engine} 正在修改本地文件。`, `${engine} is editing local files.`)
+            : textFor(locale, `${engine} 已完成本地文件修改。`, `${engine} finished local file edits.`)),
         status,
         technicalDetail: normalizeRawEvent(event)
       };

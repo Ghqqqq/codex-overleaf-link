@@ -41,7 +41,7 @@ The Page RPC names are `listReferenceProjects`, `getReferenceProjectSnapshot`, a
 [pageRpcContract](../../extension/src/shared/pageRpcContract.js) classifies the first two as safely retryable reads and cancellation as idempotent control.
 Catalog and reference reads do not require the current editor's project identity; `readProject(params.projectId)` validates the actual reference target.
 Reference reads are cancelled through a separate `requestId`; their cancellation path cannot be inferred from the generic `content_abort` flag.
-Native configuration requests are `writing-style.get/set`; generation reuses `codex.run`, routing through `params.writingStyleBuild`.
+Native configuration requests are `writing-style.get/set`; generation reuses `codex.run`, routing through `params.writingStyleBuild`. A Cursor-engine build passes a Cursor `execute` adapter into `WritingStyleRuntime.build`, creating a fresh agent whose cwd is the staging directory.
 
 ## From Reference Draft to Subsequent Run
 

@@ -65,5 +65,8 @@
   ],
   "devDependencies": {
     "esbuild": "0.28.1"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.2.0"
   }
 }

@@ -149,6 +149,7 @@
     instance.document.documentElement.appendChild(root);
     instance.root = root;
     root.addEventListener('click', event => handleClick(instance, event));
+    root.addEventListener('dblclick', event => handleDoubleClick(instance, event));
     root.addEventListener('input', event => handleInput(instance, event));
     root.addEventListener('change', event => handleInput(instance, event));
     root.addEventListener('keydown', event => handleKeydown(instance, event));
@@ -178,6 +179,7 @@
       else instance.root.showModal?.();
     }
     if (presentation.preserveDraft) return;
+    refreshCursorPresence(instance);
     queueMicrotask(() => {
       if (!instance.root || instance.root.hidden || instance.root.closest('[hidden]')) return;
       const target = instance.root.querySelector('[data-provider-row][aria-current="true"]')
@@ -218,6 +220,7 @@
         : instance.catalog.activeProviderId
     );
     instance.selectedId = nextId || 'builtin';
+    instance.cursorSetup = false;
     instance.draft = null;
     instance.dirty = false;
     delete instance.root.dataset.dirty;
@@ -278,11 +281,13 @@
 
   function renderProviderList(instance) {
     const tx = instance.tx, list = instance.root.querySelector('[data-provider-list]');
+    const cursorEngine = instance.callbacks.getAgentEngine?.() === 'cursor';
+    const showCursor = instance.cursorKeyConfigured === true;
     list.innerHTML = '<label class="codex-provider-search"><span class="codex-provider-sr-only">'
       + escapeHtml(tx('Search providers', '搜索服务')) + '</span><input type="search" data-provider-search value="'
       + escapeAttr(instance.providerFilter) + '" placeholder="' + escapeAttr(tx('Search providers', '搜索服务')) + '"></label>'
       + '<div class="codex-provider-nav-items">' + instance.catalog.providers.map(provider => {
-        const active = provider.id === getCurrentProjectProviderId(instance);
+        const active = !cursorEngine && provider.id === getCurrentProjectProviderId(instance);
         const subtitle = active ? tx('Current project', '当前项目') : provider.kind === 'builtin'
           ? tx('Local authentication', '本地身份验证')
           : tx(provider.models.length + ' models', provider.models.length + ' 个模型');
@@ -296,8 +301,59 @@
           + '<span class="codex-provider-nav-copy"><span class="codex-provider-row-main" title="' + escapeAttr(provider.name) + '">' + escapeHtml(provider.name)
           + '</span><span class="codex-provider-row-status" data-tone="' + (active ? 'active' : 'muted') + '">'
           + escapeHtml(subtitle) + '</span></span></button>';
-      }).join('') + '</div><button type="button" class="codex-provider-add" data-provider-action="add">+ '
+      }).join('') + (showCursor ? renderCursorListRow(instance, cursorEngine) : '') + '</div><button type="button" class="codex-provider-add" data-provider-action="add">+ '
       + escapeHtml(tx('Add provider', '添加模型服务')) + '</button>';
+  }
+
+  function renderCursorListRow(instance, cursorEngine) {
+    const tx = instance.tx;
+    const searchText = 'cursor';
+    const subtitle = cursorEngine
+      ? tx('Current project', '当前项目')
+      : tx('Local Cursor agent', '本机 Cursor agent');
+    return '<button type="button" class="codex-provider-row" data-provider-row="cursor-engine" data-provider-search-text="'
+      + searchText + '" aria-current="' + String(instance.selectedId === 'cursor-engine') + '"'
+      + (searchText.includes(instance.providerFilter.toLowerCase()) ? '' : ' hidden') + '>'
+      + '<span class="codex-provider-nav-mark" aria-hidden="true">' + renderProviderTemplateIcon({ id: 'cursor', short: 'C' }) + '</span>'
+      + '<span class="codex-provider-nav-copy"><span class="codex-provider-row-main" title="Cursor">Cursor</span>'
+      + '<span class="codex-provider-row-status" data-tone="' + (cursorEngine ? 'active' : 'muted') + '">'
+      + escapeHtml(subtitle) + '</span></span></button>';
+  }
+
+  function refreshCursorPresence(instance) {
+    Promise.resolve(instance.callbacks.onCursorKeyStatus?.()).then(configured => {
+      if (!instance.root || instance.root.hidden) return;
+      const saved = configured === true;
+      const changed = instance.cursorInstalled !== saved;
+      instance.cursorKeyConfigured = saved;
+      instance.cursorInstalled = saved;
+      if (!saved && instance.callbacks.getAgentEngine?.() === 'cursor') {
+        Promise.resolve(instance.callbacks.onLeaveCursor?.()).catch(() => {});
+      }
+      if (!changed) {
+        if (instance.cursorSetup) refreshCursorKeyNote(instance, saved);
+        return;
+      }
+      if (instance.templatePicker || instance.cursorSetup) return;
+      render(instance);
+    }).catch(() => {});
+  }
+
+  async function showCursorEngine(instance) {
+    if (instance.cursorSetup) return;
+    if (instance.dirty && !await confirmProviderAction(instance, instance.tx(
+      'Discard unsaved provider changes?',
+      '放弃尚未保存的模型服务配置吗？'
+    ))) return;
+    instance.templatePicker = false;
+    instance.cursorSetup = true;
+    instance.selectedId = 'cursor-engine';
+    instance.draft = null;
+    instance.dirty = false;
+    delete instance.root.dataset.dirty;
+    render(instance);
+    refreshCursorKeyNote(instance);
+    instance.root.querySelector('[data-cursor-engine-key]')?.focus();
   }
 
   // Render a detached reference, then change only owned copy in the live DOM.
@@ -342,6 +398,7 @@
   function renderDetail(instance) {
     const detail = instance.root.querySelector('[data-provider-detail]');
     if (instance.templatePicker) { renderTemplatePicker(instance, detail); return; }
+    if (instance.cursorSetup) { renderCursorDetail(instance, detail); return; }
     const provider = getSelectedProvider(instance);
     if (!provider || provider.kind === 'builtin') {
       renderBuiltinDetail(instance, detail);
@@ -577,9 +634,143 @@
     renderModelList(instance);
   }
 
+  function renderCursorDetail(instance, detail) {
+    const tx = instance.tx;
+    const active = instance.callbacks.getAgentEngine?.() === 'cursor';
+    const saved = instance.cursorKeyConfigured === true;
+    detail.innerHTML = `
+      <div class="codex-provider-detail-titleline">
+        <div>
+          <h3>Cursor</h3>
+          <p>${escapeHtml(tx(
+            'Maintain the Cursor API key for this computer, then choose it for the current project.',
+            '在这台电脑上维护 Cursor API 密钥，并选择当前项目是否使用它。'
+          ))}</p>
+        </div>
+        ${active ? `<span class="codex-provider-active-badge">${escapeHtml(tx('Current project', '当前项目'))}</span>` : ''}
+      </div>
+      <label class="codex-provider-field codex-provider-field--wide">
+        <span>${escapeHtml(tx('Cursor API key', 'Cursor API 密钥'))}</span>
+        <div class="codex-provider-secret-row">
+          <input type="password" data-cursor-engine-key autocomplete="new-password" spellcheck="false" placeholder="${escapeAttr(saved
+            ? tx('Configured; enter a new key to replace it', '已配置；输入新密钥即可替换')
+            : tx('Paste the Cursor API key', '粘贴 Cursor API 密钥'))}">
+          <button type="button" class="codex-provider-inline-button" data-provider-action="toggle-cursor-key">${escapeHtml(tx('Show', '显示'))}</button>
+          <button type="button" class="codex-provider-inline-button" data-provider-action="clear-cursor-key"${saved ? '' : ' hidden'}>${escapeHtml(tx('Clear', '清除'))}</button>
+        </div>
+        <small data-cursor-key-note>${escapeHtml(saved
+          ? tx('API key saved locally. The plaintext is never returned to the Extension.', 'API 密钥已保存在本地。扩展不会读回密钥明文。')
+          : tx('No Cursor API key is currently stored.', '当前未存储 Cursor API 密钥。'))}</small>
+      </label>
+      <div class="codex-provider-test-row">
+        <button type="button" class="codex-provider-secondary-button" data-provider-action="save-cursor-key">${escapeHtml(tx('Save key', '保存密钥'))}</button>
+        ${saved ? `<button type="button" class="codex-provider-danger-button" data-provider-action="delete-cursor-agent">${escapeHtml(tx('Delete Cursor', '删除 Cursor'))}</button>` : ''}
+        ${instance.callbacks.hasCurrentProject?.() === false || active ? ''
+          : `<button type="button" class="codex-provider-primary-button" data-provider-action="activate-cursor">${escapeHtml(tx('Use for this project', '用于当前项目'))}</button>`}
+      </div>
+      <section class="codex-provider-model-section">
+        <div class="codex-provider-section-head"><div><h4>${escapeHtml(tx('Models', '模型'))}</h4>
+          <p>${escapeHtml(tx('Enabled models appear in this chat. Refresh loads the latest Cursor list; otherwise the saved switches are used.', '打开的模型会出现在这个聊天里。点刷新才加载 Cursor 的最新列表，否则使用已保存的开关。'))}</p></div>
+          <button type="button" class="codex-provider-inline-button" data-provider-action="disable-cursor-models">${escapeHtml(tx('Turn all off', '全部关闭'))}</button>
+          <button type="button" class="codex-provider-inline-button" data-provider-action="refresh-cursor-models">${escapeHtml(tx('Refresh', '刷新'))}</button>
+        </div>
+        <div class="codex-provider-model-list" data-cursor-model-list></div>
+      </section>
+    `;
+    loadCursorModelList(instance, false);
+  }
+
+  function cursorActionError(instance, error, english, chinese) {
+    const message = String(error?.message || '');
+    if (/context invalidated/i.test(message)) {
+      return instance.tx(
+        'The extension was reloaded, so the key was not saved. Refresh this Overleaf page, then save the key again.',
+        '扩展已重新加载，密钥没有写入。请刷新这个 Overleaf 页面，然后重新保存密钥。'
+      );
+    }
+    return message || instance.tx(english, chinese);
+  }
+
+  function loadCursorModelList(instance, refresh) {
+    const host = instance.root?.querySelector('[data-cursor-model-list]');
+    if (!host) return;
+    if (refresh) host.textContent = instance.tx('Loading models…', '正在加载模型…');
+    const apply = payload => {
+      if (!instance.cursorSetup || !instance.root?.querySelector('[data-cursor-model-list]')) return;
+      const models = Array.isArray(payload) ? payload : payload?.models;
+      instance.cursorModels = Array.isArray(models) ? models : [];
+      renderCursorModelList(instance);
+      instance.callbacks.onCursorModelsChanged?.();
+    };
+    const fail = error => {
+      if (!instance.cursorSetup) return;
+      const current = instance.root?.querySelector('[data-cursor-model-list]');
+      if (current) current.textContent = cursorActionError(instance, error, 'Models could not be loaded.', '模型无法加载。');
+    };
+    if (refresh) {
+      Promise.resolve(instance.callbacks.onRefreshCursorModels?.()).then(apply).catch(fail);
+      return;
+    }
+    Promise.resolve(instance.callbacks.onReadCursorModels?.()).then(cached => {
+      const models = Array.isArray(cached?.models) ? cached.models : [];
+      const needsFirstLoad = instance.cursorKeyConfigured === true && cached?.customized !== true && !models.some(model => model.enabled === true);
+      if (!needsFirstLoad) {
+        apply(models);
+        return;
+      }
+      if (host) host.textContent = instance.tx('Loading models…', '正在加载模型…');
+      return Promise.resolve(instance.callbacks.onRefreshCursorModels?.()).then(apply);
+    }).catch(fail);
+  }
+
+  function renderCursorModelList(instance) {
+    const host = instance.root?.querySelector('[data-cursor-model-list]');
+    if (!host) return;
+    const models = instance.cursorModels || [];
+    if (!models.length) {
+      host.textContent = instance.tx('No cached models yet. Click Refresh to load them.', '还没有缓存的模型。点刷新后再加载。');
+      return;
+    }
+    host.innerHTML = models.map(model => {
+      const id = String(model.id || '');
+      const label = String(model.label || id);
+      const enabled = model.enabled !== false;
+      return '<label class="codex-provider-model-row"><span>' + escapeHtml(label) + '</span>'
+        + '<input type="checkbox" class="codex-switch" data-cursor-model-toggle="' + escapeAttr(id) + '"'
+        + (enabled ? ' checked' : '') + '></label>';
+    }).join('');
+  }
+
+  function refreshCursorKeyNote(instance, configured) {
+    const apply = value => {
+      instance.cursorKeyConfigured = value === true;
+      if (!instance.cursorSetup) return;
+      const note = instance.root?.querySelector('[data-cursor-key-note]');
+      const input = instance.root?.querySelector('[data-cursor-engine-key]');
+      const clear = instance.root?.querySelector('[data-provider-action="clear-cursor-key"]');
+      if (note) {
+        note.textContent = instance.cursorKeyConfigured
+          ? instance.tx('API key saved locally. The plaintext is never returned to the Extension.', 'API 密钥已保存在本地。扩展不会读回密钥明文。')
+          : instance.tx('No Cursor API key is currently stored.', '当前未存储 Cursor API 密钥。');
+      }
+      if (input && !input.value) {
+        input.placeholder = instance.cursorKeyConfigured
+          ? instance.tx('Configured; enter a new key to replace it', '已配置；输入新密钥即可替换')
+          : instance.tx('Paste the Cursor API key', '粘贴 Cursor API 密钥');
+      }
+      if (clear) clear.hidden = !instance.cursorKeyConfigured;
+    };
+    if (typeof configured === 'boolean') {
+      apply(configured);
+      return;
+    }
+    Promise.resolve(instance.callbacks.onCursorKeyStatus?.()).then(apply).catch(() => apply(false));
+  }
+
   function renderBuiltinDetail(instance, detail) {
     const tx = instance.tx;
-    const active = getCurrentProjectProviderId(instance) === 'builtin';
+    const active = instance.callbacks.getAgentEngine?.() !== 'cursor'
+      && getCurrentProjectProviderId(instance) === 'builtin';
     detail.innerHTML = `
       <div class="codex-provider-builtin">
         <span class="codex-provider-builtin-mark" aria-hidden="true">
@@ -609,7 +800,7 @@
     const actions = instance.root.querySelector('[data-provider-footer-actions]');
     const provider = getSelectedProvider(instance);
     const tx = instance.tx;
-    if (instance.templatePicker || !provider || provider.kind === 'builtin') {
+    if (instance.templatePicker || instance.cursorSetup || !provider || provider.kind === 'builtin') {
       actions.innerHTML = instance.embedded ? '' : `<button type="button" class="codex-provider-secondary-button" data-provider-action="close">${escapeHtml(tx('Close', '关闭'))}</button>`;
       return;
     }
@@ -655,6 +846,33 @@
     };
   }
 
+  async function handleDoubleClick(instance, event) {
+    const row = event.target.closest('[data-provider-row]');
+    if (!row || instance.templatePicker) return;
+    event.preventDefault();
+    if (row.dataset.providerRow === 'cursor-engine') {
+      const configured = instance.cursorKeyConfigured === true || await instance.callbacks.onCursorKeyStatus?.();
+      if (!configured) {
+        showCursorEngine(instance);
+        setStatus(instance, {
+          tone: 'failed',
+          title: instance.tx('Save a Cursor API key before using Cursor for this project.', '用于当前项目前，请先保存 Cursor API 密钥。')
+        });
+        return;
+      }
+      await instance.callbacks.onActivateCursor?.();
+      instance.cursorInstalled = true;
+      instance.cursorSetup = true;
+      instance.selectedId = 'cursor-engine';
+      render(instance);
+      setStatus(instance, { tone: 'success', title: instance.tx('Cursor is used for this project.', '当前项目将使用 Cursor。') });
+      return;
+    }
+    if (row.dataset.providerRow === 'builtin') {
+      await instance.callbacks.onActivateBuiltin?.();
+    }
+  }
+
   async function handleClick(instance, event) {
     const answer = event.target.closest('[data-provider-confirm-answer]');
     if (answer) {
@@ -665,6 +883,11 @@
     if (instance.confirmation) return;
     const template = event.target.closest('[data-provider-template]');
     if (template && (!instance.busy || instance.busy === 'failed')) {
+      if (template.dataset.providerTemplate === 'cursor') {
+        showCursorEngine(instance);
+        return;
+      }
+      instance.cursorSetup = false;
       instance.draft = instance.Profiles.buildPresetDraft(template.dataset.providerTemplate);
       instance.draft.name = providerTemplateTitle(instance, template.dataset.providerTemplate);
       instance.templatePicker = false;
@@ -681,9 +904,17 @@
       if (!instance.busy || instance.busy === 'failed') handleModelAction(instance, modelAction.dataset.providerModelAction, modelAction.dataset.modelId || '');
       return;
     }
+    const cursorModel = event.target.closest('[data-cursor-model]');
+    if (cursorModel && instance.cursorSetup) {
+      return;
+    }
     const action = event.target.closest('[data-provider-action]')?.dataset.providerAction;
     const providerRow = event.target.closest('[data-provider-row]');
     if (providerRow) {
+      if (providerRow.dataset.providerRow === 'cursor-engine') {
+        showCursorEngine(instance);
+        return;
+      }
       selectProvider(instance, providerRow.dataset.providerRow);
       return;
     }
@@ -715,7 +946,122 @@
       return;
     }
     if (action === 'templates-back') {
+      instance.cursorSetup = false;
       selectProvider(instance, instance.previousProviderId || 'builtin');
+      return;
+    }
+    if (action === 'disable-cursor-models') {
+      try {
+        const saved = await instance.callbacks.onDisableAllCursorModels?.();
+        instance.cursorModels = Array.isArray(saved?.models) ? saved.models : (instance.cursorModels || []).map(model => ({ ...model, enabled: false }));
+        renderCursorModelList(instance);
+        await instance.callbacks.onCursorModelsChanged?.();
+      } catch (error) {
+        setStatus(instance, { tone: 'failed', title: error?.message || instance.tx('Could not turn the models off.', '无法关闭这些模型。') });
+      }
+      return;
+    }
+    if (action === 'refresh-cursor-models') {
+      loadCursorModelList(instance, true);
+      return;
+    }
+    if (action === 'toggle-cursor-key') {
+      const input = instance.root.querySelector('[data-cursor-engine-key]');
+      if (!input) return;
+      input.type = input.type === 'password' ? 'text' : 'password';
+      event.target.closest('button').textContent = instance.tx(input.type === 'text' ? 'Hide' : 'Show', input.type === 'text' ? '隐藏' : '显示');
+      return;
+    }
+    if (action === 'clear-cursor-key') {
+      if (!await confirmProviderAction(instance, instance.tx(
+        'Remove the stored Cursor API key now?',
+        '立即删除已存储的 Cursor API 密钥吗？'
+      ), 'secret')) return;
+      try {
+        await instance.callbacks.onSaveCursorKey?.('');
+        if (instance.callbacks.getAgentEngine?.() === 'cursor') await instance.callbacks.onLeaveCursor?.();
+        instance.cursorKeyConfigured = false;
+        instance.cursorInstalled = false;
+        instance.cursorSetup = false;
+        instance.selectedId = 'builtin';
+        render(instance);
+        setStatus(instance, { tone: 'success', title: instance.tx('Cursor API key removed.', '已清除 Cursor API 密钥。') });
+      } catch (error) {
+        setStatus(instance, { tone: 'failed', title: error?.message || instance.tx('Could not remove the Cursor API key.', '无法清除 Cursor API 密钥。') });
+      }
+      return;
+    }
+    if (action === 'delete-cursor-agent') {
+      if (!await confirmProviderAction(instance, instance.tx(
+        'Delete Cursor from this list and remove the saved API key? Add Cursor again from Add provider if you want to use it later.',
+        '从列表中删除 Cursor，并清除已保存的 API 密钥吗？之后需要重新从添加模型服务里添加。'
+      ), 'provider')) return;
+      try {
+        await instance.callbacks.onSaveCursorKey?.('');
+        if (instance.callbacks.getAgentEngine?.() === 'cursor') await instance.callbacks.onLeaveCursor?.();
+        instance.cursorKeyConfigured = false;
+        instance.cursorInstalled = false;
+        instance.cursorSetup = false;
+        instance.selectedId = 'builtin';
+        render(instance);
+        setStatus(instance, {
+          tone: 'success',
+          title: instance.tx('Cursor was removed. Add it again from Add provider.', '已删除 Cursor。需要时请从添加模型服务重新添加。')
+        });
+      } catch (error) {
+        setStatus(instance, { tone: 'failed', title: error?.message || instance.tx('Could not delete Cursor.', '无法删除 Cursor。') });
+      }
+      return;
+    }
+    if (action === 'save-cursor-key') {
+      const input = instance.root.querySelector('[data-cursor-engine-key]');
+      const typed = String(input?.value || '').trim();
+      if (!typed) {
+        setStatus(instance, {
+          tone: 'failed',
+          title: instance.tx('Enter the new Cursor API key before saving.', '请先填入新的 Cursor API 密钥，再点保存。')
+        });
+        return;
+      }
+      try {
+        const result = await instance.callbacks.onSaveCursorKey?.(typed);
+        if (result?.configured !== true) {
+          throw new Error(instance.tx('The Cursor API key was not written.', 'Cursor API 密钥没有写入。'));
+        }
+        if (input) input.value = '';
+        instance.cursorKeyConfigured = true;
+        instance.cursorInstalled = true;
+        instance.cursorSetup = true;
+        instance.selectedId = 'cursor-engine';
+        render(instance);
+        refreshCursorKeyNote(instance, true);
+        setStatus(instance, {
+          tone: 'success',
+          title: instance.tx('Cursor API key saved on this computer.', 'Cursor API 密钥已保存在这台电脑上。')
+        });
+        loadCursorModelList(instance, true);
+      } catch (error) {
+        setStatus(instance, { tone: 'failed', title: cursorActionError(instance, error, 'Could not save the Cursor API key.', '无法保存 Cursor API 密钥。') });
+      }
+      return;
+    }
+    if (action === 'activate-cursor') {
+      const configured = instance.cursorKeyConfigured === true || await instance.callbacks.onCursorKeyStatus?.();
+      if (!configured) {
+        setStatus(instance, {
+          tone: 'failed',
+          title: instance.tx('Save a Cursor API key before using Cursor for this project.', '用于当前项目前，请先保存 Cursor API 密钥。')
+        });
+        return;
+      }
+      instance.cursorInstalled = true;
+      instance.cursorKeyConfigured = true;
+      instance.cursorSetup = true;
+      instance.selectedId = 'cursor-engine';
+      await instance.callbacks.onActivateCursor?.();
+      render(instance);
+      refreshCursorKeyNote(instance, true);
+      setStatus(instance, { tone: 'success', title: instance.tx('Cursor is used for this project.', '当前项目将使用 Cursor。') });
       return;
     }
     if (action === 'toggle-secret') {
@@ -822,6 +1168,17 @@
   }
 
   function handleInput(instance, event) {
+    const toggle = event.target.closest('[data-cursor-model-toggle]');
+    if (toggle) {
+      const id = toggle.dataset.cursorModelToggle;
+      const enabled = toggle.checked === true;
+      instance.cursorModels = (instance.cursorModels || []).map(model => model.id === id ? { ...model, enabled } : model);
+      Promise.resolve(instance.callbacks.onToggleCursorModel?.(id, enabled)).then(() => instance.callbacks.onCursorModelsChanged?.()).catch(error => {
+        toggle.checked = !enabled;
+        setStatus(instance, { tone: 'failed', title: error?.message || instance.tx('Could not save the model switch.', '无法保存模型开关。') });
+      });
+      return;
+    }
     if (instance.modelEditor && event.target.closest('[data-provider-model-editor]')) {
       updateModelReasoningSummary(instance);
       return;
@@ -922,6 +1279,7 @@
     }
     if (id === '__new__') instance.previousProviderId = instance.selectedId;
     instance.templatePicker = id === '__new__';
+    instance.cursorSetup = false;
     instance.modelFilter = '';
     instance.verificationStale = false;
     instance.selectedId = id;
@@ -1318,7 +1676,11 @@
           : preset.baseUrl ? (preset.wireApiPreference === 'anthropic' ? 'Anthropic Messages' : 'Chat Completions') + ' · ' + getEndpointHost(preset.baseUrl)
             : preset.wireApiPreference === 'anthropic' ? 'Anthropic Messages'
             : preset.wireApiPreference === 'responses' ? 'OpenAI Responses' : 'Responses / Chat Completions')
-        + '</small></span><span aria-hidden="true">›</span></button>').join('') + '</div>'
+        + '</small></span><span aria-hidden="true">›</span></button>').join('')
+      + '<button type="button" class="codex-provider-template" data-provider-template="cursor">'
+      + '<span class="codex-provider-template-mark" aria-hidden="true">' + renderProviderTemplateIcon({ id: 'cursor', short: 'C' }) + '</span>'
+      + '<span><strong>Cursor</strong><small>' + escapeHtml(tx('Local Cursor agent', '本机 Cursor agent')) + '</small></span>'
+      + '<span aria-hidden="true">›</span></button></div>'
       + '<p class="codex-provider-help">' + escapeHtml(tx(
         'Adding or saving a connection does not switch the current project. Credentials remain with the Native Host.',
         '添加或保存连接不会切换当前项目。已保存的密钥仍由 Native Host 保管。')) + '</p>';

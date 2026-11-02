@@ -4,13 +4,11 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { version: PACKAGE_VERSION } = require('../../package.json');
-const { SUBAGENT_QUEUE_DIR, collectMirrorChangesDetailed, getProjectMirror, markMirrorDirty, syncOverleafToMirror } = require('./mirrorWorkspace');
-const { computeLineDiff } = require('./diffEngine');
-const { prepareSelectionScope, filterSelectionChanges } = require('./selectionScope');
-const { normalizeSafeProjectPath } = require('../../extension/src/shared/projectFiles');
+const { SUBAGENT_QUEUE_DIR, getProjectMirror, markMirrorDirty, syncOverleafToMirror } = require('./mirrorWorkspace');
+const { prepareSelectionScope } = require('./selectionScope');
+const { settleMirrorEdits } = require('./mirrorSettlement');
 const WritingStyleRuntime = require('./writingStyleRuntime');
 const { createRecoveringStyleRunner } = require('./codexModelRecovery');
-const { computeTextPatches } = require('./textPatch');
 const { buildCodexHomeEnv } = require('./codexHome');
 const { applyCodexSkillIsolation } = require('./codexSkillIsolation');
 const { buildCodexSpeedArgs } = require('./codexArgs');
@@ -28,7 +26,6 @@ const {
 } = require('./localSkills');
 const { createSubagentBroker } = require('./subagentBroker');
 const { createNativeSubagentObserver } = require('./subagentTelemetry');
-const { prepareBinaryAssetChanges } = require('./nativeAssetTransfer');
 const { resolveCodexCommand, shouldUseShellForCommand } = require('./codexCommand');
 const { applyProviderEnvironment, buildProviderConfigArgs, prepareProviderLaunch } = require('./codexProviderLaunch');
 const { createReadProgressController, createRunEventScope } = require('./readProgressGuard');
@@ -281,100 +278,17 @@ async function runCodexSession({ params = {}, env = process.env, emit = () => {}
     });
   }
 
-  const collected = await collectMirrorChangesDetailed({
+  return settleMirrorEdits({
+    params,
+    mirror,
+    rootDir,
     projectId,
-    rootDir
+    runnerResult,
+    emit: event => emit(event),
+    signal,
+    selectionScope,
+    subagentBroker
   });
-  const selectionChanges = filterSelectionChanges(collected.changes || [], selectionScope);
-  const filteredChanges = filterSyncChangesForFocus({
-    changes: selectionChanges.changes,
-    focusFiles: params.focusFiles || params.session?.focusFiles,
-    focusFilesAreLiteral: params.focusFilesAreLiteral === true,
-    restrictToFocusFiles: params.restrictToFocusFiles
-  });
-  let rawSyncChanges = filteredChanges.changes;
-  const unsupportedChanges = [
-    ...(collected.unsupportedChanges || []),
-    ...selectionChanges.unsupportedChanges,
-    ...filteredChanges.unsupportedChanges
-  ];
-  // Spec S8: ownership violations hard-block writeback. Changes on violated
-  // paths are demoted to unsupportedChanges (surfaced, never auto-applied) —
-  // this must hold even when requireReviewing is off and ordinary
-  // syncChanges would write directly.
-  const subagentViolationPaths = subagentBroker ? subagentBroker.getViolationPaths() : null;
-  if (subagentViolationPaths && subagentViolationPaths.size) {
-    const violatedPath = change => [change.path, change.to].find(file => file && subagentViolationPaths.has(file));
-    const blocked = rawSyncChanges.filter(change => violatedPath(change));
-    rawSyncChanges = rawSyncChanges.filter(change => !violatedPath(change));
-    for (const change of blocked) {
-      unsupportedChanges.push({
-        type: 'unsupported-local-file',
-        path: change.path,
-        reason: subagentBroker.getBlockedReason(violatedPath(change))
-      });
-    }
-  }
-  if (rawSyncChanges.length || unsupportedChanges.length) {
-    markMirrorDirty({
-      projectId,
-      rootDir,
-      reason: params.mode === 'ask' ? 'ask_mode_local_changes' : 'codex_run_local_changes'
-    });
-  }
-  throwIfAborted(signal);
-
-  if (params.mode === 'ask') {
-    emitCodexEvent(emit, 'overleaf.sync.changes', 'Ask mode finished without Overleaf writeback', {
-      changedCount: 0,
-      files: [],
-      unsupportedCount: 0,
-      unsupportedFiles: [],
-      ignoredChangedCount: rawSyncChanges.length,
-      ignoredUnsupportedCount: unsupportedChanges.length
-    }, rawSyncChanges.length || unsupportedChanges.length ? 'warning' : 'completed');
-    return reduceTaskResult({
-      status: 'completed',
-      projectId: mirror.projectKey,
-      workspacePath: mirror.workspacePath,
-      assistantMessage: cleanAssistantMessage(runnerResult?.assistantMessage),
-      threadId: runnerResult?.threadId || '',
-      syncChanges: [],
-      unsupportedChanges: []
-    });
-  }
-
-  const preparedAssets = prepareBinaryAssetChanges({ projectId, rootDir, changes: rawSyncChanges });
-  rawSyncChanges = preparedAssets.changes;
-  unsupportedChanges.push(...preparedAssets.unsupportedChanges);
-  const syncChanges = rawSyncChanges.map(change => {
-    if (change.type === 'write' && typeof change.previousContent === 'string') {
-      return {
-        ...change,
-        diff: computeLineDiff(change.previousContent, change.content, 3, params.locale === 'zh' ? 'zh' : 'en'),
-        patches: computeTextPatches(change.previousContent, change.content)
-      };
-    }
-    return change;
-  });
-  const response = reduceTaskResult({
-    status: 'completed',
-    projectId: mirror.projectKey,
-    workspacePath: mirror.workspacePath,
-    assistantMessage: cleanAssistantMessage(runnerResult?.assistantMessage),
-    threadId: runnerResult?.threadId || '',
-    syncChanges,
-    unsupportedChanges
-  });
-
-  emitCodexEvent(emit, 'overleaf.sync.changes', 'Local Codex changes collected for Overleaf sync', {
-    changedCount: response.syncChanges.length,
-    files: response.syncChanges.map(change => change.path),
-    unsupportedCount: response.unsupportedChanges.length,
-    unsupportedFiles: response.unsupportedChanges.map(change => change.path)
-  }, response.unsupportedChanges.length ? 'warning' : 'completed');
-
-  return response;
 }
 
 function buildCodexTurnPrompt(params = {}, mirror = {}, projectLocalSkills, turnAttachments = [], codexSkillInvocationContext = null) {
@@ -391,58 +305,6 @@ function buildCodexTurnPrompt(params = {}, mirror = {}, projectLocalSkills, turn
 
 
 
-
-function normalizeFocusFiles(value, literal = false) {
-  const seen = new Set();
-  const files = [];
-  for (const item of Array.isArray(value) ? value : []) {
-    const filePath = literal ? normalizeSafeProjectPath(item) : normalizeProjectPath(item);
-    if (!filePath || seen.has(filePath)) {
-      continue;
-    }
-    seen.add(filePath);
-    files.push(filePath);
-    if (files.length >= 8) {
-      break;
-    }
-  }
-  return files;
-}
-function filterSyncChangesForFocus({ changes = [], focusFiles = [], restrictToFocusFiles = false, focusFilesAreLiteral = false } = {}) {
-  if (!restrictToFocusFiles) {
-    return { changes, unsupportedChanges: [] };
-  }
-  const focusSet = new Set(normalizeFocusFiles(focusFiles, focusFilesAreLiteral === true));
-  if (!focusSet.size && focusFilesAreLiteral !== true) {
-    return { changes, unsupportedChanges: [] };
-  }
-
-  const accepted = [];
-  const rejected = [];
-  for (const change of changes || []) {
-    if (focusSet.has(normalizeSafeProjectPath(change?.path))
-      && (!change?.to || focusSet.has(normalizeSafeProjectPath(change.to)))) {
-      accepted.push(change);
-    } else if (change?.path) {
-      rejected.push({
-        type: 'ignored-local-change',
-        path: change.path,
-        reason: 'out_of_focus_partial_snapshot'
-      });
-    }
-  }
-  return {
-    changes: accepted,
-    unsupportedChanges: rejected
-  };
-}
-function normalizeProjectPath(value) {
-  return String(value || '')
-    .replace(/^@file:/i, '')
-    .replace(/\\/g, '/')
-    .trim()
-    .replace(/^\/+/, '');
-}
 
 function loadProjectLocalSkillsContext(params = {}, mirror = {}) {
   const selectedSkillIds = Array.isArray(params.selectedSkillIds) ? params.selectedSkillIds : [];
@@ -1488,6 +1350,7 @@ function isUnsupportedDeveloperInstructionsError(error) {
 const cleanAssistantMessage = value => String(value || '').trim();
 
 module.exports = {
+  PARALLEL_SUBAGENTS_SKILL_ID,
   applyCodexSkillIsolation,
   buildCodexTurnPrompt,
   buildCodexAppServerArgs,
@@ -1498,6 +1361,11 @@ module.exports = {
   buildTurnStartParams,
   createOptionalTimeout,
   decideCommandApproval,
+  getEffectiveSkillInvocation,
+  isSkillInstallerInvocation,
+  loadCodexSkillInvocationContext,
+  loadProjectLocalSkillsContext,
+  normalizeSkillLoadingSettings,
   runCodexAppServerSession,
   runCodexSession
 };

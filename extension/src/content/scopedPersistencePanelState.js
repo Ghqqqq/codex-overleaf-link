@@ -23,7 +23,7 @@
   const REVIEW_FACT_FIELDS = ['documentEffect', 'fileSettlements', 'failures', 'recoveryAvailability', 'recoveryDisposition'];
   const AUXILIARY_EVIDENCE = ['mirrored', 'compiled'];
   const REVIEW_SOURCE_FIELDS = ['id', 'runProjectId', 'runAccountScopeId', 'startedAt', 'nativeEventSeq',
-    'codexThreadId', 'codexTurnId', 'executionSnapshot', 'forkSnapshot'];
+    'codexThreadId', 'codexTurnId', 'cursorAgentId', 'cursorRunId', 'executionSnapshot', 'forkSnapshot'];
   const factsOf = record => record?.settlement || record?.settlementFacts || {};
   function reviewSnapshot(record, SessionState) {
     const normalized = SessionState?.normalizeRuns?.([record])?.[0] || record;

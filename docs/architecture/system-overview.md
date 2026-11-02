@@ -16,9 +16,11 @@ flowchart LR
     Background <--> Native[Node Native Host]
     Native <--> Mirror[Local mirror and run assets]
     Native --> Codex[Codex app-server]
+    Native --> CursorAgent[Cursor local agent]
     Codex --> Builtin[Built-in model connection]
     Codex --> Bridge[Local Provider protocol bridge]
     Bridge --> Upstream[Configured model service]
+    CursorAgent --> CursorAccount[Cursor account models]
 ```
 
 | Context | Main responsibilities and entry points | Lifetime considerations |
@@ -36,6 +38,8 @@ Run maintenance within Content has further responsibility boundaries: [RunReview
 Same-origin checks, extension origin, project identity, and version capabilities answer different questions. The admission conditions for each message family and the Page token's same-document trust assumptions are described in [Protocols and trust boundaries](protocols-and-trust.md). One handshake does not establish that all methods perform the same permission checks.
 
 Custom Providers still use Codex app-server to manage the agent's tools and threads. [codexProviderLaunch.prepareProviderLaunch](../../native-host/src/codexProviderLaunch.js) connects a Responses, Chat Completions, or Anthropic upstream to a local bridge, then provides Codex with a uniform entry point. Changing the model service and changing the agent execution engine are separate concepts.
+
+A project can also select the Cursor engine. That choice is `agentEngine` on the execution snapshot and defaults to Codex. [cursorSessionRunner.runCursorSession](../../native-host/src/cursorSessionRunner.js) starts a local Cursor agent in the same mirror, then [mirrorSettlement.settleMirrorEdits](../../native-host/src/mirrorSettlement.js) produces the same `syncChanges` used by Ask, Auto, Track, and Undo. The Cursor API key stays in `~/.codex-overleaf/cursor-credential.json`. Custom providers remain on the Codex engine. Compaction, skills, steering, and writing style run through Cursor using the shared prompt and settings.
 
 ## How code actually loads
 

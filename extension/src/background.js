@@ -103,6 +103,9 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
     'writing-style.get',
     'writing-style.set',
     'codex.thread.fork',
+    'cursor.credential.get',
+    'cursor.credential.set',
+    'cursor.models',
     'asset.readChunk',
     'asset.release'
   ]);
@@ -436,6 +439,9 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
       case 'codex.providers.delete':
       case 'writing-style.get':
       case 'writing-style.set':
+      case 'cursor.credential.get':
+      case 'cursor.credential.set':
+      case 'cursor.models':
       case 'skills.list':
       case 'asset.readChunk':
       case 'update.status':

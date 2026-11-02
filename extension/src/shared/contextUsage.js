@@ -37,7 +37,7 @@
 
   function matches(value, scope = {}) {
     const snapshot = normalize(value);
-    return Boolean(snapshot && snapshot.threadId === identity(scope.threadId || scope.codexThreadId)
+    return Boolean(snapshot && snapshot.threadId === identity(scope.threadId || scope.codexThreadId || scope.cursorAgentId)
       && snapshot.providerId === identity(scope.providerId)
       && snapshot.providerRevision === count(scope.providerRevision)
       && snapshot.model === identity(scope.model));
@@ -51,8 +51,10 @@
     if (notification.method !== 'thread/tokenUsage/updated') return null;
     const params = notification.params || {};
     const threadId = identity(params.threadId), turnId = identity(params.turnId);
-    if (!threadId || !turnId || threadId !== identity(owner.threadId || owner.codexThreadId)
-      || turnId !== identity(owner.turnId || owner.codexTurnId) || owner.forkSnapshot === true) return null;
+    const ownerThread = identity(owner.threadId || owner.codexThreadId || owner.cursorAgentId);
+    const ownerTurn = identity(owner.turnId || owner.codexTurnId || owner.cursorRunId);
+    if (!threadId || !turnId || threadId !== ownerThread
+      || turnId !== ownerTurn || owner.forkSnapshot === true) return null;
     const last = params.tokenUsage?.last;
     const usedTokens = count(last?.totalTokens);
     if (usedTokens === null) return null;
@@ -80,7 +82,8 @@
   // successful completion of the most recent compaction that invalidated it.
   function status(session, scope = {}) {
     if (!session || session.forkSnapshot === true) return { usage: null, pending: false, compacted: false };
-    const inThread = value => value && value.threadId === identity(scope.threadId || scope.codexThreadId)
+    const ownerThread = identity(scope.threadId || scope.codexThreadId || scope.cursorAgentId);
+    const inThread = value => value && value.threadId === ownerThread
       && value.providerId === identity(scope.providerId)
       && value.providerRevision === count(scope.providerRevision);
     // A dispatched compaction can change this thread even when its completion
@@ -89,8 +92,8 @@
     let invalidatedAfter = Number.isFinite(scope.compactedAt) && scope.compactedAt > 0 ? scope.compactedAt : 0;
     let completedAfter = invalidatedAfter;
     for (const run of runs) {
-      if (run?.operation !== 'compact' || run.forkSnapshot
-        || run.codexThreadId !== identity(scope.threadId || scope.codexThreadId)) continue;
+      const runThread = identity(run?.codexThreadId || run?.cursorAgentId);
+      if (run?.operation !== 'compact' || run.forkSnapshot || runThread !== ownerThread) continue;
       const startedAt = Date.parse(run.startedAt || '') || 0;
       invalidatedAfter = Math.max(invalidatedAfter, startedAt);
       if (run.status === 'completed') completedAfter = Math.max(completedAfter, startedAt);

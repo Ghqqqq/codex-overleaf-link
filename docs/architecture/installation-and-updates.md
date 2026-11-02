@@ -76,6 +76,7 @@ Environment and installation parameters can change the root directory. Troublesh
 `buildManagedExtensionTree()` creates a new extension staging tree, copies Bootstrap, runtime, and assets, adjusts managed paths, and verifies referenced files.
 The installer renames the old extension directory to a rollback directory, then moves the new tree into place. It removes the extension rollback directory after Native installation and registration succeed.
 `installManagedNativeVersion()` writes the version directory, copies the internal fixed launcher, and updates `active-version` and, when needed, `previous-version`.
+When `node_modules/@cursor/sdk` is present, [runtimeInstaller.buildRuntimeFileManifest](../../native-host/src/runtimeInstaller.js) includes that package, its declared dependencies, and its peer dependencies, so both `installManagedNativeVersion` and the signed Native update payload copy the same tree. Doctor still requires Node.js 22.13 or newer for Cursor runs.
 `installManagedNativeRegistration()` writes the outer bridge and Native Host manifest. Windows also writes the registry; other platforms use browser-defined file locations.
 The extension ID enters `allowed_origins`. Incorrect registration makes Chrome reject Native Messaging even when local Node commands work.
 

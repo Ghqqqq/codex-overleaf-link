@@ -14,7 +14,8 @@ Matching field names provide only a navigation clue; the final request construct
 | Concept | Current meaning | Conclusion that must not be inferred |
 |---|---|---|
 | Built-in Codex | Executes through the existing Codex configuration, authentication, and model discovery paths, with `providerLaunch=null`; configuration inheritance is covered in section 5 | The extension pins its actual network endpoint; every Custom service failure automatically switches to Built-in |
-| Custom Provider | Locally saved endpoint and model configuration connected to Codex through a local bridge | The panel directly implements an independent agent engine |
+| Custom Provider | Locally saved endpoint and model configuration connected to Codex through a local bridge | The panel directly implements an independent agent engine; a Cursor-engine run uses this bridge |
+| Cursor engine | A separate local agent started by [cursorSessionRunner](../../native-host/src/cursorSessionRunner.js) with `@cursor/sdk`. Stream messages become Codex-shaped `codex.session.event` notifications through [cursorEventAdapter](../../native-host/src/cursorEventAdapter.js). The API key lives in `~/.codex-overleaf/cursor-credential.json`. | Cursor uses a Custom Provider bridge; Cursor compaction or fork is a Codex app-server RPC |
 | `wireApiPreference` | The configured preference `auto/responses/chat/anthropic` | Auto tries every protocol after any failure |
 | `resolvedWireApi` / model diagnostics | The protocol result recorded for a tested connection fingerprint | Testing one model proves that every model under that Provider is available |
 | `upstreamResponseMode` | Model-level upstream response mode; ordinary requests can select upstream SSE or complete JSON, with the client output mode adapted separately | Unlimited buffering, compatibility with every gateway, or generic interrupted-stream retries |

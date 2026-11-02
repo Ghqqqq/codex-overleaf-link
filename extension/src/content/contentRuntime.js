@@ -61,6 +61,9 @@
     'writing-style.get',
     'writing-style.set',
     'codex.thread.fork',
+    'cursor.credential.get',
+    'cursor.credential.set',
+    'cursor.models',
     'asset.readChunk',
     'asset.release'
   ]);
@@ -838,6 +841,10 @@
     window,
     getSettingsPanelInstance: () => settingsPanelInstance,
     getSelectedModel: () => state?.model || '', getSelectedProviderId: () => state?.providerId || 'builtin',
+    getAgentEngine: () => state?.agentEngine === 'cursor' ? 'cursor' : 'codex',
+    setAgentEngine: engine => setAgentEngine(engine),
+    getCursorModel: () => getActiveSession(state)?.cursorModel || 'auto',
+    setCursorModel: modelId => setCursorModel(modelId),
     getSelectedProviderRevision: () => state?.providerRevision,
     setSelectedProviderId: projectProviderSelection.commit,
     confirmProviderSwitch: projectProviderSelection.confirmSwitch,
@@ -1885,7 +1892,9 @@
     const submittedSessionId = state.activeSessionId;
     const submittedSession = runController.captureSessionContext(state);
     const submittedThreadId = getActiveSession(state)?.codexThreadId || '';
-    if (compact && !submittedThreadId) {
+    const submittedCursorAgentId = getActiveSession(state)?.cursorAgentId || '';
+    const submittedCompactId = state.agentEngine === 'cursor' ? submittedCursorAgentId : submittedThreadId;
+    if (compact && !submittedCompactId) {
       showPluginToast(tr('compactNoThread'), { status: 'info' });
       return;
     }
@@ -1900,6 +1909,7 @@
       speedTier: state.speedTier,
       autoRecompile: state.autoRecompile !== false,
       requireReviewing: state.requireReviewing === true,
+      agentEngine: state.agentEngine === 'cursor' ? 'cursor' : 'codex',
       focusFiles: compact ? [] : getActiveFocusFiles(),
       selectionContext: compact ? null : selectionContextView.capture()
     };
@@ -1942,7 +1952,9 @@
         '提交前活动项目已改变，请重新提交任务。'));
     }
     if (!findSessionById(submittedSessionId) || currentRunView
-      || (compact && findSessionById(submittedSessionId)?.codexThreadId !== submittedThreadId)) {
+      || (compact && (submittedPanelState.agentEngine === 'cursor'
+        ? findSessionById(submittedSessionId)?.cursorAgentId !== submittedCursorAgentId
+        : findSessionById(submittedSessionId)?.codexThreadId !== submittedThreadId))) {
       throw new Error(tx('The submitted session changed before submission. Submit the task again.',
         '提交所属会话已改变，请重新提交任务。'));
     }
@@ -1974,6 +1986,7 @@
         sessionId: submittedSessionId,
         sessionContext: submittedSession,
         codexThreadId: submittedThreadId,
+        cursorAgentId: submittedCursorAgentId,
         operation: compact ? 'compact' : undefined,
         task,
         mode: submittedMode,
@@ -2020,7 +2033,10 @@
           operation: 'compact', task: '/compact', mode: 'ask',
           projectId: currentRunView.runProjectId, accountScopeId: currentRunView.runAccountScopeId,
           clientRunId: currentRunView.recordId, clientSessionId: runSessionId,
-          threadId: submittedThreadId, model: executionSnapshot.model,
+          agentEngine: submittedPanelState.agentEngine,
+          threadId: submittedPanelState.agentEngine === 'cursor' ? undefined : submittedThreadId,
+          cursorAgentId: submittedPanelState.agentEngine === 'cursor' ? submittedCursorAgentId : undefined,
+          model: executionSnapshot.model,
           reasoningEffort: executionSnapshot.reasoningEffort, speedTier: executionSnapshot.speedTier,
           providerSelection: RunExecutionSnapshot.toProviderSelection(executionSnapshot),
           locale: getLocale(), ...submittedSkillLoadingSettings,
@@ -2028,8 +2044,10 @@
           enabledCodexLocalSkillIds: submittedEnabledLocalSkillIds
         }));
         if (!response?.ok) throw Object.assign(new Error(response?.error?.message || 'Compaction failed'), response?.error);
+        const compactThreadId = submittedPanelState.agentEngine === 'cursor'
+          ? submittedCursorAgentId : submittedThreadId;
         if (response.result?.operation !== 'compact' || response.result?.status !== 'completed'
-          || response.result?.threadId !== submittedThreadId) {
+          || response.result?.threadId !== compactThreadId) {
           throw Object.assign(new Error('Compaction completion was not confirmed'), { code: 'codex_compact_unconfirmed' });
         }
         throwIfRunCancellationRequested();
@@ -2333,6 +2351,7 @@
           otWarmStart,
           restrictToFocusFiles,
           codexThreadId,
+          cursorAgentId: submittedCursorAgentId,
           compileLogContext,
           customInstructions: submittedCustomInstructions,
           skillLoadingSettings: submittedSkillLoadingSettings,
@@ -2387,6 +2406,7 @@
             otWarmStart,
             restrictToFocusFiles,
             codexThreadId,
+            cursorAgentId: submittedCursorAgentId,
             compileLogContext,
             customInstructions: submittedCustomInstructions,
             skillLoadingSettings: submittedSkillLoadingSettings,
@@ -2425,6 +2445,7 @@
               otWarmStart,
               restrictToFocusFiles,
               codexThreadId: '',
+              cursorAgentId: '',
               compileLogContext,
               customInstructions: submittedCustomInstructions,
               skillLoadingSettings: submittedSkillLoadingSettings,
@@ -2697,6 +2718,11 @@
               await StorageDb.putRecord('sessions', record, { adopt: false });
             }
           }
+        }
+        const returnedCursorAgentId = String(response.result?.cursorAgentId || '');
+        if (returnedCursorAgentId && returnedCursorAgentId !== submittedCursorAgentId) {
+          updateSessionById(runSessionId, { cursorAgentId: returnedCursorAgentId });
+          if (currentRunView) currentRunView.cursorAgentId = returnedCursorAgentId;
         }
 
         await saveState();
@@ -3245,6 +3271,7 @@
       speedTier: submitted.speedTier ?? state?.speedTier,
       autoRecompile: submitted.autoRecompile ?? state?.autoRecompile !== false,
       requireReviewing: submitted.requireReviewing ?? state?.requireReviewing === true,
+      agentEngine: submitted.agentEngine ?? state?.agentEngine,
       focusFiles: selectedContext?.mode === 'edit' && selectedPaths.length
         ? [...new Set([...selectedPaths, selectedContext.path])] : selectedPaths,
       selectionContext: selectedContext,
@@ -3510,6 +3537,7 @@
     otWarmStart,
     restrictToFocusFiles,
     codexThreadId,
+    cursorAgentId,
     compileLogContext,
     customInstructions,
     skillLoadingSettings,
@@ -3535,6 +3563,7 @@
       otWarmStart,
       restrictToFocusFiles,
       codexThreadId,
+      cursorAgentId: cursorAgentId || currentRunView?.cursorAgentId || getActiveSession(state)?.cursorAgentId || '',
       customInstructions: customInstructions === undefined
         ? getCustomInstructionsForCurrentProject()
         : customInstructions,
@@ -3640,8 +3669,12 @@
       getActiveSession: () => getActiveSession(state),
       createInterruptedRun: journal => ActiveTurnControl.createInterruptedRun(journal, projectKey, tr('restoredRunStoppedStatus')),
       onRawEvent: (raw, { record, session, sequence }) => storeContextUsage(raw, record, session, sequence),
-      mapEvent: (raw, journal) => ActiveTurnControl.mapRecoveredEvent(raw, journal, {
-        mapActivity: value => mapAgentEventToActivity(value, { locale: getLocale() }),
+      mapEvent: (raw, journal, record) => ActiveTurnControl.mapRecoveredEvent(raw, journal, {
+        mapActivity: value => mapAgentEventToActivity(value, {
+          locale: getLocale(),
+          engine: record?.executionSnapshot?.agentEngine === 'cursor' || raw?.detail?.agentEngine === 'cursor'
+            ? 'cursor' : 'codex'
+        }),
         sanitizeText: sanitizeAssistantVisibleText, sanitizeValue: sanitizeAssistantVisibleValue
       }),
       upsertStream: upsertRunStreamRecordEvent,
@@ -6529,6 +6562,42 @@
     return localizeVisibleReason(error?.message || String(error));
   }
 
+  async function setAgentEngine(engine) {
+    const next = engine === 'cursor' ? 'cursor' : 'codex';
+    const previous = state.agentEngine === 'cursor' ? 'cursor' : 'codex';
+    const session = getActiveSession(state) || {};
+    const patch = { agentEngine: next };
+    if (previous !== next && next === 'cursor') {
+      patch.codexModel = state.model || session.codexModel || 'gpt-5.4';
+      state.model = session.cursorModel && session.cursorModel !== 'auto' ? session.cursorModel : '';
+    } else if (previous !== next) {
+      patch.cursorModel = state.model || session.cursorModel || 'auto';
+      state.model = session.codexModel || 'gpt-5.4';
+    }
+    const modelSelect = panel?.querySelector('[data-model]');
+    if (modelSelect) modelSelect.value = state.model;
+    const engineSelect = panel?.querySelector('[data-agent-engine]');
+    if (engineSelect) engineSelect.value = next;
+    state.agentEngine = next;
+    state = updateActiveSession(state, patch);
+    applyStateToPanel({ preserveScroll: true });
+    await persistPanelInputs();
+    await loadModelOptions();
+  }
+
+  async function setCursorModel(modelId) {
+    const id = String(modelId || 'auto').slice(0, 80);
+    state.model = id;
+    state.agentEngine = 'cursor';
+    const modelSelect = panel?.querySelector('[data-model]');
+    if (modelSelect) modelSelect.value = id;
+    const engineSelect = panel?.querySelector('[data-agent-engine]');
+    if (engineSelect) engineSelect.value = 'cursor';
+    state = updateActiveSession(state, { agentEngine: 'cursor', cursorModel: id });
+    applyStateToPanel({ preserveScroll: true });
+    await persistPanelInputs();
+  }
+
   async function persistPanelInputs(event) {
     const globalWrite = getGlobalPreferences().handleInput(event);
     if (globalWrite) return globalWrite;
@@ -6611,12 +6680,17 @@
       requireReviewing: panel.querySelector('[data-require-reviewing]').checked
     });
     state.providerId = state.providerId || 'builtin';
+    state.agentEngine = state.agentEngine === 'cursor' ? 'cursor' : 'codex';
     state.model = model;
     state.reasoningEffort = reasoningEffort;
     state.speedTier = speedTier;
     if (state.session) {
       state.session.providerId = state.providerId;
+      state.session.agentEngine = state.agentEngine;
     }
+    state = updateActiveSession(state, state.agentEngine === 'cursor'
+      ? { agentEngine: 'cursor', ...(model && model !== 'auto' && model !== 'cursor-pending' ? { cursorModel: model } : {}) }
+      : { agentEngine: 'codex', codexModel: model });
     state.autoRecompile = panel.querySelector('[data-auto-recompile]')?.checked !== false;
     const experimentalOtCheckbox = panel.querySelector('[data-experimental-ot]');
     if (experimentalOtCheckbox) {
@@ -6758,18 +6832,35 @@
     return true;
   }
 
+  function syncCursorEngineChrome() {
+    const cursor = state?.agentEngine === 'cursor';
+    const providers = panel?.querySelector('[data-set-group="providers"]');
+    if (providers) providers.hidden = cursor;
+    panel?.querySelectorAll('[data-agent-engine-choice]').forEach(button => {
+      const active = button.dataset.agentEngineChoice === (cursor ? 'cursor' : 'codex');
+      button.dataset.active = active ? 'true' : 'false';
+      button.setAttribute('aria-checked', active ? 'true' : 'false');
+    });
+  }
+
   function applyStateToPanel(options = {}) {
     if (pendingDraftSave && pendingDraftSave.scope !== getComposerDraftScope()) resetDraftSave();
     contextUsageView?.close();
     selectionContextView.render();
     writingStyleSettings.sync();
     applyPanelTheme(getThemePreference());
-    if ((state.providerId || 'builtin') === 'builtin' && !modelSelectHasOption(state.model)) {
-      renderModelOptions(getModelCatalog().FALLBACK_MODELS, state.model, {
-        provisionalSelected: getModelDiscovery().provisional === true
-      });
+    if (state.agentEngine !== 'cursor' && (state.providerId || 'builtin') === 'builtin' && !modelSelectHasOption(state.model)) {
+      const fallback = getModelCatalog().FALLBACK_MODELS;
+      const ids = fallback.map(model => model.id);
+      const saved = getActiveSession(state)?.codexModel || '';
+      const next = ids.includes(state.model) ? state.model : (ids.includes(saved) ? saved : (ids[0] || ''));
+      if (next && next !== state.model) state.model = next;
+      renderModelOptions(fallback, next || state.model, { allowUnknownSelected: false });
     }
     panel.querySelector('[data-model]').value = state.model;
+    const engineSelect = panel.querySelector('[data-agent-engine]');
+    if (engineSelect) engineSelect.value = state.agentEngine === 'cursor' ? 'cursor' : 'codex';
+    syncCursorEngineChrome();
     const renderedModels = getRenderedModelEntries();
     renderReasoningOptions(renderedModels);
     const reasoningSelect = panel.querySelector('[data-reasoning]');
@@ -6855,8 +6946,9 @@
     const selection = providerSettingsCoordinator.getRunSelection(state.providerId);
     const runningSelection = run?.status === 'running' && run.model === state.model
       && (run.providerId || 'builtin') === (state.providerId || 'builtin');
+    const cursor = state?.agentEngine === 'cursor';
     const scope = {
-      threadId: session?.codexThreadId || '',
+      threadId: cursor ? (session?.cursorAgentId || '') : (session?.codexThreadId || ''),
       providerId: state.providerId || 'builtin',
       providerRevision: runningSelection ? Number(run.providerRevision || 0)
         : selection?.providerRevision ?? ((state.providerId || 'builtin') === 'builtin' ? 0 : null),
@@ -6870,7 +6962,8 @@
     // Starting another turn must not revive statistics from before an automatic
     // compaction. Retain the watermark across this thread's saved normal runs.
     const compactedAt = (session?.runs || []).reduce((latest, candidate) => candidate && !candidate.forkSnapshot
-      && candidate.operation !== 'compact' && scope.threadId && candidate.codexThreadId === scope.threadId
+      && candidate.operation !== 'compact' && scope.threadId
+      && (cursor ? candidate.cursorAgentId === scope.threadId : candidate.codexThreadId === scope.threadId)
       ? Math.max(latest, Modules.RunActivityModel.getCompactedAt(candidate)) : latest, 0);
     const { usage, pending, compacted } = Modules.ContextUsage.status(session, { ...scope, compactedAt });
     const compacting = Boolean(matchesRun && Modules.RunActivityModel.project(run).compacting);
@@ -6879,7 +6972,10 @@
 
   function getCompactAvailability() {
     if (sessionManager.isTransitioning() || updateIdleClient?.isApplying() || currentRunView || runSubmissionPending) return { ok: false, reason: 'compactBusy' };
-    if (!getActiveSession(state)?.codexThreadId) return { ok: false, reason: 'compactNoThread' };
+    const session = getActiveSession(state);
+    if (state?.agentEngine === 'cursor' ? !session?.cursorAgentId : !session?.codexThreadId) {
+      return { ok: false, reason: 'compactNoThread' };
+    }
     return { ok: true };
   }
 
@@ -6914,6 +7010,7 @@
     sessionId = state.activeSessionId,
     sessionContext = runController.captureSessionContext(state),
     codexThreadId = '',
+    cursorAgentId = '',
     operation,
     task,
     mode,
@@ -6951,6 +7048,7 @@
       undoStatus: '',
       queueItemId,
       nativeRequestId: '', codexThreadId: '',
+      cursorAgentId: cursorAgentId || '',
       codexTurnId: '',
       nativeEventSeq: 0,
       executionSnapshot: executionSnapshot
@@ -7096,7 +7194,10 @@
       return;
     }
 
-    const activity = mapAgentEventToActivity(event, { locale: getLocale() });
+    const activity = mapAgentEventToActivity(event, {
+      locale: getLocale(),
+      engine: owner?.executionSnapshot?.agentEngine === 'cursor' || state?.agentEngine === 'cursor' ? 'cursor' : 'codex'
+    });
     if (!activity?.visible || activity.kind === 'technical') {
       return;
     }
@@ -7125,7 +7226,7 @@
     if (!usage || !Modules.ContextUsage.isNewer(usage, record.contextUsage)) return false;
     record.contextUsage = usage;
     record.nativeEventSeq = Math.max(Number(record.nativeEventSeq || 0), Number(sequence || 0));
-    if (session?.codexThreadId === usage.threadId
+    if ((session?.codexThreadId === usage.threadId || session?.cursorAgentId === usage.threadId)
       && Modules.ContextUsage.isNewer(usage, session.contextUsage)) session.contextUsage = usage;
     return true;
   }
@@ -7136,10 +7237,18 @@
     }
     const threadId = String(detail.threadId || '');
     const turnId = String(detail.turnId || '');
+    const cursor = detail.agentEngine === 'cursor'
+      || currentRunView.executionSnapshot?.agentEngine === 'cursor';
     currentRunView.activeTurn = currentRunView.operation === 'compact' ? null : { threadId, turnId };
     const record = findRunRecord(currentRunView.recordId, currentRunView.sessionId);
     if (record) {
-      record.codexThreadId = threadId; record.codexTurnId = turnId;
+      if (cursor) {
+        record.cursorAgentId = threadId;
+        record.cursorRunId = turnId;
+      } else {
+        record.codexThreadId = threadId;
+        record.codexTurnId = turnId;
+      }
       if (record.operation === 'compact') {
         const session = findSessionById(currentRunView.sessionId);
         if (session?.contextUsage?.threadId === threadId
@@ -7150,7 +7259,9 @@
       record.nativeEventSeq = Math.max(Number(record.nativeEventSeq || 0), Number(journalSeq || 0));
     }
     if (threadId) {
-      updateSessionById(currentRunView.sessionId, { codexThreadId: threadId });
+      updateSessionById(currentRunView.sessionId, cursor
+        ? { cursorAgentId: threadId }
+        : { codexThreadId: threadId });
     }
     renderPendingInputs();
     renderContextUsage();

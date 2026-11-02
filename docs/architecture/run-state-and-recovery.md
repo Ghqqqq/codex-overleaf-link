@@ -20,6 +20,7 @@ Start with symbols, then inspect adjacent modules. `contentRuntime.js` still con
 | `requestId` / `nativeRequestId` | The identity of one Native RPC request | Connects message routing, cancellation, and the background journal |
 | Native `threadId` | A Codex or server-side conversation thread | Can be resumed in later turns; distinct from an extension session |
 | Native `turnId` | One active model turn within a thread | In-flight guidance must include the expected turn to avoid delivery to the next turn |
+| `cursorAgentId` / `cursorRunId` | Cursor conversation and this turn, bound by `codex.turn.bound` with `agentEngine: "cursor"` | Must not overwrite `codexThreadId`/`codexTurnId`. Context usage for Cursor uses this pair as the thread/turn identity. Compaction and steering follow the same control handle. |
 | view generation | The generation of a load or page route | Prevents asynchronous results from an old page from overwriting the new view |
 
 The persistence view identity can be written as \(I_v=(accountScopeId,projectId,generation)\), and run ownership as \(I_r=(projectId,sessionId,runId)\).
@@ -421,8 +422,9 @@ Resource-only writes, missing creation checkpoints, forkSnapshot, and accepted/u
 ### 6.1 Session Forks and Recovery-Material Isolation
 
 `contentRuntime` wires the fork entry into `RunResultActions.configureForkButton`, which calls `forkRunFromNode` in [sessionForkController.js](../../extension/src/content/sessionForkController.js).
-The source run must have left running and have a turn ID. Thread sources are tried in this order: the run's own `codexThreadId`, the interruptedDraft thread matching that turn, then a session-thread fallback for old records. A session thread changed by a Provider switch must not overwrite an existing run source.
+The source run must have left running and have a turn ID. For Codex, thread sources are tried in this order: the run's own `codexThreadId`, the interruptedDraft thread matching that turn, then a session-thread fallback for old records. A session thread changed by a Provider switch must not overwrite an existing run source.
 After `codex.thread.fork` succeeds, the controller copies history through the selected run, generates new run IDs and a session, binds the returned new thread, and clears the queue.
+A Cursor-engine fork skips `codex.thread.fork`. It copies the same history into a new session with an empty `cursorAgentId`, so the next turn creates a new agent and replays that history in the shared prompt.
 `copyRunSnapshot` marks `forkSnapshot`, records its source, and strips attachments, applied and Undo material, Native requests, and queue bindings. Later SessionState normalization also excludes retry-recovery material from the snapshot.
 The controller merges the fork into the current session collection, synchronizes the panel immediately, and waits for ordinary `saveState`. Failure compensation affects only this fork; the next subsection explains concurrency rules. Ordinary saving remains subject to the fallback and error-handling limits in section 4.3; a resolved Promise does not establish complete durable storage of the fork record.
 

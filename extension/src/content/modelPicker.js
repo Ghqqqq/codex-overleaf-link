@@ -109,17 +109,21 @@
     try {
       const response = await sendBackgroundNative({
         method: 'codex.models',
-        params: selection ? { providerSelection: selection } : {}
+        params: {
+          ...(selection ? { providerSelection: selection } : {}),
+          agentEngine: getState()?.agentEngine === 'cursor' ? 'cursor' : 'codex'
+        }
       });
       if (generation !== modelLoadGeneration) {
         return { stale: true };
       }
       options.assertCurrent?.();
       const responseProviderId = response?.result?.providerId || '';
-      if (selection?.providerId && responseProviderId && responseProviderId !== selection.providerId) {
+      const agentEngine = getState()?.agentEngine === 'cursor' ? 'cursor' : 'codex';
+      if (agentEngine !== 'cursor' && selection?.providerId && responseProviderId && responseProviderId !== selection.providerId) {
         return { stale: true };
       }
-      if (response?.ok && selection?.providerId && selection.providerId !== 'builtin'
+      if (response?.ok && agentEngine !== 'cursor' && selection?.providerId && selection.providerId !== 'builtin'
         && Number(response?.result?.providerRevision) !== Number(selection.providerRevision)) {
         return { stale: true };
       }
@@ -127,15 +131,32 @@
       const hasDiscoveredModels = response?.ok
         && Array.isArray(response.result?.models)
         && response.result.models.length > 0;
+      if (agentEngine === 'cursor' && !hasDiscoveredModels) {
+        renderModelOptions([{ id: 'cursor-pending', label: 'Cursor' }], 'cursor-pending', { allowUnknownSelected: false });
+        updateModelDisplay();
+        return { stale: false };
+      }
       if (!hasDiscoveredModels && !Support.shouldUseBuiltInFallback(response)) {
         applyUnavailableModelOptions(response?.error);
         return { stale: false, error: response?.error || { code: 'provider_models_unavailable' } };
       }
       const sourceModels = hasDiscoveredModels ? response.result.models : fallbackModels;
-      const preserveBuiltin = (selection?.providerId || 'builtin') === 'builtin' && (getState()?.providerId || 'builtin') === 'builtin';
-      const retainedSelectedModel = retainSelectedModel(sourceModels, currentSelectedModel, { preserveUnavailable: preserveBuiltin })
+      const builtinCatalog = agentEngine !== 'cursor' && (selection?.providerId || 'builtin') === 'builtin'
+        && (getState()?.providerId || 'builtin') === 'builtin';
+      const preserveBuiltin = builtinCatalog;
+      let retainedSelectedModel = retainSelectedModel(sourceModels, currentSelectedModel, { preserveUnavailable: false })
         || (responseProviderId && responseProviderId !== 'builtin'
           ? retainSelectedModel(sourceModels, response.result?.defaultModelId) : '');
+      if (builtinCatalog) {
+        const ids = sourceModels.map(model => model.id || model);
+        if (!ids.includes(retainedSelectedModel)) {
+          const saved = getState()?.codexModel || '';
+          retainedSelectedModel = ids.includes(saved) ? saved : (ids[0] || '');
+        }
+      } else if (agentEngine === 'cursor') {
+        const ids = sourceModels.map(model => model.id || model);
+        if (!ids.includes(retainedSelectedModel)) retainedSelectedModel = response.result?.defaultModelId || ids[0] || '';
+      }
       const normalized = modelCatalog.normalizeDiscoveredModels({ models: sourceModels, selectedModel: retainedSelectedModel });
       if (normalized.usedFallback && response.result?.providerId && response.result.providerId !== 'builtin') {
         applyUnavailableModelOptions({ code: 'provider_model_catalog_invalid', message: 'The active provider returned no usable models.' });
@@ -147,7 +168,7 @@
       const renderedModels = preserveBuiltin
         ? Support.preserveSelectedCapabilities(normalized.models, retainedSelectedModel, getState(), !hasDiscoveredModels || response.result?.source === 'fallback')
         : normalized.models;
-      renderModelOptions(renderedModels, retainedSelectedModel, { allowUnknownSelected: false });
+      renderModelOptions(renderedModels, retainedSelectedModel, { allowUnknownSelected: !builtinCatalog });
       modelDiscovery = {
         status: hasDiscoveredModels && !normalized.usedFallback && response.result?.source !== 'fallback' ? 'discovered' : 'fallback',
         source: hasDiscoveredModels ? response.result?.source || 'unknown' : 'fallback',
@@ -318,10 +339,13 @@
       speedSelect.append(option);
     }
     speedSelect.value = speedTiers.includes(selectedSpeed) ? selectedSpeed : 'standard';
-    speedSelect.disabled = speedTiers.length <= 1;
+    speedSelect.disabled = !Support.speedChoiceVisible(speedTiers);
+    const cursor = getState()?.agentEngine === 'cursor';
     speedSelect.title = speedSelect.disabled
       ? tx('Fast mode is not available for this model.', '当前模型不支持 Fast 模式。')
-      : tx('Codex speed tier. Fast mode uses extra credits.', 'Codex 速度档；Fast 会消耗额外 credits。');
+      : cursor
+        ? tx('Cursor speed. Fast uses this model’s fast parameter.', 'Cursor 速度档。快速使用该模型自己的 fast 参数。')
+        : tx('Codex speed tier. Fast mode uses extra credits.', 'Codex 速度档；Fast 会消耗额外 credits。');
     renderModelConfigChoices();
   }
 
@@ -412,6 +436,12 @@
       return;
     }
     list.textContent = '';
+    const hidden = !Support.speedChoiceVisible(Array.from(speedSelect.options || []).map(option => option.value));
+    list.hidden = hidden;
+    if (list.previousElementSibling?.classList?.contains('codex-model-config-divider')) {
+      list.previousElementSibling.hidden = hidden;
+    }
+    if (hidden) return;
     for (const option of Array.from(speedSelect.options || [])) {
       const choice = createModelConfigChoice({
         value: option.value,

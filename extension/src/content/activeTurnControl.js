@@ -259,16 +259,22 @@
           }
           const raw = entry?.event || {};
           if (raw.type === 'codex.turn.bound') {
-            session.codexThreadId = String(raw.detail?.threadId || session.codexThreadId || '');
-            record.codexThreadId = String(raw.detail?.threadId || record.codexThreadId || '');
-            record.codexTurnId = String(raw.detail?.turnId || record.codexTurnId || '');
+            if (raw.detail?.agentEngine === 'cursor') {
+              session.cursorAgentId = String(raw.detail?.threadId || session.cursorAgentId || '');
+              record.cursorAgentId = String(raw.detail?.threadId || record.cursorAgentId || '');
+              record.cursorRunId = String(raw.detail?.turnId || record.cursorRunId || '');
+            } else {
+              session.codexThreadId = String(raw.detail?.threadId || session.codexThreadId || '');
+              record.codexThreadId = String(raw.detail?.threadId || record.codexThreadId || '');
+              record.codexTurnId = String(raw.detail?.turnId || record.codexTurnId || '');
+            }
             record.nativeEventSeq = sequence;
             continue;
           }
           // Non-display state (for example context usage) must also recover
           // from the journal, after the owning thread/turn has been bound.
           options.onRawEvent?.(raw, { record, session, sequence, journal });
-          const recovered = options.mapEvent?.(raw, journal);
+          const recovered = options.mapEvent?.(raw, journal, record);
           if (recovered) {
             if (recovered.kind === 'stream') {
               options.upsertStream?.(record, recovered);

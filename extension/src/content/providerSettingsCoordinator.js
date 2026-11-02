@@ -19,6 +19,10 @@
       getSettingsPanelInstance: options.getSettingsPanelInstance || (() => null),
       getSelectedModel: options.getSelectedModel || (() => ''),
       getSelectedProviderId: options.getSelectedProviderId || (() => 'builtin'),
+    getAgentEngine: options.getAgentEngine || (() => 'codex'),
+    setAgentEngine: options.setAgentEngine || (() => {}),
+    getCursorModel: options.getCursorModel || (() => 'auto'),
+    setCursorModel: options.setCursorModel || (() => {}),
       getSelectedProviderRevision: options.getSelectedProviderRevision || (() => undefined),
       hasCurrentProject: options.hasCurrentProject || (() => true),
       setSelectedProviderId: options.setSelectedProviderId || (() => {}),
@@ -61,6 +65,17 @@
         onClearSecret: context => clearProviderSecret(instance, context),
         onDelete: context => deleteProvider(instance, context),
         onActivateBuiltin: () => activateBuiltin(instance),
+        getAgentEngine: () => instance.getAgentEngine?.() || 'codex',
+        onCursorKeyStatus: () => request(instance, 'cursor.credential.get').then(result => result?.configured === true),
+        onSaveCursorKey: apiKey => request(instance, 'cursor.credential.set', { apiKey }),
+        onActivateCursor: () => instance.setAgentEngine?.('cursor'),
+        onLeaveCursor: () => instance.setAgentEngine?.('codex'),
+        onListCursorModels: () => request(instance, 'cursor.models').then(result => result.models || []),
+        onReadCursorModels: () => request(instance, 'cursor.models'),
+        onRefreshCursorModels: () => request(instance, 'cursor.models', { action: 'refresh' }),
+        onToggleCursorModel: (id, enabled) => request(instance, 'cursor.models', { action: 'set', id, enabled }),
+        onDisableAllCursorModels: () => request(instance, 'cursor.models', { action: 'disable-all' }),
+        onCursorModelsChanged: () => instance.refreshModelOptions?.(),
         onReload: () => open(instance, { refresh: true })
       }
     });
@@ -484,6 +499,8 @@
         requireProjection: true
       });
       instance.dialog.setBusy('', '');
+      await instance.setAgentEngine?.('codex');
+      instance.dialog.setCatalog(instance.catalog, 'builtin');
       instance.dialog.setStatus({ tone: 'success', title: instance.tx('Built-in Codex is active.', '已启用内置 Codex。') });
     } catch (error) {
       if (preparation?.previousProviderId && preparation.previousProviderId !== 'builtin') {

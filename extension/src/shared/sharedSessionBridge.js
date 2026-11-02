@@ -246,7 +246,7 @@
           throw failure('shared_store_scope_mismatch', 'The session does not belong to the captured account and project.');
         const proposed = new Map((record.runs || []).map(run => [run.id, run]));
         const identity = run => JSON.stringify(['id', 'runProjectId', 'runAccountScopeId', 'startedAt', 'nativeEventSeq',
-          'codexThreadId', 'codexTurnId', 'executionSnapshot', 'forkSnapshot'].map(key => run[key] ?? null));
+          'codexThreadId', 'codexTurnId', 'cursorAgentId', 'cursorRunId', 'executionSnapshot', 'forkSnapshot'].map(key => run[key] ?? null));
         for (const id of ids) {
           const current = latest.runs?.find(run => run.id === id), incoming = proposed.get(id);
           if (!current || !incoming || incoming.runProjectId !== value.projectId
