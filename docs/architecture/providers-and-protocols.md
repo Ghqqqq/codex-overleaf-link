@@ -157,6 +157,8 @@ Deleting the configuration removes the project's selected ID; the coordinator th
 Test uses the current draft and secretMutation and can test an unsaved connection; the dedicated key need not first be written to the permanent secrets file.
 The test entry point is `runProviderConnectionTest` in [codexProviderTest.js](../../native-host/src/codexProviderTest.js).
 It prepares the protocol bridge, starts `codex exec` in a temporary Codex home and read-only workspace, and requires reading one file to obtain a second filename before reading a random verification token.
+Provider overrides from `buildProviderConfigArgs` are written as TOML assignments to that home's private `config.toml`; the prompt is sent through stdin with `exec ... -`. Dedicated authentication stays in the child environment, not the config file or command line. On Windows, `.cmd`/`.bat` wrappers and PATH-resolved `codex` run through an explicit `cmd.exe` invocation containing only fixed arguments and a quoted environment-expanded command path, with delayed expansion disabled. Provider names, model IDs, catalog paths and prompt text never enter that shell command string. Native executable paths still use direct spawn.
+The isolated Windows test configuration sets `features.prefer_mxc=true` so supported Codex installations can select MXC without inheriting the user's full configuration. Codex retains responsibility for platform support, managed restrictions and legacy fallback; the test still requests `--sandbox read-only` and does not disable sandboxing. Older CLI implementations and unavailable sandbox backends may still need local setup; the connection test does not provision or repair the user's sandbox.
 Success conditions include the exit code, verification token, and absence of leaked tool control markers. The test targets two tool-call rounds and continuity of their results.
 The test shares Provider launch and bridges with normal tasks, but normal tasks use the app-server lifecycle. Test success does not establish compatibility with all editing, images, long streams, or continuation.
 The test module handles directory cleanup and process termination; a complete exit guarantee still requires process evidence.
@@ -168,7 +170,7 @@ A normal Auto run without valid model diagnostics performs one compatibility neg
 If a concurrent edit changes the revision, diagnostics may not be recorded, and the second resolution can still reject the run. A successful test cannot bypass subsequent identity checks.
 Test cancellation finds activeTests by operationId and aborts its controller; the current operationId guard separately discards results from old dialogs. [codexProviderTest](../../native-host/src/codexProviderTest.js) checks cancellation at entry, after `prepareProviderLaunch` returns, at process entry, and immediately before actual spawn. Auto negotiation also synchronously adopts an already-cancelled externalSignal.
 Cancellation during preparation prevents subsequent child-process dispatch, and the prepared bridge/catalog closes in `finally`. An already-started process follows the existing bounded stop flow, checking exit before cleaning the test directory. From the start of preparation, the test registers Host-disconnect cleanup with [nativeHelperLifecycle](../../native-host/src/nativeHelperLifecycle.js); this does not broaden the scope of Cancel for an ordinary run.
-Provider-test preparation, pre-cancelled entry, Auto externalSignal and resource cleanup need a targeted cancellation check when modified. The retained platform helper-shutdown case uses the external-task entry and does not establish Provider-test cancellation.
+Provider-test preparation, pre-cancelled entry and Auto externalSignal need a targeted cancellation check when modified. [platform/nativeShutdown](../../test/platform/nativeShutdown.test.js) also runs the production Provider-test entry through a real synthetic CLI wrapper, checking literal configuration/prompt transport, success cleanup, and cancellation of the wrapper child before cleanup. It does not call a public model or establish browser acceptance or sandbox availability on every machine.
 
 ## 5. Shared Boundaries of Built-in and Custom Execution
 
@@ -356,7 +358,7 @@ Pattern sanitization in the background journal likewise does not detect arbitrar
 
 ## 9. Change Routing and Verification
 
-The small release suite has no dedicated Provider protocol, credential-store or settings contract. Generic framing, persistence and helper-shutdown checks do not establish the complete Provider chain. When one of these paths changes, choose the relevant row below and verify a representative observable result; the table is not a per-release checklist.
+The small release suite has no dedicated Provider protocol, credential-store or settings contract. The Provider process case in [platform/nativeShutdown](../../test/platform/nativeShutdown.test.js) covers configuration/stdin transport and child cleanup with a synthetic CLI; it does not establish the complete Provider chain. When one of these paths changes, choose the relevant row below and verify a representative observable result; the table is not a per-release checklist.
 
 | Change intent | Primary changes and related modules | Change-driven observations |
 |---|---|---|

@@ -12,6 +12,7 @@ const { applyProviderEnvironment, buildProviderConfigArgs, prepareProviderLaunch
 const { providerError } = require('./providerProfile');
 
 const MAX_OUTPUT_BYTES = 256 * 1024;
+const TEST_PROMPT = 'Use the shell tool to read provider-step-one.txt. It contains the name of a second file. Then use a separate shell tool call to read that second file. Reply only with the exact contents of the second file.';
 
 async function runProviderConnectionTest({ launch, env = process.env, signal } = {}) {
   throwIfTestCancelled(signal);
@@ -50,23 +51,39 @@ function runProviderConnectionTestProcess({ launch, env = process.env, signal } 
       return;
     }
     const args = [
-      ...buildProviderConfigArgs(launch),
       'exec',
       '--skip-git-repo-check',
       '--sandbox',
       'read-only',
-      'Use the shell tool to read provider-step-one.txt. It contains the name of a second file. Then use a separate shell tool call to read that second file. Reply only with the exact contents of the second file.'
+      '-'
     ];
     const startedAt = Date.now();
     let child;
     try {
       throwIfTestCancelled(signal);
-      child = spawn(command, args, {
+      // The shared builder emits -c/TOML pairs. Keep those values out of cmd.exe:
+      // names, model IDs and catalog paths may contain quotes or shell syntax.
+      const config = buildProviderConfigArgs(launch).filter((_, index) => index % 2 === 1);
+      if (process.platform === 'win32') {
+        // The isolated home cannot inherit the desktop's sandbox selection.
+        // Let Codex prefer MXC where supported, retaining its legacy fallback
+        // and managed policy rather than forcing MXC or removing the sandbox.
+        config.push('features.prefer_mxc=true');
+      }
+      fs.writeFileSync(path.join(codexHome, 'config.toml'), config.join('\n') + '\n', { mode: 0o600 });
+      const shell = shouldUseShellForCommand(command, childEnv);
+      if (shell) childEnv.CODEX_OVERLEAF_TEST_COMMAND = command;
+      child = spawn(shell ? (childEnv.ComSpec || childEnv.COMSPEC || 'cmd.exe') : command, shell
+        // Only fixed arguments enter the command string. Expanding the quoted
+        // path from the environment also preserves literal % and ! in it.
+        ? ['/d', '/v:off', '/s', '/c', `""%CODEX_OVERLEAF_TEST_COMMAND%" ${args.join(' ')}"`]
+        : args, {
         cwd: workspace,
         env: childEnv,
-        shell: shouldUseShellForCommand(command, childEnv),
+        windowsVerbatimArguments: shell,
+        windowsHide: true,
         detached: process.platform !== 'win32',
-        stdio: ['ignore', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe']
       });
     } catch (error) {
       cleanup(root);
@@ -116,6 +133,12 @@ function runProviderConnectionTestProcess({ launch, env = process.env, signal } 
       }
       finish(classifyProviderFailure(stderr || stdout, code));
     });
+    child.stdin.on('error', error => {
+      // Early CLI rejection can close stdin before the write completes; the
+      // close handler still owns the useful exit status and stderr diagnosis.
+      if (error.code !== 'EPIPE') finish(providerError('provider_test_spawn_failed', 'Codex could not receive the provider connection test.', { cause: error }));
+    });
+    child.stdin.end(TEST_PROMPT);
 
     function appendOutput(target, chunk) {
       if (settled) return;
