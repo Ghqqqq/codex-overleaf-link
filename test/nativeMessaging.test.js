@@ -64,7 +64,7 @@ function clock() {
 }
 
 function nativeEnvironmentFixture(timing, onVersionRead = () => {}) {
-  const candidates = Array.from({ length: 4 }, (_, index) => path.join('/fixture', `candidate-${index}`, 'codex'));
+  const candidates = Array.from({ length: 4 }, (_, index) => path.posix.join('/fixture', `candidate-${index}`, 'codex'));
   const files = new Map(candidates.map(candidate => [candidate, { version: '1.2.3', signature: 1 }]));
   let versionReads = 0;
   function getFile(candidate) {
@@ -72,6 +72,7 @@ function nativeEnvironmentFixture(timing, onVersionRead = () => {}) {
     return files.get(candidate);
   }
   const dependencies = {
+    'node:path': path.posix,
     'node:fs': {
       constants: { X_OK: 1, F_OK: 0 },
       statSync(candidate) {
@@ -104,7 +105,7 @@ function nativeEnvironmentFixture(timing, onVersionRead = () => {}) {
   dependencies['./codexRuntimeIdentity'] = load('codexRuntimeIdentity');
   const environment = dependencies['./nativeEnvironment'] = load('nativeEnvironment');
   return { environment, handleRequest: load('taskRunnerRuntime').handleRequest, files,
-    base: { PATH: candidates.map(candidate => path.dirname(candidate)).join(':'), CODEX_OVERLEAF_DISABLE_SHELL_ENV: '1' },
+    base: { PATH: candidates.map(candidate => path.posix.dirname(candidate)).join(path.posix.delimiter), CODEX_OVERLEAF_DISABLE_SHELL_ENV: '1' },
     reads: () => versionReads };
 }
 
