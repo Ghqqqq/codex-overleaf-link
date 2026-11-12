@@ -247,6 +247,8 @@ Domain guides: [Native execution](native-execution.md), [Providers and protocols
 
 ### Add Native methods, events, or Provider protocol capabilities
 
+- Provider connection-test startup: [codexProviderTest.runProviderConnectionTest](../../native-host/src/codexProviderTest.js) writes the shared Provider overrides into a private temporary config, sends the prompt on stdin, and invokes Windows wrappers without interpolating configuration into the shell. Its Windows-only MXC preference retains read-only execution and Codex-managed fallback. [platform/nativeShutdown](../../test/platform/nativeShutdown.test.js) exercises literal transport and child cleanup; actual sandbox support and real-model acceptance remain separate checks. See [Save, Test, and Use](providers-and-protocols.md#4-save-test-and-use).
+
 - Entry points: [background.js](../../extension/src/background.js) → [native index](../../native-host/src/index.js) → [taskRunnerRuntime.handleRequest](../../native-host/src/taskRunnerRuntime.js) / [providerRuntime.handleProviderRequest](../../native-host/src/providerRuntime.js).
 - State owners: Native manages processes and runs; [providerStore](../../native-host/src/providerStore.js) stores Provider configuration; [providerProfile](../../native-host/src/providerProfile.js) defines the configuration structure.
 - Required coordination: [NativeChannel](../../extension/src/content/nativeChannel.js), [nativeTransportEnvelope](../../native-host/src/nativeTransportEnvelope.js), [nativeQuotas](../../native-host/src/nativeQuotas.js), [providerBridgeRoutes](../../native-host/src/providerBridgeRoutes.js), compatibility on both sides, secret redaction, and cancellation paths.

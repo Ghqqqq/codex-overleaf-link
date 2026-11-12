@@ -35,6 +35,8 @@ Legacy calls whose explicit user home and plugin home are the same path retain t
 
 ## 2. The Two RPC Layers
 
+Provider connection tests use a separate `codex exec` process owned by [codexProviderTest](../../native-host/src/codexProviderTest.js). Its isolated home contains only the generated Provider overrides and, on Windows, an MXC preference; the test keeps the read-only sandbox. Configuration travels through a private TOML file and the prompt through stdin so Windows CLI wrappers cannot split or expand either. The explicit wrapper invocation disables delayed expansion and passes only fixed arguments. [platform/nativeShutdown](../../test/platform/nativeShutdown.test.js) covers this process boundary and cancellation cleanup with a synthetic CLI. Normal app-server startup and user sandbox configuration are unchanged; see [Provider tests](providers-and-protocols.md#4-save-test-and-use).
+
 ```mermaid
 sequenceDiagram
     participant C as Content

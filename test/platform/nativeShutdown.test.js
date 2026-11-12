@@ -3,6 +3,7 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), { spawn } = require('node:child_process');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { decodeFrames } = require('../../native-host/src/nativeMessaging');
+const { runProviderConnectionTest } = require('../../native-host/src/codexProviderTest');
 const repo = path.resolve(__dirname, '../..'), helper = path.join(__dirname, '../fixtures/native-helper-shutdown/helper.cjs');
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; } };
 async function until(fn, ms = 7000) { const end = Date.now() + ms; while (!fn()) { if (Date.now() > end) throw new Error('condition timeout'); await sleep(10); } }
@@ -43,4 +44,46 @@ test('Host disconnect stops its helper without cancelling unrelated work', { tim
   assert.equal(stopEvents.some(event => event.event === 'rejected'), false, 'Host exit cannot substitute for a successful explicit stop');
   assert.ok(stopEvents.some(event => event.event === 'resolved' && event.at <= hostExit.at), 'owned stop must finish before Host exit');
   const bytes = fs.statSync(path.join(root, 'heartbeat')).size;await sleep(80);assert.equal(fs.statSync(path.join(root, 'heartbeat')).size, bytes);
+});
+
+test('Provider tests preserve configuration and stdin through CLI wrappers and clean up on cancellation', { timeout: 20000 }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-process-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // Exercise paths and configuration that cmd.exe would otherwise split/expand.
+  const commandDir = path.join(root, 'CLI space & %CODEX_TEST_EXPAND% !literal!');
+  fs.mkdirSync(commandDir);
+  const command = path.join(commandDir, process.platform === 'win32' ? 'codex.cmd' : 'codex');
+  const fixture = path.join(__dirname, '../fixtures/provider-test-process.cjs');
+  fs.writeFileSync(command, process.platform === 'win32'
+    ? '@echo off\r\n@"%CODEX_TEST_NODE%" "%CODEX_TEST_HELPER%" %*\r\n'
+    : `#!${process.execPath}\nrequire(${JSON.stringify(fixture)});\n`, { mode: 0o755 });
+  const report = path.join(root, 'report.json');
+  const launch = {
+    providerName: 'Provider "研发" & %CODEX_TEST_EXPAND% !literal! ^',
+    modelId: 'model-"quoted"-%CODEX_TEST_EXPAND%-!literal!-&',
+    baseUrl: 'https://provider.invalid/v1', wireApi: 'responses',
+    apiKey: 'synthetic-provider-secret', requestTimeoutMs: 5000
+  };
+  const env = {
+    ...process.env, CODEX_OVERLEAF_ENV_READY: '1', CODEX_OVERLEAF_CODEX_PATH: command,
+    CODEX_TEST_NODE: process.execPath, CODEX_TEST_HELPER: fixture, CODEX_TEST_REPORT: report,
+    CODEX_TEST_PROVIDER: launch.providerName, CODEX_TEST_MODEL: launch.modelId,
+    CODEX_TEST_EXPAND: 'must-not-expand', CODEX_TEST_WAIT: '0'
+  };
+  const result = await runProviderConnectionTest({ launch, env });
+  assert.equal(result.capabilities.toolRoundTrip, true);
+  const completed = JSON.parse(fs.readFileSync(report, 'utf8'));
+  for (const target of [completed.home, completed.workspace, completed.catalogPath]) assert.equal(fs.existsSync(target), false);
+
+  const controller = new AbortController();
+  const pending = runProviderConnectionTest({ launch, env: { ...env, CODEX_TEST_WAIT: '1', CODEX_TEST_REPORT: report + '.cancel' }, signal: controller.signal });
+  const rejected = assert.rejects(pending, { code: 'provider_test_cancelled' });
+  t.after(() => controller.abort());
+  await until(() => fs.existsSync(report + '.cancel'));
+  const cancelled = JSON.parse(fs.readFileSync(report + '.cancel', 'utf8'));
+  assert.equal(alive(cancelled.pid), true);
+  controller.abort();
+  await rejected;
+  assert.equal(alive(cancelled.pid), false, 'cancellation must stop the wrapper child before cleanup');
+  for (const target of [cancelled.home, cancelled.workspace, cancelled.catalogPath]) assert.equal(fs.existsSync(target), false);
 });

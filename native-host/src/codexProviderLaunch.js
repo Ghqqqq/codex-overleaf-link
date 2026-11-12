@@ -190,7 +190,9 @@ function buildProviderSnapshot(launch) {
 }
 
 function encodeTomlString(value) {
-  return JSON.stringify(String(value ?? ''));
+  // JSON escapes are TOML escapes, except that TOML also rejects a literal DEL
+  // and a \u escape for a lone surrogate.
+  return JSON.stringify(String(value ?? '').toWellFormed()).replace(/\x7f/g, '\\u007f');
 }
 
 function encodeTomlTable(value) {
