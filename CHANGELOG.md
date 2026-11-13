@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.6.6 - 2026-11-13
+
+### Fixed
+
+- On Windows, Test connection for a model provider such as DeepSeek no longer fails before reaching the provider when Codex is installed through a `.cmd` wrapper: the test prompt is no longer split into separate arguments, and the test can start Codex's Windows sandbox.
+
 ## v2.6.5 - 2026-10-29
 
 ### Added
