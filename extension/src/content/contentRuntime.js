@@ -5604,39 +5604,13 @@
   }
 
   async function getRunProjectSnapshot(expectedProjectId = getCurrentProjectId()) {
-    const project = await callPageBridge('getProjectSnapshot', {
+    return runController.readProjectSnapshot({
       projectId: expectedProjectId,
-      force: true,
-      maxAgeMs: 0,
-      preferLightweight: true,
-      allowZipFallback: true,
-      allowEditorNavigation: false,
-        requireFullProject: true,
-        includeBinaryFiles: true,
-        zipOnly: true,
       zipTimeoutMs: RUN_SNAPSHOT_ZIP_TIMEOUT_MS,
-      focusFiles: getActiveFocusFiles()
+      focusFiles: getActiveFocusFiles(),
+      callPageBridge,
+      sanitizeProject: sanitizeRunProjectSnapshot
     });
-    const sanitizedProject = sanitizeRunProjectSnapshot(project, expectedProjectId);
-    if (sanitizedProject?.capabilities?.fullProjectSnapshot || sanitizedProject?.capabilities?.pathIdentityComplete === false) {
-      return sanitizedProject;
-    }
-    const pageStateProject = await callPageBridge('getProjectSnapshot', {
-      projectId: expectedProjectId,
-      force: true,
-      maxAgeMs: 0,
-      preferLightweight: true,
-      allowZipFallback: false,
-      allowEditorNavigation: false,
-      requireFullProject: true,
-      includeBinaryFiles: false,
-      focusFiles: getActiveFocusFiles()
-    });
-    const sanitizedPageStateProject = sanitizeRunProjectSnapshot(pageStateProject, expectedProjectId);
-    if (sanitizedPageStateProject?.capabilities?.fullProjectSnapshot) {
-      return sanitizedPageStateProject;
-    }
-    return sanitizedProject;
   }
 
   function sanitizeRunProjectSnapshot(project, expectedProjectId = project?.id) {

@@ -35,21 +35,27 @@ function projectTree(paths) {
   return root;
 }
 
-function contentOverlayTransport(project, focusFiles = []) {
+function contentSnapshotCallbacks() {
   // Capture the real runtime callbacks at its composition boundary. The panel
   // and service controllers are external I/O; no runtime function is extracted.
   let callbacks;
   const stop = new Error('fixture composition complete');
   const window = {}, document = {}, chrome = { runtime: { id: 'fixture', getManifest: () => ({}) } };
   const stub = { create: () => ({}) };
+  vm.runInNewContext(fs.readFileSync(require.resolve('../extension/src/content/diagnosticsPanel'), 'utf8'), { window });
   const modules = new Proxy({ ProjectFiles: Files,
-    DiagnosticsPanel: { isTextSnapshotFile: file => file.kind !== 'binary' && typeof file.content === 'string' },
+    DiagnosticsPanel: window.CodexOverleafDiagnosticsPanel,
     PageBridgeClient: { create: () => ({ start() {} }) },
     OtWarmMirror: { create(value) { callbacks = value; throw stop; } }
   }, { get: (target, key) => target[key] || stub });
   vm.runInNewContext(fs.readFileSync(require.resolve('../extension/src/content/contentRuntime'), 'utf8'),
     { window, document, chrome, crypto: {} });
   assert.throws(() => window.CodexOverleafContentRuntime.init({ modules }), error => error === stop);
+  return callbacks;
+}
+
+function contentOverlayTransport(project, focusFiles = []) {
+  const callbacks = contentSnapshotCallbacks();
   const sanitized = callbacks.sanitizeRunProjectSnapshot(project);
   const overlays = callbacks.buildSnapshotFileOverlays(sanitized, focusFiles);
   const params = require('../extension/src/content/runController').buildCodexRunParams({ currentProjectId: project.id,
@@ -925,6 +931,134 @@ test('Track capability memory scopes and expires failures; retry and positive ev
   assert.equal((await Migration.loadPrefs('account-a', projectId)).reviewingAvailabilityByProject.p1.status, 'unavailable');
 });
 
+test('ZIP fallback retains selected text and failure evidence without replacing an incomplete project inventory', async t => {
+  const Snapshot = require('../extension/src/page/snapshotRouter');
+  const RunController = require('../extension/src/content/runController');
+  const Mirror = require('../native-host/src/mirrorWorkspace');
+  const path = require('node:path');
+  const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'snapshot-fallback-'));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  // A real stored ZIP with nested TeX files and an exact one-pixel PNG.
+  const zip = Buffer.from('UEsDBBQAAAAAAGO9cV2P7U6/bgAAAG4AAAAIAAAAbWFpbi50ZXhNYWluIG1hbnVzY3JpcHQgdGV4dC4KTWFpbiBtYW51c2NyaXB0IHRleHQuCk1haW4gbWFudXNjcmlwdCB0ZXh0LgpNYWluIG1hbnVzY3JpcHQgdGV4dC4KTWFpbiBtYW51c2NyaXB0IHRleHQuClBLAwQUAAAAAABjvXFdKwtUvm4AAABuAAAAEgAAAHNlY3Rpb25zL2ludHJvLnRleEludHJvZHVjdGlvbiBzZWN0aW9uLgpJbnRyb2R1Y3Rpb24gc2VjdGlvbi4KSW50cm9kdWN0aW9uIHNlY3Rpb24uCkludHJvZHVjdGlvbiBzZWN0aW9uLgpJbnRyb2R1Y3Rpb24gc2VjdGlvbi4KUEsDBBQAAAAAAGO9cV3NvLAbaQAAAGkAAAAbAAAAc2VjdGlvbnMvbWV0aG9kL2RldGFpbHMudGV4TmVzdGVkIG1ldGhvZHMgdGV4dC4KTmVzdGVkIG1ldGhvZHMgdGV4dC4KTmVzdGVkIG1ldGhvZHMgdGV4dC4KTmVzdGVkIG1ldGhvZHMgdGV4dC4KTmVzdGVkIG1ldGhvZHMgdGV4dC4KUEsDBBQAAAAAAGO9cV2CwIvfZAAAAGQAAAASAAAAdGFibGVzL3Jlc3VsdHMudGV4UmVzdWx0cyB0YWJsZSB0ZXh0LgpSZXN1bHRzIHRhYmxlIHRleHQuClJlc3VsdHMgdGFibGUgdGV4dC4KUmVzdWx0cyB0YWJsZSB0ZXh0LgpSZXN1bHRzIHRhYmxlIHRleHQuClBLAwQUAAAAAABjvXFdi+N6nUQAAABEAAAAEQAAAHBpY3R1cmVzL3Bsb3QucG5niVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aQ1sAAAAASUVORK5CYIJQSwECFAMUAAAAAABjvXFdj+1Ov24AAABuAAAACAAAAAAAAAAAAAAAgAEAAAAAbWFpbi50ZXhQSwECFAMUAAAAAABjvXFdKwtUvm4AAABuAAAAEgAAAAAAAAAAAAAAgAGUAAAAc2VjdGlvbnMvaW50cm8udGV4UEsBAhQDFAAAAAAAY71xXc28sBtpAAAAaQAAABsAAAAAAAAAAAAAAIABMgEAAHNlY3Rpb25zL21ldGhvZC9kZXRhaWxzLnRleFBLAQIUAxQAAAAAAGO9cV2CwIvfZAAAAGQAAAASAAAAAAAAAAAAAACAAdQBAAB0YWJsZXMvcmVzdWx0cy50ZXhQSwECFAMUAAAAAABjvXFdi+N6nUQAAABEAAAAEQAAAAAAAAAAAAAAgAFoAgAAcGljdHVyZXMvcGxvdC5wbmdQSwUGAAAAAAUABQA+AQAA2wIAAAAA', 'base64');
+  const source = new Map([
+    ['main.tex', 'Main manuscript text.\n'.repeat(5)],
+    ['sections/intro.tex', 'Introduction section.\n'.repeat(5)],
+    ['sections/method/details.tex', 'Nested methods text.\n'.repeat(5)],
+    ['tables/results.tex', 'Results table text.\n'.repeat(5)]
+  ]);
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aQ1sAAAAASUVORK5CYII=', 'base64');
+  let zipAvailable = true;
+  t.mock.method(globalThis, 'fetch', async url => {
+    const filePath = [...source.keys()].find(name => String(url).endsWith('/doc/' + idFor(name)));
+    if (filePath) return new Response(JSON.stringify({ content: source.get(filePath) }), { headers: { 'content-type': 'application/json' } });
+    return zipAvailable ? new Response(zip, { headers: { 'content-type': 'application/zip' } }) : new Response('', { status: 503 });
+  });
+  const win = { location: { pathname: '/project/' + PROJECT, origin: 'https://fixture.invalid',
+    href: 'https://fixture.invalid/project/' + PROJECT }, setTimeout, clearTimeout,
+    btoa: value => Buffer.from(value, 'binary').toString('base64'),
+    CodexOverleafProjectFiles: Files, _ide: { project: { _id: PROJECT, rootFolder: projectTree([...source.keys()]) } } };
+  const tree = Tree.create({ window: win, document: { querySelectorAll: () => [], querySelector: () => null },
+    getActiveFilePathFromEditorStore: () => 'main.tex' });
+  const router = Snapshot.create({ window: win, treeOperations: { ...tree,
+    waitForActiveEditorText: async () => ({ ok: true, text: source.get('main.tex') }),
+    openFileByPath: async () => { throw new Error('Run snapshots must not navigate the editor'); }
+  } });
+  const callbacks = contentSnapshotCallbacks();
+  const read = () => RunController.readProjectSnapshot({ projectId: PROJECT, focusFiles: ['sections/intro.tex'],
+    zipTimeoutMs: 1000, sanitizeProject: callbacks.sanitizeRunProjectSnapshot,
+    callPageBridge: async (method, params) => {
+      assert.equal(method, 'getProjectSnapshot');
+      return router.buildProjectSnapshot(params);
+    } });
+  const full = await read();
+  assert.equal(full.capabilities.fullProjectSnapshot, true);
+  assert.equal(full.capabilities.contentComplete, true);
+  assert.deepEqual(full.files.map(file => file.path).sort(), [...source.keys(), 'pictures/plot.png'].sort());
+  assert.deepEqual(Buffer.from(full.files.find(file => file.path === 'pictures/plot.png').contentBase64, 'base64'), png);
+  const mirror = await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir, project: {
+    ...full, files: [...full.files, { path: 'obsolete.tex', content: 'Removed on the server after the previous sync.' }]
+  } });
+  const baseline = JSON.parse(fs.readFileSync(mirror.baselinePath));
+
+  zipAvailable = false;
+  // Every discovered path is readable, but the Page has only a partial view.
+  win._ide.project.rootFolder = projectTree(['main.tex', 'sections/intro.tex']);
+  const partial = await read();
+  assert.equal(partial.capabilities.fullProjectSnapshot, false);
+  assert.equal(partial.capabilities.contentComplete, false);
+  assert.equal(partial.capabilities.requestedPathsComplete, true);
+  assert.deepEqual(partial.files.map(file => file.path).sort(), ['main.tex', 'sections/intro.tex']);
+  assert.ok(partial.capabilities.skipped.some(file => file.path === 'project.zip' && /503/.test(file.reason)));
+  assert.ok(partial.capabilities.diagnostics.zipTiming.attempts.some(attempt => attempt.status === 503));
+  const warnings = callbacks.getProjectSnapshotWarnings(partial);
+  assert.ok(warnings.blocking.some(warning => /Full project snapshot/.test(warning)));
+  assert.equal(RunController.canUseFocusedPartialSnapshot({ project: partial, snapshotWarnings: warnings, focusFiles: [] }), false);
+  assert.equal(RunController.canUseFocusedPartialSnapshot({ project: partial, snapshotWarnings: warnings,
+    focusFiles: ['sections/intro.tex'], focusFilesAreLiteral: true }), true);
+  assert.equal(RunController.canUseFocusedPartialSnapshot({ project: partial, snapshotWarnings: warnings,
+    focusFiles: ['tables/results.tex'], focusFilesAreLiteral: true }), false);
+  const synced = await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir, project: partial });
+  assert.equal(synced.partialSnapshot, true);
+  assert.equal(synced.contentComplete, false);
+  assert.equal(JSON.parse(fs.readFileSync(mirror.baselinePath)).lastFullSyncAt, baseline.lastFullSyncAt);
+  for (const [name, text] of source) assert.equal(fs.readFileSync(path.join(mirror.workspacePath, name), 'utf8'), text);
+  assert.deepEqual(fs.readFileSync(path.join(mirror.workspacePath, 'pictures/plot.png')), png);
+  assert.equal(fs.existsSync(path.join(mirror.workspacePath, 'obsolete.tex')), true);
+  assert.equal(Mirror.getMirrorStatus(PROJECT, { rootDir }).exists, true, 'a previously trusted full mirror remains reusable');
+
+  // A complete metadata tree can still lose deep records in the heuristic scan.
+  win._ide.project.rootFolder = projectTree([...source.keys()]);
+  const deepPartial = await read();
+  assert.equal(deepPartial.capabilities.fullProjectSnapshot, false);
+  assert.equal(deepPartial.files.some(file => file.path === 'sections/method/details.tex'), false);
+  assert.equal(deepPartial.capabilities.diagnostics.enumerationTruncated, false);
+
+  zipAvailable = true;
+  const recovered = await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir, project: await read() });
+  assert.equal(recovered.contentComplete, true);
+  assert.equal(fs.existsSync(path.join(mirror.workspacePath, 'obsolete.tex')), false);
+  assert.deepEqual(fs.readFileSync(path.join(mirror.workspacePath, 'pictures/plot.png')), png);
+
+  let reads = 0;
+  const ambiguous = { id: PROJECT, files: [full.files[0]], capabilities: { fullProjectSnapshot: false,
+    pathIdentityComplete: false, skipped: [{ path: 'sections/intro.tex', reason: 'zip_path_duplicate' }] } };
+  const rejected = await RunController.readProjectSnapshot({ projectId: PROJECT,
+    sanitizeProject: callbacks.sanitizeRunProjectSnapshot,
+    callPageBridge: async () => { reads++; return ambiguous; } });
+  assert.equal(reads, 1, 'known ZIP path ambiguity cannot be repaired by heuristic Page paths');
+  assert.equal(rejected.capabilities.pathIdentityComplete, false);
+});
+
+test('page fallback honors disabled editor navigation while retaining explicit navigation reads', async t => {
+  const Snapshot = require('../extension/src/page/snapshotRouter');
+  const source = new Map([['main.tex', 'Main manuscript text.\n'.repeat(5)], ['sections/intro.tex', 'Introduction.\n'.repeat(10)]]);
+  t.mock.method(globalThis, 'fetch', async () => new Response('', { status: 404 }));
+  for (const allowEditorNavigation of [false, true, undefined]) {
+    let active = 'main.tex';
+    const opens = [];
+    const win = { location: { pathname: '/project/' + PROJECT, origin: 'https://fixture.invalid' },
+      setTimeout, clearTimeout, CodexOverleafProjectFiles: Files,
+      _ide: { project: { _id: PROJECT, rootFolder: projectTree([...source.keys()]) } } };
+    const tree = Tree.create({ window: win, document: { querySelectorAll: () => [], querySelector: () => null },
+      getActiveFilePathFromEditorStore: () => active });
+    const snapshot = await Snapshot.create({ window: win, treeOperations: { ...tree,
+      async openFileByPath(filePath) { opens.push(filePath); active = filePath; return { ok: true }; },
+      waitForActiveFile: async filePath => active === filePath,
+      waitForActiveEditorText: async filePath => ({ ok: active === filePath, text: source.get(active) })
+    } }).buildProjectSnapshot({ preferLightweight: true, allowZipFallback: false, allowEditorNavigation });
+    assert.equal(snapshot.capabilities.fullProjectSnapshot, false);
+    assert.equal(snapshot.capabilities.contentComplete, false);
+    assert.equal(active, 'main.tex');
+    if (allowEditorNavigation === false) {
+      assert.deepEqual(opens, []);
+      assert.deepEqual(snapshot.files.map(file => file.path), ['main.tex']);
+    } else {
+      assert.deepEqual(opens, ['sections/intro.tex', 'main.tex']);
+      assert.deepEqual(snapshot.files.map(file => file.path), ['main.tex', 'sections/intro.tex']);
+    }
+  }
+});
+
 test('capped page snapshots preserve omitted mirror documents and their recovery baselines', async t => {
   const Tree = require('../extension/src/page/treeOperations');
   const Snapshot = require('../extension/src/page/snapshotRouter');
@@ -969,4 +1103,98 @@ test('capped page snapshots preserve omitted mirror documents and their recovery
       new Map(baseline.files.map(file => [file.path, file])));
     assert.equal(after.lastFullSyncAt, baseline.lastFullSyncAt);
   }
+});
+
+test('full snapshot admission preserves the mirror on contradictions and retains legitimate unread assets', async t => {
+  const Mirror = require('../native-host/src/mirrorWorkspace'), path = require('node:path');
+  const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'snapshot-admission-'));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  const projectId = PROJECT + '-snapshot-admission';
+  const asset = Buffer.from('original figure bytes');
+  const files = [{ path: 'main.tex', content: 'Main manuscript.\n'.repeat(8) },
+    { path: 'sections/intro.tex', content: 'Nested introduction.\n'.repeat(8) },
+    { path: 'pictures/figure.pdf', kind: 'binary', size: asset.length, contentBase64: asset.toString('base64') }];
+  const capabilities = { fullProjectSnapshot: true, pathIdentityComplete: true, contentComplete: true, method: 'overleaf-zip' };
+  const sync = project => Mirror.syncOverleafToMirror({ projectId, rootDir, project });
+  const mirror = await sync({ files, capabilities });
+  const read = file => fs.readFileSync(path.join(mirror.workspacePath, file));
+  const before = fs.readFileSync(mirror.baselinePath);
+  for (const contradiction of [{ pathIdentityComplete: false }, { method: 'active-editor-lightweight' },
+    { contentComplete: false }, { contentComplete: false, skipped: [
+      { path: files[2].path, reason: 'binary_file_too_large' },
+      { path: files[1].path, reason: 'document_content_unavailable' }
+    ] }]) {
+    await assert.rejects(sync({ files: [{ ...files[0], content: 'untrusted replacement' }],
+      capabilities: { ...capabilities, ...contradiction } }), { code: 'mirror_sync_requires_full_project' });
+    assert.deepEqual(fs.readFileSync(mirror.baselinePath), before);
+    assert.equal(read(files[0].path).toString(), files[0].content);
+    assert.equal(read(files[1].path).toString(), files[1].content);
+    assert.deepEqual(read(files[2].path), asset);
+  }
+  const quota = await sync({ files: files.slice(0, 2), capabilities: { ...capabilities, contentComplete: false, skipped: [
+    { path: files[2].path, reason: 'binary_file_too_large', size: 11 * 1024 * 1024 },
+    { path: files[0].path, reason: 'document_identity_mismatch' }
+  ] } });
+  assert.equal(quota.contentComplete, false);
+  assert.deepEqual(quota.skippedFiles.map(file => file.path), [files[2].path]);
+  assert.equal(read(files[0].path).toString(), files[0].content);
+  assert.deepEqual(read(files[2].path), asset);
+  const retained = JSON.parse(fs.readFileSync(mirror.baselinePath));
+  const original = JSON.parse(before);
+  assert.deepEqual(retained.files.find(file => file.path === files[2].path), original.files.find(file => file.path === files[2].path));
+  assert.equal(retained.lastFullSyncAt, original.lastFullSyncAt);
+  assert.equal(Mirror.getMirrorStatus(projectId, { rootDir }).dirty, true);
+  assert.equal(Mirror.getMirrorStatus(projectId, { rootDir }).exists, false);
+  assert.equal((await sync({ files, capabilities })).contentComplete, true);
+  assert.equal(Mirror.getMirrorStatus(projectId, { rootDir }).exists, true);
+  assert.equal(Mirror.getMirrorStatus(projectId, { rootDir }).dirty, false);
+  await sync({ files: files.slice(0, 2), capabilities });
+  assert.equal(fs.existsSync(path.join(mirror.workspacePath, files[2].path)), false);
+  assert.deepEqual(await Mirror.collectMirrorChanges({ projectId, rootDir }), []);
+});
+
+test('legacy page mirrors remain unverified through partial updates until a full ZIP restores reuse', async t => {
+  const Mirror = require('../native-host/src/mirrorWorkspace'), path = require('node:path');
+  const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'snapshot-legacy-page-'));
+  t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
+  const projectId = PROJECT + '-legacy-page';
+  const files = [{ path: 'main.tex', content: 'Main manuscript content.\n'.repeat(8) },
+    { path: 'sections/intro.tex', content: 'Nested introduction section.\n'.repeat(8) }];
+  const full = { files, capabilities: { fullProjectSnapshot: true, method: 'overleaf-zip' } };
+  const mirror = await Mirror.syncOverleafToMirror({ projectId, rootDir, project: full });
+  const baseline = JSON.parse(fs.readFileSync(mirror.baselinePath));
+  baseline.lastSyncSource = 'overleaf-doc-fetch-lightweight';
+  fs.writeFileSync(mirror.baselinePath, JSON.stringify(baseline));
+  const state = () => Mirror.getMirrorStatus(projectId, { rootDir });
+  assert.equal(state().exists, false);
+  assert.equal(state().dirtyReason, 'snapshot_inventory_unverified');
+  const overlays = [{ path: files[0].path, content: files[0].content + 'Current editor overlay.\n' }];
+  await assert.rejects(Mirror.applyFileOverlays({ projectId, rootDir, overlays }), { code: 'mirror_stale' });
+  const confirmation = await Mirror.confirmWritebackFiles({ projectId, rootDir, paths: [files[0].path],
+    expectedFiles: [{ path: files[0].path, sha256: OtText.hashText(files[0].content) }] });
+  assert.equal(confirmation.ok, false);
+  assert.equal(confirmation.reason, 'snapshot_inventory_unverified');
+  const patched = await Mirror.patchMirrorFiles({ projectId, rootDir, files: [{ path: files[0].path,
+    baseHash: OtText.hashText(files[0].content), nextContent: overlays[0].content }] });
+  assert.equal(patched.appliedCount, 0);
+  assert.equal(patched.skippedFiles[0].reason, 'dirty_mirror');
+  const partial = await Mirror.syncOverleafToMirror({ projectId, rootDir, project: { files: [files[0]],
+    capabilities: { fullProjectSnapshot: false, method: 'active-editor-lightweight' } } });
+  assert.equal(partial.contentComplete, false);
+  assert.equal(state().exists, false);
+  assert.equal(state().dirty, true);
+  const afterPartial = JSON.parse(fs.readFileSync(mirror.baselinePath));
+  assert.equal(afterPartial.lastFullSyncAt, baseline.lastFullSyncAt);
+  assert.equal(afterPartial.lastSyncSource, baseline.lastSyncSource);
+  for (const file of files) assert.equal(fs.readFileSync(path.join(mirror.workspacePath, file.path), 'utf8'), file.content);
+  await Mirror.syncOverleafToMirror({ projectId, rootDir, project: full });
+  assert.equal(state().exists, true);
+  assert.equal(state().dirty, false);
+  await Mirror.applyFileOverlays({ projectId, rootDir, overlays });
+  assert.equal(fs.readFileSync(path.join(mirror.workspacePath, files[0].path), 'utf8'), overlays[0].content);
+  const confirmed = await Mirror.confirmWritebackFiles({ projectId, rootDir, paths: [files[0].path],
+    expectedFiles: [{ path: files[0].path, sha256: OtText.hashText(overlays[0].content) }] });
+  assert.equal(confirmed.ok, true);
+  assert.equal(state().exists, true);
+  assert.equal(state().lastSyncSource, 'writeback-confirm');
 });

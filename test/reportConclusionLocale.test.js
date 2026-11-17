@@ -334,3 +334,31 @@ test('compiler failure without a log is an error; missing or untimely success ev
     assert.equal(saved.event.detailStructured.conclusionSource.compileStatus, 'unconfirmed');
   }
 });
+
+test('partial workspace sync keeps unavailable paths visible without changing run completion or raw evidence', () => {
+  const skippedFiles = [{ path: 'pictures/large.pdf', reason: 'binary_file_too_large' },
+    { path: 'pictures/second.png', reason: 'binary_project_too_large' }];
+  for (const locale of ['en', 'zh']) {
+    for (const detail of [{ contentComplete: false, skippedFiles }, { skippedFiles }, { contentComplete: false }]) {
+      const event = { type: 'overleaf.sync.completed', status: 'completed',
+        title: 'Readable files synced', detail: { fileCount: 2, ...detail } };
+      const before = JSON.stringify(event);
+      const activity = Transcript.mapAgentEventToActivity(event, { locale });
+      assert.equal(activity.visible, true);
+      assert.equal(activity.status, 'warning');
+      if (detail.skippedFiles) {
+        for (const file of skippedFiles) assert.ok(activity.title.includes(file.path));
+      }
+      assert.deepEqual(activity.technicalDetail.detail, event.detail);
+      assert.equal(JSON.stringify(event), before);
+      const run = roundtripRun({ id: 'sync-partial', mode: 'ask', status: 'completed', events: [activity] });
+      assert.equal(run.status, 'completed');
+      assert.equal(run.events[0].status, 'warning');
+    }
+    for (const detail of [{ fileCount: 2 }, { fileCount: 2, contentComplete: true, skippedFiles: [] }]) {
+      const activity = Transcript.mapAgentEventToActivity({ type: 'overleaf.sync.completed', detail }, { locale });
+      assert.equal(activity.status, 'completed');
+      assert.equal(activity.visible, true);
+    }
+  }
+});

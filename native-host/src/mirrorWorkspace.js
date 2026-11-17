@@ -13,6 +13,13 @@ const NATIVE_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 const SAFE_INLINE_BINARY_CHANGE_BYTES = 512 * 1024;
 const SAFE_NATIVE_RESPONSE_PAYLOAD_BYTES = NATIVE_OUTPUT_LIMIT_BYTES - (64 * 1024);
 const TURN_ATTACHMENTS_DIR = '.codex-overleaf-attachments';
+// Page/editor records are a partial view, including in mirrors written by older
+// versions that incorrectly promoted them to a full project snapshot.
+const PAGE_SNAPSHOT_METHODS = new Set([
+  'overleaf-doc-fetch-lightweight', 'overleaf-doc-fetch',
+  'page-text-files-lightweight', 'open-file-tree-text-files',
+  'active-editor-lightweight', 'active-editor'
+]);
 // Control plane for the parallel-subagents broker (v1.6). Lives inside the
 // workspace so the sandboxed model can write jobs, but is excluded from the
 // mirror scan so queue/result/log files can never enter Overleaf writeback.
@@ -55,7 +62,19 @@ async function syncOverleafToMirror({ projectId, project, rootDir, evidenceProje
   assertProjectPathsForPlatform([...files, ...skippedFiles].map(file => file.path), process.platform);
   const unreadPaths = new Set(skippedFiles.map(file => file.path));
   const nextPaths = new Set([...files.map(file => file.path), ...unreadPaths]);
+  if (fullProjectSnapshot) {
+    const capabilities = project?.capabilities || {};
+    const unexplainedContent = capabilities.contentComplete === false && (!unreadPaths.size
+      || (Array.isArray(capabilities.skipped) ? capabilities.skipped : [])
+        .some(file => !nextPaths.has(file?.path)));
+    if (capabilities.pathIdentityComplete === false || PAGE_SNAPSHOT_METHODS.has(capabilities.method) || unexplainedContent) {
+      const error = new Error('A complete Overleaf project snapshot is required before replacing the local workspace.');
+      error.code = 'mirror_sync_requires_full_project';
+      throw error;
+    }
+  }
   const completeContents = fullProjectSnapshot && !unreadPaths.size;
+  const previousCoverageUnknown = hasUnverifiedPageBaseline(previous);
 
   const mirrorRoot = path.dirname(mirror.projectRoot);
   assertSafeMirrorPathBeforeCreate(mirror.workspacePath, mirrorRoot);
@@ -108,9 +127,10 @@ async function syncOverleafToMirror({ projectId, project, rootDir, evidenceProje
     lastPartialSyncAt: completeContents ? previous.lastPartialSyncAt : now,
     lastSyncSource: fullProjectSnapshot ? (project?.capabilities?.method || 'snapshot') : previous.lastSyncSource,
     lastFileCount: files.length,
-    dirty: unreadPaths.size > 0 || (!completeContents && previous.dirty === true),
-    dirtyReason: unreadPaths.size ? 'snapshot_content_unavailable' : completeContents ? '' : previous.dirtyReason || '',
-    dirtyAt: unreadPaths.size ? now : completeContents ? '' : previous.dirtyAt || '',
+    dirty: unreadPaths.size > 0 || (!completeContents && (previous.dirty === true || previousCoverageUnknown)),
+    dirtyReason: unreadPaths.size ? 'snapshot_content_unavailable' : completeContents ? ''
+      : previousCoverageUnknown ? 'snapshot_inventory_unverified' : previous.dirtyReason || '',
+    dirtyAt: unreadPaths.size ? now : completeContents ? '' : previous.dirtyAt || (previousCoverageUnknown ? now : ''),
     unreadFiles: skippedFiles,
     files: nextBaselineFiles
   });
@@ -123,6 +143,10 @@ async function syncOverleafToMirror({ projectId, project, rootDir, evidenceProje
     contentComplete: completeContents,
     partialSnapshot: !fullProjectSnapshot
   };
+}
+
+function hasUnverifiedPageBaseline(baseline) {
+  return PAGE_SNAPSHOT_METHODS.has(baseline?.lastSyncSource);
 }
 
 // A ZIP skip establishes that a path exists, without establishing its current
@@ -676,6 +700,7 @@ function getMirrorStatus(projectId, options = {}) {
   const mirror = getProjectMirror(projectId, options);
   const baseline = readBaseline(mirror.baselinePath);
   const unreadContents = (baseline.unreadFiles || []).length > 0;
+  const coverageUnknown = hasUnverifiedPageBaseline(baseline);
   if (!baseline.lastFullSyncAt) {
     return {
       exists: false,
@@ -687,13 +712,14 @@ function getMirrorStatus(projectId, options = {}) {
       lastPartialSyncAt: baseline.lastPartialSyncAt || '',
       lastSyncSource: baseline.lastSyncSource || '',
       lastFileCount: Number.isFinite(Number(baseline.lastFileCount)) ? Number(baseline.lastFileCount) : (baseline.files || []).length,
-      dirty: unreadContents || baseline.dirty === true,
-      dirtyReason: unreadContents ? 'snapshot_content_unavailable' : baseline.dirtyReason || '',
+      dirty: unreadContents || coverageUnknown || baseline.dirty === true,
+      dirtyReason: unreadContents ? 'snapshot_content_unavailable'
+        : coverageUnknown ? 'snapshot_inventory_unverified' : baseline.dirtyReason || '',
       workspacePath: mirror.workspacePath,
       ...buildOtStatusFields(baseline, false)
     };
   }
-  if (unreadContents || baseline.dirty === true) {
+  if (unreadContents || coverageUnknown || baseline.dirty === true) {
     return {
       exists: false,
       projectKey: mirror.projectKey,
@@ -705,7 +731,8 @@ function getMirrorStatus(projectId, options = {}) {
       lastSyncSource: baseline.lastSyncSource || '',
       lastFileCount: Number.isFinite(Number(baseline.lastFileCount)) ? Number(baseline.lastFileCount) : (baseline.files || []).length,
       dirty: true,
-      dirtyReason: unreadContents ? 'snapshot_content_unavailable' : baseline.dirtyReason || 'dirty_mirror',
+      dirtyReason: unreadContents ? 'snapshot_content_unavailable'
+        : coverageUnknown ? 'snapshot_inventory_unverified' : baseline.dirtyReason || 'dirty_mirror',
       workspacePath: mirror.workspacePath,
       ...buildOtStatusFields(baseline, false)
     };
@@ -821,6 +848,11 @@ function buildOtStatusFields(baseline = {}, trusted) {
 async function applyFileOverlays({ projectId, overlays, rootDir, evidenceProjectId }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const baseline = readBaseline(mirror.baselinePath);
+  if (hasUnverifiedPageBaseline(baseline)) {
+    const error = new Error('The local workspace needs a full Overleaf project snapshot before it can be reused.');
+    error.code = 'mirror_stale';
+    throw error;
+  }
   const filesByPath = new Map((baseline.files || []).map(f => [f.path, f]));
   const unreadPaths = new Set((baseline.unreadFiles || []).map(file => file.path));
   const references = baselineTextReferences(baseline);
@@ -884,6 +916,9 @@ function assertDocumentProvenance(path, text, references, documentIdentity, proj
 async function confirmWritebackFiles({ projectId, paths, expectedFiles, rootDir }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const baseline = readBaseline(mirror.baselinePath);
+  if (hasUnverifiedPageBaseline(baseline)) {
+    return { ok: false, reason: 'snapshot_inventory_unverified' };
+  }
   if ((baseline.unreadFiles || []).length) {
     return { ok: false, reason: 'snapshot_content_unavailable' };
   }
@@ -961,6 +996,7 @@ async function patchMirrorFiles({ projectId, files, rootDir, source = 'ot' }) {
   const mirror = getProjectMirror(projectId, { rootDir });
   const baseline = readBaseline(mirror.baselinePath);
   const unreadContents = (baseline.unreadFiles || []).length > 0;
+  const coverageUnknown = hasUnverifiedPageBaseline(baseline);
   const baselineByPath = new Map((baseline.files || []).map(file => [file.path, file]));
   const patchedFilesByPath = new Map();
   const appliedFiles = [];
@@ -1009,7 +1045,7 @@ async function patchMirrorFiles({ projectId, files, rootDir, source = 'ot' }) {
     const nextHash = hashText(patch.nextContent);
     if (patch.baseHash !== baselineFile.hash) {
       if (nextHash === baselineFile.hash) {
-        if (unreadContents || baseline.dirty === true) {
+        if (unreadContents || coverageUnknown || baseline.dirty === true) {
           skippedFiles.push({ path: normalized.path, reason: 'dirty_mirror' });
           lastOtErrorCode = 'dirty_mirror';
           continue;
@@ -1036,7 +1072,7 @@ async function patchMirrorFiles({ projectId, files, rootDir, source = 'ot' }) {
       lastOtErrorCode = 'base_hash_mismatch';
       continue;
     }
-    if (unreadContents || baseline.dirty === true) {
+    if (unreadContents || coverageUnknown || baseline.dirty === true) {
       skippedFiles.push({ path: normalized.path, reason: 'dirty_mirror' });
       lastOtErrorCode = 'dirty_mirror';
       continue;

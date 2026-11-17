@@ -443,12 +443,18 @@
       activePath: snapshotActivePath,
       files,
       capabilities: {
-        fullProjectSnapshot: params.restrictToRequestedPathsOnly !== true && !enumerationTruncated && requestedPathsComplete && zipSnapshot?.pathIdentityComplete !== false,
+        // Page state and mounted tree nodes cannot prove the project's inventory.
+        // Reading every discovered text path still leaves undiscovered files and
+        // binary assets unknown; only a source ZIP can authorize full replacement.
+        fullProjectSnapshot: false,
+        contentComplete: false,
         pathIdentityComplete: zipSnapshot?.pathIdentityComplete,
         requestedPathsComplete,
         method: resolvePageSnapshotMethod(files, lightweightOnly),
         skipped,
         diagnostics: {
+          enumerationTruncated,
+          ...(zipSnapshot ? { zipEndpoint: zipSnapshot.endpoint, zipTiming: zipSnapshot.diagnostics } : {}),
           docRecordCount: internalDocRecords.length,
           docRecords: internalDocRecords.slice(0, 8)
         },
@@ -518,6 +524,7 @@
           reason: zipSnapshot.reason || 'ZIP file identities were incomplete'
         }],
         diagnostics: {
+          zipTiming: zipSnapshot.diagnostics,
           docRecordCount: 0,
           docRecords: []
         },
@@ -594,6 +601,9 @@
   }
 
   function canOpenInactiveFileForSnapshot(filePath, params = {}, lightweightOnly, docRecord) {
+    if (params.allowEditorNavigation === false) {
+      return false;
+    }
     if (!lightweightOnly) {
       return true;
     }
