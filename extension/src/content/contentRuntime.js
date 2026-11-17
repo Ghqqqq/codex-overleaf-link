@@ -5615,8 +5615,14 @@
 
   function sanitizeRunProjectSnapshot(project, expectedProjectId = project?.id) {
     if (!project || typeof project !== 'object') return project;
-    if (project.id !== expectedProjectId) return { ...project, files: [], capabilities: { ...project.capabilities,
-      fullProjectSnapshot: false, skipped: [{ path: '', reason: 'document_identity_mismatch' }] } };
+    if (project.id !== expectedProjectId) {
+      // A transport error has no project payload to admit; retain its cause for
+      // the independent recovery read without treating it as another project.
+      const reason = project.id == null && project.ok === false && typeof project.error === 'string'
+        ? project.error : 'document_identity_mismatch';
+      return { ...project, files: [], capabilities: { ...project.capabilities,
+        fullProjectSnapshot: false, skipped: [{ path: '', reason }] } };
+    }
     const normalize = Modules.ProjectFiles.normalizeSafeProjectPath;
     const files = Array.isArray(project.files) ? project.files.map(file => file?.documentIdentity === undefined ? file
       : { ...file, documentIdentity: snapshotDocumentIdentity(file.documentIdentity, file.path, project.id) }) : [];

@@ -565,7 +565,7 @@
     const ready = await waitForActiveEditorText(activePath, 5000, { ...options, allowEmpty: true, references });
     return ready.ok
       ? { files: [editorFile(activePath, ready, 'active-editor')], skipped: [] }
-      : { files: [], skipped: [{ path: activePath, reason: ready.code || ready.reason }] };
+      : { files: [], skipped: [{ path: activePath, reason: ready.code || ready.reason, source: 'active-editor' }] };
   }
 
   function mergeSnapshotFiles(primaryFiles = [], overrideFiles = []) {

@@ -64,9 +64,11 @@ async function syncOverleafToMirror({ projectId, project, rootDir, evidenceProje
   const nextPaths = new Set([...files.map(file => file.path), ...unreadPaths]);
   if (fullProjectSnapshot) {
     const capabilities = project?.capabilities || {};
+    // An optional editor overlay can fail while the ZIP still covers the project.
     const unexplainedContent = capabilities.contentComplete === false && (!unreadPaths.size
       || (Array.isArray(capabilities.skipped) ? capabilities.skipped : [])
-        .some(file => !nextPaths.has(file?.path)));
+        .some(file => !nextPaths.has(file?.path)
+          && !(capabilities.method === 'overleaf-zip' && file?.source === 'active-editor')));
     if (capabilities.pathIdentityComplete === false || PAGE_SNAPSHOT_METHODS.has(capabilities.method) || unexplainedContent) {
       const error = new Error('A complete Overleaf project snapshot is required before replacing the local workspace.');
       error.code = 'mirror_sync_requires_full_project';

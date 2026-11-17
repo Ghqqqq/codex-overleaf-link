@@ -1027,6 +1027,39 @@ test('ZIP fallback retains selected text and failure evidence without replacing 
     callPageBridge: async () => { reads++; return ambiguous; } });
   assert.equal(reads, 1, 'known ZIP path ambiguity cannot be repaired by heuristic Page paths');
   assert.equal(rejected.capabilities.pathIdentityComplete, false);
+
+  const timeout = { ok: false, error: 'Page bridge timed out' };
+  let recoveryReads = 0;
+  const recoveredTransport = await RunController.readProjectSnapshot({ projectId: PROJECT,
+    focusFiles: ['sections/intro.tex'], sanitizeProject: callbacks.sanitizeRunProjectSnapshot,
+    callPageBridge: async (_method, params) => {
+      assert.equal(params.projectId, PROJECT);
+      return ++recoveryReads === 1 ? timeout : router.buildProjectSnapshot(params);
+    } });
+  assert.equal(recoveryReads, 2, 'a transport failure without a project ID still permits the existing Page recovery read');
+  assert.equal(recoveredTransport.capabilities.fullProjectSnapshot, false);
+  assert.equal(RunController.canUseFocusedPartialSnapshot({ project: recoveredTransport,
+    snapshotWarnings: callbacks.getProjectSnapshotWarnings(recoveredTransport),
+    focusFiles: ['sections/intro.tex'], focusFilesAreLiteral: true }), true);
+  assert.ok(recoveredTransport.capabilities.skipped.some(file => file.reason === timeout.error));
+  assert.equal(recoveredTransport.capabilities.skipped.some(file => file.reason === 'document_identity_mismatch'), false);
+  let failedReads = 0;
+  const transportUnavailable = await RunController.readProjectSnapshot({ projectId: PROJECT,
+    sanitizeProject: callbacks.sanitizeRunProjectSnapshot,
+    callPageBridge: async () => { failedReads++; return timeout; } });
+  assert.equal(failedReads, 2);
+  assert.equal(transportUnavailable.files.length, 0);
+  assert.equal(RunController.canUseFocusedPartialSnapshot({ project: transportUnavailable,
+    snapshotWarnings: callbacks.getProjectSnapshotWarnings(transportUnavailable), focusFiles: ['sections/intro.tex'] }), false);
+  for (const mismatchedRead of [1, 2]) {
+    let identityReads = 0;
+    const wrongProject = await RunController.readProjectSnapshot({ projectId: PROJECT,
+      sanitizeProject: callbacks.sanitizeRunProjectSnapshot,
+      callPageBridge: async () => ++identityReads === mismatchedRead ? { ...full, id: 'another-project' } : timeout });
+    assert.equal(identityReads, mismatchedRead);
+    assert.equal(wrongProject.files.length, 0, 'neither source may admit files from an explicitly different project');
+    assert.equal(wrongProject.capabilities.fullProjectSnapshot, false);
+  }
 });
 
 test('page fallback honors disabled editor navigation while retaining explicit navigation reads', async t => {
@@ -1121,8 +1154,10 @@ test('full snapshot admission preserves the mirror on contradictions and retains
   const before = fs.readFileSync(mirror.baselinePath);
   for (const contradiction of [{ pathIdentityComplete: false }, { method: 'active-editor-lightweight' },
     { contentComplete: false }, { contentComplete: false, skipped: [
+      { path: 'deleted.tex', reason: 'document_identity_mismatch', source: 'active-editor' }
+    ] }, { contentComplete: false, skipped: [
       { path: files[2].path, reason: 'binary_file_too_large' },
-      { path: files[1].path, reason: 'document_content_unavailable' }
+      { path: files[1].path, reason: 'document_identity_mismatch' }
     ] }]) {
     await assert.rejects(sync({ files: [{ ...files[0], content: 'untrusted replacement' }],
       capabilities: { ...capabilities, ...contradiction } }), { code: 'mirror_sync_requires_full_project' });
@@ -1131,12 +1166,30 @@ test('full snapshot admission preserves the mirror on contradictions and retains
     assert.equal(read(files[1].path).toString(), files[1].content);
     assert.deepEqual(read(files[2].path), asset);
   }
-  const quota = await sync({ files: files.slice(0, 2), capabilities: { ...capabilities, contentComplete: false, skipped: [
-    { path: files[2].path, reason: 'binary_file_too_large', size: 11 * 1024 * 1024 },
-    { path: files[0].path, reason: 'document_identity_mismatch' }
-  ] } });
-  assert.equal(quota.contentComplete, false);
-  assert.deepEqual(quota.skippedFiles.map(file => file.path), [files[2].path]);
+  // Compact fixture of a real ZIP: both text files and an 11 MiB zero-filled asset.
+  const zip = require('node:zlib').inflateSync(Buffer.from('eNrt2r9Kw0AcB/CL10rIoKBdhTiLKb6BkwihcosPUJKrHNg05C7gZkEQcRAHH8JBrJuzz+AgDm6O0uIDVP1dpAZLnC3l+wmX+/uDu/XuJ0Jea7Bv6+z1Znx4Ri1bXCrdtkoCI49aVPvddpLrKFOpCbx/GhC/dpuO+NY1tWxZoaJlZFQv0U2VmKxn970ntZGxX/TjvJgNvBkcnJzLLc51tfbeetywZ7xjq/RPVWTyTOpmRx1QHaRx5+3BcWimf/kxGLoeAwAAAAAAAIA5138+4fYygPmfTztiHwAAAAAAAADmnVpe2rV3AbXx8cvFdh23IwAAAAAAM/iGN2AidBYa/O9c7J+lxVvfJDN7Omo6J7qMumVVGdJlfHXucRl/6lRmIouwvmgXcPruqT7ftL0vJukSeA==', 'base64'));
+  t.mock.method(globalThis, 'fetch', async () => new Response(zip, { headers: { 'content-type': 'application/zip' } }));
+  let activePath;
+  const snapshotRouter = require('../extension/src/page/snapshotRouter').create({
+    window: { location: { origin: 'https://fixture.invalid', href: 'https://fixture.invalid/project/' + projectId },
+      setTimeout, clearTimeout, CodexOverleafProjectFiles: Files },
+    treeOperations: { getProjectId: () => projectId, getEditorStoreFilePath: () => activePath,
+      waitForActiveEditorText: async () => ({ ok: false, code: 'document_identity_mismatch' }) }
+  });
+  for (activePath of [files[0].path, 'deleted.tex']) {
+    const snapshot = await snapshotRouter.buildProjectSnapshot({ zipOnly: true, includeBinaryFiles: true,
+      allowEditorNavigation: false, requireFullProject: true });
+    assert.equal(snapshot.capabilities.fullProjectSnapshot, true);
+    assert.equal(snapshot.capabilities.contentComplete, false);
+    assert.deepEqual(snapshot.capabilities.skipped.find(file => file.path === activePath), {
+      path: activePath, reason: 'document_identity_mismatch', source: 'active-editor'
+    });
+    assert.equal(snapshot.capabilities.skipped.find(file => file.path === files[2].path).size, 11 * 1024 * 1024);
+    const quota = await sync(snapshot);
+    assert.equal(quota.contentComplete, false);
+    assert.deepEqual(quota.skippedFiles.map(file => file.path), [files[2].path]);
+    assert.equal(fs.existsSync(path.join(mirror.workspacePath, 'deleted.tex')), false);
+  }
   assert.equal(read(files[0].path).toString(), files[0].content);
   assert.deepEqual(read(files[2].path), asset);
   const retained = JSON.parse(fs.readFileSync(mirror.baselinePath));

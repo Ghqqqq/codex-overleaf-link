@@ -32,7 +32,7 @@
       ...params
     }), projectId);
     const project = await read({ allowZipFallback: true, includeBinaryFiles: true, zipOnly: true, zipTimeoutMs });
-    if (project?.id !== projectId || project?.capabilities?.fullProjectSnapshot
+    if ((project?.id != null && project.id !== projectId) || project?.capabilities?.fullProjectSnapshot
       || project?.capabilities?.pathIdentityComplete === false) {
       return project;
     }
@@ -47,8 +47,8 @@
         ...pageProject.capabilities,
         fullProjectSnapshot: false,
         contentComplete: false,
-        skipped: [...(project.capabilities?.skipped || []), ...(pageProject.capabilities?.skipped || [])],
-        diagnostics: { ...project.capabilities?.diagnostics, ...pageProject.capabilities?.diagnostics }
+        skipped: [...(project?.capabilities?.skipped || []), ...(pageProject.capabilities?.skipped || [])],
+        diagnostics: { ...project?.capabilities?.diagnostics, ...pageProject.capabilities?.diagnostics }
       }
     };
   }
