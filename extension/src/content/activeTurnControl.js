@@ -342,8 +342,6 @@
     if (!activity?.visible || activity.kind === 'technical') return null;
     return { kind: activity.kind || 'activity', title: options.sanitizeText(activity.title) || 'Event',
       status: activity.status || 'running', detail: options.sanitizeValue(activity.detail),
-      // Keep the producer so recovered titles are classified as they were live.
-      ...(typeof raw?.type === 'string' && raw.type ? { producerType: options.sanitizeText(raw.type) } : {}),
       timestamp: raw.timestamp || journal.updatedAt || new Date().toISOString(),
       streamKey: options.sanitizeText(activity.streamKey), streamRole: options.sanitizeText(activity.streamRole),
       appendText: options.sanitizeText(activity.appendText), replaceText: activity.replaceText };

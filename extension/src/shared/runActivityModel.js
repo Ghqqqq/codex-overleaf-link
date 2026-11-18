@@ -62,8 +62,9 @@
   }
 
   const MAX_UNREAD_PATHS = 3;
-  const PARTIAL_WORKSPACE_TITLE = /^(?:Synced (\d+) readable files; some project content is unavailable\.(?: Unread: (.+)\.$)?|已同步 (\d+) 个可读文件，部分项目内容不可用。(?:未读取：(.+)。$)?)/;
-  const COMPLETE_WORKSPACE_TITLE = /^(?:Synced (\d+) files\.|已同步 (\d+) 个文件|Synced the Overleaf project\.|已同步 Overleaf 项目，)/;
+  // Whole product titles only, so other text that starts the same way stays what it is.
+  const PARTIAL_WORKSPACE_TITLE = /^(?:Synced (\d+) readable files; some project content is unavailable\.(?: Unread: (.+)\.)?|已同步 (\d+) 个可读文件，部分项目内容不可用。(?:未读取：(.+)。)?)$/;
+  const COMPLETE_WORKSPACE_TITLE = /^(?:Synced (\d+) files\. Local Codex will work from this workspace\.|已同步 (\d+) 个文件，本地 Codex 将直接处理这份 workspace。|Synced the Overleaf project\. Local Codex will work from this workspace\.|已同步 Overleaf 项目，本地 Codex 将直接处理这份 workspace。)$/;
 
   // Start-up steps before the model's first response. Plugin titles are matched in both locales so
   // persisted history (which drops technicalDetail) still classifies; `written` carries a file count.
@@ -83,7 +84,7 @@
     let step = type.startsWith('overleaf.sync.') && type !== 'overleaf.sync.changes' ? 'workspace'
       : type === 'codex.runtime.selected' ? 'codex' : type === 'codex.skill_isolation.applied' ? 'hidden' : '';
     // Sync titles identify a workspace step only when no other producer is known.
-    const producerType = type || text(event.producerType) || text(event.type);
+    const producerType = type || text(event.type);
     const canUseSyncTitle = !producerType || producerType.startsWith('overleaf.sync.');
     let match = null;
     if (!step) for (const [name, pattern] of SETUP_TITLES) {
@@ -290,8 +291,17 @@
     // Stream updates are saved before rendering; buffering and localization copy
     // their objects. Keep the current saved event instead of its incoming copy.
     const incomingStreamKey = incoming?.kind === 'stream' ? text(incoming.streamKey) : '';
+    // A non-stream incoming event is a (possibly re-localized) copy of one just saved
+    // when its timestamp, status and captured facts match; distinct events differ.
+    const incomingFacts = incoming && !incomingStreamKey ? JSON.stringify(capture(incoming) ?? null) : '';
+    const isSavedCopy = event => !incomingStreamKey && event?.kind === incoming.kind
+      && text(event.timestamp) && text(event.timestamp) === text(incoming.timestamp)
+      && text(event.status) === text(incoming.status)
+      && (incomingFacts !== 'null' ? JSON.stringify(capture(event) ?? null) === incomingFacts
+        : text(event.title) === text(incoming.title));
     const alreadySaved = incoming && saved.some(event => event === incoming
-      || (incomingStreamKey && event?.kind === 'stream' && event.streamKey === incomingStreamKey));
+      || (incomingStreamKey && event?.kind === 'stream' && event.streamKey === incomingStreamKey)
+      || isSavedCopy(event));
     const events = incoming && !alreadySaved ? saved.concat(incoming) : saved;
     const ordered = [];
     const diagnostics = [];
@@ -331,16 +341,6 @@
       const entry = { step, state, at, endAt: state === 'running' ? '' : at, count: meta?.written, version: meta?.output || '',
         paths: meta?.paths, skipped: meta?.skipped, unreadList: meta?.unreadList,
         reviewing: /Reviewing|留痕/.test(text(event.title)) };
-      // A localized incoming copy can follow the saved finish, including other setup events.
-      const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-      const duplicate = at && TERMINAL.has(state) && setup.steps.findLast(previous =>
-        previous.step === step && previous.state === state && previous.endAt === at
-        && same(previous.count, entry.count) && previous.version === entry.version
-        && same(previous.paths, entry.paths) && same(previous.unreadList, entry.unreadList));
-      if (duplicate) {
-        Object.assign(duplicate, { ...entry, at: duplicate.at });
-        return;
-      }
       // A finished step closes any step still running before it (start-up is sequential).
       for (const entry of setup.steps) if (entry.state === 'running' && entry.step !== step) Object.assign(entry, { state: 'completed', endAt: at });
       if (last && last.step === step && last.state === 'running') {
