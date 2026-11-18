@@ -604,3 +604,53 @@ test('warm-mirror rejection keeps its explanation and uses the ZIP guidance only
     }
   }
 });
+
+test('the project-read diagnostic reads assets like a run and never calls a project with unread content complete', async () => {
+  const vm = require('node:vm');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const sandbox = { window: {} };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../extension/src/content/diagnosticsController.js'), 'utf8'), sandbox);
+  const zip = (skipped, contentComplete) => ({ id: 'p', activePath: 'main.tex', files: [
+    { path: 'main.tex', content: '\\documentclass{article}\n'.repeat(8) }, { path: 'fig/a.png', encoding: 'base64', content: 'AA==' }],
+  capabilities: { fullProjectSnapshot: true, contentComplete, method: 'overleaf-zip', skipped } });
+  const failed = { id: 'p', files: [], capabilities: { fullProjectSnapshot: false, method: 'overleaf-zip-file-list-unavailable',
+    skipped: [{ path: 'project.zip', reason: 'https://overleaf.invalid/project/p/download/zip returned 503' }] } };
+  for (const locale of ['en', 'zh']) {
+    const tr = key => I18n.t(locale, key);
+    let snapshot, params;
+    const controller = sandbox.window.CodexOverleafDiagnosticsController.create({
+      tr, tx: (en, zh) => locale === 'zh' ? zh : en,
+      callPageBridge: async (_method, value) => { params = value; return snapshot; },
+      getCurrentProjectId: () => 'p', RUN_SNAPSHOT_ZIP_TIMEOUT_MS: 30000,
+      formatProjectSnapshotLog: () => '', formatProjectSnapshotWarning: value => value,
+      getProjectSnapshotWarnings: () => ({ blocking: [], nonBlocking: [] }),
+      isTextSnapshotFile: file => file.encoding !== 'base64',
+      describeProjectZipFailure: project => {
+        const zipFailure = Failures.captureProjectZipFailure(project?.capabilities);
+        return zipFailure ? Failures.localizeFailureReason({ code: 'project_snapshot_unavailable', evidence: { zipFailure } }, locale, tr) : null;
+      }
+    });
+    const check = async value => { snapshot = value; return controller.inspectProjectSnapshot({ collectOnly: true }); };
+
+    const complete = await check(zip([], true));
+    assert.equal(params.includeBinaryFiles, true);
+    assert.equal(params.projectId, 'p');
+    assert.equal(complete.status, 'completed');
+    assert.equal(complete.title, locale === 'zh' ? '项目读取正常' : 'Project Read OK');
+
+    const quota = await check(zip([{ path: 'fig/huge.png', reason: 'binary_file_too_large' }], false));
+    assert.equal(quota.status, 'warning');
+    assert.match(quota.summary, /fig\/huge\.png/);
+    assert.match(quota.nextStep, locale === 'zh' ? /10 MB/ : /over 10 MB/);
+
+    const overlay = await check(zip([{ path: 'main.tex', reason: 'editor_not_ready', source: 'active-editor' }], true));
+    assert.equal(overlay.status, 'completed');
+
+    const blocked = await check(failed);
+    assert.equal(blocked.status, 'warning');
+    assert.match(blocked.summary, locale === 'zh' ? /HTTP 503/ : /returned HTTP 503/);
+    assert.equal(blocked.nextStep, I18n.t(locale, 'failureReason_project_source_download_next'));
+    assert.doesNotMatch(blocked.summary + blocked.nextStep, /overleaf\.invalid|\/project\/p\//);
+  }
+});

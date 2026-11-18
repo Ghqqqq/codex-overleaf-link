@@ -362,6 +362,11 @@
     formatProjectSnapshotWarning,
     getProjectSnapshotWarnings,
     isTextSnapshotFile,
+    describeProjectZipFailure: project => {
+      const zipFailure = FailureReasons.captureProjectZipFailure(project?.capabilities);
+      return zipFailure ? FailureReasons.localizeFailureReason({ code: 'project_snapshot_unavailable', evidence: { zipFailure } },
+        getLocale(), failureReasonI18nLookup) : null;
+    },
     INSTALL_COMMAND,
     RUN_SNAPSHOT_ZIP_TIMEOUT_MS
   });

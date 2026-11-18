@@ -31,6 +31,7 @@
       formatProjectSnapshotWarning,
       getProjectSnapshotWarnings,
       isTextSnapshotFile,
+      describeProjectZipFailure,
       INSTALL_COMMAND,
       RUN_SNAPSHOT_ZIP_TIMEOUT_MS
     } = deps;
@@ -146,12 +147,17 @@
       : beginDiagnostics('diagnosticsSnapshotTitle', 'diagnosticsSnapshotLoading');
     let result;
     try {
+      // Read what a whole-project run reads, assets included, so the result
+      // cannot report the full project while every picture is missing.
       const project = await callPageBridge('getProjectSnapshot', {
+        projectId: getCurrentProjectId?.(),
         force: true,
+        maxAgeMs: 0,
         preferLightweight: true,
         allowZipFallback: true,
         allowEditorNavigation: false,
         requireFullProject: true,
+        includeBinaryFiles: true,
         zipOnly: true,
         zipTimeoutMs: RUN_SNAPSHOT_ZIP_TIMEOUT_MS
       });
@@ -648,6 +654,34 @@
       { label: tx('Asset files', '资源文件'), value: tx(String(binaryCount), `${binaryCount} 个`) },
       { label: tx('Current file', '当前文件'), value: project?.activePath || tx('Not detected', '未识别') }
     ];
+    const capabilities = project?.capabilities || {};
+    // A complete inventory can still lack content, e.g. an asset over the size limit.
+    // A failed optional editor overlay is not missing project content.
+    const unreadFiles = (Array.isArray(capabilities.skipped) ? capabilities.skipped : [])
+      .filter(file => file?.path && file.path !== 'project.zip' && file.source !== 'active-editor');
+    if (fullProject && files.length && (capabilities.contentComplete === false || unreadFiles.length)) {
+      const paths = [...new Set(unreadFiles.map(file => String(file.path)))];
+      const shown = paths.slice(0, 3);
+      const more = paths.length - shown.length;
+      const list = paths.length
+        ? (more > 0 ? tx(`${shown.join(', ')} and ${more} more`, `${shown.join('、')} 等 ${paths.length} 个文件`) : shown.join(tx(', ', '、')))
+        : '';
+      const sizeLimited = unreadFiles.some(file => /^binary_(?:file|project)_too_large$/.test(file.reason || ''));
+      return {
+        title: tx('Some Project Files Not Read', '部分项目文件未读取'),
+        subtitle: tx(`Read source: ${source}`, `读取来源：${source}`),
+        status: 'warning',
+        summary: list
+          ? tx(`The extension read the project's file list, but not the content of: ${list}.`, `插件读到了项目的文件列表，但没有读到这些文件的内容：${list}。`)
+          : tx("The extension read the project's file list, but not every file's content.", '插件读到了项目的文件列表，但没有读到所有文件的内容。'),
+        facts,
+        notes: warningText,
+        nextStep: sizeLimited
+          ? tx('Assets over 10 MB, or over 80 MB in total, are not sent to Codex. Make them smaller if Codex needs them.', '单个超过 10 MB 或合计超过 80 MB 的资源文件不会发给 Codex；如果需要 Codex 使用，请先压缩这些文件。')
+          : tx('Run the check again. Files that still cannot be read are not available to Codex.', '请重新检测；仍然读不到的文件，Codex 无法使用其内容。'),
+        technical: formatProjectSnapshotLog(project)
+      };
+    }
     if (fullProject && files.length) {
       return {
         title: tx('Project Read OK', '项目读取正常'),
@@ -662,11 +696,12 @@
         technical: formatProjectSnapshotLog(project)
       };
     }
+    const zipFailure = describeProjectZipFailure?.(project);
     return {
       title: files.length ? tx('Full Project Not Read', '没有读到完整项目') : tx('No Project Files Read', '没有读到项目文件'),
       subtitle: tx(`Read source: ${source}`, `读取来源：${source}`),
       status: 'warning',
-      summary: files.length
+      summary: zipFailure ? zipFailure.userMessage : files.length
         ? tx(
           `The full Overleaf project was not read. Currently read ${textCount} text file(s)${binaryCount ? `, ${binaryCount} asset file(s)` : ''}.`,
           `没有读到完整的 Overleaf 项目。当前只读到 ${textCount} 个文本文件${binaryCount ? `，${binaryCount} 个资源文件` : ''}。`
@@ -674,7 +709,8 @@
         : tx('The full Overleaf project was not read, and no usable file content was available.', '没有读到完整的 Overleaf 项目，也没有拿到可用文件内容。'),
       facts,
       notes: warningText,
-      nextStep: tx('Reload Overleaf and wait for the left file tree to load, then retry. If you only want one file, use + to add @file context.', '刷新 Overleaf 页面，等左侧文件树加载完成后重试；如果只想处理一个文件，可以用 + 添加 @file 上下文。'),
+      nextStep: zipFailure ? zipFailure.nextAction
+        : tx('Reload Overleaf and wait for the left file tree to load, then retry. If you only want one file, use + to add @file context.', '刷新 Overleaf 页面，等左侧文件树加载完成后重试；如果只想处理一个文件，可以用 + 添加 @file 上下文。'),
       technical: formatProjectSnapshotLog(project)
     };
   }
