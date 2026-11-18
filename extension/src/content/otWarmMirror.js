@@ -33,6 +33,7 @@
       formatProjectSnapshotUserLog,
       formatProjectSnapshotWarning,
       getProjectSnapshotWarnings,
+      buildProjectSnapshotFailure,
       sendBackgroundNative,
       callPageBridge,
       saveStateSoon,
@@ -891,15 +892,22 @@
       isUsableProjectFileContent: projectFiles.isUsableProjectFileContent
     });
     if (snapshotWarnings.blocking.length && !focusedPartialSnapshot) {
-      for (const warning of snapshotWarnings.blocking) {
-        appendLog(tx(`Cannot continue: ${formatProjectSnapshotWarning(warning)}`, `无法继续：${formatProjectSnapshotWarning(warning)}`));
+      const snapshotFailure = buildProjectSnapshotFailure(project, snapshotWarnings);
+      const zipFailure = snapshotFailure.evidence.zipFailure;
+      if (zipFailure) {
+        appendLog(snapshotFailure.userMessage);
+      } else {
+        for (const warning of snapshotWarnings.blocking) {
+          appendLog(tx(`Cannot continue: ${formatProjectSnapshotWarning(warning)}`, `无法继续：${formatProjectSnapshotWarning(warning)}`));
+        }
       }
       appendCompletionReport({
         conclusion: tr('warmMirrorStaleBlockedConclusion'), conclusionKey: 'warm_mirror_stale',
         status: 'blocked',
         operations: [],
         applyResults: [],
-        nextStep: tr('warmMirrorStaleBlockedNextStep')
+        nextStep: zipFailure ? snapshotFailure.nextAction : tr('warmMirrorStaleBlockedNextStep'),
+        ...(zipFailure ? { failure: snapshotFailure } : {})
       });
       await finishRunView(tr('warmMirrorStaleBlockedTitle'), 'failed');
       return { ok: false };

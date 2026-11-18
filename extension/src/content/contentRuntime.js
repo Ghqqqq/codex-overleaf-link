@@ -290,6 +290,7 @@
     formatProjectSnapshotUserLog,
     formatProjectSnapshotWarning,
     getProjectSnapshotWarnings,
+    buildProjectSnapshotFailure,
     sendBackgroundNative,
     callPageBridge,
     saveStateSoon,
@@ -2205,17 +2206,9 @@
         // canonical `project_snapshot_unavailable` so downstream renderers
         // (run-card + final-report) get the same data the page-side emitters
         // produce for navigation/preflight codes.
-        const zipFailure = FailureReasons.captureProjectZipFailure(project?.capabilities);
-        const snapshotFailure = buildContentFailure('project_snapshot_unavailable', null, {
-          evidence: {
-            fetchFailed: true,
-            blocking: snapshotWarnings.blocking.slice(0, 8),
-            fileCount: (project?.files || []).length,
-            ...(zipFailure ? { zipFailure } : {})
-          }
-        });
+        const snapshotFailure = buildProjectSnapshotFailure(project, snapshotWarnings);
+        const zipFailure = snapshotFailure.evidence.zipFailure;
         if (zipFailure) {
-          Object.assign(snapshotFailure, FailureReasons.localizeFailureReason(snapshotFailure, getLocale(), failureReasonI18nLookup));
           appendLog(snapshotFailure.userMessage);
         } else {
           for (const warning of snapshotWarnings.blocking) {
@@ -7598,6 +7591,20 @@
       overrides,
       FailureReasons
     );
+  }
+
+  function buildProjectSnapshotFailure(project, snapshotWarnings) {
+    const zipFailure = FailureReasons.captureProjectZipFailure(project?.capabilities);
+    const failure = buildContentFailure('project_snapshot_unavailable', null, {
+      evidence: {
+        fetchFailed: true,
+        blocking: snapshotWarnings.blocking.slice(0, 8),
+        fileCount: (project?.files || []).length,
+        ...(zipFailure ? { zipFailure } : {})
+      }
+    });
+    if (!zipFailure) return failure;
+    return { ...failure, ...FailureReasons.localizeFailureReason(failure, getLocale(), failureReasonI18nLookup) };
   }
 
   async function applyTrackedChangeSettlement(runId, kind, result, options = {}) {

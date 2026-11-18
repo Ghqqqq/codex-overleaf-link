@@ -282,7 +282,10 @@
     function workspaceWarning(entry) {
       const warning = tx('Some project content was not read', '部分项目内容未读取');
       const paths = (entry.paths || []).map(plain).filter(Boolean);
-      if (!paths.length) return warning;
+      if (!paths.length) {
+        const unreadList = plain(entry.unreadList);
+        return unreadList ? warning + ' · ' + unreadList : warning;
+      }
       const more = (entry.skipped || 0) - paths.length;
       const files = paths.join(tx(', ', '、'));
       return warning + ' · ' + (more > 0 ? tx(files + ' and ' + more + ' more', files + ' 等 ' + entry.skipped + ' 个文件') : files);

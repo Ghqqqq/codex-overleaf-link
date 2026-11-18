@@ -894,6 +894,14 @@
   const isDownloadErrorStatus = status => Number.isInteger(status) && status >= 300 && status <= 599;
   const isZipTimeout = reason => /\btimed?\s*out\b|\btimeout\b/i.test(reason);
 
+  function zipEvidenceText(value, maxLength) {
+    // Retain request paths without origins, query strings, or fragments. Path
+    // form also survives the history display sanitizer's local-path check.
+    return value.replace(/https?:\/\/[^\s<>]+/gi, url => {
+      try { return new URL(url).pathname; } catch { return '[download URL]'; }
+    }).slice(0, maxLength);
+  }
+
   function captureProjectZipFailure(capabilities) {
     const skipped = Array.isArray(capabilities?.skipped) ? capabilities.skipped : [];
     // The ZIP reader records this synthetic path. A real project.zip can also
@@ -901,10 +909,16 @@
     const reason = skipped.find(file => file?.path === 'project.zip' && typeof file.reason === 'string'
       && /^(?:Overleaf (?:source ZIP was unavailable|ZIP download\b)|https?:\/\/\S+ (?:returned|failed:) )/.test(file.reason))?.reason;
     if (!reason) return undefined;
-    const { zipEndpoint, zipTiming } = capabilities.diagnostics || {};
-    const attempts = Array.isArray(zipTiming?.attempts) ? zipTiming.attempts : [];
+    const zipTiming = capabilities.diagnostics?.zipTiming;
+    const attempts = Array.isArray(zipTiming?.attempts) ? zipTiming.attempts.slice(-2) : [];
     const last = attempts.at(-1);
-    const evidence = { reason, zipEndpoint, zipTiming };
+    const evidence = { reason: zipEvidenceText(reason, 1200), attempts: attempts.flatMap(attempt => {
+      const { status, error } = attempt || {};
+      const entry = {};
+      if (Number.isInteger(status) && status >= 100 && status <= 599) entry.status = status;
+      if (typeof error === 'string' && error) entry.error = zipEvidenceText(error, 320);
+      return Object.keys(entry).length ? [entry] : [];
+    }) };
     if (isZipTimeout(last?.error) || /(?:^|; )Overleaf ZIP download (?:timed out|exhausted)/.test(reason)
       || / failed: [^;]*(?:\btimed?\s*out\b|\btimeout\b)/i.test(reason)) return { ...evidence, kind: 'timeout' };
     const status = last?.status ?? Number(/https?:\/\/\S+ returned (\d{3})$/.exec(reason)?.[1]);
