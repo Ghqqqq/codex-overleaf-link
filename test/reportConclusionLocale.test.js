@@ -506,8 +506,8 @@ test('complete workspace sync retains the ordinary setup row and summary for cur
 
 function assertZipGuidance(nextStep, locale) {
   assert.match(nextStep, locale === 'zh'
-    ? /确认能在 Overleaf 中下载项目源码 ZIP.*输入 @ 或点击 ＋ 添加要处理的文件.*只会写回这些文件/
-    : /download the project's source ZIP from Overleaf.*add the files you want to work on with @ or ＋.*writes back only to those files/);
+    ? /确认能在 Overleaf 中下载项目源码 ZIP.*输入 @ 或点击 ＋ 添加要处理的文件后重试。$/
+    : /download the project's source ZIP from Overleaf.*add the files you want to work on with @ or ＋ and retry\.$/);
   assert.doesNotMatch(nextStep, /Menu|菜单|https?:\/\/|example-private-id/);
 }
 

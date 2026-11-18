@@ -82,10 +82,14 @@
     const title = text(event.title).trim();
     let step = type.startsWith('overleaf.sync.') && type !== 'overleaf.sync.changes' ? 'workspace'
       : type === 'codex.runtime.selected' ? 'codex' : type === 'codex.skill_isolation.applied' ? 'hidden' : '';
-    let match = null;
-    if (!step) for (const [name, pattern] of SETUP_TITLES) if ((match = pattern.exec(title))) { step = name; break; }
-    const producerType = type || text(event.type);
+    // Sync titles identify a workspace step only when no other producer is known.
+    const producerType = type || text(event.producerType) || text(event.type);
     const canUseSyncTitle = !producerType || producerType.startsWith('overleaf.sync.');
+    let match = null;
+    if (!step) for (const [name, pattern] of SETUP_TITLES) {
+      if (name === 'workspace' && !canUseSyncTitle) continue;
+      if ((match = pattern.exec(title))) { step = name; break; }
+    }
     const partial = canUseSyncTitle ? PARTIAL_WORKSPACE_TITLE.exec(title) : null;
     const syncTitle = canUseSyncTitle && !partial ? COMPLETE_WORKSPACE_TITLE.exec(title) : null;
     if (!step && (partial || syncTitle)) step = 'workspace';
@@ -328,8 +332,11 @@
         paths: meta?.paths, skipped: meta?.skipped, unreadList: meta?.unreadList,
         reviewing: /Reviewing|留痕/.test(text(event.title)) };
       // A localized incoming copy can follow the saved finish, including other setup events.
+      const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
       const duplicate = at && TERMINAL.has(state) && setup.steps.findLast(previous =>
-        previous.step === step && previous.state === state && previous.endAt === at);
+        previous.step === step && previous.state === state && previous.endAt === at
+        && same(previous.count, entry.count) && previous.version === entry.version
+        && same(previous.paths, entry.paths) && same(previous.unreadList, entry.unreadList));
       if (duplicate) {
         Object.assign(duplicate, { ...entry, at: duplicate.at });
         return;
