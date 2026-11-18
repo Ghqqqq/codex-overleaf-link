@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.6.7 - 2026-11-18
+
+### Fixed
+
+- Never delete local copies of project files when Overleaf's project download fails. Files in subfolders and images no longer go missing from the local workspace while a run reports a completed sync ([#10](https://github.com/Ghqqqq/codex-overleaf-link/issues/10)). A whole-project run now needs the complete project; otherwise it stops, names the download problem, and suggests checking the project's source download or adding the files you want with @ or ＋.
+- Show a warning in the run's setup steps that names the files Codex could not read, for example an image over the size limit, instead of reporting a complete sync.
+- Refresh a local workspace that an earlier version built from a partial page read before using it again.
+- The Project read diagnostic now reads images as a run does, and warns with the unread files instead of reporting the full project as read.
+
 ## v2.6.6 - 2026-11-13
 
 ### Fixed
