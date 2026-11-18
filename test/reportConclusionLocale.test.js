@@ -612,7 +612,7 @@ test('the project-read diagnostic reads assets like a run and never calls a proj
   const sandbox = { window: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../extension/src/content/diagnosticsController.js'), 'utf8'), sandbox);
   const zip = (skipped, contentComplete) => ({ id: 'p', activePath: 'main.tex', files: [
-    { path: 'main.tex', content: '\\documentclass{article}\n'.repeat(8) }, { path: 'fig/a.png', encoding: 'base64', content: 'AA==' }],
+    { path: 'main.tex', content: '\\documentclass{article}\n'.repeat(8) }, { path: 'fig/a.png', kind: 'binary', contentBase64: 'AA==', size: 1 }],
   capabilities: { fullProjectSnapshot: true, contentComplete, method: 'overleaf-zip', skipped } });
   const failed = { id: 'p', files: [], capabilities: { fullProjectSnapshot: false, method: 'overleaf-zip-file-list-unavailable',
     skipped: [{ path: 'project.zip', reason: 'https://overleaf.invalid/project/p/download/zip returned 503' }] } };
@@ -624,8 +624,8 @@ test('the project-read diagnostic reads assets like a run and never calls a proj
       callPageBridge: async (_method, value) => { params = value; return snapshot; },
       getCurrentProjectId: () => 'p', RUN_SNAPSHOT_ZIP_TIMEOUT_MS: 30000,
       formatProjectSnapshotLog: () => '', formatProjectSnapshotWarning: value => value,
-      getProjectSnapshotWarnings: () => ({ blocking: [], nonBlocking: [] }),
-      isTextSnapshotFile: file => file.encoding !== 'base64',
+      getProjectSnapshotWarnings: value => ({ blocking: [], nonBlocking: (value?.capabilities?.skipped || []).length ? ['skipped'] : [] }),
+      isTextSnapshotFile: file => file.kind !== 'binary' && typeof file.content === 'string',
       describeProjectZipFailure: project => {
         const zipFailure = Failures.captureProjectZipFailure(project?.capabilities);
         return zipFailure ? Failures.localizeFailureReason({ code: 'project_snapshot_unavailable', evidence: { zipFailure } }, locale, tr) : null;
@@ -642,10 +642,15 @@ test('the project-read diagnostic reads assets like a run and never calls a proj
     const quota = await check(zip([{ path: 'fig/huge.png', reason: 'binary_file_too_large' }], false));
     assert.equal(quota.status, 'warning');
     assert.match(quota.summary, /fig\/huge\.png/);
-    assert.match(quota.nextStep, locale === 'zh' ? /10 MB/ : /over 10 MB/);
+    assert.match(quota.nextStep, /10 MB/);
+
+    const realZipAsset = await check(zip([{ path: 'project.zip', reason: 'binary_file_too_large' }], false));
+    assert.equal(realZipAsset.status, 'warning');
+    assert.match(realZipAsset.summary, /project\.zip/);
 
     const overlay = await check(zip([{ path: 'main.tex', reason: 'editor_not_ready', source: 'active-editor' }], true));
     assert.equal(overlay.status, 'completed');
+    assert.equal(overlay.notes.length, 0);
 
     const blocked = await check(failed);
     assert.equal(blocked.status, 'warning');

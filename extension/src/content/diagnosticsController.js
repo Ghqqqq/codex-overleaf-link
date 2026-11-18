@@ -161,7 +161,12 @@
         zipOnly: true,
         zipTimeoutMs: RUN_SNAPSHOT_ZIP_TIMEOUT_MS
       });
-      result = projectableResult(() => formatProjectSnapshotDiagnosticsResult(project));
+      // The result is re-projected on locale changes; keep only what it reports,
+      // not the asset bodies.
+      const summary = project && typeof project === 'object' ? { ...project,
+        files: (Array.isArray(project.files) ? project.files : []).map(({ contentBase64, ...file }) =>
+          contentBase64 === undefined ? file : { ...file, size: Number.isFinite(Number(file.size)) ? Number(file.size) : undefined }) } : project;
+      result = projectableResult(() => formatProjectSnapshotDiagnosticsResult(summary));
     } catch (error) {
       result = projectableResult(() => ({
         title: tx('Project Read Failed', '项目读取失败'),
@@ -646,7 +651,13 @@
     const textCount = files.filter(isTextSnapshotFile).length;
     const binaryCount = files.length - textCount;
     const fullProject = project?.capabilities?.fullProjectSnapshot === true;
-    const warnings = getProjectSnapshotWarnings(project);
+    // A failed optional editor overlay is not missing project content, and the
+    // synthetic project.zip entry is a download failure rather than a project file.
+    const isOverlayFailure = file => file?.source === 'active-editor';
+    const isDownloadFailure = file => file?.path === 'project.zip' && !/^binary_(?:file|project)_too_large$/.test(file.reason || '');
+    const contentSkips = (Array.isArray(project?.capabilities?.skipped) ? project.capabilities.skipped : [])
+      .filter(file => !isOverlayFailure(file));
+    const warnings = getProjectSnapshotWarnings(project && { ...project, capabilities: { ...project.capabilities, skipped: contentSkips } });
     const warningText = [...warnings.blocking, ...warnings.nonBlocking].map(formatProjectSnapshotWarning);
     const source = project?.capabilities?.method || 'unknown';
     const facts = [
@@ -657,8 +668,7 @@
     const capabilities = project?.capabilities || {};
     // A complete inventory can still lack content, e.g. an asset over the size limit.
     // A failed optional editor overlay is not missing project content.
-    const unreadFiles = (Array.isArray(capabilities.skipped) ? capabilities.skipped : [])
-      .filter(file => file?.path && file.path !== 'project.zip' && file.source !== 'active-editor');
+    const unreadFiles = contentSkips.filter(file => file?.path && !isDownloadFailure(file));
     if (fullProject && files.length && (capabilities.contentComplete === false || unreadFiles.length)) {
       const paths = [...new Set(unreadFiles.map(file => String(file.path)))];
       const shown = paths.slice(0, 3);
@@ -677,7 +687,7 @@
         facts,
         notes: warningText,
         nextStep: sizeLimited
-          ? tx('Assets over 10 MB, or over 80 MB in total, are not sent to Codex. Make them smaller if Codex needs them.', '单个超过 10 MB 或合计超过 80 MB 的资源文件不会发给 Codex；如果需要 Codex 使用，请先压缩这些文件。')
+          ? tx('The project read takes assets up to 10 MB each and 80 MB in total, so these were not read. Make them smaller if Codex needs them.', '项目读取的资源文件上限是单个 10 MB、合计 80 MB，所以这些文件没有读到。如果需要 Codex 使用，请先压缩这些文件。')
           : tx('Run the check again. Files that still cannot be read are not available to Codex.', '请重新检测；仍然读不到的文件，Codex 无法使用其内容。'),
         technical: formatProjectSnapshotLog(project)
       };
