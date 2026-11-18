@@ -60,6 +60,9 @@
     };
   }
 
+  const MAX_UNREAD_PATHS = 3;
+  const PARTIAL_WORKSPACE_TITLE = /^(?:Synced (\d+) readable files; some project content is unavailable\.(?: Unread: (.+)\.$)?|已同步 (\d+) 个可读文件，部分项目内容不可用。(?:未读取：(.+)。$)?)/;
+
   // Start-up steps before the model's first response. Plugin titles are matched in both locales so
   // persisted history (which drops technicalDetail) still classifies; `written` carries a file count.
   const SETUP_TITLES = [
@@ -68,7 +71,7 @@
     ['read', /^(?:Syncing the Overleaf project to the local Codex workspace\.|正在同步 Overleaf 项目到本地 Codex workspace。)$/],
     ['read', /^(?:Read Overleaf project: (\d+) text file|已读取 Overleaf 项目：(\d+) 个文本文件)/],
     ['warm', /^(?:Using the warmed local workspace|使用已预热的本地 workspace)/],
-    ['workspace', /^(?:Syncing the Overleaf project into the local Codex workspace(?:: (\d+))?|正在同步 Overleaf 项目到本地 Codex workspace：(\d+)|Synced (\d+) text files\.|已同步 (\d+) 个文本文件)/],
+    ['workspace', /^(?:Syncing the Overleaf project into the local Codex workspace(?:: (\d+))?|正在同步 Overleaf 项目到本地 Codex workspace：(\d+)|Synced (\d+) (?:text )?files\.|已同步 (\d+) 个(?:文本)?文件|Synced the Overleaf project\.|已同步 Overleaf 项目，)/],
     ['codex', /^(?:Local Codex session is starting\.|本地 Codex session 开始运行。)$/],
     ['codex', /^Using Codex CLI ([^;\s]+?)(?:;|\.?$)/],
     ['hidden', /^Disabled non-Overleaf Codex skills/]
@@ -77,13 +80,29 @@
     const title = text(event.title).trim();
     let step = type.startsWith('overleaf.sync.') && type !== 'overleaf.sync.changes' ? 'workspace'
       : type === 'codex.runtime.selected' ? 'codex' : type === 'codex.skill_isolation.applied' ? 'hidden' : '';
+    const partial = PARTIAL_WORKSPACE_TITLE.exec(title);
+    if (!step && partial) step = 'workspace';
     let match = null;
     if (!step) for (const [name, pattern] of SETUP_TITLES) if ((match = pattern.exec(title))) { step = name; break; }
     if (!step) return undefined;
-    const fileCount = Number(detail.fileCount) || Number(match?.slice(1).find(Boolean)) || undefined;
+    const fileCount = Number(detail.fileCount) || Number(partial?.[1] ?? partial?.[3] ?? match?.slice(1).find(Boolean)) || undefined;
     const version = text(detail.version) || (step === 'codex' && match?.[1]) || '';
-    return normalize({ kind: 'lifecycle', target: 'setup.' + step, state: event.status === 'running' ? 'running' : 'completed',
-      written: Number.isSafeInteger(fileCount) ? fileCount : undefined, output: version }, sanitize);
+    const skippedFiles = Array.isArray(detail.skippedFiles) ? detail.skippedFiles : [];
+    const warn = step === 'workspace' && (partial || (type === 'overleaf.sync.completed'
+      && (event.status === 'warning' || detail.contentComplete === false || skippedFiles.length > 0)));
+    const paths = warn ? [...new Set(skippedFiles.map(file => text(file?.path).trim()).filter(Boolean))] : [];
+    let skipped = paths.length;
+    if (warn && !paths.length && (partial?.[2] || partial?.[4])) {
+      // Older records may only have the bounded unread list embedded in the transcript title.
+      const list = partial[2] || partial[4];
+      const more = (partial[2] ? / and (\d+) more$/ : / 等 (\d+) 个文件$/).exec(list);
+      paths.push(...list.slice(0, more?.index ?? list.length).split(partial[2] ? ', ' : '、'));
+      skipped = more ? (partial[2] ? paths.length + Number(more[1]) : Number(more[1])) : paths.length;
+    }
+    return normalize({ kind: 'lifecycle', target: 'setup.' + step,
+      state: warn ? 'warning' : event.status === 'running' ? 'running' : 'completed',
+      written: Number.isSafeInteger(fileCount) ? fileCount : undefined, output: version,
+      paths: paths.slice(0, MAX_UNREAD_PATHS), skipped: warn ? skipped : undefined }, sanitize);
   }
 
   function contextCompactionState(event = {}) {
@@ -108,7 +127,12 @@
   }
 
   function capture(event = {}, sanitize = text) {
-    if (event.activity?.v === 1) return normalize(event.activity, sanitize);
+    if (event.activity?.v === 1) {
+      // The previous workspace projection stored partial transcript titles as completed.
+      if (event.activity.target === 'setup.workspace' && event.activity.state === 'completed'
+        && PARTIAL_WORKSPACE_TITLE.test(text(event.title).trim())) return captureSetup(event, '', {}, sanitize);
+      return normalize(event.activity, sanitize);
+    }
     if (event.kind === 'report' || event.kind === 'guidance' || event.kind === 'stream') return undefined;
     const raw = event.technicalDetail || (event.kind === 'technical' ? event.detail : null) || {};
     const detail = raw.detail || {};
@@ -301,6 +325,7 @@
       // A finished step closes any step still running before it (start-up is sequential).
       for (const entry of setup.steps) if (entry.state === 'running' && entry.step !== step) Object.assign(entry, { state: 'completed', endAt: at });
       const entry = { step, state, at, endAt: state === 'running' ? '' : at, count: meta?.written, version: meta?.output || '',
+        paths: meta?.paths, skipped: meta?.skipped,
         reviewing: /Reviewing|留痕/.test(text(event.title)) };
       if (last && last.step === step && last.state === 'running') {
         Object.assign(last, { ...entry, at: last.at, count: entry.count ?? last.count, version: entry.version || last.version });
@@ -337,7 +362,7 @@
         stage = 'working';
         return;
       }
-      const meta = event.activity?.v === 1 ? event.activity : capture(event);
+      const meta = event.activity?.v === 1 && event.activity.target !== 'setup.workspace' ? event.activity : capture(event);
       clipped ||= meta?.clipped === true;
       if (meta?.kind === 'lifecycle' && meta.target === 'context_compaction') {
         startWork(event);

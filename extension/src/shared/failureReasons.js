@@ -891,6 +891,27 @@
     return typeof failure?.code === 'string' ? failure.code : '';
   }
 
+  const isDownloadErrorStatus = status => Number.isInteger(status) && status >= 300 && status <= 599;
+  const isZipTimeout = reason => /\btimed?\s*out\b|\btimeout\b/i.test(reason);
+
+  function captureProjectZipFailure(capabilities) {
+    const skipped = Array.isArray(capabilities?.skipped) ? capabilities.skipped : [];
+    // The ZIP reader records this synthetic path. A real project.zip can also
+    // be skipped, so require a download failure reason from the reader.
+    const reason = skipped.find(file => file?.path === 'project.zip' && typeof file.reason === 'string'
+      && /^(?:Overleaf (?:source ZIP was unavailable|ZIP download\b)|https?:\/\/\S+ (?:returned|failed:) )/.test(file.reason))?.reason;
+    if (!reason) return undefined;
+    const { zipEndpoint, zipTiming } = capabilities.diagnostics || {};
+    const attempts = Array.isArray(zipTiming?.attempts) ? zipTiming.attempts : [];
+    const last = attempts.at(-1);
+    const evidence = { reason, zipEndpoint, zipTiming };
+    if (isZipTimeout(last?.error) || /(?:^|; )Overleaf ZIP download (?:timed out|exhausted)/.test(reason)
+      || / failed: [^;]*(?:\btimed?\s*out\b|\btimeout\b)/i.test(reason)) return { ...evidence, kind: 'timeout' };
+    const status = last?.status ?? Number(/https?:\/\/\S+ returned (\d{3})$/.exec(reason)?.[1]);
+    if (isDownloadErrorStatus(status)) return { ...evidence, kind: 'http', status };
+    return { ...evidence, kind: 'unavailable' };
+  }
+
   function localizeFailureMessage(message, locale, i18nLookup) {
     return formatFailureReasonForDisplay({ code: 'unknown_legacy_failure', userMessage: message }, locale, i18nLookup).message;
   }
@@ -1003,6 +1024,15 @@
       return value && value !== key ? value : undefined;
     };
     const code = getFailureMessageCode(failure);
+    const zip = code === 'project_snapshot_unavailable' ? failure.evidence?.zipFailure : undefined;
+    if (zip) {
+      const kind = zip.kind === 'http' && isDownloadErrorStatus(zip.status) ? 'http'
+        : zip.kind === 'timeout' ? 'timeout' : 'unavailable';
+      const user = lookup('failureReason_project_source_download_' + kind + '_user');
+      const next = lookup('failureReason_project_source_download_next');
+      if (user && next) return { userMessage: user.replace('{status}', () => String(zip.status)), nextAction: next };
+      if (failure.userMessage && failure.nextAction) return { userMessage: failure.userMessage, nextAction: failure.nextAction };
+    }
     const userTemplate = code ? lookup('failureReason_' + code + '_user') : undefined;
     const nextTemplate = (code ? lookup('failureReason_' + code + '_next') : undefined)
       || (REVIEW_DISPLAY_CODES.has(code) ? lookup('failureReason_review_detail_next') : undefined);
@@ -1037,6 +1067,7 @@
     validateFailureReason,
     normalizeFailureReason,
     normalizeWritebackFailure,
+    captureProjectZipFailure,
     isUnconfirmedWriteFailure,
     selectPrimaryWritebackFailure,
     selectPrimaryFailure,

@@ -116,7 +116,10 @@
     const label = t(I18n.MESSAGES.en[findingKey] ? findingKey : 'sensitiveFinding_mixed');
     // Chinese copy separates a Latin term from the preceding Han text with a space.
     const finding = locale === 'zh' && /^[A-Za-z]/.test(label) ? ` ${label}` : label;
-    const shortTitle = I18n.MESSAGES[locale]?.[shortKey] ? t(shortKey, { file, finding }) : '';
+    const zipBlock = source.key === 'full_project_unread' && failure?.code === 'project_snapshot_unavailable'
+      && failure.evidence?.zipFailure;
+    const shortTitle = zipBlock ? display.userMessage
+      : I18n.MESSAGES[locale]?.[shortKey] ? t(shortKey, { file, finding }) : '';
     const savedNext = localizeMetaRow({ key: 'nextStep', value: value('nextStep') }, {
       tx, getLocale: () => locale, tr: t
     }).value;

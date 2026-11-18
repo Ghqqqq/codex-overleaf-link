@@ -2200,27 +2200,35 @@
       });
       let restrictToFocusFiles = runController.shouldRestrictWritebackToFocus({ focusFiles, focusedPartialSnapshot });
       if (snapshotWarnings.blocking.length && !warmMirrorReuse.useExistingMirror && !focusedPartialSnapshot) {
-        for (const warning of snapshotWarnings.blocking) {
-          appendLog(tx(`Cannot continue: ${formatProjectSnapshotWarning(warning)}`, `无法继续：${formatProjectSnapshotWarning(warning)}`));
-        }
         // Structured FailureReason §9.0: the initial project snapshot fetch
         // produced a payload that failed every usable-source check. Emit the
         // canonical `project_snapshot_unavailable` so downstream renderers
         // (run-card + final-report) get the same data the page-side emitters
         // produce for navigation/preflight codes.
+        const zipFailure = FailureReasons.captureProjectZipFailure(project?.capabilities);
         const snapshotFailure = buildContentFailure('project_snapshot_unavailable', null, {
           evidence: {
             fetchFailed: true,
             blocking: snapshotWarnings.blocking.slice(0, 8),
-            fileCount: (project?.files || []).length
+            fileCount: (project?.files || []).length,
+            ...(zipFailure ? { zipFailure } : {})
           }
         });
+        if (zipFailure) {
+          Object.assign(snapshotFailure, FailureReasons.localizeFailureReason(snapshotFailure, getLocale(), failureReasonI18nLookup));
+          appendLog(snapshotFailure.userMessage);
+        } else {
+          for (const warning of snapshotWarnings.blocking) {
+            appendLog(tx(`Cannot continue: ${formatProjectSnapshotWarning(warning)}`, `无法继续：${formatProjectSnapshotWarning(warning)}`));
+          }
+        }
         appendCompletionReport({ conclusionKey: 'full_project_unread',
           conclusion: tx('This run did not continue: the full Overleaf project was not read.', '这轮没有继续：没有读到完整的 Overleaf 项目内容。'),
           status: 'blocked',
           operations: [],
           applyResults: [],
-          nextStep: tx('Reload the Overleaf project or reopen the .tex file you want to process, then retry.', '请刷新 Overleaf 项目或重新打开要处理的 .tex 文件后再试。'),
+          nextStep: zipFailure ? snapshotFailure.nextAction
+            : tx('Reload the Overleaf project or reopen the .tex file you want to process, then retry.', '请刷新 Overleaf 项目或重新打开要处理的 .tex 文件后再试。'),
           failure: snapshotFailure
         });
         await finalizeAuditRecord(runAuditDraft, {
