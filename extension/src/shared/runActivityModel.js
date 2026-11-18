@@ -291,14 +291,15 @@
     // Stream updates are saved before rendering; buffering and localization copy
     // their objects. Keep the current saved event instead of its incoming copy.
     const incomingStreamKey = incoming?.kind === 'stream' ? text(incoming.streamKey) : '';
-    // A non-stream incoming event is a (possibly re-localized) copy of one just saved
-    // when its timestamp, status and captured facts match; distinct events differ.
-    const incomingFacts = incoming && !incomingStreamKey ? JSON.stringify(capture(incoming) ?? null) : '';
-    const isSavedCopy = event => !incomingStreamKey && event?.kind === incoming.kind
+    // A start-up step arrives as a re-localized copy of the event just saved. Only for
+    // those steps, match the copy by timestamp, status and captured facts; every other
+    // event keeps identity matching so distinct events in one millisecond stay separate.
+    const incomingSetup = incoming && !incomingStreamKey ? capture(incoming) : undefined;
+    const setupFacts = incomingSetup?.kind === 'lifecycle' && incomingSetup.target.startsWith('setup.')
+      ? JSON.stringify(incomingSetup) : '';
+    const isSavedCopy = event => Boolean(setupFacts) && event?.kind === incoming.kind
       && text(event.timestamp) && text(event.timestamp) === text(incoming.timestamp)
-      && text(event.status) === text(incoming.status)
-      && (incomingFacts !== 'null' ? JSON.stringify(capture(event) ?? null) === incomingFacts
-        : text(event.title) === text(incoming.title));
+      && text(event.status) === text(incoming.status) && JSON.stringify(capture(event) ?? null) === setupFacts;
     const alreadySaved = incoming && saved.some(event => event === incoming
       || (incomingStreamKey && event?.kind === 'stream' && event.streamKey === incomingStreamKey)
       || isSavedCopy(event));
