@@ -261,6 +261,10 @@
     const SETUP_CALM_MS = 30000;
     function setupStepText(entry, live) {
       const n = entry.count;
+      if (entry.step === 'workspace' && entry.state === 'warning') {
+        return n ? tx('Synced ' + n + ' readable files', '已同步 ' + n + ' 个可读文件')
+          : tx('Local workspace sync is incomplete', '本地工作区同步不完整');
+      }
       const copy = {
         editing: live ? tx('Checking Overleaf editing mode', '检查 Overleaf 编辑模式')
           : entry.reviewing ? tx('Overleaf Track Changes is on', 'Overleaf 已开启留痕') : tx('Overleaf is in Editing mode', 'Overleaf 处于编辑模式'),
@@ -274,6 +278,17 @@
         waiting: live ? tx("Waiting for the model's first response", '等待模型首次响应') : tx('The model responded', '模型已开始响应')
       };
       return copy[entry.step] || '';
+    }
+    function workspaceWarning(entry) {
+      const warning = tx('Some project content was not read', '部分项目内容未读取');
+      const paths = (entry.paths || []).map(plain).filter(Boolean);
+      if (!paths.length) {
+        const unreadList = plain(entry.unreadList);
+        return unreadList ? warning + ' · ' + unreadList : warning;
+      }
+      const more = (entry.skipped || 0) - paths.length;
+      const files = paths.join(tx(', ', '、'));
+      return warning + ' · ' + (more > 0 ? tx(files + ' and ' + more + ' more', files + ' 等 ' + entry.skipped + ' 个文件') : files);
     }
     function setupNote(note) {
       const empty = /^(\d+) file\(s\) have empty\/loading content\.$/.exec(note);
@@ -302,8 +317,10 @@
       else if (steps.some(entry => entry.step === 'warm')) parts.push(tx('synced workspace', '已同步的工作区'));
       const version = steps.find(entry => entry.version)?.version;
       if (version) parts.push('Codex ' + version);
+      const warning = steps.find(entry => entry.step === 'workspace' && entry.state === 'warning');
+      if (warning) parts.push(workspaceWarning(warning));
       text(card.setupFold, parts.join(' · '));
-      card.setupSummary.dataset.notes = String(steps.some(entry => entry.notes?.length));
+      card.setupSummary.dataset.notes = String(Boolean(warning) || steps.some(entry => entry.notes?.length));
       const rows = steps.length ? steps : [{ step: 'start', state: 'running', at: '' }];
       while (card.setupSteps.children.length > rows.length) card.setupSteps.lastChild.remove();
       rows.forEach((entry, index) => {
@@ -314,7 +331,8 @@
           card.setupSteps.append(row);
         }
         const live = active && entry.state === 'running';
-        const warn = Boolean(entry.notes?.length);
+        const workspaceWarn = entry.step === 'workspace' && entry.state === 'warning';
+        const warn = workspaceWarn || Boolean(entry.notes?.length);
         row.dataset.state = live ? 'running' : warn ? 'warning' : 'completed';
         const glyph = row.children[0];
         const glyphKind = live ? 'spinner' : warn ? 'notice' : 'check';
@@ -327,6 +345,7 @@
         const label = entry.step === 'start' ? tx('Starting the task', '正在启动任务') : setupStepText(entry, live);
         const body = row.children[1];
         const extras = [...(entry.notes || []).map(note => ['run-setup-note', setupNote(note)])];
+        if (workspaceWarn) extras.push(['run-setup-note', workspaceWarning(entry)]);
         const started = Date.parse(entry.at || ''), ended = Date.parse(entry.endAt || '');
         const elapsed = Number.isFinite(started) ? Math.max(0, (live ? Date.now() : (Number.isFinite(ended) ? ended : started)) - started) : NaN;
         if (live && entry.step === 'waiting' && elapsed > SETUP_CALM_MS) {
@@ -344,8 +363,8 @@
         text(row.children[2], Number.isFinite(elapsed) && (live || elapsed >= 1000) ? formatElapsed(elapsed) : '');
       });
     }
-    // Collapsed live peek: a three-row window onto the newest start-up step, thought or tool call.
-    // Prose stays out of it; new rows enter at the bottom and push older ones up.
+    // Collapsed live peek: a three-row window onto start-up, thought or tool calls.
+    // A workspace read warning stays visible as new rows enter at the bottom.
     const PEEK_ROWS = 3;
     const PEEK_GLYPHS = {
       spinner: '<circle cx="8" cy="8" r="5.5" opacity=".25"/><path d="M13.5 8A5.5 5.5 0 0 0 8 2.5"/>',
@@ -371,16 +390,22 @@
         const steps = setup.steps.length ? setup.steps : [{ step: 'start', state: 'running' }];
         steps.forEach((entry, index) => {
           const live = entry.state === 'running';
+          const workspaceWarn = entry.step === 'workspace' && entry.state === 'warning';
+          const warn = workspaceWarn || Boolean(entry.notes?.length);
           const started = Date.parse(entry.at || ''), ended = Date.parse(entry.endAt || '');
           const elapsed = Number.isFinite(started) ? Math.max(0, (live ? Date.now() : (Number.isFinite(ended) ? ended : started)) - started) : NaN;
-          entries.push({ key: 'setup:' + index, kind: 'setup', glyph: live ? 'spinner' : entry.notes?.length ? 'notice' : 'check',
-            state: live ? 'running' : entry.notes?.length ? 'warning' : 'completed',
-            lead: (entry.step === 'start' ? tx('Starting the task', '正在启动任务') : setupStepText(entry, live)) + (live ? '…' : ''),
+          entries.push({ key: 'setup:' + index, kind: 'setup', glyph: live ? 'spinner' : warn ? 'notice' : 'check',
+            state: live ? 'running' : warn ? 'warning' : 'completed', workspaceWarn,
+            lead: workspaceWarn ? workspaceWarning(entry) : (entry.step === 'start' ? tx('Starting the task', '正在启动任务') : setupStepText(entry, live)) + (live ? '…' : ''),
             result: entry.notes?.length ? setupNote(entry.notes[0]) : Number.isFinite(elapsed) && (live || elapsed >= 1000) ? formatElapsed(elapsed) : '' });
         });
         return entries;
       }
-      if (setup.steps.length) entries.push({ key: 'setup:fold', kind: 'setup', glyph: 'check', state: 'completed', lead: card.setupFold.textContent });
+      if (setup.steps.length) {
+        const warning = setup.steps.find(entry => entry.step === 'workspace' && entry.state === 'warning');
+        entries.push({ key: 'setup:fold', kind: 'setup', glyph: warning ? 'notice' : 'check', state: warning ? 'warning' : 'completed',
+          lead: warning ? workspaceWarning(warning) : card.setupFold.textContent, workspaceWarn: Boolean(warning) });
+      }
       for (const block of result.blocks) {
         if (block.kind === 'thought') {
           const value = String(sanitize(block.event.title) || '').trim();
@@ -409,7 +434,8 @@
       card.peekMore.hidden = true;
       if (!show) return;
       const entries = peekEntries(card, result, run);
-      const recent = entries.slice(-PEEK_ROWS);
+      const olderWarning = entries.slice(0, -PEEK_ROWS).find(entry => entry.workspaceWarn);
+      const recent = olderWarning ? [olderWarning, ...entries.slice(1 - PEEK_ROWS)] : entries.slice(-PEEK_ROWS);
       const keep = new Set(recent.map(entry => entry.key));
       for (const [key, row] of card.peekRows) if (!keep.has(key)) { row.el.remove(); card.peekRows.delete(key); }
       let cursor = card.peekTrack.firstChild;
@@ -439,12 +465,14 @@
         }
         text(row.label, entry.label || '');
         text(row.lead, entry.kind === 'tool' ? entry.target : entry.lead);
+        row.lead.title = entry.workspaceWarn ? entry.lead : '';
         text(row.result, entry.result ? (entry.kind === 'tool' ? '⎿ ' : '') + entry.result : '');
       }
       const hidden = entries.length - recent.length;
       // The window grows with its rows (1→3) so a fresh run has no empty band; the top fade only appears once rows scroll out.
       card.peek.dataset.rows = String(recent.length);
       card.peek.dataset.overflow = String(hidden > 0);
+      card.peek.dataset.workspaceWarningFirst = String(Boolean(recent[0]?.workspaceWarn));
       card.peekMore.hidden = hidden <= 0;
       text(card.peekMore, tx(hidden + (hidden === 1 ? ' earlier step' : ' earlier steps') + ' · expand to see all', '之前还有 ' + hidden + ' 步 · 展开查看全部'));
     }

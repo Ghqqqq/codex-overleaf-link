@@ -20,6 +20,39 @@
       JSON.stringify(submitted[key] ?? null) === JSON.stringify(current[key] ?? null));
   }
 
+  async function readProjectSnapshot({ projectId, focusFiles = [], zipTimeoutMs, callPageBridge, sanitizeProject }) {
+    const read = async params => sanitizeProject(await callPageBridge('getProjectSnapshot', {
+      projectId,
+      force: true,
+      maxAgeMs: 0,
+      preferLightweight: true,
+      allowEditorNavigation: false,
+      requireFullProject: true,
+      focusFiles,
+      ...params
+    }), projectId);
+    const project = await read({ allowZipFallback: true, includeBinaryFiles: true, zipOnly: true, zipTimeoutMs });
+    if ((project?.id != null && project.id !== projectId) || project?.capabilities?.fullProjectSnapshot
+      || project?.capabilities?.pathIdentityComplete === false) {
+      return project;
+    }
+
+    const pageProject = await read({ allowZipFallback: false, includeBinaryFiles: false });
+    if (pageProject?.id !== projectId) return pageProject;
+    // Keep the latest Page reads for focused/overlay admission, without promoting
+    // their coverage or restoring an earlier editor capture rejected by this read.
+    return {
+      ...pageProject,
+      capabilities: {
+        ...pageProject.capabilities,
+        fullProjectSnapshot: false,
+        contentComplete: false,
+        skipped: [...(project?.capabilities?.skipped || []), ...(pageProject.capabilities?.skipped || [])],
+        diagnostics: { ...project?.capabilities?.diagnostics, ...pageProject.capabilities?.diagnostics }
+      }
+    };
+  }
+
   function buildCodexRunParams({
     currentProjectId,
     state = {},
@@ -290,6 +323,7 @@
   return {
     captureSessionContext,
     isSubmittedComposerUnchanged,
+    readProjectSnapshot,
     buildCodexRunParams,
     canUseFocusedPartialSnapshot,
     shouldRestrictWritebackToFocus,

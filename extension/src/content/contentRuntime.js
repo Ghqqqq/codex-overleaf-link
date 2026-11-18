@@ -290,6 +290,7 @@
     formatProjectSnapshotUserLog,
     formatProjectSnapshotWarning,
     getProjectSnapshotWarnings,
+    buildProjectSnapshotFailure,
     sendBackgroundNative,
     callPageBridge,
     saveStateSoon,
@@ -361,6 +362,11 @@
     formatProjectSnapshotWarning,
     getProjectSnapshotWarnings,
     isTextSnapshotFile,
+    describeProjectZipFailure: project => {
+      const zipFailure = FailureReasons.captureProjectZipFailure(project?.capabilities);
+      return zipFailure ? FailureReasons.localizeFailureReason({ code: 'project_snapshot_unavailable', evidence: { zipFailure } },
+        getLocale(), failureReasonI18nLookup) : null;
+    },
     INSTALL_COMMAND,
     RUN_SNAPSHOT_ZIP_TIMEOUT_MS
   });
@@ -2200,27 +2206,27 @@
       });
       let restrictToFocusFiles = runController.shouldRestrictWritebackToFocus({ focusFiles, focusedPartialSnapshot });
       if (snapshotWarnings.blocking.length && !warmMirrorReuse.useExistingMirror && !focusedPartialSnapshot) {
-        for (const warning of snapshotWarnings.blocking) {
-          appendLog(tx(`Cannot continue: ${formatProjectSnapshotWarning(warning)}`, `无法继续：${formatProjectSnapshotWarning(warning)}`));
-        }
         // Structured FailureReason §9.0: the initial project snapshot fetch
         // produced a payload that failed every usable-source check. Emit the
         // canonical `project_snapshot_unavailable` so downstream renderers
         // (run-card + final-report) get the same data the page-side emitters
         // produce for navigation/preflight codes.
-        const snapshotFailure = buildContentFailure('project_snapshot_unavailable', null, {
-          evidence: {
-            fetchFailed: true,
-            blocking: snapshotWarnings.blocking.slice(0, 8),
-            fileCount: (project?.files || []).length
+        const snapshotFailure = buildProjectSnapshotFailure(project, snapshotWarnings);
+        const zipFailure = snapshotFailure.evidence.zipFailure;
+        if (zipFailure) {
+          appendLog(snapshotFailure.userMessage);
+        } else {
+          for (const warning of snapshotWarnings.blocking) {
+            appendLog(tx(`Cannot continue: ${formatProjectSnapshotWarning(warning)}`, `无法继续：${formatProjectSnapshotWarning(warning)}`));
           }
-        });
+        }
         appendCompletionReport({ conclusionKey: 'full_project_unread',
           conclusion: tx('This run did not continue: the full Overleaf project was not read.', '这轮没有继续：没有读到完整的 Overleaf 项目内容。'),
           status: 'blocked',
           operations: [],
           applyResults: [],
-          nextStep: tx('Reload the Overleaf project or reopen the .tex file you want to process, then retry.', '请刷新 Overleaf 项目或重新打开要处理的 .tex 文件后再试。'),
+          nextStep: zipFailure ? snapshotFailure.nextAction
+            : tx('Reload the Overleaf project or reopen the .tex file you want to process, then retry.', '请刷新 Overleaf 项目或重新打开要处理的 .tex 文件后再试。'),
           failure: snapshotFailure
         });
         await finalizeAuditRecord(runAuditDraft, {
@@ -5604,45 +5610,25 @@
   }
 
   async function getRunProjectSnapshot(expectedProjectId = getCurrentProjectId()) {
-    const project = await callPageBridge('getProjectSnapshot', {
+    return runController.readProjectSnapshot({
       projectId: expectedProjectId,
-      force: true,
-      maxAgeMs: 0,
-      preferLightweight: true,
-      allowZipFallback: true,
-      allowEditorNavigation: false,
-        requireFullProject: true,
-        includeBinaryFiles: true,
-        zipOnly: true,
       zipTimeoutMs: RUN_SNAPSHOT_ZIP_TIMEOUT_MS,
-      focusFiles: getActiveFocusFiles()
+      focusFiles: getActiveFocusFiles(),
+      callPageBridge,
+      sanitizeProject: sanitizeRunProjectSnapshot
     });
-    const sanitizedProject = sanitizeRunProjectSnapshot(project, expectedProjectId);
-    if (sanitizedProject?.capabilities?.fullProjectSnapshot || sanitizedProject?.capabilities?.pathIdentityComplete === false) {
-      return sanitizedProject;
-    }
-    const pageStateProject = await callPageBridge('getProjectSnapshot', {
-      projectId: expectedProjectId,
-      force: true,
-      maxAgeMs: 0,
-      preferLightweight: true,
-      allowZipFallback: false,
-      allowEditorNavigation: false,
-      requireFullProject: true,
-      includeBinaryFiles: false,
-      focusFiles: getActiveFocusFiles()
-    });
-    const sanitizedPageStateProject = sanitizeRunProjectSnapshot(pageStateProject, expectedProjectId);
-    if (sanitizedPageStateProject?.capabilities?.fullProjectSnapshot) {
-      return sanitizedPageStateProject;
-    }
-    return sanitizedProject;
   }
 
   function sanitizeRunProjectSnapshot(project, expectedProjectId = project?.id) {
     if (!project || typeof project !== 'object') return project;
-    if (project.id !== expectedProjectId) return { ...project, files: [], capabilities: { ...project.capabilities,
-      fullProjectSnapshot: false, skipped: [{ path: '', reason: 'document_identity_mismatch' }] } };
+    if (project.id !== expectedProjectId) {
+      // A transport error has no project payload to admit; retain its cause for
+      // the independent recovery read without treating it as another project.
+      const reason = project.id == null && project.ok === false && typeof project.error === 'string'
+        ? project.error : 'document_identity_mismatch';
+      return { ...project, files: [], capabilities: { ...project.capabilities,
+        fullProjectSnapshot: false, skipped: [{ path: '', reason }] } };
+    }
     const normalize = Modules.ProjectFiles.normalizeSafeProjectPath;
     const files = Array.isArray(project.files) ? project.files.map(file => file?.documentIdentity === undefined ? file
       : { ...file, documentIdentity: snapshotDocumentIdentity(file.documentIdentity, file.path, project.id) }) : [];
@@ -7610,6 +7596,20 @@
       overrides,
       FailureReasons
     );
+  }
+
+  function buildProjectSnapshotFailure(project, snapshotWarnings) {
+    const zipFailure = FailureReasons.captureProjectZipFailure(project?.capabilities);
+    const failure = buildContentFailure('project_snapshot_unavailable', null, {
+      evidence: {
+        fetchFailed: true,
+        blocking: snapshotWarnings.blocking.slice(0, 8),
+        fileCount: (project?.files || []).length,
+        ...(zipFailure ? { zipFailure } : {})
+      }
+    });
+    if (!zipFailure) return failure;
+    return { ...failure, ...FailureReasons.localizeFailureReason(failure, getLocale(), failureReasonI18nLookup) };
   }
 
   async function applyTrackedChangeSettlement(runId, kind, result, options = {}) {

@@ -4372,7 +4372,7 @@
   transition: height var(--tl-m-base) var(--tl-m-ease); }
 #codex-overleaf-panel .run-peek[data-rows="0"], #codex-overleaf-panel .run-peek[data-rows="1"] { height: 22px; }
 #codex-overleaf-panel .run-peek[data-rows="2"] { height: calc(2 * 22px); }
-#codex-overleaf-panel .run-peek[data-overflow="true"] { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px); mask-image: linear-gradient(to bottom, transparent 0, #000 16px); }
+#codex-overleaf-panel .run-peek[data-overflow="true"]:not([data-workspace-warning-first="true"]) { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px); mask-image: linear-gradient(to bottom, transparent 0, #000 16px); }
 #codex-overleaf-panel .run-peek[hidden], #codex-overleaf-panel .run-peek-more[hidden] { display: none !important; }
 #codex-overleaf-panel .run-peek-track { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; }
 #codex-overleaf-panel .run-peek-row { display: flex; align-items: center; gap: 7px; min-width: 0; height: 22px; color: var(--tl-fg-2); font-size: var(--tl-text-sm, 12px); line-height: 22px; }
@@ -4414,6 +4414,7 @@
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-6' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m3.5 8 3 3 6-6' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat; }
 #codex-overleaf-panel .run-setup-summary[data-notes="true"] .run-setup-done { color: var(--tl-review); }
+#codex-overleaf-panel .run-setup-summary[data-notes="true"] .run-setup-fold { overflow-wrap: anywhere; }
 #codex-overleaf-panel .run-setup-summary::after { content: "›"; margin-left: auto; color: var(--tl-fg-4); transition: transform var(--tl-m-base) var(--tl-m-ease); }
 #codex-overleaf-panel .run-setup[open] > .run-setup-summary::after { transform: rotate(90deg); }
 #codex-overleaf-panel .run-setup[data-folded="false"] > .run-setup-summary { display: none; }

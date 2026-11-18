@@ -46,6 +46,7 @@ test('a persisted composite report translates only its product suffix and preser
 });
 
 const Completion = require('../extension/src/content/runCompletionMeta');
+const ActivityModel = require('../extension/src/shared/runActivityModel');
 const Controller = require('../extension/src/content/runController');
 const Settlement = require('../extension/src/shared/writebackSettlement');
 const Failures = require('../extension/src/shared/failureReasons');
@@ -332,5 +333,329 @@ test('compiler failure without a log is an error; missing or untimely success ev
     const saved = saveReport({ conclusion, conclusionSource: source }, locale);
     assert.notEqual(project(saved, locale === 'en' ? 'zh' : 'en'), conclusion);
     assert.equal(saved.event.detailStructured.conclusionSource.compileStatus, 'unconfirmed');
+  }
+});
+
+// Mount the real activity view with the DOM operations used by its disclosures and rows.
+function mountActivity(run, locale, { open = false, incoming } = {}) {
+  class Element {
+    constructor(tag, attribute) {
+      this.tag = tag;
+      this.attribute = attribute;
+      this.children = [];
+      this.dataset = {};
+      this.classList = { add() {} };
+      this.value = '';
+    }
+    get textContent() { return this.value + this.children.map(child => child.textContent).join(''); }
+    set textContent(value) { this.replaceChildren(); this.value = value; }
+    get firstChild() { return this.children[0]; }
+    get nextSibling() { return this.parent?.children[this.parent.children.indexOf(this) + 1]; }
+    insertBefore(child, next) {
+      child.remove();
+      this.children.splice(next ? this.children.indexOf(next) : this.children.length, 0, child);
+      child.parent = this;
+    }
+    append(...children) { children.forEach(child => this.insertBefore(child)); }
+    replaceChildren(...children) { while (this.firstChild) this.firstChild.remove(); this.append(...children); }
+    before(child) { this.parent.insertBefore(child, this); }
+    after(child) { this.parent.insertBefore(child, this.nextSibling); }
+    remove() {
+      if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1);
+      this.parent = undefined;
+    }
+    querySelector(selector) {
+      const matches = child => selector === child.tag || selector === `[${child.attribute}]`
+        || (selector.startsWith('.') && child.className?.split(' ').includes(selector.slice(1)));
+      return this.children.map(child => matches(child) ? child : child.querySelector(selector)).find(Boolean);
+    }
+    addEventListener() {}
+    setAttribute() {}
+  }
+  const storage = new Map([['codex-overleaf:workflow-disclosure:v1', JSON.stringify([[run.id + ':run', open]])]]);
+  const window = { sessionStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) } };
+  require('node:vm').runInNewContext(require('node:fs').readFileSync(
+    require.resolve('../extension/src/content/runActivitySummary'), 'utf8'), {
+    window, document: { createElement: tag => new Element(tag) }
+  });
+  const root = new Element('article');
+  const process = new Element('details', 'data-run-process');
+  process.append(new Element('summary', 'data-run-process-summary'));
+  root.append(process, new Element('div', 'data-run-events'));
+  const view = window.CodexOverleafRunActivitySummary.create({ RunActivityModel: ActivityModel, formatElapsed: String,
+    renderMarkdownBlockText() {}, findRunRecord: () => run, tx: (en, zh) => locale === 'zh' ? zh : en });
+  view.mount(root, run);
+  if (incoming) view.update({ root, recordId: run.id }, incoming);
+  return root;
+}
+
+test('partial workspace sync shows unread paths in live and restored setup rows and summaries', () => {
+  const skippedFiles = [{ path: 'pictures/large.pdf', reason: 'binary_file_too_large' },
+    { path: 'pictures/second.png', reason: 'binary_project_too_large' },
+    { path: 'pictures/Smith, Jones、draft.png' }, { path: 'pictures/fourth.png' }];
+  for (const locale of ['en', 'zh']) {
+    for (const detail of [{ contentComplete: false, skippedFiles }, { skippedFiles: skippedFiles.slice(0, 2) }, { contentComplete: false }]) {
+      const event = { type: 'overleaf.sync.completed', status: 'completed',
+        title: 'Readable files synced', detail: { fileCount: 2, ...detail } };
+      const before = JSON.stringify(event);
+      const activity = Transcript.mapAgentEventToActivity(event, { locale });
+      assert.equal(activity.visible, true);
+      assert.equal(activity.status, 'warning');
+      for (const file of (detail.skippedFiles || []).slice(0, 3)) assert.ok(activity.title.includes(file.path));
+      assert.deepEqual(activity.technicalDetail.detail, event.detail);
+      assert.equal(JSON.stringify(event), before);
+      const live = { id: 'sync-partial', mode: 'ask', status: 'running', events: [activity] };
+      const run = roundtripRun({ ...live, status: 'completed' });
+      assert.equal(run.status, 'completed');
+      assert.equal(run.events[0].status, 'warning');
+      assert.ok(!run.events[0].technicalDetail);
+      const { title, status, kind } = activity;
+      const thinking = ['Checking the readable files', 'Reading the introduction', 'Reviewing the results'].map(title => ({
+        kind: 'stream', streamRole: 'reasoning', title, status: 'running'
+      }));
+      const verifyWarning = node => {
+        assert.match(node.textContent, /Some project content was not read|部分项目内容未读取/);
+        for (const file of (detail.skippedFiles || []).slice(0, 3)) assert.ok(node.textContent.includes(file.path));
+        if (detail.skippedFiles?.length > 3) {
+          assert.ok(!node.textContent.includes(skippedFiles[3].path));
+          assert.match(node.textContent, /and 1 more|等 4 个文件/);
+        }
+      };
+      for (const view of [locale, locale === 'en' ? 'zh' : 'en']) {
+        const language = view === 'en' ? /Some project content was not read/ : /部分项目内容未读取/;
+        const peek = mountActivity(live, view).querySelector('.run-peek-row');
+        assert.equal(peek.dataset.state, 'warning');
+        assert.match(peek.textContent, language);
+        verifyWarning(peek);
+        const foldedPeek = mountActivity({ ...live, events: [activity, ...thinking] }, view).querySelector('.run-peek-row');
+        assert.equal(foldedPeek.dataset.state, 'warning');
+        verifyWarning(foldedPeek);
+        const activityOnly = { ...run.events[0], title: 'Event' };
+        const titleOnly = { title, status, kind };
+        const olderActivity = { ...titleOnly, activity: { v: 1, kind: 'lifecycle', target: 'setup.workspace', state: 'completed', written: 2 } };
+        for (const record of [live, ...[activityOnly, titleOnly, olderActivity].map(saved => ({ ...run, events: [saved] }))]) {
+          const root = mountActivity(record, view, { open: true });
+          assert.equal(root.querySelector('.run-setup').hidden, false);
+          const row = root.querySelector('.run-setup-step');
+          assert.equal(row.dataset.state, 'warning');
+          assert.match(row.textContent, language);
+          verifyWarning(row);
+          const fold = root.querySelector('.run-setup-summary');
+          assert.equal(fold.dataset.notes, 'true');
+          assert.match(fold.textContent, language);
+          verifyWarning(fold);
+        }
+      }
+    }
+  }
+});
+
+test('a sync completion and its localized live copy update one setup row', () => {
+  const started = { ...Transcript.mapAgentEventToActivity({ type: 'overleaf.sync.started' }), timestamp: '2026-11-18T01:00:00Z' };
+  const event = { type: 'overleaf.sync.completed', detail: { fileCount: 2, skippedFiles: [{ path: 'fig.png' }] } };
+  const completed = locale => ({ ...Transcript.mapAgentEventToActivity(event, { locale }), timestamp: '2026-11-18T01:00:01Z' });
+  const run = { id: 'one-sync', mode: 'ask', status: 'running', events: [started, completed('en')] };
+  const root = mountActivity(run, 'zh', { open: true, incoming: completed('zh') });
+  const steps = root.querySelector('.run-setup-steps');
+  assert.equal(steps.children.length, 1);
+  assert.equal(steps.firstChild.dataset.state, 'warning');
+  assert.match(steps.firstChild.textContent, /部分项目内容未读取.*fig\.png/);
+});
+
+test('sync-like titles preserve typed notices and assistant messages', () => {
+  const titleSources = ['Synced 2 files.', '已同步 2 个文件。', 'Synced the Overleaf project.',
+    'Synced 2 readable files; some project content is unavailable. Unread: fig.png.'];
+  for (const title of titleSources) {
+    const notice = { kind: 'activity', status: 'warning', title,
+      technicalDetail: { type: 'codex.session.event', detail: { method: 'guardianWarning' } } };
+    const message = { kind: 'activity', status: 'completed', title,
+      technicalDetail: { type: 'codex.agent.message', detail: { phase: 'commentary' } } };
+    const stored = roundtripRun({ id: 'typed-events', status: 'completed', events: [notice, message] }, false);
+    assert.equal(stored.events[0].activity.noticeSource, 'guardianWarning');
+    assert.equal(stored.events[1].activity.kind, 'message');
+    const projection = ActivityModel.project(stored);
+    assert.equal(projection.setup.steps.length, 0);
+    assert.equal(projection.notices[0].event.title, title);
+    assert.equal(projection.blocks.at(-1).kind, 'message');
+  }
+  const partial = titleSources.at(-1);
+  const existing = { v: 1, kind: 'notice', target: 'setup.workspace', state: 'completed' };
+  assert.equal(ActivityModel.capture({ title: partial, activity: existing }).kind, 'notice');
+});
+
+test('complete workspace sync retains the ordinary setup row and summary for current and legacy titles', () => {
+  for (const locale of ['en', 'zh']) {
+    for (const detail of [{ fileCount: 2 }, { fileCount: 2, contentComplete: true, skippedFiles: [] }]) {
+      const activity = Transcript.mapAgentEventToActivity({ type: 'overleaf.sync.completed', detail }, { locale });
+      assert.equal(activity.status, 'completed');
+      assert.equal(activity.visible, true);
+      const { kind, title, status } = activity;
+      const oldTitle = locale === 'zh' ? title.replace('2 个文件', '2 个文本文件') : title.replace('2 files.', '2 text files.');
+      for (const event of [activity, { kind, title, status }, { kind, title: oldTitle, status }]) {
+        const root = mountActivity({ id: 'complete', mode: 'ask', status: 'completed', events: [event] }, locale, { open: true });
+        const row = root.querySelector('.run-setup-step');
+        assert.equal(row.dataset.state, 'completed');
+        assert.equal(row.textContent, locale === 'zh' ? '已同步 2 个文件到本地工作区' : 'Synced 2 files to the local workspace');
+        const fold = root.querySelector('.run-setup-summary');
+        assert.equal(fold.dataset.notes, 'false');
+        assert.equal(fold.textContent, locale === 'zh' ? '启动 · 2 个文件' : 'Setup · 2 files');
+      }
+    }
+  }
+});
+
+function assertZipGuidance(nextStep, locale) {
+  assert.match(nextStep, locale === 'zh'
+    ? /确认能在 Overleaf 中下载项目源码 ZIP.*输入 @ 或点击 ＋ 添加要处理的文件后重试。$/
+    : /download the project's source ZIP from Overleaf.*add the files you want to work on with @ or ＋ and retry\.$/);
+  assert.doesNotMatch(nextStep, /Menu|菜单|https?:\/\/|example-private-id/);
+}
+
+test('blocked project-read cards localize the ZIP cause and preserve bounded path-form evidence across storage', () => {
+  const origin = 'https://overleaf.invalid';
+  const endpoint = origin + '/project/example-private-id/download/zip';
+  const secondEndpoint = origin + '/download/project/example-private-id';
+  const timedOut = 'Overleaf ZIP download timed out after 30000ms';
+  const couldNotRead = [/project source download could not be read/, /无法读取 Overleaf 项目源码下载内容/];
+  const cases = [
+    [`${endpoint} returned 503; ${secondEndpoint} returned 503`, [{ endpoint, status: 503 }, { endpoint: secondEndpoint, status: 503 }],
+      [/project download returned HTTP 503/, /项目源码下载返回 HTTP 503/], 'http', 503],
+    [`${endpoint} returned 404; ${secondEndpoint} failed: ${timedOut}`, [{ endpoint, status: 404 }, { endpoint: secondEndpoint, error: timedOut }],
+      [/project download timed out/, /项目源码下载超时/], 'timeout'],
+    [`${endpoint} returned 502`, [], [/project download returned HTTP 502/, /项目源码下载返回 HTTP 502/], 'http', 502],
+    [`${endpoint} failed: Failed to fetch`, [{ endpoint, error: 'Failed to fetch' }], couldNotRead, 'unavailable'],
+    [`${endpoint} returned no text files (application/zip)`, [{ endpoint, status: 200 }], couldNotRead, 'unavailable'],
+    ['binary_file_too_large', [], null],
+    ['ZIP file identities were incomplete', [], null],
+    ['', [], null]
+  ];
+  for (const [reason, attempts, cause, kind, status] of cases) {
+    const capabilities = { skipped: reason ? [{ path: 'project.zip', reason }] : [], diagnostics: { zipTiming: { attempts } } };
+    const zipFailure = Failures.captureProjectZipFailure(capabilities);
+    const expected = cause ? { reason: reason.replaceAll(origin, ''), kind, ...(status ? { status } : {}),
+      attempts: attempts.map(({ endpoint: _endpoint, ...attempt }) => attempt) } : undefined;
+    assert.deepEqual(zipFailure, expected);
+    for (const locale of ['en', 'zh']) {
+      const failure = Settlement.buildContentFailure('project_snapshot_unavailable', null, {
+        evidence: { fetchFailed: true, ...(zipFailure ? { zipFailure } : {}) }
+      });
+      const live = reportRun({ conclusionKey: 'full_project_unread', conclusion: productText('full_project_unread', locale),
+        status: 'blocked', locale, failure, nextStep: locale === 'zh'
+          ? '请刷新 Overleaf 项目或重新打开要处理的 .tex 文件后再试。'
+          : 'Reload the Overleaf project or reopen the .tex file you want to process, then retry.' });
+      for (const run of [live, roundtripRun(live)]) {
+        assert.deepEqual(run.events[0].failure.evidence.zipFailure, expected);
+        const card = projectOutcome(run, locale);
+        assert.equal(card.kind, 'didnt-finish');
+        const visible = [card.title, card.body, card.nextStep].join('\n');
+        assert.doesNotMatch(visible, /https?:\/\/|example-private-id/);
+        if (cause) {
+          assert.match(card.title, cause[locale === 'zh' ? 1 : 0]);
+          assertZipGuidance(card.nextStep, locale);
+        } else {
+          assert.equal(card.title, I18n.t(locale, 'runOutcomeCause_project_snapshot_unavailable'));
+          assert.equal(card.nextStep, I18n.t(locale, 'failureReason_project_snapshot_unavailable_next'));
+        }
+      }
+    }
+  }
+});
+
+test('warm-mirror rejection keeps its explanation and uses the ZIP guidance only when recovery has ZIP evidence', async () => {
+  const window = {};
+  require('node:vm').runInNewContext(require('node:fs').readFileSync(require.resolve('../extension/src/content/otWarmMirror'), 'utf8'), { window });
+  const blocked = { blocking: ['Full project snapshot was not captured.'] };
+  const projects = [
+    { capabilities: { skipped: [{ path: 'project.zip', reason: 'https://overleaf.invalid/project/example-private-id/download/zip returned 503' }] } },
+    { capabilities: { skipped: [] } }
+  ];
+  for (const locale of ['en', 'zh']) {
+    const tr = key => I18n.t(locale, key);
+    for (const project of projects) {
+      let input, status;
+      const warmMirror = window.CodexOverleafOtWarmMirror.create({
+        tr, tx: (en, zh) => locale === 'zh' ? zh : en, runController: Controller,
+        projectFiles: require('../extension/src/shared/projectFiles'), throwIfRunCancellationRequested() {},
+        formatProjectSnapshotUserLog: () => '', formatProjectSnapshotWarning: value => value, getProjectSnapshotWarnings: () => blocked,
+        buildProjectSnapshotFailure: snapshot => {
+          const zipFailure = Failures.captureProjectZipFailure(snapshot.capabilities);
+          const failure = Settlement.buildContentFailure('project_snapshot_unavailable', null, { evidence: { zipFailure } });
+          return { ...failure, ...Failures.localizeFailureReason(failure, locale, tr) };
+        },
+        appendLog() {}, appendCompletionReport: report => { input = report; }, finishRunView: (_title, result) => { status = result; }
+      });
+      assert.equal((await warmMirror.prepareMirrorStaleRetry({ project })).ok, false);
+      assert.equal(status, 'failed');
+      assert.equal(input.conclusion, tr('warmMirrorStaleBlockedConclusion'));
+      if (project.capabilities.skipped.length) {
+        assertZipGuidance(input.nextStep, locale);
+        const run = roundtripRun(reportRun({ ...input, locale }));
+        for (const language of ['en', 'zh']) {
+          const card = projectOutcome(run, language);
+          assert.match(card.title, /HTTP 503/);
+          assert.equal(card.body, I18n.t(language, 'warmMirrorStaleBlockedConclusion'));
+          assertZipGuidance(card.nextStep, language);
+        }
+      } else {
+        assert.equal(input.failure, undefined);
+        assert.equal(input.nextStep, tr('warmMirrorStaleBlockedNextStep'));
+        assert.equal(projectOutcome(reportRun({ ...input, locale }), locale), null);
+      }
+    }
+  }
+});
+
+test('the project-read diagnostic reads assets like a run and never calls a project with unread content complete', async () => {
+  const vm = require('node:vm');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const sandbox = { window: {} };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../extension/src/content/diagnosticsController.js'), 'utf8'), sandbox);
+  const zip = (skipped, contentComplete) => ({ id: 'p', activePath: 'main.tex', files: [
+    { path: 'main.tex', content: '\\documentclass{article}\n'.repeat(8) }, { path: 'fig/a.png', kind: 'binary', contentBase64: 'AA==', size: 1 }],
+  capabilities: { fullProjectSnapshot: true, contentComplete, method: 'overleaf-zip', skipped } });
+  const failed = { id: 'p', files: [], capabilities: { fullProjectSnapshot: false, method: 'overleaf-zip-file-list-unavailable',
+    skipped: [{ path: 'project.zip', reason: 'https://overleaf.invalid/project/p/download/zip returned 503' }] } };
+  for (const locale of ['en', 'zh']) {
+    const tr = key => I18n.t(locale, key);
+    let snapshot, params;
+    const controller = sandbox.window.CodexOverleafDiagnosticsController.create({
+      tr, tx: (en, zh) => locale === 'zh' ? zh : en,
+      callPageBridge: async (_method, value) => { params = value; return snapshot; },
+      getCurrentProjectId: () => 'p', RUN_SNAPSHOT_ZIP_TIMEOUT_MS: 30000,
+      formatProjectSnapshotLog: () => '', formatProjectSnapshotWarning: value => value,
+      getProjectSnapshotWarnings: value => ({ blocking: [], nonBlocking: (value?.capabilities?.skipped || []).length ? ['skipped'] : [] }),
+      isTextSnapshotFile: file => file.kind !== 'binary' && typeof file.content === 'string',
+      describeProjectZipFailure: project => {
+        const zipFailure = Failures.captureProjectZipFailure(project?.capabilities);
+        return zipFailure ? Failures.localizeFailureReason({ code: 'project_snapshot_unavailable', evidence: { zipFailure } }, locale, tr) : null;
+      }
+    });
+    const check = async value => { snapshot = value; return controller.inspectProjectSnapshot({ collectOnly: true }); };
+
+    const complete = await check(zip([], true));
+    assert.equal(params.includeBinaryFiles, true);
+    assert.equal(params.projectId, 'p');
+    assert.equal(complete.status, 'completed');
+    assert.equal(complete.title, locale === 'zh' ? '项目读取正常' : 'Project Read OK');
+
+    const quota = await check(zip([{ path: 'fig/huge.png', reason: 'binary_file_too_large' }], false));
+    assert.equal(quota.status, 'warning');
+    assert.match(quota.summary, /fig\/huge\.png/);
+    assert.match(quota.nextStep, /10 MB/);
+
+    const realZipAsset = await check(zip([{ path: 'project.zip', reason: 'binary_file_too_large' }], false));
+    assert.equal(realZipAsset.status, 'warning');
+    assert.match(realZipAsset.summary, /project\.zip/);
+
+    const overlay = await check(zip([{ path: 'main.tex', reason: 'editor_not_ready', source: 'active-editor' }], true));
+    assert.equal(overlay.status, 'completed');
+    assert.equal(overlay.notes.length, 0);
+
+    const blocked = await check(failed);
+    assert.equal(blocked.status, 'warning');
+    assert.match(blocked.summary, locale === 'zh' ? /HTTP 503/ : /returned HTTP 503/);
+    assert.equal(blocked.nextStep, I18n.t(locale, 'failureReason_project_source_download_next'));
+    assert.doesNotMatch(blocked.summary + blocked.nextStep, /overleaf\.invalid|\/project\/p\//);
   }
 });

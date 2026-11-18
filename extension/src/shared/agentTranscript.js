@@ -305,7 +305,7 @@
         kind: 'activity',
         visible: true,
         title: fileCount
-          ? textFor(locale, `正在同步 Overleaf 项目到本地 Codex workspace：${fileCount} 个文本文件。`, `Syncing the Overleaf project into the local Codex workspace: ${fileCount} text files.`)
+          ? textFor(locale, `正在同步 Overleaf 项目到本地 Codex workspace：${fileCount} 个文件。`, `Syncing the Overleaf project into the local Codex workspace: ${fileCount} files.`)
           : textFor(locale, '正在同步 Overleaf 项目到本地 Codex workspace。', 'Syncing the Overleaf project into the local Codex workspace.'),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
@@ -314,13 +314,21 @@
 
     if (type === 'overleaf.sync.completed') {
       const fileCount = Number(event.detail?.fileCount) || 0;
+      const skippedFiles = Array.isArray(event.detail?.skippedFiles) ? event.detail.skippedFiles : [];
+      const incomplete = event.detail?.contentComplete === false || skippedFiles.length > 0;
+      const unreadPaths = normalizeStringList(skippedFiles.map(file => file?.path));
+      const unreadDetail = unreadPaths.length
+        ? textFor(locale, `未读取：${formatFilesInline(unreadPaths, locale)}。`, `Unread: ${formatFilesInline(unreadPaths, locale)}.`)
+        : '';
       return {
         kind: 'activity',
         visible: true,
-        title: fileCount
-          ? textFor(locale, `已同步 ${fileCount} 个文本文件，本地 Codex 将直接处理这份 workspace。`, `Synced ${fileCount} text files. Local Codex will work from this workspace.`)
-          : textFor(locale, '已同步 Overleaf 项目，本地 Codex 将直接处理这份 workspace。', 'Synced the Overleaf project. Local Codex will work from this workspace.'),
-        status: 'completed',
+        title: incomplete
+          ? textFor(locale, `已同步 ${fileCount} 个可读文件，部分项目内容不可用。${unreadDetail}`, `Synced ${fileCount} readable files; some project content is unavailable.${unreadDetail ? ` ${unreadDetail}` : ''}`)
+          : fileCount
+            ? textFor(locale, `已同步 ${fileCount} 个文件，本地 Codex 将直接处理这份 workspace。`, `Synced ${fileCount} files. Local Codex will work from this workspace.`)
+            : textFor(locale, '已同步 Overleaf 项目，本地 Codex 将直接处理这份 workspace。', 'Synced the Overleaf project. Local Codex will work from this workspace.'),
+        status: incomplete ? 'warning' : 'completed',
         technicalDetail: normalizeRawEvent(event)
       };
     }

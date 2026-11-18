@@ -34,6 +34,7 @@
       action: ['read', 'search', 'list'].includes(value.action) ? value.action : '',
       target: clip(value.target, 320), command: clip(value.command, 400),
       output: clip(value.output, 1200), paths: normalizedPaths, files: normalizedFiles,
+      ...(value.unreadList ? { unreadList: clip(value.unreadList, 1200) } : {}),
       durationMs: count(value.durationMs), exitCode: Number.isSafeInteger(value.exitCode) ? value.exitCode : undefined,
       written: count(value.written), skipped: count(value.skipped),
       resolvedBy: clip(value.resolvedBy, 600),
@@ -60,6 +61,11 @@
     };
   }
 
+  const MAX_UNREAD_PATHS = 3;
+  // Whole product titles only, so other text that starts the same way stays what it is.
+  const PARTIAL_WORKSPACE_TITLE = /^(?:Synced (\d+) readable files; some project content is unavailable\.(?: Unread: (.+)\.)?|已同步 (\d+) 个可读文件，部分项目内容不可用。(?:未读取：(.+)。)?)$/;
+  const COMPLETE_WORKSPACE_TITLE = /^(?:Synced (\d+) files\. Local Codex will work from this workspace\.|已同步 (\d+) 个文件，本地 Codex 将直接处理这份 workspace。|Synced the Overleaf project\. Local Codex will work from this workspace\.|已同步 Overleaf 项目，本地 Codex 将直接处理这份 workspace。)$/;
+
   // Start-up steps before the model's first response. Plugin titles are matched in both locales so
   // persisted history (which drops technicalDetail) still classifies; `written` carries a file count.
   const SETUP_TITLES = [
@@ -77,13 +83,30 @@
     const title = text(event.title).trim();
     let step = type.startsWith('overleaf.sync.') && type !== 'overleaf.sync.changes' ? 'workspace'
       : type === 'codex.runtime.selected' ? 'codex' : type === 'codex.skill_isolation.applied' ? 'hidden' : '';
+    // Sync titles identify a workspace step only when no other producer is known.
+    const producerType = type || text(event.type);
+    const canUseSyncTitle = !producerType || producerType.startsWith('overleaf.sync.');
     let match = null;
-    if (!step) for (const [name, pattern] of SETUP_TITLES) if ((match = pattern.exec(title))) { step = name; break; }
+    if (!step) for (const [name, pattern] of SETUP_TITLES) {
+      if (name === 'workspace' && !canUseSyncTitle) continue;
+      if ((match = pattern.exec(title))) { step = name; break; }
+    }
+    const partial = canUseSyncTitle ? PARTIAL_WORKSPACE_TITLE.exec(title) : null;
+    const syncTitle = canUseSyncTitle && !partial ? COMPLETE_WORKSPACE_TITLE.exec(title) : null;
+    if (!step && (partial || syncTitle)) step = 'workspace';
     if (!step) return undefined;
-    const fileCount = Number(detail.fileCount) || Number(match?.slice(1).find(Boolean)) || undefined;
+    const fileCount = Number(detail.fileCount) || Number((partial || syncTitle || match)?.slice(1).find(Boolean)) || undefined;
     const version = text(detail.version) || (step === 'codex' && match?.[1]) || '';
-    return normalize({ kind: 'lifecycle', target: 'setup.' + step, state: event.status === 'running' ? 'running' : 'completed',
-      written: Number.isSafeInteger(fileCount) ? fileCount : undefined, output: version }, sanitize);
+    const skippedFiles = Array.isArray(detail.skippedFiles) ? detail.skippedFiles : [];
+    const warn = step === 'workspace' && (partial || (type === 'overleaf.sync.completed'
+      && (event.status === 'warning' || detail.contentComplete === false || skippedFiles.length > 0)));
+    const paths = warn ? [...new Set(skippedFiles.map(file => text(file?.path).trim()).filter(Boolean))] : [];
+    // A legacy title contains a display list whose separators may also occur in filenames.
+    const unreadList = warn && !paths.length ? partial?.[2] || partial?.[4] : undefined;
+    return normalize({ kind: 'lifecycle', target: 'setup.' + step,
+      state: warn ? 'warning' : event.status === 'running' ? 'running' : 'completed',
+      written: Number.isSafeInteger(fileCount) ? fileCount : undefined, output: version,
+      paths: paths.slice(0, MAX_UNREAD_PATHS), skipped: warn ? paths.length : undefined, unreadList }, sanitize);
   }
 
   function contextCompactionState(event = {}) {
@@ -108,7 +131,15 @@
   }
 
   function capture(event = {}, sanitize = text) {
-    if (event.activity?.v === 1) return normalize(event.activity, sanitize);
+    if (event.activity?.v === 1) {
+      // The previous workspace projection stored partial transcript titles as completed.
+      if (event.activity.kind === 'lifecycle' && event.activity.target === 'setup.workspace' && event.activity.state === 'completed'
+        && PARTIAL_WORKSPACE_TITLE.test(text(event.title).trim())) {
+        const recovered = captureSetup(event, text(event.technicalDetail?.type), event.technicalDetail?.detail || {}, sanitize);
+        if (recovered?.state === 'warning') return recovered;
+      }
+      return normalize(event.activity, sanitize);
+    }
     if (event.kind === 'report' || event.kind === 'guidance' || event.kind === 'stream') return undefined;
     const raw = event.technicalDetail || (event.kind === 'technical' ? event.detail : null) || {};
     const detail = raw.detail || {};
@@ -260,8 +291,18 @@
     // Stream updates are saved before rendering; buffering and localization copy
     // their objects. Keep the current saved event instead of its incoming copy.
     const incomingStreamKey = incoming?.kind === 'stream' ? text(incoming.streamKey) : '';
+    // A start-up step arrives as a re-localized copy of the event just saved. Only for
+    // those steps, match the copy by timestamp, status and captured facts; every other
+    // event keeps identity matching so distinct events in one millisecond stay separate.
+    const incomingSetup = incoming && !incomingStreamKey ? capture(incoming) : undefined;
+    const setupFacts = incomingSetup?.kind === 'lifecycle' && incomingSetup.target.startsWith('setup.')
+      ? JSON.stringify(incomingSetup) : '';
+    const isSavedCopy = event => Boolean(setupFacts) && event?.kind === incoming.kind
+      && text(event.timestamp) && text(event.timestamp) === text(incoming.timestamp)
+      && text(event.status) === text(incoming.status) && JSON.stringify(capture(event) ?? null) === setupFacts;
     const alreadySaved = incoming && saved.some(event => event === incoming
-      || (incomingStreamKey && event?.kind === 'stream' && event.streamKey === incomingStreamKey));
+      || (incomingStreamKey && event?.kind === 'stream' && event.streamKey === incomingStreamKey)
+      || isSavedCopy(event));
     const events = incoming && !alreadySaved ? saved.concat(incoming) : saved;
     const ordered = [];
     const diagnostics = [];
@@ -298,10 +339,11 @@
       const last = setup.steps.at(-1);
       const state = meta?.state || (event.status === 'running' ? 'running' : 'completed');
       const at = text(event.timestamp);
+      const entry = { step, state, at, endAt: state === 'running' ? '' : at, count: meta?.written, version: meta?.output || '',
+        paths: meta?.paths, skipped: meta?.skipped, unreadList: meta?.unreadList,
+        reviewing: /Reviewing|留痕/.test(text(event.title)) };
       // A finished step closes any step still running before it (start-up is sequential).
       for (const entry of setup.steps) if (entry.state === 'running' && entry.step !== step) Object.assign(entry, { state: 'completed', endAt: at });
-      const entry = { step, state, at, endAt: state === 'running' ? '' : at, count: meta?.written, version: meta?.output || '',
-        reviewing: /Reviewing|留痕/.test(text(event.title)) };
       if (last && last.step === step && last.state === 'running') {
         Object.assign(last, { ...entry, at: last.at, count: entry.count ?? last.count, version: entry.version || last.version });
       } else setup.steps.push(entry);
@@ -337,7 +379,7 @@
         stage = 'working';
         return;
       }
-      const meta = event.activity?.v === 1 ? event.activity : capture(event);
+      const meta = event.activity?.v === 1 && event.activity.target !== 'setup.workspace' ? event.activity : capture(event);
       clipped ||= meta?.clipped === true;
       if (meta?.kind === 'lifecycle' && meta.target === 'context_compaction') {
         startWork(event);
