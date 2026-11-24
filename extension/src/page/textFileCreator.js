@@ -217,7 +217,8 @@
 
       assertReady();
       const direct = uniqueAction(Array.from(tree.querySelectorAll('button'))
-        .filter(node => belongsToTree(node) && !node.closest('[role="menu"]')));
+        .filter(node => belongsToTree(node) && !node.closest('[role="menu"], [role="treeitem"]')
+          && !node.matches('.file-tree-entity-button')));
       if (direct) { direct.click(); return; }
 
       const readTrigger = () => {

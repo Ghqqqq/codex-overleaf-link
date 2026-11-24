@@ -31,24 +31,28 @@ const before = { id: PROJECT, capabilities: { fullProjectSnapshot: true }, files
   { path: 'figures/seed.tex', content: 'nested original' }
 ] };
 
-for (const [textTree, target, expectedClicks] of [
+for (const [textTree, target, expectedClicks, existingFolder, expectedDirectories = []] of [
   ['legacy', 'references.bib', ['Upload']],
   ['collapsed', 'elegantpaper.cls', ['Add', 'Upload']],
   ['expanded', 'figures/TEMPLATE.md', ['Upload']],
-  ['chinese', 'docs/templates/TEMPLATE.md', ['Add', 'New folder', 'Add', 'New folder', 'Add', 'Upload']]
+  ['chinese', 'docs/templates/TEMPLATE.md', ['Add', 'New folder', 'Add', 'New folder', 'Add', 'Upload'],
+    undefined, ['docs', 'docs/templates']],
+  ['collapsed', 'references.bib', ['Add', 'Upload'], 'Upload'],
+  ['collapsed', 'docs/TEMPLATE.md', ['Add', 'New folder', 'Add', 'Upload'], 'New folder', ['docs']],
+  ['legacy', 'references.bib', ['Upload'], 'Upload']
 ]) {
-  test(`text creation through the ${textTree} file tree saves ${target} at the exact path`, async t => {
-    const h = textHarness(t, { textTree });
+  const folderContext = existingFolder ? ` with a folder named "${existingFolder}"` : '';
+  test(`text creation through the ${textTree} file tree${folderContext} saves ${target} at the exact path`, async t => {
+    const h = textHarness(t, { textTree, existingFolder });
     const content = 'second line follows\r\n你好\n';
     const result = await h.create(target, content);
-    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.ok, true, JSON.stringify({ result, clicks: h.clicks }));
     const [entry] = result.applied;
     assert.equal(entry.result.saveReceipt.sha256, sha256(content));
     assert.deepEqual(h.clicks, expectedClicks);
     assert.deepEqual(h.submissions.map(entry => entry.path), [target]);
     assert.equal(h.server.get(target).toString(), content);
-    assert.deepEqual(entry.result.createdDirectories.map(dir => dir.path),
-      textTree === 'chinese' ? ['docs', 'docs/templates'] : []);
+    assert.deepEqual(entry.result.createdDirectories.map(dir => dir.path), expectedDirectories);
     const undo = Undo.buildCreatedFileUndoCheckpoint(before, [Settlement.attachVerifiedContentToOperation(entry.operation, entry.result)]);
     assert.deepEqual(undo.undoBaseFiles, [{ path: target, content }]);
     assert.equal(undo.undoOperations[0].path, target);
@@ -230,7 +234,7 @@ async function harness(t, options = {}) {
 }
 
 function overleafHarness(t, options) {
-  const { textTree } = options;
+  const { textTree, existingFolder } = options;
   const server = new Map(before.files.map(file => [file.path, Buffer.from(file.content)]));
   const rows = new Map();
   const submissions = [], clicks = [], groups = new Map(), clock = { value: 1000 };
@@ -256,7 +260,17 @@ function overleafHarness(t, options) {
     const label = visible({
       textContent: filePath.split('/').pop(),
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 20 }),
-      click() { selected = row; },
+      matches: selector => selector === 'button' || selector === '.file-tree-entity-button',
+      closest(selector) {
+        const selectors = selector.split(',').map(part => part.trim());
+        if (selectors.includes('.file-tree-entity-button')) return label;
+        if (selectors.includes('[role="treeitem"]')) return row;
+        return selectors.includes('.file-tree') ? treePane : null;
+      },
+      click() {
+        if (filePath === existingFolder) clicks.push(`Select ${filePath}`);
+        selected = row;
+      },
       dispatchEvent(event) {
         if (event.type !== 'contextmenu') return;
         menu = visible({ closest: () => null, querySelectorAll: () => [button('Delete', () => {
@@ -301,6 +315,7 @@ function overleafHarness(t, options) {
   makeRow('main.tex', 'doc');
   const folder = makeRow('figures', 'folder');
   makeRow('figures/seed.tex', 'doc');
+  if (existingFolder) makeRow(existingFolder, 'folder');
   selected = folder;
   const input = visible({
     className: 'uppy-Dashboard-input', isConnected: true, multiple: true,
@@ -352,7 +367,8 @@ function overleafHarness(t, options) {
   function closeAddMenu() { expandAt = mountAt = Infinity; }
   const upload = button(textTree === 'chinese' ? '上传' : 'Upload', openUpload);
   upload.getAttribute = key => key === 'role' ? 'menuitem' : '';
-  const menuItems = [upload, button('新建文件夹', openFolder), button('Upload folder', () => clicks.push('wrong action'))];
+  const newFolder = button(textTree === 'chinese' ? '新建文件夹' : 'New folder', openFolder);
+  const menuItems = [upload, newFolder, button('Upload folder', () => clicks.push('wrong action'))];
   if (textTree === 'duplicate-item') menuItems.push(button('Upload', openUpload));
   const addMenu = visible({
     getAttribute: key => ({ role: 'menu', 'aria-labelledby': textTree === 'unrelated-menu' ? 'another-menu-button' : triggerId })[key] || '',
@@ -373,9 +389,10 @@ function overleafHarness(t, options) {
   const directUpload = button('Upload', openUpload);
   const toolbarButtons = textTree && !['missing-trigger', 'foreign-trigger'].includes(textTree) ? [trigger] : [];
   if (textTree === 'legacy') toolbarButtons.push(directUpload);
+  const treeButtons = () => [...toolbarButtons, ...allRows().map(row => row.querySelector('.file-tree-entity-button'))];
   const treePane = visible({
-    contains: node => allRows().includes(node) || toolbarButtons.includes(node),
-    querySelectorAll: selector => selector.includes('button') ? toolbarButtons : []
+    contains: node => allRows().includes(node) || treeButtons().includes(node),
+    querySelectorAll: selector => selector.includes('button') ? treeButtons() : []
   });
   for (const control of toolbarButtons) control.closest = selector => selector.includes('.file-tree') ? treePane : null;
   const menus = () => menuMounted() ? [addMenu, ...(textTree === 'duplicate-menu' ? [visible({ ...addMenu })] : [])] : [];
