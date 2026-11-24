@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.6.8 - 2026-11-24
+
+### Fixed
+
+- Create new files and missing folders again when Overleaf's file tree keeps New folder and Upload in its Add (+) menu ([#12](https://github.com/Ghqqqq/codex-overleaf-link/pull/12)).
+- A project folder named Upload or New folder no longer stops Codex from creating files.
+
 ## v2.6.7 - 2026-11-18
 
 ### Fixed
