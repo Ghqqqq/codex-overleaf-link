@@ -5,6 +5,9 @@
   'use strict';
 
   const MAX_CONFIRMATION_OBSERVATIONS = 8;
+  const FILE_TREE = '#ide-rail-tabs-tabpane-file-tree, #ide-redesign-file-tree, .ide-redesign-file-tree, .file-tree';
+  const ADD_BUTTON = '#file-tree-add-dropdown-btn';
+  const ADD_MENU = '[role="menu"][aria-labelledby="file-tree-add-dropdown-btn"]';
 
   function create(deps = {}) {
     const { window, document, treeOperations, uploadHelpers, snapshotRouter } = deps;
@@ -186,9 +189,97 @@
       // "note_addNew file". Keep visually-hidden labels but exclude icons
       // deliberately removed from the accessibility tree.
       const copy = node.cloneNode?.(true);
-      copy?.querySelectorAll('[aria-hidden="true"], [hidden], svg').forEach(child => child.remove());
+      copy?.querySelectorAll('[aria-hidden="true"], [hidden], svg, .material-symbols').forEach(child => child.remove());
       return normalizeDomText((copy ? copy.textContent : node.textContent) || node.getAttribute('title'));
     };
+    const controlVisible = node => {
+      if (!node?.getClientRects().length || node.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      const style = window.getComputedStyle?.(node);
+      return style?.display !== 'none' && !['hidden', 'collapse'].includes(style?.visibility);
+    };
+    const controlAvailable = node => controlVisible(node) && !node.disabled && !node.matches?.(':disabled')
+      && !node.closest('[aria-disabled="true"]');
+
+    async function clickFileTreeAction(anchor, parentPath, projectId, pattern, { assertCurrent, dialogs, waitFor }) {
+      const tree = Array.from(document.querySelectorAll(FILE_TREE)).find(node => node.contains(anchor));
+      const belongsToTree = node => tree?.contains(node) && node.closest(FILE_TREE)?.contains(anchor);
+      const assertReady = () => {
+        assertCurrent();
+        if (!tree?.contains(anchor) || dialogs().length) throw new Error('The Overleaf file tree is not ready for this operation.');
+      };
+      const uniqueAction = nodes => {
+        const matches = Array.from(nodes).filter(node => controlVisible(node) && pattern.test(controlName(node)));
+        if (matches.length > 1 || (matches.length === 1 && !controlAvailable(matches[0]))) {
+          throw new Error('A unique available Overleaf file-tree action could not be identified.');
+        }
+        return matches[0];
+      };
+
+      assertReady();
+      const direct = uniqueAction(Array.from(tree.querySelectorAll('button'))
+        .filter(node => belongsToTree(node) && !node.closest('[role="menu"], [role="treeitem"]')
+          && !node.matches('.file-tree-entity-button')));
+      if (direct) { direct.click(); return; }
+
+      const readTrigger = () => {
+        const matches = document.querySelectorAll(ADD_BUTTON);
+        const button = matches[0];
+        if (matches.length !== 1 || !button.matches('button') || !belongsToTree(button) || !controlAvailable(button)) {
+          throw new Error('The Overleaf file-tree Add button could not be identified safely.');
+        }
+        return button;
+      };
+      const readMenu = () => {
+        // The popup may be rendered through a portal. Its exact ARIA owner
+        // is the only lookup outside the file-tree container.
+        const menus = Array.from(document.querySelectorAll(ADD_MENU)).filter(controlVisible);
+        if (menus.length > 1) throw new Error('Multiple menus are associated with the Overleaf file-tree Add button.');
+        return menus[0];
+      };
+      const readAction = menu => uniqueAction(Array.from(menu.querySelectorAll('button, [role="menuitem"]'))
+        .filter(node => node.closest('[role="menu"]') === menu));
+      const trigger = readTrigger();
+      const parent = rememberUploadParent(parentPath, anchor, projectId);
+      const assertParent = () => {
+        if (!isUploadParentCurrent(parentPath, parent)) throw new Error('The selected Overleaf file-tree parent could not be confirmed.');
+      };
+      assertParent();
+      let expanded = trigger.getAttribute('aria-expanded') === 'true';
+      if (!expanded) {
+        if (trigger.getAttribute('aria-expanded') !== 'false' || readMenu()) {
+          throw new Error('The Overleaf file-tree Add menu is in an inconsistent state.');
+        }
+        trigger.click();
+      }
+      let observedMenu, observedAction;
+      const action = await waitFor(() => {
+        assertReady();
+        assertParent();
+        if (readTrigger() !== trigger) throw new Error('The Overleaf file-tree Add button changed while opening its menu.');
+        const state = trigger.getAttribute('aria-expanded');
+        const menu = readMenu();
+        if (state !== 'true') {
+          if (expanded || menu || state !== 'false') throw new Error('The Overleaf file-tree Add menu changed unexpectedly.');
+          return null;
+        }
+        expanded = true;
+        const candidate = menu && readAction(menu);
+        if ((observedMenu && observedMenu !== menu) || (observedAction && observedAction !== candidate)) {
+          throw new Error('The Overleaf file-tree Add menu changed before its action could be selected.');
+        }
+        if (observedAction) return candidate;
+        observedMenu = menu;
+        observedAction = candidate;
+        return null;
+      });
+      assertReady();
+      assertParent();
+      if (readTrigger() !== trigger || trigger.getAttribute('aria-expanded') !== 'true'
+        || readMenu() !== observedMenu || readAction(observedMenu) !== action) {
+        throw new Error('The Overleaf file-tree Add menu changed before its action could be selected.');
+      }
+      action.click();
+    }
     const findFolder = folderPath => {
       let group = document.querySelector('[data-testid="file-tree-list-root"], .file-tree-list[role="tree"]');
       if (!group?.children) return findFileTreeNode(folderPath, { invalidateCache: true });
@@ -276,9 +367,7 @@
         await delay(100);
         assertCurrent();
         await expandParent();
-        const tree = document.querySelector('#ide-rail-tabs-tabpane-file-tree, #ide-redesign-file-tree, .ide-redesign-file-tree, .file-tree');
-        if (!tree) throw new Error('The Overleaf file-tree toolbar is unavailable.');
-        choose(tree, /^(?:New folder|新建文件夹)$/i).click();
+        await clickFileTreeAction(anchor, parentPath, projectId, /^(?:New folder|新建文件夹)$/i, { assertCurrent, dialogs, waitFor });
         ownedDialog = await waitFor(() => dialogs().length === 1 && dialogs()[0]);
         const inputs = Array.from(ownedDialog.querySelectorAll('input[type="text"], input:not([type])')).filter(visible);
         if (inputs.length !== 1) throw new Error('The Overleaf name field could not be identified safely.');
@@ -341,12 +430,6 @@
         } while (Date.now() < until);
         throw new Error('Overleaf did not confirm the requested file-tree change before timeout.');
       };
-      const chooseButton = (scope, pattern) => {
-        const matches = Array.from(scope.querySelectorAll('button')).filter(node => visible(node)
-          && pattern.test(controlName(node)));
-        if (matches.length !== 1) throw new Error('A unique Overleaf file-tree control could not be identified.');
-        return matches[0];
-      };
       const ensureFolderExpanded = async folderPath => {
         const node = findFolder(folderPath);
         if (!node) throw new Error('The target parent folder is unavailable.');
@@ -377,8 +460,7 @@
         await delay(100);
         if (parentPath) await ensureFolderExpanded(parentPath);
         assertCurrent();
-        const tree = document.querySelector('#ide-rail-tabs-tabpane-file-tree, #ide-redesign-file-tree, .ide-redesign-file-tree, .file-tree');
-        chooseButton(tree, /^(?:Upload|上传)$/i).click();
+        await clickFileTreeAction(anchor, parentPath, projectId, /^(?:Upload|上传)$/i, { assertCurrent, dialogs, waitFor });
         const dialog = await waitFor(() => dialogs().length === 1 && dialogs()[0]);
         uploadDialog = dialog;
         const input = await waitFor(() => uploadHelpers.chooseOverleafFileInput(dialog.querySelectorAll('input[type="file"]')));

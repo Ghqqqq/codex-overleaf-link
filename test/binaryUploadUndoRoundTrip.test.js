@@ -17,11 +17,119 @@ const Snapshot = require('../extension/src/page/snapshotRouter');
 const Files = require('../extension/src/shared/projectFiles');
 const Writeback = require('../extension/src/content/writebackController');
 const Undo = require('../extension/src/shared/undoOperations');
+const Router = require('../extension/src/page/writebackRouter');
+const StaleGuard = require('../extension/src/shared/staleGuard');
+const Guard = require('../extension/src/page/writeGuard');
+const Settlement = require('../extension/src/shared/writebackSettlement');
 
 const PROJECT = 'binary-roundtrip-project';
 const TARGET = 'probe.png';
 const PNG = makePng();
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+const before = { id: PROJECT, capabilities: { fullProjectSnapshot: true }, files: [
+  { path: 'main.tex', content: 'main original' },
+  { path: 'figures/seed.tex', content: 'nested original' }
+] };
+
+for (const [textTree, target, expectedClicks, existingFolder, expectedDirectories = []] of [
+  ['legacy', 'references.bib', ['Upload']],
+  ['collapsed', 'elegantpaper.cls', ['Add', 'Upload']],
+  ['expanded', 'figures/TEMPLATE.md', ['Upload']],
+  ['chinese', 'docs/templates/TEMPLATE.md', ['Add', 'New folder', 'Add', 'New folder', 'Add', 'Upload'],
+    undefined, ['docs', 'docs/templates']],
+  ['collapsed', 'references.bib', ['Add', 'Upload'], 'Upload'],
+  ['collapsed', 'docs/TEMPLATE.md', ['Add', 'New folder', 'Add', 'Upload'], 'New folder', ['docs']],
+  ['legacy', 'references.bib', ['Upload'], 'Upload']
+]) {
+  const folderContext = existingFolder ? ` with a folder named "${existingFolder}"` : '';
+  test(`text creation through the ${textTree} file tree${folderContext} saves ${target} at the exact path`, async t => {
+    const h = textHarness(t, { textTree, existingFolder });
+    const content = 'second line follows\r\n你好\n';
+    const result = await h.create(target, content);
+    assert.equal(result.ok, true, JSON.stringify({ result, clicks: h.clicks }));
+    const [entry] = result.applied;
+    assert.equal(entry.result.saveReceipt.sha256, sha256(content));
+    assert.deepEqual(h.clicks, expectedClicks);
+    assert.deepEqual(h.submissions.map(entry => entry.path), [target]);
+    assert.equal(h.server.get(target).toString(), content);
+    assert.deepEqual(entry.result.createdDirectories.map(dir => dir.path), expectedDirectories);
+    const undo = Undo.buildCreatedFileUndoCheckpoint(before, [Settlement.attachVerifiedContentToOperation(entry.operation, entry.result)]);
+    assert.deepEqual(undo.undoBaseFiles, [{ path: target, content }]);
+    assert.equal(undo.undoOperations[0].path, target);
+    const directories = undo.undoOperations[0].undoCreatedFile.createdDirectories || [];
+    assert.deepEqual(directories, entry.result.createdDirectories);
+    assert.ok(directories.every(dir => dir.ownershipConfirmed === false));
+    assert.equal(h.server.get('main.tex').toString(), 'main original');
+  });
+}
+
+for (const [textTree, code, expectedClicks] of [
+  ['missing-trigger', 'file_tree_controls_unavailable', []],
+  ['foreign-trigger', 'file_tree_controls_unavailable', []],
+  ['disabled-trigger', 'file_tree_controls_unavailable', []],
+  ['unrelated-menu', 'file_tree_controls_unavailable', ['Add']],
+  ['duplicate-menu', 'file_tree_controls_unavailable', ['Add']],
+  ['duplicate-item', 'file_tree_controls_unavailable', ['Add']],
+  ['unstable', 'file_tree_controls_unavailable', ['Add']],
+  ['parent-changed', 'file_tree_controls_unavailable', ['Add']],
+  ['no-dialog', 'file_tree_controls_unavailable', ['Add', 'Upload']],
+  ['project-changed', 'aborted_project_changed', ['Add']],
+  ['cancelled', 'codex_cancelled', ['Add']]
+]) {
+  test(`text creation stops before submission with ${textTree}`, async t => {
+    const h = textHarness(t, { textTree });
+    const target = 'references.bib';
+    const result = await h.create(target, '@article{key}');
+    assert.equal(result.ok, false);
+    assert.equal(result.skipped[0].result.code, code);
+    assert.equal(result.skipped[0].result.changedDocument, false);
+    assert.deepEqual(h.clicks, expectedClicks);
+    assert.equal(h.submissions.length, 0);
+    assert.equal(h.server.has(target), false);
+  });
+}
+
+test('text creation preserves a concurrent name collision without clicking Replace', async t => {
+  const h = textHarness(t, { textTree: 'conflict' });
+  const target = 'references.bib';
+  const result = await h.create(target, '@article{key}');
+  assert.equal(result.ok, false);
+  assert.equal(result.skipped[0].result.code, 'file_upload_unconfirmed');
+  assert.equal(result.skipped[0].result.fileUploadAttempted, true);
+  assert.deepEqual(h.clicks, ['Add', 'Upload']);
+  assert.equal(h.server.get(target).toString(), 'concurrent content');
+  assert.equal(h.submissions.length, 1);
+});
+
+test('text creation needs server ZIP confirmation and Retry sync never resubmits matching bytes', async t => {
+  const h = textHarness(t, { textTree: 'unconfirmed' });
+  const target = 'references.bib', content = '@article{key}';
+  const result = await h.create(target, content);
+  assert.equal(result.ok, false);
+  assert.equal(result.skipped[0].result.code, 'file_upload_unconfirmed');
+  assert.equal(result.skipped[0].result.fileUploadAttempted, true);
+  assert.equal(result.skipped[0].result.saveReceipt, undefined);
+  assert.equal(h.submissions.length, 1);
+  assert.equal(h.rows.has(target), true);
+  assert.equal(h.server.has(target), false);
+
+  h.server.set(target, Buffer.from(content));
+  const retry = await h.create(target, content, { retryCreates: true });
+  assert.equal(retry.ok, true, JSON.stringify(retry));
+  assert.equal(retry.applied[0].result.idempotent, true);
+  assert.equal(retry.applied[0].result.changedDocument, false);
+  assert.equal(retry.applied[0].result.saveReceipt.sha256, sha256(content));
+  assert.equal(h.submissions.length, 1);
+});
+
+function textHarness(t, options) {
+  const h = overleafHarness(t, options);
+  const router = Router.create({ window: h.win, treeOperations: h.tree,
+    createTextFile: h.creator.createFile, beginTextCreateBatch: h.creator.beginCreateBatch,
+    finishTextCreateBatch: h.creator.finishCreateBatch, readWriteCancellationSequence: h.readCancellation });
+  return { ...h, create: (path, content, options) => router.applyOperations([{ type: 'create', path, content }],
+    { ...options, runProjectId: PROJECT, baseFiles: before.files }) };
+}
 
 test('binary upload, server save proof and repeated Undo preserve exact bytes and paths', async t => {
   const h = await harness(t, { compression: 8 });
@@ -79,10 +187,6 @@ for (const interference of ['bytes', 'project']) {
 async function harness(t, options = {}) {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'col-binary-roundtrip-'));
   t.after(() => fs.rmSync(rootDir, { recursive: true, force: true }));
-  const before = { id: PROJECT, capabilities: { fullProjectSnapshot: true }, files: [
-    { path: 'main.tex', content: 'main original' },
-    { path: 'figures/seed.tex', content: 'nested original' }
-  ] };
   await Mirror.syncOverleafToMirror({ projectId: PROJECT, rootDir, project: before });
   const mirror = Mirror.getProjectMirror(PROJECT, { rootDir });
   fs.writeFileSync(path.join(mirror.workspacePath, TARGET), PNG);
@@ -94,14 +198,53 @@ async function harness(t, options = {}) {
   ref.chunkSize = 37;
   t.after(() => Native.releaseAsset({ token: ref.token }));
 
+  const h = overleafHarness(t, options);
+  const { win, documentRef, tree, snapshotRouter, creator, clock, isCurrent } = h;
+  let chunkReads = 0;
+  const uploader = Uploader.create({ window: win, document: documentRef, treeOperations: tree, snapshotRouter,
+    prepareUploadParent: creator.prepareUploadParent, isUploadParentCurrent: creator.isUploadParentCurrent, findFolderNode: creator.findFolderNode });
+  const broker = Broker.create({
+    now: () => clock.value, delay: async ms => { clock.value += ms; },
+    callPageBridge(method, params) {
+      const handler = { binaryUploadBegin: 'begin', binaryUploadAppend: 'append',
+        binaryUploadCommit: 'commit', binaryUploadStatus: 'status', binaryUploadAbort: 'abort' }[method];
+      assert.ok(handler, 'Only the real binary upload RPCs are expected');
+      return Promise.resolve(uploader[handler](params));
+    },
+    async sendBackgroundNative({ method, params }) {
+      if (method === 'asset.readChunk') { chunkReads++; return { ok: true, result: Native.readAssetChunk(params) }; }
+      assert.equal(method, 'asset.release');
+      return { ok: true, result: Native.releaseAsset(params) };
+    }
+  });
+  return {
+    ...h, before, chunkReads: () => chunkReads,
+    assertCurrent() { assert.equal(isCurrent(), true); },
+    snapshot: options => snapshotRouter.buildProjectSnapshot({ ...options, serverOnly: true, includeBinaryFiles: true }),
+    upload: () => broker.applyOperations({ runProjectId: PROJECT,
+      operations: Writeback.buildSyncApplyOperations(prepared.changes, before) }),
+    undo(applied) {
+      const checkpoint = Undo.buildCreatedFileUndoCheckpoint(before, applied.applied.map(entry => entry.operation));
+      assert.equal(checkpoint.undoOperations.length, 1);
+      const operation = checkpoint.undoOperations[0];
+      return creator.deleteFile(operation, { undoCreatedFile: true, expectedSha256: operation.undoCreatedFile.sha256,
+        isCurrent, canDelete: isCurrent });
+    }
+  };
+}
+
+function overleafHarness(t, options) {
+  const { textTree, existingFolder } = options;
   const server = new Map(before.files.map(file => [file.path, Buffer.from(file.content)]));
   const rows = new Map();
-  const submissions = [];
-  let selected, menu = null, dialog = null, current = true, clock = 1000;
-  let uploadPending = Promise.resolve(), posts = 0, deletions = 0, chunkReads = 0;
-  t.mock.method(Date, 'now', () => clock);
-  const visible = value => ({ disabled: false, getClientRects: () => [{}], getAttribute: () => '', ...value });
-  const button = (name, click) => visible({ textContent: name, click });
+  const submissions = [], clicks = [], groups = new Map(), clock = { value: 1000 };
+  let selected, menu = null, dialog = null, cancellation = 0;
+  let uploadPending = Promise.resolve(), posts = 0, deletions = 0;
+  t.mock.method(Date, 'now', () => clock.value);
+  const visible = value => ({ disabled: false, closest: () => null,
+    getClientRects: () => [{}], getAttribute: () => '', ...value });
+  const button = (name, click) => visible({ textContent: name, click,
+    matches: selector => selector === 'button' });
   const allRows = () => Array.from(rows.values());
   const root = {
     children: [], parentElement: null, dataset: {},
@@ -110,17 +253,24 @@ async function harness(t, options = {}) {
     querySelector: () => null, querySelectorAll: () => allRows(),
     closest: selector => selector === '[role="tree"]' ? root : null
   };
-  const group = { children: [], parentElement: root, dataset: {},
-    getAttribute: key => key === 'role' ? 'tree' : '', querySelectorAll: () => [],
-    closest: selector => selector === '[role="tree"]' ? group : null };
   function makeRow(filePath, type) {
-    const parent = filePath.includes('/') ? group : root;
+    const parent = groups.get(filePath.split('/').slice(0, -1).join('/')) || root;
     const entity = { dataset: { fileId: 'id-' + filePath, fileType: type },
       getAttribute: key => key === 'data-file-id' ? entity.dataset.fileId : '' };
     const label = visible({
       textContent: filePath.split('/').pop(),
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 20 }),
-      click() { selected = row; },
+      matches: selector => selector === 'button' || selector === '.file-tree-entity-button',
+      closest(selector) {
+        const selectors = selector.split(',').map(part => part.trim());
+        if (selectors.includes('.file-tree-entity-button')) return label;
+        if (selectors.includes('[role="treeitem"]')) return row;
+        return selectors.includes('.file-tree') ? treePane : null;
+      },
+      click() {
+        if (filePath === existingFolder) clicks.push(`Select ${filePath}`);
+        selected = row;
+      },
       dispatchEvent(event) {
         if (event.type !== 'contextmenu') return;
         menu = visible({ closest: () => null, querySelectorAll: () => [button('Delete', () => {
@@ -152,12 +302,20 @@ async function harness(t, options = {}) {
     });
     rows.set(filePath, row);
     parent.children.push(row);
+    if (type === 'folder') {
+      const group = { children: [], parentElement: parent, dataset: {}, previousElementSibling: row,
+        getAttribute: key => key === 'role' ? 'tree' : '', querySelectorAll: () => [],
+        closest: selector => selector === '[role="tree"]' ? group : null };
+      row.nextElementSibling = group;
+      parent.children.push(group);
+      groups.set(filePath, group);
+    }
     return row;
   }
   makeRow('main.tex', 'doc');
   const folder = makeRow('figures', 'folder');
-  folder.nextElementSibling = group; group.previousElementSibling = folder; root.children.push(group);
   makeRow('figures/seed.tex', 'doc');
+  if (existingFolder) makeRow(existingFolder, 'folder');
   selected = folder;
   const input = visible({
     className: 'uppy-Dashboard-input', isConnected: true, multiple: true,
@@ -165,22 +323,91 @@ async function harness(t, options = {}) {
     dispatchEvent(event) {
       if (event.type !== 'change') return;
       const file = input.files[0];
-      const selectedPath = Array.from(rows).find(([, row]) => row === selected)?.[0] || '';
-      const parent = options.forceWrongParent ? 'figures'
-        : selected?.type === 'folder' ? selectedPath : selectedPath.split('/').slice(0, -1).join('/');
+      const parent = options.forceWrongParent ? 'figures' : selectedParent();
       const filePath = (parent ? parent + '/' : '') + file.name;
       submissions.push({ path: filePath, file });
+      if (textTree === 'conflict') {
+        server.set(filePath, Buffer.from('concurrent content'));
+        dialog = visible({ innerText: 'Replace this file?', querySelectorAll: () => [button('Replace', () => clicks.push('Replace'))] });
+        return;
+      }
       uploadPending = file.arrayBuffer().then(buffer => {
-        server.set(filePath, Buffer.from(buffer)); makeRow(filePath, 'file');
+        if (textTree !== 'unconfirmed') server.set(filePath, Buffer.from(buffer));
+        makeRow(filePath, 'file');
+        dialog = null;
       });
     }
   });
+  function selectedParent() {
+    const selectedPath = Array.from(rows).find(([, row]) => row === selected)?.[0] || '';
+    return selected?.type === 'folder' ? selectedPath : selectedPath.split('/').slice(0, -1).join('/');
+  }
+  const openUpload = () => {
+    clicks.push('Upload');
+    closeAddMenu();
+    if (textTree !== 'no-dialog') dialog = visible({ querySelectorAll: selector =>
+      selector === 'input[type="file"]' ? [input] : [button('Cancel', () => { dialog = null; })] });
+  };
+  class NameInput { set value(name) { this.name = name; } }
+  const openFolder = () => {
+    clicks.push('New folder');
+    closeAddMenu();
+    const nameInput = Object.assign(new NameInput(), visible({ dispatchEvent() {} }));
+    dialog = visible({ querySelectorAll: selector => selector.startsWith('input') ? [nameInput] : [button('创建', () => {
+      const parent = selectedParent();
+      makeRow(parent ? parent + '/' + nameInput.name : nameInput.name, 'folder');
+      dialog = null;
+    })] });
+  };
+  // The modern popup is rendered elsewhere in the document, bound to the toolbar by ID.
+  const triggerId = 'file-tree-add-dropdown-btn';
+  let expandAt = textTree === 'expanded' ? 0 : Infinity, mountAt = expandAt, collapseAt = Infinity;
+  const menuMounted = () => clock.value >= mountAt && clock.value < collapseAt;
+  const expanded = () => clock.value >= expandAt && clock.value < collapseAt ? 'true' : 'false';
+  function closeAddMenu() { expandAt = mountAt = Infinity; }
+  const upload = button(textTree === 'chinese' ? '上传' : 'Upload', openUpload);
+  upload.getAttribute = key => key === 'role' ? 'menuitem' : '';
+  const newFolder = button(textTree === 'chinese' ? '新建文件夹' : 'New folder', openFolder);
+  const menuItems = [upload, newFolder, button('Upload folder', () => clicks.push('wrong action'))];
+  if (textTree === 'duplicate-item') menuItems.push(button('Upload', openUpload));
+  const addMenu = visible({
+    getAttribute: key => ({ role: 'menu', 'aria-labelledby': textTree === 'unrelated-menu' ? 'another-menu-button' : triggerId })[key] || '',
+    querySelectorAll: () => menuItems
+  });
+  for (const item of menuItems) item.closest = selector => selector === '[role="menu"]' ? addMenu : null;
+  const trigger = button('addAdd', () => {
+    clicks.push('Add');
+    expandAt = clock.value + 150;
+    mountAt = clock.value + 250;
+    if (textTree === 'cancelled') cancellation++;
+    if (textTree === 'project-changed') win.location.pathname = '/project/other';
+    if (textTree === 'unstable') collapseAt = clock.value + 350;
+    if (textTree === 'parent-changed') selected = folder;
+  });
+  trigger.disabled = textTree === 'disabled-trigger';
+  trigger.getAttribute = key => ({ id: triggerId, 'aria-expanded': expanded() })[key] || '';
+  const directUpload = button('Upload', openUpload);
+  const toolbarButtons = textTree && !['missing-trigger', 'foreign-trigger'].includes(textTree) ? [trigger] : [];
+  if (textTree === 'legacy') toolbarButtons.push(directUpload);
+  const treeButtons = () => [...toolbarButtons, ...allRows().map(row => row.querySelector('.file-tree-entity-button'))];
+  const treePane = visible({
+    contains: node => allRows().includes(node) || treeButtons().includes(node),
+    querySelectorAll: selector => selector.includes('button') ? treeButtons() : []
+  });
+  for (const control of toolbarButtons) control.closest = selector => selector.includes('.file-tree') ? treePane : null;
+  const menus = () => menuMounted() ? [addMenu, ...(textTree === 'duplicate-menu' ? [visible({ ...addMenu })] : [])] : [];
   const documentRef = {
-    querySelector: selector => selector.includes('file-tree-list-root') ? root : null,
+    querySelector: selector => selector.includes('file-tree-list-root') ? root
+      : selector.includes('ide-rail-tabs-tabpane-file-tree') ? treePane : null,
     querySelectorAll(selector) {
-      if (selector === 'input[type="file"]') return [input];
+      if (selector === 'input[type="file"]') return textTree && !dialog ? [] : [input];
       if (selector === '[role="dialog"]') return dialog ? [dialog] : [];
-      if (selector === '[role="menu"]') return menu ? [menu] : [];
+      if (selector === '[role="menu"]') return menu ? [menu, ...menus()] : menus();
+      if (selector === '#' + triggerId) return textTree && textTree !== 'missing-trigger' ? [trigger] : [];
+      if (selector.includes('[aria-labelledby') && selector.includes(triggerId)) {
+        return menus().filter(node => node.getAttribute('aria-labelledby') === triggerId);
+      }
+      if (selector.includes('ide-rail-tabs-tabpane-file-tree')) return [treePane];
       if (selector.includes('aria-selected')) return selected ? [selected] : [];
       if (selector.includes('[role="treeitem"]')) return allRows();
       return [];
@@ -190,10 +417,11 @@ async function harness(t, options = {}) {
     location: { origin: 'https://www.overleaf.com', pathname: '/project/' + PROJECT, href: 'https://www.overleaf.com/project/' + PROJECT },
     document: documentRef, File, FormData, Event, atob, btoa, crypto: webcrypto,
     MouseEvent: class { constructor(type) { this.type = type; } },
-    CodexOverleafProjectFiles: Files,
+    CodexOverleafProjectFiles: Files, CodexOverleafStaleGuard: StaleGuard, CodexOverleafWriteGuard: Guard,
+    HTMLInputElement: NameInput,
     setTimeout(callback, ms) {
-      if (ms >= 1000) return setTimeout(callback, ms);
-      clock += ms; return setImmediate(callback);
+      if (ms >= 1000 && !textTree) return setTimeout(callback, ms);
+      clock.value += ms; return setImmediate(callback);
     },
     clearTimeout,
     DataTransfer: class { constructor() { this.files = []; this.items = { add: file => this.files.push(file) }; } },
@@ -213,39 +441,10 @@ async function harness(t, options = {}) {
     await uploadPending;
     return new Response(makeZip(server, options.compression || 0), { headers: { 'content-type': 'application/zip' } });
   });
-  const creator = Creator.create({ window: win, document: documentRef, treeOperations: tree, snapshotRouter });
-  const uploader = Uploader.create({ window: win, document: documentRef, treeOperations: tree, snapshotRouter,
-    prepareUploadParent: creator.prepareUploadParent, isUploadParentCurrent: creator.isUploadParentCurrent, findFolderNode: creator.findFolderNode });
-  const broker = Broker.create({
-    now: () => clock, delay: async ms => { clock += ms; },
-    callPageBridge(method, params) {
-      const handler = { binaryUploadBegin: 'begin', binaryUploadAppend: 'append',
-        binaryUploadCommit: 'commit', binaryUploadStatus: 'status', binaryUploadAbort: 'abort' }[method];
-      assert.ok(handler, 'Only the real binary upload RPCs are expected');
-      return Promise.resolve(uploader[handler](params));
-    },
-    async sendBackgroundNative({ method, params }) {
-      if (method === 'asset.readChunk') { chunkReads++; return { ok: true, result: Native.readAssetChunk(params) }; }
-      assert.equal(method, 'asset.release');
-      return { ok: true, result: Native.releaseAsset(params) };
-    }
-  });
-  const isCurrent = () => current && tree.getProjectId() === PROJECT;
-  return {
-    before, server, rows, tree, submissions,
-    posts: () => posts, deletions: () => deletions, chunkReads: () => chunkReads,
-    assertCurrent() { assert.equal(isCurrent(), true); },
-    snapshot: options => snapshotRouter.buildProjectSnapshot({ ...options, serverOnly: true, includeBinaryFiles: true }),
-    upload: () => broker.applyOperations({ runProjectId: PROJECT,
-      operations: Writeback.buildSyncApplyOperations(prepared.changes, before) }),
-    undo(applied) {
-      const checkpoint = Undo.buildCreatedFileUndoCheckpoint(before, applied.applied.map(entry => entry.operation));
-      assert.equal(checkpoint.undoOperations.length, 1);
-      const operation = checkpoint.undoOperations[0];
-      return creator.deleteFile(operation, { undoCreatedFile: true, expectedSha256: operation.undoCreatedFile.sha256,
-        isCurrent, canDelete: isCurrent });
-    }
-  };
+  const creator = Creator.create({ window: win, document: documentRef, treeOperations: tree, snapshotRouter, uploadHelpers: Uploader });
+  return { win, documentRef, server, rows, tree, snapshotRouter, creator, clicks, submissions, clock,
+    isCurrent: () => tree.getProjectId() === PROJECT, readCancellation: () => cancellation,
+    posts: () => posts, deletions: () => deletions };
 }
 
 function crc32(bytes) {
