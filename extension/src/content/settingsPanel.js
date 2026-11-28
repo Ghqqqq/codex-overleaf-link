@@ -241,6 +241,7 @@
               <span class="codex-set-saved" data-set-saved hidden><svg class="codex-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m3.5 8 3 3 6-6"/></svg><span data-i18n="settingsSaved">Saved</span></span>
             </summary>
             <div class="codex-set-card">
+              <div class="codex-set-note" data-skills-antigravity-note data-tone="info" hidden></div>
               <label class="codex-project-settings-row codex-project-settings-row--switch">
                 <span class="codex-project-settings-row-label" data-i18n="loadCodexLocalSkills">Load local Codex skills</span>
                 <input type="checkbox" class="codex-switch" data-load-codex-local-skills>
@@ -443,6 +444,22 @@
       setChecked(scope, '[data-load-codex-overleaf-skills]', toggles.loadCodexOverleafSkills !== false);
       setValue(scope, '[data-theme-select]', state.theme || 'dark');
       setValue(scope, '[data-language-select]', state.language || 'en');
+    }
+    if (Object.prototype.hasOwnProperty.call(state, 'antigravityActive')) {
+      const scope = instance?.container || root;
+      const active = state.antigravityActive === true;
+      const note = scope.querySelector('[data-skills-antigravity-note]');
+      if (note) {
+        note.textContent = active ? t(instance, 'skillsUnavailableAntigravity') : '';
+        note.hidden = !active;
+      }
+      for (const selector of ['[data-load-codex-local-skills]', '[data-load-codex-overleaf-skills]']) {
+        const input = scope.querySelector(selector);
+        if (input) {
+          input.disabled = active;
+          input.title = active ? t(instance, 'skillsUnavailableAntigravity') : '';
+        }
+      }
     }
     instance.workbench?.refresh();
   }

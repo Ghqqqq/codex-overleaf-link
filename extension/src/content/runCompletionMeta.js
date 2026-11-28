@@ -1,56 +1,84 @@
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('../shared/failureReasons'), require('../shared/i18n'), require('../shared/agentTranscript'));
-  else root.CodexOverleafModuleRegistry.define('RunCompletionMeta', ['FailureReasons', 'I18n', 'AgentTranscript'], factory);
-})(typeof window !== 'undefined' ? window : globalThis, function (FailureReasons, I18n, AgentTranscript) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('../shared/failureReasons'), require('../shared/i18n'), require('../shared/agentTranscript'), require('../shared/agentBrand'));
+  else root.CodexOverleafModuleRegistry.define('RunCompletionMeta', ['FailureReasons', 'I18n', 'AgentTranscript', 'AgentBrand'], factory);
+})(typeof window !== 'undefined' ? window : globalThis, function (FailureReasons, I18n, AgentTranscript, AgentBrand) {
   'use strict';
+
+  function brandForRun(run) {
+    if (AgentTranscript?.brandIdForRun) return AgentTranscript.brandIdForRun(run);
+    const providerId = run?.executionSnapshot?.providerId || run?.providerId;
+    if (providerId) return AgentBrand?.brandIdForProvider?.(providerId) || (String(providerId).trim() === 'antigravity' ? 'antigravity' : 'codex');
+    return String(run?.codexThreadId || '').trim().startsWith('agy:') ? 'antigravity' : 'codex';
+  }
+  function brandCopy(text, brand) {
+    return brand === 'antigravity' && AgentBrand?.brandText ? AgentBrand.brandText(text, brand) : text;
+  }
+  function trForRun(locale, brand, key, values) {
+    const template = I18n.t(locale, key);
+    const branded = brandCopy(template, brand);
+    if (!values || typeof values !== 'object') return branded;
+    let out = branded;
+    for (const name of Object.keys(values)) {
+      const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      out = out.replace(new RegExp(`\\{${escaped}\\}`, 'g'), () => String(values[name]));
+    }
+    return out;
+  }
 
   // Read only persisted product evidence; never infer a launch outcome from
   // arbitrary answer text or change the run's archived status.
   function projectNotStartedRun(run, locale = 'en') {
     const event = (Array.isArray(run?.events) ? run.events : []).filter(item => item?.kind === 'report').at(-1);
     const source = event?.detailStructured?.conclusionSource;
+    const brand = brandForRun(run);
+    const brands = brand === 'antigravity' ? ['codex', 'antigravity'] : ['codex'];
     if (source?.origin !== 'product' || source.key !== 'launch_not_started'
-      || !['en', 'zh'].some(language => AgentTranscript.projectProductConclusion(source, language)
-        === event.detailStructured.conclusion)) return null;
+      || !['en', 'zh'].some(language => brands.some(candidateBrand =>
+        AgentTranscript.projectProductConclusion(source, language, undefined, '', { brand: candidateBrand })
+          === event.detailStructured.conclusion))) return null;
     const meta = Array.isArray(event.detailStructured.meta) ? event.detailStructured.meta : [];
     const savedNext = meta.find(row => row?.key === 'nextStep')?.value || '';
     const declinedChoice = event.failure?.evidence?.declinedChoice;
     const cancelled = declinedChoice === true || run.status === 'cancelled'
       // Legacy reports predate the structured marker; only those need the copy fallback.
-      || (declinedChoice === undefined && ['en', 'zh'].some(language =>
-        savedNext === I18n.t(language, 'failureReason_reviewing_unavailable_cancelled_next')));
+      || (declinedChoice === undefined && ['en', 'zh'].some(language => brands.some(candidateBrand =>
+        savedNext === trForRun(language, candidateBrand, 'failureReason_reviewing_unavailable_cancelled_next'))));
     const unavailable = event.failure?.code === 'reviewing_unavailable' || cancelled;
-    const tx = (en, zh) => locale === 'zh' ? zh : en;
+    const tx = (en, zh) => brandCopy(locale === 'zh' ? zh : en, brand);
+    const tr = (key, values) => trForRun(locale, brand, key, values);
     const next = localizeMetaRow({ key: 'nextStep', value: savedNext }, {
-      tx, getLocale: () => locale, tr: key => I18n.t(locale, key)
+      tx, getLocale: () => locale, tr, brand
     });
     return {
       cancelled,
-      status: I18n.t(locale, cancelled ? 'runNotStartedCancelled' : 'runNotStarted'),
-      title: I18n.t(locale, unavailable ? 'runNotStartedTrackTitle' : 'runNotStartedModeTitle'),
-      body: I18n.t(locale, unavailable ? 'runNotStartedTrackBody' : 'runNotStartedModeBody'),
-      nextStep: cancelled ? I18n.t(locale, 'runNotStartedCancelledNext')
-        : next.value || I18n.t(locale, 'runNotStartedNext')
+      status: tr(cancelled ? 'runNotStartedCancelled' : 'runNotStarted'),
+      title: tr(unavailable ? 'runNotStartedTrackTitle' : 'runNotStartedModeTitle'),
+      body: tr(unavailable ? 'runNotStartedTrackBody' : 'runNotStartedModeBody'),
+      nextStep: cancelled ? tr('runNotStartedCancelledNext')
+        : next.value || tr('runNotStartedNext')
     };
   }
 
   function projectCompletionConclusion(event, run, locale = 'en', options = {}) {
     const structured = event?.detailStructured;
     const raw = options.flat ? options.text : String(structured?.conclusion || '');
+    const brand = brandForRun(run);
+    const brands = brand === 'antigravity' ? ['codex', 'antigravity'] : ['codex'];
     if (structured?.conclusionSource) {
       if (structured.conclusionSource.key !== 'writeback'
-        && !['en', 'zh'].some(language => AgentTranscript.projectProductConclusion(structured.conclusionSource, language) === raw)) return raw;
-      return AgentTranscript.projectProductConclusion(structured.conclusionSource, locale, options.localizeCompileReason, raw) ?? raw;
+        && !['en', 'zh'].some(language => brands.some(candidateBrand =>
+          AgentTranscript.projectProductConclusion(structured.conclusionSource, language, undefined, '', { brand: candidateBrand }) === raw))) return raw;
+      return AgentTranscript.projectProductConclusion(structured.conclusionSource, locale, options.localizeCompileReason, raw, { brand }) ?? raw;
     }
     // Reload recovery predates structured conclusions but retains an explicit
     // product source. Translate only its intact flat report, never lookalikes.
     if (options.flat && !structured && event?.kind === 'report' && event.status === 'failed'
       && !event.streamRole && !event.guidanceId && !event.subagent
       && event.failure?.code === 'native_request_failed' && event.failure.source === 'panel_reload'
-      && raw === event.detail && ['en', 'zh'].some(language =>
-        event.title === I18n.t(language, 'restoredRunStoppedTitle')
-        && raw === I18n.t(language, 'restoredRunStoppedDetail'))) {
-      return I18n.t(locale, 'restoredRunStoppedDetail');
+      && raw === event.detail && ['en', 'zh'].some(language => brands.some(candidateBrand =>
+        event.title === trForRun(language, candidateBrand, 'restoredRunStoppedTitle')
+        && raw === trForRun(language, candidateBrand, 'restoredRunStoppedDetail')))) {
+      return trForRun(locale, brand, 'restoredRunStoppedDetail');
     }
     // Legacy cancellation has a unique adjacent producer-owned lifecycle event.
     // Text alone, status alone, and a user's/model's matching answer confer no identity.
@@ -62,12 +90,16 @@
       || !['Task report', '本轮完成报告'].includes(event.title)
       || previous?.activity?.kind !== 'lifecycle' || previous.activity.state !== 'cancelled'
       || previous.activity.target !== 'cancelled' || previous.streamRole || previous.guidanceId
-      || !['Current Codex task was cancelled.', '已中断当前 Codex 任务。'].includes(previous.title)) return raw;
+      || !['Current Codex task was cancelled.', '已中断当前 Codex 任务。',
+        'Current Antigravity task was cancelled.', '已中断当前 Antigravity 任务。'].includes(previous.title)) return raw;
     const source = { origin: 'product', key: 'cancelled' };
-    const en = AgentTranscript.projectProductConclusion(source, 'en'), zh = AgentTranscript.projectProductConclusion(source, 'zh');
-    const known = options.flat ? [`Conclusion: ${en}`, `结论：${zh}`] : [en, zh];
+    const known = brands.flatMap(candidateBrand => {
+      const en = AgentTranscript.projectProductConclusion(source, 'en', undefined, '', { brand: candidateBrand });
+      const zh = AgentTranscript.projectProductConclusion(source, 'zh', undefined, '', { brand: candidateBrand });
+      return options.flat ? [`Conclusion: ${en}`, `结论：${zh}`] : [en, zh];
+    });
     if (!known.includes(raw)) return raw;
-    const projected = AgentTranscript.projectProductConclusion(source, locale);
+    const projected = AgentTranscript.projectProductConclusion(source, locale, undefined, '', { brand });
     return options.flat ? (locale === 'zh' ? `结论：${projected}` : `Conclusion: ${projected}`) : projected;
   }
 
@@ -77,10 +109,12 @@
     if (!run || run.status === 'running' || run.retryingWriteback || projectNotStartedRun(run, locale)) return null;
     const event = (Array.isArray(run.events) ? run.events : []).filter(item => item?.kind === 'report').at(-1);
     const structured = event?.detailStructured, source = structured?.conclusionSource;
+    const brand = brandForRun(run);
+    const brands = brand === 'antigravity' ? ['codex', 'antigravity'] : ['codex'];
     if (typeof structured?.conclusion !== 'string' || source?.origin !== 'product' || !['en', 'zh'].some(language =>
-      AgentTranscript.projectProductConclusion(source, language, undefined, structured.conclusion) === structured.conclusion)) return null;
-    const t = (key, values) => I18n.t(locale, key, values);
-    const tx = (en, zh) => locale === 'zh' ? zh : en;
+      brands.some(candidateBrand => AgentTranscript.projectProductConclusion(source, language, undefined, structured.conclusion, { brand: candidateBrand }) === structured.conclusion))) return null;
+    const t = (key, values) => trForRun(locale, brand, key, values);
+    const tx = (en, zh) => brandCopy(locale === 'zh' ? zh : en, brand);
     const meta = Array.isArray(structured.meta) ? structured.meta : [];
     const value = key => meta.find(row => row?.key === key)?.value || '';
     const counts = /^(?:wrote (\d+) items?, skipped (\d+) items?|已写入 (\d+) 项，跳过 (\d+) 项)$/.exec(value('writeResult'));
@@ -121,7 +155,7 @@
     const shortTitle = zipBlock ? display.userMessage
       : I18n.MESSAGES[locale]?.[shortKey] ? t(shortKey, { file, finding }) : '';
     const savedNext = localizeMetaRow({ key: 'nextStep', value: value('nextStep') }, {
-      tx, getLocale: () => locale, tr: t
+      tx, getLocale: () => locale, tr: t, brand
     }).value;
     const base = { failure, file, wrote, skipped, noWrites, unconfirmed,
       nextStep: display?.nextAction || savedNext || t('runOutcomeNext'), files: [] };
@@ -172,9 +206,9 @@
       // Verify the whole original suffix above before projecting just the prefix
       // and sync result. Never strip a model sentence by matching its wording.
       const prefix = structured.conclusion.slice(0, source.prefixLength);
-      const raw = prefix || AgentTranscript.projectProductConclusion({ origin: 'product', key: 'synced' }, locale);
+      const raw = prefix || AgentTranscript.projectProductConclusion({ origin: 'product', key: 'synced' }, locale, undefined, '', { brand });
       const conclusion = prefix ? (source.prefixKey
-        ? AgentTranscript.projectProductConclusion({ origin: 'product', key: source.prefixKey }, locale) : prefix) : raw;
+        ? AgentTranscript.projectProductConclusion({ origin: 'product', key: source.prefixKey }, locale, undefined, '', { brand }) : prefix) : raw;
       return { ...base, kind: 'compile-errors', tone: 'warning', conclusion,
         compileCount: source.errorCount, compileErrors: (Array.isArray(source.errors) ? source.errors : []).slice(0, 3),
         compileChip: t('runOutcomeCompileChip', { count: source.errorCount, plural: source.errorCount === 1 ? '' : 's' }),
@@ -245,7 +279,11 @@
               pattern: new RegExp('^' + parts.map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('([^\\r\\n]*?)') + '$') });
           }
         }
-        for (const text of pair) if (!errorNextSteps.has(text)) errorNextSteps.set(text, pair);
+        for (const text of pair) {
+          if (!errorNextSteps.has(text)) errorNextSteps.set(text, pair);
+          const antigravityText = brandCopy(text, 'antigravity');
+          if (antigravityText !== text && !errorNextSteps.has(antigravityText)) errorNextSteps.set(antigravityText, pair);
+        }
       };
       // Reuse the producer's own bilingual copy rather than maintain another
       // translation catalog. Only exact, known next-step prose is accepted.
@@ -283,7 +321,8 @@
     if (!entry) return row;
     const { tx } = options;
     let value = row.value;
-    const pair = (META_COPY[row.key] || []).find(values => values.includes(value));
+    const pair = (META_COPY[row.key] || []).find(values => values.some(candidate =>
+      candidate === value || brandCopy(candidate, 'antigravity') === value));
     if (pair) value = tx(...pair);
     if (row.key === 'nextStep') value = localizeErrorNextStep(value, tx);
     if (row.key === 'writeResult') {
@@ -393,10 +432,15 @@
   }
 
   function projectCompletionMeta(meta, run, options) {
-    const { tx, trackedChangeInFlight, isTrackedChangeLifecycleRun, projectRunSettlement } = options;
+    const { trackedChangeInFlight, isTrackedChangeLifecycleRun, projectRunSettlement } = options;
     if (!Array.isArray(meta) || !run) return meta;
+    const locale = options.getLocale?.() || (options.tx?.('en', 'zh') === 'zh' ? 'zh' : 'en');
+    const brand = brandForRun(run);
+    const tx = (en, zh) => brandCopy(locale === 'zh' ? zh : en, brand);
+    const tr = (key, values) => trForRun(locale, brand, key, values);
+    const runOptions = { ...options, tx, tr, getLocale: () => locale, brand };
     const undone = run.undoStatus === 'applied' || run.trackedChangeStatus === 'rejected';
-    const rows = (undone ? meta.filter(row => row?.key !== 'saveState') : meta).map(row => localizeMetaRow(row, options))
+    const rows = (undone ? meta.filter(row => row?.key !== 'saveState') : meta).map(row => localizeMetaRow(row, runOptions))
       .filter(row => row?.key !== 'recoveryRetention' && row?.key !== 'directoryObservation');
     const pending = run.pendingDirectoryCleanup;
     if (!run.forkSnapshot && pending?.v === 1 && pending.runId === run.id
@@ -453,7 +497,7 @@
           ? directory : [recovery, directory].filter(Boolean).join(' ') });
     }
     if (undoUnavailable.length) {
-      const warning = options.tr('failureReason_snapshot_undo_unavailable_user')
+      const warning = tr('failureReason_snapshot_undo_unavailable_user')
         + ' ' + undoUnavailable.map(item => item.path).join(', ');
       const retained = projected.find(row => row.key === 'recoveryRetention');
       if (retained) { retained.value += ' ' + warning; retained.undoUnavailable = true; }

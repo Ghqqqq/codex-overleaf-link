@@ -36,7 +36,8 @@
     normalizeComposerSkillInvocation = (value) => value,
     clearComposerSkillInvocation = () => {},
     setSlashCodexOverleafSkills = () => {},
-    clearSlashCodexOverleafSkills = () => {}
+    clearSlashCodexOverleafSkills = () => {},
+    isAntigravityActive = () => false
   } = {}) {
     const document = documentDep
       || root.document
@@ -121,10 +122,18 @@
         return;
       }
       confirmingRowId = null;
+      const antigravity = Boolean(isAntigravityActive());
+      const overleafToggle = getPanel()?.querySelector('[data-load-codex-overleaf-skills]');
+      if (overleafToggle) {
+        overleafToggle.disabled = antigravity;
+        overleafToggle.title = antigravity ? tr('skillsUnavailableAntigravity') : '';
+      }
       const codexOverleafSkills = getCodexOverleafSkillsForSettings();
       const codexOverleafEnabled = getSkillLoadingSettings().loadCodexOverleafSkills !== false;
       list.textContent = '';
-      if (!codexOverleafEnabled) {
+      if (antigravity) {
+        appendLocalSkillEmpty(list, 'skillsUnavailableAntigravity', 'antigravity-skills-notice');
+      } else if (!codexOverleafEnabled) {
         appendLocalSkillEmpty(list, 'codexOverleafSkillsDisabled');
       }
       if (!codexOverleafSkills.length) {
@@ -132,7 +141,7 @@
         return;
       }
       for (const skill of codexOverleafSkills) {
-        renderCodexOverleafSkillRow(list, skill, codexOverleafEnabled);
+        renderCodexOverleafSkillRow(list, skill, codexOverleafEnabled && !antigravity, { antigravity });
       }
     }
 
@@ -140,8 +149,13 @@
       const list = getPanel()?.querySelector('[data-codex-local-skill-list]');
       if (!list) return;
       list.textContent = '';
+      const antigravity = Boolean(isAntigravityActive());
       const enabled = getSkillLoadingSettings().loadCodexLocalSkills !== false;
-      if (!enabled) appendLocalSkillEmpty(list, 'codexLocalSkillsDisabled');
+      if (antigravity) {
+        appendLocalSkillEmpty(list, 'skillsUnavailableAntigravity', 'antigravity-skills-notice');
+      } else if (!enabled) {
+        appendLocalSkillEmpty(list, 'codexLocalSkillsDisabled');
+      }
       const skills = getCodexLocalSkills();
       if (localSkillsListError) { appendLocalSkillEmpty(list, 'codexLocalSkillsLoadFailed'); return; }
       if (!Array.isArray(skills)) { appendLocalSkillEmpty(list, 'codexOverleafSkillsLoading'); return; }
@@ -157,7 +171,7 @@
       for (const skill of skills) {
         const title = String(skill.title || skill.name || skill.id).trim();
         const duplicateTitle = skills.filter(other => String(other.title || other.name || other.id).trim() === title).length > 1;
-        renderCodexOverleafSkillRow(list, { ...skill, title, duplicateTitle, scope: 'codex-local', removable: false }, enabled);
+        renderCodexOverleafSkillRow(list, { ...skill, title, duplicateTitle, scope: 'codex-local', removable: false }, enabled && !antigravity, { antigravity });
       }
     }
 
@@ -175,7 +189,8 @@
       return mark;
     }
 
-    function renderCodexOverleafSkillRow(list, skill, masterEnabled) {
+    function renderCodexOverleafSkillRow(list, skill, masterEnabled, options = {}) {
+      const antigravity = options.antigravity === true;
       const id = String(skill?.id || '').trim();
       if (!id) {
         return;
@@ -185,6 +200,7 @@
       const row = document.createElement('div');
       row.className = 'codex-local-skill-row';
       row.dataset.scope = local ? 'codex-local' : 'codex-overleaf';
+      row.dataset.skillId = id;
       if (!masterEnabled) {
         row.dataset.disabled = 'true';
       }
@@ -226,6 +242,14 @@
         sourceLabel.textContent = sourceText();
         copy.append(sourceLabel);
       }
+      let antigravityHint = null;
+      if (antigravity && !local && id === 'parallel-subagents') {
+        antigravityHint = document.createElement('span');
+        antigravityHint.className = 'codex-local-skill-description';
+        antigravityHint.dataset.skillUnavailableHint = 'parallel-subagents';
+        antigravityHint.textContent = tr('parallelSubagentsUnavailableAntigravity');
+        copy.append(antigravityHint);
+      }
       if (compact) row.append(createSkillMark(local ? '' : id));
       row.append(copy);
       const controls = compact ? document.createElement('div') : row;
@@ -242,17 +266,28 @@
       if (!masterEnabled) {
         toggle.disabled = true;
       }
+      if (antigravity) {
+        toggle.title = tr(!local && id === 'parallel-subagents'
+          ? 'parallelSubagentsUnavailableAntigravity'
+          : 'skillsUnavailableAntigravity');
+      }
       toggle.addEventListener('change', event => {
         if (local) setCodexLocalSkillEnabled(id, event.target.checked);
         else setCodexOverleafSkillEnabled(id, event.target.checked);
       });
       row._refreshLocale = () => {
         if (sourceLabel) sourceLabel.textContent = sourceText();
+        if (antigravityHint) antigravityHint.textContent = tr('parallelSubagentsUnavailableAntigravity');
+        if (antigravity) {
+          toggle.title = tr(!local && id === 'parallel-subagents'
+            ? 'parallelSubagentsUnavailableAntigravity'
+            : 'skillsUnavailableAntigravity');
+        }
         toggle.setAttribute('aria-label', accessibleSkillName + ': ' + tr('codexOverleafSkillEnableToggle'));
         const label = !local && id === 'annotated-rewrite' ? tx('Guided editing for document revisions.', '用于文稿修订的编辑流程。')
           : !local && id === 'parallel-subagents' ? tx('Split independent subtasks across multiple agents.', '将相互独立的子任务分配给多个 agent。')
             : !local && id === 'reviewer-response' ? tx('Map reviewer comments to evidence, edits and reply drafts.', '把审稿意见对应到论文证据、修改和回复草稿。') : '';
-        const help = copy.querySelector('.codex-local-skill-description');
+        const help = copy.querySelector('.codex-local-skill-description:not([data-skill-unavailable-hint])');
         if (label && help) { help.textContent = label; help.title = label; }
       };
 
@@ -360,11 +395,12 @@
       }
     }
 
-    function appendLocalSkillEmpty(list, key) {
+    function appendLocalSkillEmpty(list, key, marker = '') {
       const empty = document.createElement('div');
       empty.className = 'codex-project-settings-empty';
       empty.textContent = tr(key);
       empty.dataset.i18n = key;
+      if (marker) empty.dataset[marker.replace(/-([a-z])/g, (_, ch) => ch.toUpperCase())] = 'true';
       list.append(empty);
     }
 

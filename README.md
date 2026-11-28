@@ -3,7 +3,7 @@
   <h1>Codex Overleaf Link</h1>
   <p><strong>Empower Overleaf with Codex.</strong></p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.6.8-blue" alt="version 2.6.8">
+    <img src="https://img.shields.io/badge/version-2.7.0-blue" alt="version 2.7.0">
     <img src="https://img.shields.io/badge/chrome-MV3-green" alt="chrome manifest v3">
     <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="node version">
     <a href="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml"><img src="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml/badge.svg" alt="tests"></a>
@@ -13,7 +13,7 @@
   <p>English | <a href="README.zh-CN.md">简体中文</a></p>
 </div>
 
-Codex Overleaf Link adds a Codex panel next to the Overleaf editor. Ask about your project, or let Codex edit it: changes go back through the editor, as tracked changes if you want, and a run can be undone until you accept its changes. Codex runs on your machine through the Codex CLI.
+Codex Overleaf Link adds a Codex panel next to the Overleaf editor. Ask about your project, or let Codex edit it: changes go back through the editor, as tracked changes if you want, and a run can be undone until you accept its changes. It runs on your machine through the Codex CLI, or, when you switch a project to Antigravity, through Google's Antigravity CLI.
 
 ![The panel next to the editor and PDF in the Overleaf example project](assets/readme/2.6.0/overview@2x.png)
 
@@ -97,9 +97,17 @@ The panel uses the local Codex CLI's models by default; choose the model and rea
 
 <p align="center"><img src="assets/readme/2.6.0/providers@2x.png" width="700" alt="Provider shortcuts in Models & connections"></p>
 
+### Codex or Antigravity
+
+Each project can run on Codex or on Google Antigravity. Choose **Antigravity** under **Settings → All projects → Models & connections**, sign in with Google if the pane asks you to, click **Use for this project**, then pick a Gemini model and thinking level in the composer. The panel switches to its Antigravity form: the mark, the agent's name in the interface and the toolbar icon for that tab change. Earlier runs keep the name of the agent that ran them.
+
+Ask and Auto work as they do with Codex: Auto writes through the editor, as tracked changes if Track is on, and a run can be undone. Antigravity has no sandbox like Codex's, so the native host answers each of its permission requests: Ask never writes, Auto writes only inside the project's local workspace, and commands are limited to read-only inspection tools. Guiding a running turn, forks, `/compact`, skills and parallel subagents are Codex-only for now.
+
+<p align="center"><img src="assets/readme/2.7.0/twin-forms@2x.png" width="360" alt="The Codex and Antigravity marks"></p>
+
 ## Install
 
-You need Google Chrome on macOS, Windows or Linux (or Chromium on Linux), Node.js 20+, and the [Codex CLI](https://github.com/openai/codex), installed and signed in. The extension works on `overleaf.com`, `www.overleaf.com` and `cn.overleaf.com`; self-hosted Overleaf is not supported.
+You need Google Chrome on macOS, Windows or Linux (or Chromium on Linux), Node.js 20+, and the [Codex CLI](https://github.com/openai/codex), installed and signed in. To use Antigravity, also install the [Antigravity CLI](https://antigravity.google) (`agy`) and sign in with Google. The extension works on `overleaf.com`, `www.overleaf.com` and `cn.overleaf.com`; self-hosted Overleaf is not supported.
 
 ### Let Codex install it (recommended)
 
@@ -112,7 +120,7 @@ Install Codex Overleaf Link on this computer. Follow the install steps in https:
 ### Install with npm
 
 ```bash
-npm exec --yes codex-overleaf-link@2.6.8 -- install-managed
+npm exec --yes codex-overleaf-link@2.7.0 -- install-managed
 ```
 
 The installer sets up the native host and a managed copy of the extension, then prints the extension's folder.
@@ -126,13 +134,13 @@ In `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** an
 
 ```bash
 # macOS / Linux
-CODEX_OVERLEAF_REF=v2.6.8 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.6.8/install.sh)"
+CODEX_OVERLEAF_REF=v2.7.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.7.0/install.sh)"
 ```
 
 ```powershell
 # Windows
-iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.6.8/install.ps1 -OutFile install.ps1
-$env:CODEX_OVERLEAF_REF='v2.6.8'
+iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.7.0/install.ps1 -OutFile install.ps1
+$env:CODEX_OVERLEAF_REF='v2.7.0'
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
@@ -157,11 +165,13 @@ flowchart TD
     B <-->|Native Messaging over stdio| N[Native host, Node]
     N <--> M[Project mirror and baseline]
     N <-->|JSON-RPC over stdio| A[codex app-server]
+    N <-->|ACP over stdio| G[agy acp]
     A -->|reads and edits| M
+    G -->|reads and edits| M
 ```
 
 1. When you send a task, the extension saves the run's settings and syncs the project into a local mirror, or reuses the mirror if it is still current.
-2. The native host starts `codex app-server` on the mirror, with a Codex home of its own.
+2. The native host starts `codex app-server` on the mirror, with a Codex home of its own. For an Antigravity project it starts `agy acp` instead and answers its permission requests.
 3. When Codex is done, the host compares the mirror with its baseline and turns the differences into text patches and file transfers. An Ask run ends here.
 4. In Auto, the extension writes each patch through the Overleaf editor. Before writing it checks the project, path rules, edit mode and expected text, and shifts the patch past edits made elsewhere in the file since the run started.
 5. It then records the undo point, confirms the save, refreshes the mirror and, if Auto compile is on, recompiles.
@@ -174,7 +184,7 @@ Contributor notes on the architecture are in [docs/architecture](docs/architectu
 
 **Skills.** The plugin's Codex home copies your Codex login and config, but not `~/.codex/AGENTS.md`, `personality`, `rules` or `memories`. **Load local Codex skills** adds `~/.codex/skills` and your local plugins; **Load Codex Overleaf skills** adds `~/.codex-overleaf/skills`. Both are on by default.
 
-**Data.** There is no hosted backend and no telemetry. Task context goes to Codex or to the provider you configured, after a check for tokens and keys. Path rules decide what Codex may write; they don't hide files from it.
+**Data.** There is no hosted backend and no telemetry. Task context goes to Codex, Antigravity or the provider you configured, after a check for tokens and keys. Path rules decide what Codex may write; they don't hide files from it.
 
 <details>
 <summary>Where things are stored</summary>
@@ -188,6 +198,7 @@ Contributor notes on the architecture are in [docs/architecture](docs/architectu
 | Project mirrors | `~/.codex-overleaf/projects` | `%USERPROFILE%\.codex-overleaf\projects` |
 | Plugin Codex home | `~/.codex-overleaf/codex-home` | `%USERPROFILE%\.codex-overleaf\codex-home` |
 | Skills | `~/.codex-overleaf/skills` | `%USERPROFILE%\.codex-overleaf\skills` |
+| Antigravity sessions | `~/.codex-overleaf/antigravity/gemini` | `%USERPROFILE%\.codex-overleaf\antigravity\gemini` |
 | Providers and keys | `~/.codex-overleaf/providers.json`, `provider-secrets.json` | `%USERPROFILE%\.codex-overleaf\` |
 | Logs | `~/.codex-overleaf/native-host.log` | `%LOCALAPPDATA%\CodexOverleaf\native-host.log` |
 | Native Messaging manifest | Chrome: `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.codex.overleaf.json` (macOS), `~/.config/google-chrome/NativeMessagingHosts/` (Linux); Chromium: `~/.config/chromium/NativeMessagingHosts/` | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.codex.overleaf` |
@@ -210,10 +221,10 @@ Source checkouts and release-zip installs are unmanaged; update them by hand. Ea
 
 | Task | Command |
 |---|---|
-| Install, repair or migrate | `npm exec --yes codex-overleaf-link@2.6.8 -- install-managed` |
-| Diagnose | `npm exec --yes codex-overleaf-link@2.6.8 -- doctor` |
-| Uninstall | `npm exec --yes codex-overleaf-link@2.6.8 -- uninstall-managed` |
-| Native host only, for an unmanaged extension | `npm exec --yes codex-overleaf-link@2.6.8 -- install-native` / `uninstall-native` |
+| Install, repair or migrate | `npm exec --yes codex-overleaf-link@2.7.0 -- install-managed` |
+| Diagnose | `npm exec --yes codex-overleaf-link@2.7.0 -- doctor` |
+| Uninstall | `npm exec --yes codex-overleaf-link@2.7.0 -- uninstall-managed` |
+| Native host only, for an unmanaged extension | `npm exec --yes codex-overleaf-link@2.7.0 -- install-native` / `uninstall-native` |
 
 `uninstall-managed` removes the native host registration, the bridge, the managed extension and its runtimes. Your history, settings, mirrors, keys and skills stay. To remove everything, clear the history under **Settings → All projects → Local data → Clear local history…**, uninstall, remove the extension in `chrome://extensions`, and delete `~/.codex-overleaf` and the `~/Codex Overleaf Link Extension` shortcut (on Windows, `%USERPROFILE%\.codex-overleaf` and `%LOCALAPPDATA%\CodexOverleaf`).
 
@@ -223,6 +234,7 @@ Source checkouts and release-zip installs are unmanaged; update them by hand. Ea
 
 - **The native host is missing or needs an update.** Rerun `install-managed`, reload the extension and refresh Overleaf.
 - **Codex CLI not found.** Make sure `codex --version` works in a new terminal, then rerun the installer so it picks up your `PATH`.
+- **Antigravity is not found or not signed in.** Make sure `agy --version` works in a new terminal, then open **Settings → All projects → Models & connections → Antigravity** and use **Sign in with Google** or **Refresh status**. Antigravity currently also needs the Codex CLI installed.
 - **Extension ID mismatch.** Copy the ID from `chrome://extensions` and reinstall with `--extension-id <id>`.
 - **A file was skipped.** Its target text changed during the run, the editor couldn't open it, or a path rule makes it read-only. The details under the answer say which.
 - **A write was blocked by a path rule or the sensitive-content check.** Path rules can make files read-only; the check looks for tokens and keys before context leaves your machine. Change the rule in the project settings, or remove what the check found.

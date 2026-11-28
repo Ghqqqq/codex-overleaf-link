@@ -50,6 +50,8 @@
     'codex.providers.activate',
     'codex.providers.clear-secret',
     'codex.providers.delete',
+    'codex.providers.antigravity.status',
+    'codex.providers.antigravity.login',
     'task.run',
     'mirror.sync',
     'mirror.patchFiles', 'mirror.confirmWriteback', 'mirror.invalidate',
@@ -111,6 +113,7 @@
     buildCreatedFileUndoCheckpoint,
     buildUndoCheckpoint
   } = Modules.UndoOperations;
+  const AgentBrand = Modules.AgentBrand;
   const { buildHumanCompletionReport, mapAgentEventToActivity, stripEmptyHtmlCommentPlaceholders,
     translateRawError } = Modules.AgentTranscript;
   const i18n = Modules.I18n;
@@ -454,7 +457,8 @@
   });
   const runResultActions = Modules.RunResultActions.create({
     tr,
-    forkRunFromNode: sessionForkController.forkRunFromNode
+    forkRunFromNode: sessionForkController.forkRunFromNode,
+    getActiveProviderId: () => state?.providerId || 'builtin'
   });
   const runTimelineView = Modules.RunTimelineView.create({
     RunActivitySummary: Modules.RunActivitySummary,
@@ -476,6 +480,9 @@
     localizeCompileReason: value => Modules.CompileAdapter.localizeCompileReason(value, getLocale()),
     tr,
     tx,
+    rawTr,
+    rawTx,
+    getPanelBrandId,
     getLocale,
     formatElapsed,
     findRunRecord,
@@ -834,10 +841,15 @@
     normalizeState: normalizePanelState, applyStateToPanel
   });
 
+  function isAntigravityProvider(providerId) {
+    return String(providerId || '').trim() === 'antigravity';
+  }
+
   const providerSettingsCoordinator = Modules.ProviderSettingsCoordinator.create({
     ProviderProfiles: Modules.ProviderProfiles,
     ProviderSettingsDialog: Modules.ProviderSettingsDialog,
     hasCurrentProject: () => Boolean(getCurrentProjectId()),
+    hasAntigravityRuntime: () => nativeCompatibilityController.hasCapability('antigravityRuntime'),
     tx,
     sendBackgroundNative,
     document,
@@ -1016,7 +1028,8 @@
       slashCodexOverleafSkills = [];
       slashCodexOverleafSkillsLoaded = false;
       updateSkillsEntrySummary();
-    }
+    },
+    isAntigravityActive: () => isAntigravityProvider(state?.providerId)
   });
 
   let panel = null;
@@ -1082,7 +1095,9 @@
     showPluginToast,
     getPanel: () => panel,
     ensurePanelOpen,
-    getIconUrl: () => chrome.runtime.getURL('assets/icons/codex-overleaf-dialog-icon.png'),
+    getIconUrl: () => AgentBrand?.iconUrl
+      ? AgentBrand.iconUrl(getPanelBrandId(), 'dialog', path => chrome.runtime.getURL(path))
+      : chrome.runtime.getURL('assets/icons/codex-overleaf-dialog-icon.png'),
     getPanelRendererInstance: () => panelRendererInstance,
     setBadge: (...args) => PanelRenderer.setBadge(...args),
     setDiagnosticsHealth,
@@ -1256,12 +1271,50 @@
     return i18n?.normalizeLocale?.(state?.locale) || 'en';
   }
 
-  function tr(key, params) {
+  function getPanelBrandId() {
+    if (!getCurrentProjectId() || panel?.dataset.view === 'recent-projects') {
+      return 'codex';
+    }
+    return AgentBrand?.brandIdForProvider?.(state?.providerId) || 'codex';
+  }
+
+  function rawTr(key, params) {
     return i18n?.t?.(getLocale(), key, params) || key;
   }
 
-  function tx(en, zh) {
+  function rawTx(en, zh) {
     return getLocale() === 'zh' ? zh : en;
+  }
+
+  function tr(key, params) {
+    const template = i18n?.t?.(getLocale(), key) || key;
+    const branded = AgentBrand?.brandText ? AgentBrand.brandText(template, getPanelBrandId()) : template;
+    if (!params || typeof params !== 'object') return branded;
+    let out = branded;
+    for (const name of Object.keys(params)) {
+      const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      out = out.replace(new RegExp(`\\{${escaped}\\}`, 'g'), () => String(params[name]));
+    }
+    return out;
+  }
+
+  function tx(en, zh) {
+    const text = getLocale() === 'zh' ? zh : en;
+    return AgentBrand?.brandText ? AgentBrand.brandText(text, getPanelBrandId()) : text;
+  }
+
+  let lastSentToolbarBrand = '';
+  function syncToolbarBrand(force = false) {
+    const brand = getPanelBrandId();
+    if (!force && brand === lastSentToolbarBrand) return;
+    lastSentToolbarBrand = brand;
+    try {
+      chrome?.runtime?.sendMessage?.({ type: 'codex-overleaf/agent-brand', brand }, () => {
+        void chrome?.runtime?.lastError;
+      });
+    } catch (_error) {
+      // Toolbar icon/title branding is cosmetic and fails silently.
+    }
   }
 
   function getExtensionCompatibilityMetadata() {
@@ -1721,6 +1774,7 @@
     DiagnosticsPanel.refreshLocale?.(diagnosticsPanelInstance, diagnosticsController.refreshLocale?.());
     if (!panel.querySelector('[data-context-tray]')?.hidden) renderContextFiles();
     if (settingsPanelInstance?.container?.querySelector('[data-storage-card]')?.open) refreshStorageUsageSummary();
+    syncToolbarBrand();
   }
 
   function setElementTitleAndAria(selector, title, ariaLabel) {
@@ -1891,6 +1945,10 @@
     const submittedSessionId = state.activeSessionId;
     const submittedSession = runController.captureSessionContext(state);
     const submittedThreadId = getActiveSession(state)?.codexThreadId || '';
+    if (compact && (isAntigravityProvider(state?.providerId) || String(submittedThreadId || '').startsWith('agy:'))) {
+      showPluginToast(tr('compactUnsupportedAntigravity'), { status: 'info' });
+      return;
+    }
     if (compact && !submittedThreadId) {
       showPluginToast(tr('compactNoThread'), { status: 'info' });
       return;
@@ -1909,33 +1967,58 @@
       focusFiles: compact ? [] : getActiveFocusFiles(),
       selectionContext: compact ? null : selectionContextView.capture()
     };
+    const queuedSnapshot = queuedInput ? RunExecutionSnapshot.fromQueuePayload(queuedInput.payload) : null;
     const queuedContext = queuedInput
       ? RunInputQueue.normalizeSubmissionContext(queuedInput.payload?.submissionContext) : null;
     const submittedCustomInstructions = queuedContext ? queuedContext.customInstructions : getCustomInstructionsForCurrentProject();
     const submittedSkillLoadingSettings = queuedContext ? queuedContext.skillLoadingSettings : getSkillLoadingSettings();
     const submittedAttachments = queuedInput || compact ? [] : getComposerAttachmentsForRun();
-    const submittedSkillInvocation = compact ? null : queuedContext ? queuedContext.skillInvocation : getComposerSkillInvocationForRun();
-    let submittedEnabledSkillIds = queuedContext ? queuedContext.enabledCodexOverleafSkillIds : getEnabledCodexOverleafSkillIds();
+    const rawSkillInvocation = compact ? null : queuedContext ? queuedContext.skillInvocation : getComposerSkillInvocationForRun();
+    const rawEnabledSkillIds = queuedContext ? queuedContext.enabledCodexOverleafSkillIds : getEnabledCodexOverleafSkillIds();
     const submittedSkillEnabled = { ...state.codexOverleafSkillEnabled };
     const submittedLocalSkillEnabled = { ...state.codexLocalSkillEnabled };
     const submittedSelectionRevision = selectionContextView.getRevision?.();
-    let submittedEnabledLocalSkillIds = queuedContext ? queuedContext.enabledCodexLocalSkillIds : compact ? getEnabledCodexLocalSkillIds() : [];
+    const rawEnabledLocalSkillIds = queuedContext ? queuedContext.enabledCodexLocalSkillIds : compact ? getEnabledCodexLocalSkillIds() : [];
+    const skillScope = runController.resolveRunSkillScope({
+      queuedInput,
+      queuedSnapshot,
+      panelProviderId: submittedPanelState.providerId,
+      submittedEnabledSkillIds: rawEnabledSkillIds,
+      submittedEnabledLocalSkillIds: rawEnabledLocalSkillIds,
+      submittedSkillInvocation: rawSkillInvocation
+    });
+    const antigravityRun = skillScope.antigravityRun;
+    const submittedSkillInvocation = skillScope.skillInvocation;
+    let submittedEnabledSkillIds = skillScope.enabledCodexOverleafSkillIds;
+    let submittedEnabledLocalSkillIds = skillScope.enabledCodexLocalSkillIds;
+    if (skillScope.blockedSkillInvocation) {
+      const blockedMessage = skillScope.blockedSkillInvocation.id === 'skill-installer' && !skillScope.blockedSkillInvocation.scope
+        ? tr('slashInstallSkillUnsupportedAntigravity')
+        : tr('slashSkillUnsupportedAntigravity');
+      showPluginToast(blockedMessage, { status: 'warning' });
+      if (queuedInput) {
+        throw Object.assign(new Error(blockedMessage), { code: 'antigravity_unsupported_operation' });
+      }
+      return;
+    }
     // Capture submission first; a save must not adopt text typed while it waits.
     if (!queuedInput) await flushComposerDraft({ requireDurable: true });
-    if (!compact && !queuedInput && submittedSkillLoadingSettings.loadCodexLocalSkills !== false) {
-      const localSkills = await primeCodexLocalSkillsCatalog({ required: true, force: submittedSkillInvocation?.scope === 'codex-local' });
-      submittedEnabledLocalSkillIds = localSkills.filter(skill => Object.hasOwn(submittedLocalSkillEnabled, skill.id)
-        ? submittedLocalSkillEnabled[skill.id] !== false : skill.enabled !== false).map(skill => skill.id);
-    }
-    if (!queuedInput && submittedSkillInvocation?.scope === 'codex-local'
-      && (submittedSkillLoadingSettings.loadCodexLocalSkills === false || !submittedEnabledLocalSkillIds.includes(submittedSkillInvocation.id))) {
-      throw new Error(tx('The selected local Codex skill is unavailable or disabled. Select an enabled skill and try again.',
-        '所选 Codex 本地技能不可用或已关闭，请选择已启用的技能后重试。'));
-    }
-    if (!compact && !queuedInput && submittedSkillLoadingSettings.loadCodexOverleafSkills !== false) {
-      const skills = await primeCodexOverleafSkillsCatalog({ required: true });
-      submittedEnabledSkillIds = skills.map(skill => String(skill?.id || '').trim())
-        .filter(id => id && submittedSkillEnabled[id] !== false);
+    if (!antigravityRun) {
+      if (!compact && !queuedInput && submittedSkillLoadingSettings.loadCodexLocalSkills !== false) {
+        const localSkills = await primeCodexLocalSkillsCatalog({ required: true, force: submittedSkillInvocation?.scope === 'codex-local' });
+        submittedEnabledLocalSkillIds = localSkills.filter(skill => Object.hasOwn(submittedLocalSkillEnabled, skill.id)
+          ? submittedLocalSkillEnabled[skill.id] !== false : skill.enabled !== false).map(skill => skill.id);
+      }
+      if (!queuedInput && submittedSkillInvocation?.scope === 'codex-local'
+        && (submittedSkillLoadingSettings.loadCodexLocalSkills === false || !submittedEnabledLocalSkillIds.includes(submittedSkillInvocation.id))) {
+        throw new Error(tx('The selected local Codex skill is unavailable or disabled. Select an enabled skill and try again.',
+          '所选 Codex 本地技能不可用或已关闭，请选择已启用的技能后重试。'));
+      }
+      if (!compact && !queuedInput && submittedSkillLoadingSettings.loadCodexOverleafSkills !== false) {
+        const skills = await primeCodexOverleafSkillsCatalog({ required: true });
+        submittedEnabledSkillIds = skills.map(skill => String(skill?.id || '').trim())
+          .filter(id => id && submittedSkillEnabled[id] !== false);
+      }
     }
     // Keep the previous mirror's completion events on its own run.
     const pendingMirror = getPendingMirrorRefresh?.();
@@ -1955,7 +2038,7 @@
     submittedPanelState.writingStyle = queuedInput || compact ? null : writingStyleSettings.capture();
     let executionSnapshot = queuedInput
       ? RunExecutionSnapshot.resolveForExecution(
-        RunExecutionSnapshot.fromQueuePayload(queuedInput.payload),
+        queuedSnapshot,
         { catalog: providerSettingsCoordinator.getCatalog() }
       )
       : captureCurrentExecutionSnapshot(submittedPanelState);
@@ -2165,7 +2248,7 @@
       let otWarmStart = warmStart.otWarmStart === true;
       if (!useExistingMirror) {
         appendRunEvent({
-          title: tx('Syncing the Overleaf project to the local Codex workspace.', '正在同步 Overleaf 项目到本地 Codex workspace。'),
+          title: tx('Syncing the Overleaf project to the local workspace.', '正在同步 Overleaf 项目到本地工作区。'),
           status: 'running'
         });
         project = await awaitRunStep(getRunProjectSnapshot());
@@ -2461,7 +2544,15 @@
             task: submittedDraft, attachments: submittedAttachments, skillInvocation: submittedSkillInvocation,
             selectionContext: submittedPanelState.selectionContext }, localSkillRestorePoint);
         }
-        const translated = translateRawError(response.error.message, { mode: submittedMode, locale: getLocale(), code: response.error?.code });
+        const runProviderId = executionSnapshot?.providerId || state?.providerId || 'builtin';
+        const runThreadId = currentRunView?.codexThreadId || submittedThreadId || '';
+        const translated = translateRawError(response.error.message, {
+          mode: submittedMode,
+          locale: getLocale(),
+          code: response.error?.code,
+          providerId: runProviderId,
+          threadId: runThreadId
+        });
         // Structured FailureReason (§9.7): split bridge-availability from
         // Codex-side errors. `native_connection_failed` / `native_unavailable`
         // / `native_update_required` indicate the bridge itself is missing,
@@ -2473,7 +2564,20 @@
         // steps) existed but were never emitted, so everything collapsed into
         // "no usable result" and pointed users at the wrong recovery.
         const runErrorMessage = String(response.error?.message || '');
-        const codexRunFailure = translated.failureCode === 'codex_context_limit'
+        const rawErrorCode = String(response.error?.code || '');
+        const antigravityFailureCode = translated.failureCode?.startsWith('antigravity_')
+          ? translated.failureCode
+          : FailureReasons.FAILURE_CODE_CATALOG[rawErrorCode] && rawErrorCode.startsWith('antigravity_')
+            ? rawErrorCode
+            : /^(?:antigravity_|ACP_)/i.test(rawErrorCode)
+              ? 'antigravity_runtime_error'
+              : '';
+        const codexRunFailure = antigravityFailureCode
+          ? buildContentFailure(antigravityFailureCode, { path: 'codex.run' }, {
+            technicalMessage: runErrorMessage,
+            evidence: { errorCode: rawErrorCode || antigravityFailureCode }
+          })
+          : translated.failureCode === 'codex_context_limit'
           ? buildContentFailure('codex_context_limit', { path: 'codex.run' }, {
             technicalMessage: runErrorMessage,
             evidence: { errorCode: response.error?.code || '' }
@@ -2504,7 +2608,7 @@
                 errorCode: response.error?.code || ''
               }
             })
-          : /Codex CLI was not found/i.test(runErrorMessage)
+          : !isAntigravityProvider(runProviderId) && !runThreadId.startsWith('agy:') && /Codex CLI was not found/i.test(runErrorMessage)
             ? buildContentFailure('codex_not_found', { path: 'codex.run' }, {
               technicalMessage: runErrorMessage,
               evidence: { errorCode: response.error?.code || '' }
@@ -2760,7 +2864,14 @@
       // — the fallback conclusion must reflect that instead of saying
       // 'local Codex returned no usable result'.
       const codexReturned = Boolean(getAssistantAnswerForCurrentRun());
-      const translated = translateRawError(error.message, { mode: submittedMode, locale: getLocale(), code: error.code, codexReturned });
+      const translated = translateRawError(error.message, {
+        mode: submittedMode,
+        locale: getLocale(),
+        code: error.code,
+        codexReturned,
+        providerId: executionSnapshot?.providerId || state?.providerId || 'builtin',
+        threadId: currentRunView?.codexThreadId || submittedThreadId || ''
+      });
       // When translateRawError maps the raw error to a FailureReason code,
       // attach the structured failure to the run-event and completion-report
       // so the run record carries machine-readable failure data alongside
@@ -2892,7 +3003,13 @@
         await finishRunView(tx('Cancelled', '已取消'), 'cancelled');
         return;
       }
-      const translated = translateRawError(response.error.message, { mode: submittedMode, locale: getLocale() });
+      const translated = translateRawError(response.error.message, {
+        mode: submittedMode,
+        locale: getLocale(),
+        code: response.error?.code,
+        providerId: executionSnapshot?.providerId || state?.providerId || 'builtin',
+        threadId: codexThreadId || ''
+      });
       // Attach the structured FailureReason from the regex → catalog mapping
       // (when translateRawError surfaces one) so the skill-installer failure
       // path carries the same machine-readable shape the run-card consumes.
@@ -3218,6 +3335,7 @@
         task, project: { files: [] }, rules: getGovernanceRulesForCurrentProject(),
         guidance: true, useExistingMirror: false, assertCurrent
       }),
+      isGuideSupported: run => !isAntigravityProvider(run?.executionSnapshot?.providerId || run?.providerId || state?.providerId),
       sendSteer: (params, context) => nativeCompatibilityController.sendBackgroundNative({ method: 'codex.steer', params }, context),
       getContainer: () => panel?.querySelector('[data-pending-inputs]'),
       createView: options => PendingInputView.create(options),
@@ -3258,7 +3376,7 @@
         ? submitted.writingStyle : writingStyleSettings.capture()
     }, {
       source: 'submitted',
-      requireProviderRevision: providerId !== 'builtin'
+      requireProviderRevision: !Modules.ProviderProfiles.isFixedProviderId(providerId)
     });
   }
 
@@ -3273,14 +3391,24 @@
 
   function queueComposerInput() {
     if (sessionManager.isTransitioning()) return;
-    if (getSkillLoadingSettings().loadCodexLocalSkills !== false && !Array.isArray(getCodexLocalSkillsCatalog())) {
+    const antigravity = isAntigravityProvider(state?.providerId);
+    const invocation = getComposerSkillInvocationForRun();
+    if (antigravity && invocation) {
+      showPluginToast(
+        invocation.id === 'skill-installer' && !invocation.scope
+          ? tr('slashInstallSkillUnsupportedAntigravity')
+          : tr('slashSkillUnsupportedAntigravity'),
+        { status: 'warning' }
+      );
+      return;
+    }
+    if (!antigravity && getSkillLoadingSettings().loadCodexLocalSkills !== false && !Array.isArray(getCodexLocalSkillsCatalog())) {
       primeCodexLocalSkillsCatalog({ required: true }).catch(() => {});
       showPluginToast(tx('Local Codex skills are still loading. Try submitting again when loading finishes.',
         'Codex 本地技能仍在加载，请在加载完成后重新提交。'), { status: 'info' });
       return;
     }
-    const invocation = getComposerSkillInvocationForRun();
-    if (invocation?.scope === 'codex-local' && !getEnabledCodexLocalSkillIds()?.includes(invocation.id)) {
+    if (!antigravity && invocation?.scope === 'codex-local' && !getEnabledCodexLocalSkillIds()?.includes(invocation.id)) {
       showPluginToast(tx('The selected local Codex skill is unavailable or disabled. Select an enabled skill and try again.',
         '所选 Codex 本地技能不可用或已关闭，请选择已启用的技能后重试。'), { status: 'failed' });
       return;
@@ -3486,7 +3614,9 @@
       pluginConfirmController = PanelRenderer.createConfirmController({
         getPanel: () => panel,
         ensurePanelOpen,
-        getIconUrl: () => chrome.runtime.getURL('assets/icons/codex-overleaf-dialog-icon.png'),
+        getIconUrl: () => AgentBrand?.iconUrl
+          ? AgentBrand.iconUrl(getPanelBrandId(), 'dialog', path => chrome.runtime.getURL(path))
+          : chrome.runtime.getURL('assets/icons/codex-overleaf-dialog-icon.png'),
         tr
       });
     }
@@ -3647,7 +3777,11 @@
       createInterruptedRun: journal => ActiveTurnControl.createInterruptedRun(journal, projectKey, tr('restoredRunStoppedStatus')),
       onRawEvent: (raw, { record, session, sequence }) => storeContextUsage(raw, record, session, sequence),
       mapEvent: (raw, journal) => ActiveTurnControl.mapRecoveredEvent(raw, journal, {
-        mapActivity: value => mapAgentEventToActivity(value, { locale: getLocale() }),
+        mapActivity: value => mapAgentEventToActivity(value, {
+          locale: getLocale(),
+          providerId: journal?.providerId,
+          threadId: journal?.threadId
+        }),
         sanitizeText: sanitizeAssistantVisibleText, sanitizeValue: sanitizeAssistantVisibleValue
       }),
       upsertStream: upsertRunStreamRecordEvent,
@@ -3849,15 +3983,18 @@
   }
 
   function getSlashCommands() {
+    const antigravity = isAntigravityProvider(state?.providerId);
     const commands = [
       { id: 'compact', kind: 'compact', group: 'commands', title: tr('slashCompactTitle'), slug: '/compact',
-        subtitle: tr('slashCompactSubtitle') },
+        disabled: antigravity,
+        subtitle: tr(antigravity ? 'slashCompactUnsupportedAntigravity' : 'slashCompactSubtitle') },
       {
         id: 'install-skill',
         kind: 'installer',
         group: 'commands',
         title: tr('slashInstallSkillTitle'),
-        subtitle: tr('slashInstallSkillSubtitle')
+        disabled: antigravity,
+        subtitle: tr(antigravity ? 'slashInstallSkillUnsupportedAntigravity' : 'slashInstallSkillSubtitle')
       }
     ];
     const settings = getSkillLoadingSettings();
@@ -3879,7 +4016,10 @@
         scope: 'codex-overleaf',
         skillId: id,
         title,
-        subtitle: tr('slashUseOverleafSkillSubtitle')
+        disabled: antigravity,
+        subtitle: antigravity
+          ? tr(id === 'parallel-subagents' ? 'parallelSubagentsUnavailableAntigravity' : 'slashSkillUnsupportedAntigravity')
+          : tr('slashUseOverleafSkillSubtitle')
       });
     }
     const localSkills = settings.loadCodexLocalSkills === false ? [] : (getCodexLocalSkillsCatalog() || []);
@@ -3890,14 +4030,20 @@
       commands.push({ id: `local-skill:${skill.id}`, kind: 'codex-local-skill', group: 'local', scope: 'codex-local', skillId: skill.id,
         title: String(skill.title || skill.name || skill.id).trim().slice(0, 80),
         searchName: String(skill.name || ''),
-        subtitle: [skill.sourceKind === 'plugin' && skill.sourceLabel ? skill.sourceLabel : '',
-          sameName ? skill.sourceHint || skill.id.slice(-8) : '',
-          String(skill.preview || '').trim() || tr('slashUseLocalSkillSubtitle')].filter(Boolean).join(' · ') });
+        disabled: antigravity,
+        subtitle: antigravity
+          ? tr('slashSkillUnsupportedAntigravity')
+          : [skill.sourceKind === 'plugin' && skill.sourceLabel ? skill.sourceLabel : '',
+            sameName ? skill.sourceHint || skill.id.slice(-8) : '',
+            String(skill.preview || '').trim() || tr('slashUseLocalSkillSubtitle')].filter(Boolean).join(' · ') });
     }
     return commands;
   }
 
   async function refreshCodexOverleafSkillsForSlashMenu() {
+    if (isAntigravityProvider(state?.providerId)) {
+      return;
+    }
     if (getSlashTrigger() && getSkillLoadingSettings().loadCodexLocalSkills !== false) {
       primeCodexLocalSkillsCatalog().catch(() => {
         showPluginToast(tx('Could not load local Codex skills. Try again.', '无法加载 Codex 本地技能，请重试。'), { status: 'failed' });
@@ -4160,6 +4306,12 @@
       button.type = 'button';
       button.dataset.slashCommand = command.id;
       button.dataset.slashCommandKind = command.kind || '';
+      if (command.disabled) {
+        button.disabled = true;
+        button.dataset.disabled = 'true';
+        button.setAttribute('aria-disabled', 'true');
+        button.title = command.subtitle || '';
+      }
       if (command.skillId) {
         button.dataset.slashSkillId = command.skillId;
       }
@@ -4304,6 +4456,11 @@
       closeSlashMenu();
       return;
     }
+    if (command.disabled) {
+      closeSlashMenu();
+      if (command.subtitle) showPluginToast(command.subtitle, { status: 'info' });
+      return;
+    }
     if (command.kind === 'at-loading') {
       return;
     }
@@ -4349,6 +4506,10 @@
   }
 
   function activateSkillInstallerComposerContext() {
+    if (isAntigravityProvider(state?.providerId)) {
+      showPluginToast(tr('slashInstallSkillUnsupportedAntigravity'), { status: 'info' });
+      return;
+    }
     composerDraftRevision += 1;
     composerSkillInvocation = {
       id: 'skill-installer',
@@ -4772,6 +4933,7 @@
     cancelPendingWritebacks(prevId);
     pauseProjectObservers(prevId);
     disableComposer();
+    syncToolbarBrand();
   }
 
   function enterProject(id) {
@@ -6845,7 +7007,7 @@
       threadId: session?.codexThreadId || '',
       providerId: state.providerId || 'builtin',
       providerRevision: runningSelection ? Number(run.providerRevision || 0)
-        : selection?.providerRevision ?? ((state.providerId || 'builtin') === 'builtin' ? 0 : null),
+        : selection?.providerRevision ?? (Modules.ProviderProfiles.isFixedProviderId(state.providerId || 'builtin') ? 0 : null),
       model: state.model || ''
     };
     // The composer can select the next turn's model while this turn runs.
@@ -6865,6 +7027,9 @@
 
   function getCompactAvailability() {
     if (sessionManager.isTransitioning() || updateIdleClient?.isApplying() || currentRunView || runSubmissionPending) return { ok: false, reason: 'compactBusy' };
+    if (isAntigravityProvider(state?.providerId) || String(getActiveSession(state)?.codexThreadId || '').startsWith('agy:')) {
+      return { ok: false, reason: 'compactUnsupportedAntigravity' };
+    }
     if (!getActiveSession(state)?.codexThreadId) return { ok: false, reason: 'compactNoThread' };
     return { ok: true };
   }
@@ -7082,7 +7247,11 @@
       return;
     }
 
-    const activity = mapAgentEventToActivity(event, { locale: getLocale() });
+    const activity = mapAgentEventToActivity(event, {
+      locale: getLocale(),
+      providerId: owner?.executionSnapshot?.providerId || owner?.providerId,
+      threadId: owner?.codexThreadId || event?.detail?.params?.threadId || ''
+    });
     if (!activity?.visible || activity.kind === 'technical') {
       return;
     }
@@ -8313,6 +8482,8 @@
     const report = buildHumanCompletionReport({
       ...input,
       locale: getLocale(),
+      providerId: input.providerId || record?.executionSnapshot?.providerId || record?.providerId,
+      threadId: input.threadId || record?.codexThreadId || '',
       operations,
       applyResults,
       undoCount,
@@ -8479,19 +8650,19 @@
     const key = operation?.reasonKey || '';
     const count = Number(operation?.reasonParams?.count || 0);
     if (key === 'localWorkspaceDelete') {
-      return tx('Local Codex workspace deleted this file.', '本地 Codex workspace 删除了这个文件。');
+      return tx('Local workspace deleted this file.', '本地工作区删除了这个文件。');
     }
     if (key === 'localWorkspacePatch') {
       return tx(
-        `Synced ${count || 0} local Codex workspace edit${Number(count) === 1 ? '' : 's'}.`,
-        `同步本地 Codex workspace 中的局部文件改动（${count || 0} 处）。`
+        `Synced ${count || 0} local workspace edit${Number(count) === 1 ? '' : 's'}.`,
+        `同步本地工作区中的局部文件改动（${count || 0} 处）。`
       );
     }
     if (key === 'localWorkspaceContent') {
-      return tx('Synced file content from the local Codex workspace.', '同步本地 Codex workspace 中的文件内容。');
+      return tx('Synced file content from the local workspace.', '同步本地工作区中的文件内容。');
     }
     if (key === 'localWorkspaceCreate') {
-      return tx('Synced a new file from the local Codex workspace.', '同步本地 Codex workspace 中的新文件。');
+      return tx('Synced a new file from the local workspace.', '同步本地工作区中的新文件。');
     }
     return localizeVisibleReason(operation?.reason || '');
   }

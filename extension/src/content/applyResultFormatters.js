@@ -302,19 +302,19 @@
     if (text.includes('Codex 要修改的具体位置已经被你或协作者改过')) {
       return 'The exact edit location was changed by you or a collaborator, so Codex did not overwrite it. Review the diff and retry.';
     }
-    const patchMatch = text.match(/^同步本地 Codex workspace 中的局部文件改动（(\d+) 处）。$/);
+    const patchMatch = text.match(/^同步本地(?: Codex workspace |工作区)中的局部文件改动（(\d+) 处）。$/);
     if (patchMatch) {
       const count = Number(patchMatch[1]) || 0;
-      return `Synced ${count} local Codex workspace edit${count === 1 ? '' : 's'}.`;
+      return `Synced ${count} local workspace edit${count === 1 ? '' : 's'}.`;
     }
-    if (text === '本地 Codex workspace 删除了这个文件。') {
-      return 'Local Codex workspace deleted this file.';
+    if ((text === '本地 Codex workspace 删除了这个文件。' || text === '本地工作区删除了这个文件。')) {
+      return 'Local workspace deleted this file.';
     }
-    if (text === '同步本地 Codex workspace 中的文件内容。') {
-      return 'Synced file content from the local Codex workspace.';
+    if ((text === '同步本地 Codex workspace 中的文件内容。' || text === '同步本地工作区中的文件内容。')) {
+      return 'Synced file content from the local workspace.';
     }
-    if (text === '同步本地 Codex workspace 中的新文件。') {
-      return 'Synced a new file from the local Codex workspace.';
+    if ((text === '同步本地 Codex workspace 中的新文件。' || text === '同步本地工作区中的新文件。')) {
+      return 'Synced a new file from the local workspace.';
     }
     return text;
   }

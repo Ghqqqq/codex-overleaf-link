@@ -1,10 +1,10 @@
 (function initRunPresence(root, factory) {
   if (typeof module === 'object' && module.exports) {
-    module.exports = factory();
+    module.exports = factory(require('../shared/agentBrand'));
   } else {
-    root.CodexOverleafModuleRegistry.define('RunPresence', [], factory);
+    root.CodexOverleafModuleRegistry.define('RunPresence', ['AgentBrand'], factory);
   }
-})(typeof window !== 'undefined' ? window : globalThis, function runPresenceFactory() {
+})(typeof window !== 'undefined' ? window : globalThis, function runPresenceFactory(AgentBrand) {
   'use strict';
 
   // Presentation-only run header: the animated brand mark, the live label and
@@ -36,7 +36,11 @@
   // Layers (inlined in panel.css) are pixel-exact slices of assets/icons/codex-overleaf-icon.png;
   // the origins (percent of the square crop) are the leaf stem and cloud centre.
   const MARK_LAYERS = ['cloud', 'cursor', 'leaf'];
-  const MARK_STYLE = '--mark-leaf-origin:70.6% 41.6%;--mark-cloud-origin:44.3% 55%';
+  const MARK_STYLES = Object.freeze({
+    codex: '--mark-leaf-origin:70.6% 41.6%;--mark-cloud-origin:44.3% 55%',
+    antigravity: '--mark-leaf-origin:66.8% 41.5%;--mark-cloud-origin:44.6% 56.4%'
+  });
+  const normalizeBrand = brand => brand === 'antigravity' ? 'antigravity' : 'codex';
   const ICONS = {
     alert: '<circle cx="8" cy="8" r="6"/><path d="M8 4.5v4 M8 11h.01"/>',
     minus: '<circle cx="8" cy="8" r="6"/><path d="M5 8h6"/>',
@@ -160,8 +164,9 @@
       return once('codex-overleaf:egg:late-night:' + night) ? tx('Burning the midnight oil', '挑灯夜战') : '';
     }
 
-    function markHtml(className = '') {
-      return '<span class="run-mark' + (className ? ' ' + className : '') + '" aria-hidden="true" style="' + MARK_STYLE + '">'
+    function markHtml(className = '', brand = 'codex') {
+      const normalized = normalizeBrand(brand);
+      return '<span class="run-mark' + (className ? ' ' + className : '') + '" data-brand="' + normalized + '" aria-hidden="true" style="' + MARK_STYLES[normalized] + '">'
         + MARK_LAYERS.map(layer => '<span class="run-mark-' + layer + '"></span>').join('') + '</span>';
     }
 
@@ -197,14 +202,15 @@
       return slot;
     }
 
-    function ensureRunning(el, runId) {
+    function ensureRunning(el, runId, brand = 'codex') {
+      const normalized = normalizeBrand(brand);
       let state = live.get(el);
-      if (state && state.runId === runId) return state;
+      if (state && state.runId === runId && state.brand === normalized) return state;
       stop(el);
       el.dataset.presence = 'running';
-      el.innerHTML = markHtml() + '<span class="codex-sr-only">' + escapeHtml(tx('Running', '运行中')) + '</span>'
+      el.innerHTML = markHtml('', normalized) + '<span class="codex-sr-only">' + escapeHtml(tx('Running', '运行中')) + '</span>'
         + '<span class="run-presence-label"></span><span class="run-presence-timer"></span>';
-      state = { runId, key: '', verb: '', slot: -1, elapsedMs: 0, eggs: [], label: el.querySelector('.run-presence-label'),
+      state = { runId, brand: normalized, key: '', verb: '', slot: -1, elapsedMs: 0, eggs: [], label: el.querySelector('.run-presence-label'),
         timer: el.querySelector('.run-presence-timer') };
       const late = lateNightEgg();
       if (late) state.eggs.push(late);
@@ -213,9 +219,9 @@
     }
 
     // label: { kind: 'stage', text } | { kind: 'idle' }. Tool steps live in the round list, not the header.
-    function paintRunning(el, { runId = '', label = { kind: 'idle' }, elapsedMs } = {}) {
+    function paintRunning(el, { runId = '', brand = 'codex', label = { kind: 'idle' }, elapsedMs } = {}) {
       if (!el) return;
-      const state = ensureRunning(el, runId);
+      const state = ensureRunning(el, runId, brand);
       state.idle = label.kind !== 'stage';
       if (elapsedMs !== undefined) tick(el, elapsedMs);
       if (!state.idle) {
@@ -276,10 +282,11 @@
     }
 
     // Decorates the existing empty-state element with the mark, project chip and a tip.
-    function decorateEmpty(empty, { projectName = '' } = {}) {
+    function decorateEmpty(empty, { projectName = '', brand = 'codex' } = {}) {
+      const normalized = normalizeBrand(brand);
       const mark = doc().createElement('div');
       mark.className = 'run-empty-mark';
-      mark.innerHTML = markHtml('is-large');
+      mark.innerHTML = markHtml('is-large', normalized);
       empty.prepend(mark);
       const title = empty.querySelector('.empty-runs-title');
       if (title) title.textContent = emptyTitle();
@@ -300,7 +307,8 @@
       const show = () => {
         const old = tip.querySelector('.run-empty-tip-text');
         const fresh = old.cloneNode(false);
-        fresh.textContent = TIPS[locale()][tipIndex % TIPS.en.length];
+        const rawTip = TIPS[locale()][tipIndex % TIPS.en.length];
+        fresh.textContent = AgentBrand?.brandText ? AgentBrand.brandText(rawTip, normalized) : rawTip;
         old.replaceWith(fresh);
       };
       next.addEventListener('click', () => { tipIndex += 1; show(); });

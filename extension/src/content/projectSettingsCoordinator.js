@@ -143,6 +143,10 @@
       if (!settingsPanelInstance) {
         return;
       }
+      if (getState()?.providerId === 'antigravity') {
+        SettingsPanel.setSkillsSummary(settingsPanelInstance, tr('skillsSummaryUnavailableAntigravity'));
+        return;
+      }
       const settings = getSkillLoadingSettings();
       const localCount = settings.loadCodexLocalSkills === false ? 0
         : (deps.getCodexLocalSkills?.() || []).filter(skill => isCodexLocalSkillEnabled(skill.id, skill)).length;
@@ -364,6 +368,7 @@
       SettingsPanel.loadState(getSettingsPanelInstance(), {
         governanceRules: getGovernanceRulesForCurrentProject(),
         skillToggles: getSkillLoadingSettings(),
+        antigravityActive: getState()?.providerId === 'antigravity',
         theme: getThemePreference(),
         language: getLocale()
       });

@@ -22,6 +22,13 @@ const { sanitizeProviderMessage } = require('./providerRedaction');
 const { createProviderLaunch } = require('./codexProviderLaunch');
 const { runProviderConnectionTest } = require('./codexProviderTest');
 const { getReasoningControl } = require('./providerReasoning');
+const {
+  ANTIGRAVITY_PROVIDER_ID,
+  ANTIGRAVITY_PROVIDER_NAME,
+  getAntigravityStatus,
+  loginAntigravity,
+  resolveAntigravityModels
+} = require('./antigravityRuntime');
 
 const PROVIDER_METHODS = new Set([
   'codex.providers.list',
@@ -30,7 +37,9 @@ const PROVIDER_METHODS = new Set([
   'codex.providers.upsert',
   'codex.providers.activate',
   'codex.providers.clear-secret',
-  'codex.providers.delete'
+  'codex.providers.delete',
+  'codex.providers.antigravity.status',
+  'codex.providers.antigravity.login'
 ]);
 const AUTO_PROTOCOL_FALLBACK_CODES = new Set([
   'provider_protocol_incompatible'
@@ -63,6 +72,10 @@ async function handleProviderRequest(request, env = process.env, emit = () => {}
         return okResponse(request.id, cancelProviderTest(params.operationId));
       case 'codex.providers.test':
         return okResponse(request.id, await testProvider(params, env, emit));
+      case 'codex.providers.antigravity.status':
+        return okResponse(request.id, await getAntigravityStatus(params, env));
+      case 'codex.providers.antigravity.login':
+        return okResponse(request.id, await loginAntigravity(params, env));
       default:
         throw providerError('method_not_found', `Unknown provider method: ${request.method}`);
     }
@@ -226,6 +239,15 @@ function resolveProviderModels(params = {}, env = process.env, resolveBuiltInMod
     });
     return result && typeof result.then === 'function' ? result.then(attachProvider) : attachProvider(result);
   }
+  if (requestedProviderId === ANTIGRAVITY_PROVIDER_ID) {
+    if (selection?.providerId !== ANTIGRAVITY_PROVIDER_ID) {
+      throw providerError('provider_selection_unavailable', 'The active provider has not been confirmed by this Overleaf tab. Wait for Provider settings to load and retry.');
+    }
+    if (selection.providerRevision !== undefined && Number(selection.providerRevision) !== 0) {
+      throw providerError('provider_revision_conflict', 'The selected provider changed. Refresh its model list and retry.');
+    }
+    return resolveAntigravityModels(params, env);
+  }
   const profile = state.public.profiles.find(item => item.id === requestedProviderId);
   if (!profile) {
     throw providerError('provider_not_found', 'The selected provider no longer exists.');
@@ -266,6 +288,22 @@ function resolveRunProvider(params = {}, env = process.env) {
       reasoningEffort: params.reasoningEffort || '',
       providerLaunch: null,
       providerSelection: { providerId: 'builtin', providerRevision: 0 }
+    };
+  }
+  if (requestedProviderId === ANTIGRAVITY_PROVIDER_ID) {
+    if (selection?.providerId !== ANTIGRAVITY_PROVIDER_ID) {
+      throw providerError('provider_selection_unavailable', 'The active provider has not been confirmed by this Overleaf tab. Wait for Provider settings to load and retry.');
+    }
+    if (selection.providerRevision !== undefined && Number(selection.providerRevision) !== 0) {
+      throw providerError('provider_revision_conflict', 'The selected provider changed. Refresh its model list and retry.');
+    }
+    return {
+      providerId: ANTIGRAVITY_PROVIDER_ID,
+      modelId: String(params.model || '').trim(),
+      reasoningEffort: String(params.reasoningEffort || '').trim(),
+      providerLaunch: null,
+      providerSelection: { providerId: ANTIGRAVITY_PROVIDER_ID, providerRevision: 0 },
+      providerName: ANTIGRAVITY_PROVIDER_NAME
     };
   }
   const profile = state.public.profiles.find(item => item.id === requestedProviderId);
@@ -370,8 +408,22 @@ function okResponse(id, result) {
   return { id, ok: true, result };
 }
 
+function isAntigravityProviderSelection(params = {}) {
+  return params?.providerSelection?.providerId === ANTIGRAVITY_PROVIDER_ID;
+}
+
+function isAntigravityActive(env = process.env) {
+  try {
+    return loadProviderState(env).public.activeProviderId === ANTIGRAVITY_PROVIDER_ID;
+  } catch (_error) {
+    return false;
+  }
+}
+
 module.exports = {
   handleProviderRequest,
+  isAntigravityActive,
+  isAntigravityProviderSelection,
   isProviderMethod,
   providerErrorResponse,
   resolveProviderModels,

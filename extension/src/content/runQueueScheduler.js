@@ -193,7 +193,8 @@
       codex_turn_not_ready: 'queuedInputGuideNotReady',
       codex_turn_mismatch: 'queuedInputGuideTurnChanged',
       codex_steer_empty: 'queuedInputGuideEmpty',
-      codex_steer_too_large: 'queuedInputGuideTooLarge'
+      codex_steer_too_large: 'queuedInputGuideTooLarge',
+      antigravity_unsupported_operation: 'queuedInputGuideUnsupportedAntigravity'
     };
     function formatGuideError(error) {
       const key = guideErrorKeys[error?.code];
@@ -253,6 +254,10 @@
       const session = options.getActiveSession?.();
       const item = (session?.pendingInputs || []).find(entry => entry.id === itemId);
       const run = options.getCurrentRun?.();
+      if (options.isGuideSupported && options.isGuideSupported(run) === false) {
+        options.toast?.(options.tr?.('queuedInputGuideUnsupportedAntigravity'), 'info');
+        return;
+      }
       const binding = run?.activeTurn;
       const initialScope = options.getGuideScope?.();
       const guideScope = initialScope ? { ...initialScope } : null;
@@ -446,9 +451,11 @@
           || !matchesGuidanceScope(attempt.scope)
           || session.createdAt !== attempt.identity.sessionCreatedAt || !matchesGuidanceItem(item, attempt.identity);
       });
+      const guideSupported = options.isGuideSupported ? options.isGuideSupported(run) !== false : true;
       view?.render?.(visibleQueue, {
         running: Boolean(run),
-        canGuide: Boolean(run?.activeTurn?.turnId)
+        canGuide: Boolean(guideSupported && run?.activeTurn?.turnId),
+        guideUnsupportedReason: guideSupported ? '' : 'queuedInputGuideUnsupportedAntigravity'
       });
     }
 

@@ -3,7 +3,7 @@
   <h1>Codex Overleaf Link</h1>
   <p><strong>Empower Overleaf with Codex.</strong></p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.6.8-blue" alt="version 2.6.8">
+    <img src="https://img.shields.io/badge/version-2.7.0-blue" alt="version 2.7.0">
     <img src="https://img.shields.io/badge/chrome-MV3-green" alt="chrome manifest v3">
     <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="node version">
     <a href="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml"><img src="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml/badge.svg" alt="tests"></a>
@@ -13,7 +13,7 @@
   <p><a href="README.md">English</a> | 简体中文</p>
 </div>
 
-Codex Overleaf Link 在 Overleaf 编辑器旁边加了一个 Codex 面板。你可以就项目提问，也可以让 Codex 直接动手修改：改动通过编辑器写回，可以选择以留痕形式写入，接受改动之前每一轮都能撤销。Codex 通过 Codex CLI 在你的电脑上运行。
+Codex Overleaf Link 在 Overleaf 编辑器旁边加了一个 Codex 面板。你可以就项目提问，也可以让 Codex 直接动手修改：改动通过编辑器写回，可以选择以留痕形式写入，接受改动之前每一轮都能撤销。它通过 Codex CLI 在你的电脑上运行；把项目切换到 Antigravity 后，改用 Google 的 Antigravity CLI。
 
 ![Overleaf 示例项目中，面板和编辑器、PDF 并排](assets/readme/2.6.0/overview@2x.png)
 
@@ -97,9 +97,17 @@ Codex Overleaf Link 在 Overleaf 编辑器旁边加了一个 Codex 面板。你�
 
 <p align="center"><img src="assets/readme/2.6.0/providers@2x.png" width="700" alt="模型与连接中的服务预设"></p>
 
+### Codex 或 Antigravity
+
+每个项目可以用 Codex，也可以用 Google Antigravity。在**设置 → 所有项目 → 模型与连接**里选择 **Antigravity**，按提示用 Google 登录，点**用于当前项目**，然后在输入框里选 Gemini 模型和思考强度。面板会切换成 Antigravity 形态：标志、界面里的代理名称和这个标签页的工具栏图标都会变。之前的运行记录仍然显示当时运行它的代理。
+
+Ask 和 Auto 的用法和 Codex 一样：Auto 通过编辑器写回，开着 Track 时以留痕形式写入，每一轮都能撤销。Antigravity 没有 Codex 那样的沙箱，所以由 native host 逐个回应它的权限请求：Ask 从不写入，Auto 只能写项目的本地工作区，命令只允许只读的查看类工具。运行中追加指令、分支、`/compact`、技能和并行子代理暂时只有 Codex 支持。
+
+<p align="center"><img src="assets/readme/2.7.0/twin-forms@2x.png" width="360" alt="Codex 与 Antigravity 两种形态的标志"></p>
+
 ## 安装
 
-需要 macOS、Windows 或 Linux 上的 Google Chrome（Linux 上也可以用 Chromium）、Node.js 20 及以上版本，以及已安装并登录的 [Codex CLI](https://github.com/openai/codex)。支持 `overleaf.com`、`www.overleaf.com` 和 `cn.overleaf.com`，暂不支持自建的 Overleaf。
+需要 macOS、Windows 或 Linux 上的 Google Chrome（Linux 上也可以用 Chromium）、Node.js 20 及以上版本，以及已安装并登录的 [Codex CLI](https://github.com/openai/codex)。要使用 Antigravity，还需要安装 [Antigravity CLI](https://antigravity.google)（`agy`）并用 Google 登录。支持 `overleaf.com`、`www.overleaf.com` 和 `cn.overleaf.com`，暂不支持自建的 Overleaf。
 
 ### 让 Codex 帮你安装（推荐）
 
@@ -112,7 +120,7 @@ Codex Overleaf Link 在 Overleaf 编辑器旁边加了一个 Codex 面板。你�
 ### 用 npm 安装
 
 ```bash
-npm exec --yes codex-overleaf-link@2.6.8 -- install-managed
+npm exec --yes codex-overleaf-link@2.7.0 -- install-managed
 ```
 
 安装器会装好 native host 和一份托管的扩展，最后输出扩展所在的文件夹。
@@ -126,13 +134,13 @@ npm exec --yes codex-overleaf-link@2.6.8 -- install-managed
 
 ```bash
 # macOS / Linux
-CODEX_OVERLEAF_REF=v2.6.8 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.6.8/install.sh)"
+CODEX_OVERLEAF_REF=v2.7.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.7.0/install.sh)"
 ```
 
 ```powershell
 # Windows
-iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.6.8/install.ps1 -OutFile install.ps1
-$env:CODEX_OVERLEAF_REF='v2.6.8'
+iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.7.0/install.ps1 -OutFile install.ps1
+$env:CODEX_OVERLEAF_REF='v2.7.0'
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
@@ -157,11 +165,13 @@ flowchart TD
     B <-->|Native Messaging, stdio| N[Native host, Node]
     N <--> M[项目镜像与基线]
     N <-->|JSON-RPC, stdio| A[codex app-server]
+    N <-->|ACP, stdio| G[agy acp]
     A -->|读取与修改| M
+    G -->|读取与修改| M
 ```
 
 1. 发送任务时，扩展先记下本轮的设置，把项目同步到本地镜像；镜像还是最新的就直接复用。
-2. native host 在镜像上启动 `codex app-server`，使用一个独立的 Codex home。
+2. native host 在镜像上启动 `codex app-server`，使用一个独立的 Codex home。Antigravity 项目改为启动 `agy acp`，并由 host 回应它的权限请求。
 3. Codex 完成后，host 对比镜像和基线，把差异整理成文本补丁和文件传输。Ask 模式到这里就结束了。
 4. Auto 模式下，扩展通过 Overleaf 编辑器逐个写入补丁。写入前会核对项目、路径规则、编辑模式和预期文字；如果运行期间文件别处被改过，补丁会相应调整位置。
 5. 最后记录撤销点、确认已保存、刷新镜像；开着自动编译时再重新编译一次。
@@ -174,7 +184,7 @@ flowchart TD
 
 **技能。** 插件使用独立的 Codex home，会复制你的 Codex 登录信息和配置，但不包括 `~/.codex/AGENTS.md`、`personality`、`rules` 和 `memories`。**加载 Codex 本地技能**会加入 `~/.codex/skills` 和本地插件，**加载 Codex Overleaf 专属技能**会加入 `~/.codex-overleaf/skills`，两项默认都开启。
 
-**数据。** 没有云端服务，也没有遥测。任务上下文会先检查是否含有 token 和密钥，再发给 Codex 或你配置的模型服务。路径规则只决定 Codex 能写哪些文件，不会对它隐藏文件。
+**数据。** 没有云端服务，也没有遥测。任务上下文会先检查是否含有 token 和密钥，再发给 Codex、Antigravity 或你配置的模型服务。路径规则只决定 Codex 能写哪些文件，不会对它隐藏文件。
 
 <details>
 <summary>数据存放位置</summary>
@@ -188,6 +198,7 @@ flowchart TD
 | 项目镜像 | `~/.codex-overleaf/projects` | `%USERPROFILE%\.codex-overleaf\projects` |
 | 插件的 Codex home | `~/.codex-overleaf/codex-home` | `%USERPROFILE%\.codex-overleaf\codex-home` |
 | 技能 | `~/.codex-overleaf/skills` | `%USERPROFILE%\.codex-overleaf\skills` |
+| Antigravity 会话 | `~/.codex-overleaf/antigravity/gemini` | `%USERPROFILE%\.codex-overleaf\antigravity\gemini` |
 | 模型服务与密钥 | `~/.codex-overleaf/providers.json`、`provider-secrets.json` | `%USERPROFILE%\.codex-overleaf\` |
 | 日志 | `~/.codex-overleaf/native-host.log` | `%LOCALAPPDATA%\CodexOverleaf\native-host.log` |
 | Native Messaging 清单 | Chrome：`~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.codex.overleaf.json`（macOS）、`~/.config/google-chrome/NativeMessagingHosts/`（Linux）；Chromium：`~/.config/chromium/NativeMessagingHosts/` | `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.codex.overleaf` |
@@ -210,10 +221,10 @@ flowchart TD
 
 | 用途 | 命令 |
 |---|---|
-| 安装、修复或迁移 | `npm exec --yes codex-overleaf-link@2.6.8 -- install-managed` |
-| 诊断 | `npm exec --yes codex-overleaf-link@2.6.8 -- doctor` |
-| 卸载 | `npm exec --yes codex-overleaf-link@2.6.8 -- uninstall-managed` |
-| 只装 native host（扩展自行管理时） | `npm exec --yes codex-overleaf-link@2.6.8 -- install-native` / `uninstall-native` |
+| 安装、修复或迁移 | `npm exec --yes codex-overleaf-link@2.7.0 -- install-managed` |
+| 诊断 | `npm exec --yes codex-overleaf-link@2.7.0 -- doctor` |
+| 卸载 | `npm exec --yes codex-overleaf-link@2.7.0 -- uninstall-managed` |
+| 只装 native host（扩展自行管理时） | `npm exec --yes codex-overleaf-link@2.7.0 -- install-native` / `uninstall-native` |
 
 `uninstall-managed` 会删除 native host 注册、bridge、托管的扩展和运行时，历史、设置、镜像、密钥和技能都会保留。要彻底清理：先在**设置 → 所有项目 → 本地数据 → 清理本地历史…**中清掉历史，再卸载，然后在 `chrome://extensions` 里移除扩展，最后删除 `~/.codex-overleaf` 和 `~/Codex Overleaf Link Extension` 快捷方式（Windows 上是 `%USERPROFILE%\.codex-overleaf` 和 `%LOCALAPPDATA%\CodexOverleaf`）。
 
@@ -223,6 +234,7 @@ flowchart TD
 
 - **找不到 native host，或提示需要更新。** 重新运行 `install-managed`，重新加载扩展，再刷新 Overleaf。
 - **找不到 Codex CLI。** 在新开的终端里确认 `codex --version` 能运行，再重新运行安装器，让它拿到最新的 `PATH`。
+- **找不到 Antigravity，或没有登录。** 在新开的终端里确认 `agy --version` 能运行，然后打开**设置 → 所有项目 → 模型与连接 → Antigravity**，点**使用 Google 登录**或**刷新状态**。目前使用 Antigravity 也需要装好 Codex CLI。
 - **扩展 ID 不匹配。** 从 `chrome://extensions` 复制扩展 ID，用 `--extension-id <id>` 重新安装。
 - **有文件被跳过。** 可能是运行期间目标文字被改过、编辑器没能打开这个文件，或者路径规则把它设成了只读。回答下方的详情会写明是哪一种。
 - **写入被路径规则或敏感信息检查拦下。** 路径规则可以把文件设为只读；敏感信息检查会在上下文离开本机前查找 token 和密钥。可以在项目设置里调整规则，或者删掉检查发现的内容。

@@ -14,6 +14,7 @@ Matching field names provide only a navigation clue; the final request construct
 | Concept | Current meaning | Conclusion that must not be inferred |
 |---|---|---|
 | Built-in Codex | Executes through the existing Codex configuration, authentication, and model discovery paths, with `providerLaunch=null`; configuration inheritance is covered in section 5 | The extension pins its actual network endpoint; every Custom service failure automatically switches to Built-in |
+| Fixed Antigravity (`antigravity`) | Fixed local provider (`kind:'antigravity'`, `revision:0`) executed directly through `agy acp` in [antigravityRuntime.js](../../native-host/src/antigravityRuntime.js) with `providerLaunch=null`; it is **not** a Codex Provider HTTP bridge | That Antigravity uses a local Responses bridge, temporary Codex `models.json`, Codex CLI, or `provider-secrets.json` |
 | Custom Provider | Locally saved endpoint and model configuration connected to Codex through a local bridge | The panel directly implements an independent agent engine |
 | `wireApiPreference` | The configured preference `auto/responses/chat/anthropic` | Auto tries every protocol after any failure |
 | `resolvedWireApi` / model diagnostics | The protocol result recorded for a tested connection fingerprint | Testing one model proves that every model under that Provider is available |
@@ -67,7 +68,7 @@ Pre-run Provider resolution begins only after the project lock is acquired. Auto
 
 ## 3. Model Configuration, Discovery, and Run Identity
 
-### 3.1 Two Types of Model Catalog
+### 3.1 Three Types of Model Catalog
 
 `ModelPicker.loadModelOptions` sends `codex.models` while capturing modelLoadGeneration and the Provider selection.
 On return, it validates the generation, Provider ID, and Custom Provider revision; stale results cannot replace the current selection.
@@ -75,15 +76,16 @@ Revision comparison applies only to successful responses. An error for the curre
 The entry points are [modelPicker.js](../../extension/src/content/modelPicker.js) and [modelPickerSupport.js](../../extension/src/content/modelPickerSupport.js).
 For Built-in, Native's `resolveProviderModels` calls `resolveCodexModels`, reads candidate `models_cache.json` files in order, and returns the built-in fallback only when no usable cache exists.
 Cache location priority is managed by `getModelsCacheCandidates` in [codexModels.js](../../native-host/src/codexModels.js); the current discovery chain does not actively fetch a live model list from the service provider.
+For Antigravity, `resolveProviderModels` requires an explicit `providerSelection.providerId === 'antigravity'` (no fallback from global `activeProviderId`; missing explicit selection throws `provider_selection_unavailable`), validates revision `0`, and awaits `resolveAntigravityModels` → `buildAntigravityModelCatalog` in [antigravityRuntime.js](../../native-host/src/antigravityRuntime.js), which probes `agy acp` (`initialize` + `session/new`, followed by best-effort `session/close` when supported) and derives a Gemini-only catalog from ACP `configOptions` and `models.availableModels` variants (see section 5.1). On `antigravity_auth_required` or `antigravity_not_found`, the picker marks the catalog unavailable with `source: 'antigravity'` and never falls back to built-in GPT models.
 `resolveProviderModels` in [providerRuntime](../../native-host/src/providerRuntime.js) builds the Custom catalog from saved `profile.models` and returns `defaultModelId`, reasoning-control capabilities, the Provider revision, and standard speed. The picker retains a selection supported by that catalog; otherwise it selects the configured default when present in the catalog, then falls back to the first model. It does not call upstream `/models` to enumerate every model.
 The local bridge's `/models` response also describes only the current launch model and must not be treated as the service provider's model discovery API.
-If the Custom catalog is empty, fails, or cannot be normalized, the panel shows it as unavailable. Built-in fallback has an explicit guard and cannot mask a Custom connection failure.
+If the Custom or Antigravity catalog is empty, fails, or cannot be normalized, the panel shows it as unavailable. Built-in fallback has an explicit guard and cannot mask a Custom or Antigravity connection failure.
 
 ### 3.2 Configuration Versions and Execution Snapshots
 
 The Provider execution selection can be expressed as \(P=(providerId,providerRevision,modelId,reasoningEffort,speedTier)\); the full submission snapshot also includes fields such as mode and Track.
-Beyond browser submission and queue validation, `resolveRunProvider` rechecks that a Custom configuration exists, its revision matches, the model is configured, and endpoint disclosure remains valid. Built-in returns early; the boundary of its inherited configuration is covered in section 5.
-If the Native default service is Custom but the page supplies no explicit providerSelection, it returns `provider_selection_unavailable`.
+Beyond browser submission and queue validation, `resolveRunProvider` rechecks that a Custom configuration exists, its revision matches, the model is configured, and endpoint disclosure remains valid. Built-in and Antigravity return early with `providerLaunch: null` and `providerRevision: 0`; for Antigravity, `resolveProviderModels`, `resolveRunProvider`, and [runExecutionSnapshotCodec.js](../../extension/src/shared/runExecutionSnapshotCodec.js) reject any non-zero `providerRevision` with `provider_revision_conflict`, and [runExecutionSnapshot.js](../../extension/src/shared/runExecutionSnapshot.js) (`resolveForExecution`) still fails closed with `provider_not_found` if `antigravity` is absent from the loaded catalog (for example on an older Native host). The boundary of Built-in's inherited configuration is covered in section 5.
+If the Native default service is Custom or Antigravity but the page supplies no explicit providerSelection, it returns `provider_selection_unavailable`.
 Endpoint disclosure compares both hostname and normalized baseUrl; retaining the same domain alone does not authorize a changed path.
 These checks compare the identity of the submitted selection with the currently saved configuration. They do not retain arbitrary historical versions for old queues to recover; a version change can cause an old task to be rejected.
 Endpoint disclosure compares configuration strings and does not pin redirect destinations or DNS resolution addresses. Network boundaries are covered in section 8.
@@ -91,12 +93,13 @@ See [run state and recovery](run-state-and-recovery.md) for project switching an
 
 | Operation | profile revision | storeRevision | Effect on configuration and runs |
 |---|---|---|---|
-| Create/save with `upsertProvider` | Created or incremented | Incremented | Validates expectedRevision; recomputes the diagnostic fingerprint |
+| Create/save with `upsertProvider` | Created or incremented | Incremented | Validates expectedRevision; recomputes the diagnostic fingerprint; rejects fixed `builtin`/`antigravity` IDs with `provider_not_editable` |
 | Use saved Custom with `activateProvider` | Incremented | Incremented | Saves disclosure and updates Native activeProviderId |
 | Use Built-in | Built-in remains 0 | Incremented | Switches the Native default |
+| Use Antigravity | Antigravity remains 0 | Incremented | Switches Native `activeProviderId` to `'antigravity'`; requires no endpoint disclosure or API key in `provider-secrets.json` |
 | Clear API key | Incremented | Incremented | Clears diagnostics; falls back to Built-in if this is the Native default; project selection is covered separately in section 4 |
 | Successfully record matching model diagnostics | Unchanged | Incremented | Updates the protocol, response mode, and verification time |
-| Delete | Record removed | Incremented | Deletes the dedicated credential; the Native default can fall back to Built-in, while a missing project configuration takes a separate selection-fallback path |
+| Delete | Record removed | Incremented | Deletes the dedicated credential; rejects fixed `builtin`/`antigravity` IDs with `provider_not_found`; the Native default can fall back to Built-in, while a missing project configuration takes a separate selection-fallback path |
 
 `recordProviderDiagnostic` records a result only when the profile revision, saved model ID, and connectionFingerprint all match.
 An unsaved model can pass a test, but this does not write its diagnostics into the old profile; a subsequent form Save can carry matching diagnostics.
@@ -198,6 +201,27 @@ The function itself can also accept an unprepared launch. Credential boundaries 
 The local HTTP server binds to `127.0.0.1` and requires a random bearer token. Closing it aborts active upstream requests and clears history.
 `applyProviderEnvironment` adds the local address to NO_PROXY to prevent system proxies from rerouting loopback requests; it preserves the caller's other environment rules.
 The existing app-server session wrapper calls prepared.close in finally; connection tests have their corresponding finally block.
+
+### 5.1 Fixed Antigravity Provider (ACP, Not a Codex Bridge)
+
+**Current behavior:** Antigravity (`id: 'antigravity'`) sits next to Built-in Codex as a second fixed provider, not as a Custom Codex Provider bridge. `resolveRunProvider` in [providerRuntime.js](../../native-host/src/providerRuntime.js) requires an explicit `providerSelection.providerId === 'antigravity'` (falling back from global `activeProviderId` without an explicit selection throws `provider_selection_unavailable`, matching Custom providers) and returns `providerLaunch: null`, `providerSelection: { providerId: 'antigravity', providerRevision: 0 }`, and `providerName: 'Antigravity'`; it starts no local HTTP Responses bridge and writes no temporary Codex `models.json`. Instead, [codexSessionRunner.js](../../native-host/src/codexSessionRunner.js) routes Antigravity runs to `runAntigravitySession` over `agy acp` (see [Antigravity ACP executor](native-execution.md#antigravity-acp-executor)).
+
+- **Catalog, activation, and revision `0`:** [providerStore.js](../../native-host/src/providerStore.js) (`buildCatalog`) always emits `{ id: 'antigravity', kind: 'antigravity', revision: 0, name: 'Antigravity', editable: false, deletable: false, models: [], hasSecret: false }` next to `builtin`, mirrored by `buildAntigravityProvider` / `isFixedProviderId` in [providerProfiles.js](../../extension/src/shared/providerProfiles.js). `upsertProviderUnlocked` rejects editing (`provider_not_editable`), `deleteProviderUnlocked` rejects deleting (`provider_not_found`), and `activateProviderUnlocked` switches Native `activeProviderId` to `'antigravity'` (incrementing `storeRevision` while keeping `antigravity` at revision `0`). `resolveProviderModels`, `resolveRunProvider`, and [runExecutionSnapshotCodec.js](../../extension/src/shared/runExecutionSnapshotCodec.js) reject any non-zero revision for `antigravity` with `provider_revision_conflict`. Both `resolveProviderModels` and `resolveRunProvider` require an explicit `providerSelection` for Antigravity (`provider_selection_unavailable` if omitted). Without `bridge.ping` `capabilities.antigravityRuntime === true`, the extension strips `antigravity` from the usable catalog and `RunExecutionSnapshot.resolveForExecution` fails closed with `provider_not_found`.
+- **Status and Google OAuth login methods:** `PROVIDER_METHODS` in [providerRuntime.js](../../native-host/src/providerRuntime.js) routes two Antigravity methods (both in `COMPATIBILITY_REQUIRED_METHODS` and `NATIVE_COMPATIBILITY_GATED_METHODS`, default `no_silent_retry`):
+  - `codex.providers.antigravity.status` → `getAntigravityStatus` in [antigravityRuntime.js](../../native-host/src/antigravityRuntime.js): probes `initialize` + `session/new` (plus best-effort `session/close` when `sessionCapabilities.close` is advertised and async `probeAntigravityCliVersion` when `agentInfo.version` is absent) in a temporary directory inside `runOwnedNativeHelper`, bounded by `ANTIGRAVITY_STATUS_TIMEOUT_MS` (20,000 ms, overridable by `CODEX_OVERLEAF_ANTIGRAVITY_STATUS_TIMEOUT_MS`), and never calls `authenticate`. Returns `{ installed, executable, version, signedIn, tier, error }` with sanitized error messages. Background timeout: `NATIVE_REQUEST_TIMEOUT_MS`.
+  - `codex.providers.antigravity.login` → `loginAntigravity`: runs `initialize`, calls ACP `authenticate { methodId: 'oauth-personal' }` bounded by `ANTIGRAVITY_LOGIN_TIMEOUT_MS` (5 minutes, overridable by `CODEX_OVERLEAF_ANTIGRAVITY_LOGIN_TIMEOUT_MS`), then runs `session/new` (bounded by `ANTIGRAVITY_STATUS_TIMEOUT_MS`, followed by best-effort `session/close`) to read `_meta.antigravity.tier`. Once `authenticate` succeeds, a non-auth post-login `session/new` failure or timeout preserves `signedIn: true, error: null` and attaches `warning: { code: 'antigravity_probe_timeout' | 'antigravity_probe_failed', message }` (while aborts or auth errors still fail login). Background timeout: `0` (none, matching `codex.run`, so browser OAuth completes within Native's 5-minute bound).
+- **Gemini-only model catalog from ACP variants:** `resolveProviderModels` awaits `resolveAntigravityModels` → `buildAntigravityModelCatalog` in [antigravityRuntime.js](../../native-host/src/antigravityRuntime.js), calling best-effort `session/close` after `session/new`. From `session/new` `configOptions` (`model` select, plus fallback `thought_level` options) and `models.availableModels`, it retains only `gemini-*` base models (filtering out `*orchestrator*` and non-Gemini models) and derives each model's `reasoningEfforts` from its per-effort variant suffixes (`minimal`/`low`/`medium`/`high`/`xhigh`/`max`). Output carries `providerId: 'antigravity'`, `providerRevision: 0`, `source: 'antigravity'`, `defaultModelId` (preferring `ANTIGRAVITY_DEFAULT_MODEL`, currently `'gemini-4-neon'`), `reasoningPresentation: 'effort'` (or `'none'`), and `speedTiers: ['standard']`. Missing `agy`, signed-out state, or rate/quota limits fail with `antigravity_not_found`, `antigravity_auth_required`, or `antigravity_rate_limited` (no GPT fallback).
+- **Credentials and isolated `--gemini-dir`:** Google sign-in credentials stay with `agy` in the OS keychain and never enter `provider-secrets.json`, run snapshots, or extension storage. Every `agy acp` process receives `--gemini-dir <dir>` from `resolveAntigravityGeminiDir` (`CODEX_OVERLEAF_ANTIGRAVITY_HOME` or `~/.codex-overleaf/antigravity/gemini`, created `0o700`), isolating the extension from user-level `agy` allow-rules, MCP servers, and `GEMINI.md` without using `--app-data-dir`.
+
+**Known gaps / Unverified (Antigravity):**
+
+- Signed-out browser OAuth (`authenticate { methodId: 'oauth-personal' }` starting from a signed-out state) has not been verified live, and an in-flight login cannot be cancelled from the UI once started.
+- Windows `agy` spawning is unverified live.
+- Machines with `agy` installed but without Codex CLI are not supported in this MVP (`compatibility.js` still classifies missing Codex CLI as `native_unhealthy`).
+- `codex.history.clearPlugin` does not clear Antigravity session storage.
+- Only Gemini (`gemini-*`) models are exposed; non-Gemini models advertised by `agy` are excluded.
+- Codex-only features (live steer, fork, `/compact`, Codex/local skills, and parallel subagents) are unsupported under Antigravity.
+- Automated coverage runs against fake `agy` in [antigravityRuntime.test.js](../../test/antigravityRuntime.test.js) and fake DOM in [antigravityProviderUi.test.js](../../test/antigravityProviderUi.test.js).
 
 ## 6. How the Three Protocols Are Converted
 
@@ -358,11 +382,12 @@ Pattern sanitization in the background journal likewise does not detect arbitrar
 
 ## 9. Change Routing and Verification
 
-The small release suite has no dedicated Provider protocol, credential-store or settings contract. The Provider process case in [platform/nativeShutdown](../../test/platform/nativeShutdown.test.js) covers configuration/stdin transport and child cleanup with a synthetic CLI; it does not establish the complete Provider chain. When one of these paths changes, choose the relevant row below and verify a representative observable result; the table is not a per-release checklist.
+The small release suite has no dedicated Custom Provider protocol or credential-store contract; Antigravity catalog, login/status, revision-0, and UI gating paths are covered by [antigravityRuntime.test.js](../../test/antigravityRuntime.test.js) (fake `agy`) and [antigravityProviderUi.test.js](../../test/antigravityProviderUi.test.js) (fake DOM). The Provider process case in [platform/nativeShutdown](../../test/platform/nativeShutdown.test.js) covers configuration/stdin transport and child cleanup with a synthetic CLI; it does not establish the complete Provider chain. When one of these paths changes, choose the relevant row below and verify a representative observable result; the table is not a per-release checklist.
 
 | Change intent | Primary changes and related modules | Change-driven observations |
 |---|---|---|
 | Save/Use and project binding | dialog, coordinator, ProjectProviderSelection, store | Native default versus project selection, switching during runs, same-ID revisions, catalog preloading, projection failures |
+| Fixed Antigravity catalog, status, OAuth login, or Gemini discovery | [antigravityRuntime.js](../../native-host/src/antigravityRuntime.js), [providerStore.js](../../native-host/src/providerStore.js), [providerRuntime.js](../../native-host/src/providerRuntime.js), [providerProfiles.js](../../extension/src/shared/providerProfiles.js), [modelPicker.js](../../extension/src/content/modelPicker.js), [providerSettingsCoordinator.js](../../extension/src/content/providerSettingsCoordinator.js) | revision-0 enforcement, `antigravityRuntime` capability gate, Gemini-only variant derivation, no GPT fallback on auth/missing errors, OS-keychain & `--gemini-dir` isolation; [antigravityRuntime.test.js](../../test/antigravityRuntime.test.js) and [antigravityProviderUi.test.js](../../test/antigravityProviderUi.test.js) |
 | secret/profile/schema | providerProfile, providerStore, browser Profiles and forms | field validation, dedicated credentials, revision, disclosure, final byte budgets, and legacy-data recovery |
 | Responses diagnostics and passthrough | responsesPassthroughBridge, providerRedaction, stream lifecycle | JSON/SSE/compact diagnostics, duplicate keys, normal output, and receive boundaries |
 | Explicit output budgets, buffered mode, and request overrides | dialog/Profiles, providerProfile/Store, launch, request and response conversion for the three protocols | new values/legacy migration, actual wire stream, SSE content and terminal states, allowed fields and core-field protection, cancellation |

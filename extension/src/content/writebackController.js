@@ -32,8 +32,8 @@
           ...(typeof change.previousSha256 === 'string' ? { previousSha256: change.previousSha256 } : {}),
           reasonKey: change.type === 'overwrite-binary' ? 'localWorkspaceBinaryOverwrite' : 'localWorkspaceBinaryCreate',
           reason: change.type === 'overwrite-binary'
-            ? 'Synced a binary asset replacement from the local Codex workspace.'
-            : 'Synced a new binary asset from the local Codex workspace.'
+            ? 'Synced a binary asset replacement from the local workspace.'
+            : 'Synced a new binary asset from the local workspace.'
         };
       }
       if (change.type === 'delete') {
@@ -41,7 +41,7 @@
           type: 'delete',
           path: change.path,
           reasonKey: 'localWorkspaceDelete',
-          reason: 'Local Codex workspace deleted this file.'
+          reason: 'Local workspace deleted this file.'
         };
       }
       if (change.type === 'write' && existingPaths.has(change.path)) {
@@ -53,7 +53,7 @@
             patches,
             reasonKey: 'localWorkspacePatch',
             reasonParams: { count: patches.length },
-            reason: `Synced ${patches.length} local Codex workspace edit${patches.length === 1 ? '' : 's'}.`
+            reason: `Synced ${patches.length} local workspace edit${patches.length === 1 ? '' : 's'}.`
           };
         }
         return {
@@ -61,7 +61,7 @@
           path: change.path,
           replaceAll: String(change.content ?? ''),
           reasonKey: 'localWorkspaceContent',
-          reason: 'Synced file content from the local Codex workspace.'
+          reason: 'Synced file content from the local workspace.'
         };
       }
       return {
@@ -69,7 +69,7 @@
         path: change.path,
         content: change.content || '',
         reasonKey: 'localWorkspaceCreate',
-        reason: 'Synced a new file from the local Codex workspace.'
+        reason: 'Synced a new file from the local workspace.'
       };
     }).filter(operation => operation.path);
   }

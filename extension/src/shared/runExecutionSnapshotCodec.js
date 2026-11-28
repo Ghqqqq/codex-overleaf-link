@@ -20,6 +20,8 @@
   const SCHEMA_VERSION = 1;
   const VALID_MODES = new Set(['ask', 'auto']);
   const VALID_SOURCES = new Set(['submitted', 'legacy-captured', 'legacy-inferred']);
+  const FIXED_PROVIDER_IDS = new Set(['builtin', 'antigravity']);
+  const isFixedProviderId = providerId => FIXED_PROVIDER_IDS.has(providerId);
   const TUPLE_FIELDS = Object.freeze([
     'mode', 'providerId', 'providerRevision', 'model', 'reasoningEffort',
     'speedTier', 'autoRecompile', 'requireReviewing', 'focusFiles', 'selectionContext', 'writingStyle'
@@ -35,11 +37,14 @@
     const providerId = normalizeText(input.providerId) || 'builtin';
     const revision = normalizeRevisionResult(input.providerRevision);
     if (!revision.ok) throw snapshotError('provider_revision_conflict', revision.error);
+    if (providerId === 'antigravity' && revision.value && revision.value !== '0') {
+      throw snapshotError('provider_revision_conflict', 'Antigravity cannot carry a non-zero provider revision.');
+    }
     const snapshot = {
       schemaVersion: SCHEMA_VERSION,
       mode: input.mode === 'auto' ? 'auto' : 'ask',
       providerId,
-      providerRevision: providerId === 'builtin' ? '' : revision.value,
+      providerRevision: isFixedProviderId(providerId) ? '' : revision.value,
       model: normalizeText(input.model).slice(0, 160),
       reasoningEffort: normalizeText(input.reasoningEffort).slice(0, 32),
       speedTier: input.speedTier === 'fast' ? 'fast' : 'standard',
@@ -77,7 +82,9 @@
       errors.push(errorItem('provider_revision_conflict', revision.error));
     } else if (providerId === 'builtin' && revision.value) {
       errors.push(errorItem('provider_revision_conflict', 'Built-in Codex cannot carry a provider revision.'));
-    } else if (providerId !== 'builtin' && options.requireProviderRevision === true && !revision.value) {
+    } else if (providerId === 'antigravity' && revision.value && revision.value !== '0') {
+      errors.push(errorItem('provider_revision_conflict', 'Antigravity cannot carry a non-zero provider revision.'));
+    } else if (!isFixedProviderId(providerId) && options.requireProviderRevision === true && !revision.value) {
       errors.push(errorItem('provider_revision_conflict', 'The selected provider revision was not available when the run was submitted.'));
     }
     if (!Array.isArray(value.focusFiles) || value.focusFiles.length > 100) {

@@ -66,6 +66,9 @@ function upsertProviderUnlocked(params = {}, env = process.env) {
   const state = loadProviderState(env);
   const now = Date.now();
   const requestedId = normalizeId(params.profileId);
+  if (requestedId === 'builtin' || requestedId === 'antigravity') {
+    throw providerError('provider_not_editable', 'Fixed providers cannot be edited.');
+  }
   const existing = requestedId ? state.public.profiles.find(profile => profile.id === requestedId) : null;
   const expectedRevision = normalizeRevision(params.expectedRevision);
   if (existing && existing.revision !== expectedRevision) {
@@ -180,9 +183,9 @@ function upsertProviderUnlocked(params = {}, env = process.env) {
 function activateProviderUnlocked(params = {}, env = process.env) {
   const state = loadProviderState(env);
   const providerId = normalizeId(params.providerId) || 'builtin';
-  if (providerId === 'builtin') {
+  if (providerId === 'builtin' || providerId === 'antigravity') {
     commitProviderState(state, {
-      public: { ...state.public, activeProviderId: 'builtin' },
+      public: { ...state.public, activeProviderId: providerId },
       secrets: state.secrets
     });
     return buildCatalog(loadProviderState(env));
@@ -314,8 +317,8 @@ function recordProviderDiagnosticUnlocked(params = {}, env = process.env) {
 function deleteProviderUnlocked(params = {}, env = process.env) {
   const state = loadProviderState(env);
   const providerId = normalizeId(params.providerId);
-  if (!providerId || providerId === 'builtin') {
-    throw providerError('provider_not_found', 'Built-in Codex cannot be deleted.');
+  if (!providerId || providerId === 'builtin' || providerId === 'antigravity') {
+    throw providerError('provider_not_found', `${providerId === 'antigravity' ? 'Antigravity' : 'Built-in Codex'} cannot be deleted.`);
   }
   const profile = state.public.profiles.find(item => item.id === providerId);
   if (!profile) {
@@ -463,6 +466,16 @@ function buildCatalog(state) {
       kind: 'builtin',
       revision: 0,
       name: 'Built-in Codex',
+      editable: false,
+      deletable: false,
+      models: [],
+      hasSecret: false
+    },
+    {
+      id: 'antigravity',
+      kind: 'antigravity',
+      revision: 0,
+      name: 'Antigravity',
       editable: false,
       deletable: false,
       models: [],

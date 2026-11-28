@@ -37,6 +37,13 @@
         ? run.interruptedDraft.threadId : '';
       // Provider switches replace the session thread, not the selected node's origin.
       const sourceThreadId = String(run.codexThreadId || draftThreadId || session.codexThreadId || '').trim();
+      const antigravityTurn = run.executionSnapshot?.providerId === 'antigravity'
+        || run.providerId === 'antigravity'
+        || sourceThreadId.startsWith('agy:');
+      if (antigravityTurn || previousState.providerId === 'antigravity' || session.providerId === 'antigravity') {
+        return failFork('antigravity_unsupported_operation',
+          tr(antigravityTurn ? 'forkRunUnsupportedAntigravityTurn' : 'forkRunUnsupportedAntigravity'));
+      }
       if (run.status === 'running' || !sourceThreadId || !run.codexTurnId) {
         return failFork('session_fork_unavailable', tr('forkRunUnavailable'));
       }
@@ -69,7 +76,11 @@
         return null;
       }
       if (!response?.ok || !response.result?.threadId) {
-        return failFork(response?.error?.code || 'session_fork_failed', response?.error?.message || tr('forkRunFailed'));
+        const errorCode = response?.error?.code || 'session_fork_failed';
+        const errorMessage = errorCode === 'antigravity_unsupported_operation'
+          ? tr('forkRunUnsupportedAntigravity')
+          : (response?.error?.message || tr('forkRunFailed'));
+        return failFork(errorCode, errorMessage);
       }
       const copiedRuns = session.runs.slice(0, runIndex + 1).map(copyRunSnapshot);
       const titleBase = String(session.title || copiedRuns[0]?.task || tr('newSessionFallback')).trim();

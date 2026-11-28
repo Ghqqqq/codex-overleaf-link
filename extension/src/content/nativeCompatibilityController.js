@@ -13,6 +13,7 @@
     const tr = options.tr;
 
     let installIdentity = options.getExtensionCompatibilityMetadata?.()?.installIdentity || {};
+    let lastCompatibility = null;
     function resolveInstallCommand(compatibility = {}) {
       const metadata = options.getExtensionCompatibilityMetadata?.() || {};
       installIdentity = { ...installIdentity, ...(metadata.installIdentity || {}), ...(compatibility.installIdentity || {}) };
@@ -38,7 +39,9 @@
         compatibilityGate = await ensureForMethod(payload?.method, context);
         if (!compatibilityGate.ok) return compatibilityGate.response;
         // Catalog reads belong to the selected session, not a retained cancelled run.
-        const independentCatalog = payload?.method === 'codex.models' || payload?.method === 'codex.providers.list';
+        const independentCatalog = payload?.method === 'codex.models'
+          || payload?.method === 'codex.providers.list'
+          || payload?.method === 'codex.providers.antigravity.status';
         // Post-Undo cache bookkeeping must survive the ended run's cancellation.
         if (gatedMethods.has(payload?.method) && payload.method !== 'mirror.invalidate' && !independentCatalog) {
           options.throwIfCancellationRequested?.();
@@ -67,6 +70,7 @@
       const compatibility = Compatibility?.evaluateNativeCompatibility
         ? Compatibility.evaluateNativeCompatibility(response, metadata)
         : options.fallbackNativeCompatibility(response);
+      lastCompatibility = compatibility;
       const installCommand = resolveInstallCommand(compatibility);
       const allowed = !gatedMethods.has(method) ||
         (Compatibility?.isNativeMethodAllowed
@@ -136,6 +140,7 @@
           : {};
         const response = await sendBackgroundNative({ method: 'bridge.ping', params });
         const compatibility = Compatibility.evaluateNativeCompatibility(response, metadata);
+        lastCompatibility = compatibility;
         resolveInstallCommand(compatibility);
         const classification = options.getNativeCompatibilityClassification(compatibility);
         if (classification === 'compatible') {
@@ -362,6 +367,8 @@
     return Object.freeze({
       attachEvidence,
       ensureForMethod,
+      getLastCompatibility: () => lastCompatibility,
+      hasCapability: name => Boolean(name && lastCompatibility?.native?.capabilities?.[name] === true),
       refreshBadge,
       scheduleFirstUseOnboardingTip,
       sendBackgroundNative,

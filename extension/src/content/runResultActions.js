@@ -7,10 +7,19 @@
   const { splitFlatCompletionReport, projectNotStartedRun, projectFinishedRun, projectCompletionConclusion, projectCompletionBody, projectCompletionMeta, summarizeCompletionMeta } = RunCompletionMeta;
 
 
+  function isAntigravityRun(run) {
+    return Boolean(
+      run?.executionSnapshot?.providerId === 'antigravity'
+      || run?.providerId === 'antigravity'
+      || String(run?.codexThreadId || '').startsWith('agy:')
+    );
+  }
+
   function create(deps = {}) {
     const {
       tr,
       forkRunFromNode,
+      getActiveProviderId,
       document: documentRef = globalThis.document,
       navigator: navigatorRef = globalThis.navigator
     } = deps;
@@ -47,13 +56,18 @@
       const existing = root.querySelector('[data-run-fork]');
       const button = existing.cloneNode(true);
       existing.replaceWith(button);
-      const available = run.forkSnapshot !== true
+      const antigravityTurn = isAntigravityRun(run);
+      const antigravity = antigravityTurn || getActiveProviderId?.() === 'antigravity';
+      const available = !antigravity
+        && run.forkSnapshot !== true
         && run.status !== 'running'
         && Boolean(run.codexTurnId)
         && typeof forkRunFromNode === 'function';
       button.hidden = false;
       button.disabled = !available;
-      button.title = tr(available ? 'forkRunTitle' : 'forkRunUnavailable');
+      button.title = tr(available ? 'forkRunTitle'
+        : antigravityTurn ? 'forkRunUnsupportedAntigravityTurn'
+          : antigravity ? 'forkRunUnsupportedAntigravity' : 'forkRunUnavailable');
       button.setAttribute('aria-label', button.title);
       button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path transform="translate(.5 0)" d="M3 10h3.5c3.5 0 4.2-4 7.5-4h2m-2.5-2.5L16 6l-2.5 2.5M6.5 10c3.5 0 4.2 4 7.5 4h2m-2.5-2.5L16 14l-2.5 2.5"/></svg>';
       if (!available) return;

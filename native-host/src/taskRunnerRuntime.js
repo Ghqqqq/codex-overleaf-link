@@ -17,17 +17,20 @@ const {
 const { runCodexSession } = require('./codexSessionRunner');
 const WritingStyleRuntime = require('./writingStyleRuntime');
 const { resolveCodexModels } = require('./codexModels');
+const providerRuntime = require('./providerRuntime');
 const {
   handleProviderRequest,
   isProviderMethod,
   providerErrorResponse,
   resolveProviderModels,
   resolveRunProviderForRun
-} = require('./providerRuntime');
+} = providerRuntime;
+const { isAntigravityThreadId } = require('./antigravityRuntime');
 const { clearPluginCodexHistory } = require('./codexHome');
 const { forkCodexThread } = require('./codexThreadFork');
 const { readAssetChunk, releaseAsset } = require('./nativeAssetTransfer');
 const { logDebug, truncateText } = require('./debugLog');
+const { sanitizeProviderMessage } = require('./providerRedaction');
 const { HOST_NAME } = require('./manifest');
 const { getNativeRuntimePlatform, summarizeNativeEnvironment, refreshCodexRuntimeEnv } = require('./nativeEnvironment');
 const { formatModelUpgradeError } = require('./codexModelRecovery');
@@ -50,7 +53,7 @@ const activeRunEntries = new Map();
 // Overleaf tab was reloaded — the requestId lived in content-side JS state
 // and is gone, but the native-host-side controller is still running).
 const activeRunByProject = new Map();
-const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result', 'codex_context_limit', 'codex_process_stop_unconfirmed', 'selected_context_unresolved', 'codex_local_skill_unavailable', 'document_identity_mismatch']);
+const CODEX_RUN_PASSTHROUGH_ERROR_CODES = new Set(['thread_resume_failed', 'codex_no_usable_result', 'codex_context_limit', 'codex_process_stop_unconfirmed', 'selected_context_unresolved', 'codex_local_skill_unavailable', 'document_identity_mismatch', 'provider_model_not_found', 'provider_model_not_configured', 'antigravity_not_found', 'antigravity_auth_required', 'antigravity_rate_limited', 'antigravity_mode_unavailable', 'antigravity_unsupported_operation']);
 
 async function handleRequest(request, env = process.env, emit = () => {}) {
   if (!request || typeof request !== 'object') {
@@ -72,7 +75,7 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
       platform: getNativeRuntimePlatform({ env }),
       protocolVersion: 2,
       supportedProtocol: { ...SUPPORTED_NATIVE_PROTOCOL },
-      capabilities: { ...Object.fromEntries(REQUIRED_CAPABILITIES.map(capability => [capability, true])), literalProjectPaths: true, threadCompact: true },
+      capabilities: { ...Object.fromEntries(REQUIRED_CAPABILITIES.map(capability => [capability, true])), literalProjectPaths: true, threadCompact: true, antigravityRuntime: true },
       minExtensionVersion: MIN_COMPATIBLE_EXTENSION_VERSION,
       version: PACKAGE_VERSION,
       environment: summarizeNativeEnvironment(env)
@@ -115,7 +118,7 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
 
   if (request.method === 'codex.models') {
     try {
-      return okResponse(request.id, resolveProviderModels(
+      return okResponse(request.id, await resolveProviderModels(
         request.params || {},
         env,
         resolveCodexModels
@@ -142,8 +145,14 @@ async function handleRequest(request, env = process.env, emit = () => {}) {
   }
 
   if (request.method === 'codex.thread.fork') {
+    const forkParams = request.params || {};
+    if (forkParams.providerSelection?.providerId === 'antigravity'
+      || forkParams.providerId === 'antigravity'
+      || isAntigravityThreadId(forkParams.threadId)) {
+      return errorResponse(request.id, 'antigravity_unsupported_operation', 'Conversation forking is not supported for Antigravity sessions.');
+    }
     try {
-      return okResponse(request.id, await forkCodexThread(request.params || {}, env));
+      return okResponse(request.id, await forkCodexThread(forkParams, env));
     } catch (error) {
       return errorResponse(request.id, error.code || 'codex_thread_fork_failed', error.message);
     }
@@ -233,16 +242,30 @@ async function handleCodexRun(request, env, emit) {
       writingStyleBuild: { ...params.writingStyleBuild, requestId: String(request.id) }
     };
   }
-  if (isCodexMissing(env)) {
-    return errorResponse(
-      request.id,
-      'codex_not_found',
-      'Codex CLI was not found. Install Codex or make sure the `codex` command is available in your login shell.'
-    );
-  }
-  const codexRuntimeEvent = buildCodexRuntimeEvent(env);
-  if (codexRuntimeEvent && typeof emit === 'function') {
-    emit(codexRuntimeEvent);
+  const antigravitySelected = params.providerSelection?.providerId === 'antigravity';
+  const unconfirmedAntigravityActive = !params.providerSelection?.providerId
+    && typeof providerRuntime.isAntigravityActive === 'function'
+    && providerRuntime.isAntigravityActive(env);
+  if (antigravitySelected || (params.operation === 'compact' && isAntigravityThreadId(params.threadId))) {
+    if (params.operation === 'compact') {
+      return errorResponse(request.id, 'antigravity_unsupported_operation', 'Context compaction is not supported for Antigravity sessions.');
+    }
+    if (String(params.skillInvocation?.id || '').trim() === 'skill-installer'
+      && (!params.skillInvocation?.scope || params.skillInvocation.scope === 'builtin')) {
+      return errorResponse(request.id, 'antigravity_unsupported_operation', 'Skill installation requires Codex CLI and is not supported with Antigravity.');
+    }
+  } else if (!unconfirmedAntigravityActive) {
+    if (isCodexMissing(env)) {
+      return errorResponse(
+        request.id,
+        'codex_not_found',
+        'Codex CLI was not found. Install Codex or make sure the `codex` command is available in your login shell.'
+      );
+    }
+    const codexRuntimeEvent = buildCodexRuntimeEvent(env);
+    if (codexRuntimeEvent && typeof emit === 'function') {
+      emit(codexRuntimeEvent);
+    }
   }
 
   const projectKey = resolveProjectKey(params);
@@ -255,6 +278,7 @@ async function handleCodexRun(request, env, emit) {
   const activeEntry = {
     id: request.id,
     projectKey,
+    providerId: antigravitySelected ? 'antigravity' : '',
     controller: abortController,
     control: null
   };
@@ -268,6 +292,7 @@ async function handleCodexRun(request, env, emit) {
         signal: abortController.signal,
         emit
       });
+      activeEntry.providerId = providerResolution.providerSelection?.providerId || activeEntry.providerId;
       params = {
         ...params,
         model: providerResolution.modelId,
@@ -352,19 +377,21 @@ async function handleCodexRun(request, env, emit) {
       return errorResponse(request.id, modelUpgradeError.code, modelUpgradeError.message, modelUpgradeError.details);
     }
     if (shouldPassthroughCodexRunError(error)) {
+      const safeMessage = sanitizeProviderMessage(error.message || 'Codex run failed.', [], 12000);
       logDebug('codex.run.passthrough_failed', {
         code: error.code,
-        message: error.message,
-        stack: error.stack
+        message: safeMessage,
+        stack: error.stack ? sanitizeProviderMessage(error.stack, [], 12000) : undefined
       });
-      return errorResponse(request.id, error.code, truncateText(error.message, 12000));
+      return errorResponse(request.id, error.code, truncateText(safeMessage, 12000));
     }
+    const safeMessage = sanitizeProviderMessage(error.message || 'Codex run failed.', [], 12000);
     logDebug('codex.run.failed', {
       code: error.code,
-      message: error.message,
-      stack: error.stack
+      message: safeMessage,
+      stack: error.stack ? sanitizeProviderMessage(error.stack, [], 12000) : undefined
     });
-    return errorResponse(request.id, 'codex_run_failed', truncateText(error.message, 12000));
+    return errorResponse(request.id, 'codex_run_failed', truncateText(safeMessage, 12000));
   } finally {
     if (activeRunControllers.get(request.id) === abortController) {
       activeRunControllers.delete(request.id);
@@ -383,6 +410,13 @@ async function handleCodexRun(request, env, emit) {
 async function handleCodexSteer(request) {
   const params = request.params || {};
   const entry = findActiveRunEntry(params);
+  if (params.providerSelection?.providerId === 'antigravity'
+    || isAntigravityThreadId(params.threadId)
+    || entry?.providerId === 'antigravity'
+    || entry?.control?.providerId === 'antigravity'
+    || isAntigravityThreadId(entry?.control?.threadId)) {
+    return errorResponse(request.id, 'antigravity_unsupported_operation', 'In-turn steering is not supported for Antigravity runs.');
+  }
   if (!entry?.control) {
     return errorResponse(request.id, 'codex_turn_not_ready', 'The active Codex turn is not ready for guidance.');
   }
@@ -419,6 +453,9 @@ async function handleCodexSteer(request) {
       turnId: entry.control.turnId
     });
   } catch (error) {
+    if (error?.code === 'antigravity_unsupported_operation') {
+      return errorResponse(request.id, error.code, truncateText(error.message, 4000));
+    }
     return errorResponse(request.id, 'codex_steer_failed', truncateText(error.message, 4000));
   }
 }
@@ -707,7 +744,8 @@ function isCancellationError(error = {}) {
 }
 
 function shouldPassthroughCodexRunError(error = {}) {
-  return CODEX_RUN_PASSTHROUGH_ERROR_CODES.has(error.code) || String(error.code || '').startsWith('codex_compact_');
+  return CODEX_RUN_PASSTHROUGH_ERROR_CODES.has(error.code) || String(error.code || '').startsWith('codex_compact_')
+    || String(error.code || '').startsWith('antigravity_');
 }
 
 function isCodexMissing(env = process.env) {

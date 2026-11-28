@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.7.0 - 2026-11-28
+
+### Added
+
+- Run a project on Google Antigravity as well as Codex. Choose Antigravity under **Settings → All projects → Models & connections**, sign in with Google from its pane, then pick a Gemini model and thinking level in the composer. Ask and Auto, tracked writeback, review and Undo work as they do with Codex.
+- When a project uses Antigravity, the panel takes its Antigravity form: its own mark, the agent's name in the interface and the toolbar icon for that tab. Each run keeps the name of the agent that ran it.
+
+### Security
+
+- Antigravity has no sandbox like Codex's, so the native host answers each of its permission requests. Ask never writes, Auto writes only inside the project's local workspace, and commands are limited to read-only inspection tools. Antigravity runs with a configuration directory of its own, so your own agy permission rules and MCP servers do not apply to the panel.
+
+### Notes
+
+- Guiding a running turn, forks, `/compact`, skills and parallel subagents are Codex-only for now. Antigravity still needs the Codex CLI installed, and it has not been tested on Windows.
+
 ## v2.6.8 - 2026-11-24
 
 ### Fixed

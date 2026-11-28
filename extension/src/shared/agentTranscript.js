@@ -3,18 +3,21 @@
     module.exports = factory({
       getFailureReasons: function getFailureReasonsCjs() { return require('./failureReasons.js'); },
       getI18n: function getI18nCjs() { return require('./i18n.js'); },
-      RunActivityModel: require('./runActivityModel.js')
+      RunActivityModel: require('./runActivityModel.js'),
+      AgentBrand: require('./agentBrand.js')
     });
   } else {
     root.CodexOverleafModuleRegistry.define('AgentTranscript', [
       'FailureReasons',
       'I18n',
-      'RunActivityModel'
-    ], function createAgentTranscript(FailureReasons, I18n, RunActivityModel) {
+      'RunActivityModel',
+      'AgentBrand'
+    ], function createAgentTranscript(FailureReasons, I18n, RunActivityModel, AgentBrand) {
       return factory({
         getFailureReasons: function getFailureReasonsWindow() { return FailureReasons; },
         getI18n: function getI18nWindow() { return I18n; },
-        RunActivityModel
+        RunActivityModel,
+        AgentBrand
       });
     });
   }
@@ -27,6 +30,25 @@
   const getI18nModule = (deps && deps.getI18n) instanceof Function
     ? deps.getI18n
     : function noI18n() { return null; };
+  const AgentBrand = deps && deps.AgentBrand ? deps.AgentBrand : null;
+
+  function brandIdForRun(run) {
+    const providerId = run?.executionSnapshot?.providerId || run?.providerId;
+    if (providerId) return AgentBrand?.brandIdForProvider?.(providerId) || (String(providerId).trim() === 'antigravity' ? 'antigravity' : 'codex');
+    const threadId = String(run?.codexThreadId || run?.threadId || '').trim();
+    return threadId.startsWith('agy:') ? 'antigravity' : 'codex';
+  }
+
+  function resolveEventBrand(options = {}, event = null) {
+    if (options.brand === 'antigravity' || options.brand === 'codex') return options.brand;
+    if (options.providerId) return AgentBrand?.brandIdForProvider?.(options.providerId) || (String(options.providerId).trim() === 'antigravity' ? 'antigravity' : 'codex');
+    const threadId = String(options.threadId || event?.detail?.params?.threadId || event?.detail?.threadId || '').trim();
+    return threadId.startsWith('agy:') ? 'antigravity' : 'codex';
+  }
+
+  function brandCopy(text, brand) {
+    return brand === 'antigravity' && AgentBrand?.brandText ? AgentBrand.brandText(text, brand) : text;
+  }
 
   // Only explicit product producers may attach these semantic identities.
   const PRODUCT_CONCLUSIONS = {
@@ -246,6 +268,36 @@
     },
     "provider_response_invalid": {
       "message": "provider_response_invalid"
+    },
+    "antigravity_not_found": {
+      "code": "antigravity_not_found"
+    },
+    "antigravity_auth_required": {
+      "code": "antigravity_auth_required"
+    },
+    "antigravity_unsupported_operation": {
+      "code": "antigravity_unsupported_operation"
+    },
+    "antigravity_login_timeout": {
+      "code": "antigravity_login_timeout"
+    },
+    "antigravity_login_failed": {
+      "code": "antigravity_login_failed"
+    },
+    "antigravity_status_failed": {
+      "code": "antigravity_status_failed"
+    },
+    "antigravity_models_unavailable": {
+      "code": "antigravity_models_unavailable"
+    },
+    "antigravity_mode_unavailable": {
+      "code": "antigravity_mode_unavailable"
+    },
+    "antigravity_rate_limited": {
+      "code": "antigravity_rate_limited"
+    },
+    "antigravity_runtime_error": {
+      "code": "antigravity_runtime_error"
     }
   };
 
@@ -285,7 +337,28 @@
 
   function mapAgentEventToActivity(event = {}, options = {}) {
     const locale = normalizeLocale(options);
+    const brand = resolveEventBrand(options, event);
     const type = String(event.type || '');
+
+    if (type === 'antigravity.thread.fresh') {
+      return {
+        kind: 'activity',
+        visible: true,
+        title: textFor(locale, '已开启新的 Antigravity 会话（原有会话属于其他服务）。', 'Started a fresh Antigravity session (the previous thread belonged to another provider).'),
+        status: 'warning',
+        technicalDetail: normalizeRawEvent(event)
+      };
+    }
+
+    if (type === 'codex.thread.fresh') {
+      return {
+        kind: 'activity',
+        visible: true,
+        title: textFor(locale, '已开启新的 Codex 会话（原有会话属于 Antigravity）。', 'Started a fresh Codex thread (the previous session belonged to Antigravity).'),
+        status: 'warning',
+        technicalDetail: normalizeRawEvent(event)
+      };
+    }
 
     if (type === 'codex.local_skills.missing' || type === 'codex.local_skill_invocation.ignored') {
       return { kind: 'activity', visible: true,
@@ -296,7 +369,7 @@
     }
 
     if (isContextCompactionEvent(event)) {
-      return formatContextCompactionCheckpoint(event, locale);
+      return formatContextCompactionCheckpoint(event, locale, brand);
     }
 
     if (type === 'overleaf.sync.started') {
@@ -304,9 +377,9 @@
       return {
         kind: 'activity',
         visible: true,
-        title: fileCount
-          ? textFor(locale, `正在同步 Overleaf 项目到本地 Codex workspace：${fileCount} 个文件。`, `Syncing the Overleaf project into the local Codex workspace: ${fileCount} files.`)
-          : textFor(locale, '正在同步 Overleaf 项目到本地 Codex workspace。', 'Syncing the Overleaf project into the local Codex workspace.'),
+        title: brandCopy(fileCount
+          ? textFor(locale, `正在同步 Overleaf 项目到本地工作区：${fileCount} 个文件。`, `Syncing the Overleaf project into the local workspace: ${fileCount} files.`)
+          : textFor(locale, '正在同步 Overleaf 项目到本地工作区。', 'Syncing the Overleaf project into the local workspace.'), brand),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -325,9 +398,9 @@
         visible: true,
         title: incomplete
           ? textFor(locale, `已同步 ${fileCount} 个可读文件，部分项目内容不可用。${unreadDetail}`, `Synced ${fileCount} readable files; some project content is unavailable.${unreadDetail ? ` ${unreadDetail}` : ''}`)
-          : fileCount
+          : brandCopy(fileCount
             ? textFor(locale, `已同步 ${fileCount} 个文件，本地 Codex 将直接处理这份 workspace。`, `Synced ${fileCount} files. Local Codex will work from this workspace.`)
-            : textFor(locale, '已同步 Overleaf 项目，本地 Codex 将直接处理这份 workspace。', 'Synced the Overleaf project. Local Codex will work from this workspace.'),
+            : textFor(locale, '已同步 Overleaf 项目，本地 Codex 将直接处理这份 workspace。', 'Synced the Overleaf project. Local Codex will work from this workspace.'), brand),
         status: incomplete ? 'warning' : 'completed',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -340,15 +413,15 @@
         kind: 'activity',
         visible: true,
         title: changedCount
-          ? textFor(locale, `Codex 本地改动已收集：${formatFilesInline(files, locale)}。`, `Collected local Codex changes: ${formatFilesInline(files, locale)}.`)
-          : textFor(locale, 'Codex 没有产生需要同步回 Overleaf 的文件改动。', 'Codex did not produce file changes to sync back to Overleaf.'),
+          ? brandCopy(textFor(locale, 'Codex 本地改动已收集：', 'Collected local Codex changes: '), brand) + formatFilesInline(files, locale) + textFor(locale, '。', '.')
+          : brandCopy(textFor(locale, 'Codex 没有产生需要同步回 Overleaf 的文件改动。', 'Codex did not produce file changes to sync back to Overleaf.'), brand),
         status: 'completed',
         technicalDetail: normalizeRawEvent(event)
       };
     }
 
     if (type === 'codex.session.event' || type === 'codex.session.request') {
-      return mapCodexSessionEvent(event, locale);
+      return mapCodexSessionEvent(event, locale, brand);
     }
 
     if (type === 'agent.snapshot.preparing') {
@@ -370,9 +443,9 @@
       return {
         kind: 'activity',
         visible: true,
-        title: fileCount
+        title: brandCopy(fileCount
           ? textFor(locale, `已同步 ${fileCount} 个文本文件，Codex 将基于这份内容继续分析。`, `Synced ${fileCount} text files. Codex will continue from this content.`)
-          : textFor(locale, '已同步 Overleaf 项目内容，Codex 将基于这份内容继续分析。', 'Synced the Overleaf project. Codex will continue from this content.'),
+          : textFor(locale, '已同步 Overleaf 项目内容，Codex 将基于这份内容继续分析。', 'Synced the Overleaf project. Codex will continue from this content.'), brand),
         status: 'completed',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -386,7 +459,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, '本地 Codex 已开始处理这轮任务。', 'Local Codex started this task.'),
+        title: brandCopy(textFor(locale, '本地 Codex 已开始处理这轮任务。', 'Local Codex started this task.'), brand),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -397,7 +470,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: failed ? textFor(locale, '本地 Codex 没有正常完成。', 'Local Codex did not finish normally.') : textFor(locale, '本地 Codex 已完成分析。', 'Local Codex finished analysis.'),
+        title: brandCopy(failed ? textFor(locale, '本地 Codex 没有正常完成。', 'Local Codex did not finish normally.') : textFor(locale, '本地 Codex 已完成分析。', 'Local Codex finished analysis.'), brand),
         status: failed ? 'failed' : 'completed',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -425,7 +498,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, 'Codex 已整理出本轮结果，正在生成报告。', 'Codex prepared this task result and is generating the report.'),
+        title: brandCopy(textFor(locale, 'Codex 已整理出本轮结果，正在生成报告。', 'Codex prepared this task result and is generating the report.'), brand),
         status: 'completed',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -527,19 +600,19 @@
     return { ...base, status: event.status || 'running', title: label };
   }
 
-  function mapCodexSessionEvent(event, locale) {
+  function mapCodexSessionEvent(event, locale, brand = 'codex') {
     const method = String(event.detail?.method || event.title || '');
     const params = event.detail?.params || {};
 
     if (isContextCompactionEvent(event)) {
-      return formatContextCompactionCheckpoint(event, locale);
+      return formatContextCompactionCheckpoint(event, locale, brand);
     }
 
     if (event.type === 'codex.session.request') {
       return {
         kind: 'activity',
         visible: true,
-        title: formatCodexApprovalRequest(method, locale),
+        title: formatCodexApprovalRequest(method, locale, brand),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -549,7 +622,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, '本地 Codex session 已创建。', 'Local Codex session created.'),
+        title: brandCopy(textFor(locale, '本地 Codex session 已创建。', 'Local Codex session created.'), brand),
         status: 'completed',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -558,7 +631,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, 'Codex 开始处理这轮请求。', 'Codex started processing this request.'),
+        title: brandCopy(textFor(locale, 'Codex 开始处理这轮请求。', 'Codex started processing this request.'), brand),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -567,7 +640,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, 'Codex 完成本地处理，正在准备同步改动。', 'Codex finished local processing and is preparing to sync changes.'),
+        title: brandCopy(textFor(locale, 'Codex 完成本地处理，正在准备同步改动。', 'Codex finished local processing and is preparing to sync changes.'), brand),
         status: 'completed',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -576,7 +649,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: formatPlanUpdateTitle(params, locale),
+        title: formatPlanUpdateTitle(params, locale, brand),
         status: 'running',
         detail: formatPlanUpdateDetail(params, locale),
         technicalDetail: normalizeRawEvent(event)
@@ -587,15 +660,15 @@
       return {
         kind: 'activity',
         visible: true,
-        title: changedFiles
+        title: brandCopy(changedFiles
           ? textFor(locale, `Codex 更新了本地文件差异：${changedFiles} 个文件。`, `Codex updated local file diffs: ${changedFiles} file(s).`)
-          : textFor(locale, 'Codex 更新了本地文件差异。', 'Codex updated local file diffs.'),
+          : textFor(locale, 'Codex 更新了本地文件差异。', 'Codex updated local file diffs.'), brand),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
     }
     if (method === 'item/started' || method === 'item/completed') {
-      return mapThreadItemEvent(params.item, method === 'item/started', event, locale);
+      return mapThreadItemEvent(params.item, method === 'item/started', event, locale, brand);
     }
     if (method === 'item/agentMessage/delta' || method === 'item/reasoning/summaryTextDelta') {
       const title = cleanStreamDeltaText(
@@ -628,8 +701,8 @@
         kind: 'activity',
         visible: true,
         title: files.length
-          ? textFor(locale, `Codex 正在修改本地文件：${formatFilesInline(files, locale)}。`, `Codex is editing local files: ${formatFilesInline(files, locale)}.`)
-          : textFor(locale, 'Codex 正在修改本地文件。', 'Codex is editing local files.'),
+          ? brandCopy(textFor(locale, 'Codex 正在修改本地文件：', 'Codex is editing local files: '), brand) + formatFilesInline(files, locale) + textFor(locale, '。', '.')
+          : brandCopy(textFor(locale, 'Codex 正在修改本地文件。', 'Codex is editing local files.'), brand),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -638,7 +711,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, 'Codex 正在写入本地文件。', 'Codex is writing local files.'),
+        title: brandCopy(textFor(locale, 'Codex 正在写入本地文件。', 'Codex is writing local files.'), brand),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -647,7 +720,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: textFor(locale, 'Codex 已切换到可用模型继续运行。', 'Codex switched to an available model and continued.'),
+        title: brandCopy(textFor(locale, 'Codex 已切换到可用模型继续运行。', 'Codex switched to an available model and continued.'), brand),
         status: 'running',
         technicalDetail: normalizeRawEvent(event)
       };
@@ -671,21 +744,23 @@
     return Boolean(deps.RunActivityModel.contextCompactionState(event));
   }
 
-  function formatContextCompactionCheckpoint(event = {}, locale = 'en') {
+  function formatContextCompactionCheckpoint(event = {}, locale = 'en', brand = 'codex') {
     const running = deps.RunActivityModel.contextCompactionState(event) === 'running';
     return {
       kind: 'checkpoint',
       visible: true,
-      title: running
+      title: brandCopy(running
         ? textFor(locale, '正在压缩上下文，Codex 会继续处理。', 'Compacting context; Codex will continue.')
-        : textFor(locale, '上下文已压缩，Codex 继续处理。', 'Context compacted; Codex continued.'),
+        : textFor(locale, '上下文已压缩，Codex 继续处理。', 'Context compacted; Codex continued.'), brand),
       status: running ? 'running' : 'completed',
       technicalDetail: normalizeRawEvent(event)
     };
   }
 
-  function mapThreadItemEvent(item = {}, started, event, locale) {
-    const status = started ? 'running' : (item.status === 'failed' ? 'failed' : 'completed');
+  function mapThreadItemEvent(item = {}, started, event, locale, brand = 'codex') {
+    const declined = !started && item.status === 'declined';
+    const failed = !started && item.status === 'failed';
+    const status = started ? 'running' : (failed ? 'failed' : declined ? 'blocked' : 'completed');
     if (item.type === 'agentMessage') {
       const title = cleanVisibleText(item.text || '');
       if (title) {
@@ -717,7 +792,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: started ? textFor(locale, 'Codex 正在分析。', 'Codex is analyzing.') : textFor(locale, 'Codex 完成了一段分析。', 'Codex completed an analysis step.'),
+        title: brandCopy(started ? textFor(locale, 'Codex 正在分析。', 'Codex is analyzing.') : textFor(locale, 'Codex 完成了一段分析。', 'Codex completed an analysis step.'), brand),
         status,
         technicalDetail: normalizeRawEvent(event)
       };
@@ -727,7 +802,7 @@
       return {
         kind: 'activity',
         visible: true,
-        title: title || textFor(locale, 'Codex 更新了计划。', 'Codex updated its plan.'),
+        title: title || brandCopy(textFor(locale, 'Codex 更新了计划。', 'Codex updated its plan.'), brand),
         status,
         technicalDetail: normalizeRawEvent(event)
       };
@@ -739,6 +814,7 @@
         detail: {
           command: item.command,
           itemId: item.id,
+          itemStatus: item.status,
           threadId: event.detail?.params?.threadId,
           turnId: event.detail?.params?.turnId,
           commandActions: item.commandActions,
@@ -749,27 +825,42 @@
     }
     if (item.type === 'fileChange') {
       const files = getPatchChangeFiles(item.changes);
+      let title;
+      if (declined) {
+        title = files.length
+          ? textFor(locale, `本地文件修改已被拒绝，未应用：${formatFilesInline(files, locale)}。`, `Local file edits were declined and not applied: ${formatFilesInline(files, locale)}.`)
+          : textFor(locale, '本地文件修改已被拒绝，未应用。', 'Local file edits were declined and not applied.');
+      } else if (failed) {
+        title = files.length
+          ? textFor(locale, `本地文件修改失败，未应用：${formatFilesInline(files, locale)}。`, `Local file edits failed and were not applied: ${formatFilesInline(files, locale)}.`)
+          : textFor(locale, '本地文件修改失败，未应用。', 'Local file edits failed and were not applied.');
+      } else {
+        title = files.length
+          ? brandCopy(started
+            ? textFor(locale, 'Codex 正在修改本地文件：', 'Codex is editing local files: ')
+            : textFor(locale, 'Codex 已修改本地文件：', 'Codex edited local files: '), brand) + formatFilesInline(files, locale) + textFor(locale, '。', '.')
+          : brandCopy(started
+            ? textFor(locale, 'Codex 正在修改本地文件。', 'Codex is editing local files.')
+            : textFor(locale, 'Codex 已完成本地文件修改。', 'Codex finished local file edits.'), brand);
+      }
       return {
         kind: 'activity',
         visible: true,
-        title: files.length
-          ? (started
-            ? textFor(locale, `Codex 正在修改本地文件：${formatFilesInline(files, locale)}。`, `Codex is editing local files: ${formatFilesInline(files, locale)}.`)
-            : textFor(locale, `Codex 已修改本地文件：${formatFilesInline(files, locale)}。`, `Codex edited local files: ${formatFilesInline(files, locale)}.`))
-          : (started
-            ? textFor(locale, 'Codex 正在修改本地文件。', 'Codex is editing local files.')
-            : textFor(locale, 'Codex 已完成本地文件修改。', 'Codex finished local file edits.')),
+        title,
         status,
         technicalDetail: normalizeRawEvent(event)
       };
     }
     if (item.type === 'mcpToolCall' || item.type === 'dynamicToolCall') {
+      const toolLabel = cleanVisibleText(item.tool || textFor(locale, '本地工具', 'local tool'));
       return {
         kind: 'activity',
         visible: true,
-        title: started
-          ? textFor(locale, `正在使用工具：${cleanVisibleText(item.tool || '本地工具')}。`, `Using tool: ${cleanVisibleText(item.tool || 'local tool')}.`)
-          : textFor(locale, `已使用工具：${cleanVisibleText(item.tool || '本地工具')}。`, `Used tool: ${cleanVisibleText(item.tool || 'local tool')}.`),
+        title: declined
+          ? textFor(locale, `工具调用已被拒绝，未执行：${toolLabel}。`, `Tool call was declined and not run: ${toolLabel}.`)
+          : started
+            ? textFor(locale, `正在使用工具：${cleanVisibleText(item.tool || '本地工具')}。`, `Using tool: ${cleanVisibleText(item.tool || 'local tool')}.`)
+            : textFor(locale, `已使用工具：${cleanVisibleText(item.tool || '本地工具')}。`, `Used tool: ${cleanVisibleText(item.tool || 'local tool')}.`),
         status,
         technicalDetail: normalizeRawEvent(event)
       };
@@ -778,14 +869,14 @@
     return technicalOnly(event, locale);
   }
 
-  function formatCodexApprovalRequest(method, locale) {
+  function formatCodexApprovalRequest(method, locale, brand = 'codex') {
     if (/fileChange\/requestApproval/.test(method)) {
-      return textFor(locale, 'Codex 请求写入本地文件，正在按当前模式处理。', 'Codex requested local file writes; handling according to the current mode.');
+      return brandCopy(textFor(locale, 'Codex 请求写入本地文件，正在按当前模式处理。', 'Codex requested local file writes; handling according to the current mode.'), brand);
     }
     if (/commandExecution\/requestApproval/.test(method)) {
-      return textFor(locale, 'Codex 请求运行本地命令，正在按当前模式处理。', 'Codex requested a local command; handling according to the current mode.');
+      return brandCopy(textFor(locale, 'Codex 请求运行本地命令，正在按当前模式处理。', 'Codex requested a local command; handling according to the current mode.'), brand);
     }
-    return textFor(locale, 'Codex 请求继续操作，正在按当前模式处理。', 'Codex requested to continue; handling according to the current mode.');
+    return brandCopy(textFor(locale, 'Codex 请求继续操作，正在按当前模式处理。', 'Codex requested to continue; handling according to the current mode.'), brand);
   }
 
   function getCodexStreamKey(method, params = {}) {
@@ -804,13 +895,13 @@
     return `${prefix}:${itemId || 'current'}`;
   }
 
-  function formatPlanUpdateTitle(params = {}, locale = 'en') {
+  function formatPlanUpdateTitle(params = {}, locale = 'en', brand = 'codex') {
     const steps = Array.isArray(params.plan) ? params.plan : [];
     const active = steps.find(step => step.status === 'in_progress') || steps.find(step => step.status === 'pending');
     const text = cleanVisibleText(active?.step || params.explanation || '');
     return text
-      ? textFor(locale, `Codex 计划更新：${text}`, `Codex plan update: ${text}`)
-      : textFor(locale, 'Codex 更新了执行计划。', 'Codex updated its plan.');
+      ? brandCopy(textFor(locale, 'Codex 计划更新：', 'Codex plan update: '), brand) + text
+      : brandCopy(textFor(locale, 'Codex 更新了执行计划。', 'Codex updated its plan.'), brand);
   }
 
   function formatPlanUpdateDetail(params = {}, locale = 'en') {
@@ -829,8 +920,80 @@
     };
   }
 
-  function translateProviderError(text, locale) {
+  function translateProviderError(text, locale, code = '') {
     const rules = [
+      {
+        code: 'antigravity_not_found',
+        pattern: /antigravity_not_found|Antigravity CLI.*not found|agy.*not found/i,
+        conclusionZh: '这轮没有启动：本机没有找到 Antigravity CLI（agy）。',
+        conclusionEn: 'This run did not start: Antigravity CLI (agy) was not found on this machine.',
+        nextZh: '请安装 Antigravity CLI（`agy`）并确保其在 PATH 中（或设置 CODEX_OVERLEAF_ANTIGRAVITY_BIN），然后重试。',
+        nextEn: 'Install the Antigravity CLI (`agy`), make sure it is on PATH (or set CODEX_OVERLEAF_ANTIGRAVITY_BIN), then retry.'
+      },
+      {
+        code: 'antigravity_auth_required',
+        pattern: /antigravity_auth_required|antigravity.*authentication required/i,
+        conclusionZh: '这轮没有启动：Antigravity 需要先完成 Google 登录。',
+        conclusionEn: 'This run did not start: Antigravity requires Google sign-in first.',
+        nextZh: '请打开设置 → 模型与连接 → Antigravity，点击“使用 Google 登录”，然后重试。',
+        nextEn: 'Open Settings > Models & connections > Antigravity and click Sign in with Google, then retry.'
+      },
+      {
+        code: 'antigravity_unsupported_operation',
+        pattern: /antigravity_unsupported_operation/i,
+        conclusionZh: '当前项目使用 Antigravity 时不支持此操作。',
+        conclusionEn: 'This operation is not supported while Antigravity is selected.',
+        nextZh: '请使用普通的 Ask 或 Auto 任务，或切换为内置 Codex 以使用 Codex 专属功能。',
+        nextEn: 'Use a standard Ask or Auto turn with Antigravity, or switch this project to Built-in Codex for Codex-only features.'
+      },
+      {
+        code: 'antigravity_login_timeout',
+        pattern: /antigravity_login_timeout/i,
+        conclusionZh: 'Antigravity 的 Google 登录超时。',
+        conclusionEn: 'Google sign-in for Antigravity timed out.',
+        nextZh: '请在设置中重新点击“使用 Google 登录”，并在浏览器窗口中完成登录。',
+        nextEn: 'Click Sign in with Google again in Settings and finish sign-in in your browser.'
+      },
+      {
+        code: 'antigravity_login_failed',
+        pattern: /antigravity_login_failed/i,
+        conclusionZh: 'Antigravity 的 Google 登录失败。',
+        conclusionEn: 'Google sign-in for Antigravity did not succeed.',
+        nextZh: '请检查浏览器和网络连接，然后重新点击“使用 Google 登录”。',
+        nextEn: 'Check your browser and network connection, then click Sign in with Google to try again.'
+      },
+      {
+        code: 'antigravity_status_failed',
+        pattern: /antigravity_status_failed/i,
+        conclusionZh: '无法检查 Antigravity 状态。',
+        conclusionEn: 'Could not check Antigravity status.',
+        nextZh: '请确认本机可以运行 agy，然后点击“刷新状态”重试。',
+        nextEn: 'Confirm that agy works locally and click Refresh status to try again.'
+      },
+      {
+        code: 'antigravity_models_unavailable',
+        pattern: /antigravity_models_unavailable/i,
+        conclusionZh: 'Antigravity 无法加载 Gemini 模型列表。',
+        conclusionEn: 'Antigravity could not load the Gemini model list.',
+        nextZh: '请检查 Antigravity 登录状态和网络，刷新后重试。',
+        nextEn: 'Check your Antigravity sign-in status and network, then refresh models and retry.'
+      },
+      {
+        code: 'antigravity_mode_unavailable',
+        pattern: /antigravity_mode_unavailable/i,
+        conclusionZh: 'Antigravity 无法切换到所需的权限模式。',
+        conclusionEn: 'Antigravity could not switch to the required permission mode.',
+        nextZh: '请将 Antigravity CLI（agy）更新到受支持的版本后重试。',
+        nextEn: 'Update the Antigravity CLI (agy) to a supported version and retry.'
+      },
+      {
+        code: 'antigravity_rate_limited',
+        pattern: /antigravity_rate_limited/i,
+        conclusionZh: 'Antigravity 触发了请求频率或配额限制。',
+        conclusionEn: 'Antigravity reached a request rate or quota limit.',
+        nextZh: '请稍候重试，或切换到其他模型或模型服务。',
+        nextEn: 'Wait briefly before retrying, or switch to another model or provider.'
+      },
       {
         pattern: /provider_revision_conflict|active provider changed|provider changed in another tab/i,
         conclusionZh: '这轮没有启动：模型服务配置已在另一个标签页发生变化。',
@@ -952,15 +1115,31 @@
         code: 'provider_response_invalid'
       }
     ];
-    const rule = rules.find(candidate => candidate.pattern.test(text));
-    if (!rule) {
-      return null;
+    const rule = rules.find(candidate => (code && candidate.code === code) || candidate.pattern.test(text));
+    if (rule) {
+      return {
+        conclusion: textFor(locale, rule.conclusionZh, rule.conclusionEn),
+        nextStep: textFor(locale, rule.nextZh, rule.nextEn),
+        failureCode: rule.code
+      };
     }
-    return {
-      conclusion: textFor(locale, rule.conclusionZh, rule.conclusionEn),
-      nextStep: textFor(locale, rule.nextZh, rule.nextEn),
-      failureCode: rule.code
-    };
+    if (/^(?:antigravity_|ACP_)/i.test(String(code || ''))
+      || /\b(?:antigravity_[a-z0-9_]+|ACP_[A-Z0-9_]+)\b/.test(text)) {
+      return {
+        conclusion: textFor(locale, 'Antigravity 无法完成此请求。', 'Antigravity could not complete this request.'),
+        nextStep: textFor(locale, '请在设置中刷新 Antigravity 状态后重试，或打开技术详情查看错误。', 'Refresh Antigravity status in Settings and retry, or open Technical Details to inspect the error.'),
+        failureCode: 'antigravity_runtime_error'
+      };
+    }
+    return null;
+  }
+
+  function isAntigravityErrorContext(context = {}) {
+    const code = String(context.code || '').trim();
+    const threadId = String(context.threadId || '').trim();
+    return context.providerId === 'antigravity'
+      || threadId.startsWith('agy:')
+      || /^(?:antigravity_|ACP_)/i.test(code);
   }
 
   function translateRawErrorCopy(message, context = {}) {
@@ -1002,7 +1181,7 @@
         failureCode: 'codex_context_limit'
       };
     }
-    const providerError = translateProviderError(text, locale);
+    const providerError = translateProviderError(text, locale, context.code);
     if (providerError) {
       return providerError;
     }
@@ -1048,7 +1227,15 @@
         failureCode: 'codex_output_limit'
       };
     }
-    if (/codex_not_found|Codex CLI was not found|ENOENT/i.test(text)) {
+    const antigravityContext = isAntigravityErrorContext(context);
+    if (antigravityContext && /ENOENT/i.test(text) && /(?:spawn\s+[^\r\n]*agy|\bagy\b|antigravity)/i.test(text)) {
+      return {
+        conclusion: textFor(locale, '这轮没有启动：本机没有找到 Antigravity CLI（agy）。', 'This run did not start: Antigravity CLI (agy) was not found on this machine.'),
+        nextStep: textFor(locale, '请安装 Antigravity CLI（`agy`）并确保其在 PATH 中（或设置 CODEX_OVERLEAF_ANTIGRAVITY_BIN），然后重试。', 'Install the Antigravity CLI (`agy`), make sure it is on PATH (or set CODEX_OVERLEAF_ANTIGRAVITY_BIN), then retry.'),
+        failureCode: 'antigravity_not_found'
+      };
+    }
+    if (!antigravityContext && /codex_not_found|Codex CLI was not found|ENOENT/i.test(text)) {
       return {
         conclusion: textFor(locale, '这轮没有启动：本机没有找到 Codex CLI。', 'This run did not start: Codex CLI was not found locally.'),
         nextStep: textFor(locale, '请确认终端里可以运行 `codex`，然后重新安装 native host 或刷新扩展后重试。', 'Confirm `codex` works in Terminal, then reinstall the native host or reload the extension.'),
@@ -1111,6 +1298,13 @@
         failureCode: null  // post-processing path; the real error already attached its own structured failure
       };
     }
+    if (antigravityContext) {
+      return {
+        conclusion: textFor(locale, 'Antigravity 无法完成此请求。', 'Antigravity could not complete this request.'),
+        nextStep: textFor(locale, '请在设置中刷新 Antigravity 状态后重试，或打开技术详情查看错误。', 'Refresh Antigravity status in Settings and retry, or open Technical Details to inspect the error.'),
+        failureCode: 'antigravity_runtime_error'
+      };
+    }
     return {
       conclusion: context.mode === 'ask'
         ? textFor(locale, '这轮只问不改没有完成：本地 Codex 没有正常完成，因此没有生成最终说明。', 'This Ask run did not complete: local Codex did not finish normally, so no final answer was generated.')
@@ -1129,7 +1323,13 @@
   function translateRawError(message, context = {}) {
     const translated = translateRawErrorCopy(message, context), locale = normalizeLocale(context);
     const key = Object.keys(ERROR_CONCLUSIONS).find(id => productConclusionText(`error:${id}`, locale) === translated.conclusion);
-    return { ...translated, ...(key ? { conclusionKey: `error:${key}` } : {}) };
+    const brand = context.brand === 'antigravity' || isAntigravityErrorContext(context) ? 'antigravity' : 'codex';
+    return {
+      ...translated,
+      conclusion: brandCopy(translated.conclusion, brand),
+      nextStep: brandCopy(translated.nextStep, brand),
+      ...(key ? { conclusionKey: `error:${key}` } : {})
+    };
   }
 
   // Old Native failures retained the real transport error even when their
@@ -1179,17 +1379,21 @@
       warningCount: Number.isSafeInteger(source.warningCount) && source.warningCount >= 0 ? source.warningCount : 0 };
   }
 
-  function projectProductConclusion(source, locale = 'en', localizeCompileReason = value => value, raw = '') {
+  function projectProductConclusion(source, locale = 'en', localizeCompileReason = value => value, raw = '', options = {}) {
     const identity = normalizeConclusionSource(source);
     if (!identity) return null;
-    if (identity.key !== 'writeback') return productConclusionText(identity.key, locale);
+    const brand = options?.brand === 'antigravity' ? 'antigravity' : 'codex';
+    if (identity.key !== 'writeback') return brandCopy(productConclusionText(identity.key, locale), brand);
     if (identity.prefixLength < 0 || identity.prefixLength > raw.length) return null;
     const originalPrefix = raw.slice(0, identity.prefixLength);
-    if (identity.prefixKey && !['en', 'zh'].some(language => productConclusionText(identity.prefixKey, language) === originalPrefix)) return null;
-    const compose = (language, projectReason) => {
+    const knownBrands = brand === 'antigravity' ? ['codex', 'antigravity'] : ['codex'];
+    if (identity.prefixKey && !['en', 'zh'].some(language => knownBrands.some(candidateBrand =>
+      brandCopy(productConclusionText(identity.prefixKey, language), candidateBrand) === originalPrefix))) return null;
+    const compose = (language, projectReason, targetBrand) => {
       const tx = (en, zh) => language === 'zh' ? zh : en;
-      const prefix = projectReason && identity.prefixKey ? productConclusionText(identity.prefixKey, language) : originalPrefix;
-      const note = productConclusionText(identity.outcome + (prefix && identity.outcome !== 'synced' ? '_note' : ''), language);
+      const prefix = projectReason && identity.prefixKey
+        ? brandCopy(productConclusionText(identity.prefixKey, language), targetBrand) : originalPrefix;
+      const note = brandCopy(productConclusionText(identity.outcome + (prefix && identity.outcome !== 'synced' ? '_note' : ''), language), targetBrand);
       const conclusion = prefix ? [prefix, identity.outcome === 'synced' ? '' : note].filter(Boolean).join('\n\n') : note;
       const { compileStatus: status, errors, errorCount, warningCount: warnings } = identity;
       if (!identity.hasCompile) return conclusion;
@@ -1210,8 +1414,8 @@
       return [conclusion, summary].filter(Boolean).join('\n');
     };
     // A compacted or changed raw answer must never be reconstructed from metadata.
-    if (!['en', 'zh'].some(language => compose(language, false) === raw)) return null;
-    return compose(locale, true);
+    if (!['en', 'zh'].some(language => knownBrands.some(candidateBrand => compose(language, false, candidateBrand) === raw))) return null;
+    return compose(locale, true, brand);
   }
 
   function buildHumanCompletionReport(input = {}) {
@@ -1220,6 +1424,7 @@
     const appliedCount = countApplyResultEntries(applyResults, 'applied');
     const skippedCount = countApplyResultEntries(applyResults, 'skipped');
     const translatedError = input.errorMessage ? translateRawError(input.errorMessage, { mode: input.mode, locale, code: input.failure?.code,
+      providerId: input.providerId, threadId: input.threadId, brand: input.brand,
       codexReturned: input.conclusionKey === 'error:post_processing' }) : null;
     const userReport = normalizeUserReport(input.userReport);
     const report = userReport || buildFallbackReport(input, {
@@ -1507,7 +1712,8 @@
     const output = String(event.detail?.output || '');
     const commandKind = classifyCommand(command);
     const running = type === 'codex.command.started';
-    const failed = event.status === 'failed' || Number(event.detail?.exitCode) > 0;
+    const declined = event.status === 'blocked' || event.status === 'skipped' || event.detail?.itemStatus === 'declined';
+    const failed = !declined && (event.status === 'failed' || Number(event.detail?.exitCode) > 0);
 
     if (running) {
       return {
@@ -1515,6 +1721,17 @@
         visible: true,
         title: formatCommandStartedTitle(commandKind, command, locale),
         status: 'running',
+        detail: formatCommandPublicDetail(commandKind, command, locale),
+        technicalDetail: normalizeRawEvent(event)
+      };
+    }
+
+    if (declined) {
+      return {
+        kind: 'activity',
+        visible: true,
+        title: textFor(locale, '本地命令已被拒绝，未执行。', 'Local command was declined and not run.'),
+        status: 'blocked',
         detail: formatCommandPublicDetail(commandKind, command, locale),
         technicalDetail: normalizeRawEvent(event)
       };
@@ -1829,20 +2046,20 @@
     const key = operation?.reasonKey || '';
     const count = Number(operation?.reasonParams?.count || 0);
     if (key === 'localWorkspaceDelete') {
-      return textFor(locale, '本地 Codex workspace 删除了这个文件。', 'Local Codex workspace deleted this file.');
+      return textFor(locale, '本地工作区删除了这个文件。', 'Local workspace deleted this file.');
     }
     if (key === 'localWorkspacePatch') {
       return textFor(
         locale,
-        `同步本地 Codex workspace 中的局部文件改动（${count || 0} 处）。`,
-        `Synced ${count || 0} local Codex workspace edit${Number(count) === 1 ? '' : 's'}.`
+        `同步本地工作区中的局部文件改动（${count || 0} 处）。`,
+        `Synced ${count || 0} local workspace edit${Number(count) === 1 ? '' : 's'}.`
       );
     }
     if (key === 'localWorkspaceContent') {
-      return textFor(locale, '同步本地 Codex workspace 中的文件内容。', 'Synced file content from the local Codex workspace.');
+      return textFor(locale, '同步本地工作区中的文件内容。', 'Synced file content from the local workspace.');
     }
     if (key === 'localWorkspaceCreate') {
-      return textFor(locale, '同步本地 Codex workspace 中的新文件。', 'Synced a new file from the local Codex workspace.');
+      return textFor(locale, '同步本地工作区中的新文件。', 'Synced a new file from the local workspace.');
     }
     return localizeVisibleReason(operation?.reason || '', locale);
   }
@@ -2090,19 +2307,19 @@
     if (text.includes('Codex 要修改的具体位置已经被你或协作者改过')) {
       return 'The exact edit location was changed by you or a collaborator, so Codex did not overwrite it. Review the diff and retry.';
     }
-    const patchMatch = text.match(/^同步本地 Codex workspace 中的局部文件改动（(\d+) 处）。$/);
+    const patchMatch = text.match(/^同步本地(?: Codex workspace |工作区)中的局部文件改动（(\d+) 处）。$/);
     if (patchMatch) {
       const count = Number(patchMatch[1]) || 0;
-      return `Synced ${count} local Codex workspace edit${count === 1 ? '' : 's'}.`;
+      return `Synced ${count} local workspace edit${count === 1 ? '' : 's'}.`;
     }
-    if (text === '本地 Codex workspace 删除了这个文件。') {
-      return 'Local Codex workspace deleted this file.';
+    if ((text === '本地 Codex workspace 删除了这个文件。' || text === '本地工作区删除了这个文件。')) {
+      return 'Local workspace deleted this file.';
     }
-    if (text === '同步本地 Codex workspace 中的文件内容。') {
-      return 'Synced file content from the local Codex workspace.';
+    if ((text === '同步本地 Codex workspace 中的文件内容。' || text === '同步本地工作区中的文件内容。')) {
+      return 'Synced file content from the local workspace.';
     }
-    if (text === '同步本地 Codex workspace 中的新文件。') {
-      return 'Synced a new file from the local Codex workspace.';
+    if ((text === '同步本地 Codex workspace 中的新文件。' || text === '同步本地工作区中的新文件。')) {
+      return 'Synced a new file from the local workspace.';
     }
     if (text.includes('Codex 在本地生成了这些文件，但插件没有同步回 Overleaf')) {
       return text
@@ -2115,6 +2332,7 @@
   }
 
   return {
+    brandIdForRun,
     buildHumanCompletionReport,
     projectProductConclusion,
     projectContextLimitEvent,

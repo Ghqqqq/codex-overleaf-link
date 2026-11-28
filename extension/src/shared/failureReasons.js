@@ -503,6 +503,56 @@
       fallbackUserMessage: 'Codex CLI was not found on this machine.',
       fallbackNextAction: 'Confirm `codex` works in Terminal, then reinstall the native host or reload the extension.'
     },
+    antigravity_not_found: {
+      stage: 'codex', severity: 'blocked', defaultRetryable: true,
+      fallbackUserMessage: 'Antigravity CLI (agy) was not found on this machine.',
+      fallbackNextAction: 'Install the Antigravity CLI (`agy`), make sure it is on PATH (or set CODEX_OVERLEAF_ANTIGRAVITY_BIN), then retry.'
+    },
+    antigravity_auth_required: {
+      stage: 'codex', severity: 'blocked', defaultRetryable: true,
+      fallbackUserMessage: 'Antigravity requires Google sign-in before running tasks.',
+      fallbackNextAction: 'Open Settings > Models & connections > Antigravity and click Sign in with Google, then retry.'
+    },
+    antigravity_unsupported_operation: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: false,
+      fallbackUserMessage: 'This operation is not supported while Antigravity is selected.',
+      fallbackNextAction: 'Use a standard Ask or Auto turn with Antigravity, or switch this project to Built-in Codex for Codex-only features.'
+    },
+    antigravity_login_timeout: {
+      stage: 'codex', severity: 'error', defaultRetryable: true,
+      fallbackUserMessage: 'Google sign-in for Antigravity timed out.',
+      fallbackNextAction: 'Click Sign in with Google again and finish sign-in in your browser.'
+    },
+    antigravity_login_failed: {
+      stage: 'codex', severity: 'error', defaultRetryable: true,
+      fallbackUserMessage: 'Google sign-in for Antigravity did not succeed.',
+      fallbackNextAction: 'Check your browser and network connection, then click Sign in with Google to try again.'
+    },
+    antigravity_status_failed: {
+      stage: 'codex', severity: 'error', defaultRetryable: true,
+      fallbackUserMessage: 'Could not check Antigravity status.',
+      fallbackNextAction: 'Confirm that agy works locally and click Refresh status to try again.'
+    },
+    antigravity_models_unavailable: {
+      stage: 'codex', severity: 'error', defaultRetryable: true,
+      fallbackUserMessage: 'Antigravity could not load the Gemini model list.',
+      fallbackNextAction: 'Check your Antigravity sign-in status and network, then refresh models and retry.'
+    },
+    antigravity_mode_unavailable: {
+      stage: 'preflight', severity: 'blocked', defaultRetryable: true,
+      fallbackUserMessage: 'Antigravity could not switch to the required permission mode.',
+      fallbackNextAction: 'Update the Antigravity CLI (agy) to a supported version and retry.'
+    },
+    antigravity_rate_limited: {
+      stage: 'codex', severity: 'error', defaultRetryable: true,
+      fallbackUserMessage: 'Antigravity reached a request rate or quota limit.',
+      fallbackNextAction: 'Wait briefly before retrying, or switch to another model or provider.'
+    },
+    antigravity_runtime_error: {
+      stage: 'codex', severity: 'error', defaultRetryable: true,
+      fallbackUserMessage: 'Antigravity could not complete this request.',
+      fallbackNextAction: 'Refresh Antigravity status in Settings and retry, or open Technical Details to inspect the error.'
+    },
 
     // 9.8 Storage
     storage_quota_exceeded: {
@@ -631,6 +681,8 @@
     } else if (legacyCode && FAILURE_CODE_CATALOG[legacyCode]) {
       // Already a canonical code.
       canonicalCode = legacyCode;
+    } else if (/^(?:antigravity_|ACP_)/i.test(legacyCode)) {
+      canonicalCode = 'antigravity_runtime_error';
     } else {
       canonicalCode = 'unknown_legacy_failure';
     }

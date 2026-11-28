@@ -128,7 +128,7 @@
         && Array.isArray(response.result?.models)
         && response.result.models.length > 0;
       if (!hasDiscoveredModels && !Support.shouldUseBuiltInFallback(response)) {
-        applyUnavailableModelOptions(response?.error);
+        applyUnavailableModelOptions(response?.error, selection?.providerId);
         return { stale: false, error: response?.error || { code: 'provider_models_unavailable' } };
       }
       const sourceModels = hasDiscoveredModels ? response.result.models : fallbackModels;
@@ -138,7 +138,7 @@
           ? retainSelectedModel(sourceModels, response.result?.defaultModelId) : '');
       const normalized = modelCatalog.normalizeDiscoveredModels({ models: sourceModels, selectedModel: retainedSelectedModel });
       if (normalized.usedFallback && response.result?.providerId && response.result.providerId !== 'builtin') {
-        applyUnavailableModelOptions({ code: 'provider_model_catalog_invalid', message: 'The active provider returned no usable models.' });
+        applyUnavailableModelOptions({ code: 'provider_model_catalog_invalid', message: 'The active provider returned no usable models.' }, response.result?.providerId);
         return {
           stale: false,
           error: { code: 'provider_model_catalog_invalid', message: 'The active provider returned no usable models.' }
@@ -171,12 +171,12 @@
         return { stale: true };
       }
       options.assertCurrent?.();
-      applyUnavailableModelOptions(error);
+      applyUnavailableModelOptions(error, selection?.providerId);
       return { stale: false, error };
     }
   }
 
-  function applyUnavailableModelOptions(error) {
+  function applyUnavailableModelOptions(error, providerId = '') {
     const selectedModel = resolveSelectedModel();
     const modelSelect = getPanel()?.querySelector('[data-model]');
     if (modelSelect) {
@@ -191,7 +191,7 @@
     }
     modelDiscovery = {
       status: 'unavailable',
-      source: 'custom-provider',
+      source: providerId === 'antigravity' ? 'antigravity' : 'custom-provider',
       fetchedAt: '',
       errorCode: error?.code || '',
       errorMessage: error?.message || (error ? String(error) : '')

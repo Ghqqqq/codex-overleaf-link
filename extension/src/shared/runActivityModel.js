@@ -64,18 +64,18 @@
   const MAX_UNREAD_PATHS = 3;
   // Whole product titles only, so other text that starts the same way stays what it is.
   const PARTIAL_WORKSPACE_TITLE = /^(?:Synced (\d+) readable files; some project content is unavailable\.(?: Unread: (.+)\.)?|已同步 (\d+) 个可读文件，部分项目内容不可用。(?:未读取：(.+)。)?)$/;
-  const COMPLETE_WORKSPACE_TITLE = /^(?:Synced (\d+) files\. Local Codex will work from this workspace\.|已同步 (\d+) 个文件，本地 Codex 将直接处理这份 workspace。|Synced the Overleaf project\. Local Codex will work from this workspace\.|已同步 Overleaf 项目，本地 Codex 将直接处理这份 workspace。)$/;
+  const COMPLETE_WORKSPACE_TITLE = /^(?:Synced (\d+) files\. Local (?:Codex|Antigravity) will work from this workspace\.|已同步 (\d+) 个文件，本地 (?:Codex|Antigravity) 将直接处理这份 workspace。|Synced the Overleaf project\. Local (?:Codex|Antigravity) will work from this workspace\.|已同步 Overleaf 项目，本地 (?:Codex|Antigravity) 将直接处理这份 workspace。)$/;
 
   // Start-up steps before the model's first response. Plugin titles are matched in both locales so
   // persisted history (which drops technicalDetail) still classifies; `written` carries a file count.
   const SETUP_TITLES = [
     ['editing', /^(?:Checking Overleaf (?:Editing mode|Reviewing\/Track Changes) before starting\.|正在确认 Overleaf (?:Editing 模式|留痕状态)。)$/],
     ['editing', /(?:Starting the task\.|开始处理任务。)$/],
-    ['read', /^(?:Syncing the Overleaf project to the local Codex workspace\.|正在同步 Overleaf 项目到本地 Codex workspace。)$/],
+    ['read', /^(?:Syncing the Overleaf project to the local (?:Codex|Antigravity) workspace\.|正在同步 Overleaf 项目到本地 (?:Codex|Antigravity) workspace。)$/],
     ['read', /^(?:Read Overleaf project: (\d+) text file|已读取 Overleaf 项目：(\d+) 个文本文件)/],
     ['warm', /^(?:Using the warmed local workspace|使用已预热的本地 workspace)/],
-    ['workspace', /^(?:Syncing the Overleaf project into the local Codex workspace(?:: (\d+))?|正在同步 Overleaf 项目到本地 Codex workspace：(\d+)|Synced (\d+) text files\.|已同步 (\d+) 个文本文件)/],
-    ['codex', /^(?:Local Codex session is starting\.|本地 Codex session 开始运行。)$/],
+    ['workspace', /^(?:Syncing the Overleaf project into the local (?:Codex|Antigravity) workspace(?:: (\d+))?|正在同步 Overleaf 项目到本地 (?:Codex|Antigravity) workspace：(\d+)|Synced (\d+) text files\.|已同步 (\d+) 个文本文件)/],
+    ['codex', /^(?:Local (?:Codex|Antigravity) session is starting\.|本地 (?:Codex|Antigravity) session 开始运行。)$/],
     ['codex', /^Using Codex CLI ([^;\s]+?)(?:;|\.?$)/],
     ['hidden', /^Disabled non-Overleaf Codex skills/]
   ];
@@ -180,7 +180,9 @@
         exitCode: item.exitCode ?? detail.exitCode,
         durationMs: item.durationMs ?? detail.durationMs,
         state: method === 'item/completed' || type.endsWith('.completed')
-          ? (item.status === 'failed' || event.status === 'failed' || Number(item.exitCode ?? detail.exitCode) > 0 ? 'failed' : 'completed')
+          ? (item.status === 'failed' || event.status === 'failed' || Number(item.exitCode ?? detail.exitCode) > 0
+            ? 'failed'
+            : (item.status === 'declined' || event.status === 'blocked' || event.status === 'skipped' ? 'skipped' : 'completed'))
           : 'running'
       }, sanitize);
     }
@@ -190,13 +192,14 @@
       return normalize({
         ...base, kind: 'edit', files, paths: files.map(file => file.path),
         state: method === 'item/completed'
-          ? (item.status === 'failed' ? 'failed' : item.status === 'declined' ? 'skipped' : 'completed') : 'running'
+          ? (item.status === 'failed' ? 'failed' : (item.status === 'declined' || event.status === 'blocked' || event.status === 'skipped') ? 'skipped' : 'completed') : 'running'
       }, sanitize);
     }
     if (['mcpToolCall', 'dynamicToolCall'].includes(item.type)) {
       return normalize({ ...base, kind: 'tool', target: item.tool || item.server,
         durationMs: item.durationMs, state: method === 'item/completed'
-          ? (item.status === 'failed' || item.success === false || item.error ? 'failed' : 'completed') : 'running' }, sanitize);
+          ? (item.status === 'failed' || item.success === false || item.error ? 'failed'
+            : (item.status === 'declined' || event.status === 'blocked' || event.status === 'skipped') ? 'skipped' : 'completed') : 'running' }, sanitize);
     }
     if (method === 'turn/plan/updated' || item.type === 'plan') {
       const plan = Array.isArray(params.plan) ? params.plan : [];
@@ -244,6 +247,7 @@
     // Exact plugin acknowledgements only: assistant prose and tool failures
     // must never change the terminal state of a saved run.
     return ['Current Codex task was cancelled.', '已中断当前 Codex 任务。',
+      'Current Antigravity task was cancelled.', '已中断当前 Antigravity 任务。',
       'Cancelled: user chose not to create a new thread.', '已取消：用户选择不新建线程。']
       .includes(text(event.title).trim());
   }
@@ -260,6 +264,8 @@
     const title = text(event.title).trim();
     return title === 'Codex returned a runtime notice.'
       || title === 'Codex 返回了一条运行提示。'
+      || title === 'Antigravity returned a runtime notice.'
+      || title === 'Antigravity 返回了一条运行提示。'
       || /^Codex is ignoring \d+ unrecognized configuration settings?\b/i.test(title);
   }
 

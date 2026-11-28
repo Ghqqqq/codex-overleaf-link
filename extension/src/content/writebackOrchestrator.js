@@ -852,8 +852,8 @@
     if (!confirmation.snapshot && await tryConfirmMirrorWriteback(applied, target.runProjectId)) {
       appendRunEvent({
         title: tx(
-          'Local Codex workspace confirmed in place (no project re-download needed). The next run starts from the latest content.',
-          '本地 Codex workspace 已就地确认（无需重新下载项目），下一轮将从最新内容开始。'
+          'Local workspace confirmed in place (no project re-download needed). The next run starts from the latest content.',
+          '本地工作区已就地确认（无需重新下载项目），下一轮将从最新内容开始。'
         ),
         status: 'completed'
       });
@@ -861,7 +861,7 @@
     }
 
     appendRunEvent({
-      title: tx('Checking latest Overleaf content and refreshing the local Codex workspace.', '正在确认 Overleaf 最新内容，并刷新本地 Codex workspace。'),
+      title: tx('Checking latest Overleaf content and refreshing the local workspace.', '正在确认 Overleaf 最新内容，并刷新本地工作区。'),
       status: 'running'
     });
 
@@ -901,7 +901,7 @@
     if (response?.ok) {
       await settleFullMirrorSync(target.runProjectId, syncedProject, mirrorFence, response);
       appendRunEvent({
-        title: tx('Local Codex workspace refreshed. The next run will start from the latest Overleaf content.', '已刷新本地 Codex workspace，下一轮会从最新 Overleaf 内容开始。'),
+        title: tx('Local workspace refreshed. The next run will start from the latest Overleaf content.', '已刷新本地工作区，下一轮会从最新 Overleaf 内容开始。'),
         status: 'completed'
       });
       return 'complete';

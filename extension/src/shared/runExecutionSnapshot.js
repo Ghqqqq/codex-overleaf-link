@@ -10,11 +10,17 @@
 })(typeof window !== 'undefined' ? window : globalThis, function runExecutionSnapshotFactory(ProviderProfiles, Codec) {
   'use strict';
 
+  function isFixedProvider(providerId) {
+    return ProviderProfiles?.isFixedProviderId
+      ? ProviderProfiles.isFixedProviderId(providerId)
+      : providerId === 'builtin' || providerId === 'antigravity';
+  }
+
   function create(input = {}) {
     const providerId = Codec.normalizeText(input.providerId) || 'builtin';
     return Codec.normalizeSnapshot(input, {
       source: input.source || 'submitted',
-      requireProviderRevision: providerId !== 'builtin'
+      requireProviderRevision: !isFixedProvider(providerId)
     });
   }
 
@@ -48,7 +54,7 @@
       }
     }
     const providerId = Codec.normalizeText(captured.providerId) || 'builtin';
-    if (providerId !== 'builtin' && !Codec.normalizeRevision(captured.providerRevision)
+    if (!isFixedProvider(providerId) && !Codec.normalizeRevision(captured.providerRevision)
       && (!Codec.hasOwn(raw, 'providerRevision') || captured.providerRevision === '' || captured.providerRevision == null)) {
       captured.providerRevision = fallback.providerRevision;
       inferred = true;
@@ -71,6 +77,9 @@
       ? ProviderProfiles.getProviderById(catalog, snapshot.providerId)
       : (catalog.providers || []).find(item => item?.id === snapshot.providerId);
     if (!provider) throw Codec.snapshotError('provider_not_found', 'The selected provider no longer exists.');
+    if (snapshot.providerId === 'antigravity') {
+      return Codec.normalizeSnapshot(snapshot, { source: snapshot.source });
+    }
     const currentRevision = Codec.normalizeRevision(provider.revision);
     if (!currentRevision) throw Codec.snapshotError('provider_revision_conflict', 'The selected provider has no usable revision.');
     if (!snapshot.providerRevision) {
@@ -127,7 +136,7 @@
     const snapshot = snapshotOf(value);
     return {
       ...toLegacyQueueTuple(snapshot),
-      providerRevision: snapshot.providerId === 'builtin' ? 0 : Number(snapshot.providerRevision),
+      providerRevision: isFixedProvider(snapshot.providerId) ? 0 : Number(snapshot.providerRevision),
       executionSnapshot: cloneSnapshot(snapshot)
     };
   }
@@ -170,7 +179,7 @@
     return {
       ...state,
       ...toLegacyQueueTuple(snapshot),
-      providerRevision: snapshot.providerId === 'builtin' ? 0 : Number(snapshot.providerRevision)
+      providerRevision: isFixedProvider(snapshot.providerId) ? 0 : Number(snapshot.providerRevision)
     };
   }
 
@@ -178,7 +187,7 @@
     const snapshot = snapshotOf(value);
     return {
       providerId: snapshot.providerId,
-      providerRevision: snapshot.providerId === 'builtin' ? 0 : Number(snapshot.providerRevision)
+      providerRevision: isFixedProvider(snapshot.providerId) ? 0 : Number(snapshot.providerRevision)
     };
   }
 

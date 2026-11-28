@@ -320,6 +320,32 @@
     return [...retained, nextRun].slice(-Math.max(1, maxRuns));
   }
 
+  function resolveRunSkillScope({
+    queuedInput = null,
+    queuedSnapshot = null,
+    panelProviderId = 'builtin',
+    submittedEnabledSkillIds = [],
+    submittedEnabledLocalSkillIds = [],
+    submittedSkillInvocation = null
+  } = {}) {
+    const providerId = String(
+      queuedSnapshot?.providerId
+      || queuedInput?.payload?.executionSnapshot?.providerId
+      || queuedInput?.payload?.providerId
+      || panelProviderId
+      || 'builtin'
+    ).trim() || 'builtin';
+    const antigravityRun = providerId === 'antigravity';
+    return {
+      providerId,
+      antigravityRun,
+      enabledCodexOverleafSkillIds: antigravityRun ? [] : submittedEnabledSkillIds,
+      enabledCodexLocalSkillIds: antigravityRun ? [] : submittedEnabledLocalSkillIds,
+      skillInvocation: antigravityRun ? null : submittedSkillInvocation,
+      blockedSkillInvocation: antigravityRun && submittedSkillInvocation ? submittedSkillInvocation : null
+    };
+  }
+
   return {
     captureSessionContext,
     isSubmittedComposerUnchanged,
@@ -331,6 +357,7 @@
     isRetryReplacementEligible,
     replaceRunForRetry,
     resolveRetryReplacement,
+    resolveRunSkillScope,
     truncateSessionHistoryText,
     normalizeComposerAttachments,
     normalizeSkillInvocation

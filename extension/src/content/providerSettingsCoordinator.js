@@ -21,6 +21,7 @@
       getSelectedProviderId: options.getSelectedProviderId || (() => 'builtin'),
       getSelectedProviderRevision: options.getSelectedProviderRevision || (() => undefined),
       hasCurrentProject: options.hasCurrentProject || (() => true),
+      hasAntigravityRuntime: typeof options.hasAntigravityRuntime === 'function' ? options.hasAntigravityRuntime : null,
       setSelectedProviderId: options.setSelectedProviderId || (() => {}),
       confirmProviderSwitch: options.confirmProviderSwitch || (() => true),
       assertProviderSwitchAllowed: options.assertProviderSwitchAllowed || (() => {}),
@@ -31,6 +32,8 @@
       loaded: false,
       loadPromise: null,
       testOperationId: '',
+      antigravityStatusGeneration: 0,
+      antigravityLoggingIn: false,
       channel: null,
       dialog: null
     };
@@ -53,6 +56,7 @@
       ProviderProfiles: Profiles,
       callbacks: {
         hasCurrentProject: instance.hasCurrentProject,
+        hasAntigravityRuntime: () => isAntigravitySupported(instance),
         getCurrentProjectProviderId: () => instance.getSelectedProviderId() || 'builtin',
         onTest: context => testProvider(instance, context),
         onCancelTest: () => cancelProviderTest(instance),
@@ -61,6 +65,10 @@
         onClearSecret: context => clearProviderSecret(instance, context),
         onDelete: context => deleteProvider(instance, context),
         onActivateBuiltin: () => activateBuiltin(instance),
+        onActivateAntigravity: () => activateAntigravity(instance),
+        onSelectAntigravity: () => refreshAntigravityStatus(instance),
+        onAntigravityRefresh: () => refreshAntigravityStatus(instance, { force: true }),
+        onAntigravityLogin: () => loginAntigravity(instance),
         onReload: () => open(instance, { refresh: true })
       }
     });
@@ -70,6 +78,9 @@
       refreshSummary: () => refreshSummary(instance),
       renderSummary: () => updateSettingsSummary(instance),
       refreshLocale: () => instance.dialog.refreshLocale?.(),
+      refreshAntigravityStatus: options => refreshAntigravityStatus(instance, options),
+      loginAntigravity: () => loginAntigravity(instance),
+      activateAntigravity: () => activateAntigravity(instance),
       ensureLoaded: () => ensureLoaded(instance),
       getRunSelection: providerId => instance.loaded
         ? Profiles.buildRunSelection(instance.catalog, providerId || instance.getSelectedProviderId())
@@ -100,6 +111,9 @@
     try {
       await refresh(instance, { updateDialog: true, source: preserveDraft ? 'cross-tab' : 'open' });
       instance.dialog.setBusy('', '');
+      if (isAntigravitySupported(instance) && instance.dialog._instance?.selectedId === 'antigravity') {
+        refreshAntigravityStatus(instance).catch(() => {});
+      }
     } catch (_error) {
       // Keep the embedded editor available, with its original error projection.
     }
@@ -496,6 +510,131 @@
     }
   }
 
+  function isAntigravitySupported(instance, rawCatalog = null) {
+    if (typeof instance.hasAntigravityRuntime === 'function') {
+      return Boolean(instance.hasAntigravityRuntime());
+    }
+    const providers = rawCatalog?.providers || instance.catalog?.providers || [];
+    return providers.some(provider => provider?.id === 'antigravity');
+  }
+
+  async function refreshAntigravityStatus(instance) {
+    if (!isAntigravitySupported(instance)) {
+      return null;
+    }
+    const generation = ++instance.antigravityStatusGeneration;
+    instance.dialog.setAntigravityStatus?.({ loading: true, error: '' });
+    try {
+      const status = await request(instance, 'codex.providers.antigravity.status', {});
+      if (generation !== instance.antigravityStatusGeneration) {
+        return null;
+      }
+      instance.dialog.setAntigravityStatus?.({ loading: false, loaded: true, status, error: '' });
+      return status;
+    } catch (error) {
+      if (generation !== instance.antigravityStatusGeneration) {
+        return null;
+      }
+      instance.dialog.setAntigravityStatus?.({
+        loading: false,
+        loaded: true,
+        status: null,
+        error: formatError(instance, error)
+      });
+      throw error;
+    }
+  }
+
+  async function loginAntigravity(instance) {
+    if (!isAntigravitySupported(instance) || instance.antigravityLoggingIn) {
+      return null;
+    }
+    instance.antigravityLoggingIn = true;
+    instance.dialog.setAntigravityStatus?.({ loggingIn: true, error: '' });
+    instance.dialog.setBusy(
+      'antigravity-login',
+      instance.tx('Waiting for Google sign-in in your browser…', '正在浏览器中等待 Google 登录…')
+    );
+    try {
+      const loginResult = await request(instance, 'codex.providers.antigravity.login', {});
+      instance.antigravityLoggingIn = false;
+      instance.dialog.setBusy('', '');
+      instance.dialog.setAntigravityStatus?.({ loggingIn: false, loaded: true, status: loginResult, error: '' });
+      const refreshed = await refreshAntigravityStatus(instance).catch(() => loginResult);
+      if (refreshed?.signedIn === true) {
+        instance.dialog.setStatus({
+          tone: 'success',
+          title: instance.tx('Signed in to Antigravity.', '已登录 Antigravity。')
+        });
+        if (instance.getSelectedProviderId() === 'antigravity') {
+          instance.refreshModelOptions(
+            instance.Profiles.buildRunSelection(instance.catalog, 'antigravity')
+          ).catch(() => {});
+        }
+      } else if (refreshed?.error?.message || refreshed?.error?.code) {
+        instance.dialog.setStatus({
+          tone: 'failed',
+          title: formatError(instance, refreshed.error)
+        });
+      } else {
+        instance.dialog.setStatus({
+          tone: 'warning',
+          title: instance.tx('Google sign-in did not complete.', 'Google 登录尚未完成。')
+        });
+      }
+      return refreshed;
+    } catch (error) {
+      instance.antigravityLoggingIn = false;
+      instance.dialog.setAntigravityStatus?.({ loggingIn: false });
+      await refreshAntigravityStatus(instance).catch(() => {});
+      const message = formatError(instance, error);
+      instance.dialog.setBusy('failed', message);
+      instance.dialog.setStatus({ tone: 'failed', title: message });
+      return null;
+    }
+  }
+
+  async function activateAntigravity(instance) {
+    if (!isAntigravitySupported(instance) || !instance.Profiles.getProviderById(instance.catalog, 'antigravity')) {
+      const message = instance.tx('Native host update required to use Antigravity.', '需要更新 Native Host 才能使用 Antigravity。');
+      instance.dialog.setBusy('failed', message);
+      instance.dialog.setStatus({ tone: 'failed', title: message });
+      return;
+    }
+    let preparation;
+    try {
+      preparation = await prepareProviderActivation(instance, 'antigravity');
+      if (preparation.cancelled) {
+        return;
+      }
+      instance.dialog.setBusy('saving', instance.tx('Activating Antigravity…', '正在启用 Antigravity…'));
+      const result = await request(instance, 'codex.providers.activate', {
+        providerId: 'antigravity',
+        expectedRevision: 0
+      });
+      const applied = applyCatalog(instance, result, { updateDialog: true, selectedId: 'antigravity' });
+      await notifyChanged(instance, applied.change, {
+        sessionProviderId: 'antigravity',
+        providerSwitchApproved: true,
+        modelsPreloaded: true,
+        preloadedModelId: preparation.selectedModel,
+        requireProjection: true
+      });
+      instance.dialog.setBusy('', '');
+      instance.dialog.setStatus({ tone: 'success', title: instance.tx('Antigravity is active.', '已启用 Antigravity。') });
+    } catch (error) {
+      if (preparation?.previousProviderId && preparation.previousProviderId !== 'antigravity') {
+        await instance.refreshModelOptions(
+          instance.Profiles.buildRunSelection(instance.catalog, preparation.previousProviderId),
+          { persist: false }
+        ).catch(() => {});
+      }
+      const message = formatError(instance, error);
+      instance.dialog.setBusy('failed', message);
+      instance.dialog.setStatus({ tone: 'failed', title: message });
+    }
+  }
+
   async function request(instance, method, params = {}, onEvent) {
     if (typeof instance.sendBackgroundNative !== 'function') {
       throw createClientError('native_unavailable', 'Native Host request channel is unavailable.');
@@ -513,7 +652,15 @@
   }
 
   function applyCatalog(instance, result, options = {}) {
-    const nextCatalog = instance.Profiles.normalizeCatalog(result);
+    let nextCatalog = instance.Profiles.normalizeCatalog(result);
+    if (!isAntigravitySupported(instance, nextCatalog)) {
+      const providers = nextCatalog.providers.filter(provider => provider.id !== 'antigravity');
+      nextCatalog = instance.Profiles.normalizeCatalog({
+        ...nextCatalog,
+        providers,
+        activeProviderId: nextCatalog.activeProviderId === 'antigravity' ? 'builtin' : nextCatalog.activeProviderId
+      });
+    }
     if (instance.loaded && nextCatalog.storeRevision < instance.catalog.storeRevision) {
       return { applied: false, change: emptyCatalogChange() };
     }
@@ -549,8 +696,8 @@
         ? instance.Profiles.getActiveProvider(instance.catalog)
         : {
           id: selectedProviderId,
-          name: selectedProviderId,
-          kind: 'custom',
+          name: selectedProviderId === 'antigravity' ? 'Antigravity' : selectedProviderId,
+          kind: selectedProviderId === 'antigravity' ? 'antigravity' : 'custom',
           defaultModelId: instance.getSelectedModel() || '',
           wireApiPreference: '',
           resolvedWireApi: ''
@@ -700,10 +847,26 @@
       provider_disclosure_required: instance.tx('Confirm the provider endpoint before activation.', '启用前请确认模型服务端点。'),
       provider_secret_invalid: instance.tx('The API key change could not be accepted. Review the key settings.', '无法接受此次 API 密钥变更，请检查密钥设置。'),
       provider_model_catalog_unavailable: instance.tx('The provider model catalog could not be loaded. Retry shortly.', '无法加载模型服务的模型目录，请稍后重试。'),
+      antigravity_not_found: instance.tx('Antigravity CLI (agy) was not found on this machine. Install agy and retry.', '本机未找到 Antigravity CLI（agy），请安装 agy 后重试。'),
+      antigravity_auth_required: instance.tx('Sign in with Google in Antigravity before activating or loading models.', '请先在 Antigravity 中完成 Google 登录，再启用或加载模型。'),
+      antigravity_unsupported_operation: instance.tx('This operation is not supported while Antigravity is selected.', '使用 Antigravity 时不支持此操作。'),
+      antigravity_login_timeout: instance.tx('Google sign-in for Antigravity timed out. Click Sign in with Google to try again.', 'Antigravity 的 Google 登录超时，请重新点击“使用 Google 登录”。'),
+      antigravity_login_failed: instance.tx('Google sign-in for Antigravity failed. Check your browser and network, then retry.', 'Antigravity 的 Google 登录失败，请检查浏览器和网络后重试。'),
+      antigravity_status_failed: instance.tx('Could not check Antigravity status. Confirm agy works locally and refresh status.', '无法检查 Antigravity 状态，请确认本机可以运行 agy 后刷新状态。'),
+      antigravity_models_unavailable: instance.tx('Antigravity could not load the Gemini model list. Check sign-in status and retry.', 'Antigravity 无法加载 Gemini 模型列表，请检查登录状态后重试。'),
+      antigravity_mode_unavailable: instance.tx('Antigravity could not switch to the required permission mode. Update agy and retry.', 'Antigravity 无法切换到所需的权限模式，请更新 agy 后重试。'),
+      antigravity_rate_limited: instance.tx('Antigravity reached a request rate or quota limit. Wait briefly and retry.', 'Antigravity 触发了请求频率或配额限制，请稍候重试。'),
+      antigravity_runtime_error: instance.tx('Antigravity could not complete this operation. Refresh status and retry.', 'Antigravity 无法完成此操作，请刷新状态后重试。'),
       native_unavailable: instance.tx('The local service is unavailable. Check the Native Host connection.', '本机服务不可用，请检查 Native Host 连接。'),
       provider_request_failed: instance.tx('The provider operation failed. Review the settings and retry.', '模型服务操作失败，请检查设置后重试。')
     });
-    return messages[code] || error?.message || instance.tx('Provider operation failed.', '模型服务操作失败。');
+    if (messages[code]) {
+      return messages[code];
+    }
+    if (/^(?:antigravity_|ACP_)/i.test(code) || /\[(?:antigravity_|ACP_)[^\]]*\]/i.test(String(error?.message || ''))) {
+      return messages.antigravity_runtime_error;
+    }
+    return error?.message || instance.tx('Provider operation failed.', '模型服务操作失败。');
   }
 
   function createClientError(code, message) {

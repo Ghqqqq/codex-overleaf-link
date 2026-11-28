@@ -6,6 +6,19 @@
     const { RunActivityModel: Model, RunGuidanceView, getPendingGuidance = () => [], PanelIcons, tx, findRunRecord, getPanel, cssEscape, isGuidance,
       formatElapsed, renderMarkdownBlockText, renderRunEvent, presence, getNotStartedRun, getFinishedRun, classifyStatus, getProjectId, summarizeCommand, projectReviewResultEvent, formatReviewResultFailure,
       sanitizeAssistantVisibleText: sanitize = value => String(value || '') } = deps;
+    const AgentBrand = deps.AgentBrand || (typeof globalThis !== 'undefined' ? globalThis.CodexOverleafAgentBrand : null);
+    const rawTx = typeof deps.rawTx === 'function' ? deps.rawTx : tx;
+    const brandForRun = run => {
+      if (typeof deps.getRunBrand === 'function') return deps.getRunBrand(run);
+      const providerId = run?.executionSnapshot?.providerId || run?.providerId;
+      if (providerId) return AgentBrand?.brandIdForProvider?.(providerId) || (String(providerId).trim() === 'antigravity' ? 'antigravity' : 'codex');
+      return String(run?.codexThreadId || '').trim().startsWith('agy:') ? 'antigravity' : 'codex';
+    };
+    const brandTx = (run, en, zh) => {
+      const textValue = rawTx(en, zh);
+      const brand = brandForRun(run);
+      return brand === 'antigravity' && AgentBrand?.brandText ? AgentBrand.brandText(textValue, brand) : textValue;
+    };
     const cards = new WeakMap();
     const choices = new Map();
     const storageKey = 'codex-overleaf:workflow-disclosure:v1';
@@ -171,6 +184,11 @@
         row.bodyStamp = stamp;
         row.body.replaceChildren();
         if (file?.preview) {
+          if (state === 'skipped' && publicText) {
+            const note = make('div', 'run-workflow-tool-note');
+            note.textContent = publicText;
+            row.body.append(note);
+          }
           const diffBody = make('pre', 'run-workflow-patch');
           for (const line of file.preview.split('\n')) {
             const lineNode = make('span', line.startsWith('+') && !line.startsWith('+++') ? 'is-added' : line.startsWith('-') && !line.startsWith('---') ? 'is-removed' : '');
@@ -259,49 +277,54 @@
     }
     // Start-up block: what happens between Send and the model's first response, step by step.
     const SETUP_CALM_MS = 30000;
-    function setupStepText(entry, live) {
+    function setupStepText(entry, live, run) {
       const n = entry.count;
       if (entry.step === 'workspace' && entry.state === 'warning') {
-        return n ? tx('Synced ' + n + ' readable files', '已同步 ' + n + ' 个可读文件')
-          : tx('Local workspace sync is incomplete', '本地工作区同步不完整');
+        return n ? rawTx('Synced ' + n + ' readable files', '已同步 ' + n + ' 个可读文件')
+          : rawTx('Local workspace sync is incomplete', '本地工作区同步不完整');
       }
+      const brand = brandForRun(run);
       const copy = {
-        editing: live ? tx('Checking Overleaf editing mode', '检查 Overleaf 编辑模式')
-          : entry.reviewing ? tx('Overleaf Track Changes is on', 'Overleaf 已开启留痕') : tx('Overleaf is in Editing mode', 'Overleaf 处于编辑模式'),
-        read: live ? tx('Reading the Overleaf project', '正在读取 Overleaf 项目')
-          : n ? tx('Read the Overleaf project · ' + n + ' text files', '已读取 Overleaf 项目 · ' + n + ' 个文本文件') : tx('Read the Overleaf project', '已读取 Overleaf 项目'),
-        warm: tx('Using the already synced workspace', '使用已同步的工作区，无需重新读取项目'),
-        workspace: live ? tx('Writing the local workspace', '正在写入本地工作区')
-          : n ? tx('Synced ' + n + ' files to the local workspace', '已同步 ' + n + ' 个文件到本地工作区') : tx('Synced the local workspace', '已同步本地工作区'),
-        codex: live ? tx('Starting Codex', '正在启动 Codex')
-          : entry.version ? tx('Started Codex CLI ' + entry.version, '已启动 Codex CLI ' + entry.version) : tx('Started Codex', '已启动 Codex'),
-        waiting: live ? tx("Waiting for the model's first response", '等待模型首次响应') : tx('The model responded', '模型已开始响应')
+        editing: live ? rawTx('Checking Overleaf editing mode', '检查 Overleaf 编辑模式')
+          : entry.reviewing ? rawTx('Overleaf Track Changes is on', 'Overleaf 已开启留痕') : rawTx('Overleaf is in Editing mode', 'Overleaf 处于编辑模式'),
+        read: live ? rawTx('Reading the Overleaf project', '正在读取 Overleaf 项目')
+          : n ? rawTx('Read the Overleaf project · ' + n + ' text files', '已读取 Overleaf 项目 · ' + n + ' 个文本文件') : rawTx('Read the Overleaf project', '已读取 Overleaf 项目'),
+        warm: rawTx('Using the already synced workspace', '使用已同步的工作区，无需重新读取项目'),
+        workspace: live ? rawTx('Writing the local workspace', '正在写入本地工作区')
+          : n ? rawTx('Synced ' + n + ' files to the local workspace', '已同步 ' + n + ' 个文件到本地工作区') : rawTx('Synced the local workspace', '已同步本地工作区'),
+        codex: live ? brandTx(run, 'Starting Codex', '正在启动 Codex')
+          : entry.version
+            ? (brand === 'antigravity'
+              ? rawTx('Started Antigravity ' + entry.version, '已启动 Antigravity ' + entry.version)
+              : rawTx('Started Codex CLI ' + entry.version, '已启动 Codex CLI ' + entry.version))
+            : brandTx(run, 'Started Codex', '已启动 Codex'),
+        waiting: live ? rawTx("Waiting for the model's first response", '等待模型首次响应') : rawTx('The model responded', '模型已开始响应')
       };
       return copy[entry.step] || '';
     }
     function workspaceWarning(entry) {
-      const warning = tx('Some project content was not read', '部分项目内容未读取');
+      const warning = rawTx('Some project content was not read', '部分项目内容未读取');
       const paths = (entry.paths || []).map(plain).filter(Boolean);
       if (!paths.length) {
         const unreadList = plain(entry.unreadList);
         return unreadList ? warning + ' · ' + unreadList : warning;
       }
       const more = (entry.skipped || 0) - paths.length;
-      const files = paths.join(tx(', ', '、'));
-      return warning + ' · ' + (more > 0 ? tx(files + ' and ' + more + ' more', files + ' 等 ' + entry.skipped + ' 个文件') : files);
+      const files = paths.join(rawTx(', ', '、'));
+      return warning + ' · ' + (more > 0 ? rawTx(files + ' and ' + more + ' more', files + ' 等 ' + entry.skipped + ' 个文件') : files);
     }
     function setupNote(note) {
       const empty = /^(\d+) file\(s\) have empty\/loading content\.$/.exec(note);
-      if (empty) return tx(empty[1] + ' file(s) are empty or still loading', empty[1] + ' 个文件内容为空或尚未加载完');
+      if (empty) return rawTx(empty[1] + ' file(s) are empty or still loading', empty[1] + ' 个文件内容为空或尚未加载完');
       const short = /^(\d+) captured file\(s\) are shorter than 80 characters\.$/.exec(note);
-      if (short) return tx(short[1] + ' file(s) are very short and may not have loaded', short[1] + ' 个文件内容很短，可能没有加载完');
+      if (short) return rawTx(short[1] + ' file(s) are very short and may not have loaded', short[1] + ' 个文件内容很短，可能没有加载完');
       return note;
     }
-    function setupLiveLabel(setup) {
+    function setupLiveLabel(setup, run) {
       const live = setup.steps.findLast(entry => entry.state === 'running');
-      return live ? setupStepText(live, true) : tx('Starting the task', '正在启动任务');
+      return live ? setupStepText(live, true, run) : rawTx('Starting the task', '正在启动任务');
     }
-    function renderSetup(card, setup, active) {
+    function renderSetup(card, setup, active, run) {
       const el = card.setup;
       const steps = setup?.steps || [];
       el.hidden = !steps.length && !active;
@@ -311,12 +334,12 @@
       el.dataset.live = String(active && !setup.done);
       const first = Date.parse(steps[0]?.at || ''), waitAt = Date.parse(steps.find(entry => entry.step === 'waiting')?.at || '');
       const parts = [Number.isFinite(first) && Number.isFinite(waitAt) && waitAt >= first
-        ? tx('Setup ' + formatElapsed(waitAt - first), '启动 ' + formatElapsed(waitAt - first)) : tx('Setup', '启动')];
+        ? rawTx('Setup ' + formatElapsed(waitAt - first), '启动 ' + formatElapsed(waitAt - first)) : rawTx('Setup', '启动')];
       const files = steps.find(entry => entry.step === 'workspace')?.count;
-      if (files) parts.push(tx(files + ' files', files + ' 个文件'));
-      else if (steps.some(entry => entry.step === 'warm')) parts.push(tx('synced workspace', '已同步的工作区'));
+      if (files) parts.push(rawTx(files + ' files', files + ' 个文件'));
+      else if (steps.some(entry => entry.step === 'warm')) parts.push(rawTx('synced workspace', '已同步的工作区'));
       const version = steps.find(entry => entry.version)?.version;
-      if (version) parts.push('Codex ' + version);
+      if (version) parts.push((brandForRun(run) === 'antigravity' ? 'Antigravity ' : 'Codex ') + version);
       const warning = steps.find(entry => entry.step === 'workspace' && entry.state === 'warning');
       if (warning) parts.push(workspaceWarning(warning));
       text(card.setupFold, parts.join(' · '));
@@ -342,7 +365,7 @@
             spinner: '<circle cx="8" cy="8" r="5.5" opacity=".25"/><path d="M13.5 8A5.5 5.5 0 0 0 8 2.5"/>',
             notice: '<circle cx="8" cy="8" r="6"/><path d="M8 4.5v4 M8 11h.01"/>', check: '<path d="m3.5 8 3 3 6-6"/>' })[glyphKind] + '</svg>';
         }
-        const label = entry.step === 'start' ? tx('Starting the task', '正在启动任务') : setupStepText(entry, live);
+        const label = entry.step === 'start' ? rawTx('Starting the task', '正在启动任务') : setupStepText(entry, live, run);
         const body = row.children[1];
         const extras = [...(entry.notes || []).map(note => ['run-setup-note', setupNote(note)])];
         if (workspaceWarn) extras.push(['run-setup-note', workspaceWarning(entry)]);
@@ -396,7 +419,7 @@
           const elapsed = Number.isFinite(started) ? Math.max(0, (live ? Date.now() : (Number.isFinite(ended) ? ended : started)) - started) : NaN;
           entries.push({ key: 'setup:' + index, kind: 'setup', glyph: live ? 'spinner' : warn ? 'notice' : 'check',
             state: live ? 'running' : warn ? 'warning' : 'completed', workspaceWarn,
-            lead: workspaceWarn ? workspaceWarning(entry) : (entry.step === 'start' ? tx('Starting the task', '正在启动任务') : setupStepText(entry, live)) + (live ? '…' : ''),
+            lead: workspaceWarn ? workspaceWarning(entry) : (entry.step === 'start' ? rawTx('Starting the task', '正在启动任务') : setupStepText(entry, live, run)) + (live ? '…' : ''),
             result: entry.notes?.length ? setupNote(entry.notes[0]) : Number.isFinite(elapsed) && (live || elapsed >= 1000) ? formatElapsed(elapsed) : '' });
         });
         return entries;
@@ -593,7 +616,7 @@
       setIcon('compact');
       text(view.title, tx('Context compacted automatically', '上下文已自动压缩'));
       text(view.time, clock(result.compactedAt));
-      text(view.sub, tx('Codex summarized earlier turns partway through this turn, then continued.',
+      text(view.sub, brandTx(run, 'Codex summarized earlier turns partway through this turn, then continued.',
         'Codex 在这一轮中途整理了此前的对话，然后继续处理。'));
       view.sub.hidden = false;
     }
@@ -649,7 +672,7 @@
         card.attention.hidden = process.open || !card.noticeCount;
         if (card.projection) {
           const active = card.run.status === 'running' && !card.notStarted;
-          renderSetup(card, card.projection.setup, active);
+          renderSetup(card, card.projection.setup, active, card.run);
           if (!process.open) card.setup.hidden = true;
           renderPeek(card, card.projection, card.run, active);
         }
@@ -691,7 +714,7 @@
       card.summary.setAttribute('aria-expanded', String(card.process.open));
       reconcile(card.events, result.blocks, card.rows, block => buildBlock(block, card),
         (row, block) => updateBlock(row, block, card, run));
-      renderSetup(card, result.setup, active);
+      renderSetup(card, result.setup, active, run);
       // Live start-up stays open; once work begins (or in history) it follows the run disclosure.
       if (active && !result.setup?.done) card.setup.open = true;
       else if (!choices.has(card.id + ':setup')) card.setup.open = false;
@@ -705,27 +728,27 @@
       paintPresence(card, run, result, active);
       // The ∎ header carries the file count (and its recorded-only caveat) whenever presence is on.
       card.metrics.hidden = active || !result.fileCount || Boolean(presence);
-      text(card.metrics, (result.clipped ? tx('Recorded: ', '已记录：') : '')
-        + tx(result.fileCount + ' local files changed', result.fileCount + ' 个本地文件有改动'));
+      text(card.metrics, (result.clipped ? rawTx('Recorded: ', '已记录：') : '')
+        + rawTx(result.fileCount + ' local files changed', result.fileCount + ' 个本地文件有改动'));
       const hasActive = result.blocks.some(block => block.kind === 'message' && block.event.status === 'running'
         || block.kind === 'exploreGroup' && block.items.some(item => item.meta.state === 'running')
         || block.meta?.state === 'running');
       // The presence header already narrates the live state.
       card.busy.hidden = !active || hasActive || Boolean(presence);
-      text(card.busy, result.compacting ? tx('Compacting context…', '正在压缩上下文…') : result.stage === 'local_completed'
-        ? (run.mode === 'ask' ? tx('Preparing the answer…', '正在整理回答…') : tx('Preparing writeback and verification…', '正在准备写回与验证…'))
-        : result.stage === 'preparing' ? tx('Preparing project context…', '正在准备项目上下文…') : tx('Working…', '正在处理…'));
+      text(card.busy, result.compacting ? rawTx('Compacting context…', '正在压缩上下文…') : result.stage === 'local_completed'
+        ? (run.mode === 'ask' ? rawTx('Preparing the answer…', '正在整理回答…') : rawTx('Preparing writeback and verification…', '正在准备写回与验证…'))
+        : result.stage === 'preparing' ? rawTx('Preparing project context…', '正在准备项目上下文…') : rawTx('Working…', '正在处理…'));
     }
     // Live header: long phases are named; otherwise a rarely-changing word. Tool steps stay in the round list.
     function runningLabel(result, run) {
-      if (result.compacting) return { kind: 'stage', text: tx('Compacting context', '正在压缩上下文') };
-      if (result.stage === 'sync') return { kind: 'stage', text: tx('Syncing changes to Overleaf', '正在同步改动到 Overleaf') };
+      if (result.compacting) return { kind: 'stage', text: rawTx('Compacting context', '正在压缩上下文') };
+      if (result.stage === 'sync') return { kind: 'stage', text: rawTx('Syncing changes to Overleaf', '正在同步改动到 Overleaf') };
       // Before the model's first response the header names the real start-up step, not a playful word.
-      if (result.setup && !result.setup.done) return { kind: 'stage', text: setupLiveLabel(result.setup) };
-      if (result.stage === 'preparing') return { kind: 'stage', text: tx('Preparing project context', '正在准备项目上下文') };
+      if (result.setup && !result.setup.done) return { kind: 'stage', text: setupLiveLabel(result.setup, run) };
+      if (result.stage === 'preparing') return { kind: 'stage', text: rawTx('Preparing project context', '正在准备项目上下文') };
       if (result.stage === 'local_completed') {
-        return { kind: 'stage', text: run.mode === 'ask' ? tx('Preparing the answer', '正在整理回答')
-          : tx('Preparing writeback and verification', '正在准备写回与验证') };
+        return { kind: 'stage', text: run.mode === 'ask' ? rawTx('Preparing the answer', '正在整理回答')
+          : rawTx('Preparing writeback and verification', '正在准备写回与验证') };
       }
       return { kind: 'idle' };
     }
@@ -741,7 +764,7 @@
       if (!status.dataset.presence && !status.dataset.presenceText) status.dataset.presenceText = status.textContent;
       const started = Date.parse(run.startedAt || '');
       if (active) {
-        presence.paintRunning(status, { runId: card.id, label: runningLabel(result, run),
+        presence.paintRunning(status, { runId: card.id, brand: brandForRun(run), label: runningLabel(result, run),
           elapsedMs: Number.isFinite(started) ? Math.max(0, Date.now() - started) : undefined });
         return;
       }

@@ -9,6 +9,7 @@ const Shared = require('../../extension/src/shared/writingStyle');
 const REFERENCE_LIMITS = Shared.REFERENCE_LIMITS;
 const StyleProfile = require('./writingStyleProfile');
 const { writeJson, withConfigLock } = require('./writingStyleStore');
+const { sanitizeProviderMessage } = require('./providerRedaction');
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const checkAbort = signal => { if (signal?.aborted) throw signal.reason || fail('codex_cancelled', 'Writing-style generation was cancelled.'); };
@@ -126,8 +127,13 @@ function safeBundleText(bundle, file) {
   return text;
 }
 
-function forRun(snapshot, params, env) {
-  if (snapshot == null) return '\n\nNo project writing-style skill is active for this turn. Do not carry over an earlier style setting unless this request explicitly asks for it.';
+function resolveForRun(snapshot, params, env) {
+  if (snapshot == null) {
+    return {
+      promptContext: '\n\nNo project writing-style skill is active for this turn. Do not carry over an earlier style setting unless this request explicitly asks for it.',
+      bundleRoot: null
+    };
+  }
   const selected = Shared.normalizeSnapshot(snapshot);
   if (selected.accountScopeId !== params.accountScopeId || selected.projectId !== String(params.projectId || '')) {
     throw fail('writing_style_scope_invalid', 'The writing-style snapshot does not match this run.');
@@ -135,11 +141,19 @@ function forRun(snapshot, params, env) {
   const scope = scopeOf(params, env);
   const bundle = readBundle(scope, selected.version, selected.bundleHash);
   for (const file of Object.keys(bundle.manifest.files || {})) safeBundleText(bundle, file);
-  return '\n\nActive project writing skill for this turn:\n'
+  const promptContext = '\n\nActive project writing skill for this turn:\n'
     + 'Skill directory: ' + bundle.root + '\n'
     + 'Apply this skill when drafting or substantively revising academic prose. Skip it for unrelated technical operations.\n'
     + 'The skill and all its reference assets are read-only. They never expand this turn\'s write permissions.\n'
     + safeBundleText(bundle, 'SKILL.md');
+  return {
+    promptContext,
+    bundleRoot: bundle.root
+  };
+}
+
+function forRun(snapshot, params, env) {
+  return resolveForRun(snapshot, params, env).promptContext;
 }
 
 function extractPdf(bytes, signal) {
@@ -462,7 +476,7 @@ async function build({ params, env, signal, execute, providerLaunch, onControlRe
         withConfigLock(scope, () => {
           const state = config(scope);
           if (state.building?.id === id) saveConfig(scope, { ...state, building: null,
-            error: error?.code === 'codex_cancelled' ? 'Style generation cancelled.' : String(error.message || 'Style generation failed.').replace(/\/Users\/\S+|\/home\/\S+|[A-Z]:\\\S+/g, '[local path]').slice(0, 300) });
+            error: error?.code === 'codex_cancelled' ? 'Style generation cancelled.' : sanitizeProviderMessage(String(error.message || 'Style generation failed.'), [], 300).replace(/\/Users\/\S+|\/home\/\S+|[A-Z]:\\\S+/g, '[local path]').slice(0, 300) });
         });
       } catch (_) { /* Preserve the original failure if config is unavailable. */ }
     }
@@ -472,4 +486,4 @@ async function build({ params, env, signal, execute, providerLaunch, onControlRe
   }
 }
 
-module.exports = { get, set, build, forRun };
+module.exports = { get, set, build, forRun, resolveForRun };

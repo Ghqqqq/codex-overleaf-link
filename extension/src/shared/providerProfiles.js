@@ -8,6 +8,12 @@
   'use strict';
 
   const BUILTIN_PROVIDER_ID = 'builtin';
+  const ANTIGRAVITY_PROVIDER_ID = 'antigravity';
+
+  function isFixedProviderId(providerId) {
+    const normalized = normalizeText(providerId);
+    return normalized === BUILTIN_PROVIDER_ID || normalized === ANTIGRAVITY_PROVIDER_ID;
+  }
 
   const PROVIDER_CONNECTIONS = {
     kimi: {
@@ -137,6 +143,9 @@
     if (id === BUILTIN_PROVIDER_ID || value.kind === 'builtin') {
       return buildBuiltinProvider();
     }
+    if (id === ANTIGRAVITY_PROVIDER_ID || value.kind === 'antigravity') {
+      return buildAntigravityProvider();
+    }
     const models = normalizeModels(value.models);
     const defaultModelId = normalizeText(value.defaultModelId) || models[0]?.id || '';
     return {
@@ -227,6 +236,18 @@
       kind: 'builtin',
       revision: 0,
       name: 'Built-in Codex',
+      editable: false,
+      deletable: false,
+      models: []
+    };
+  }
+
+  function buildAntigravityProvider() {
+    return {
+      id: ANTIGRAVITY_PROVIDER_ID,
+      kind: 'antigravity',
+      revision: 0,
+      name: 'Antigravity',
       editable: false,
       deletable: false,
       models: []
@@ -390,7 +411,9 @@
 
   return {
     BUILTIN_PROVIDER_ID,
+    ANTIGRAVITY_PROVIDER_ID,
     MODEL_EFFORTS,
+    isFixedProviderId,
     getProviderPresets,
     getPresetConnectionInfo,
     getPresetConnection,
@@ -398,6 +421,7 @@
     updateDraftModel,
     removeDraftModel,
     buildBuiltinProvider,
+    buildAntigravityProvider,
     buildEmptyDraft,
     buildRunSelection,
     getActiveProvider,

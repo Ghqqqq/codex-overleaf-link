@@ -4,6 +4,7 @@
 // the compatibility checkpoint. Runtime manifests load only the generated
 // bundle; cross-module consumption is migrated behind the registry Adapter.
 import '../src/content/moduleRegistryKernel.js';
+import '../src/shared/agentBrand.js';
 import '../src/shared/summary.js';
 import '../src/shared/runActivityModel.js';
 import '../src/shared/failureReasons.js';

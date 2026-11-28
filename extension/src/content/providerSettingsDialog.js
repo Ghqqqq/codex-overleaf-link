@@ -8,6 +8,9 @@
   // Upstream SVG blob: c917480d32596242d674985ee622d9e7dd51f81a
   const ANTHROPIC_LOGO_PATH = 'M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z';
 
+  // Four-point sparkle mark for the local Antigravity (Gemini) provider.
+  const ANTIGRAVITY_LOGO_PATH = 'M12 2c.6 4.9 4.1 8.4 9 9-4.9.6-8.4 4.1-9 9-.6-4.9-4.1-8.4-9-9 4.9-.6 8.4-4.1 9-9Z';
+
   /*!
  * Provider SVG marks adapted from LobeHub Icons.
  * kimi: https://github.com/lobehub/lobe-icons/blob/master/packages/static-svg/icons/kimi.svg (blob 1915850ee50ea636cc34b37aa11ba7f1ae0a26a2)
@@ -76,7 +79,8 @@
       verificationStale: false,
       embedded: false,
       embeddedContainer: null,
-      confirmation: null
+      confirmation: null,
+      antigravityState: { loading: false, loggingIn: false, loaded: false, status: null, error: '' }
     };
     ensureRoot(instance);
     return {
@@ -86,6 +90,7 @@
       offerCatalog: (catalog, selectedId) => offerCatalog(instance, catalog, selectedId),
       setBusy: (kind, message) => setBusy(instance, kind, message),
       setStatus: status => setStatus(instance, status),
+      setAntigravityStatus: state => setAntigravityStatus(instance, state),
       setVerification: verification => setVerification(instance, verification),
       setVerificationFailure: failure => setVerificationFailure(instance, failure),
       setTestProgress: progress => setTestProgress(instance, progress),
@@ -278,25 +283,39 @@
 
   function renderProviderList(instance) {
     const tx = instance.tx, list = instance.root.querySelector('[data-provider-list]');
+    const antigravitySelectable = isAntigravitySelectable(instance);
+    const unavailableAntigravityRow = antigravitySelectable ? '' : '<button type="button" class="codex-provider-row"'
+      + ' data-provider-unavailable="antigravity" data-provider-search-text="antigravity gemini" disabled aria-disabled="true"'
+      + ('antigravity gemini'.includes(instance.providerFilter.toLowerCase()) ? '' : ' hidden') + '>'
+      + '<span class="codex-provider-nav-mark" aria-hidden="true">' + renderAntigravityIcon() + '</span>'
+      + '<span class="codex-provider-nav-copy"><span class="codex-provider-row-main" title="Antigravity">Antigravity</span>'
+      + '<span class="codex-provider-row-status" data-tone="muted">' + escapeHtml(tx('Native update required', '需要更新 Native Host')) + '</span></span></button>';
     list.innerHTML = '<label class="codex-provider-search"><span class="codex-provider-sr-only">'
       + escapeHtml(tx('Search providers', '搜索服务')) + '</span><input type="search" data-provider-search value="'
       + escapeAttr(instance.providerFilter) + '" placeholder="' + escapeAttr(tx('Search providers', '搜索服务')) + '"></label>'
       + '<div class="codex-provider-nav-items">' + instance.catalog.providers.map(provider => {
+        if (provider.kind === 'antigravity' && !antigravitySelectable) return '';
         const active = provider.id === getCurrentProjectProviderId(instance);
         const subtitle = active ? tx('Current project', '当前项目') : provider.kind === 'builtin'
           ? tx('Local authentication', '本地身份验证')
-          : tx(provider.models.length + ' models', provider.models.length + ' 个模型');
-        const searchText = (provider.name + ' ' + (provider.baseUrl || '')).toLowerCase();
+          : provider.kind === 'antigravity'
+            ? tx('Google sign-in', 'Google 登录')
+            : tx(provider.models.length + ' models', provider.models.length + ' 个模型');
+        const searchText = (provider.name + ' ' + (provider.baseUrl || '') + (provider.kind === 'antigravity' ? ' gemini' : '')).toLowerCase();
+        const mark = provider.kind === 'builtin'
+          ? renderProviderTemplateIcon({ id: 'openai-compatible' })
+          : provider.kind === 'antigravity'
+            ? renderAntigravityIcon()
+            : escapeHtml(provider.name.slice(0, 1).toUpperCase());
         return '<button type="button" class="codex-provider-row" data-provider-row="' + escapeAttr(provider.id)
           + '" data-provider-search-text="' + escapeAttr(searchText)
           + '" aria-current="' + String(provider.id === instance.selectedId) + '"'
           + (searchText.includes(instance.providerFilter.toLowerCase()) ? '' : ' hidden') + '>'
-          + '<span class="codex-provider-nav-mark" aria-hidden="true">'
-          + (provider.kind === 'builtin' ? renderProviderTemplateIcon({ id: 'openai-compatible' }) : escapeHtml(provider.name.slice(0, 1).toUpperCase())) + '</span>'
+          + '<span class="codex-provider-nav-mark" aria-hidden="true">' + mark + '</span>'
           + '<span class="codex-provider-nav-copy"><span class="codex-provider-row-main" title="' + escapeAttr(provider.name) + '">' + escapeHtml(provider.name)
           + '</span><span class="codex-provider-row-status" data-tone="' + (active ? 'active' : 'muted') + '">'
           + escapeHtml(subtitle) + '</span></span></button>';
-      }).join('') + '</div><button type="button" class="codex-provider-add" data-provider-action="add">+ '
+      }).join('') + unavailableAntigravityRow + '</div><button type="button" class="codex-provider-add" data-provider-action="add">+ '
       + escapeHtml(tx('Add provider', '添加模型服务')) + '</button>';
   }
 
@@ -345,6 +364,10 @@
     const provider = getSelectedProvider(instance);
     if (!provider || provider.kind === 'builtin') {
       renderBuiltinDetail(instance, detail);
+      return;
+    }
+    if (provider.kind === 'antigravity') {
+      renderAntigravityDetail(instance, detail);
       return;
     }
     const tx = instance.tx;
@@ -597,6 +620,148 @@
     `;
   }
 
+  function renderAntigravityIcon() {
+    return '<svg class="codex-provider-brand-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="'
+      + ANTIGRAVITY_LOGO_PATH + '"></path></svg>';
+  }
+
+  function isAntigravitySupported(instance) {
+    if (typeof instance.callbacks.hasAntigravityRuntime === 'function') {
+      return Boolean(instance.callbacks.hasAntigravityRuntime());
+    }
+    return instance.catalog.providers.some(provider => provider.id === 'antigravity');
+  }
+
+  function isAntigravitySelectable(instance) {
+    return isAntigravitySupported(instance)
+      && instance.catalog.providers.some(provider => provider.id === 'antigravity');
+  }
+
+  function canAntigravityLogin(instance) {
+    const state = instance.antigravityState || {};
+    return isAntigravitySelectable(instance) && !state.loggingIn && !state.loading && state.status?.installed !== false;
+  }
+
+  function canAntigravityActivate(instance) {
+    const state = instance.antigravityState || {};
+    return isAntigravitySelectable(instance)
+      && instance.callbacks.hasCurrentProject?.() !== false
+      && !state.loggingIn
+      && !state.loading
+      && state.status?.installed === true && state.status.signedIn === true;
+  }
+
+  function setAntigravityStatus(instance, next = {}) {
+    instance.antigravityState = { ...instance.antigravityState, ...next };
+    if (instance.root && !instance.root.hidden && !instance.templatePicker && getSelectedProvider(instance)?.kind === 'antigravity') {
+      renderDetail(instance);
+      applyBusyState(instance);
+    }
+  }
+
+  function describeAntigravityStatus(instance) {
+    const tx = instance.tx;
+    const state = instance.antigravityState || {};
+    const status = state.status;
+    if (state.loggingIn) {
+      return {
+        tone: 'progress',
+        title: tx('Signing in with Google…', '正在使用 Google 登录…'),
+        hint: tx('Finish Google sign-in in the browser window that opened.', '请在打开的浏览器窗口中完成 Google 登录。')
+      };
+    }
+    if (state.loading && !state.loaded) {
+      return {
+        tone: 'muted',
+        title: tx('Checking Antigravity status…', '正在检查 Antigravity 状态…'),
+        hint: ''
+      };
+    }
+    if (state.error) {
+      return { tone: 'failed', title: state.error, hint: '' };
+    }
+    if (status && status.installed === false) {
+      return {
+        tone: 'failed',
+        title: tx('Antigravity CLI (agy) is not installed.', '未安装 Antigravity CLI（agy）。'),
+        hint: tx(
+          'Install the Antigravity CLI (`agy`) and make sure it is on PATH (or set CODEX_OVERLEAF_ANTIGRAVITY_BIN), then refresh status.',
+          '请先安装 Antigravity CLI（`agy`）并确认其在 PATH 中（或设置 CODEX_OVERLEAF_ANTIGRAVITY_BIN），然后刷新状态。'
+        )
+      };
+    }
+    if (status && status.installed === true && status.signedIn === true) {
+      const tierName = typeof status.tier?.name === 'string' ? status.tier.name.trim() : '';
+      const version = typeof status.version === 'string' ? status.version.trim() : '';
+      return {
+        tone: 'success',
+        title: tierName ? tx(`Signed in · ${tierName}`, `已登录 · ${tierName}`) : tx('Signed in', '已登录'),
+        hint: version
+          ? tx(`Antigravity CLI ${version} is ready for Gemini models.`, `Antigravity CLI ${version} 已就绪，可使用 Gemini 模型。`)
+          : tx('Ready to list Gemini models and run Ask or Auto turns.', '已就绪，可加载 Gemini 模型并运行 Ask 或 Auto 任务。')
+      };
+    }
+    if (status && status.installed === true && status.signedIn !== true) {
+      return {
+        tone: 'warning',
+        title: tx('Signed out', '未登录'),
+        hint: tx('Sign in with Google to list Gemini models and run tasks.', '请使用 Google 登录以获取 Gemini 模型并运行任务。')
+      };
+    }
+    return {
+      tone: 'muted',
+      title: tx('Status not checked yet.', '尚未检查状态。'),
+      hint: tx('Click Refresh status to check whether agy is installed and signed in.', '点击“刷新状态”以检查 agy 是否已安装并登录。')
+    };
+  }
+
+  function renderAntigravityDetail(instance, detail) {
+    const tx = instance.tx;
+    const state = instance.antigravityState || {};
+    const active = getCurrentProjectProviderId(instance) === 'antigravity';
+    const summary = describeAntigravityStatus(instance);
+    const loginEnabled = canAntigravityLogin(instance);
+    const activateEnabled = canAntigravityActivate(instance);
+    const refreshDisabled = state.loading || state.loggingIn;
+    const needsSignIn = Boolean(state.status?.installed === true && state.status?.signedIn !== true);
+    const loginLabel = state.loggingIn
+      ? tx('Signing in…', '正在登录…')
+      : tx('Sign in with Google', '使用 Google 登录');
+    const activateTitle = activateEnabled ? ''
+      : state.status?.installed === false
+        ? tx('Install the Antigravity CLI (agy) first.', '请先安装 Antigravity CLI（agy）。')
+        : state.status?.signedIn === false
+          ? tx('Sign in with Google before using Antigravity.', '使用 Antigravity 前请先通过 Google 登录。')
+          : '';
+    detail.innerHTML = `
+      <div class="codex-provider-builtin">
+        <span class="codex-provider-builtin-mark" aria-hidden="true">${renderAntigravityIcon()}</span>
+        <h3>Antigravity</h3>
+        <p>${escapeHtml(tx(
+          'Runs Gemini models locally through the Antigravity CLI (agy) using your Google sign-in.',
+          '通过本机 Antigravity CLI（agy）和你的 Google 账号运行 Gemini 模型。'
+        ))}</p>
+        ${instance.callbacks.hasCurrentProject?.() === false ? '' : active
+          ? `<span class="codex-provider-active-badge">${escapeHtml(tx('Current project', '当前项目'))}</span>`
+          : `<button type="button" class="codex-provider-primary-button" data-provider-action="activate-antigravity"${activateEnabled ? '' : ' disabled'}${activateTitle ? ` title="${escapeAttr(activateTitle)}"` : ''}>${escapeHtml(tx('Use for this project', '用于当前项目'))}</button>`}
+      </div>
+      <div class="codex-provider-test-row" data-antigravity-status data-tone="${escapeAttr(summary.tone)}">
+        <div class="codex-provider-test-copy">
+          <strong data-antigravity-status-text>${escapeHtml(summary.title)}</strong>
+          ${summary.hint ? `<span data-antigravity-status-hint>${escapeHtml(summary.hint)}</span>` : ''}
+        </div>
+        <div class="codex-provider-test-controls">
+          <button type="button" class="${needsSignIn ? 'codex-provider-primary-button' : 'codex-provider-secondary-button'}" data-provider-action="antigravity-login"${loginEnabled ? '' : ' disabled'}>${escapeHtml(loginLabel)}</button>
+          <button type="button" class="codex-provider-inline-button" data-provider-action="antigravity-refresh"${refreshDisabled ? ' disabled' : ''}>${escapeHtml(tx('Refresh status', '刷新状态'))}</button>
+        </div>
+      </div>
+      <p class="codex-provider-help">${escapeHtml(tx(
+        'Supports standard Ask and Auto turns with Gemini models. Codex-only features (live steer, fork, /compact, Codex skills, and parallel subagents) do not apply.',
+        '支持使用 Gemini 模型运行普通 Ask 和 Auto 任务。Codex 专属功能（轮中引导、分叉、/compact、Codex 技能与并行子代理）不生效。'
+      ))}</p>
+    `;
+  }
+
   function getCurrentProjectProviderId(instance) {
     if (instance.callbacks.hasCurrentProject?.() === false) return '';
     const providerId = instance.callbacks.getCurrentProjectProviderId?.();
@@ -609,7 +774,7 @@
     const actions = instance.root.querySelector('[data-provider-footer-actions]');
     const provider = getSelectedProvider(instance);
     const tx = instance.tx;
-    if (instance.templatePicker || !provider || provider.kind === 'builtin') {
+    if (instance.templatePicker || !provider || provider.kind === 'builtin' || provider.kind === 'antigravity') {
       actions.innerHTML = instance.embedded ? '' : `<button type="button" class="codex-provider-secondary-button" data-provider-action="close">${escapeHtml(tx('Close', '关闭'))}</button>`;
       return;
     }
@@ -765,6 +930,18 @@
       instance.callbacks.onActivateBuiltin?.();
       return;
     }
+    if (action === 'activate-antigravity') {
+      if (canAntigravityActivate(instance)) instance.callbacks.onActivateAntigravity?.();
+      return;
+    }
+    if (action === 'antigravity-login') {
+      if (canAntigravityLogin(instance)) instance.callbacks.onAntigravityLogin?.();
+      return;
+    }
+    if (action === 'antigravity-refresh') {
+      instance.callbacks.onAntigravityRefresh?.();
+      return;
+    }
     if (action === 'delete') {
       const context = readContext(instance);
       if (await confirmProviderAction(instance, instance.tx(
@@ -911,6 +1088,9 @@
   }
 
   async function selectProvider(instance, id) {
+    if (id === 'antigravity' && !isAntigravitySelectable(instance)) {
+      return;
+    }
     if (id === instance.selectedId) {
       return;
     }
@@ -935,6 +1115,9 @@
     instance.pendingCatalog = null;
     setStatus(instance, { tone: '', title: '' });
     render(instance);
+    if (id === 'antigravity') {
+      instance.callbacks.onSelectAntigravity?.();
+    }
   }
 
   function readContext(instance) {
@@ -1037,10 +1220,18 @@
     for (const element of instance.root.querySelectorAll('input, select, textarea, button')) {
       if (element.matches('[data-provider-confirm-answer]')) {
         element.disabled = false;
+      } else if (element.matches('[data-provider-unavailable]')) {
+        element.disabled = true;
       } else if (element.matches('[data-provider-action="close"]')) {
         element.disabled = false;
       } else if (element.matches('[data-provider-action="cancel-test"]')) {
         element.disabled = false;
+      } else if (element.matches('[data-provider-action="antigravity-login"]')) {
+        element.disabled = busy || !canAntigravityLogin(instance);
+      } else if (element.matches('[data-provider-action="antigravity-refresh"]')) {
+        element.disabled = busy || Boolean(instance.antigravityState?.loading || instance.antigravityState?.loggingIn);
+      } else if (element.matches('[data-provider-action="activate-antigravity"]')) {
+        element.disabled = busy || !canAntigravityActivate(instance);
       } else if (element.matches('[data-provider-action="save"], [data-provider-action="save-use"]')) {
         element.disabled = busy || !actionState.saveEnabled;
       } else if (element.matches('[data-provider-action="use"]')) {

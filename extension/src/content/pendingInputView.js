@@ -68,7 +68,7 @@
       if (state.running && !state.canGuide && head.state === 'queued') {
         const hint = document.createElement('p');
         hint.className = 'codex-pending-hint';
-        hint.textContent = tr('queuedInputGuideHint');
+        hint.textContent = tr(state.guideUnsupportedReason || 'queuedInputGuideHint');
         container.append(hint);
       }
     }
@@ -96,7 +96,9 @@
         guide.dataset.action = 'guide';
         guide.append(createIcon('guide'), Object.assign(document.createElement('span'), { textContent: tr('queuedInputGuide') }));
         guide.disabled = !state.canGuide;
-        guide.title = state.canGuide ? tr('queuedInputGuideTitle') : tr('queuedInputGuideUnavailable');
+        guide.title = state.canGuide
+          ? tr('queuedInputGuideTitle')
+          : tr(state.guideUnsupportedReason || 'queuedInputGuideUnavailable');
         actions.append(guide);
       }
       const remove = createButton('', () => options.onRemove?.(item.id));

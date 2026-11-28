@@ -1,7 +1,7 @@
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./runRecoveryActions'));
-  else root.CodexOverleafModuleRegistry.define('RunTimelineView', ['RunRecoveryActions'], factory);
-})(typeof window !== 'undefined' ? window : globalThis, function (RunRecoveryActions) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./runRecoveryActions'), require('../shared/agentBrand'));
+  else root.CodexOverleafModuleRegistry.define('RunTimelineView', ['RunRecoveryActions', 'AgentBrand'], factory);
+})(typeof window !== 'undefined' ? window : globalThis, function (RunRecoveryActions, AgentBrand) {
   'use strict';
 
 
@@ -26,6 +26,9 @@
       localizeCompileReason = value => value,
       tr,
       tx,
+      rawTr,
+      rawTx,
+      getPanelBrandId,
       getLocale,
       formatElapsed,
       findRunRecord,
@@ -81,23 +84,48 @@
     isFollowing: () => logAutoFollow,
     onLayoutChange: scroller => logAutoFollow ? scrollLogToBottom() : updateJumpToLatestButton(scroller)
   });
-  const failureNotice = RunFailureNotice?.create({ tr, projectRunSettlement, sanitizeText: sanitizeAssistantVisibleText });
+  const resolvePanelBrand = () => getPanelBrandId?.() || AgentBrand?.brandIdForProvider?.(getState?.()?.providerId) || 'codex';
+  const brandForRun = run => {
+    const providerId = run?.executionSnapshot?.providerId || run?.providerId;
+    if (providerId) return AgentBrand?.brandIdForProvider?.(providerId) || (String(providerId).trim() === 'antigravity' ? 'antigravity' : 'codex');
+    return String(run?.codexThreadId || '').trim().startsWith('agy:') ? 'antigravity' : 'codex';
+  };
+  const brandCopy = (text, brand) => (brand === 'antigravity' && AgentBrand?.brandText ? AgentBrand.brandText(text, brand) : text);
+  const baseTx = (en, zh) => (typeof rawTx === 'function' ? rawTx(en, zh) : (getLocale?.() === 'zh' ? zh : en));
+  const runTx = (run, en, zh) => brandCopy(baseTx(en, zh), brandForRun(run));
+  const runTr = (run, key, params) => {
+    const brand = brandForRun(run);
+    if (I18n?.t) {
+      const template = I18n.t(getLocale?.() || 'en', key);
+      const branded = brandCopy(template, brand);
+      if (!params || typeof params !== 'object') return branded;
+      let out = branded;
+      for (const name of Object.keys(params)) {
+        const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        out = out.replace(new RegExp(`\\{${escaped}\\}`, 'g'), () => String(params[name]));
+      }
+      return out;
+    }
+    const text = typeof rawTr === 'function' ? rawTr(key, params) : tr(key, params);
+    return brandCopy(text, brand);
+  };
+  const failureNotice = RunFailureNotice?.create({ tr, I18n, getLocale, projectRunSettlement, sanitizeText: sanitizeAssistantVisibleText });
   const { buildRecoveryButton, appendRecoveryActionForFailure } = RunRecoveryActions.create({
     document: typeof document === 'undefined' ? undefined : document,
     window: typeof window === 'undefined' ? undefined : window,
     tx, failureNotice, refillComposerForRetry, openProjectFileForFailure, showNativeSetupGuidance,
     openStorageSettings, forceCancelStuckTaskForCurrentProject
   });
-  const presence = RunPresence?.create({ tx, getLocale, formatElapsed });
+  const presence = RunPresence?.create({ tx: baseTx, getLocale, formatElapsed });
   const getNotStartedRun = run => RunResultActions.projectNotStartedRun?.(run, getLocale());
   const getFinishedRun = run => RunResultActions.projectFinishedRun?.(run, getLocale(), { projectRunSettlement });
   const displayRun = run => RunFailureNotice?.projectResolvedUndo?.(run) || run;
   const displayLocalizedRun = run => {
     const displayed = displayRun(run);
-    return displayed ? { ...displayed, events: (displayed.events || []).map(sanitizeRunEventForRender) } : displayed;
+    return displayed ? { ...displayed, events: (displayed.events || []).map(event => sanitizeRunEventForRender(event, displayed)) } : displayed;
   };
-  const activitySummary = RunActivitySummary?.create({ RunActivityModel, RunGuidanceView, getPendingGuidance, SubagentActivityView, PanelIcons, tx, findRunRecord: (...args) => displayLocalizedRun(findRunRecord(...args)), getPanel, cssEscape,
-    projectReviewResultEvent: sanitizeRunEventForRender,
+  const activitySummary = RunActivitySummary?.create({ RunActivityModel, RunGuidanceView, getPendingGuidance, SubagentActivityView, PanelIcons, AgentBrand, tx: baseTx, rawTx: baseTx, getRunBrand: brandForRun, findRunRecord: (...args) => displayLocalizedRun(findRunRecord(...args)), getPanel, cssEscape,
+    projectReviewResultEvent: (event, run) => sanitizeRunEventForRender(event, run),
     formatReviewResultFailure,
     formatEventTime, formatElapsed, renderMarkdownBlockText, renderRunEvent, formatEventDetail,
     presence, getNotStartedRun, getFinishedRun, classifyStatus: classifyRunPresence, getProjectId: () => getCurrentProjectId?.() || '',
@@ -378,13 +406,18 @@
       ? scrollLayout?.snapshot() || { scrollTop: log.scrollTop } : null;
     log.replaceChildren();
     if (!getState().runs?.length) {
+      const panelBrand = resolvePanelBrand();
       const empty = document.createElement('div');
       empty.className = 'empty-runs';
       const icon = document.createElement('img');
       icon.className = 'codex-empty-icon';
       icon.alt = '';
       icon.setAttribute('aria-hidden', 'true');
-      icon.src = chrome.runtime.getURL('assets/icons/codex-overleaf-icon.png');
+      const getRuntimeUrl = typeof chrome !== 'undefined' && typeof chrome.runtime?.getURL === 'function'
+        ? path => chrome.runtime.getURL(path) : null;
+      icon.src = AgentBrand?.iconUrl
+        ? AgentBrand.iconUrl(panelBrand, 'empty', getRuntimeUrl)
+        : (getRuntimeUrl ? getRuntimeUrl('assets/icons/codex-overleaf-icon.png') : 'assets/icons/codex-overleaf-icon.png');
       const label = document.createElement('div');
       label.textContent = tr('emptyRunLabel');
       const hint = document.createElement('div');
@@ -394,7 +427,7 @@
       empty.append(icon, label, hint);
       if (presence) {
         icon.remove();
-        presence.decorateEmpty(empty, { projectName: getProjectName?.() || '' });
+        presence.decorateEmpty(empty, { projectName: getProjectName?.() || '', brand: panelBrand });
       }
       log.append(empty);
       return;
@@ -419,6 +452,7 @@
     root.className = 'transcript-turn run-card';
     root.dataset.status = run.status || 'completed';
     root.dataset.runId = run.id;
+    root.dataset.brand = brandForRun(run);
     root.title = [
       `${tr('mode')}: ${formatModeLabel(run.mode)}`,
       run.model,
@@ -586,12 +620,12 @@
     return row;
   }
 
-  function sanitizeRunEventForRender(event = {}) {
+  function sanitizeRunEventForRender(event = {}, run = null) {
     event = projectContextLimitEvent(event);
     const streamRole = sanitizeAssistantVisibleText(event.streamRole);
     const title = sanitizeAssistantVisibleText(event.title);
     const activity = !streamRole && (!event.kind || event.kind === 'activity') && !event.guidanceId;
-    const localized = activity ? localizeProductActivity(title, sanitizeAssistantVisibleValue(event.detail)) : null;
+    const localized = activity ? localizeProductActivity(title, sanitizeAssistantVisibleValue(event.detail), run) : null;
     return {
       ...event,
       ...(activity && event.activity?.kind === 'compile' ? { activity: { ...event.activity, output: localizeCompileReason(event.activity.output) } } : {}),
@@ -606,24 +640,26 @@
     };
   }
 
-  function localizeProductActivity(title, detail) {
+  function localizeProductActivity(title, detail, run = null) {
     let known = false, nextTitle = title;
+    const trRun = (key, params) => run ? runTr(run, key, params) : tr(key, params);
+    const txRun = (en, zh) => run ? runTx(run, en, zh) : tx(en, zh);
     const keys = ['undoUnsafeFullFileTitle', 'undoNoTraceTitle', 'undoFileSelectTitle', 'undoNoTraceStarted', 'undoTrackedTitle', 'undoNativeTitle', 'undoTrackedStarted', 'undoNativeStarted', 'undoSwitchedEditing', 'undoReviewingRestoreUnverified', 'runAcceptTrackedStarted', 'runAcceptTrackedFailed', 'undoResult', 'undoTrackedResult', 'undoNativeResult', 'runAcceptTrackedResult'];
     if (I18n?.t) outer: for (const key of keys) for (const locale of ['en', 'zh']) {
       const template = I18n.t(locale, key, { applied: '__APPLIED__', skipped: '__SKIPPED__' });
       const pattern = template.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('__APPLIED__', '(\\d+)').replace('__SKIPPED__', '(\\d+)');
       const match = new RegExp('^' + pattern + '$').exec(title);
-      if (match) { known = true; nextTitle = tr(key, { applied: match[1], skipped: match[2] }); break outer; }
+      if (match) { known = true; nextTitle = trRun(key, { applied: match[1], skipped: match[2] }); break outer; }
     }
     let countedTitle;
     const writeResult = /^(?:Write result: wrote (\d+) item\(s\), skipped (\d+)|写入结果：已写入 (\d+) 项，跳过 (\d+) 项)$/.exec(title);
     const governance = /^(?:Project governance blocked (\d+) write\(s\) before review\.|项目治理规则在审核前阻止了 (\d+) 项写入。)$/.exec(title);
     if (writeResult) {
       const applied = writeResult[1] ?? writeResult[3], skipped = writeResult[2] ?? writeResult[4];
-      countedTitle = tx(`Write result: wrote ${applied} item(s), skipped ${skipped}`, `写入结果：已写入 ${applied} 项，跳过 ${skipped} 项`);
+      countedTitle = txRun(`Write result: wrote ${applied} item(s), skipped ${skipped}`, `写入结果：已写入 ${applied} 项，跳过 ${skipped} 项`);
     } else if (governance) {
       const count = governance[1] ?? governance[2];
-      countedTitle = tx(`Project governance blocked ${count} write(s) before review.`, `项目治理规则在审核前阻止了 ${count} 项写入。`);
+      countedTitle = txRun(`Project governance blocked ${count} write(s) before review.`, `项目治理规则在审核前阻止了 ${count} 项写入。`);
     }
     const labels = ['detailAccepted', 'detailRejected', 'detailUndone', 'detailSkipped', 'detailFile', 'detailRecord', 'detailReason'];
     const project = (value, reason = false) => {
@@ -632,18 +668,19 @@
       if (!value || typeof value !== 'object') return value;
       return Object.fromEntries(Object.entries(value).map(([key, child]) => {
         const label = labels.find(id => ['en', 'zh'].some(locale => I18n?.t?.(locale, id) === key));
-        return [label ? tr(label) : key, project(child, label === 'detailReason')];
+        return [label ? trRun(label) : key, project(child, label === 'detailReason')];
       }));
     };
     return { title: countedTitle || (known ? nextTitle : localizeCompileReason(localizeVisibleReason(title))),
       detail: typeof detail === 'string' ? localizeVisibleReason(detail) : known ? project(detail) : detail };
   }
-  function formatReviewResultFailure(failure) {
+  function formatReviewResultFailure(failure, run = null) {
+    const trRun = (key, params) => run ? runTr(run, key, params) : tr(key, params);
     if (failure?.code === 'unknown_legacy_failure' && (!failure.evidence?.originalCode || failure.evidence.originalCode === 'unknown_legacy_failure')
       && ['Unknown reason', '未知原因'].includes(failure.userMessage)) {
-      failure = { ...failure, userMessage: tr('unknownReason') };
+      failure = { ...failure, userMessage: trRun('unknownReason') };
     }
-    return FailureReasons?.formatFailureReasonForDisplay(failure, getLocale?.(), key => { const value = tr(key, failure?.file ? undefined : { file: tr('unknownFile'), activeFile: tr('unknownFile') }); return value && value !== key ? value : undefined; });
+    return FailureReasons?.formatFailureReasonForDisplay(failure, getLocale?.(), key => { const value = trRun(key, failure?.file ? undefined : { file: trRun('unknownFile'), activeFile: trRun('unknownFile') }); return value && value !== key ? value : undefined; });
   }
   function renderActivityLine(input) {
     const event = sanitizeRunEventForRender(input);
@@ -1107,13 +1144,13 @@
     const applied = run.undoStatus === 'applied' && !inFlight;
     button.disabled = !projection.canUndo || inFlight || (run.undoStatus === 'running' && !run.undoRecoveryCheckRequired) || run.undoStatus === 'applied';
     button.textContent = applied
-      ? tr('undoApplied')
-      : (run.partialWriteback ? tr('undoPartialRun') : tr('undoRun'));
+      ? runTr(run, 'undoApplied')
+      : (run.partialWriteback ? runTr(run, 'undoPartialRun') : runTr(run, 'undoRun'));
     button.title = applied
-      ? tr('undoAppliedTitle')
-      : (run.partialWriteback ? tr('undoPartialRunTitle') : tr('undoRunTitle'));
-    if (run.undoRecoveryUnavailable) button.title = tx('Undo recovery checks are unavailable. Reload this page after the connection recovers.', '撤销恢复检查暂不可用，请在连接恢复后重新加载此页面。');
-    if (projection.undoUnavailable?.length) button.title = tr('failureReason_snapshot_undo_unavailable_user')
+      ? runTr(run, 'undoAppliedTitle')
+      : (run.partialWriteback ? runTr(run, 'undoPartialRunTitle') : runTr(run, 'undoRunTitle'));
+    if (run.undoRecoveryUnavailable) button.title = runTx(run, 'Undo recovery checks are unavailable. Reload this page after the connection recovers.', '撤销恢复检查暂不可用，请在连接恢复后重新加载此页面。');
+    if (projection.undoUnavailable?.length) button.title = runTr(run, 'failureReason_snapshot_undo_unavailable_user')
       + ' ' + projection.undoUnavailable.map(item => item.path).join(', ');
     button.addEventListener('click', event => {
       event.stopPropagation();
@@ -1132,8 +1169,8 @@
     const inFlight = trackedChangeInFlight.get(run.id);
     const projection = projectRunSettlement(run);
     const undoTitle = projection.undoUnavailable?.length
-      ? tr('failureReason_snapshot_undo_unavailable_user') + ' ' + projection.undoUnavailable.map(item => item.path).join(', ')
-      : tr('undoRunTitle');
+      ? runTr(run, 'failureReason_snapshot_undo_unavailable_user') + ' ' + projection.undoUnavailable.map(item => item.path).join(', ')
+      : runTr(run, 'undoRunTitle');
     // §7 settlement matrix: needs_review keeps BOTH controls visible AND
     // actionable. Branch placed before the terminal branches so a
     // needs_review run is never treated as terminal.

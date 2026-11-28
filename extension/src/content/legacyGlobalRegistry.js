@@ -13,6 +13,7 @@
 
   const REQUIRED_MODULES = Object.freeze([
     'ActiveTurnControl',
+    'AgentBrand',
     'AgentTranscript',
     'ApplyResultFormatters',
     'AssetTransferBroker',

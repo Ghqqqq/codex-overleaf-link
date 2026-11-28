@@ -1,6 +1,10 @@
 if (!globalThis.CodexOverleafCompatibility) {
   importScripts('shared/compatibility.js');
 }
+if (!globalThis.CodexOverleafAgentBrand && typeof importScripts === 'function') {
+  const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
+  importScripts(runtimeBase ? chrome.runtime.getURL(`${runtimeBase}/src/shared/agentBrand.js`) : 'shared/agentBrand.js');
+}
 if (!globalThis.CodexOverleafManagedUpdateProjection) {
   const runtimeBase = String(globalThis.__CODEX_OVERLEAF_RUNTIME_BASE__ || '');
   const projectionPath = runtimeBase
@@ -97,6 +101,8 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
     'codex.providers.activate',
     'codex.providers.clear-secret',
     'codex.providers.delete',
+    'codex.providers.antigravity.status',
+    'codex.providers.antigravity.login',
     'skills.list',
     'skills.install',
     'skills.remove',
@@ -181,6 +187,17 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === 'codex-overleaf/agent-brand') {
+      if (!isAllowedAgentBrandSender(sender)) {
+        sendResponse({ ok: false });
+        return undefined;
+      }
+      const brand = globalThis.CodexOverleafAgentBrand?.getBrand?.(message.brand)?.id
+        || (String(message.brand || '').trim() === 'antigravity' ? 'antigravity' : 'codex');
+      void applyTabAgentBrand(sender.tab.id, brand);
+      sendResponse({ ok: true, brand });
+      return undefined;
+    }
     if (message?.type === 'codex-overleaf/run-journal/list') {
       if (!isAllowedOverleafSender(sender)) {
         sendResponse({ ok: false, journals: [] });
@@ -434,6 +451,7 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
       case 'codex.providers.activate':
       case 'codex.providers.clear-secret':
       case 'codex.providers.delete':
+      case 'codex.providers.antigravity.status':
       case 'writing-style.get':
       case 'writing-style.set':
       case 'skills.list':
@@ -1065,6 +1083,105 @@ if (!globalThis.CodexOverleafBackgroundUpdateSafety) {
       );
     } catch (_error) {
       return false;
+    }
+  }
+
+  function isAllowedAgentBrandSender(sender) {
+    if (!sender || sender.id !== chrome.runtime.id || typeof sender.tab?.id !== 'number') {
+      return false;
+    }
+    if (sender.frameId !== undefined && sender.frameId !== 0) {
+      return false;
+    }
+    const senderUrl = sender.url || sender.tab.url || '';
+    try {
+      const url = new URL(senderUrl);
+      return url.protocol === 'https:'
+        && ['overleaf.com', 'www.overleaf.com', 'cn.overleaf.com'].includes(url.hostname)
+        && (url.pathname === '/project' || url.pathname.startsWith('/project/'));
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  const tabBrandGenerations = new Map();
+  let antigravityToolbarImageDataPromise = null;
+
+  async function loadAntigravityToolbarImageData() {
+    if (antigravityToolbarImageDataPromise) {
+      return antigravityToolbarImageDataPromise;
+    }
+    const toolbarIcons = globalThis.CodexOverleafAgentBrand?.BRANDS?.antigravity?.toolbarIcons;
+    if (!toolbarIcons || typeof fetch !== 'function'
+      || typeof createImageBitmap !== 'function' || typeof OffscreenCanvas !== 'function') {
+      return null;
+    }
+    const pendingDecode = (async () => {
+      const imageData = {};
+      for (const sizeKey of Object.keys(toolbarIcons)) {
+        const size = Number(sizeKey);
+        if (!Number.isInteger(size) || size <= 0) continue;
+        const response = await fetch(toolbarIcons[sizeKey]);
+        const blob = await response.blob();
+        const bitmap = await createImageBitmap(blob);
+        try {
+          const canvas = new OffscreenCanvas(size, size);
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return null;
+          ctx.drawImage(bitmap, 0, 0, size, size);
+          imageData[size] = ctx.getImageData(0, 0, size, size);
+        } finally {
+          bitmap.close?.();
+        }
+      }
+      return Object.keys(imageData).length ? imageData : null;
+    })().catch(() => {
+      antigravityToolbarImageDataPromise = null;
+      return null;
+    });
+    antigravityToolbarImageDataPromise = pendingDecode;
+    return pendingDecode;
+  }
+
+  async function applyTabAgentBrand(tabId, brand) {
+    if (typeof tabId !== 'number' || !chrome.action) {
+      return;
+    }
+    const generation = (tabBrandGenerations.get(tabId) || 0) + 1;
+    tabBrandGenerations.set(tabId, generation);
+    try {
+      const manifestAction = chrome.runtime.getManifest?.()?.action || {};
+      const defaultTitle = manifestAction.default_title || 'Codex Overleaf Link';
+      const manifestIcon = manifestAction.default_icon || {
+        16: 'assets/icons/icon16.png',
+        32: 'assets/icons/icon32.png',
+        48: 'assets/icons/icon48.png',
+        128: 'assets/icons/icon128.png'
+      };
+      // setIcon resolves relative paths against the worker script, which a
+      // managed install loads from a subdirectory; anchor them at the root.
+      const defaultIcon = typeof manifestIcon === 'string'
+        ? '/' + manifestIcon.replace(/^\/+/, '')
+        : Object.fromEntries(Object.entries(manifestIcon).map(([size, iconPath]) => [size, '/' + String(iconPath).replace(/^\/+/, '')]));
+      if (brand === 'antigravity') {
+        const imageData = await loadAntigravityToolbarImageData();
+        if (tabBrandGenerations.get(tabId) !== generation) return;
+        if (imageData && typeof chrome.action.setIcon === 'function') {
+          await Promise.resolve(chrome.action.setIcon({ tabId, imageData })).catch(() => {});
+        }
+        if (typeof chrome.action.setTitle === 'function') {
+          await Promise.resolve(chrome.action.setTitle({ tabId, title: `${defaultTitle} · Antigravity` })).catch(() => {});
+        }
+        return;
+      }
+      if (typeof chrome.action.setIcon === 'function') {
+        await Promise.resolve(chrome.action.setIcon({ tabId, path: defaultIcon })).catch(() => {});
+      }
+      if (typeof chrome.action.setTitle === 'function') {
+        await Promise.resolve(chrome.action.setTitle({ tabId, title: defaultTitle })).catch(() => {});
+      }
+    } catch (_error) {
+      // Toolbar icon/title branding is cosmetic and must fail silently.
     }
   }
 

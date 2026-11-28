@@ -199,6 +199,7 @@ function summarizeRequest(message) {
   return {
     id: message?.id,
     method: message?.method,
+    providerId: params.providerSelection?.providerId || params.providerId || undefined,
     mode: params.mode,
     model: params.model,
     reasoningEffort: params.reasoningEffort,

@@ -314,6 +314,7 @@ function summarizeNativeEnvironment(env = process.env, options = {}) {
   const runtimeOptions = { ...options, platform: getNativeRuntimePlatform({ ...options, env }) };
   const availableLatex = LATEX_TOOL_NAMES.filter(tool => Boolean(env[getToolEnvName(tool)]));
   const missingLatex = LATEX_TOOL_NAMES.filter(tool => !env[getToolEnvName(tool)]);
+  const antigravityPath = resolveAntigravityExecutable(env, runtimeOptions);
   return {
     codex: {
       ok: Boolean(env.CODEX_OVERLEAF_CODEX_PATH),
@@ -328,6 +329,10 @@ function summarizeNativeEnvironment(env = process.env, options = {}) {
         source: candidate.source || 'path',
         selected: candidate.selected === true
       }))
+    },
+    antigravity: {
+      ok: Boolean(antigravityPath),
+      path: antigravityPath || ''
     },
     latex: {
       ok: availableLatex.length > 0,
@@ -428,6 +433,52 @@ function normalizePathKeys(env, pathValue, options = {}) {
   env.PATH = pathValue;
 }
 
+function resolveAntigravityExecutable(env = process.env, options = {}) {
+  const runtimeOptions = { ...options, env, platform: getNativeRuntimePlatform({ ...options, env }) };
+  const isWin = runtimeOptions.platform === 'win32';
+  const checkCandidateFile = candidate => {
+    try {
+      if (!fs.statSync(candidate).isFile()) return false;
+      fs.accessSync(candidate, isWin ? fs.constants.F_OK : fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  if (Object.prototype.hasOwnProperty.call(env, 'CODEX_OVERLEAF_ANTIGRAVITY_BIN')) {
+    const explicit = String(env.CODEX_OVERLEAF_ANTIGRAVITY_BIN || '').trim();
+    if (!explicit) return '';
+    if (explicit.includes('/') || (isWin && explicit.includes('\\'))) {
+      const baseCandidate = path.isAbsolute(explicit) ? explicit : path.resolve(explicit);
+      for (const name of getExecutableCandidates(path.basename(baseCandidate), runtimeOptions)) {
+        const candidate = path.join(path.dirname(baseCandidate), name);
+        if (checkCandidateFile(candidate)) return candidate;
+      }
+      return '';
+    }
+    const fromPath = resolveExecutable(explicit, env.PATH || '', runtimeOptions);
+    return fromPath && checkCandidateFile(fromPath) ? fromPath : '';
+  }
+
+  const pathValue = mergePathSegments(getPathValues(env, runtimeOptions), runtimeOptions);
+  const fromPath = resolveExecutable('agy', pathValue, runtimeOptions);
+  if (fromPath && checkCandidateFile(fromPath)) {
+    return fromPath;
+  }
+
+  const home = env.HOME || env.USERPROFILE || os.homedir();
+  const fallbackDirs = isWin
+    ? (home ? [path.win32.join(home, '.local', 'bin')] : [])
+    : [
+        home ? path.posix.join(home, '.local/bin') : '',
+        '/opt/homebrew/bin',
+        '/usr/local/bin'
+      ].filter(Boolean);
+  const fallbackMatch = resolveExecutable('agy', fallbackDirs.join(getPathDelimiter(runtimeOptions)), runtimeOptions);
+  return fallbackMatch && checkCandidateFile(fallbackMatch) ? fallbackMatch : '';
+}
+
 module.exports = {
   buildNativeRuntimeEnv,
   getDefaultPathSegments,
@@ -436,6 +487,7 @@ module.exports = {
   parseMarkedShellEnv,
   readLoginShellEnv,
   refreshCodexRuntimeEnv,
+  resolveAntigravityExecutable,
   resolveExecutable,
   summarizeNativeEnvironment
 };
