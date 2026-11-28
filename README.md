@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="extension/assets/icons/codex-overleaf-icon.png" width="72" alt="Codex Overleaf Link">
+  <img src="assets/readme/2.7.0/header-twin@2x.png" width="186" alt="Codex Overleaf Link: Codex and Antigravity">
   <h1>Codex Overleaf Link</h1>
-  <p><strong>Empower Overleaf with Codex.</strong></p>
+  <p><strong>Empower Overleaf with Codex and Antigravity.</strong></p>
   <p>
     <img src="https://img.shields.io/badge/version-2.7.0-blue" alt="version 2.7.0">
     <img src="https://img.shields.io/badge/chrome-MV3-green" alt="chrome manifest v3">
