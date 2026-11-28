@@ -69,6 +69,7 @@ let currentThoughtLevel = 'high';
 let currentMode = 'auto'; // Intentionally non-default initially so tests prove Native sets `default` explicitly!
 let activePrompt = null;
 const pendingPermissions = new Map();
+const sessionPromptCounts = new Map();
 let nextServerReqId = 1000;
 
 function thoughtOptionsForModel(modelId) {
@@ -184,6 +185,8 @@ function isApprovedOutcome(result) {
 async function handlePrompt(id, params) {
   const sessionId = params.sessionId;
   const cwd = process.cwd();
+  const promptIndex = sessionPromptCounts.get(sessionId) || 0;
+  sessionPromptCounts.set(sessionId, promptIndex + 1);
   mutateState(state => {
     state.prompts = Array.isArray(state.prompts) ? state.prompts : [];
     state.prompts.push({ sessionId, prompt: params.prompt });
@@ -236,7 +239,103 @@ async function handlePrompt(id, params) {
     return;
   }
 
+  if (scenario === 'reject_then_continue') {
+    const blockCycles = Number(process.env.FAKE_AGY_BLOCK_CYCLES || '1');
+    const hangOnCycle = process.env.FAKE_AGY_HANG_ON_CYCLE !== undefined
+      ? Number(process.env.FAKE_AGY_HANG_ON_CYCLE)
+      : -1;
+    const outsideTarget = process.env.FAKE_AGY_OUTSIDE_TARGET || path.resolve(cwd, '..', 'outside-blocked.txt');
+
+    if (promptIndex === hangOnCycle) {
+      await requestPermission(sessionId, {
+        toolCallId: `hang-block-${promptIndex}`,
+        kind: 'execute',
+        title: 'Blocked command before cancel',
+        rawInput: { CommandLine: 'rm -f main.tex' }
+      });
+      await new Promise(resolve => {
+        if (cancelled) {
+          resolve();
+          return;
+        }
+        onCancel = resolve;
+      });
+      activePrompt = null;
+      send({ id, result: { stopReason: 'cancelled' } });
+      return;
+    }
+
+    if (promptIndex < blockCycles) {
+      if (promptIndex === 0 && process.env.FAKE_AGY_PREAMBLE_TEXT) {
+        sendUpdate(sessionId, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: process.env.FAKE_AGY_PREAMBLE_TEXT }
+        });
+      }
+      const blockedTool = promptIndex === 0
+        ? {
+            toolCallId: `blocked-${promptIndex}`,
+            kind: 'execute',
+            title: 'Find with pipe',
+            rawInput: { CommandLine: 'find . -maxdepth 1 | head' }
+          }
+        : promptIndex === 1
+          ? {
+              toolCallId: `blocked-${promptIndex}`,
+              kind: 'execute',
+              title: 'Python script',
+              rawInput: { CommandLine: 'python3 inspect.py' }
+            }
+          : {
+              toolCallId: `blocked-${promptIndex}`,
+              kind: 'read',
+              title: 'Outside read',
+              locations: [{ path: outsideTarget }],
+              rawInput: { Path: outsideTarget }
+            };
+      sendUpdate(sessionId, {
+        sessionUpdate: 'tool_call',
+        ...blockedTool,
+        status: 'pending'
+      });
+      await requestPermission(sessionId, blockedTool);
+      sendUpdate(sessionId, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: blockedTool.toolCallId,
+        status: 'failed'
+      });
+      activePrompt = null;
+      send({
+        id,
+        result: {
+          stopReason: 'end_turn',
+          usage: { inputTokens: 300 + promptIndex * 100, outputTokens: 10, totalTokens: 310 + promptIndex * 100 }
+        }
+      });
+      return;
+    }
+
+    sendUpdate(sessionId, {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'Recovered answer after continuation.' }
+    });
+    activePrompt = null;
+    send({
+      id,
+      result: {
+        stopReason: 'end_turn',
+        usage: { inputTokens: 600, outputTokens: 40, totalTokens: 640 }
+      }
+    });
+    return;
+  }
+
   if (scenario === 'edit_and_boundary') {
+    if (promptIndex > 0) {
+      activePrompt = null;
+      send({ id, result: { stopReason: 'end_turn' } });
+      return;
+    }
     const insideTarget = path.join(cwd, 'main.tex');
     const outsideTarget = process.env.FAKE_AGY_OUTSIDE_TARGET || path.resolve(cwd, '..', 'outside-escape.txt');
     const attachmentTarget = path.join(cwd, '.codex-overleaf-attachments', 'secret.txt');
@@ -342,10 +441,27 @@ async function handlePrompt(id, params) {
   }
 
   if (scenario === 'permission_matrix') {
+    if (promptIndex > 0) {
+      activePrompt = null;
+      send({ id, result: { stopReason: 'end_turn' } });
+      return;
+    }
     const outsideReadPath = process.env.FAKE_AGY_OUTSIDE_TARGET || path.resolve(cwd, '..', 'outside-secret.txt');
     const insideReadPath = path.join(cwd, 'main.tex');
     const checks = [
       ['rg_cmd', { toolCallId: 'c1', kind: 'execute', title: 'rg', rawInput: { CommandLine: 'rg -n document main.tex' } }],
+      ['find_safe_cmd', { toolCallId: 'c1a', kind: 'execute', title: 'find safe', rawInput: { CommandLine: "find . -maxdepth 3 -not -path '*/.*'" } }],
+      ['find_name_cmd', { toolCallId: 'c1b', kind: 'execute', title: 'find name', rawInput: { CommandLine: "find . -name '*.tex'" } }],
+      ['find_exec_cmd', { toolCallId: 'c1c', kind: 'execute', title: 'find exec', rawInput: { CommandLine: "find . -name '*.tex' -exec cat {} +" } }],
+      ['find_execdir_cmd', { toolCallId: 'c1d', kind: 'execute', title: 'find execdir', rawInput: { CommandLine: 'find . -execdir cat {} +' } }],
+      ['find_ok_cmd', { toolCallId: 'c1e', kind: 'execute', title: 'find ok', rawInput: { CommandLine: 'find . -ok cat {} +' } }],
+      ['find_okdir_cmd', { toolCallId: 'c1f', kind: 'execute', title: 'find okdir', rawInput: { CommandLine: 'find . -okdir cat {} +' } }],
+      ['find_delete_cmd', { toolCallId: 'c1g', kind: 'execute', title: 'find delete', rawInput: { CommandLine: "find . -name '*.aux' -delete" } }],
+      ['find_fprint_cmd', { toolCallId: 'c1h', kind: 'execute', title: 'find fprint', rawInput: { CommandLine: 'find . -fprint out.txt' } }],
+      ['find_fprint0_cmd', { toolCallId: 'c1i', kind: 'execute', title: 'find fprint0', rawInput: { CommandLine: 'find . -fprint0 out.txt' } }],
+      ['find_fprintf_cmd', { toolCallId: 'c1j', kind: 'execute', title: 'find fprintf', rawInput: { CommandLine: 'find . -fprintf out.txt %p' } }],
+      ['find_fls_cmd', { toolCallId: 'c1k', kind: 'execute', title: 'find fls', rawInput: { CommandLine: 'find . -fls out.txt' } }],
+      ['find_outside_cmd', { toolCallId: 'c1l', kind: 'execute', title: 'find outside', rawInput: { CommandLine: `find "${outsideReadPath}" -maxdepth 1` } }],
       ['latexmk_cmd', { toolCallId: 'c2', kind: 'execute', title: 'latexmk', rawInput: { CommandLine: 'latexmk -norc -pdf main.tex' } }],
       ['redirect_cmd', { toolCallId: 'c3', kind: 'execute', title: 'redirect', rawInput: { CommandLine: 'cat main.tex > hacked.tex' } }],
       ['rm_cmd', { toolCallId: 'c4', kind: 'execute', title: 'rm', rawInput: { CommandLine: 'rm -f main.tex' } }],
@@ -379,6 +495,11 @@ async function handlePrompt(id, params) {
   }
 
   if (scenario === 'interleaved_and_declined') {
+    if (promptIndex > 0) {
+      activePrompt = null;
+      send({ id, result: { stopReason: 'end_turn' } });
+      return;
+    }
     const outsideTarget = process.env.FAKE_AGY_OUTSIDE_TARGET || path.resolve(cwd, '..', 'outside-declined.txt');
     const styleSkillFile = process.env.FAKE_AGY_STYLE_SKILL_FILE || '';
     const styleOutcomes = {};

@@ -31,6 +31,7 @@ const ANTIGRAVITY_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 const ANTIGRAVITY_STATUS_TIMEOUT_MS = 20000;
 const ANTIGRAVITY_VERSION_PROBE_TIMEOUT_MS = 2000;
 const ANTIGRAVITY_CANCEL_GRACE_MS = 1500;
+const MAX_PERMISSION_CONTINUATIONS = 2;
 const MAX_TURN_TEXT_BYTES = 1024 * 1024;
 const MAX_TRACKED_TOOLS = 256;
 const MAX_TOOL_INPUT_BYTES = 64 * 1024;
@@ -1256,7 +1257,7 @@ function decideAntigravityPermission({
 // executables, no shell syntax, and every path-like argument must stay inside
 // the run's mirror workspace (or the verified writing-style bundle root).
 const ANTIGRAVITY_READ_ONLY_COMMANDS = new Set([
-  'rg', 'grep', 'cat', 'head', 'tail', 'nl', 'ls', 'wc', 'cut',
+  'rg', 'grep', 'cat', 'head', 'tail', 'nl', 'ls', 'wc', 'cut', 'find',
   'basename', 'dirname', 'realpath', 'stat', 'kpsewhich', 'lacheck'
 ]);
 
@@ -1324,6 +1325,9 @@ function evaluateAntigravityCommand(commandLine, workspacePath, baseDir = null, 
   if (executable === 'tail' && args.some(arg => /^-[A-Za-z0-9]*[fF]/.test(arg) || /^--follow(?:=|$)/.test(arg))) {
     return { ok: false, reason: 'command_argument_forbidden' };
   }
+  if (executable === 'find' && args.some(arg => /^--?(?:exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)(?:=|$)/i.test(arg))) {
+    return { ok: false, reason: 'command_argument_forbidden' };
+  }
   for (const arg of args) {
     if (arg.startsWith('-') && !arg.includes('=') && /[\/\\~]/.test(arg)) {
       return { ok: false, reason: 'command_argument_forbidden' };
@@ -1373,11 +1377,204 @@ function inferImageMimeType(attachment = {}) {
   return '';
 }
 
+function extractToolCommandLine(toolCall = {}) {
+  if (!toolCall || typeof toolCall !== 'object') return '';
+  const hasRaw = Object.prototype.hasOwnProperty.call(toolCall, 'rawInput') && toolCall.rawInput !== undefined;
+  const hasArgs = Object.prototype.hasOwnProperty.call(toolCall, 'args') && toolCall.args !== undefined;
+  const rawObj = hasRaw && typeof toolCall.rawInput === 'object' && toolCall.rawInput && !Array.isArray(toolCall.rawInput)
+    ? toolCall.rawInput
+    : {};
+  const argsObj = hasArgs && typeof toolCall.args === 'object' && toolCall.args && !Array.isArray(toolCall.args)
+    ? toolCall.args
+    : {};
+  if (typeof rawObj.CommandLine === 'string') return rawObj.CommandLine;
+  if (typeof rawObj.command === 'string') return rawObj.command;
+  if (typeof toolCall.rawInput === 'string') return toolCall.rawInput;
+  if (typeof argsObj.CommandLine === 'string') return argsObj.CommandLine;
+  if (typeof argsObj.command === 'string') return argsObj.command;
+  if (typeof toolCall.args === 'string') return toolCall.args;
+  return '';
+}
+
+function extractSafeCommandExecutable(commandLine) {
+  const text = String(commandLine || '').trim();
+  if (!text) return '';
+  const tokens = tokenizeAntigravityCommand(text);
+  const rawFirst = tokens && tokens.length
+    ? tokens[0]
+    : text.split(/[\s&;|<>`()]+/)[0].replace(/^['"]+|['"]+$/g, '');
+  if (!rawFirst || rawFirst === '.' || rawFirst === '..') return '';
+  return /^[A-Za-z0-9._-]+$/.test(rawFirst) ? rawFirst.slice(0, 64) : '';
+}
+
+function sanitizeCommandPreviewForPrompt(commandLine, workspacePath, env = process.env) {
+  const collapsed = String(commandLine || '').replace(/[\r\n]+/g, ' ; ').replace(/\s+/g, ' ').trim();
+  if (!collapsed) return '';
+  const parts = collapsed.split(' ').map(token => {
+    const core = token.replace(/^['"`(]+|['"`),;]+$/g, '');
+    if (!core || !isCommandArgPathLike(core)) {
+      return token;
+    }
+    const verdict = evaluateMirrorWorkspacePath(core, workspacePath, {
+      allowWorkspaceRoot: true,
+      forbidInternalDirs: false,
+      env
+    });
+    if (!verdict.ok) {
+      return '<outside-workspace-path>';
+    }
+    if (path.isAbsolute(core)) {
+      return verdict.relativePath || '.';
+    }
+    return token;
+  });
+  return parts.join(' ').slice(0, 160);
+}
+
+function collectSafeWorkspaceRelativePaths(toolCall = {}, workspacePath = '', env = process.env) {
+  if (!toolCall || typeof toolCall !== 'object' || !workspacePath) return [];
+  const collected = { paths: [], cwds: [], commands: [], overflow: false, invalidInput: false };
+  const kind = typeof toolCall.kind === 'string' ? toolCall.kind.trim() : '';
+  if (toolCall.rawInput && typeof toolCall.rawInput === 'object' && !Array.isArray(toolCall.rawInput)) {
+    collectToolPolicyInputs(toolCall.rawInput, collected, 0, '', kind);
+  }
+  if (toolCall.args && typeof toolCall.args === 'object' && !Array.isArray(toolCall.args)) {
+    collectToolPolicyInputs(toolCall.args, collected, 0, '', kind);
+  }
+  const candidates = [
+    ...collected.paths,
+    ...(Array.isArray(toolCall.locations) ? toolCall.locations.map(loc => loc?.path).filter(Boolean) : []),
+    ...(Array.isArray(toolCall.content) ? toolCall.content.filter(b => b?.type === 'diff').map(b => b.path).filter(Boolean) : [])
+  ];
+  const safe = [];
+  const seen = new Set();
+  for (const raw of candidates) {
+    if (typeof raw !== 'string') continue;
+    const verdict = evaluateMirrorWorkspacePath(raw, workspacePath, {
+      allowWorkspaceRoot: true,
+      forbidInternalDirs: false,
+      env
+    });
+    if (!verdict.ok) continue;
+    const rel = verdict.relativePath || '.';
+    if (!seen.has(rel)) {
+      seen.add(rel);
+      safe.push(rel);
+    }
+    if (safe.length >= 3) break;
+  }
+  return safe;
+}
+
+function isOutsideWorkspacePermissionReason(reason) {
+  const code = String(reason || '');
+  return code === 'outside_mirror_workspace'
+    || code === 'invalid_path'
+    || code === 'unresolvable_path'
+    || code === 'outside_writing_style_bundle'
+    || code === 'no_writing_style_root'
+    || code.startsWith('writing_style_')
+    || code.startsWith('command_path_')
+    || code === 'cwd_outside_mirror_workspace'
+    || code === 'cwd_invalid_path'
+    || code === 'cwd_unresolvable_path';
+}
+
+function describeDeclinedPermissionForPrompt(decision = {}, toolCall = {}, workspacePath = '', env = process.env) {
+  const kind = String(decision.kind || toolCall?.kind || 'unknown');
+  const reason = String(decision.reason || '');
+  const commandLine = kind === 'execute' ? extractToolCommandLine(toolCall) : '';
+  const commandName = kind === 'execute' ? extractSafeCommandExecutable(commandLine) : '';
+  const safePaths = kind !== 'execute' ? collectSafeWorkspaceRelativePaths(toolCall, workspacePath, env) : [];
+
+  let target;
+  if (kind === 'execute') {
+    const preview = sanitizeCommandPreviewForPrompt(commandLine, workspacePath, env);
+    target = preview ? `shell command \`${preview}\`` : 'shell command';
+  } else if (WRITE_TOOL_KINDS.has(kind)) {
+    const label = kind === 'delete' ? 'file delete' : kind === 'move' ? 'file move' : 'file edit';
+    target = safePaths.length ? `${label} on \`${safePaths.join(', ')}\`` : label;
+  } else if (kind === 'read') {
+    target = safePaths.length ? `file read on \`${safePaths.join(', ')}\`` : 'file read';
+  } else {
+    const safeKind = /^[A-Za-z0-9._-]+$/.test(kind) ? kind : 'tool';
+    target = `tool request \`${safeKind}\``;
+  }
+
+  let plainReason;
+  if (reason === 'command_outside_read_only_allowlist') {
+    plainReason = commandName
+      ? `command \`${commandName}\` is not in the read-only list`
+      : 'command not in the read-only list';
+  } else if (reason === 'command_shell_operator_forbidden') {
+    plainReason = 'shell operators not allowed (no pipes, redirection, chaining, or substitution)';
+  } else if (reason === 'command_argument_forbidden') {
+    plainReason = commandName
+      ? `write, exec, or follow flags are not allowed for \`${commandName}\``
+      : 'write, exec, or follow flags are not allowed in read-only commands';
+  } else if (reason === 'ask_mode_read_only') {
+    plainReason = 'edits not allowed in Ask mode';
+  } else if (isOutsideWorkspacePermissionReason(reason)) {
+    plainReason = 'path outside the project workspace';
+  } else if (reason === 'reserved_workspace_directory'
+    || reason === 'cwd_reserved_workspace_directory'
+    || reason === 'workspace_root_mutation_forbidden') {
+    plainReason = 'protected workspace directory cannot be modified';
+  } else if (reason === 'unsupported_permission_kind') {
+    plainReason = 'tool kind is not allowed by the plugin policy';
+  } else {
+    plainReason = 'request could not be verified under the workspace permission policy';
+  }
+
+  return { target, plainReason, reason };
+}
+
+function buildAntigravityContinuationPrompt(declinedItems = [], mode = 'ask') {
+  const isAuto = mode === 'auto';
+  const lines = [];
+  const seen = new Set();
+  for (const item of declinedItems) {
+    const line = `- ${item.target}: ${item.plainReason}.`;
+    if (!seen.has(line)) {
+      seen.add(line);
+      lines.push(line);
+    }
+    if (lines.length >= 8) break;
+  }
+  const blockedSection = lines.length === 1
+    ? `[Overleaf plugin] Your previous request (${lines[0].slice(2, -1)}) was blocked by the plugin's permission policy.`
+    : [
+        "[Overleaf plugin] The following requests in your previous step were blocked by the plugin's permission policy:",
+        ...lines
+      ].join('\n');
+  const continueInstruction = isAuto
+    ? 'Continue the original task now and provide your answer (if edits are needed, edit files inside this workspace with your built-in file tools).'
+    : 'Continue the original task now and answer without editing any files.';
+  return [
+    blockedSection,
+    'Reading, listing, and searching files inside this workspace with your built-in tools is allowed and needs no approval.',
+    lines.length === 1 ? 'Do not retry that blocked request.' : 'Do not retry the blocked requests.',
+    continueInstruction
+  ].join(' ');
+}
+
+function buildAntigravityPolicyNote() {
+  const allowedCommands = Array.from(ANTIGRAVITY_READ_ONLY_COMMANDS).join(', ');
+  return [
+    'Antigravity local tool and command policy:',
+    '- Prefer your built-in file read, list, and search tools to explore the project; they need no approval inside this workspace.',
+    `- Shell commands are limited to single read-only inspection tools (${allowedCommands}) on paths inside the workspace, with no pipes, redirection, chaining, or substitution, and no write/exec flags (such as find -exec or -delete).`,
+    '- File edits are allowed only inside the workspace in Auto mode, and not at all in Ask mode.'
+  ].join('\n');
+}
+
 function buildPromptBlocks(input = {}, initResult = {}) {
   const taskText = String(input.task || '');
-  const fullText = input.developerInstructions
-    ? `<developer_instructions>\n${input.developerInstructions}\n</developer_instructions>\n\n${taskText}`
-    : taskText;
+  const developerBlock = [
+    String(input.developerInstructions || '').trim(),
+    buildAntigravityPolicyNote()
+  ].filter(Boolean).join('\n\n');
+  const fullText = `<developer_instructions>\n${developerBlock}\n</developer_instructions>\n\n${taskText}`;
   const blocks = [{ type: 'text', text: fullText }];
 
   if (initResult?.agentCapabilities?.promptCapabilities?.image === false) {
@@ -1809,6 +2006,8 @@ async function runAntigravitySession(input = {}) {
 
   const configState = { options: [], currentModeId: '', currentModelId: '' };
   const tools = new Map();
+  let promptCycle = 0;
+  let declinedInCycle = [];
   let messageSeq = 0;
   let thoughtSeq = 0;
   let openThought = null;
@@ -1921,22 +2120,29 @@ async function runAntigravitySession(input = {}) {
           ? mergeBoundedToolRecord(cached.tool, partial)
           : mergeBoundedToolRecord({}, partial);
 
+        const effectiveToolCall = partial && typeof partial === 'object'
+          ? {
+              ...mergedToolCall,
+              ...(Object.prototype.hasOwnProperty.call(partial, 'rawInput') ? { rawInput: partial.rawInput } : {}),
+              ...(Object.prototype.hasOwnProperty.call(partial, 'args') ? { args: partial.args } : {})
+            }
+          : partial;
+
         const decision = decideAntigravityPermission({
           mode: input.mode,
           workspacePath,
           writingStyleRoot,
-          toolCall: partial && typeof partial === 'object'
-            ? {
-                ...mergedToolCall,
-                ...(Object.prototype.hasOwnProperty.call(partial, 'rawInput') ? { rawInput: partial.rawInput } : {}),
-                ...(Object.prototype.hasOwnProperty.call(partial, 'args') ? { args: partial.args } : {})
-              }
-            : partial,
+          toolCall: effectiveToolCall,
           options: params.options,
           env
         });
 
+        const commandName = decision.kind === 'execute'
+          ? extractSafeCommandExecutable(extractToolCommandLine(effectiveToolCall))
+          : '';
+
         if (!decision.allowed) {
+          declinedInCycle.push(describeDeclinedPermissionForPrompt(decision, effectiveToolCall, workspacePath, env));
           const declinedId = toolCallId || `declined-tool-${tools.size + 1}`;
           const entry = cached || { tool: {}, startedEmitted: false, completedEmitted: false };
           entry.tool = mergeBoundedToolRecord(entry.tool, {
@@ -1973,6 +2179,7 @@ async function runAntigravitySession(input = {}) {
           decision: decision.decision,
           kind: decision.kind,
           reason: decision.reason,
+          ...(commandName ? { commandName } : {}),
           toolCallId: String(mergedToolCall?.toolCallId || ''),
           params: {
             kind: decision.kind,
@@ -2036,9 +2243,10 @@ async function runAntigravitySession(input = {}) {
             if (!delta) break;
             totalMessageBytes += Buffer.byteLength(delta, 'utf8');
 
-            const messageKey = typeof update.messageId === 'string' && update.messageId.trim()
+            const rawMessageKey = typeof update.messageId === 'string' && update.messageId.trim()
               ? update.messageId.trim()
               : '__default__';
+            const messageKey = `${promptCycle}:${rawMessageKey}`;
             let entry = messagesByKey.get(messageKey);
             if (!entry) {
               messageSeq += 1;
@@ -2223,57 +2431,11 @@ async function runAntigravitySession(input = {}) {
       turn: { id: activeTurnId, status: 'inProgress' }
     }, 'running');
 
-    const promptBlocks = buildPromptBlocks(input, initResult);
+    let currentPromptBlocks = buildPromptBlocks(input, initResult);
     assertSetupActive();
-    turnActive = true;
-    promptSubmitted = true;
 
-    const promptPromise = client.request('session/prompt', {
-      sessionId: activeSessionId,
-      prompt: promptBlocks
-    }, { timeoutMs: 0 });
-    const promptOutcome = promptPromise.then(result => ({ result }), error => ({ error }));
-    const outcome = await Promise.race([promptOutcome, cancelGraceExpired]);
-    turnActive = false;
-
-    if (timedOutError) {
-      throw timedOutError;
-    }
-    if (outcome.cancelGraceTimeout || cancelRequested || input.signal?.aborted) {
-      throw getAbortReason(input.signal);
-    }
-    if (outcome.error) {
-      throw mapAntigravityError(outcome.error, 'codex_turn_failed');
-    }
-
-    const promptResult = outcome.result || {};
-    const stopReason = String(promptResult.stopReason || '');
-    finalizeOpenThought();
-    finalizeAllMessages();
-
-    if (stopReason === 'cancelled') {
-      emitSessionEvent('turn/completed', {
-        threadId: activeThreadId,
-        turnId: activeTurnId,
-        turn: { id: activeTurnId, status: 'interrupted', error: null }
-      }, 'cancelled');
-      throw codedError('codex_cancelled', 'Codex run was cancelled by the user');
-    }
-    if (stopReason !== 'end_turn') {
-      const turnFailure = codedError(
-        'codex_turn_failed',
-        `Antigravity turn ended with stop reason "${sanitizeProviderMessage(stopReason || 'unknown')}".`
-      );
-      emitSessionEvent('turn/completed', {
-        threadId: activeThreadId,
-        turnId: activeTurnId,
-        turn: { id: activeTurnId, status: 'failed', error: { message: turnFailure.message } }
-      }, 'failed');
-      throw turnFailure;
-    }
-
-    const rawUsage = promptResult.usage;
-    if (rawUsage && typeof rawUsage === 'object') {
+    const emitPromptUsageIfPresent = rawUsage => {
+      if (!rawUsage || typeof rawUsage !== 'object') return;
       let inputTokens = safeNonNegativeInt(rawUsage.inputTokens);
       const cachedRead = safeNonNegativeInt(rawUsage.cachedReadTokens);
       const cachedWrite = safeNonNegativeInt(rawUsage.cachedWriteTokens);
@@ -2301,6 +2463,95 @@ async function runAntigravitySession(input = {}) {
           }
         }, 'running');
       }
+    };
+
+    const assertContinuationActive = () => {
+      if (timedOutError) {
+        throw timedOutError;
+      }
+      if (cancelRequested || input.signal?.aborted) {
+        throw getAbortReason(input.signal);
+      }
+    };
+
+    let continuationCount = 0;
+    while (true) {
+      assertContinuationActive();
+      declinedInCycle = [];
+      lastUsageUsed = null;
+      turnActive = true;
+      promptSubmitted = true;
+
+      const promptPromise = client.request('session/prompt', {
+        sessionId: activeSessionId,
+        prompt: currentPromptBlocks
+      }, { timeoutMs: 0 });
+      const promptOutcome = promptPromise.then(result => ({ result }), error => ({ error }));
+      const outcome = await Promise.race([promptOutcome, cancelGraceExpired]);
+      turnActive = false;
+
+      if (timedOutError) {
+        throw timedOutError;
+      }
+      if (outcome.cancelGraceTimeout || cancelRequested || input.signal?.aborted) {
+        throw getAbortReason(input.signal);
+      }
+      if (outcome.error) {
+        throw mapAntigravityError(outcome.error, 'codex_turn_failed');
+      }
+
+      const promptResult = outcome.result || {};
+      const stopReason = String(promptResult.stopReason || '');
+      finalizeOpenThought();
+      finalizeAllMessages();
+
+      if (stopReason === 'cancelled') {
+        emitSessionEvent('turn/completed', {
+          threadId: activeThreadId,
+          turnId: activeTurnId,
+          turn: { id: activeTurnId, status: 'interrupted', error: null }
+        }, 'cancelled');
+        throw codedError('codex_cancelled', 'Codex run was cancelled by the user');
+      }
+      if (stopReason !== 'end_turn') {
+        const turnFailure = codedError(
+          'codex_turn_failed',
+          `Antigravity turn ended with stop reason "${sanitizeProviderMessage(stopReason || 'unknown')}".`
+        );
+        emitSessionEvent('turn/completed', {
+          threadId: activeThreadId,
+          turnId: activeTurnId,
+          turn: { id: activeTurnId, status: 'failed', error: { message: turnFailure.message } }
+        }, 'failed');
+        throw turnFailure;
+      }
+
+      emitPromptUsageIfPresent(promptResult.usage);
+
+      if (declinedInCycle.length === 0 || continuationCount >= MAX_PERMISSION_CONTINUATIONS) {
+        break;
+      }
+
+      assertContinuationActive();
+      const declinedSnapshot = declinedInCycle;
+      continuationCount += 1;
+      promptCycle += 1;
+      const continuationText = buildAntigravityContinuationPrompt(declinedSnapshot, input.mode);
+      emitEvent(
+        'antigravity.turn.continued',
+        'A request was blocked; Antigravity was told why and continued.',
+        {
+          threadId: activeThreadId,
+          turnId: activeTurnId,
+          continuation: continuationCount,
+          maxContinuations: MAX_PERMISSION_CONTINUATIONS,
+          blockedCount: declinedSnapshot.length,
+          reasons: [...new Set(declinedSnapshot.map(item => item.reason).filter(Boolean))]
+        },
+        'warning'
+      );
+      assertContinuationActive();
+      currentPromptBlocks = [{ type: 'text', text: continuationText }];
     }
 
     emitSessionEvent('turn/completed', {

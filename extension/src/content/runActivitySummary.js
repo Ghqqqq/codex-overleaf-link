@@ -178,8 +178,10 @@
         row.status.hidden = true;
       } else row.status.hidden = false;
       const publicText = plain(item.event?.title);
+      const detailText = item.kind === 'notice' && typeof item.event?.detail === 'string' ? plain(item.event.detail) : '';
       const reviewLines = reviewResultLines(item);
-      const stamp = [publicText, meta.output, meta.command, meta.exitCode, file?.preview, state, meta.clipped, JSON.stringify(reviewLines)].join('\0');
+      const noteLines = reviewLines.length ? reviewLines : [detailText || publicText].filter(Boolean);
+      const stamp = [publicText, detailText, meta.output, meta.command, meta.exitCode, file?.preview, state, meta.clipped, JSON.stringify(reviewLines)].join('\0');
       if (stamp !== row.bodyStamp) {
         row.bodyStamp = stamp;
         row.body.replaceChildren();
@@ -199,7 +201,7 @@
         } else {
           if (meta.command) { const command = make('pre', 'run-workflow-command'); command.textContent = plain(meta.command); row.body.append(command); }
           if (meta.output) { const output = make('pre', 'run-workflow-output'); output.textContent = plain(meta.output); row.body.append(output); }
-          for (const value of reviewLines.length ? reviewLines : [publicText]) {
+          for (const value of noteLines) {
             const note = make('div', 'run-workflow-tool-note');
             note.textContent = value;
             row.body.append(note);

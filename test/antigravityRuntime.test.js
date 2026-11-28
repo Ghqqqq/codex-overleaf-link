@@ -201,6 +201,9 @@ test('Ask mode rejects edits, emits permission decision, sets default mode expli
     ]
   );
   assert.match(state.prompts[0].prompt[0].text, /<developer_instructions>/);
+  assert.match(state.prompts[0].prompt[0].text, /Prefer your built-in file read, list, and search tools/);
+  assert.match(state.prompts[0].prompt[0].text, /\bfind\b/);
+  assert.match(state.prompts[0].prompt[0].text, /not at all in Ask mode/);
 
   const approvalEvents = events.filter(event => event.type === 'codex.session.request');
   assert.equal(approvalEvents.length, 3);
@@ -320,8 +323,20 @@ test('Permission policy enforces command allowlist, mirror-only reads, and rejec
   assert.equal(autoRes.ok, true);
 
   const [askMatrix, autoMatrix] = readFakeState().matrix;
-  assert.deepEqual(askMatrix, {
+  const expectedMatrix = {
     rg_cmd: true,
+    find_safe_cmd: true,
+    find_name_cmd: true,
+    find_exec_cmd: false,
+    find_execdir_cmd: false,
+    find_ok_cmd: false,
+    find_okdir_cmd: false,
+    find_delete_cmd: false,
+    find_fprint_cmd: false,
+    find_fprint0_cmd: false,
+    find_fprintf_cmd: false,
+    find_fls_cmd: false,
+    find_outside_cmd: false,
     latexmk_cmd: false,
     redirect_cmd: false,
     rm_cmd: false,
@@ -334,22 +349,9 @@ test('Permission policy enforces command allowlist, mirror-only reads, and rejec
     read_outside: false,
     fetch_unknown: false,
     mcp_unknown: false
-  });
-  assert.deepEqual(autoMatrix, {
-    rg_cmd: true,
-    latexmk_cmd: false,
-    redirect_cmd: false,
-    rm_cmd: false,
-    background_chain_cmd: false,
-    newline_chain_cmd: false,
-    output_file_cmd: false,
-    path_executable_cmd: false,
-    outside_path_cmd: false,
-    read_inside: true,
-    read_outside: false,
-    fetch_unknown: false,
-    mcp_unknown: false
-  });
+  };
+  assert.deepEqual(askMatrix, expectedMatrix);
+  assert.deepEqual(autoMatrix, expectedMatrix);
 });
 
 test('Path boundary hardening checks workspace root + cwd, args/overflow, path-like keys, unsafe syntax, and case-insensitive reserved dirs', t => {
@@ -758,6 +760,123 @@ test('Cancellation sends session/cancel, rejects steer, resolves as codex_cancel
   const state = readFakeState();
   assert.ok(Array.isArray(state.cancels) && state.cancels.length === 1);
   assert.equal(isProcessAlive(state.lastPid), false);
+});
+
+test('Auto-continues up to 2 times after declined permissions, keeps turnId, accumulates last non-empty answer, and never continues after cancel', async t => {
+  // 1. Single blocked command ends cycle silently -> second prompt in same session produces answer & notice
+  const { env: recoverEnv, readFakeState: readRecoverState } = createTestHarness(t, {
+    FAKE_AGY_SCENARIO: 'reject_then_continue',
+    FAKE_AGY_BLOCK_CYCLES: '1'
+  });
+  const recoverEvents = [];
+  const recoverRes = await handleRequest({
+    id: 'continue-recover-1',
+    method: 'codex.run',
+    params: {
+      projectId: 'proj-agy-1',
+      mode: 'auto',
+      model: 'gemini-4-neon',
+      reasoningEffort: 'low',
+      providerSelection: { providerId: 'antigravity', providerRevision: 0 },
+      task: 'First run `find . -maxdepth 1 | head`, then describe main.tex.',
+      project: buildFullProjectSnapshot()
+    }
+  }, recoverEnv, event => recoverEvents.push(event));
+
+  assert.equal(recoverRes.ok, true);
+  assert.equal(recoverRes.result.assistantMessage, 'Recovered answer after continuation.');
+  const boundEvents = recoverEvents.filter(e => e.type === 'codex.turn.bound');
+  assert.equal(boundEvents.length, 1);
+  const continuedNotices = recoverEvents.filter(e => e.type === 'antigravity.turn.continued');
+  assert.equal(continuedNotices.length, 1);
+  assert.equal(continuedNotices[0].status, 'warning');
+  assert.equal(continuedNotices[0].detail.turnId, boundEvents[0].detail.turnId);
+  const turnScopedIds = recoverEvents
+    .filter(e => e.type === 'codex.session.event' && e.detail?.params?.turnId)
+    .map(e => e.detail.params.turnId);
+  assert.ok(turnScopedIds.length > 0 && turnScopedIds.every(id => id === boundEvents[0].detail.turnId));
+
+  const recoverState = readRecoverState();
+  assert.equal(recoverState.prompts.length, 2);
+  assert.equal(recoverState.prompts[0].sessionId, recoverState.prompts[1].sessionId);
+  const followUpText = recoverState.prompts[1].prompt[0].text;
+  assert.match(followUpText, /find \. -maxdepth 1 \| head/);
+  assert.match(followUpText, /shell operators not allowed/);
+  assert.match(followUpText, /built-in tools is allowed and needs no approval/);
+  assert.match(followUpText, /Do not retry/);
+
+  // 2. Repeated blocks stop after 2 continuations (3 prompts total) and preserve last non-empty message
+  const outsidePath = path.join(os.tmpdir(), `secret-outside-${process.pid}.txt`);
+  const { env: capEnv, readFakeState: readCapState } = createTestHarness(t, {
+    FAKE_AGY_SCENARIO: 'reject_then_continue',
+    FAKE_AGY_BLOCK_CYCLES: '5',
+    FAKE_AGY_PREAMBLE_TEXT: 'Preamble before persistent blocks.',
+    FAKE_AGY_OUTSIDE_TARGET: outsidePath
+  });
+  const capEvents = [];
+  const capRes = await handleRequest({
+    id: 'continue-cap-1',
+    method: 'codex.run',
+    params: {
+      projectId: 'proj-agy-1',
+      mode: 'ask',
+      model: 'gemini-3.8-flash',
+      reasoningEffort: 'low',
+      providerSelection: { providerId: 'antigravity', providerRevision: 0 },
+      task: 'Keep hitting blocked tools.',
+      project: buildFullProjectSnapshot()
+    }
+  }, capEnv, event => capEvents.push(event));
+
+  assert.equal(capRes.ok, true);
+  assert.equal(capRes.result.assistantMessage, 'Preamble before persistent blocks.');
+  assert.equal(capEvents.filter(e => e.type === 'antigravity.turn.continued').length, 2);
+  const capState = readCapState();
+  assert.equal(capState.prompts.length, 3);
+  assert.match(capState.prompts[1].prompt[0].text, /answer without editing/i);
+  assert.match(capState.prompts[2].prompt[0].text, /is not in the read-only list/);
+
+  // 3. Cancel during continuation aborts cleanly and never auto-continues after cancel
+  const { env: cancelContEnv, readFakeState: readCancelContState } = createTestHarness(t, {
+    FAKE_AGY_SCENARIO: 'reject_then_continue',
+    FAKE_AGY_BLOCK_CYCLES: '5',
+    FAKE_AGY_HANG_ON_CYCLE: '1'
+  });
+  let notifyContinued;
+  const continuedReady = new Promise(resolve => { notifyContinued = resolve; });
+  const cancelRunPromise = handleRequest({
+    id: 'continue-cancel-1',
+    method: 'codex.run',
+    params: {
+      projectId: 'proj-agy-cancel-cont',
+      mode: 'auto',
+      model: 'gemini-4-neon',
+      reasoningEffort: 'low',
+      providerSelection: { providerId: 'antigravity', providerRevision: 0 },
+      task: 'Cancel during continuation.',
+      project: buildFullProjectSnapshot()
+    }
+  }, cancelContEnv, event => {
+    if (event.type === 'antigravity.turn.continued') {
+      notifyContinued();
+    }
+  });
+
+  await continuedReady;
+  await new Promise(resolve => setTimeout(resolve, 60));
+  const cancelContRes = await handleRequest({
+    id: 'cancel-cont-req',
+    method: 'codex.cancel',
+    params: { requestId: 'continue-cancel-1' }
+  }, cancelContEnv);
+  assert.equal(cancelContRes.ok, true);
+
+  const settledCancelRun = await cancelRunPromise;
+  assert.equal(settledCancelRun.ok, false);
+  assert.equal(settledCancelRun.error.code, 'codex_cancelled');
+  const cancelContState = readCancelContState();
+  assert.equal(cancelContState.prompts.length, 2);
+  assert.equal(isProcessAlive(cancelContState.lastPid), false);
 });
 
 test('Thread identity uses session/resume for agy: ids and starts fresh with warnings across runtimes', async t => {

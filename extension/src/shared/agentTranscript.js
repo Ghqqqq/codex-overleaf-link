@@ -360,6 +360,25 @@
       };
     }
 
+    if (type === 'antigravity.turn.continued') {
+      return {
+        kind: 'activity',
+        visible: true,
+        title: textFor(
+          locale,
+          '有请求被拦下，已告知 Antigravity 原因并让它继续。',
+          'A request was blocked; Antigravity was told why and continued.'
+        ),
+        detail: (() => {
+          const count = Number(event?.detail?.continuation) || 1;
+          const max = Number(event?.detail?.maxContinuations) || count;
+          return textFor(locale, `第 ${count} 次续跑（每轮最多 ${max} 次）。`, `Continuation ${count} of at most ${max}.`);
+        })(),
+        status: 'warning',
+        technicalDetail: normalizeRawEvent(event)
+      };
+    }
+
     if (type === 'codex.local_skills.missing' || type === 'codex.local_skill_invocation.ignored') {
       return { kind: 'activity', visible: true,
         title: type === 'codex.local_skills.missing'
@@ -609,11 +628,13 @@
     }
 
     if (event.type === 'codex.session.request') {
+      const approvalDetail = formatAntigravityApprovalDetail(event.detail, locale);
       return {
         kind: 'activity',
         visible: true,
         title: formatCodexApprovalRequest(method, locale, brand),
         status: 'running',
+        ...(approvalDetail ? { detail: approvalDetail } : {}),
         technicalDetail: normalizeRawEvent(event)
       };
     }
@@ -877,6 +898,72 @@
       return brandCopy(textFor(locale, 'Codex 请求运行本地命令，正在按当前模式处理。', 'Codex requested a local command; handling according to the current mode.'), brand);
     }
     return brandCopy(textFor(locale, 'Codex 请求继续操作，正在按当前模式处理。', 'Codex requested to continue; handling according to the current mode.'), brand);
+  }
+
+  function formatAntigravityApprovalDetail(rawDetail, locale = 'en') {
+    if (!rawDetail || typeof rawDetail !== 'object' || rawDetail.acpMethod !== 'session/request_permission') {
+      return '';
+    }
+    const decision = String(rawDetail.decision || '');
+    const reason = String(rawDetail.reason || '');
+    const rawCmd = typeof rawDetail.commandName === 'string' ? rawDetail.commandName.trim() : '';
+    const commandName = /^[A-Za-z0-9._-]+$/.test(rawCmd) && rawCmd !== '.' && rawCmd !== '..'
+      ? rawCmd.slice(0, 64)
+      : '';
+
+    if (decision === 'accept') {
+      if (reason === 'read_only_command_allowed') {
+        return textFor(locale, '已允许：只读命令。', 'Allowed: read-only command.');
+      }
+      if (reason === 'auto_mirror_write_allowed') {
+        return textFor(locale, '已允许：Auto 模式下的工作区文件修改。', 'Allowed: workspace file edit in Auto mode.');
+      }
+      if (reason === 'mirror_read_allowed') {
+        return textFor(locale, '已允许：只读文件读取。', 'Allowed: read-only file access.');
+      }
+      return textFor(locale, '已允许：符合当前模式规则。', 'Allowed: permitted by current mode.');
+    }
+
+    if (reason === 'command_outside_read_only_allowlist') {
+      return commandName
+        ? textFor(locale, `已拦截：\`${commandName}\` 不在只读命令列表中。`, `Blocked: \`${commandName}\` is not in the read-only command list.`)
+        : textFor(locale, '已拦截：命令不在只读命令列表中。', 'Blocked: command is not in the read-only command list.');
+    }
+    if (reason === 'command_shell_operator_forbidden') {
+      return textFor(locale, '已拦截：不允许使用管道、重定向或变量展开等 shell 操作符。', 'Blocked: shell operators are not allowed.');
+    }
+    if (reason === 'command_argument_forbidden') {
+      return commandName
+        ? textFor(locale, `已拦截：\`${commandName}\` 含有写入、执行或持续跟随参数。`, `Blocked: \`${commandName}\` includes write, exec, or follow flags.`)
+        : textFor(locale, '已拦截：命令含有写入、执行或持续跟随参数。', 'Blocked: command includes write, exec, or follow flags.');
+    }
+    if (reason === 'ask_mode_read_only') {
+      return textFor(locale, '已拦截：只问不改（Ask）模式下不允许修改文件。', 'Blocked: edits are not allowed in Ask mode.');
+    }
+    if (reason === 'outside_mirror_workspace'
+      || reason === 'invalid_path'
+      || reason === 'unresolvable_path'
+      || reason === 'outside_writing_style_bundle'
+      || reason === 'no_writing_style_root'
+      || reason.startsWith('writing_style_')
+      || reason.startsWith('command_path_')
+      || reason === 'cwd_outside_mirror_workspace'
+      || reason === 'cwd_invalid_path'
+      || reason === 'cwd_unresolvable_path') {
+      return textFor(locale, '已拦截：路径超出当前项目工作区。', 'Blocked: path is outside the project workspace.');
+    }
+    if (reason === 'reserved_workspace_directory'
+      || reason === 'cwd_reserved_workspace_directory'
+      || reason === 'workspace_root_mutation_forbidden') {
+      return textFor(locale, '已拦截：目标属于受保护的工作区目录。', 'Blocked: target is a protected workspace directory.');
+    }
+    if (reason === 'unsupported_permission_kind') {
+      return textFor(locale, '已拦截：当前插件策略不允许此类工具请求。', 'Blocked: this tool type is not allowed by the plugin policy.');
+    }
+    if (reason === 'command_unparseable' || reason === 'missing_command_line' || reason === 'conflicting_command_fields') {
+      return textFor(locale, '已拦截：无法将该命令验证为单条只读命令。', 'Blocked: command could not be verified as a single read-only command.');
+    }
+    return textFor(locale, '已拦截：请求未通过工作区安全策略校验。', 'Blocked: request could not be verified under the workspace policy.');
   }
 
   function getCodexStreamKey(method, params = {}) {

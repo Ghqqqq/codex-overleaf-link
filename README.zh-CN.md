@@ -3,7 +3,7 @@
   <h1>Codex Overleaf Link</h1>
   <p><strong>Empower Overleaf with Codex and Antigravity.</strong></p>
   <p>
-    <img src="https://img.shields.io/badge/version-2.7.0-blue" alt="version 2.7.0">
+    <img src="https://img.shields.io/badge/version-2.7.1-blue" alt="version 2.7.1">
     <img src="https://img.shields.io/badge/chrome-MV3-green" alt="chrome manifest v3">
     <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="node version">
     <a href="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml"><img src="https://github.com/Ghqqqq/codex-overleaf-link/actions/workflows/test.yml/badge.svg" alt="tests"></a>
@@ -120,7 +120,7 @@ Ask 和 Auto 的用法和 Codex 一样：Auto 通过编辑器写回，开着 Tra
 ### 用 npm 安装
 
 ```bash
-npm exec --yes codex-overleaf-link@2.7.0 -- install-managed
+npm exec --yes codex-overleaf-link@2.7.1 -- install-managed
 ```
 
 安装器会装好 native host 和一份托管的扩展，最后输出扩展所在的文件夹。
@@ -134,13 +134,13 @@ npm exec --yes codex-overleaf-link@2.7.0 -- install-managed
 
 ```bash
 # macOS / Linux
-CODEX_OVERLEAF_REF=v2.7.0 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.7.0/install.sh)"
+CODEX_OVERLEAF_REF=v2.7.1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.7.1/install.sh)"
 ```
 
 ```powershell
 # Windows
-iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.7.0/install.ps1 -OutFile install.ps1
-$env:CODEX_OVERLEAF_REF='v2.7.0'
+iwr https://raw.githubusercontent.com/Ghqqqq/codex-overleaf-link/v2.7.1/install.ps1 -OutFile install.ps1
+$env:CODEX_OVERLEAF_REF='v2.7.1'
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
@@ -221,10 +221,10 @@ flowchart TD
 
 | 用途 | 命令 |
 |---|---|
-| 安装、修复或迁移 | `npm exec --yes codex-overleaf-link@2.7.0 -- install-managed` |
-| 诊断 | `npm exec --yes codex-overleaf-link@2.7.0 -- doctor` |
-| 卸载 | `npm exec --yes codex-overleaf-link@2.7.0 -- uninstall-managed` |
-| 只装 native host（扩展自行管理时） | `npm exec --yes codex-overleaf-link@2.7.0 -- install-native` / `uninstall-native` |
+| 安装、修复或迁移 | `npm exec --yes codex-overleaf-link@2.7.1 -- install-managed` |
+| 诊断 | `npm exec --yes codex-overleaf-link@2.7.1 -- doctor` |
+| 卸载 | `npm exec --yes codex-overleaf-link@2.7.1 -- uninstall-managed` |
+| 只装 native host（扩展自行管理时） | `npm exec --yes codex-overleaf-link@2.7.1 -- install-native` / `uninstall-native` |
 
 `uninstall-managed` 会删除 native host 注册、bridge、托管的扩展和运行时，历史、设置、镜像、密钥和技能都会保留。要彻底清理：先在**设置 → 所有项目 → 本地数据 → 清理本地历史…**中清掉历史，再卸载，然后在 `chrome://extensions` 里移除扩展，最后删除 `~/.codex-overleaf` 和 `~/Codex Overleaf Link Extension` 快捷方式（Windows 上是 `%USERPROFILE%\.codex-overleaf` 和 `%LOCALAPPDATA%\CodexOverleaf`）。
 

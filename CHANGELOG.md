@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.7.1 - 2026-11-28
+
+### Fixed
+
+- An Antigravity run no longer ends without an answer when the panel blocks one of its requests. Antigravity is told which request was blocked and why, then continues the task, at most twice per run.
+- Antigravity can list project files with `find`; options that write files or run other programs stay blocked.
+- A blocked or allowed Antigravity request shows its reason once in the run's activity instead of repeating the same sentence.
+
 ## v2.7.0 - 2026-11-28
 
 ### Added

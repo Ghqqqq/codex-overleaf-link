@@ -812,12 +812,64 @@ test('Antigravity failure codes, ENOENT handling, declined tool items, and compa
   assert.equal(evalResult.status, 'native_unhealthy');
   assert.equal(evalResult.classification, 'incompatible');
 
-  for (const type of ['antigravity.thread.fresh', 'codex.thread.fresh']) {
+  for (const type of ['antigravity.thread.fresh', 'codex.thread.fresh', 'antigravity.turn.continued']) {
     const en = AgentTranscript.mapAgentEventToActivity({ type }, { locale: 'en' });
     const zh = AgentTranscript.mapAgentEventToActivity({ type }, { locale: 'zh' });
     assert.equal(en.visible, true);
     assert.equal(en.status, 'warning');
     assert.notEqual(en.title, zh.title);
+  }
+
+  // Antigravity approval notices produce localized decision+reason details without repeating title or leaking outside paths.
+  const blockedFindApproval = {
+    type: 'codex.session.request',
+    detail: {
+      method: 'item/commandExecution/requestApproval',
+      acpMethod: 'session/request_permission',
+      decision: 'decline',
+      kind: 'execute',
+      reason: 'command_outside_read_only_allowlist',
+      commandName: 'find'
+    }
+  };
+  const allowedCmdApproval = {
+    type: 'codex.session.request',
+    detail: {
+      method: 'item/commandExecution/requestApproval',
+      acpMethod: 'session/request_permission',
+      decision: 'accept',
+      kind: 'execute',
+      reason: 'read_only_command_allowed',
+      commandName: 'rg'
+    }
+  };
+  const outsidePathApproval = {
+    type: 'codex.session.request',
+    detail: {
+      method: 'session/request_permission',
+      acpMethod: 'session/request_permission',
+      decision: 'decline',
+      kind: 'read',
+      reason: 'outside_mirror_workspace',
+      commandName: '/Users/secretuser/private/keys.txt',
+      params: { kind: 'read', title: 'Read /Users/secretuser/private/keys.txt' }
+    }
+  };
+  const blockedEn = AgentTranscript.mapAgentEventToActivity(blockedFindApproval, { locale: 'en', providerId: 'antigravity' });
+  const blockedZh = AgentTranscript.mapAgentEventToActivity(blockedFindApproval, { locale: 'zh', providerId: 'antigravity' });
+  assert.equal(blockedEn.detail, 'Blocked: `find` is not in the read-only command list.');
+  assert.equal(blockedZh.detail, '已拦截：`find` 不在只读命令列表中。');
+  assert.notEqual(blockedEn.title, blockedEn.detail);
+
+  const allowedEn = AgentTranscript.mapAgentEventToActivity(allowedCmdApproval, { locale: 'en', providerId: 'antigravity' });
+  const allowedZh = AgentTranscript.mapAgentEventToActivity(allowedCmdApproval, { locale: 'zh', providerId: 'antigravity' });
+  assert.equal(allowedEn.detail, 'Allowed: read-only command.');
+  assert.equal(allowedZh.detail, '已允许：只读命令。');
+
+  for (const locale of ['en', 'zh']) {
+    const outsideMapped = AgentTranscript.mapAgentEventToActivity(outsidePathApproval, { locale, providerId: 'antigravity' });
+    assert.doesNotMatch(outsideMapped.detail, /secretuser|keys\.txt/);
+    assert.doesNotMatch(outsideMapped.title, /secretuser|keys\.txt/);
   }
 });
 
@@ -1018,6 +1070,39 @@ test('AgentBrand protects product and Codex-only phrases while twin-form panel a
     summaryCtrl.mount(agyCard, agyRun);
     assert.equal(codexCard.querySelector('.run-setup-label').textContent, 'Started Codex');
     assert.equal(agyCard.querySelector('.run-setup-label').textContent, 'Started Antigravity');
+
+    // Approval notice row renders decision+reason detail in .run-workflow-tool-note instead of duplicating summary title.
+    const approvalActivity = AgentTranscript.mapAgentEventToActivity({
+      type: 'codex.session.request',
+      detail: {
+        method: 'item/commandExecution/requestApproval',
+        acpMethod: 'session/request_permission',
+        decision: 'decline',
+        kind: 'execute',
+        reason: 'command_outside_read_only_allowlist',
+        commandName: 'latexmk'
+      }
+    }, { locale: 'en', providerId: 'antigravity' });
+    const agyNoticeRun = {
+      id: 'run-agy-notice',
+      status: 'completed',
+      executionSnapshot: { providerId: 'antigravity' },
+      events: [{
+        ...approvalActivity,
+        activity: RunActivityModel.capture(approvalActivity)
+      }]
+    };
+    const noticeSummaryCtrl = summaryWin.CodexOverleafRunActivitySummary.create({
+      RunActivityModel, AgentBrand, tx: panelTx, rawTx: en => en,
+      findRunRecord: () => agyNoticeRun,
+      getPanel: () => doc.createElement('div'), cssEscape: s => s,
+      formatElapsed: () => '1s', renderMarkdownBlockText() {}, renderRunEvent: () => doc.createElement('div'),
+      presence, classifyStatus: () => 'done'
+    });
+    const noticeCard = makeCardHost(agyNoticeRun.id);
+    noticeSummaryCtrl.mount(noticeCard, agyNoticeRun);
+    assert.equal(noticeCard.querySelector('.run-workflow-tool-target').textContent, approvalActivity.title);
+    assert.equal(noticeCard.querySelector('.run-workflow-tool-note').textContent, 'Blocked: `latexmk` is not in the read-only command list.');
 
     // RunCompletionMeta and RunFailureNotice preserve each run's own brand regardless of panel provider.
     const metaInput = [{ key: 'nextStep', label: 'Next', value: 'Continue the conversation, or switch to Auto to let Codex edit files.' }];
